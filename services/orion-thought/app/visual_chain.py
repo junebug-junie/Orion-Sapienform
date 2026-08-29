@@ -197,7 +197,6 @@ from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
 from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
-from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
 from .store import (
@@ -216,6 +215,20 @@ logger = logging.getLogger("orion-thought.visual_chain")
 # written anything). Deliberately small and neutral -- this only needs to
 # produce *something* real to generate and observe.
 DEFAULT_SEED_PROMPT = "a calm orion, soft abstract light, dreaming"
+
+# Patch 8: the metacog interpretation call's route/lane, named rather than three independent
+# literals -- review caught this live 2026-08-29. Deliberately NOT a settings flag or shared
+# helper with reverie.py's own _metacog_route(): unlike reverie's calls,
+# ORION_REVERIE_METACOG_BACKGROUND_ENABLED must never move this one -- per Juniper's stated
+# priority ("diffusion trumps text if we are too tight"), this call is the one that must never
+# wait, in every configuration. If a future patch ever wants this to become conditional, that is
+# a deliberate policy change to make here explicitly, not something a shared helper should paper
+# over.
+_INTERPRETATION_LLM_ROUTE = "metacog"
+# Same background-lane/no-chat-fallback contract reverie.py's own metacog-routed calls use
+# (build_reverie_context, build_expectation_judge_context) -- named here so this call site's
+# intent reads the same way, not because the two files share a helper.
+_METACOG_LLM_LANE_OPTIONS: dict[str, Any] = {"llm_lane": "background", "allow_chat_fallback": False}
 
 # Defense-in-depth single-flight guard (module docstring). Not the mechanism
 # that makes overlap structurally impossible -- the worker loop's own
@@ -327,16 +340,16 @@ def build_visual_interpretation_plan_request(
     docstring). Always plain `metacog`, never `metacog_background` -- see
     Patch 8's writeup on why this call is the one that must never wait.
     """
-    plan = build_plan_for_verb("visual_context_interpret", mode="metacog")
+    plan = build_plan_for_verb("visual_context_interpret", mode=_INTERPRETATION_LLM_ROUTE)
     return PlanExecutionRequest(
         plan=plan,
         args=PlanExecutionArgs(
             request_id=correlation_id,
             trigger_source=settings.service_name,
             extra={
-                "llm_profile": "metacog",
-                "mode": "metacog",
-                "llm_route": "metacog",
+                "llm_profile": _INTERPRETATION_LLM_ROUTE,
+                "mode": _INTERPRETATION_LLM_ROUTE,
+                "llm_route": _INTERPRETATION_LLM_ROUTE,
                 "execution_lane": "background",
             },
         ),
@@ -344,7 +357,7 @@ def build_visual_interpretation_plan_request(
             "source_label": source_label,
             "source_text": source_text,
             "prior_description": (prior_description or "").strip() or None,
-            "options": {"llm_lane": "background", "allow_chat_fallback": False},
+            "options": _METACOG_LLM_LANE_OPTIONS,
         },
     )
 
@@ -390,15 +403,20 @@ async def interpret_context_for_visual(
             slot_name, correlation_id, exc,
         )
         return None
-    try:
-        raw = extract_stance_react_payload(exec_result)
-    except Exception as exc:
+    raw = exec_result.get("final_text") if isinstance(exec_result, dict) else None
+    if not isinstance(raw, str):
+        # Review finding: extract_stance_react_payload was built for stance_react's richer
+        # multi-step fallback chain (a nested step's structured/json/payload dict). This
+        # verb's plan has exactly one step with plain-text output -- final_text is the only
+        # shape ever expected, so a missing or non-string result is logged and treated as a
+        # failure to interpret, not silently degraded through a fallback chain meant for a
+        # different verb.
         logger.warning(
-            "visual chain interpretation payload missing slot=%s corr=%s err=%s",
-            slot_name, correlation_id, exc,
+            "visual chain interpretation result missing final_text slot=%s corr=%s",
+            slot_name, correlation_id,
         )
         return None
-    text = raw.strip() if isinstance(raw, str) else ""
+    text = raw.strip()
     return text or None
 
 
@@ -613,13 +631,27 @@ async def run_visual_chain_once(
         logger.info("visual chain skipped: run already in flight")
         return None
 
-    async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
-                                  prior_description: str | None, context_text: str | None,
-                                  self_study_text: str | None, memory_text: str | None,
-                                  context_slot_used: str | None, context_slot_rotation: int,
-                                  context_slot_interpreted: str | None,
-                                  continuity_streak: int, continuity_reset: bool
-                                  ) -> ReverieVisualChainV1:
+    async def _generation_failed(
+        *,
+        chain_id: str,
+        error: BaseException,
+        prompt: str,
+        prior_description: str | None,
+        context_text: str | None,
+        self_study_text: str | None,
+        memory_text: str | None,
+        context_slot_used: str | None,
+        context_slot_rotation: int,
+        context_slot_interpreted: str | None,
+        continuity_streak: int,
+        continuity_reset: bool,
+    ) -> ReverieVisualChainV1:
+        # Review finding: this closure's positional parameter list had grown to 12 args
+        # across Patches 4-8, several adjacent int/bool/str-or-None values with nothing
+        # stopping a future edit from silently transposing two of them (e.g.
+        # continuity_streak/continuity_reset) at a call site -- keyword-only forces every
+        # call site to name each value, so a transposition is a TypeError, not a silent
+        # data-corruption bug in a persisted chain_json row.
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
@@ -737,9 +769,18 @@ async def run_visual_chain_once(
             )
         except Exception as exc:
             return await _generation_failed(
-                chain_id, exc, prompt, continuity_fallback, context_text, self_study_text,
-                memory_text, context_slot_used, context_slot_rotation, context_slot_interpreted,
-                continuity_streak, continuity_reset,
+                chain_id=chain_id,
+                error=exc,
+                prompt=prompt,
+                prior_description=continuity_fallback,
+                context_text=context_text,
+                self_study_text=self_study_text,
+                memory_text=memory_text,
+                context_slot_used=context_slot_used,
+                context_slot_rotation=context_slot_rotation,
+                context_slot_interpreted=context_slot_interpreted,
+                continuity_streak=continuity_streak,
+                continuity_reset=continuity_reset,
             )
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
@@ -765,9 +806,18 @@ async def run_visual_chain_once(
 
         if isinstance(store_result, BaseException):
             return await _generation_failed(
-                chain_id, store_result, prompt, continuity_fallback, context_text, self_study_text,
-                memory_text, context_slot_used, context_slot_rotation, context_slot_interpreted,
-                continuity_streak, continuity_reset,
+                chain_id=chain_id,
+                error=store_result,
+                prompt=prompt,
+                prior_description=continuity_fallback,
+                context_text=context_text,
+                self_study_text=self_study_text,
+                memory_text=memory_text,
+                context_slot_used=context_slot_used,
+                context_slot_rotation=context_slot_rotation,
+                context_slot_interpreted=context_slot_interpreted,
+                continuity_streak=continuity_streak,
+                continuity_reset=continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
 

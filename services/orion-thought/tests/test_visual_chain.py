@@ -505,7 +505,15 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering of that thought"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    # Review finding: without an explicit cortex_client, a real context_slot_used here
+    # (Patch 8) would fire interpret_context_for_visual against this SAME fake bus, whose
+    # rpc_request was only configured to answer the vision-caption RPC -- it happened to
+    # fail open safely by coincidence (the vision-shaped payload doesn't match final_text),
+    # not by anything this test asserted. Explicit stub makes that failure-open path
+    # deliberate, not accidental.
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     assert "a real reverie thought" in chain.chain_json["prompt"]
@@ -657,14 +665,21 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "e" * 64)
 
+    # Review finding: a real context_slot_used here would otherwise fire
+    # interpret_context_for_visual against the same fake bus configured only for the
+    # vision-caption RPC -- explicit stub makes the fail-open path deliberate.
+    cortex_client = _FakeCortexClient(error=RuntimeError("not exercised here"))
+
     # Run 1: no prior yet -- seeds from context, streak stays 0 (nothing to cap).
-    r1 = await visual_chain.run_visual_chain_once(_fake_bus(_vision_result_payload("an aqueduct")))
+    r1 = await visual_chain.run_visual_chain_once(
+        _fake_bus(_vision_result_payload("an aqueduct")), cortex_client=cortex_client
+    )
     assert r1.chain_json["continuity_streak"] == 0
     assert r1.chain_json["continuity_reset"] is False
 
     # Run 2: real continuity available, streak 0 < cap(2) -- continuity used, streak -> 1.
     r2 = await visual_chain.run_visual_chain_once(
-        _fake_bus(_vision_result_payload("an aqueduct at dusk"))
+        _fake_bus(_vision_result_payload("an aqueduct at dusk")), cortex_client=cortex_client
     )
     assert "an aqueduct" in generate_prompts[1]
     assert r2.chain_json["continuity_streak"] == 1
@@ -672,7 +687,7 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
 
     # Run 3: streak 1 < cap(2) -- still allowed, streak -> 2.
     r3 = await visual_chain.run_visual_chain_once(
-        _fake_bus(_vision_result_payload("the same aqueduct again"))
+        _fake_bus(_vision_result_payload("the same aqueduct again")), cortex_client=cortex_client
     )
     assert "an aqueduct at dusk" in generate_prompts[2]
     assert r3.chain_json["continuity_streak"] == 2
@@ -682,7 +697,8 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     # prompt must NOT contain the prior continuity text, proving the cap
     # actually changed what got generated, not just what got recorded.
     r4 = await visual_chain.run_visual_chain_once(
-        _fake_bus(_vision_result_payload("something completely different"))
+        _fake_bus(_vision_result_payload("something completely different")),
+        cortex_client=cortex_client,
     )
     assert "the same aqueduct again" not in generate_prompts[3]
     assert r4.chain_json["continuity_streak"] == 0
@@ -810,7 +826,9 @@ async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_js
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering of that observation"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     assert "vision events dropped 0.36x vs baseline" in chain.chain_json["prompt"]
@@ -884,7 +902,9 @@ async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering of that memory"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     assert "Orion and Juniper talked through the mesh work" in chain.chain_json["prompt"]
@@ -964,7 +984,9 @@ async def test_run_visual_chain_once_uses_only_one_context_seed_per_run_when_all
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     # Rotation starts at index 0 -> "context" wins this run.
@@ -1017,10 +1039,11 @@ async def test_context_slot_rotation_advances_across_successive_runs(tmp_path, m
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "j" * 64)
 
+    cortex_client = _FakeCortexClient(error=RuntimeError("not exercised here"))
     slots_used = []
     for _ in range(4):
         chain = await visual_chain.run_visual_chain_once(
-            _fake_bus(_vision_result_payload("a rendering"))
+            _fake_bus(_vision_result_payload("a rendering")), cortex_client=cortex_client
         )
         slots_used.append(chain.chain_json["context_slot_used"])
 

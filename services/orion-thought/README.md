@@ -249,7 +249,7 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
-## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding)
+## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed + Patch 7 context-slot rotation)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -285,8 +285,14 @@ takes `context_text` — the text reverie chain's own most recent, real
 (non-hollow) `substrate_reverie_thought.interpretation`, ONLY once it is
 already linked into a *settled* `substrate_reverie_chain` row
 (`store.load_latest_reverie_interpretation`, capped at
-`MAX_REVERIE_CONTEXT_CHARS`=240 chars, word-boundary truncation via
-`orion.cognition.compactor.truncate`). A deliberately narrow first slice of
+`ORION_REVERIE_CONTEXT_CHAR_LIMIT`=240 chars by default, word-boundary
+truncation via `orion.cognition.compactor.truncate`, and only considered
+fresh within `ORION_REVERIE_CONTEXT_MAX_AGE_SEC`=900s — without a staleness
+bound, a stalled/disabled text-reverie worker would leave the same old
+thought answering forever, presented as "Orion is currently thinking"
+long after it stopped being current; see `settings.py`'s field comment for
+why 900s specifically, not the felt_state_reader.py/proposal-runtime
+thresholds already elsewhere in this repo). A deliberately narrow first slice of
 the design doc §1's full "recent activity / chat / dream" list: already-
 summarized content that already reaches the Hub Reverie tab's Text sub-view
 — but only true once chain-linked (review finding: a thought row is written
@@ -302,6 +308,91 @@ a true last resort, hit only when neither exists yet (a fresh install).
 surfaced as its own field in the Hub Reverie tab. Live-verified against the
 real `conjourney` database 2026-08-26 (design doc §14). Raw chat/dream
 sourcing remains a separate, later change.
+
+**Patch 4 continuity reset (design doc §15):** live-caught 2026-08-27, hours
+after Patch 3 shipped -- `prior_description` continuity had locked onto one
+visual attractor ("ancient Roman aqueduct") across 10+ runs / 100+ minutes,
+unmoved by context-seeding: a short abstract clause has nowhere near the
+prompt weight of a long, concrete continuity description, and abstract
+cognitive-state narration isn't strongly visualizable content regardless of
+prompt order. Fix is a deterministic reset, not a reweighting guess:
+`resolve_visual_chain_continuity` tracks how many CONSECUTIVE runs used real
+continuity (`chain_json.continuity_streak`, read alongside
+`prior_description` in one round trip by `store.
+load_latest_visual_chain_continuity_state` -- review finding: two separate
+reads of the same latest row wasted a query and left a theoretical race);
+once that streak reaches `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` (default
+3), the next run forces continuity to drop from its own prompt -- re-seeding
+from `context_text`, or the fixed seed if neither exists -- then continuity
+resumes normally. On a reset run, a failed generation/caption never
+resurrects the stale pre-reset `prior_description` (a second review
+finding, fixed the same way: `continuity_fallback` is `None` on a reset
+run, the old value only on a normal one). No off switch by design (0 means
+reset every run). `continuity_streak`/`continuity_reset` recorded in
+`chain_json` on both the success and `generation_failed` paths, surfaced in
+the Hub Reverie tab alongside `context_text`.
+
+**Patch 5 self-study context-seed (design doc §16):** same session as Patch
+4 -- Juniper directly asked for the visual chain to draw on "actual memory
+or a recent chat or something from Orion's self study analysis." All three
+candidates were live-checked before any code was written: `memory_
+crystallizations` ("actual memory") was DECLINED -- its `summary`/`subject`
+columns hold verbatim personal chat content with no safe filter, including
+a real sample naming a family member's medical history. The
+`chat_history_compactor` digest ("recent chat") was DECLINED on cadence
+grounds -- it's a daily-schedule producer with no evidence it has ever
+fired in production, not a fit for a ~600s-cadence consumer. Self-study
+analysis was BUILT: `build_visual_prompt` gains a third optional input,
+`self_study_text` (`store.load_latest_self_study_reflection`), real
+quantified self-observation from `self_study_analysis.py`'s four
+deterministic window-contrast analyses (concept induction, vision events,
+affective state, co-creation signals) -- confirmed safe by reading real
+bodies before writing any code. The actual privacy boundary is
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES`, an ALLOWLIST of only those four
+producers' `source_ref` prefixes -- `source_kind='self_study'` also covers
+a sibling free-form "Curiosity" reflection confirmed live to quote
+sensitive personal content, which the allowlist deliberately excludes.
+`self_study_text` recorded in `chain_json` on both paths, surfaced in the
+Hub tab alongside `context_text`. `build_visual_prompt`'s old if/elif
+branches were refactored into a list-join composition (a third optional
+input would have meant 8 branches) -- verified byte-identical output for
+every pre-Patch-5 combination via exact-string test assertions.
+
+**Patch 6 memory-crystallization context-seed (design doc §17):** same day,
+Juniper corrected Patch 5's `memory_crystallizations` call -- the "no new
+privacy surface" concern assumed a second audience for that content that
+does not exist: this route has no external port mapping and no auth, so
+Juniper is the only possible viewer, and also the original source of
+everything the table holds. `build_visual_prompt` gains a fourth optional
+input, `memory_text` (`store.load_latest_memory_crystallization`),
+verbatim `summary` text from the most recent `status='active'` row --
+deliberately NOT content-filtered, unlike `self_study_text`. `memory_text`
+recorded in `chain_json` on both paths, surfaced in the Hub tab.
+
+**Patch 7 context-slot rotation (design doc §18) -- the real root cause:**
+same day, live report: "the memory got washed out and Orion just continued
+generating stars." Root cause verified with the REAL tokenizer: SDXL-turbo's
+CLIP text encoder truncates at 77 tokens, silently -- the actual reported
+prompt tokenized to 191 tokens; the model never saw `memory_text` or even
+the style suffix. Every context-seed added after Patch 3 had, in practice,
+almost never reached the model regardless of how correctly it was computed.
+Fix: `build_visual_prompt` now takes a SELECTED slot
+(`context_slot_name`/`context_slot_text`, breaking change from the old
+4-input signature) instead of concatenating all three -- `select_context_
+slot` round-robins among whichever of {context, self_study, memory}
+currently have content, persisting the rotation counter in `chain_json.
+context_slot_rotation` (read in the same combined round trip as
+`prior_description`/`continuity_streak`). Each slot's char cap was
+independently re-derived against the real tokenizer:
+`MAX_SELF_STUDY_CONTEXT_CHARS` 400→150, `MAX_MEMORY_CRYSTALLIZATION_
+CONTEXT_CHARS` 400→180 (`MAX_REVERIE_CONTEXT_CHARS` was already fine
+unchanged). `chain_json.context_slot_used` names which one actually
+entered the prompt; the other two are still recorded, just visually marked
+"not used this run" in the Hub tab. `orion-diffusion-host`'s
+`_run_generation` also gained `_log_prompt_token_budget`, logging a
+WARNING with real token counts whenever a prompt exceeds either of SDXL's
+two text-encoder budgets -- visibility only, using the pipeline's own
+already-loaded tokenizer(s), zero new dependency.
 
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as
@@ -351,7 +442,7 @@ Flags:
 | `ORION_VISUAL_CHAIN_ENABLED` | `true` | Master switch |
 | `ORION_VISUAL_CHAIN_INTERVAL_SEC` | `600` | Trigger cadence (real cadence is `max(this, run duration)`) |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
-| `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `30` | `/generate` HTTP timeout |
+| `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
 | `ORION_VISUAL_CHAIN_STORAGE_DIR` | `/mnt/storage-lukewarm/orion/reverie-visual` | Content-addressed image store |
 | `ORION_VISUAL_CHAIN_PERCEPT_STORE_URL` | `http://orion-athena-percept-store:8000/percepts` | Cross-host hop to vision-host |
 | `ORION_VISUAL_CHAIN_PERCEPT_STORE_TOKEN` | *(empty)* | `X-Orion-Percept-Token`, if the store requires one |
@@ -359,6 +450,13 @@ Flags:
 | `CHANNEL_VISION_HOST_REQUEST` | `orion:exec:request:VisionHostService:circe-vl` | circe's dedicated Qwen2-VL vision-host lane |
 | `CHANNEL_VISION_REPLY_PREFIX` | `orion:vision:reply` | Per-call reply channel prefix |
 | `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
+| `ORION_REVERIE_CONTEXT_CHAR_LIMIT` | `240` | Max chars of the text-reverie chain's context-seed woven into the prompt |
+| `ORION_REVERIE_CONTEXT_MAX_AGE_SEC` | `900` | How stale that context-seed thought can be before it's treated as absent rather than "current" |
+| `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` | `3` | Consecutive continuity-carrying runs before a forced reset (Patch 4, design doc §15); no off switch, 0 resets every run |
+| `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `150` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16; cut from 400 by Patch 7, design doc §18 -- 400 chars of self-study's dense jargon alone tokenizes to 104 tokens with framing, already over SDXL's 77-token budget by itself) |
+| `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` | `21600` | How stale that self-study analysis can be before it's treated as absent (6h -- these analyses fire on their own 6-72h cadence) |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `180` | Max chars of the memory-crystallization context-seed woven into the prompt (Patch 6, design doc §17; cut from 400 by Patch 7, design doc §18, same real-token-budget reasoning) |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `604800` | How stale the latest active crystallization can be before it's treated as absent (7 days -- NOT self-study's 6h; a crystallized memory doesn't go stale on that clock. Covers all but one 10-day historical outlier; see settings.py's own comment for the reconciled live-data numbers) |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test
@@ -375,3 +473,44 @@ itself needs a real Postgres to exercise (same limitation as this file's
 other read-filter functions, e.g. `load_recent_chain_theme_events`'s
 `theme_key` filter) -- live-verified instead against the real `conjourney`
 database (design doc §14).
+
+Patch 4's `resolve_visual_chain_continuity` is a pure function with direct
+unit coverage (no-prior/under-cap/at-cap/max-runs=0), plus an end-to-end
+orchestration test driving `run_visual_chain_once` through a full cap+1
+cycle and asserting the run AT the cap's own generated prompt excludes the
+prior continuity text -- not just that the resolver says it would in
+isolation (design doc §15).
+
+Patch 5's `load_latest_self_study_reflection` has direct coverage in
+`tests/test_store.py`: real-body return, char-limit override, max-age-sec
+clause presence/absence, empty-row/empty-body, never-raises -- and, the
+actual privacy boundary, a dedicated test asserting the SQL only ever binds
+the four known-safe `source_ref` prefixes by name (not "some WHERE clause
+exists"), with an explicit assertion that `curiosity:` is never among them.
+`build_visual_prompt`'s list-join refactor has an exact-string regression
+test proving every pre-Patch-5 prompt combination is byte-identical to the
+old branches (design doc §16).
+
+Patch 6's `load_latest_memory_crystallization` has direct coverage in
+`tests/test_store.py`: real-summary return, char-limit override,
+max-age-sec clause presence/absence, `status='active'` filter (a
+`rejected`/`proposed` row is never returned), empty-row/empty-summary,
+never-raises. `build_visual_prompt`'s fourth clause and `run_visual_chain_
+once`'s wiring have the same exact-string/orchestration coverage pattern
+as Patch 5's `self_study_text` (design doc §17).
+
+Patch 7's `select_context_slot` has direct unit coverage in
+`tests/test_visual_chain.py`: nothing available, rotates through all
+three, skips unavailable slots, wraps a large rotation index, index
+unchanged when nothing available. `build_visual_prompt`'s new two-input
+contract (breaking change from four) has exact-string wording coverage
+per slot label. Two end-to-end orchestration tests are the actual
+regression guard: one proves that with all three context-seeds present
+simultaneously, only the rotation-selected one appears in the real
+generated prompt string; another drives four successive runs through the
+same fake-DB round-trip harness the continuity tests use and asserts the
+selected slot visits context → self_study → memory → context in order
+(design doc §18). `orion-diffusion-host`'s `tests/test_generate.py` has
+direct coverage of `_log_prompt_token_budget` with a fake tokenizer: warns
+when over budget, silent when within it, checks both SDXL encoders, never
+raises when the pipe has no tokenizer at all.

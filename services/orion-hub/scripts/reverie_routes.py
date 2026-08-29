@@ -18,8 +18,16 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
    since 2026-08-25): generate -> store -> caption. One `reverie_visual_chain`
    row per run, `reverie_visual_artifact` rows via a REAL FK on `chain_id`.
    `prior_description` is the continuity thread; `chain_json.context_text`
-   (Patch 3) is the context-seed -- nothing else downstream of either exists
-   yet.
+   (Patch 3) is the reverie context-seed; `chain_json.continuity_streak`/
+   `continuity_reset` (Patch 4) record whether THIS run's own prompt was
+   forced to drop continuity; `chain_json.self_study_text` (Patch 5) is a
+   second, richer context-seed from the self-study analysis system;
+   `chain_json.memory_text` (Patch 6) is a third, from the Recall system's
+   `memory_crystallizations` table; `chain_json.context_slot_used` (Patch
+   7) records WHICH of those three actually entered the prompt this run --
+   see that patch's note below, all three are recorded but only one is
+   ever actually rendered -- nothing else downstream of any of these
+   exists yet.
 
 Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
 calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
@@ -56,6 +64,55 @@ No raw chat/dream content reaches the prompt (still a deliberately narrow
 first slice of design doc §1's full "recent activity, chats, dreams" list) --
 widening the source set further is a separate, later change that must redo
 this same check.
+
+**Privacy note, Patch 5** (design doc §16): a second context-seed,
+`self_study_text`, was added from the self-study analysis system's four
+deterministic window-contrast producers (concept induction, vision events,
+affective state, co-creation signals) -- pure numeric prose, no chat quotes,
+confirmed by reading real bodies before writing the reader
+(`orion-thought`'s `store.load_latest_self_study_reflection`,
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES`). `memory_crystallizations`
+("actual memory") was declined at the time -- see Patch 6 note below, which
+reverses that call. The `chat_history_compactor` digest ("recent chat")
+remains declined: a daily-schedule producer with no evidence it has ever
+fired in production.
+
+**Privacy note, Patch 6** (design doc §17): a third context-seed,
+`memory_text`, from `memory_crystallizations` (`orion-thought`'s
+`store.load_latest_memory_crystallization`) -- reverses Patch 5's declined
+call on the same table, on new evidence about audience rather than a
+change in content filtering. This route (and the whole Reverie tab it
+backs) is not published outside this host -- no `ports:` mapping in this
+service's `docker-compose.yml` -- and has no per-user auth; there is one
+possible viewer, and that viewer is also the original source of everything
+`memory_crystallizations` holds. `memory_text` is verbatim `summary` text
+from that table, filtered only to `status='active'` (a pipeline-lifecycle
+filter, not a content one) -- unlike `self_study_text`, this is NOT
+restricted to a safe-content allowlist, by design.
+
+**Patch 7** (design doc §18): not a privacy change -- `context_text`,
+`self_study_text`, and `memory_text` are all still computed and recorded
+on every run exactly as before. What changed is that only ONE of them
+(`chain_json.context_slot_used` names which) actually enters the
+diffusion prompt each run -- the diffusion model's real 77-token text-
+encoder budget meant concatenating all three (Patches 3/5/6's original
+design) silently discarded most of them anyway. This tab now shows the
+honest distinction CLAUDE.md §0A calls for: which context-seeds were
+*available* this run (still all three, still all real) versus which one
+*actually reached the image* (`context_slot_used`) -- a real gap this tab
+previously had no way to show, since `chain_json.prompt` alone doesn't
+reveal that everything past token 77 was invisible to the model.
+
+**Privacy/governance correction, same day** (design doc §20): the Patch 6
+note above called `status='active'` "a pipeline-lifecycle filter" implying
+the crystallization pipeline's governor had reviewed the content. Verified
+live that this is false for most of the table -- `formation_policy.py`'s
+`AUTO_ACTIVE_KINDS` sets `status='active'` on creation with zero
+governor review; only 21 of 652 real `active` rows have ever been touched
+by an actual decision. `store.load_latest_memory_crystallization` now also
+requires a real `memory_crystallization_history` row with `op='approve'`
+-- the pipeline's actual audit trail, not its near-universal default
+status.
 """
 
 from __future__ import annotations
@@ -246,6 +303,30 @@ async def visual_recent(
                 # of a full sentence (CLAUDE.md §0A: inspectable evidence, not
                 # schema presence).
                 "context_text": cj.get("context_text"),
+                # Patch 5: a second, richer context-seed -- real quantified
+                # self-observation, not a bare narration sentence. Same
+                # "own field, not just prose" reasoning as context_text
+                # above.
+                "self_study_text": cj.get("self_study_text"),
+                # Patch 6: a third context-seed -- real shared-life memory
+                # crystallization content. Same "own field" reasoning as
+                # context_text/self_study_text above.
+                "memory_text": cj.get("memory_text"),
+                # Patch 7: which ONE of context_text/self_study_text/
+                # memory_text actually entered THIS run's prompt --
+                # "context", "self_study", "memory", or null (nothing had
+                # content). All three fields above are still recorded
+                # regardless; this is the honest "which one actually
+                # reached the model" signal the diffusion model's 77-token
+                # budget made necessary (see module docstring).
+                "context_slot_used": cj.get("context_slot_used"),
+                # Patch 4: whether THIS run's own prompt was forced to drop
+                # prior_description continuity (visual_chain.py::
+                # resolve_visual_chain_continuity) -- surfaced so the tab can
+                # show "this is a fresh seed point", not just a normal
+                # continuity step.
+                "continuity_streak": cj.get("continuity_streak"),
+                "continuity_reset": cj.get("continuity_reset"),
                 # A failed generation's chain_json carries "error" instead of
                 # "artifact_sha256"/"description" (visual_chain.py's
                 # _generation_failed) -- surfaced so the cockpit can show

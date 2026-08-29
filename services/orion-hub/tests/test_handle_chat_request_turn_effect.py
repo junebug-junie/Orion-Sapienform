@@ -431,7 +431,7 @@ def test_api_chat_skips_persistence_for_workflow_metadata_only(monkeypatch) -> N
     monkeypatch.setattr(api_routes, "publish_chat_turn", _fake_publish_chat_turn)
 
     payload = {"messages": [{"role": "user", "content": "run dream cycle"}]}
-    result = asyncio.run(api_routes.api_chat(payload, None, None))
+    result = asyncio.run(api_routes.api_chat(None, payload, None, None))
     assert result["workflow_metadata_only"] is True
     assert result["text"] == ""
     assert calls == {"history": 0, "turn": 0}
@@ -477,7 +477,7 @@ def test_api_chat_persists_normal_responses(monkeypatch) -> None:
     monkeypatch.setattr(api_routes, "publish_chat_turn", _fake_publish_chat_turn)
 
     payload = {"messages": [{"role": "user", "content": "hello"}]}
-    result = asyncio.run(api_routes.api_chat(payload, None, None))
+    result = asyncio.run(api_routes.api_chat(None, payload, None, None))
     assert result["workflow_metadata_only"] is False
     assert result["text"] == "normal response"
     assert calls["history"] == 1

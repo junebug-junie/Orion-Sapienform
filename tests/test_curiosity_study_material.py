@@ -200,3 +200,107 @@ def test_what_was_recently_studied_no_longer_comes_from_the_journal() -> None:
     assert "journal_entries" not in "".join(
         v for v in vars(study_material).values() if isinstance(v, str)
     )
+
+
+# --- the corpus is Orion's, not AI Town's ----------------------------------
+
+
+def test_the_sample_excludes_ai_town_at_the_sql_level() -> None:
+    """`formation_policy.DEFAULT_DISCARD_PLATFORMS` discards the platform now,
+    but every AI Town row already in the table predates that gate, and this
+    sampler was the last place still serving them: 185 of the 295 rows it could
+    draw from were AI Town, under a heading claiming Juniper had approved them.
+    """
+    from orion.curiosity.study_material import (
+        APPROVED_COUNT_SQL,
+        APPROVED_SAMPLE_SQL,
+        RELATION_RESOLVABLE_SQL,
+        RELATION_SAMPLE_SQL,
+    )
+
+    from orion.curiosity.study_material import RELATION_COUNT_SQL
+
+    # RELATION_COUNT_SQL is in this list because it was NOT filtered when the
+    # other three were, and the miss was invisible: the prompt announced 551
+    # induction decisions while `orion_readonly` could reach 89. A count and a
+    # sample taken over different populations is the same defect that had the
+    # crystallization heading claiming 651.
+    for sql in (APPROVED_COUNT_SQL, APPROVED_SAMPLE_SQL, RELATION_COUNT_SQL,
+                RELATION_SAMPLE_SQL, RELATION_RESOLVABLE_SQL):
+        assert "aitown_chat_history_log" in sql, sql[:80]
+        assert "NOT EXISTS" in sql, sql[:80]
+
+
+def test_the_counts_are_taken_over_the_same_pool_as_the_sample() -> None:
+    """Counting `status='active'` while sampling something narrower is how the
+    prompt came to announce 651 items and draw twelve from 295."""
+    from orion.curiosity.study_material import (
+        APPROVED_COUNT_SQL,
+        APPROVED_SAMPLE_SQL,
+        _SAMPLEABLE_KINDS,
+    )
+
+    assert _SAMPLEABLE_KINDS in APPROVED_COUNT_SQL
+    assert _SAMPLEABLE_KINDS in APPROVED_SAMPLE_SQL
+
+
+def test_the_candidate_join_normalises_the_crys_id_format() -> None:
+    """Candidates are `crys_<hex-no-dashes>`; crystallization ids are dashed
+    UUIDs. Comparing them raw resolved 0 of 550 and the code concluded induction
+    was recording judgements about concepts it did not keep. Normalised: 235."""
+    from orion.curiosity.study_material import RELATION_SAMPLE_SQL
+
+    assert "'crys_' || replace(" in RELATION_SAMPLE_SQL
+    assert "'-', ''" in RELATION_SAMPLE_SQL
+
+
+def test_manual_approval_is_counted_separately_from_auto_activation() -> None:
+    from datetime import datetime, timezone
+
+    from orion.curiosity.study_material import assemble_study_material
+
+    m = assemble_study_material(
+        now=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        approved_counts=[{"kind": "semantic", "n": 87, "manual_n": 0},
+                         {"kind": "stance", "n": 20, "manual_n": 20}],
+        approved_rows=[], relation_counts=[], relation_rows=[],
+    )
+    assert m.approved_total == 107
+    assert m.manual_total == 20
+
+
+def test_a_caller_without_the_manual_column_reads_as_unknown_not_zero() -> None:
+    """Absent must not render as "0 of these Juniper approved" -- that is a
+    claim, and the prompt says nothing instead."""
+    from datetime import datetime, timezone
+
+    from orion.curiosity.study_material import assemble_study_material
+
+    m = assemble_study_material(
+        now=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        approved_counts=[{"kind": "semantic", "n": 87}],
+        approved_rows=[], relation_counts=[], relation_rows=[],
+    )
+    assert m.approved_total == 87
+    assert m.manual_total == 0
+
+
+def test_the_prompt_no_longer_claims_juniper_approved_everything() -> None:
+    from datetime import datetime, timezone
+
+    from orion.curiosity.kickoff_prompt import _material_section
+    from orion.curiosity.study_material import assemble_study_material
+
+    m = assemble_study_material(
+        now=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        approved_counts=[{"kind": "stance", "n": 20, "manual_n": 20},
+                         {"kind": "semantic", "n": 87, "manual_n": 0}],
+        approved_rows=[{"crystallization_id": "c1", "kind": "stance",
+                        "subject": "a real thing", "summary": "", "salience": 0.5,
+                        "created_at": None}],
+        relation_counts=[], relation_rows=[],
+    )
+    text = "\n".join(_material_section(m))
+    assert "JUNIPER HAS APPROVED" not in text
+    assert "20 of these Juniper approved by hand" in text
+    assert "auto-activated by policy without her seeing them" in text

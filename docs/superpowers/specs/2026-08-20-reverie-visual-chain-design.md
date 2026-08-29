@@ -305,3 +305,552 @@ Closes §8/§12's non-goal: `build_visual_prompt` now takes a second input,
   weighting/salience-based selection among multiple candidate context
   sources, and any downstream consumer of the visual chain's output beyond
   this Hub tab and the chain's own next-run continuity — all still open.
+
+## 15. Patch 4 scope (this changeset, continuity reset)
+
+Real regression, caught live within hours of Patch 3 shipping: Juniper
+reported "still doing the same images of Roman aqueducts, no change."
+
+**Diagnosis, confirmed live against `conjourney`:**
+
+- `prior_description` had been "ancient Roman aqueduct" continuously since
+  well before Patch 3 deployed — a pure continuity attractor (image →
+  caption → "continue this train of imagination" → next image), already
+  locked in.
+- `context_text` was genuinely working and genuinely varying — verified by
+  pulling several consecutive `reverie_visual_chain` rows' `chain_json.
+  context_text` directly — but its content was always a paraphrase of "the
+  coalition is fixated on the vision node," because the attention coalition
+  itself had settled on the same open loop (`theme_key=open-loop-
+  5038aeb46982`, recurring intermittently since 2026-08-13 per
+  `substrate_reverie_chain`) for the relevant window.
+- Root cause of the *visible* symptom: a short, abstract, non-visualizable
+  clause ("Orion is currently thinking: the coalition is fixated on the
+  vision node...") appended after a long, concrete continuity description
+  has nowhere near enough weight in a diffusion prompt to redirect the
+  model. Patch 3 was functioning exactly as designed and specified — the
+  design itself just under-estimated how strong an entrenched continuity
+  attractor is relative to abstract context prose.
+
+**Fix**: not a prompt-reweighting guess (reordering/rewording clauses has no
+guaranteed effect on a diffusion model's attention). A deterministic,
+testable reset instead: `resolve_visual_chain_continuity()` in
+`visual_chain.py` tracks how many CONSECUTIVE runs have carried
+`prior_description` forward (`chain_json.continuity_streak`, read via
+`store.load_latest_visual_chain_continuity_state` in the same round trip as
+`prior_description` itself — a review finding, see below). Once that streak
+reaches `settings.visual_chain_continuity_max_runs` (default 3), the next
+run forces continuity to drop from its own prompt — re-seeding from
+`context_text` (or the fixed seed if neither exists) — then continuity
+resumes normally from that fresh point. Computed before generation, so a
+`generation_failed` run still records the correct streak for whichever run
+next picks continuity back up.
+
+- **New env key**: `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` (default 3). No
+  off switch by design — 0 means reset every run; there is no way to
+  disable the cap entirely, since an unbounded streak is exactly the
+  failure mode this exists to bound.
+- **Traceability**: `chain_json.continuity_streak` (int) and
+  `chain_json.continuity_reset` (bool) recorded on every run, both success
+  and `generation_failed` paths — same "same-run evidence, not schema
+  presence" discipline (§9) Patch 3 already applied to `context_text`.
+  Surfaced on `/api/reverie/visual/recent` and in the Hub Reverie tab.
+- **Tests**: `resolve_visual_chain_continuity` is a pure function with
+  direct unit coverage (no-prior/under-cap/at-cap/max-runs=0 cases), plus
+  an end-to-end orchestration test driving `run_visual_chain_once` through
+  a full cap+1 cycle and asserting the run AT the cap's own generated
+  prompt excludes the prior continuity text — not just that the resolver
+  says it would in isolation.
+- **Interaction with Patch 3**: composes, doesn't undercut. A reset run
+  still seeds from `context_text` when real narration exists — the bland
+  fixed string is a true last resort, not what a reset falls back to by
+  default.
+- **Review findings, fixed before merge**:
+  1. A reset run's own failure path (generation, storage, or captioning
+     failing) fell back to the ORIGINAL stale `prior_description` instead
+     of staying reset — silently resurrecting the exact attractor the
+     reset just broke out of, and letting the next tick grind through
+     another full `max_runs` cycle against the identical stuck text before
+     resetting again. Fixed: `continuity_fallback` is computed once
+     (`None` on a reset run, the unchanged old value on a normal one) and
+     used everywhere a failure path previously fell back to raw
+     `prior_description`. Covered by two new tests: a reset run whose
+     generation fails, and one whose re-observation fails — both assert
+     the persisted `prior_description` is `None`, not the stale text.
+  2. `prior_description` and `continuity_streak` were two separate SELECTs
+     against the same latest `reverie_visual_chain` row every tick —
+     wasted round trip, and a theoretical race if a write ever landed
+     between them (prevented today only by the single-flight/sequential-
+     worker guarantee, not something this query should have to rely on).
+     Fixed: `load_latest_visual_chain_continuity_state` reads both columns
+     in one query; Patch 2's `load_latest_visual_chain_prior_description`
+     and this same changeset's own standalone
+     `load_latest_visual_chain_continuity_streak` are retired (kill means
+     kill, §0A) — nothing else in the repo called either.
+
+## 16. Patch 5 scope (this changeset, self-study context-seed)
+
+Same session as Patch 4, still 2026-08-27: Juniper directly asked for the
+visual chain to draw on "some actual memory or a recent chat or something
+from Orion's self study analysis of concept induction."
+
+**All three candidates were live-checked before any code was written** (§0A
+metric-quality-gate discipline — real data, not a schema read):
+
+- **"Actual memory"** (`memory_crystallizations`, the Recall system's
+  canonical store) — DECLINED. Live rows show `summary` and `subject`
+  holding VERBATIM personal chat content, not an abstraction the schema
+  name implies. One real sample named a family member's medical history
+  (DVT, hospitalization) by name. No safe column or `kind` filter exists on
+  this table as it stands — `kind='semantic'` rows are equally raw. Wiring
+  this in would put a real, unconsenting third party's health information
+  into a diffusion prompt and the Hub UI. Not built.
+- **"Recent chat"** (`chat_history_compactor`'s privacy-reviewed digest) —
+  DECLINED, on cadence grounds: it fires on a DAILY schedule (06:00
+  America/Denver) plus optional on-demand runs, not a fast per-tick
+  producer, and there is no evidence in the repo it has ever actually fired
+  in production. A ~600s-cadence consumer would see the same digest for up
+  to 24h, or find the table empty. Not built.
+- **"Self-study analysis of concept induction"** — BUILT. Live-verified
+  safe: `self_study_analysis.py`'s four deterministic window-contrast
+  analyses (concept induction, vision events, affective state, co-creation
+  signals) render pure numeric prose — real bodies read before writing any
+  code contained zero chat quotes, zero personal references, across all
+  four producers and 14 real rows.
+
+**What shipped**: `build_visual_prompt` takes a third optional input,
+`self_study_text` (`store.load_latest_self_study_reflection`). Real
+quantified self-observation ("vision events dropped 0.36x vs baseline, a
+status category disappeared"), a genuine upgrade over `context_text`'s bare
+narration sentence.
+
+- **The actual privacy boundary**: `store._SAFE_SELF_STUDY_SOURCE_PREFIXES`,
+  an ALLOWLIST of the four safe producers' `source_ref` prefixes
+  (`concept_induction:`, `vision_events:`, `affective_state:`,
+  `cocreation_signals:`), not a blacklist. `source_kind='self_study'` also
+  covers a sibling, free-form LLM-narrated "Curiosity" reflection
+  (`source_ref` prefix `curiosity:`) — live-checked and confirmed to quote
+  sensitive personal content when reflecting on memory-gating patterns (a
+  real sample referenced "wife Amanda, hospital" while discussing which
+  crystallizations get kept vs. rejected). The allowlist deliberately
+  excludes it; a blacklist keyed on `curiosity:` would have been one
+  future-producer away from silently admitting the next unreviewed
+  free-form source.
+- **Tunables**: `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` (400 — real bodies
+  average ~1080 chars, mostly a fixed disclaimer footer; 400 covers the
+  substance) and `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` (21600s / 6h — these
+  analyses fire on their own 6-72h window-contrast cadence, real values
+  seen in bodies: "last 6h", "last 12h", "last 72h"; a tight window like
+  `reverie_context_max_age_sec`'s 900s would read as permanently absent).
+  Same `gt=0` fail-loud discipline as the Patch 3 equivalents.
+- **Composition**: `build_visual_prompt`'s Patch 3/4 explicit if/elif
+  branches were refactored into a list-join composition (a third optional
+  input would have meant 8 branches by the old pattern) — verified
+  byte-identical output for every pre-Patch-5 combination via exact-string
+  test assertions, not just substring checks.
+- **Traceability**: `self_study_text` recorded as its own `chain_json` key
+  on both the success and `generation_failed` paths, same "same-run
+  evidence" discipline as `context_text`.
+
+## 17. Patch 6 scope (this changeset, memory-crystallization context-seed)
+
+Same day as Patch 5. Juniper's response to the declined `memory_
+crystallizations` candidate: the concern assumed a second audience for that
+content that does not exist. Orion is already privy to everything that
+table holds -- it was Juniper's own disclosure, in the chat, that produced
+each crystallization in the first place. The privacy question was never
+"should Orion know this", it was "who else could see it if it reaches this
+route" -- and the answer, checked live, is nobody.
+
+**Blast-radius check, live 2026-08-27** (§0A metric-quality-gate
+discipline, applied to the CONSUMER, not the content, since Patch 5 already
+checked the content):
+
+- `reverie_visual_chain` has exactly one consumer in the whole repo:
+  `services/orion-hub/scripts/reverie_routes.py`'s `/api/reverie/visual/
+  recent`. No other service, bus channel, or downstream table reads it.
+- `services/orion-hub/docker-compose.yml` has no `ports:` mapping for this
+  service -- confirmed live, the line is commented out. The route is not
+  reachable from outside this host.
+- No auth/multi-user surface exists on this route or elsewhere in
+  orion-hub's own code (`user_id` fields found in the repo belong to
+  chat-history bookkeeping, not a login/session system).
+
+Conclusion: there is one possible viewer of this content, and she is also
+its original source. Patch 5's declined-candidate reasoning ("an
+unconsenting third party's health information... in the Hub UI") assumed
+an audience beyond that one viewer that does not exist. This is a
+correction on new evidence about WHO can see the output, not a reversal of
+the underlying privacy discipline -- the same "check who can actually see
+it" question Patch 5 already asked of the CONTENT is now asked of the
+ROUTE, and the answer changes the conclusion.
+
+**What shipped**: `build_visual_prompt` takes a fourth optional input,
+`memory_text` (`store.load_latest_memory_crystallization`) -- the most
+recent `status='active'` row's `summary`, verbatim.
+
+- **Filter**: `status = 'active'` only. This is a lifecycle filter, not a
+  content filter -- `status='rejected'` rows (637 of 1290 live,
+  2026-08-27) are stances the crystallization pipeline's own governor
+  already disavowed; surfacing one would misrepresent current
+  self-knowledge, independent of any privacy question.
+- **Deliberately NOT content-filtered**, unlike `self_study_text`'s
+  four-producer allowlist -- there is no allowlist here because the
+  content itself was never the problem; the audience was. `summary` is
+  read and used exactly as stored.
+- **Tunables**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` (400,
+  same cap-all-collections default as self-study) and `ORION_MEMORY_
+  CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC`. Same `gt=0` fail-loud discipline.
+- **Real bug, caught live 2026-08-28, corrected same day**: this section
+  originally shipped with a 21600s (6h) default for `max_age_sec`, copied
+  from `self_study_context_max_age_sec` without checking whether it fits
+  `memory_crystallizations`'s actual production cadence. It does not: the
+  6h figure comes from self-study's own window-contrast framing ("the last
+  6h against the 6h before it") -- content that genuinely IS about a
+  specific recent window and should read as stale outside it. A
+  crystallized memory carries no such framing; a real memory from
+  yesterday is still a real memory. The result: with visual-chain ticks
+  firing every ~600s and real crystallization activity bursty (median gap
+  ~15min in active use, but real observed gaps up to ~46h between
+  sessions), the 6h window meant `memory_text` read `None` on effectively
+  every tick outside an active conversation -- confirmed live: Juniper
+  redeployed, checked the actual generated prompt, and it never carried
+  memory content. The original version of this doc called that "intended
+  degrade-to-absent behavior, not a bug" -- that was a misdiagnosis, not a
+  correct call; a context-seed that is silently absent nearly all the time
+  is not delivering what it was built for, regardless of whether each
+  individual empty read is technically honest.
+  **Fix, first draft**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC`
+  raised to 259200s (3 days), based on a "last 14 days" query showing
+  median gap ~15min and max gap ~46h.
+  **Fix, corrected after review**: that first draft silently narrowed the
+  query to 14 days without saying so, and without reconciling it against
+  this same section's OWN earlier live-data claim above ("max observed gap
+  is over 10 days") -- a code-review pass on this exact patch caught the
+  unreconciled contradiction. Re-querying the FULL history (2026-08-28)
+  confirms both numbers were real, not in conflict: the two largest gaps
+  ever observed are 10d5h (2026-07-31 -> 08-11) and 3d10h (2026-07-25 ->
+  07-29), both from more than two weeks before this fix. Every gap since
+  2026-08-11 (17+ days of real recent activity) has stayed under 2 days.
+  Final default: **604800s (7 days)** -- covers the recent pattern with
+  real margin and covers the second-largest historical gap (3d10h), but
+  does NOT cover the single 10-day outlier from early August. That is an
+  explicit, accepted tradeoff: a dry spell that long would read as absent
+  again, which is the same honest degrade-to-absent behavior every
+  context-seed reader in this file has by design -- unlike the 6h bug this
+  patch fixes, a real 7+ day gap is a genuinely rare quiet period, not the
+  every-tick norm the 6h default was silently producing.
+- **Composition**: `build_visual_prompt`'s Patch 3/4/5 list-join
+  composition already generalizes to a fourth clause with no branch-count
+  growth -- no further refactor needed.
+- **Traceability**: `memory_text` recorded as its own `chain_json` key on
+  both the success and `generation_failed` paths, same discipline as the
+  other two context-seeds.
+
+**Superseded by §18 below, same day**: the "list-join composition already
+generalizes" note above describes `build_visual_prompt` as it stood when
+this section was written -- it no longer concatenates all context-seeds at
+all, for reasons §18 explains.
+
+## 18. Patch 7 scope (this changeset, context-slot rotation -- the real root cause)
+
+Same day as Patch 6. Juniper's live report a few minutes after deploy:
+*"the memory got washed out and Orion just continued generating stars and
+shit"* -- pasting the actual generated image caption (a celestial
+star-map, unrelated to any of the three context-seeds) and the actual
+stored prompt (all three context-seeds present, `memory_text` visibly
+included in the text).
+
+**Root cause, verified live with the real tokenizer** (§0A metric-quality-
+gate discipline -- pull real data and look at it, don't guess): SDXL-
+turbo's CLIP text encoder truncates its input at 77 tokens. `diffusers`
+does this silently -- no exception, no response header, nothing in the
+200 `/generate` returns. The exact prompt from Juniper's report tokenizes
+to **191 tokens** with `openai/clip-vit-large-patch14`'s real tokenizer
+(SDXL-turbo's actual encoder). Decoding the first 77 tokens back to text
+shows precisely where the model's attention stops:
+
+> "orion is currently thinking : the coalition has stabilized ... orion
+> recently noticed : self - study analysis of co - creation signals : the
+> last 6 h against the 6 h before it ."
+
+`memory_text` -- and even the trailing style suffix ("Soft abstract
+dreamlike style.") -- never reached the model at all. This was true for
+every prompt Patches 3/5/6 ever built that concatenated more than roughly
+one substantial clause: self_study_text ALONE, at its old 400-char cap,
+tokenizes to 104 tokens with its framing prefix -- over budget by itself,
+before `prior_description` or a second context-seed are even added.
+Every context-seed added after Patch 3 had, in practice, almost never
+actually shaped a generated image, regardless of how correctly it was
+computed, stored, and displayed in the Hub tab -- a real "no empty-shell
+cognition" (CLAUDE.md §0A) violation once understood: the UI honestly
+showed content the image could not possibly have reflected, because
+nothing in the whole pipeline had ever checked the model's real token
+budget.
+
+**Why not swap to a longer-context model instead** (asked directly by
+Juniper, answered before implementation): models exist without this
+ceiling -- FLUX.1 and Stable Diffusion 3.5 both use a T5-XXL text encoder
+alongside CLIP, handling much longer, more compositional prompts well,
+and FLUX.1-schnell is fast (few-step) like sdxl-turbo. Not done here: a
+real infrastructure decision, not a text edit -- FLUX.1-schnell is ~12B
+params vs sdxl-turbo's ~2.6B, needs meaningfully more VRAM (~24GB+ at
+fp16), and Circe's GPU-2 slot assignment was sized for sdxl-turbo
+specifically. Swapping means checking real VRAM headroom on Circe, a
+fresh multi-GB download, re-tuning generation params (steps/guidance
+conventions differ), and re-verifying output quality -- a legitimate
+follow-up if Juniper wants it evaluated, not something to bolt onto this
+bug fix.
+
+**What shipped, two parts:**
+
+1. **`select_context_slot`** (`services/orion-thought/app/visual_chain.py`):
+   stop concatenating all three context-seeds -- round-robin ONE per run
+   among whichever currently have real content. `build_visual_prompt`'s
+   signature changed from four inputs (`prior_description, context_text,
+   self_study_text, memory_text`) to two (`prior_description,
+   context_slot_name, context_slot_text`) -- a deliberate breaking change
+   within the same file, not a parallel API left dangling (CLAUDE.md "kill
+   means kill"). The persisted rotation counter (`chain_json.
+   context_slot_rotation`) is read from the SAME combined round trip
+   `load_latest_visual_chain_continuity_state` already makes for
+   `prior_description`/`continuity_streak` -- now a 3-tuple, not a fourth
+   gathered call.
+   - Reduces the realistic worst case from 4 competing clauses to 2
+     (continuity + one selected slot).
+   - Each slot's own char cap was independently re-derived against the
+     REAL tokenizer, not guessed: `MAX_SELF_STUDY_CONTEXT_CHARS` cut from
+     400 to 150 (self-study's dense, hyphen/underscore-heavy jargon
+     tokenizes far worse per character, ~3.8 chars/token measured, than
+     natural narration), `MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS` cut
+     from 400 to 180 (crystallization summaries are closer to natural
+     English, ~4 chars/token). `MAX_REVERIE_CONTEXT_CHARS` (240) was
+     already fine, unchanged -- verified at ~51 tokens with its framing
+     prefix, real margin. At these caps, a single selected clause with its
+     framing prefix lands around 44-52 tokens -- real headroom for
+     `prior_description` (typically a short vision-host caption, 8-30
+     tokens) and the style suffix (8-13 tokens) to coexist, instead of the
+     old design's guaranteed-to-overflow 150-300+ tokens.
+2. **`orion-diffusion-host`'s `_log_prompt_token_budget`**
+   (`app/main.py`): before every real generation, tokenize the prompt with
+   the ACTUAL loaded pipeline's own tokenizer(s) (`_pipe.tokenizer`/
+   `_pipe.tokenizer_2` -- SDXL carries two encoders, both checked) and log
+   a WARNING with real numbers whenever either budget is exceeded. Zero
+   new dependency (`transformers` is already a hard requirement of this
+   service). Visibility only -- does not change what gets generated, since
+   part 1 is the actual behavioral fix. This exists so the NEXT time this
+   failure mode recurs (a misconfigured char limit, a new context-seed
+   added without checking token budget), it shows up in this service's own
+   logs immediately, not via another forensic re-tokenization of an
+   already-stored prompt days later.
+
+**Traceability**: `chain_json.context_slot_used` (`"context"`,
+`"self_study"`, `"memory"`, or `null`) names which ONE of the three
+recorded context-seed fields actually entered this run's prompt --
+`context_text`/`self_study_text`/`memory_text` are all still recorded on
+every run regardless (nothing about the honesty of "what was available"
+changed), but the Hub Reverie tab now visually distinguishes "recorded"
+from "actually rendered" (a "used this run" / "not used this run" badge
+per block) -- the exact distinction CLAUDE.md §0A calls inspectable
+evidence, which the tab had no way to show before this patch.
+
+**Tests**: `select_context_slot` has direct unit coverage (nothing
+available, rotates through all three, skips unavailable slots, wraps a
+large index, index unchanged when nothing available).
+`build_visual_prompt`'s new two-input contract has exact-string wording
+coverage per slot label. Two new end-to-end orchestration tests: one
+proves that when all three context-seeds have real content
+SIMULTANEOUSLY, only the rotation-selected one appears in the actual
+generated prompt string (the exact regression, not just the resolver's
+isolated correctness); another drives four successive runs through the
+same fake-DB round-trip harness the continuity tests use and asserts the
+selected slot visits context -> self_study -> memory -> context in order.
+`orion-diffusion-host`'s `_log_prompt_token_budget` has direct coverage
+with a fake tokenizer (warns when over budget, silent when within it,
+checks both encoders, never raises when the pipe has no tokenizer at all
+-- the shape every other test in that file's fake pipe already has).
+
+## 19. Model swap: sdxl-turbo -> FLUX.1-schnell (this changeset, real root-cause removal)
+
+Same day as Patch 7, directly asked for by Juniper: "why can't we find a
+model that runs the full token count." Patch 7 fixed the SYMPTOM (rotate
+one context-seed per run so the 77-token ceiling stops silently discarding
+2 of 3 sources every tick); this changeset removes the actual CEILING by
+replacing the model that has it.
+
+**Live blast-radius/feasibility check before any code was written** (§0A
+metric-quality-gate discipline):
+
+- Real per-GPU VRAM pulled from `orion_biometrics` (Circe's 7 physical
+  GPUs, live 2026-08-28): GPU 2 (this service's own dedicated card, per
+  README's "Node/port/GPU assignment") had 22.5GB free with sdxl-turbo
+  (9.7GB) already resident -- meaning the WHOLE 32GB frees up once
+  sdxl-turbo is replaced, not just the visible headroom.
+- FLUX.1-schnell fully GPU-resident at 2 bytes/param needs up to ~33GB
+  (12B-param transformer + 4.5B-param T5-XXL encoder) -- over a 32GB card
+  even once fully freed. `enable_model_cpu_offload()` cuts peak residency
+  to ~24GB, fitting with real margin -- same real weights/math, staged
+  residency, not reduced precision.
+- **Review-caught correction: bf16 does not run well on this card's real
+  hardware.** FLUX's own docs recommend bf16 over fp16 (avoids a known
+  fp16 overflow risk), but that assumes Ampere-or-later hardware. This
+  service's actual card (physical GPU 2, "Tesla PG500-216") is confirmed
+  live to be Volta architecture with first-generation Tensor Cores -- bf16
+  tensor-core acceleration is an Ampere+ (compute capability >= 8.0)
+  feature this card does not have (other PyTorch-based projects on this
+  exact GPU class report hard failures attempting it). Landed on
+  `DIFFUSION_DTYPE=fp16` instead -- Volta's tensor cores were built for
+  fp16, the same reason sdxl-turbo (a different model, same card) already
+  ran fp16 correctly. `_DTYPE_MAP` still supports `bf16` as a configurable
+  option for a future deployment on newer hardware.
+- **Official repo is gated.** `black-forest-labs/FLUX.1-schnell` requires
+  accepting a license via the HF web UI before any token can download it.
+  Checked BOTH real `HF_TOKEN`s already configured elsewhere in this repo
+  (`orion-vllm`, `orion-llama-cola-host`) against the actual weight file
+  (not just the model-metadata API endpoint, which returns a misleading
+  `200` regardless of gate status) -- both real `403`. Rather than block
+  on a manual click, found `YuCollection/FLUX.1-schnell-Diffusers`: a
+  verified-ungated (`gated: false`) full diffusers-format mirror of the
+  identical Apache-2.0-licensed weights (confirmed matching
+  `model_index.json`: `FluxPipeline`/`CLIPTextModel`+`T5EncoderModel`/
+  `FluxTransformer2DModel`/`AutoencoderKL`), downloadable with no token at
+  all -- Apache 2.0 explicitly permits this redistribution.
+- **A real compatibility break, caught before deploy**: `FluxPipeline.
+  __call__` has neither `negative_prompt` (schnell is guidance-distilled,
+  no true classifier-free-guidance path) nor tolerates one being passed.
+  `_run_generation` previously passed `negative_prompt=req.negative_
+  prompt` unconditionally -- against Flux that raises `TypeError` on
+  EVERY `/generate` call, a full outage. Fixed via `_pipe_accepts`, which
+  builds the actual call kwargs by inspecting the loaded pipeline's real
+  `__call__` signature instead of hardcoding "if Flux" branches, so this
+  stays correct across any future model swap too.
+
+**What shipped:**
+
+- `DIFFUSION_MODEL_ID`: `stabilityai/sdxl-turbo` -> `YuCollection/
+  FLUX.1-schnell-Diffusers`.
+- `DIFFUSION_DTYPE`: stays `fp16` -- FLUX's own docs recommend `bf16`
+  (same 2-bytes/param cost, avoids a known fp16 overflow risk), but that
+  assumes Ampere+ hardware this service's actual card (Volta,
+  first-generation Tensor Cores) does not have. See the review-caught
+  correction above.
+- `DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD` (new): `true` -- see VRAM math
+  above. `_load_pipeline` branches on this flag; `False` preserves
+  sdxl-turbo's exact prior fully-resident behavior for any future model
+  that doesn't need offloading.
+- `DIFFUSION_NUM_INFERENCE_STEPS`: `1` -> `4` -- schnell's own documented
+  operating point, not sdxl-turbo's.
+- `DIFFUSION_MAX_SEQUENCE_LENGTH` (new): `256` -- the real T5-XXL token
+  budget this whole swap exists to gain, passed explicitly to every
+  `_pipe()` call rather than relying on an unstated pipeline default.
+- `DIFFUSION_DEFAULT_WIDTH`/`HEIGHT`: `512` -> `1024` -- FLUX was trained
+  primarily at 1024x1024; 512 is off-distribution for this model and
+  produces worse output for no VRAM saving worth the quality loss.
+  `DIFFUSION_GUIDANCE_SCALE` (`0.0`) is unchanged -- schnell is also
+  guidance-distilled, same operating point sdxl-turbo had.
+- `_log_prompt_token_budget` (Patch 7) extended to accept an explicit
+  `max_sequence_length` override for `tokenizer_2` -- a T5-style
+  tokenizer's own `model_max_length` attribute is often an effectively-
+  unbounded HF placeholder, not the pipeline's real effective limit, so
+  checking against the tokenizer's raw attribute alone would silently
+  under-report truncation risk for exactly the encoder this whole swap
+  was done to un-cap.
+
+**CLIP is still loaded, deliberately not removed**: FLUX's architecture
+uses CLIP-L only for a single pooled embedding (global conditioning), not
+per-token cross-attention the way SDXL used it -- its 77-token truncation
+still applies (`tokenizer`, unchanged check) but is far less consequential
+here than it was for SDXL, where CLIP was the ONLY encoder and every
+truncated token was lost content, not just a coarser global signal.
+
+**Tests**: `SdxlLikeFakePipe`/`FluxLikeFakePipe` (explicit `__call__`
+signatures, not the pre-existing `FakePipe`'s `**kwargs` catch-all, which
+`inspect.signature` reports as having no named parameters at all and so
+cannot exercise `_pipe_accepts`'s real branches) prove `_run_generation`
+builds correct kwargs for both pipeline shapes -- `negative_prompt`
+reaches an SDXL-shaped pipe, is dropped with a visible warning (not
+silently) against a Flux-shaped one, and `max_sequence_length` reaches
+the Flux-shaped pipe from `settings.DIFFUSION_MAX_SEQUENCE_LENGTH`. A
+dedicated test proves `_log_prompt_token_budget`'s `tokenizer_2` check
+uses the passed `max_sequence_length`, not the tokenizer's raw attribute.
+
+**Not done, named as a real follow-up, not silently dropped**: no live
+GPU smoke test against the real downloaded weights was run as part of
+this changeset (would require the actual multi-GB download completing on
+Circe) -- `docker/build/smoke` in the PR report says so plainly rather
+than claiming a check that didn't happen.
+
+**Update, same day**: the live GPU smoke WAS run (PR #1926's own report has
+the full trace) -- two real missing dependencies (`sentencepiece`,
+`protobuf`) found and fixed live against real downloaded weights on
+Circe, model loaded, two real `/generate` calls succeeded with coherent
+1024x1024 output. A follow-up (PR #1930) then caught a real production
+timeout: `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC=30` was tuned for
+sdxl-turbo's near-instant generation; FLUX's real 49-56s generation time
+timed out every tick until raised to 120s.
+
+## 20. Memory-crystallization context-seed: require real governor approval, not just `status='active'` (this changeset)
+
+Same day, live report from Juniper viewing the Hub Reverie tab: "I never
+crystalized this with approval" -- pointing at a `memory_text` clause
+(`"ah, yep. We moved from eno1 to eno5 on Circe (10G) and I forgot to
+allow list it on the Panduit PDU. Just fixed!"`) that had become a
+generated "fluffy cloud" image, and asking how a throwaway IT aside
+became a "shared-life memory" at all.
+
+**Real finding, verified against `memory_crystallization_history` (the
+crystallization pipeline's own audit trail), not assumed**: §17/§18's
+`load_latest_memory_crystallization` filtered on `status='active'` alone,
+describing that status in its own docstring as meaning "the crystallization
+pipeline's own governor already accepted" the content. That description
+was wrong for most of the table. `orion/memory/crystallization/
+formation_policy.py`'s `AUTO_ACTIVE_KINDS` (`semantic`, `episode`,
+`open_loop`, `procedure`) sets `status='active'` immediately on creation,
+with NO governor review at all -- only `GATED_KINDS` (`stance`,
+`decision`, `contradiction`, `attractor`, `failure_mode`) route to
+`GOVERNOR_QUEUE`, where a real decision can actually get recorded.
+
+Live query against `memory_crystallization_history`: of 652 real
+`status='active'` rows (live, 2026-08-28), only 21 distinct
+crystallizations have ANY history entry at all, and every one of those 21
+(`kind='stance'`) went through `GOVERNOR_QUEUE` and got a real
+`op='approve'` (actor `orion_journal`) -- 5 of those 21 also carry later
+`evidence_removed` entries, which is why the raw `memory_crystallization_
+history` row count for this set is 28, not 21; the entity count is 21.
+The other ~631 -- reflection/semantic/open_loop kinds -- were never
+touched by any recorded decision, human or automated. The row that
+triggered this fix (`kind='semantic'`) is one of those: it became a
+permanent, canonical "memory" the instant the pipeline processed it, with
+the same zero-review path as roughly 97% of everything in this table.
+
+This does not reopen the privacy/audience question §17 already settled
+(this route's blast radius is still Juniper alone) -- it is a different,
+also-real question: was this content ever actually decided-upon by
+anything, the way the reader's own docstring claimed. It was not, for the
+overwhelming majority of the table.
+
+**Fix**: `load_latest_memory_crystallization` now requires `EXISTS (SELECT
+1 FROM memory_crystallization_history WHERE crystallization_id = ... AND
+op = 'approve')` in addition to `status = 'active'`. This narrows the real
+candidate pool from 652 to 21 rows (live count, 2026-08-28) -- an accepted
+tradeoff: honestly sparse beats surfacing content nobody ever reviewed.
+Real cadence of the narrowed pool (live query): median gap ~11.6h between
+approved crystallizations, max gap ~13 days -- the existing 7-day
+`ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` window (§19) already
+fits this comfortably (median gap is 1.4% of the window) without needing
+to change.
+
+**Not a privacy fix, and does not make the remaining content "safe" in a
+new way**: the 21 actually-approved rows still include real, sensitive
+personal content (verified live -- medical content about a named family
+member is among them). This fix only ensures the content that DOES
+surface went through the pipeline's own real decision process, matching
+what the reader's docstring always claimed to require. §17's audience
+reasoning (Juniper is the only viewer, and the original source) still
+carries the privacy argument for that content being shown at all.
+
+**Tests**: `test_load_latest_memory_crystallization_query_requires_active_
+status_and_real_approval` (renamed from the old `..._filters_to_active_
+status`) asserts the SQL requires both `status = 'active'` AND `op =
+'approve'` against `memory_crystallization_history` -- not just the
+former.

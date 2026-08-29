@@ -8,6 +8,7 @@ must not do that is worth pinning.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -117,6 +118,16 @@ class _FakeRedis:
         self.values[key] = str(int(self.values.get(key, 0)) + 1)
         return int(self.values[key])
 
+    async def decr(self, key):
+        self.values[key] = str(int(self.values.get(key, 0)) - 1)
+        return int(self.values[key])
+
+    async def delete(self, *keys):
+        n = 0
+        for k in keys:
+            n += self.values.pop(k, None) is not None
+        return n
+
     async def expire(self, key, ttl):
         return True
 
@@ -163,11 +174,22 @@ class _FakeConn:
     async def fetch(self, sql, *args):
         if self.raises:
             raise RuntimeError("relation \"memory_crystallizations\" does not exist")
-        if "GROUP BY kind" in sql:
-            return [{"kind": "semantic", "n": 268}]
+        # Matched on the count query's own alias. The corpus filter added a
+        # `NOT EXISTS` join and aliased the table, so the old "GROUP BY kind"
+        # needle stopped matching and this fake silently returned [] -- the
+        # journal then reported "4 of 0 approved concepts" and the only symptom
+        # was one assertion about a sentence.
+        if "GROUP BY m.kind" in sql or "GROUP BY kind" in sql:
+            return [{"kind": "semantic", "n": 268, "manual_n": 12}]
         if "FROM memory_crystallizations" in sql and "random()" in sql:
             return self.rows
-        if "GROUP BY relation" in sql:
+        # Matched on the alias too. This fake dispatches by SQL SUBSTRING, and
+        # that has now silently mis-routed three times in this branch's history
+        # -- each time a query gained a table alias, the needle stopped matching
+        # and the fake answered from the NEXT branch down, which returns rows
+        # where counts were expected. The symptom is never "no match": it is a
+        # KeyError two functions away, or a journal line reporting "4 of 0".
+        if "GROUP BY d.relation" in sql or "GROUP BY relation" in sql:
             return [{"relation": "same", "n": 316}]
         if "memory_concept_relation_decisions" in sql:
             return self.relations
@@ -706,11 +728,14 @@ def test_this_runs_id_is_persisted_so_the_next_run_can_find_its_note() -> None:
 # --- priors order the presentation, and Orion still chooses ----------------
 
 
-def test_open_priors_are_shown_with_the_ordering_disclosed() -> None:
+def test_live_priors_are_shown_with_the_ordering_disclosed() -> None:
+    """The prior here is `revised`, not `open`, on purpose: at the loop level
+    that is the status that went missing on 2026-08-27 and left a run with
+    `priors=0/0` and nothing of its own to continue."""
     bus = _FakeBus()
-    reader = _FakeReader(answers={"p.status = 'open'": [
+    reader = _FakeReader(answers={"RETURN p.prior_id AS prior_id": [
         {"prior_id": "p1", "claim": "the foveal tier never runs on a schedule",
-         "confidence": "0.55", "status": "open", "times_tested": 1,
+         "confidence": "0.55", "status": "revised", "times_tested": 1,
          "formed_from": "crystallization:abc", "last_tested_at": ""},
     ]})
     loop = _graph_loop(bus, reader=reader)
@@ -1063,3 +1088,175 @@ def test_no_relay_configured_still_runs() -> None:
     loop = _loop(bus)
     assert asyncio.run(loop.tick()) is None
     assert len(bus.published) == 1
+
+
+# --- the manual override ---------------------------------------------------
+
+
+def test_force_skips_the_cooldown_and_the_daily_cap() -> None:
+    """The two gates that exist to bound cost. An operator asking for a run has
+    already made that call."""
+    from scripts.curiosity_investigation import (
+        SchedulingGateInputs,
+        scheduling_block_reason,
+    )
+
+    at_cap = SchedulingGateInputs(enabled=True, seconds_since_last=10.0,
+                                  min_cooldown_sec=14400.0, done_today=6,
+                                  daily_cap=6)
+    assert scheduling_block_reason(at_cap) in {"daily_cap", "cooldown"}
+
+    # State comes from Redis, not the in-process fields: `_read_persisted_state`
+    # prefers the persisted values, which is the whole reason a redeploy is not
+    # a licence to run again.
+    from scripts.curiosity_investigation import (
+        _COOLDOWN_KEY,
+        _DAILY_COUNT_KEY_PREFIX,
+    )
+
+    def _at_cap():
+        bus = _FakeBus()
+        loop = _loop(bus)
+        now = datetime.now(timezone.utc)
+        bus.redis.values[_COOLDOWN_KEY] = now.isoformat()
+        bus.redis.values[loop._daily_key(now)] = "6"
+        return loop
+
+    assert asyncio.run(_at_cap().tick()) in {"daily_cap", "cooldown"}
+    assert asyncio.run(_at_cap().tick(force=True)) is None, "force must reach the turn"
+
+
+def test_force_does_not_override_the_off_switch() -> None:
+    """A loop switched off is a decision already made. A button that quietly
+    undid it would make the switch meaningless."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    loop.enabled = False
+    assert asyncio.run(loop.tick(force=True)) == "disabled"
+
+
+def test_a_forced_run_still_counts_against_today() -> None:
+    """A forced run that did not count would make the daily counter lie, and
+    that counter is what the atlas page compares against to notice a run that
+    left no trace."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    now = datetime.now(timezone.utc)
+    from scripts.curiosity_investigation import _COOLDOWN_KEY
+
+    bus.redis.values[_COOLDOWN_KEY] = now.isoformat()
+    bus.redis.values[loop._daily_key(now)] = "5"
+    assert asyncio.run(loop.tick(force=True)) is None
+    assert loop._done_today == 6
+
+
+def test_force_does_not_override_a_health_gate() -> None:
+    """Cooldown and cap answer "should this run now". The health gates answer
+    "can it work at all", which an operator cannot override by wanting it."""
+    bus = _FakeBus()
+    loop = _loop(bus, conn=_FakeConn(raises=True))
+    now = datetime.now(timezone.utc)
+    from scripts.curiosity_investigation import _COOLDOWN_KEY
+
+    bus.redis.values[_COOLDOWN_KEY] = now.isoformat()
+    bus.redis.values[loop._daily_key(now)] = "99"
+    assert asyncio.run(loop.tick(force=True)) is not None
+
+
+def test_two_turns_cannot_run_at_once() -> None:
+    """There was no lock before the manual trigger because the cooldown made
+    overlap impossible -- a turn runs ~20 minutes and the next was 4 hours
+    away. A button removes that guarantee."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+
+    async def _both():
+        await loop._run_lock.acquire()
+        try:
+            # BOUNDED. Without the guard `tick` does not return the wrong
+            # answer, it blocks forever on the held lock -- confirmed by
+            # mutation, the unbounded version of this test hangs instead of
+            # failing. A test that hangs is a test nobody can run in CI.
+            return await asyncio.wait_for(loop.tick(force=True), timeout=5)
+        finally:
+            loop._run_lock.release()
+
+    assert asyncio.run(_both()) == "already_running"
+
+
+# --- a redeploy should not cost a run --------------------------------------
+
+
+def _at_slot(bus, loop, *, count: str, stamp_minutes_ago: float = 600.0):
+    now = datetime.now(timezone.utc)
+    prior = (now - timedelta(minutes=stamp_minutes_ago)).isoformat()
+    bus.redis.values[_CD_KEY] = prior
+    bus.redis.values[loop._daily_key(now)] = count
+    return prior
+
+
+from scripts.curiosity_investigation import _COOLDOWN_KEY as _CD_KEY
+
+
+def test_a_turn_cancelled_mid_flight_gives_its_slot_back() -> None:
+    """Runs `5fd3349e2ba7` and `8d1e2fa92879` were each killed minutes in by a
+    redeploy, wrote nothing, and still cost a slot and stamped the cooldown."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    prior = _at_slot(bus, loop, count="2")
+
+    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True):
+        raise asyncio.CancelledError()
+
+    loop._generate = _cancelled  # type: ignore[assignment]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.tick())
+
+    now = datetime.now(timezone.utc)
+    assert int(bus.redis.values[loop._daily_key(now)]) == 2, "the slot must come back"
+    assert bus.redis.values[_CD_KEY] == prior, "the old stamp must be restored"
+
+
+def test_the_restored_stamp_is_the_old_one_not_an_absence() -> None:
+    """Deleting it would report "never investigated", which reads as eligible
+    immediately -- a redeploy storm would then start a turn per restart."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    prior = _at_slot(bus, loop, count="1")
+
+    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True):
+        raise asyncio.CancelledError()
+
+    loop._generate = _cancelled  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.tick())
+    assert bus.redis.values.get(_CD_KEY) == prior
+    assert _CD_KEY in bus.redis.values
+
+
+def test_a_turn_that_merely_FAILS_still_costs_its_slot() -> None:
+    """The protection this must not break: a reliably failing turn would
+    otherwise retry every tick forever. Only cancellation refunds."""
+    bus = _FakeBus()
+    loop = _loop(bus, text="")          # empty generation == a failed turn
+    _at_slot(bus, loop, count="2")
+
+    assert asyncio.run(loop.tick()) == "empty_generation"
+    now = datetime.now(timezone.utc)
+    assert int(bus.redis.values[loop._daily_key(now)]) == 3, "a failed turn pays"
+
+
+def test_a_turn_that_raises_an_ordinary_error_still_costs_its_slot() -> None:
+    bus = _FakeBus()
+    loop = _loop(bus)
+    _at_slot(bus, loop, count="2")
+
+    async def _boom(prompt, correlation_id, source=None, require_lookup=True):
+        raise RuntimeError("the model fell over")
+
+    loop._generate = _boom  # type: ignore[assignment]
+    with pytest.raises(RuntimeError):
+        asyncio.run(loop.tick())
+    now = datetime.now(timezone.utc)
+    assert int(bus.redis.values[loop._daily_key(now)]) == 3

@@ -15,8 +15,8 @@ was deliberately the thinnest honest placeholder (prior_description, or a
 fixed seed prompt for the very first run), not a fabricated stand-in for the
 context-seeding that patch did not own.
 
-Patch 3 (this changeset): real context-seeding. `build_visual_prompt` now also
-takes `context_text` -- the text reverie chain's own most recent, real
+Patch 3 (shipped 2026-08-26): real context-seeding. `build_visual_prompt` now
+also takes `context_text` -- the text reverie chain's own most recent, real
 (non-hollow) narration (`store.load_latest_reverie_interpretation`), a
 deliberately narrow first slice of the design doc's full "recent activity /
 chat / dream" list (§1): already-summarized content that already reaches the
@@ -24,6 +24,93 @@ same Hub Reverie tab this feeds, so no new privacy surface (see that store
 function's own docstring and reverie_routes.py's privacy note). Widening to
 raw chat/dream sources is a separate, later change that must redo that
 privacy check.
+
+Patch 4 (shipped 2026-08-27): live-caught -- Juniper reported "still doing
+the same images of Roman aqueducts, no change" a few hours after Patch 3
+shipped. Real: `prior_description` continuity had locked onto one visual
+attractor across 10+ runs / 100+ minutes, predating Patch 3 and unmoved by
+it -- `context_text` is real, correctly varying content (confirmed live in
+Postgres), but a short abstract clause ("Orion is currently thinking: the
+coalition is fixated on ...") has nowhere near the prompt weight of a long,
+concrete continuity description, and abstract cognitive-state narration
+isn't strongly visualizable content regardless of prompt order.
+`resolve_visual_chain_continuity` below is the actual fix: a deterministic,
+testable reset -- after `settings.visual_chain_continuity_max_runs`
+CONSECUTIVE runs carrying `prior_description` forward, the next run forces
+continuity to drop for that one prompt, then continuity resumes normally.
+Not a prompt-reweighting guess; a mechanical guarantee the loop cannot run
+unbounded.
+
+Patch 5 (this changeset, design doc §16): a second, richer context-seed --
+`build_visual_prompt` now also takes `self_study_text`
+(`store.load_latest_self_study_reflection`), the self-study analysis
+system's real quantified self-observation (window-contrast prose:
+"vision events dropped 0.36x vs baseline, a status category disappeared"),
+not a bare narration sentence. Live-caught 2026-08-27, same session as
+Patch 4: Juniper directly asked for "actual memory or a recent chat" as a
+context-seed; live-checking `memory_crystallizations` (the actual-memory
+candidate) found its `summary`/`subject` columns hold VERBATIM personal
+chat content -- including a real, sensitive example naming a family
+member's medical history -- with no safe column or `kind` filter available
+on that table as it stands. Declined outright, not wired in. Self-study
+analysis was the one candidate that live-verified safe: its four
+deterministic producers (concept induction, vision events, affective
+state, co-creation signals) render pure numeric window-contrasts, no chat
+quotes, confirmed by reading real bodies before writing any code.
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES` is an explicit allowlist of only
+those four producers -- `source_kind='self_study'` also covers a sibling
+free-form "Curiosity" reflection confirmed live to quote sensitive personal
+content, which this allowlist deliberately excludes.
+
+Patch 6 (design doc §17): a third context-seed, `memory_text` --
+`store.load_latest_memory_crystallization`, real shared-life content from
+the Recall system's `memory_crystallizations` table. Reverses Patch 5's
+declined call on this same table, on new evidence rather than a policy
+change: the only consumer of this reader's output is this service's own
+`reverie_visual_chain` row (surfaced via `reverie_routes.py`, which has no
+external port mapping and no auth/multi-user surface), so there is no
+second audience for that content beyond the one person who is also its
+original source. See `store.load_latest_memory_crystallization`'s own
+docstring for the full writeup.
+
+Patch 7 (design doc §18): the REAL root cause of "the memory got washed
+out and Orion just kept generating stars" (live report, 2026-08-28, same
+day Patch 6 shipped) -- Patches 3/5/6 concatenated ALL THREE context-seeds
+into one prompt string, but `orion-diffusion-host`'s SDXL-turbo model
+truncates its CLIP text encoder input at 77 tokens, SILENTLY (diffusers'
+own default, no exception, no response-visible signal). Verified live
+with the real tokenizer against an actual generated prompt: 191 real
+tokens, encoder only sees the first 77 -- cutting off mid self-study
+clause and NEVER reaching `memory_text` or even the trailing style
+suffix. Every context-seed added after Patch 3 had, in practice, almost
+never actually reached the model, regardless of how correctly it was
+computed, stored, and displayed in the Hub tab -- a real "no empty-shell
+cognition" (CLAUDE.md §0A) violation once understood: the UI honestly
+showed content the image could not possibly have reflected.
+
+Fix, two parts:
+  1. `select_context_slot` below: stop concatenating all three -- round-
+     robin ONE per run (after `prior_description`/continuity, which keeps
+     its own separate reset mechanism from Patch 4). Reduces the realistic
+     worst case from 4 competing clauses to 2 (continuity + one selected
+     slot), and each individual slot's own char cap was independently
+     re-derived against the REAL tokenizer (see `store.py`'s
+     `MAX_SELF_STUDY_CONTEXT_CHARS`/`MAX_MEMORY_CRYSTALLIZATION_CONTEXT_
+     CHARS` -- both cut substantially from their Patch 5/6 values, which
+     were never checked against a real token budget at all).
+  2. `orion-diffusion-host`'s `_run_generation` now logs a WARNING with
+     real token counts whenever a prompt exceeds either of SDXL's two
+     text-encoder budgets (CLIP-L and OpenCLIP-bigG) -- this exact failure
+     mode was previously invisible in every log this system produces; it
+     took a forensic re-tokenization of an already-stored prompt to find
+     it. Visibility only (does not change what gets generated) -- the
+     actual behavioral fix is #1.
+
+A genuinely long-context text encoder (T5-XXL, used by FLUX.1/SD3.5)
+would remove this ceiling entirely, but that is a real model-swap
+decision (different VRAM footprint, different generation parameters, a
+fresh Circe GPU/VRAM check) -- out of scope for this patch, which fixes
+the model actually running today.
 
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
@@ -80,8 +167,10 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 
 from .settings import settings
 from .store import (
+    load_latest_memory_crystallization,
     load_latest_reverie_interpretation,
-    load_latest_visual_chain_prior_description,
+    load_latest_self_study_reflection,
+    load_latest_visual_chain_continuity_state,
     persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
 )
@@ -113,30 +202,159 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_visual_prompt(prior_description: str | None, context_text: str | None = None) -> str:
+# Framing prefix per context-seed source, keyed by the slot name
+# `select_context_slot` returns -- moved out of `build_visual_prompt`
+# itself (Patch 7) since only ONE slot's text is ever composed into a
+# prompt now, not all three.
+_CONTEXT_SLOT_LABELS: dict[str, str] = {
+    "context": "Orion is currently thinking",
+    "self_study": "Orion recently noticed",
+    "memory": "Orion remembers",
+}
+
+
+def select_context_slot(
+    context_text: str | None,
+    self_study_text: str | None,
+    memory_text: str | None,
+    rotation_index: int,
+) -> tuple[str | None, str | None, int]:
+    """Patch 7 (module docstring): pick ONE of the three context-seeds to
+    actually put in the prompt this run, round-robin among whichever
+    currently have real content.
+
+    Why one, not all three: SDXL-turbo's CLIP text encoder truncates at 77
+    tokens, silently. Concatenating all three (Patches 3/5/6's original
+    design) meant real prompts routinely hit 150-200+ tokens -- verified
+    live 2026-08-28 against an actual generated prompt (191 tokens) -- so
+    every clause after the first was, in practice, invisible to the model
+    regardless of how correct its content was. Rotation guarantees whichever
+    ONE slot wins this run gets its full, real token budget instead of
+    fighting two other clauses for the same 77-token window every single
+    time.
+
+    Pure function -- `rotation_index` is `store.load_latest_visual_chain_
+    continuity_state()`'s third return value (a monotonically increasing
+    counter this service writes every run). `idx = rotation_index %
+    len(available)` re-indexes against whichever slots currently have
+    content, so a currently-empty slot never gets skipped-but-still-counted
+    the way a fixed `rotation_index % 3` would (a self-study body absent
+    this tick costs nothing -- rotation just cycles the other two).
+
+    Review finding, not fixed by design: this re-indexing is NOT guaranteed
+    fair in the long run when the available set itself fluctuates tick to
+    tick (verified by direct simulation) -- a slot that happens to be
+    present on more ticks than another can end up visited disproportionately
+    more often, since `rotation_index % len(available)` maps the SAME
+    counter value to a different position whenever `len(available)`
+    changes. This does not get anything stuck (progress and eventual
+    coverage of every currently-available slot are still guaranteed each
+    tick) -- it just is not a perfect long-run-fair scheduler under
+    fluctuating availability, and this function does not attempt to be one.
+    The actual regression this fixes (concatenating all three, guaranteeing
+    2 of 3 are silently truncated away every single tick) does not require
+    long-run fairness to be solved -- "sometimes one slot" beats "always
+    the same one or two truncated."
+
+    Returns `(slot_name, slot_text, next_rotation_index)`:
+      - `slot_name`/`slot_text`: `None`/`None` when no context-seed has
+        real content this run (`build_visual_prompt` then falls back to
+        `prior_description`/`DEFAULT_SEED_PROMPT`, unchanged from before
+        this patch).
+      - `next_rotation_index`: the value to record in this run's
+        `chain_json.context_slot_rotation`, for the next run's decision.
+        Left unchanged when nothing was available this run -- no reason to
+        advance a counter that picked nothing.
+    """
+    available = [
+        (name, text)
+        for name, text in (
+            ("context", context_text),
+            ("self_study", self_study_text),
+            ("memory", memory_text),
+        )
+        if (text or "").strip()
+    ]
+    if not available:
+        return None, None, rotation_index
+    idx = rotation_index % len(available)
+    slot_name, slot_text = available[idx]
+    return slot_name, slot_text, rotation_index + 1
+
+
+def build_visual_prompt(
+    prior_description: str | None,
+    context_slot_name: str | None = None,
+    context_slot_text: str | None = None,
+) -> str:
     """The diffusion prompt for one run. See module docstring for scope.
 
-    `prior_description` (visual continuity -- the previous run's own
-    re-observed caption) and `context_text` (Patch 3's context-seed --
-    Orion's own most recent real reverie-thought interpretation) are
-    independent inputs: continuity keeps the image chain visually coherent
-    frame-to-frame; context-seeding keeps it grounded in what Orion is
-    actually narrating instead of drifting into purely self-referential
-    imagery with nothing anchoring it to a real cognitive state. Falls back
-    to DEFAULT_SEED_PROMPT only when both are empty.
+    Two independent inputs, each optional: `prior_description` (visual
+    continuity -- the previous run's own re-observed caption) and ONE
+    selected context-seed (`context_slot_name`/`context_slot_text` --
+    Patch 7's `select_context_slot`, the round-robin winner among
+    {context_text, self_study_text, memory_text} for THIS run only).
+    Continuity keeps the image chain visually coherent frame-to-frame; the
+    selected context-seed keeps it grounded in what Orion is actually
+    narrating/observing/remembering instead of drifting into purely
+    self-referential imagery with nothing anchoring it to a real cognitive
+    state. Falls back to DEFAULT_SEED_PROMPT only when both are empty.
+
+    Was a four-way list-join over all three context-seeds at once
+    (Patches 3/5/6) until Patch 7 found that design silently discarded
+    everything past the diffusion model's real 77-token budget -- see
+    `select_context_slot`'s own docstring and the module docstring's
+    Patch 7 entry for the live evidence. This function's own wording for
+    each labeled clause is unchanged; only how many clauses it is ever
+    asked to compose changed (always at most one selected slot now, never
+    up to three).
     """
     prior = (prior_description or "").strip()
-    context = (context_text or "").strip()
-    if prior and context:
-        return (
-            f"{prior}. Orion is currently thinking: {context}. "
-            "Continue this train of imagination, soft dreamlike style."
-        )
+    slot_text = (context_slot_text or "").strip()
+    clauses = []
     if prior:
-        return f"{prior}. Continue this train of imagination, soft dreamlike style."
-    if context:
-        return f"Orion is currently thinking: {context}. Soft abstract dreamlike style."
-    return DEFAULT_SEED_PROMPT
+        clauses.append(prior)
+    if slot_text and context_slot_name in _CONTEXT_SLOT_LABELS:
+        clauses.append(f"{_CONTEXT_SLOT_LABELS[context_slot_name]}: {slot_text}")
+    if not clauses:
+        return DEFAULT_SEED_PROMPT
+    style = (
+        "Continue this train of imagination, soft dreamlike style."
+        if prior
+        else "Soft abstract dreamlike style."
+    )
+    return ". ".join(clauses) + ". " + style
+
+
+def resolve_visual_chain_continuity(
+    prior_description: str | None, streak: int, max_runs: int
+) -> tuple[str | None, int, bool]:
+    """Patch 4 (module docstring): decide whether THIS run may use
+    `prior_description` continuity in its prompt, or must force a reset.
+
+    Pure function -- `streak` is `store.load_latest_visual_chain_continuity_
+    streak()`'s return (how many consecutive prior runs used continuity),
+    `max_runs` is `settings.visual_chain_continuity_max_runs`.
+
+    Returns `(effective_prior_description, next_streak, was_reset)`:
+      - `effective_prior_description`: what to actually pass to
+        `build_visual_prompt` for this run's prompt -- `prior_description`
+        unchanged, or `None` on a forced reset.
+      - `next_streak`: the value to record in this run's `chain_json.
+        continuity_streak`, for the *next* run's decision.
+      - `was_reset`: whether this run forced a reset (for logging/
+        `chain_json.continuity_reset` -- inspectable evidence, not just an
+        inferred side effect).
+
+    No prior_description at all (cold start, or continuity already broken
+    by a prior reset/failed re-observation) needs no reset and starts the
+    streak fresh at 0 -- there is nothing to cap yet.
+    """
+    if not (prior_description or "").strip():
+        return prior_description, 0, False
+    if streak >= max_runs:
+        return None, 0, True
+    return prior_description, streak + 1, False
 
 
 class DiffusionGenerationError(RuntimeError):
@@ -276,15 +494,28 @@ async def run_visual_chain_once(
         return None
 
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
-                                  prior_description: str | None,
-                                  context_text: str | None) -> ReverieVisualChainV1:
+                                  prior_description: str | None, context_text: str | None,
+                                  self_study_text: str | None, memory_text: str | None,
+                                  context_slot_used: str | None, context_slot_rotation: int,
+                                  continuity_streak: int, continuity_reset: bool
+                                  ) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
             created_at=now_fn(),
             terminal_reason="generation_failed",
             prior_description=prior_description,
-            chain_json={"prompt": prompt, "context_text": context_text, "error": str(error)},
+            chain_json={
+                "prompt": prompt,
+                "context_text": context_text,
+                "self_study_text": self_study_text,
+                "memory_text": memory_text,
+                "context_slot_used": context_slot_used,
+                "context_slot_rotation": context_slot_rotation,
+                "continuity_streak": continuity_streak,
+                "continuity_reset": continuity_reset,
+                "error": str(error),
+            },
         )
         with suppress(Exception):
             await asyncio.to_thread(persist_reverie_visual_chain, chain)
@@ -292,16 +523,71 @@ async def run_visual_chain_once(
 
     async with _visual_chain_lock:
         chain_id = str(uuid4())
-        # Two independent reads (different tables, no data dependency) --
-        # concurrent so the cost is max() of the two round trips, not sum()
+        # Four independent reads (different tables, no data dependency) --
+        # concurrent so the cost is max() of the round trips, not sum()
         # (review finding: this function already makes exactly this
         # argument a few lines below for store_visual_artifact/
         # upload_to_percept_store; the same reasoning applies here).
-        prior_description, context_text = await asyncio.gather(
-            asyncio.to_thread(load_latest_visual_chain_prior_description),
-            asyncio.to_thread(load_latest_reverie_interpretation),
+        # prior_description, continuity_streak, AND context_slot_rotation
+        # come from the SAME row of the SAME table, so they're one combined
+        # read (review finding on the original 2-value version: two
+        # separate round trips to the same row wasted a query and left a
+        # theoretical read-your-own-write race), not three gathered reads.
+        (
+            (prior_description, continuity_streak, context_slot_rotation),
+            context_text,
+            self_study_text,
+            memory_text,
+        ) = await asyncio.gather(
+            asyncio.to_thread(load_latest_visual_chain_continuity_state),
+            asyncio.to_thread(
+                load_latest_reverie_interpretation,
+                char_limit=settings.reverie_context_char_limit,
+                max_age_sec=settings.reverie_context_max_age_sec,
+            ),
+            asyncio.to_thread(
+                load_latest_self_study_reflection,
+                char_limit=settings.self_study_context_char_limit,
+                max_age_sec=settings.self_study_context_max_age_sec,
+            ),
+            asyncio.to_thread(
+                load_latest_memory_crystallization,
+                char_limit=settings.memory_crystallization_context_char_limit,
+                max_age_sec=settings.memory_crystallization_context_max_age_sec,
+            ),
         )
-        prompt = build_visual_prompt(prior_description, context_text)
+        # Patch 4 (module docstring): cap how many consecutive runs may
+        # carry prior_description continuity before forcing one reset --
+        # computed here (before generation) so a failed run still records
+        # the correct streak for whichever run picks continuity back up.
+        effective_prior, continuity_streak, continuity_reset = resolve_visual_chain_continuity(
+            prior_description, continuity_streak, settings.visual_chain_continuity_max_runs
+        )
+        if continuity_reset:
+            logger.info(
+                "visual chain continuity reset chain=%s -- forcing a fresh seed after %s runs",
+                chain_id,
+                settings.visual_chain_continuity_max_runs,
+            )
+        # Review finding: on a reset run, the ORIGINAL (stale, pre-reset)
+        # prior_description must never come back as this row's own
+        # prior_description -- that would silently resurrect the exact
+        # attractor the reset just broke out of the moment generation,
+        # storage, or captioning fails on this run (a real, previously-
+        # untested failure mode: the next tick would read streak=0 against
+        # the SAME stale text and grind through another full max_runs cycle
+        # before resetting again). A non-reset run keeps the pre-Patch-4
+        # behavior unchanged: carry the old value forward on any failure.
+        continuity_fallback = None if continuity_reset else prior_description
+        # Patch 7 (module docstring): pick ONE context-seed for this run's
+        # prompt instead of concatenating all three -- see
+        # select_context_slot's own docstring for why. Computed here
+        # (before generation) so a failed run still records which slot/
+        # rotation value it used, same discipline as continuity_streak.
+        context_slot_used, context_slot_text, context_slot_rotation = select_context_slot(
+            context_text, self_study_text, memory_text, context_slot_rotation
+        )
+        prompt = build_visual_prompt(effective_prior, context_slot_used, context_slot_text)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -311,7 +597,11 @@ async def run_visual_chain_once(
                 timeout_sec=settings.visual_chain_diffusion_timeout_sec,
             )
         except Exception as exc:
-            return await _generation_failed(chain_id, exc, prompt, prior_description, context_text)
+            return await _generation_failed(
+                chain_id, exc, prompt, continuity_fallback, context_text, self_study_text,
+                memory_text, context_slot_used, context_slot_rotation,
+                continuity_streak, continuity_reset,
+            )
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
         # network round trip) both operate on the same immutable png_bytes
@@ -336,7 +626,9 @@ async def run_visual_chain_once(
 
         if isinstance(store_result, BaseException):
             return await _generation_failed(
-                chain_id, store_result, prompt, prior_description, context_text
+                chain_id, store_result, prompt, continuity_fallback, context_text, self_study_text,
+                memory_text, context_slot_used, context_slot_rotation,
+                continuity_streak, continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
 
@@ -355,9 +647,12 @@ async def run_visual_chain_once(
             )
 
         # Only advance continuity on a real, non-empty description -- a failed
-        # re-observation forwards the *previous* prior_description unchanged
-        # rather than propagating None and losing continuity for one step.
-        next_prior_description = description or prior_description
+        # re-observation forwards `continuity_fallback` (the previous
+        # prior_description unchanged on a normal run, or None on a reset run
+        # -- see continuity_fallback's own comment above) rather than
+        # propagating a stale value on a reset run or losing continuity
+        # entirely on a normal one.
+        next_prior_description = description or continuity_fallback
 
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
@@ -367,6 +662,12 @@ async def run_visual_chain_once(
             chain_json={
                 "prompt": prompt,
                 "context_text": context_text,
+                "self_study_text": self_study_text,
+                "memory_text": memory_text,
+                "context_slot_used": context_slot_used,
+                "context_slot_rotation": context_slot_rotation,
+                "continuity_streak": continuity_streak,
+                "continuity_reset": continuity_reset,
                 "artifact_sha256": stored.sha256,
                 "description": description,
             },

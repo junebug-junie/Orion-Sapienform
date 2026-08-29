@@ -7,6 +7,14 @@ from dotenv import load_dotenv
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
+# One source of truth for the context-seed char cap (review finding: was
+# independently hardcoded here AND in store.py, two 240s to keep in sync by
+# hand). store.py's top-level imports are stdlib-only -- importing it here
+# costs nothing and creates no cycle (store.py never imports this module).
+from .store import MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS as _MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS
+from .store import MAX_REVERIE_CONTEXT_CHARS as _MAX_REVERIE_CONTEXT_CHARS
+from .store import MAX_SELF_STUDY_CONTEXT_CHARS as _MAX_SELF_STUDY_CONTEXT_CHARS
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 logger = logging.getLogger("orion-thought.settings")
@@ -196,8 +204,20 @@ class ThoughtSettings(BaseSettings):
     diffusion_host_base_url: str = Field(
         "http://100.112.254.99:8014", alias="ORION_DIFFUSION_HOST_BASE_URL"
     )
+    # 30s (this field's original value) was tuned for sdxl-turbo's
+    # single-step, near-instant generation. Real bug, caught live
+    # 2026-08-28 the same day orion-diffusion-host swapped to
+    # FLUX.1-schnell (design doc §19): FLUX's real 4-step generation with
+    # CPU offloading measured 49-56s on the actual deployed hardware
+    # (Circe, physical GPU 2) -- every visual-chain tick timed out and
+    # recorded terminal_reason="generation_failed" the FIRST tick after
+    # deploy that wasn't also caught by a manual-testing 429 collision.
+    # 120s gives real margin over the observed 49-56s range (prompt-length
+    # and shared-GPU-contention variance could push it higher) without
+    # coming anywhere close to conflicting with visual_chain_interval_sec's
+    # 600s tick cadence above.
     visual_chain_diffusion_timeout_sec: float = Field(
-        30.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
+        120.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
     )
     # Content-addressed image storage (orion.reverie.visual_storage, design
     # doc §6). Overridable so tests never touch the real mount.
@@ -241,6 +261,133 @@ class ThoughtSettings(BaseSettings):
     )
     visual_chain_caption_timeout_sec: float = Field(
         60.0, alias="ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC"
+    )
+    # Patch 3 context-seed tunables (store.py::load_latest_reverie_
+    # interpretation) -- were bare module constants/unbounded until now,
+    # unlike every other tunable in this block. reverie_context_char_limit's
+    # default is store.py's own MAX_REVERIE_CONTEXT_CHARS (imported below,
+    # not a second hardcoded 240) -- one source of truth, one-directional
+    # import (settings -> store). Safe: store.py never imports this settings
+    # module (its own module docstring: "never the heavy orion.substrate
+    # package this thin service does not ship"), and its own top-level
+    # imports are stdlib-only -- nothing heavy runs just by importing it here.
+    #
+    # reverie_context_max_age_sec closes a real staleness gap: without it, a
+    # stalled/disabled text-reverie worker (chain.py) leaves the same old
+    # thought answering forever, woven into the diffusion prompt and shown
+    # in the visual cockpit's own context_text field as "Orion is currently
+    # thinking" long after it stopped being current. This does NOT bound the
+    # Hub Reverie tab's separate Text sub-view (reverie_routes.py::
+    # text_recent), which has no staleness filter of its own and is not
+    # touched by this change -- an operator can still see an old thought
+    # presented as the latest one there.
+    #
+    # 900s (not the felt_state_reader.py convention of 2x the text-reverie
+    # chain's own ~90s tick = 180s, and not proposal-runtime's
+    # load_recent_reverie_thought's 300s default -- both real, checked, not
+    # reused here on purpose): those two consumers read on their OWN fast
+    # cadence, so a tight window matched to the *producer's* tick makes
+    # sense for them. This context-seed is read once per VISUAL chain run
+    # (ORION_VISUAL_CHAIN_INTERVAL_SEC, default 600s) -- a 180s window would
+    # reject a perfectly fresh thought on almost every single visual-chain
+    # tick, since 600s > 180s. 900s = 1.5x this consumer's own poll interval,
+    # the same "multiple of the consumer's cadence" convention felt_state_
+    # reader.py already uses, just computed against the right cadence.
+    #
+    # gt=0 on both (review finding): without it, a 0 or negative
+    # ORION_REVERIE_CONTEXT_MAX_AGE_SEC makes the SQL freshness clause
+    # permanently unsatisfiable (silently degrading to "no context-seed,
+    # ever" -- indistinguishable from the genuine no-data case), and a
+    # negative ORION_REVERIE_CONTEXT_CHAR_LIMIT turns Python's negative-index
+    # slicing into "keep everything except the last N chars" -- the exact
+    # opposite of a cap. Both fail loud at settings load instead of silently
+    # doing the wrong thing at read time.
+    reverie_context_char_limit: int = Field(
+        _MAX_REVERIE_CONTEXT_CHARS, alias="ORION_REVERIE_CONTEXT_CHAR_LIMIT", gt=0
+    )
+    reverie_context_max_age_sec: float = Field(
+        900.0, alias="ORION_REVERIE_CONTEXT_MAX_AGE_SEC", gt=0
+    )
+    # Patch 4 (design doc §15): live 2026-08-27, `prior_description`
+    # continuity can lock onto one visual attractor indefinitely (confirmed
+    # live -- "ancient Roman aqueduct" imagery, unbroken across 10+ runs /
+    # 100+ minutes, predating Patch 3's context-seeding and un-moved by it:
+    # a short abstract context clause has nowhere near the prompt weight of
+    # a long, concrete continuity description). After this many CONSECUTIVE
+    # runs carrying continuity forward, the next run forces one reset --
+    # drops prior_description from that run's prompt only (re-seeding from
+    # context_text, or the fixed seed if neither exists) -- then continuity
+    # resumes normally. Not disabled by setting this high without limit:
+    # 0 would mean "reset every single run", never let continuity build
+    # at all; there is no off switch by design, since an unbounded
+    # continuity streak is exactly the failure mode this exists to bound.
+    visual_chain_continuity_max_runs: int = Field(
+        3, alias="ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS"
+    )
+
+    # Patch 5 (design doc §16): a second, richer context-seed alongside
+    # reverie_context_* above -- self_study_analysis.py's four deterministic
+    # window-contrast analyses (concept induction, vision events, affective
+    # state, co-creation signals), real quantified self-observation rather
+    # than a bare narration sentence. store.py's
+    # `_SAFE_SELF_STUDY_SOURCE_PREFIXES` is the actual privacy boundary (an
+    # allowlist of the four safe producers, not "any source_kind='self_study'
+    # row") -- these two settings only tune length/freshness of content
+    # already gated safe by that allowlist, same division of concerns
+    # reverie_context_char_limit/max_age_sec has with load_latest_reverie_
+    # interpretation's own EXISTS/hollow gate.
+    #
+    # 21600s (6h), not reverie_context_max_age_sec's 900s: these analyses
+    # fire on their OWN 6-72h window-contrast cadence (real values seen in
+    # bodies: "the last 6h against the 6h before it", "last 12h", "last
+    # 72h") -- a 900s window would read as permanently absent almost every
+    # tick. 6h is this producer's own shortest real window, the same
+    # "match the producer's cadence, not the consumer's" reasoning
+    # reverie_context_max_age_sec's own comment already applies elsewhere.
+    #
+    # gt=0 on both, same reasoning as reverie_context_char_limit/
+    # max_age_sec's own comment: a non-positive value silently produces the
+    # wrong behavior (permanently-unsatisfiable freshness clause / negative-
+    # index slicing) instead of failing loud at settings load.
+    self_study_context_char_limit: int = Field(
+        _MAX_SELF_STUDY_CONTEXT_CHARS, alias="ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT", gt=0
+    )
+    self_study_context_max_age_sec: float = Field(
+        21600.0, alias="ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC", gt=0
+    )
+    memory_crystallization_context_char_limit: int = Field(
+        _MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS,
+        alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT",
+        gt=0,
+    )
+    # 604800s (7 days), NOT self_study_context_max_age_sec's 6h -- that 6h
+    # value was wrongly copied from self-study without checking whether it
+    # fits (real bug, caught live 2026-08-28: the 6h default meant this
+    # context-seed read empty on every single tick, because a
+    # crystallization is not a time-window-bound comparison the way a
+    # self-study body is ("the last 6h against the 6h before it") -- a
+    # crystallized memory from yesterday is still a real memory, it doesn't
+    # go stale on that clock.
+    #
+    # 7 days, not this fix's first draft of 3 days: a code-review pass on
+    # this exact patch caught that the 3-day pick rested on an all-time-max
+    # query silently narrowed to "last 14 days" without saying so or
+    # reconciling it against the earlier (unscoped) PR #1917 write-up,
+    # which had found a >10-day gap. Re-querying the FULL history
+    # (2026-08-28) confirms both numbers were real, not contradictory:
+    # ALL 5 of the largest gaps ever observed are old --the two biggest are
+    # 10d5h (2026-07-31 -> 08-11) and 3d10h (2026-07-25 -> 07-29), both from
+    # more than 2 weeks before this patch. Every gap since 2026-08-11 (17+
+    # days of real recent activity) has stayed under 2 days. 7 days covers
+    # the recent pattern with real margin and covers the second-largest
+    # historical gap too; it does NOT cover the single 10-day outlier from
+    # early August. That is an accepted, explicit tradeoff, not an
+    # oversight: a dry spell that long would read as absent again, which is
+    # the same honest degrade-to-absent behavior every context-seed reader
+    # in this file has -- unlike the 6h bug this patch fixes, a 7-day gap
+    # is a genuinely rare, real quiet period, not the every-tick norm.
+    memory_crystallization_context_max_age_sec: float = Field(
+        604800.0, alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC", gt=0
     )
 
     # --- Attention salience trace publish gate ---

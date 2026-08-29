@@ -269,6 +269,180 @@ numbers. `GET .../status` reports both `peak_deviation_pressure` and
 `sustained_load_pressure` on `last_tension_reason` so an operator can see
 which fact(s) actually drove a given outreach.
 
+**A daydream, not only telemetry (2026-08-28).** Every other grounding lane
+above is an instrument reading, so an unprompted message could only ever be
+Orion narrating its own dials. `_fetch_current_daydream` adds the one lane
+that is not: the caption orion-thought's *reverie visual chain* writes to
+`reverie_visual_chain` (~1 row/600s — it generates an image from whatever
+Orion is currently thinking/noticing/remembering, then looks at what came
+out). The newest **usable** caption inside a **12h** window goes into the
+prompt with a coarse relative age, explicitly framed as Orion's own so the
+generated text cannot thank Juniper for a picture she never sent.
+
+**One caption, not a list — and that is a measured retraction, not caution.**
+The first version of this lane shipped the last 3 *distinct* captions,
+de-duplicated by Jaccard token overlap at 0.2. Measured against all 328 live
+rows, that mechanism does not work and no threshold fixes it:
+
+* Consecutive captions re-describe **one** image, so they differ mostly in
+  *length*. Jaccard divides by the union, which penalises exactly that: two
+  17th-century celestial maps measured **0.150**, under the threshold, so
+  both rendered.
+* The containment coefficient corrects that length bias and is *worse* — at
+  0.4 it surfaced three map captions.
+* Eyeballing sampled `(newest, next-distinct)` pairs across the corpus, both
+  variants returned obvious duplicates (two Roman aqueducts; two 17th-century
+  star charts).
+
+The producer already knows this. `visual_chain.py`'s Patch 4 exists because
+Juniper reported *"still doing the same images of Roman aqueducts, no
+change"* on 2026-08-27: `prior_description` continuity locks onto a visual
+attractor for 10+ runs. Presenting "your last 3 daydreams" over a corpus that
+lands on attractors is a claim the data cannot support (AGENTS.md §0A). The
+newest usable caption needs no such claim, and it cut the lane from 38% to
+23% of the prompt — it was previously the largest block in it, for the lane
+that is explicitly the least load-bearing.
+
+`chain_json.continuity_streak`/`continuity_reset` were evaluated as a
+ready-made theme boundary and **rejected**: live they run a rigid `3 2 1 0`
+period-4 cycle, because `resolve_visual_chain_continuity` forces a reset
+every `visual_chain_continuity_max_runs` runs unconditionally. That is a
+mechanical cap, not a signal that the imagery changed. Showing genuine
+*drift* ("celestial maps for two hours; Roman aqueducts before that") would
+need a real theme detector — embeddings, not bag-of-words — and is left as
+follow-up rather than faked.
+
+**Caption validity is load-bearing, because only one caption ships.**
+`_looks_like_daydream_prose` rejects three live failure modes of the vision
+model, and `_strip_appended_list` repairs a fourth. All four are **producer
+bugs worth fixing in orion-thought**; these are consumer-side guards, not the
+fix. To re-measure any count below, run the eval — do not trust a number
+written here, the table grows ~6 rows/hour:
+
+| shape | example | handling |
+|---|---|---|
+| raw grounding output | `objects(103,419),(554,604)`, `bridge(269,261),(879,661)` | reject |
+| bare tag dump | `1. Sun 2. Mercury 3. Venus …`, `two trees, lake, reflection, purple sky` | reject |
+| second-person address | `The graph you provided is a phase diagram…` | reject |
+| appended instruction echo | `a spiral galaxy. Directly visible objects and people include: 1. **Galaxy**: …` | **truncate** |
+
+The last one was 12 of 290 rendered captions (4.1%) — the vision prompt's own
+instruction text echoed back with literal markdown and a dangling enumerator.
+The prose *before* it is genuinely good, so the tail is cut rather than the
+caption dropped; when nothing usable precedes the list, the length and prose
+checks reject what remains. `_DAYDREAM_LIST_START_RE` matches the structural
+markers (a literal `**`, or a colon followed by an enumerator) rather than the
+instruction wording, which is the captioner's to change.
+
+The rejects have no false positives on the live corpus, including a short
+18-word real caption that a naive alphabetic-character-ratio test wrongly
+drops, and a real caption ending *"…are directly visible."* that a naive
+instruction-echo test wrongly drops — the latter caught by the eval on its
+first run. `_DAYDREAM_SCAN_LIMIT` is 12 rather than 1 for the same reason: ~3%
+of rows are debris and ~10% have a NULL caption, so "newest row" is often not
+"newest usable row".
+
+Two more deliberate choices worth not undoing. The whitespace collapse in
+`_clean_daydream` is an **injection guard**, not prompt-shape hygiene — this
+is model-generated text interpolated into a prompt, and flattening newlines
+is what stops a caption forging its own prompt line. And the lane reads
+`chain_json->>'description'`, **not** the typed `prior_description` column
+that looks like the obvious simplification: `visual_chain.py:527` sets
+`prior_description = description or continuity_fallback`, so on a
+caption-failure row it carries the *previous* run's caption forward and would
+silently re-surface a stale daydream as current.
+
+Three columns on that table were checked and **deliberately not used** —
+since the chain went live on 2026-08-25, `theme_key` is NULL on every row
+(`count(theme_key) = 0`; the producer never sets it), `ema_salience` is
+exactly `0.000`, and `terminal_reason` is always `'max_steps'`. They carry no information today. Like `embodied_presence`, the
+daydream is enrichment only and is **not** part of `is_empty()`: having been
+daydreaming is never on its own a reason to interrupt Juniper.
+
+**Which lanes actually reached the prompt (2026-08-28).** A decision row that
+built a prompt carries a `grounding` object in
+`endogenous_outreach_decisions.result_json`:
+
+```json
+"grounding": {"daydream": true, "daydream_age_sec": 317, "curiosity_summaries": 1,
+              "recent_turns": 2, "tension": true, "chat_presence": false,
+              "embodied_presence": false}
+```
+
+This exists because the prompt itself is **not** observable anywhere. It is built
+in memory, handed to generation, and dropped — not in the decision log, not in the
+container logs, and not in Postgres (`emit_observation` puts it on the substrate as
+a molecule, which has no queryable Postgres sink). Found immediately after the
+daydream lane shipped, when the obvious question — *"did that outreach actually see
+a daydream?"* — turned out to have no answer. Every lane added to this prompt was
+unfalsifiable in production: an outreach that silently lost a lane and one that
+never had it looked identical.
+
+Booleans and counts only, never the caption or summary text — logging the text
+would copy real content into a second store with its own retention and quietly
+widen the privacy boundary stated above.
+
+Each field reports what the prompt text **rendered**, not what was fetched. These
+differ: `fetch_presence` returns a full row for an `absent` camera, but
+`presence_fragment` returns `None` for any state that is not `present`/`recent`, so
+no camera line renders. The first version of this reported the fetched row and was
+wrong on live data on day one — anything claimed here must be traceable to a line
+in the prompt.
+
+The trace is written only for cycles that actually built a prompt. Rows WITHOUT a
+`grounding` key are:
+
+| Row | Why no key |
+|---|---|
+| gated (`quiet_hours`, `cooldown`, `daily_cap`, `turn_in_flight`, `already_sending`) | returned before context was gathered |
+| `no_grounding_context` | context was gathered but `is_empty()` skipped the tick, so no prompt exists for lanes to reach |
+| `source`-tagged rows from `offer_message` | the curiosity loop composes its text elsewhere and never builds an `OutreachContext` |
+
+None of these inherit a previous cycle's lanes: the summary is a local passed into
+`_record`, not instance state. That is deliberate and mutation-tested — stale lanes
+would be worse than none, because they read as evidence rather than as a gap.
+
+```sql
+-- did the last few real outreaches see a daydream?
+SELECT decided_at, reason, result_json->'grounding' AS grounding
+FROM endogenous_outreach_decisions
+WHERE result_json ? 'grounding'
+ORDER BY decided_at DESC LIMIT 10;
+```
+
+#### Evals
+
+`services/orion-hub/evals/` is this service's first eval directory. It exists
+because of a specific mistake: the daydream lane's original de-duplication
+shipped a calibration claim that live data falsified the same day. A unit test
+could not have caught it — unit tests run on fixtures the same reasoning
+invented. This runs the real caption pipeline over the real rows.
+
+```bash
+scripts/test_service.sh orion-hub --with-evals
+# or directly:
+pytest services/orion-hub/evals -q
+DAYDREAM_EVAL_DATABASE_URL=postgresql+psycopg2://... pytest services/orion-hub/evals -q
+```
+
+Read-only, and it **skips** cleanly with no reachable database — but a missing
+or renamed `reverie_visual_chain` **fails** rather than skipping, since that is
+the loudest thing that can go wrong with this lane.
+
+It measures the caption usability rate over a **24h window** (not the lifetime
+of the table: a lifetime rate cannot detect a later failure — at ~6 rows/hour a
+0.85 floor trips after ~7h of total collapse on today's corpus but would need
+~10 days once the table reaches 10k rows), asserts that real debris present in
+the raw captions does not survive cleaning, asserts no rendered caption echoes
+the captioner's instructions, checks the window is not empty (liveness), and
+pins its own two thresholds so they cannot be quietly set to values that make
+everything pass.
+
+**Repo-wide gap this exposed:** 11 services carry an `evals/` directory and
+none were reachable through `scripts/test_service.sh` or any Makefile target.
+The `--with-evals` flag above is new and opt-in; wiring the other ten is
+follow-up, not this change.
+
 **Through the real unified turn, not a lookalike (2026-08-19).** Generation
 used to call `CortexGatewayClient.chat()` directly — a bare bus RPC to
 `orion-cortex-gateway` that never reached `orion-harness-governor` at all:
@@ -928,6 +1102,7 @@ TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
 ### Manual UI checklist
 - Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
 - In Topic Studio, run **Preview** with `turn_pairs`, then switch to `conversation_bound` after setting a `boundary_column`.
+  - Topic Studio pins `split_text_columns: false` (it has no control for it yet), so its previews keep the historical fused-column shape. The Hub's own scheduler sends `split_text_columns: true` with `column_speakers`, so scheduler-driven runs produce one document per utterance -- expect Topic Studio's document counts to differ from the scheduler's for the same window. See `docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md`.
 - Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.
 
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.

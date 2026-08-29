@@ -144,6 +144,11 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
                 "chain_json": {
                     "prompt": "a quiet room. Orion is currently thinking: curiosity about the mesh.",
                     "context_text": "curiosity about the mesh",
+                    "self_study_text": "vision events dropped 0.36x vs baseline",
+                    "memory_text": "Orion and Juniper talked through the mesh work",
+                    "context_slot_used": "context",
+                    "continuity_streak": 1,
+                    "continuity_reset": False,
                     "description": "a quiet room",
                 },
             }
@@ -172,6 +177,15 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     assert chain["prompt"] == "a quiet room. Orion is currently thinking: curiosity about the mesh."
     # Patch 3: surfaced as its own field, not just prose inside `prompt`.
     assert chain["context_text"] == "curiosity about the mesh"
+    # Patch 5: same treatment for the self-study context-seed.
+    assert chain["self_study_text"] == "vision events dropped 0.36x vs baseline"
+    # Patch 6: same treatment for the memory-crystallization context-seed.
+    assert chain["memory_text"] == "Orion and Juniper talked through the mesh work"
+    # Patch 7: which of the three actually entered the prompt this run.
+    assert chain["context_slot_used"] == "context"
+    # Patch 4: same treatment for the continuity-reset bookkeeping.
+    assert chain["continuity_streak"] == 1
+    assert chain["continuity_reset"] is False
     assert len(chain["artifacts"]) == 1
     assert chain["artifacts"][0]["sha256"] == "a" * 64
     assert chain["artifacts"][0]["image_url"] == f"/api/reverie/visual/image/{'a' * 64}"
@@ -197,7 +211,18 @@ def test_visual_recent_context_text_absent_is_none_not_a_keyerror(client, monkey
     )
     resp = client.get("/api/reverie/visual/recent")
     assert resp.status_code == 200
-    assert resp.json()["chains"][0]["context_text"] is None
+    chain = resp.json()["chains"][0]
+    assert chain["context_text"] is None
+    # Patch 5: same discipline for the self-study context-seed key.
+    assert chain["self_study_text"] is None
+    # Patch 6: same discipline for the memory-crystallization context-seed key.
+    assert chain["memory_text"] is None
+    # Patch 7: same discipline for context_slot_used.
+    assert chain["context_slot_used"] is None
+    # Patch 4: a chain_json written before Patch 4 has neither key either --
+    # same .get() degrade-to-None discipline, never KeyError.
+    assert chain["continuity_streak"] is None
+    assert chain["continuity_reset"] is None
 
 
 def test_visual_recent_has_more_true_when_extra_row_fetched(client, monkeypatch):

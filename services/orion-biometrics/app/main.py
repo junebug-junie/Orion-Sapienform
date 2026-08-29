@@ -9,6 +9,9 @@ from fastapi import FastAPI, Query
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, Clock, Hunter
+
+from app.power_intent import sample_gpu_watts, settle
+from orion.schemas.power import PowerIntentV1
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
@@ -528,6 +531,53 @@ async def lifespan(app: FastAPI):
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
         await metrics_worker.start_background()
         workers.append(metrics_worker)
+
+    # Power intent settlement. Runs in EVERY mode, not just hub: the settler must be on
+    # the node that physically owns the GPU, and only agent-mode deployments run there.
+    # An intent for another node is ignored, so all nodes can subscribe safely.
+    if settings.POWER_INTENT_SETTLE_ENABLED:
+
+        async def _handle_power_intent(env: BaseEnvelope) -> None:
+            payload = env.payload
+            if hasattr(payload, "model_dump"):
+                payload = payload.model_dump(mode="json")
+            if not isinstance(payload, dict):
+                return
+            try:
+                intent = PowerIntentV1.model_validate(payload)
+            except Exception:
+                logger.exception("power_intent_invalid_payload")
+                return
+            if intent.node != settings.NODE_NAME:
+                return  # another node's meter, not ours to read
+
+            async def _run() -> None:
+                try:
+                    settled = await settle(
+                        intent,
+                        sampler=sample_gpu_watts,
+                        sample_interval_sec=settings.POWER_INTENT_SAMPLE_INTERVAL_SEC,
+                    )
+                except Exception:
+                    logger.exception("power_intent_settle_failed intent=%s", intent.intent_id)
+                    return
+                await _publish(
+                    bus,
+                    settings.POWER_INTENT_SETTLED_CHANNEL,
+                    "power.intent.settled.v1",
+                    settled,
+                )
+
+            # Fire-and-forget: the window must not block the intent consumer, or a
+            # second workload declaring mid-window would queue behind the first.
+            asyncio.create_task(_run())
+
+        power_hunter = Hunter(
+            chassis_cfg(),
+            patterns=[settings.POWER_INTENT_CHANNEL],
+            handler=_handle_power_intent,
+        )
+        asyncio.create_task(power_hunter.start_background(hunter_stop))
 
     if settings.BIOMETRICS_MODE in {"hub", "both"}:
         hub = BiometricsHub()

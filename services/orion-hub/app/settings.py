@@ -1187,6 +1187,14 @@ class Settings(BaseSettings):
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"
     )
+    # Run one scheduler tick shortly after startup instead of waiting a full
+    # interval. Default on: at the 86400s interval the loop's old sleep-first
+    # shape required 24 unbroken hours of Hub uptime to fire even once, and it
+    # had never fired in production. Turn off only to deliberately suppress
+    # the startup tick without disabling the scheduler entirely.
+    SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP: bool = Field(
+        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP"
+    )
     SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS: int = Field(
         default=30, alias="SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS"
     )

@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     TELEMETRY_PUBLISH_CHANNEL: str = Field(default="orion:telemetry:biometrics")
     BIOMETRICS_SAMPLE_CHANNEL: str = Field(default="orion:biometrics:sample")
     BIOMETRICS_SUMMARY_CHANNEL: str = Field(default="orion:biometrics:summary")
+    # Power intent settlement (stage 2). The settler runs on the node that owns the
+    # GPU, so every agent-mode deployment listens and ignores intents for other nodes.
+    POWER_INTENT_CHANNEL: str = Field(default="orion:power:intent")
+    POWER_INTENT_SETTLED_CHANNEL: str = Field(default="orion:power:intent:settled")
+    POWER_INTENT_SETTLE_ENABLED: bool = Field(default=True)
+    POWER_INTENT_SAMPLE_INTERVAL_SEC: float = Field(default=1.0)
     BIOMETRICS_INDUCTION_CHANNEL: str = Field(default="orion:biometrics:induction")
     BIOMETRICS_CLUSTER_CHANNEL: str = Field(default="orion:biometrics:cluster")
     SPARK_SIGNAL_CHANNEL: str = Field(default="orion:spark:signal")

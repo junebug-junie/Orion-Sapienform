@@ -22,6 +22,8 @@ from app.settings import settings
 from app.db import get_session, remove_session, session_factory
 from app.models import (
     BiometricsTelemetry,
+    BiometricsClusterSQL,
+    PowerIntentSettledSQL,
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
@@ -118,7 +120,13 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorSto
 from orion.schemas.metacog_entry import MetacogEntryV1
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
-from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSummaryV1, BiometricsInductionV1
+from orion.schemas.power import PowerIntentSettledV1
+from orion.schemas.telemetry.biometrics import (
+    BiometricsPayload,
+    BiometricsSummaryV1,
+    BiometricsInductionV1,
+    BiometricsClusterV1,
+)
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
@@ -417,6 +425,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "Dream": (Dream, None),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
     "BiometricsSummarySQL": (BiometricsSummarySQL, BiometricsSummaryV1),
+    "BiometricsClusterSQL": (BiometricsClusterSQL, BiometricsClusterV1),
+    "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
@@ -1496,6 +1506,38 @@ def _ensure_chat_history_from_message(
         own_sess.close()
 
 
+def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
+    """Map a ``biometrics.cluster.v1`` payload onto BiometricsClusterSQL's columns.
+
+    Two jobs the generic key-to-column filter in ``_write_row`` cannot do:
+
+    1. The payload's occurrence time is ``timestamp``; the column is ``observed_at``,
+       deliberately distinct from the row's ``created_at`` write time. Settlement
+       windows range over occurrence time, so this mapping is load-bearing, not
+       cosmetic.
+    2. The fleet watts live INSIDE ``measurements``. They are hoisted into real float
+       columns so a time-range aggregate can use a btree instead of extracting JSONB
+       per row. ``measurements`` is still stored whole alongside them.
+
+    A key absent from ``measurements`` means UNMEASURED and stays None. It must never
+    become 0.0 -- that would invent a reading no instrument produced, and every
+    downstream sum would silently treat an unseen machine as a machine drawing nothing.
+    """
+    out = dict(write_data)
+
+    ts = out.pop("timestamp", None)
+    if ts is not None and out.get("observed_at") is None:
+        out["observed_at"] = ts
+
+    measurements = out.get("measurements")
+    if isinstance(measurements, dict):
+        for key in ("pdu_watts", "chassis_watts", "gpu_watts_total", "cpu_watts_total", "gpu_count"):
+            value = measurements.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[key] = float(value)
+    return out
+
+
 def _write_row(sql_model_cls, data: dict) -> bool:
     sess = get_session()
     try:
@@ -1503,6 +1545,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
         write_data = dict(data)
         if sql_model_cls is NotificationRequestDB:
             write_data = _normalize_notification_request_payload(write_data)
+        if sql_model_cls is BiometricsClusterSQL:
+            write_data = _normalize_biometrics_cluster_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)

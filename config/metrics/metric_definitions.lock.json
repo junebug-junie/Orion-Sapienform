@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 617,
+  "metric_count": 619,
   "_last_change": {
-    "base": "merge base 6b9b0f04e (origin/main)",
-    "change_count": 1,
-    "high_severity_count": 1,
+    "base": "merge base b70f9ded0 (origin/main)",
+    "change_count": 0,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026ub', 'orion-memory-conso\u2026 -> \u2026ub', 'orion-juniper-affective-state', 'orion-memory-conso\u2026)"
+      "no definition changes relative to the merge base"
     ]
   },
   "definitions": {
@@ -460,6 +460,17 @@
       "declared_consumers": [
         "orion-equilibrium-service",
         "orion-heartbeat",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:power:intent:settled": {
+      "schema_id": "PowerIntentSettledV1",
+      "all_producers": [
+        "orion-biometrics"
+      ],
+      "declared_consumers": [
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
@@ -1015,6 +1026,17 @@
         "orion-cortex-exec"
       ],
       "notes": "kind=request stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-diffusion-host/orion:power:intent": {
+      "schema_id": "PowerIntentV1",
+      "all_producers": [
+        "orion-diffusion-host"
+      ],
+      "declared_consumers": [
+        "orion-biometrics"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {

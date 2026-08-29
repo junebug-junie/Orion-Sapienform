@@ -710,6 +710,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const conceptAtlasPanel = document.getElementById("concept-atlas");
   const conceptAtlasPanelFrame = document.getElementById("conceptAtlasPanelFrame");
   const conceptAtlasPanelRefresh = document.getElementById("conceptAtlasPanelRefresh");
+  const curiosityAtlasTabButton = document.getElementById("curiosityAtlasTabButton");
+  const curiosityAtlasPanel = document.getElementById("curiosity-atlas");
+  const curiosityAtlasPanelFrame = document.getElementById("curiosityAtlasPanelFrame");
+  const curiosityAtlasPanelRefresh = document.getElementById("curiosityAtlasPanelRefresh");
   const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
   const pressurePanel = document.getElementById("pressure");
   const collapseMirrorTabButton = document.getElementById("collapseMirrorTabButton");
@@ -1009,6 +1013,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "concept-atlas" && !conceptAtlasPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "curiosity-atlas" && !curiosityAtlasPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
       effectiveTab = "hub";
     }
@@ -1043,6 +1050,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
     const isCausalGeometry = effectiveTab === "causal-geometry";
     const isConceptAtlas = effectiveTab === "concept-atlas";
+    const isCuriosityAtlas = effectiveTab === "curiosity-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
@@ -1105,6 +1113,32 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         } catch {
           /* iframe not ready */
+        }
+      }
+    }
+    if (curiosityAtlasPanel) {
+      const wasCuriosityVisible = !curiosityAtlasPanel.classList.contains("hidden");
+      curiosityAtlasPanel.classList.toggle("hidden", !isCuriosityAtlas);
+      // The page polls the graph on a timer. Left running behind a hidden
+      // tab that is a FalkorDB read every 60s for a panel nobody is looking
+      // at, so it takes the same activate/deactivate contract Concept Atlas
+      // established rather than inventing a second convention.
+      if (curiosityAtlasPanelFrame) {
+        const ping = (fn) => {
+          try {
+            const win = curiosityAtlasPanelFrame.contentWindow;
+            if (win && win.OrionCuriosityAtlas
+                && typeof win.OrionCuriosityAtlas[fn] === "function") {
+              win.OrionCuriosityAtlas[fn]();
+            }
+          } catch {
+            /* iframe not ready */
+          }
+        };
+        if (isCuriosityAtlas) {
+          setTimeout(() => ping("activate"), 150);
+        } else if (wasCuriosityVisible) {
+          ping("deactivate");
         }
       }
     }
@@ -1229,6 +1263,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (causalGeometryTabButton) {
       styleTabButton(causalGeometryTabButton, isCausalGeometry);
+    }
+    if (curiosityAtlasTabButton) {
+      styleTabButton(curiosityAtlasTabButton, isCuriosityAtlas);
     }
     if (conceptAtlasTabButton) {
       styleTabButton(conceptAtlasTabButton, isConceptAtlas);
@@ -1838,6 +1875,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("causal-geometry");
     } else if (h === "#concept-atlas" && conceptAtlasPanel && conceptAtlasTabButton) {
       setActiveTab("concept-atlas");
+    } else if (h === "#curiosity-atlas" && curiosityAtlasPanel && curiosityAtlasTabButton) {
+      setActiveTab("curiosity-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
     } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
@@ -1874,6 +1913,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#signals"
         || h === "#substrate-atlas"
         || h === "#concept-atlas"
+        || h === "#curiosity-atlas"
         || h === "#collapse-mirror"
         || h === "#ai-town"
         || h === "#attention-organ"
@@ -2166,6 +2206,14 @@ document.addEventListener("DOMContentLoaded", () => {
   function buildWindowingSpec() {
     return {
       block_mode: tsBlockMode?.value || "turn_pairs",
+      // Pinned explicitly rather than inherited from the server default.
+      // Topic Studio has no control for column splitting yet, and leaving
+      // this unset would let a WindowingSpec default change silently alter
+      // what a UI-driven Preview/Train builds (review finding, 2026-08-28).
+      // Splitting is currently driven by the Hub scheduler's own spec; see
+      // docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md
+      // for the follow-up that surfaces it here.
+      split_text_columns: false,
       segmentation_mode: tsSegmentationMode?.value || "time_gap",
       time_gap_seconds: Number(tsTimeGap?.value || 900),
       max_window_seconds: Number(tsMaxWindow?.value || 7200),
@@ -10674,7 +10722,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function shouldAppendOrionWsPayload(d) {
     if (!d || typeof d !== 'object') return false;
-    if (d.tts_error) return false;
+    // Review finding, 2026-08-27: `d.tts_error` alone (no `d.llm_response`)
+    // is the WS lane's own "synthesis failed" follow-up frame -- it also
+    // carries the ORIGINAL text under `d.text` for logging only, and must
+    // not spawn a duplicate bubble for text a real "final" frame already
+    // showed moments earlier. But the HTTP-fallback path (same date) can
+    // merge a REAL llm_response with a tts_error (text succeeded, TTS
+    // didn't) into ONE object -- that case must still render the text.
+    // The two are told apart by `d.llm_response` specifically, not the
+    // broader resolveAssistantDisplayText() below (which also reads
+    // `d.text`, exactly the field the WS-only case uses for logging, and
+    // would have wrongly treated case 1 as real text too).
+    if (d.tts_error && !d.llm_response) return false;
     // TTS playback follow-up may carry assistant text for logging; never spawn a second bubble.
     if (d.audio_response && !d.llm_response) return Boolean(d.workflow);
     if (d.workflow) return true;
@@ -10896,18 +10955,7 @@ document.addEventListener("DOMContentLoaded", () => {
             syncSocialInspectionFromRouteDebug(d.routing_debug);
           }
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
-          if (d.tts_debug) {
-            console.info('[tts] debug', d.tts_debug);
-          }
-          if (d.audio_response) {
-            console.info('[tts] audio_response received', {
-              audio_b64_len: d.audio_response.length,
-              tts_meta: d.tts_meta || null,
-            });
-            audioQueue.push({ audio_b64: d.audio_response, meta: d.tts_meta || null });
-            processAudioQueue();
-          }
-          if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
+          handleTtsFields(d);
           if (d.error) {
             appendMessage('System', `Error: ${d.error}`, 'text-red-400');
             if (d.audio_debug) {
@@ -11337,6 +11385,7 @@ document.addEventListener("DOMContentLoaded", () => {
               );
             }
             updateMemoryPanelFromResponse(d);
+            handleTtsFields(d);
             updateStatusBasedOnState();
         })
         .catch(e => {
@@ -11715,6 +11764,28 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     _finishVoiceStop();
+  }
+
+  // Shared by both delivery paths: the live WebSocket's onmessage handler
+  // AND the HTTP fallback's fetch().then() handler (app.js's own
+  // WS-down-so-fall-back-to-HTTP path, services/orion-hub/scripts/api_routes.py's
+  // /api/chat). Real incident, 2026-08-27 (corr=11215a1b-...): a turn that
+  // went through the HTTP fallback had no voice at all -- the backend now
+  // sends the SAME audio_response/tts_meta/tts_error fields either way, so
+  // this is the one place that reacts to them regardless of transport.
+  function handleTtsFields(d) {
+    if (d.tts_debug) {
+      console.info('[tts] debug', d.tts_debug);
+    }
+    if (d.audio_response) {
+      console.info('[tts] audio_response received', {
+        audio_b64_len: d.audio_response.length,
+        tts_meta: d.tts_meta || null,
+      });
+      audioQueue.push({ audio_b64: d.audio_response, meta: d.tts_meta || null });
+      processAudioQueue();
+    }
+    if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
   }
 
   function processAudioQueue() {
@@ -12460,6 +12531,13 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#concept-atlas");
       });
     }
+    if (curiosityAtlasTabButton && curiosityAtlasPanel) {
+      curiosityAtlasTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("curiosity-atlas");
+        history.replaceState(null, "", "#curiosity-atlas");
+      });
+    }
     if (memoryTabButton) {
       memoryTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -12587,6 +12665,22 @@ document.addEventListener("DOMContentLoaded", () => {
           atlasWin.OrionConceptAtlas.refresh();
         } else {
           atlasWin?.location.reload();
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  if (curiosityAtlasPanelRefresh && curiosityAtlasPanelFrame) {
+    curiosityAtlasPanelRefresh.addEventListener("click", () => {
+      try {
+        const win = curiosityAtlasPanelFrame.contentWindow;
+        if (win && win.OrionCuriosityAtlas
+            && typeof win.OrionCuriosityAtlas.refresh === "function") {
+          win.OrionCuriosityAtlas.refresh();
+        } else {
+          win?.location.reload();
         }
       } catch {
         /* ignore */

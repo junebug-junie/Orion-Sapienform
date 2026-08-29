@@ -47,7 +47,10 @@ backpressure mechanism.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
+import uuid
+from datetime import datetime, timedelta, timezone
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -60,6 +63,8 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
+from orion.schemas.power import PowerIntentV1
 
 from .settings import Settings
 
@@ -84,6 +89,9 @@ _LOAD_RETRY_ATTEMPTS = 3
 _LOAD_RETRY_BACKOFF_SEC = (5.0, 15.0, 30.0)
 
 
+_DTYPE_MAP = {"fp16": "float16", "bf16": "bfloat16", "fp32": "float32"}
+
+
 def _load_pipeline():
     """Blocking model load -- runs on `_gpu_executor` (see lifespan below).
     Any exception here is caught by the caller and recorded as
@@ -91,16 +99,52 @@ def _load_pipeline():
     DIFFUSION_MODEL_ID or a download failure must show up as
     model_loaded=false on /health, not crash-loop the container the way
     orion-vision-host's liveness watcher once did on a bad env value
-    (README.md cross-reference, same failure shape)."""
+    (README.md cross-reference, same failure shape).
+
+    FLUX.1-schnell swap (2026-08-28, real root-cause fix for the 77-token
+    CLIP ceiling `_log_prompt_token_budget` above exists because of):
+    FLUX uses a T5-XXL second text encoder with a real ~256-token budget
+    for actual cross-attention content, not CLIP's 77 -- CLIP-L is still
+    loaded (`tokenizer`/`text_encoder`) but only contributes a single
+    pooled embedding in this architecture, not per-token conditioning, so
+    its 77-token truncation is far less consequential here than it was for
+    SDXL, where CLIP was the only encoder.
+
+    `DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD`: FLUX.1-schnell fully GPU-resident
+    at 2 bytes/param (fp16 or bf16, same cost) needs up to ~33GB (12B-param
+    transformer + 4.5B-param T5-XXL encoder) -- over budget on a 32GB card.
+    `enable_model_cpu_offload()` keeps components on CPU until their turn
+    in the forward pass, cutting peak GPU residency to ~24GB -- same real
+    weights and math, not reduced precision, just staged residency, at
+    some generation-latency cost this service's slow, capacity-gated
+    cadence (design doc §4) already tolerates. sdxl-turbo does not need
+    this (comfortably fits fully resident) -- default False would preserve
+    its exact prior behavior if this service ever serves it again; this
+    flag is enabled via env for the FLUX deployment specifically.
+
+    `DIFFUSION_DTYPE=fp16`, not bf16, DESPITE FLUX's own docs recommending
+    bf16 -- a real correction, caught by review before deploy: this
+    service's actual card (physical GPU 2, "Tesla PG500-216" per README's
+    "Node/port/GPU assignment") is Volta architecture with first-
+    generation Tensor Cores. bf16 tensor-core acceleration is an Ampere+
+    (compute capability >= 8.0) feature this card does not have -- other
+    PyTorch-based projects on this exact GPU class report hard failures
+    attempting it. Volta's tensor cores were built for fp16 (why
+    sdxl-turbo, a different model on the same card, already ran fp16
+    correctly). `_DTYPE_MAP` below still supports `bf16` as a configurable
+    option for a future deployment on newer hardware."""
     import torch
     from diffusers import AutoPipelineForText2Image
 
-    dtype = torch.float16 if settings.DIFFUSION_DTYPE == "fp16" else torch.float32
+    dtype = getattr(torch, _DTYPE_MAP.get(settings.DIFFUSION_DTYPE, "float32"))
     pipe = AutoPipelineForText2Image.from_pretrained(
         settings.DIFFUSION_MODEL_ID,
         torch_dtype=dtype,
         cache_dir=settings.MODEL_CACHE_DIR,
     )
+    if settings.DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD:
+        pipe.enable_model_cpu_offload(device=settings.DIFFUSION_DEVICE)
+        return pipe
     return pipe.to(settings.DIFFUSION_DEVICE)
 
 
@@ -223,11 +267,111 @@ async def ready():
     return JSONResponse(body, status_code=200 if body["ready"] else 503)
 
 
+def _pipe_accepts(param_name: str) -> bool:
+    """Whether the currently-loaded pipeline's `__call__` has this
+    parameter -- used instead of a hardcoded "is this Flux" check so
+    `_run_generation` stays correct across a future model swap without
+    needing a matching code change every time it does.
+
+    Real, concrete reason this exists (FLUX.1-schnell swap, 2026-08-28):
+    `FluxPipeline.__call__` has neither `negative_prompt` (schnell is
+    guidance-distilled -- no true classifier-free guidance path) nor
+    accepts one silently the way SDXL's does. `_run_generation` used to
+    pass `negative_prompt=req.negative_prompt` unconditionally -- against
+    Flux that raises `TypeError: unexpected keyword argument
+    'negative_prompt'` on every single request, a full outage caught here
+    before deploy, not live."""
+    try:
+        return param_name in inspect.signature(_pipe.__call__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _log_prompt_token_budget(prompt: str, *, max_sequence_length: int | None = None) -> None:
+    """Real-tokenizer visibility into whether `prompt` fits the loaded
+    model's actual attention window.
+
+    diffusers' own `encode_prompt()` truncates any prompt exceeding the
+    text encoder's effective budget completely silently -- no exception,
+    no response header, nothing in the 200 this endpoint returns. Confirmed
+    live 2026-08-28: a caller (`orion-thought`'s visual chain, three
+    patches deep) had been sending prompts up to 191 real tokens with no
+    visibility that ~60% of the content -- including its most recently
+    added context-seeds -- was silently discarded before the model ever
+    saw it (against sdxl-turbo's 77-token CLIP ceiling). That incident was
+    only found by forensically re-tokenizing an already-stored prompt
+    after the fact; this makes the same fact visible the moment it
+    happens, in this service's own logs (CLAUDE.md §0A "runtime truth
+    beats config truth": a log line with correlation evidence, not a
+    config value or a clean 200 response).
+
+    `max_sequence_length` (FLUX.1-schnell swap): for a T5-style second
+    encoder, the tokenizer's own `model_max_length` attribute is often an
+    effectively-unbounded HF placeholder, NOT the real limit -- FluxPipeline
+    truncates `tokenizer_2`'s output to whatever `max_sequence_length` is
+    passed to the actual `__call__` (this service's own
+    `DIFFUSION_MAX_SEQUENCE_LENGTH` setting, 256 by default, matching
+    schnell's documented sweet spot), independent of the tokenizer's raw
+    attribute. Pass the effective call-time value in here so `tokenizer_2`
+    is checked against what the model ACTUALLY used, not what the
+    tokenizer object happens to report unasked.
+
+    Uses the REAL tokenizer(s) already loaded as part of `_pipe` --
+    `transformers` is already a hard dependency of this service
+    (`requirements.txt`), so this is zero new cost, and it is the actual
+    encoder the running model uses, not a same-family approximation.
+    Multi-encoder pipelines carry a second encoder (`tokenizer_2` --
+    OpenCLIP-bigG for SDXL, T5-XXL for Flux) -- checked too, via the same
+    `getattr` guard, since not every `AutoPipelineForText2Image` target
+    has one.
+
+    Log-only, best-effort: this must never change what gets generated or
+    block a request -- any failure here (missing tokenizer attribute,
+    tokenizer call error) is swallowed at DEBUG, not raised.
+    """
+    for attr in ("tokenizer", "tokenizer_2"):
+        tok = getattr(_pipe, attr, None)
+        if tok is None:
+            continue
+        try:
+            configured_max = getattr(tok, "model_max_length", None)
+            max_len = (
+                max_sequence_length
+                if attr == "tokenizer_2" and max_sequence_length is not None
+                else configured_max
+            )
+            n_tokens = len(tok(prompt)["input_ids"])
+            if max_len and n_tokens > max_len:
+                logger.warning(
+                    "prompt exceeds {} budget: {} tokens > effective max_length={} "
+                    "(prompt is {} chars) -- diffusers silently truncates; only the "
+                    "first {} tokens are actually seen by the model",
+                    attr,
+                    n_tokens,
+                    max_len,
+                    len(prompt),
+                    max_len,
+                )
+        except Exception as exc:  # noqa: BLE001 -- visibility only, never block generation
+            logger.debug("prompt token-budget check on {} failed (non-fatal): {}", attr, exc)
+
+
 def _run_generation(req: GenerateRequest) -> bytes:
     """Blocking diffusers call -- runs on `_gpu_executor` (module docstring
     "Concurrency"). torch is imported lazily, only when a seed is given --
     unlike `_load_pipeline`, this function runs on every request, including
-    in tests that inject a fake pipe and never install real torch."""
+    in tests that inject a fake pipe and never install real torch.
+
+    Call kwargs are built conditionally via `_pipe_accepts` rather than
+    hardcoded, so this function works unchanged whether the loaded
+    pipeline is SDXL-shaped (`negative_prompt` supported) or Flux-shaped
+    (it is not, but `max_sequence_length` is instead) -- see
+    `_pipe_accepts`'s own docstring for the real outage this specifically
+    prevents."""
+    max_seq_len = (
+        settings.DIFFUSION_MAX_SEQUENCE_LENGTH if _pipe_accepts("max_sequence_length") else None
+    )
+    _log_prompt_token_budget(req.prompt, max_sequence_length=max_seq_len)
     generator = None
     if req.seed is not None:
         import torch
@@ -237,7 +381,14 @@ def _run_generation(req: GenerateRequest) -> bytes:
     effective_guidance = (
         req.guidance_scale if req.guidance_scale is not None else settings.DIFFUSION_GUIDANCE_SCALE
     )
-    if req.negative_prompt and effective_guidance <= 1.0:
+    supports_negative_prompt = _pipe_accepts("negative_prompt")
+    if req.negative_prompt and not supports_negative_prompt:
+        logger.warning(
+            "negative_prompt given but the loaded pipeline ({}) does not accept one -- "
+            "ignored, not silently dropped without a trace",
+            type(_pipe).__name__,
+        )
+    elif req.negative_prompt and effective_guidance <= 1.0:
         # diffusers only applies classifier-free guidance (and therefore
         # negative-prompt conditioning) above guidance_scale=1.0. The
         # documented sdxl-turbo operating point is 0.0 (settings.py), so a
@@ -250,9 +401,8 @@ def _run_generation(req: GenerateRequest) -> bytes:
             effective_guidance,
         )
 
-    result = _pipe(
+    call_kwargs = dict(
         prompt=req.prompt,
-        negative_prompt=req.negative_prompt,
         width=req.width if req.width is not None else settings.DIFFUSION_DEFAULT_WIDTH,
         height=req.height if req.height is not None else settings.DIFFUSION_DEFAULT_HEIGHT,
         num_inference_steps=(
@@ -263,10 +413,47 @@ def _run_generation(req: GenerateRequest) -> bytes:
         guidance_scale=effective_guidance,
         generator=generator,
     )
+    if supports_negative_prompt:
+        call_kwargs["negative_prompt"] = req.negative_prompt
+    if max_seq_len is not None:
+        call_kwargs["max_sequence_length"] = max_seq_len
+
+    result = _pipe(**call_kwargs)
     image = result.images[0]
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     return buf.getvalue()
+
+
+async def _publish_power_intent() -> None:
+    """Best-effort declaration. Never blocks or fails a generation.
+
+    A failed declaration costs a settlement, not an image. Raising here would let a bus
+    hiccup take down the actual workload, which would be a strictly worse trade than
+    losing one row of measurement.
+    """
+    if not settings.DIFFUSION_POWER_INTENT_ENABLED:
+        return
+    chassis = _heartbeat_chassis
+    bus = getattr(chassis, "bus", None) if chassis is not None else None
+    if bus is None:
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        intent = PowerIntentV1(
+            intent_id=str(uuid.uuid4()),
+            workload_kind="reverie_diffusion",
+            node=settings.NODE_NAME,
+            gpu_index=settings.DIFFUSION_POWER_INTENT_GPU_INDEX,
+            expected_duration_sec=settings.DIFFUSION_POWER_INTENT_DURATION_SEC,
+            expected_watts=None,
+            deadline=now
+            + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),
+        )
+        await bus.publish("orion:power:intent", "power.intent.v1", intent)
+        logger.info("power_intent_declared intent={} gpu={}", intent.intent_id, intent.gpu_index)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("power_intent_declare_failed (generation continues): {}", exc)
 
 
 @app.post("/generate")
@@ -286,6 +473,18 @@ async def generate(req: GenerateRequest) -> Response:
         raise HTTPException(status_code=429, detail="another generation is already in flight")
 
     async with _generation_lock:
+        # Declare BEFORE drawing. The declaration is what makes an override possible at
+        # all -- you cannot pre-empt a workload you only learn about after it has drawn
+        # -- and it opens the settler's fast sample window, without which this job is
+        # invisible: the standing 31s GPU sampler caught 4 of 332 real generations over
+        # three days (measured 2026-08-28).
+        #
+        # expected_watts is deliberately NOT set. Nobody has measured this workload yet,
+        # and inventing a plausible constant would bake a fabricated number into the
+        # first day of the dataset that is later fitted against. It stays None until
+        # real settlements produce a distribution to derive it from.
+        await _publish_power_intent()
+
         loop = asyncio.get_running_loop()
         start = time.monotonic()
         try:

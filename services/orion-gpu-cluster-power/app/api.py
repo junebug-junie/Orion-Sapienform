@@ -9,6 +9,18 @@ from .bus import start_command_listener_background
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.system_health import SystemHealthV1
 import asyncio
+import uuid
+from datetime import datetime, timezone
+
+# SystemHealthV1 requires boot_id and last_seen_ts. Constructing it without them
+# raises inside the heartbeat loop's own try/except, which logs a warning and
+# sleeps -- so the service looks alive while publishing no heartbeat at all.
+# Confirmed live 2026-08-29 on orion-gpu-cluster-power: one failure per 30s tick,
+# indefinitely, and nothing downstream noticed the silence.
+# BOOT_ID identifies THIS process run, so a consumer can tell a restart from a
+# continuous uptime (same convention as services/orion-whisper-tts/app/main.py).
+BOOT_ID = str(uuid.uuid4())
+
 
 logger = logging.getLogger("orion-psu-proxy.api")
 
@@ -113,7 +125,9 @@ async def heartbeat_loop(service: PsuService):
                     service=service.settings.service_name,
                     version=service.settings.service_version,
                     node="psu-node",
-                    status="ok"
+                    status="ok",
+                    boot_id=BOOT_ID,
+                    last_seen_ts=datetime.now(timezone.utc),
                 ).model_dump(mode="json")
 
                 await service.bus.publish("orion:system:health", BaseEnvelope(

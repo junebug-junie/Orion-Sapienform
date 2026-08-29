@@ -9,6 +9,18 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.system_health import SystemHealthV1
 import asyncio
+import uuid
+from datetime import datetime, timezone
+
+# SystemHealthV1 requires boot_id and last_seen_ts. Constructing it without them
+# raises inside the heartbeat loop's own try/except, which logs a warning and
+# sleeps -- so the service looks alive while publishing no heartbeat at all.
+# Confirmed live 2026-08-29 on orion-gpu-cluster-power: one failure per 30s tick,
+# indefinitely, and nothing downstream noticed the silence.
+# BOOT_ID identifies THIS process run, so a consumer can tell a restart from a
+# continuous uptime (same convention as services/orion-whisper-tts/app/main.py).
+BOOT_ID = str(uuid.uuid4())
+
 
 # --- Logging Setup ---
 logging.basicConfig(level=settings.LOG_LEVEL.upper(), format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -50,7 +62,9 @@ def heartbeat_worker_thread():
                         service=settings.SERVICE_NAME,
                         version=settings.SERVICE_VERSION,
                         node="rag-node",
-                        status="ok"
+                        status="ok",
+                        boot_id=BOOT_ID,
+                        last_seen_ts=datetime.now(timezone.utc),
                     ).model_dump(mode="json")
 
                     await bus.publish("orion:system:health", BaseEnvelope(

@@ -371,6 +371,9 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001 -- a bad zone must not stop the loop
             logger.warning("curiosity_bad_timezone name=%s falling back to UTC", timezone_name)
             self._tz = timezone.utc
+        # One turn at a time. See `tick(force=...)` for why this arrived with
+        # the manual trigger rather than before it.
+        self._run_lock = asyncio.Lock()
         self._pool_provider = pool_provider
         self._source_ref = source_ref
 
@@ -528,7 +531,9 @@ class CuriosityInvestigation:
             )
         return self._acl_error
 
-    async def _read_worldview(self, run_id_of_last: Optional[str]) -> WorldviewSnapshot:
+    async def _read_worldview(
+        self, run_id_of_last: Optional[str], *, rotate_seed: str = ""
+    ) -> WorldviewSnapshot:
         """Orion's own graph, plus the note the previous run left itself."""
         if self._reader is None:
             return WorldviewSnapshot(unavailable_reason="no_graph_configured")
@@ -539,6 +544,7 @@ class CuriosityInvestigation:
                 reader,
                 sample=self.prior_sample,
                 stale_after=self.stale_prior_tests,
+                rotate_seed=rotate_seed,
             )
             if view.is_unavailable or not run_id_of_last:
                 return view
@@ -643,6 +649,53 @@ class CuriosityInvestigation:
         # Redis must read as "no previous run", never as a query fragment.
         return value if _RUN_ID_RE.match(value) else None
 
+    async def _refund_investigation(self, previous_stamp: Optional[str]) -> None:
+        """Give back a slot a turn never got to use.
+
+        ONLY on cancellation, and that distinction is the whole design. The
+        counter is written BEFORE the turn on purpose: a turn that errors, times
+        out, or gets deferred still consumes its slot, because otherwise a
+        reliably failing turn retries every tick forever. That protection has to
+        survive this.
+
+        A cancellation is not a failing turn. It means the event loop is going
+        away -- Hub got SIGTERM because the container is being replaced -- which
+        is the host being rebuilt, not Orion failing at anything. Measured
+        twice: run `5fd3349e2ba7` (2026-08-27 06:17) and `8d1e2fa92879`
+        (2026-08-28 04:51) were each killed minutes in by a redeploy, wrote
+        nothing, and each still cost a slot and stamped the cooldown. Two of
+        twelve daily runs spent on being restarted.
+
+        A crash-loop cannot farm this: every refund costs a full container
+        start, so the rate is bounded by how fast something can restart Hub, not
+        by the tick.
+
+        The previous stamp is RESTORED rather than deleted -- deleting it would
+        report "never investigated", which reads as eligible-immediately and
+        would let a redeploy storm start a turn per restart.
+        """
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            key = self._daily_key(now)
+            current = await redis.get(key)
+            if current is not None:
+                await redis.decr(key)
+            if previous_stamp:
+                await redis.setex(_COOLDOWN_KEY, _STATE_TTL_SEC, previous_stamp)
+            else:
+                await redis.delete(_COOLDOWN_KEY)
+            self._done_today = max(0, self._done_today - 1)
+            logger.warning(
+                "curiosity_investigation_refunded -- the turn was cancelled "
+                "before it finished, which means Hub is shutting down rather "
+                "than the turn failing; the slot is given back"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_state_refund_failed", exc_info=True)
+
     async def _record_investigation(self, now: datetime, run_id: str) -> None:
         """Persist the cooldown stamp, today's counter, and this run's id."""
         redis = getattr(self._bus, "redis", None)
@@ -659,6 +712,19 @@ class CuriosityInvestigation:
             await redis.setex(_LAST_RUN_KEY, 604800, run_id)
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_state_write_failed", exc_info=True)
+
+    async def _read_cooldown_stamp(self) -> Optional[str]:
+        """The persisted cooldown stamp as written, or None."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return None
+        try:
+            raw = await redis.get(_COOLDOWN_KEY)
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        return str(raw) if raw else None
 
     async def _read_study_material(self, now: datetime) -> StudyMaterial:
         """Read both stores. Never raises -- an unreadable store is reported as
@@ -714,10 +780,36 @@ class CuriosityInvestigation:
             return False
         return found is None
 
-    async def tick(self) -> Optional[str]:
-        """One decision. Returns the block reason, or None if it investigated."""
+    async def tick(self, *, force: bool = False) -> Optional[str]:
+        """One decision. Returns the block reason, or None if it investigated.
+
+        `force` SKIPS THE SCHEDULING GATE AND NOTHING ELSE. Cooldown and daily
+        cap exist to bound cost and to stop a redeploy spending a slot; an
+        operator asking for a run on purpose has already made that call. Every
+        other gate still applies -- `enabled`, the Postgres role, the graph ACL,
+        the stores, whether there is any material -- because those answer "can
+        this run work at all", which an operator cannot override by wanting it.
+
+        The run is still RECORDED: it stamps the cooldown and increments the
+        daily counter like any other. A forced run that did not count would make
+        the counter lie, and the counter is what the atlas page compares against
+        to notice a run that left no trace.
+        """
         now = datetime.now(timezone.utc)
         self._roll_daily_counter(now)
+
+        # No two turns at once. There was no lock before this because the
+        # cooldown made overlap impossible -- a turn runs ~20 minutes and the
+        # next was 4 hours away. A manual trigger removes that guarantee: it can
+        # land in the middle of a scheduled turn, and two concurrent turns would
+        # race on the same run-id key and the same FCC sandbox.
+        #
+        # `locked()` then `async with` is safe rather than racy here: acquiring
+        # an unlocked asyncio.Lock does not yield, so nothing can interleave
+        # between the check and the acquisition on this single-threaded loop.
+        if self._run_lock.locked():
+            logger.info("curiosity_investigation_blocked reason=already_running")
+            return "already_running"
 
         since_last, done_today = await self._read_persisted_state(now)
         reason = scheduling_block_reason(
@@ -729,6 +821,17 @@ class CuriosityInvestigation:
                 daily_cap=self.daily_cap,
             )
         )
+        if force and reason in {"cooldown", "daily_cap"}:
+            logger.warning(
+                "curiosity_investigation_forced overriding=%s since_last=%.0fs "
+                "done_today=%s cap=%s -- an operator asked for this run; it "
+                "still counts against today",
+                reason,
+                since_last if since_last is not None else -1.0,
+                done_today,
+                self.daily_cap,
+            )
+            reason = None
         if reason is not None:
             # INFO, not DEBUG. These fire at most once per tick (5 min), so the
             # volume is trivial, and a loop whose every refusal is invisible is
@@ -815,8 +918,35 @@ class CuriosityInvestigation:
         run_id = uuid4().hex[:12]
         correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
 
+        # HELD FOR THE WHOLE TURN, not just checked at the top. The check up
+        # there rejects a second trigger early and cheaply; this is what makes
+        # the rejection true, since the gate reads between the two both await.
+        if self._run_lock.locked():
+            logger.info("curiosity_investigation_blocked reason=already_running")
+            return "already_running"
+        async with self._run_lock:
+            return await self._investigate(
+                now=now,
+                run_id=run_id,
+                correlation_id=correlation_id,
+                material=material,
+                done_today=done_today,
+            )
+
+    async def _investigate(
+        self,
+        *,
+        now: datetime,
+        run_id: str,
+        correlation_id: str,
+        material: StudyMaterial,
+        done_today: int,
+    ) -> Optional[str]:
+        """The turn itself. Split out so `tick` can hold one lock across it."""
         last_run_id = await self._read_last_run_id()
-        view = await self._read_worldview(last_run_id)
+        # Seeded with THIS run's id so ties in the prior ordering rotate
+        # between runs instead of pinning the same `sample` priors forever.
+        view = await self._read_worldview(last_run_id, rotate_seed=run_id)
         if view.is_unavailable and self.graph_enabled:
             # The ACL assert above succeeded, so this is a query-level failure
             # rather than a missing grant. Reported and NOT fatal: Orion can
@@ -831,6 +961,9 @@ class CuriosityInvestigation:
         # failing turn would be retried every tick forever.
         self._last_investigation_monotonic = time.monotonic()
         self._done_today = done_today + 1
+        # Captured before the stamp is overwritten, so a cancelled turn can put
+        # back the value that was there rather than clearing it.
+        previous_stamp = await self._read_cooldown_stamp()
         await self._record_investigation(now, run_id)
 
         logger.info(
@@ -841,8 +974,8 @@ class CuriosityInvestigation:
             material.approved_total,
             len(material.relations),
             material.relation_total,
-            len(view.open_priors),
-            view.open_total,
+            len(view.live_priors) + len(view.stale_priors),
+            view.live_total,
             bool(view.continuation and view.continuation.continue_line),
             correlation_id,
         )
@@ -862,7 +995,14 @@ class CuriosityInvestigation:
             # them here would silence the disclosure -- see build_kickoff_prompt.
             graph_enabled=self.graph_enabled,
         )
-        text, debug = await self._generate(prompt, correlation_id)
+        try:
+            text, debug = await self._generate(prompt, correlation_id)
+        except asyncio.CancelledError:
+            # Hub is going away mid-turn. Give the slot back and let the
+            # cancellation continue -- swallowing it would leave a task the
+            # shutdown is waiting on.
+            await self._refund_investigation(previous_stamp)
+            raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
             return "empty_generation"

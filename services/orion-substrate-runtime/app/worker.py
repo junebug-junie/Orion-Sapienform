@@ -341,6 +341,35 @@ REDUCER_SPECS: tuple[ReducerSpec, ...] = (
 )
 
 
+def _prediction_error_label(node_id: str) -> str:
+    """Human-readable label for a substrate prediction-error concept node.
+
+    These nodes render in the Concept Atlas alongside organically-discovered
+    topics, so their label is read by a person. It used to be
+    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.harness_closure``
+    -- a non-empty string that is not a label, just the id said twice. See
+    docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
+
+    ``node:substrate.harness_closure`` -> ``"Harness closure prediction error"``.
+    Falls back to the raw node_id if it does not match the expected shape --
+    never returns an empty label (the schema requires one) and never invents a
+    domain name that is not in the id.
+    """
+    domain = str(node_id or "").strip()
+    for prefix in ("node:substrate.", "node:", "substrate."):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix) :]
+            break
+    domain = domain.replace("_", " ").replace(".", " ").strip()
+    if not domain:
+        # .strip() matters: a whitespace-only node_id would otherwise return
+        # "   " -- long enough to pass ConceptNodeV1's min_length=1 while
+        # rendering as a blank label in the atlas. Caught by this function's
+        # own test.
+        return str(node_id or "").strip() or "substrate prediction error"
+    return f"{domain[:1].upper()}{domain[1:]} prediction error"
+
+
 class BiometricsSubstrateWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
@@ -1876,7 +1905,7 @@ class BiometricsSubstrateWorker:
                 node_id=node_id,
                 anchor_scope="orion",
                 subject_ref="entity:orion",
-                label=f"substrate:{node_id}",
+                label=_prediction_error_label(node_id),
                 temporal=make_temporal(observed_at=now),
                 provenance=SubstrateProvenanceV1(
                     authority="local_inferred",

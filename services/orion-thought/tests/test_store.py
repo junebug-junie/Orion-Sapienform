@@ -190,7 +190,7 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     `model_dump()` IS the right thing to store), `ReverieVisualChainV1` has
     its own small `chain_json: dict` field. Writing the full model dump here
     self-nests the real prompt/description data one level deeper than every
-    reader (including `load_latest_visual_chain_prior_description`'s sibling
+    reader (including `load_latest_visual_chain_continuity_state`'s sibling
     reads and any future consumer) expects."""
     import json as _json
 
@@ -233,6 +233,132 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     # The bug this guards against: writing model_dump() instead would nest
     # the whole chain (including this same chain_json) one level deeper.
     assert "chain_json" not in written
+
+
+# --- load_latest_visual_chain_continuity_state: Patch 4 reset counter ------
+#
+# Review finding: this used to be two separate functions/round trips
+# (load_latest_visual_chain_prior_description, a Patch 2 original, plus a
+# Patch 4 load_latest_visual_chain_continuity_streak) reading two columns of
+# the SAME latest row. Consolidated into one query -- both are retired,
+# nothing else in the repo called either.
+
+
+def _connect_result_engine(row: dict | None):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_visual_chain_continuity_state_reads_all_three_fields() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine(
+            {
+                "prior_description": "an aqueduct",
+                "chain_json": {"continuity_streak": 2, "context_slot_rotation": 5},
+            }
+        ),
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 2, 5)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_prior_description_empty_or_whitespace_is_none() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"prior_description": "   ", "chain_json": {}}),
+    )
+    try:
+        prior, streak, rotation = store.load_latest_visual_chain_continuity_state()
+    finally:
+        monkeypatch.undo()
+    assert prior is None
+    assert streak == 0
+    assert rotation == 0
+
+
+def test_load_latest_visual_chain_continuity_state_streak_and_rotation_zero_on_missing_key() -> None:
+    """A pre-Patch-4/pre-Patch-7 row has no continuity_streak/
+    context_slot_rotation keys at all -- both degrade to 0 (the honest
+    'nothing recorded yet' answer), never raise."""
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"prior_description": "an aqueduct", "chain_json": {"prompt": "p"}}),
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 0, 0)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_streak_and_rotation_zero_on_non_dict_chain_json() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"prior_description": None, "chain_json": "not a dict"}),
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_defaults_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _connect_result_engine(None))
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
+    finally:
+        monkeypatch.undo()
 
 
 # --- load_latest_reverie_interpretation: Patch 3 context-seed ---------------
@@ -402,6 +528,93 @@ def test_load_latest_reverie_interpretation_truncates_at_word_boundary() -> None
     assert value[:-1].endswith("wondering")
 
 
+def test_load_latest_reverie_interpretation_char_limit_override() -> None:
+    """char_limit=None preserves the old default (MAX_REVERIE_CONTEXT_CHARS,
+    still 240); a caller-supplied value (visual_chain.py passes
+    settings.reverie_context_char_limit) must actually be used, not ignored."""
+    store = _fresh_store()
+    long_text = ("wondering " * 30).strip()
+    payload = _grounded_thought_json("t-1", long_text)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
+    try:
+        value = store.load_latest_reverie_interpretation(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21  # +1 for the ellipsis char, not the 240 default
+
+
+def _capturing_engine(payload: dict, captured: dict):
+    """Same shape as `_rows_result`, but also records the executed statement
+    text and bound params -- shared by the two max_age_sec tests below
+    (review finding: they previously each redefined this trio verbatim)."""
+
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"thought_json": payload}]
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_reverie_interpretation_max_age_sec_adds_and_binds_the_clause() -> None:
+    """Staleness bound (post-Patch-3 review finding): without an age filter,
+    a stalled text-reverie worker leaves the same old thought answering
+    every call forever, presented as current. Confirm the SQL actually
+    carries the bound and the parameter is really passed through."""
+    store = _fresh_store()
+    payload = _grounded_thought_json("t-1", "a real, grounded reverie thought still fresh enough")
+    captured: dict = {}
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _capturing_engine(payload, captured))
+    try:
+        value = store.load_latest_reverie_interpretation(max_age_sec=900.0)
+    finally:
+        monkeypatch.undo()
+
+    assert value == "a real, grounded reverie thought still fresh enough"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"]["max_age_sec"] == 900.0
+    assert captured["params"]["limit"] == store._REVERIE_CONTEXT_CANDIDATE_LIMIT
+
+
+def test_load_latest_reverie_interpretation_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+    payload = _grounded_thought_json("t-1", "a real, grounded reverie thought about whatever is there")
+    captured: dict = {}
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _capturing_engine(payload, captured))
+    try:
+        store.load_latest_reverie_interpretation()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+
+
 def test_load_latest_reverie_interpretation_none_on_empty_table() -> None:
     store = _fresh_store()
     monkeypatch = pytest.MonkeyPatch()
@@ -425,5 +638,343 @@ def test_load_latest_reverie_interpretation_never_raises_on_db_failure() -> None
         # Must degrade to None, exactly like an absent prior_description --
         # never break the visual chain's tick over a DB hiccup.
         assert store.load_latest_reverie_interpretation() is None
+    finally:
+        monkeypatch.undo()
+
+
+# --- load_latest_self_study_reflection: Patch 5 richer context-seed --------
+#
+# Real incident this reader exists because of, not a hypothetical (see the
+# function's own docstring): live-checking the candidate `memory_
+# crystallizations` table for an "actual memory" context-seed found its
+# summary/subject columns hold verbatim personal chat content.
+# self_study_analysis.py's four deterministic window-contrast producers were
+# the one candidate that live-verified safe (pure numeric prose, no chat
+# quotes) -- confirmed by reading real bodies before writing this reader.
+# The allowlist is a real privacy boundary, not a style choice, so it gets
+# direct SQL-shape assertions below, not just "does it return the row" --
+# asserted against `orion.schemas.self_study_analysis.ANALYSIS_SOURCES`
+# itself (review finding: an earlier version of this test compared against
+# a second hardcoded literal set, which couldn't catch the allowlist and the
+# real producer list drifting apart).
+
+
+def _body_row_result(row: dict | None):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt, _params=None):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def _body_capturing_engine(row: dict | None, captured: dict):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_self_study_reflection_returns_real_body() -> None:
+    store = _fresh_store()
+    body = (
+        "Self-study analysis of affective state: the last 6h against the 6h "
+        "before it. mean_shift: mean word_count moved 2073 vs 3.625."
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": body}))
+    try:
+        assert store.load_latest_self_study_reflection() == body
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_self_study_reflection_query_only_allowlists_the_four_safe_prefixes() -> None:
+    """The actual privacy boundary: assert the SQL only ever admits the four
+    known-safe source_ref prefixes, by name -- not "some WHERE clause exists".
+    A future edit widening this without updating the allowlist should fail
+    this test, not slip through as "query still returns rows". Asserted
+    against `ANALYSIS_SOURCES` itself, not a second hardcoded literal set
+    (review finding: a hardcoded expectation here couldn't catch the
+    allowlist and the real producer list drifting apart)."""
+    from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
+
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "x"}, captured)
+    )
+    try:
+        store.load_latest_self_study_reflection()
+    finally:
+        monkeypatch.undo()
+
+    stmt = captured["stmt"]
+    assert "source_kind = 'self_study'" in stmt
+    # starts_with(), not LIKE (review finding): every real prefix contains an
+    # underscore, which LIKE treats as a single-character wildcard rather
+    # than a literal -- starts_with() is exact literal prefix matching.
+    assert "starts_with(source_ref" in stmt
+    assert "LIKE" not in stmt
+    params = captured["params"]
+    bound_prefixes = {v for k, v in params.items() if k.startswith("prefix")}
+    assert bound_prefixes == {f"{source}:" for source in ANALYSIS_SOURCES}
+    # The real incident this allowlist closes: the free-form "Curiosity"
+    # reflection's own prefix must never be one of the admitted ones.
+    assert "curiosity:" not in bound_prefixes
+
+
+def test_load_latest_self_study_reflection_char_limit_override() -> None:
+    store = _fresh_store()
+    long_body = ("finding " * 80).strip()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": long_body}))
+    try:
+        value = store.load_latest_self_study_reflection(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21  # +1 for the ellipsis char, not the module default
+
+
+def test_load_latest_self_study_reflection_max_age_sec_adds_and_binds_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "a real finding"}, captured)
+    )
+    try:
+        value = store.load_latest_self_study_reflection(max_age_sec=21600.0)
+    finally:
+        monkeypatch.undo()
+
+    assert value == "a real finding"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"]["max_age_sec"] == 21600.0
+
+
+def test_load_latest_self_study_reflection_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "a real finding"}, captured)
+    )
+    try:
+        store.load_latest_self_study_reflection()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+
+
+def test_load_latest_self_study_reflection_none_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result(None))
+    try:
+        assert store.load_latest_self_study_reflection() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_self_study_reflection_none_on_empty_body() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": "   "}))
+    try:
+        assert store.load_latest_self_study_reflection() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_self_study_reflection_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_self_study_reflection() is None
+    finally:
+        monkeypatch.undo()
+
+
+# --- load_latest_memory_crystallization: Patch 6 third context-seed --------
+#
+# Reverses Patch 5's declined call on this same table -- see the function's
+# own docstring for why. Real correction (design doc §20): `status='active'`
+# alone is NOT a governor-review signal for most of this table -- verified
+# live that `formation_policy.py`'s AUTO_ACTIVE_KINDS sets it on creation
+# with zero review. The actual filter requires a real `memory_
+# crystallization_history` row with `op='approve'` -- asserted directly
+# below so a future edit that drops that requirement silently fails this
+# test, not just "query still returns a row".
+
+
+def test_load_latest_memory_crystallization_returns_real_summary() -> None:
+    store = _fresh_store()
+    summary = "Orion and Juniper talked through the week's mesh work."
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"summary": summary}))
+    try:
+        assert store.load_latest_memory_crystallization() == summary
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_memory_crystallization_query_requires_active_status_and_real_approval() -> None:
+    """The actual privacy/governance boundary: `status='active'` alone
+    proved (live, design doc §20) to be a near-universal default most rows
+    get with zero review -- the query must also require a real
+    `memory_crystallization_history` row with `op='approve'`, not just
+    `status='active'`."""
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"summary": "x"}, captured)
+    )
+    try:
+        store.load_latest_memory_crystallization()
+    finally:
+        monkeypatch.undo()
+
+    stmt = captured["stmt"]
+    assert "memory_crystallizations" in stmt
+    assert "status = 'active'" in stmt
+    # Review finding: substring-checking "memory_crystallization_history" and
+    # "op = 'approve'" separately would still pass if a future edit
+    # decorrelated the EXISTS subquery (e.g. dropped the crystallization_id
+    # join predicate, leaving "is there ANY approved row anywhere in the
+    # whole table" -- true almost always, since real approved rows already
+    # exist -- instead of "is THIS row approved"). Assert the actual join
+    # predicate is present, not just that both fragments appear somewhere.
+    assert "h.crystallization_id = mc.crystallization_id" in stmt
+    assert "h.op = 'approve'" in stmt
+    # Deliberately no source_ref/allowlist clause -- unlike self-study, this
+    # reader is not content-filtered (see the function's own docstring).
+    assert "source_ref" not in stmt
+
+
+def test_load_latest_memory_crystallization_char_limit_override() -> None:
+    store = _fresh_store()
+    long_summary = ("shared memory " * 80).strip()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"summary": long_summary}))
+    try:
+        value = store.load_latest_memory_crystallization(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21  # +1 for the ellipsis char, not the module default
+
+
+def test_load_latest_memory_crystallization_max_age_sec_adds_and_binds_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"summary": "a real memory"}, captured)
+    )
+    try:
+        value = store.load_latest_memory_crystallization(max_age_sec=21600.0)
+    finally:
+        monkeypatch.undo()
+
+    assert value == "a real memory"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"]["max_age_sec"] == 21600.0
+
+
+def test_load_latest_memory_crystallization_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"summary": "a real memory"}, captured)
+    )
+    try:
+        store.load_latest_memory_crystallization()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+
+
+def test_load_latest_memory_crystallization_none_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result(None))
+    try:
+        assert store.load_latest_memory_crystallization() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_memory_crystallization_none_on_empty_summary() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"summary": "   "}))
+    try:
+        assert store.load_latest_memory_crystallization() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_memory_crystallization_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_memory_crystallization() is None
     finally:
         monkeypatch.undo()

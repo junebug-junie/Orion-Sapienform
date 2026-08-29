@@ -430,12 +430,45 @@ def persist_reverie_visual_artifact(artifact) -> bool:
         return False
 
 
-def load_latest_visual_chain_prior_description() -> str | None:
-    """Most recent visual-chain row's prior_description -- the continuity input
-    the next run's prompt is built from (design doc §2/§5). Read-only,
-    best-effort: None on any error or empty table, so a lookup failure
-    degrades to "no continuity yet" (the same prompt a first-ever run uses)
-    rather than breaking the tick.
+def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:
+    """Most recent visual-chain row's `prior_description`, `continuity_
+    streak`, AND `context_slot_rotation`, in ONE round trip (review finding
+    on the original 2-value version: two separate single-column SELECTs
+    against the same latest row wasted a full connect+query cycle every
+    tick, and left a theoretical window where the two reads could observe
+    different rows if a write ever raced between them -- currently
+    prevented only by the single-flight/sequential-worker guarantee
+    documented in visual_chain.py's module docstring, not something this
+    query should have to rely on to be correct. Patch 7 adds a third value
+    from the SAME row/read rather than a fourth gathered call, for the
+    identical reason).
+
+    Returns `(prior_description, continuity_streak, context_slot_rotation)`:
+      - `prior_description`: the continuity input the next run's prompt is
+        built from (design doc §2/§5).
+      - `continuity_streak`: how many CONSECUTIVE recent runs used real
+        continuity in their prompt -- reads `chain_json.continuity_streak`,
+        a small int this service itself writes on every run (design doc
+        §15, `visual_chain.py::resolve_visual_chain_continuity`). NOT
+        derived from `prior_description`'s own nullness, which reflects
+        "did this run get a real caption" and would keep climbing even
+        through a run whose PROMPT was forcibly reset. Missing/unparsable
+        on an older pre-Patch-4 row degrades to 0 -- the honest "no streak
+        recorded yet" answer, same direction a missing counter should fail
+        in (under-count, never over-count, so a bad read causes an extra
+        continuity run at worst, never gets stuck skipping resets forever).
+      - `context_slot_rotation`: a monotonically increasing counter this
+        service writes on every run (design doc §18,
+        `visual_chain.py::select_context_slot`), used to round-robin which
+        ONE of {context_text, self_study_text, memory_text} actually enters
+        the prompt each run -- see that function's own docstring for why
+        only one, ever. Missing/unparsable on a pre-Patch-7 row degrades to
+        0, same direction as `continuity_streak`.
+
+    Read-only, best-effort: `(None, 0, 0)` on any error or empty table, so a
+    lookup failure degrades to "no continuity yet, nothing to cap, start
+    rotation at slot 0" (the same prompt a first-ever run uses) rather than
+    breaking the tick.
     """
     try:
         from sqlalchemy import text
@@ -445,7 +478,7 @@ def load_latest_visual_chain_prior_description() -> str | None:
             row = (
                 conn.execute(
                     text(
-                        "SELECT prior_description FROM reverie_visual_chain "
+                        "SELECT prior_description, chain_json FROM reverie_visual_chain "
                         "ORDER BY created_at DESC LIMIT 1"
                     )
                 )
@@ -453,18 +486,35 @@ def load_latest_visual_chain_prior_description() -> str | None:
                 .first()
             )
         if not row:
-            return None
+            return None, 0, 0
         value = row.get("prior_description")
-        return str(value).strip() or None if value else None
+        prior = str(value).strip() or None if value else None
+        cj = row.get("chain_json")
+        streak = 0
+        rotation = 0
+        if isinstance(cj, dict):
+            try:
+                streak = max(0, int(cj.get("continuity_streak") or 0))
+            except (TypeError, ValueError):
+                streak = 0
+            try:
+                rotation = max(0, int(cj.get("context_slot_rotation") or 0))
+            except (TypeError, ValueError):
+                rotation = 0
+        return prior, streak, rotation
     except Exception as exc:
-        logger.debug("visual chain prior_description load failed: %s", exc)
-        return None
+        logger.debug("visual chain continuity state load failed: %s", exc)
+        return None, 0, 0
 
 
 # Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
 # collections) -- SpontaneousThoughtV1.interpretation has no length bound of
 # its own (it's free LLM narration), but the diffusion model only needs a
-# short scene description, not the full text.
+# short scene description, not the full text. THIS is the one source of
+# truth -- settings.py's reverie_context_char_limit Field imports this
+# constant as its default (one-directional import, settings -> store; this
+# module still never imports settings, per its own header docstring) rather
+# than hardcoding a second, driftable 240.
 MAX_REVERIE_CONTEXT_CHARS = 240
 
 # How many recent chain-linked candidates to pull before Python-side
@@ -475,11 +525,43 @@ MAX_REVERIE_CONTEXT_CHARS = 240
 _REVERIE_CONTEXT_CANDIDATE_LIMIT = 10
 
 
-def load_latest_reverie_interpretation() -> str | None:
+def load_latest_reverie_interpretation(
+    *, char_limit: int | None = None, max_age_sec: float | None = None
+) -> str | None:
     """Most recent real (non-hollow, non-empty) text-chain thought's
     interpretation, already linked into a SETTLED chain -- the visual
     chain's context-seed (design doc §8: "which specific recent-activity/
     chat/dream sources feed a step", Patch 3).
+
+    `char_limit`: overrides MAX_REVERIE_CONTEXT_CHARS when given (visual_chain
+    passes settings.reverie_context_char_limit, env-configurable like every
+    other tunable in that file -- this was a bare module constant until now).
+
+    `max_age_sec`: if given, only candidates within this age are considered
+    (added review finding, post-Patch-3): without it, a stalled or disabled
+    text-reverie worker (chain.py) leaves the same old thought answering
+    every future call, and it keeps being woven into the visual prompt and
+    shown in the cockpit as "Orion is currently thinking" long after it
+    stopped being current -- the fetch LIMIT above bounds candidate COUNT,
+    not age, so this is a real gap the count bound alone doesn't close. This
+    only bounds THIS function's callers (currently just visual_chain.py) --
+    it does NOT bound the Hub's separate Text sub-view (`reverie_routes.py`
+    ::`text_recent`), which has no staleness filter of its own; nor does it
+    give any consumer a way to tell "producer genuinely quiet" from
+    "producer stalled/dead" -- both look identical here as "no fresh row",
+    since there is no liveness/heartbeat signal from chain.py itself to
+    check instead (a real gap, not fixed by this patch).
+
+    Both `char_limit`/`max_age_sec` default to None, preserving the exact
+    prior unbounded/uncapped behavior for any OTHER caller of this function
+    that doesn't pass them (review finding, deliberate choice not an
+    oversight: this docstring already names `_project_reverie_glimpse` as
+    a consumer of this same underlying table via a different code path
+    (`felt_state_reader.py`'s own reader, not this function) -- changing
+    this function's own default behavior for hypothetical future callers
+    of THIS specific function, rather than leaving it opt-in, is a bigger
+    change than this patch's scope; every current, real caller (just
+    visual_chain.py) does pass both).
 
     Deliberately the text chain's own narration, not raw chat: it is already
     the summary layer the coalition-grounding + hollow guard
@@ -524,20 +606,39 @@ def load_latest_reverie_interpretation() -> str | None:
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
         from orion.schemas.reverie import SpontaneousThoughtV1
 
+        where_sql = (
+            "t.interpretation <> '' "
+            "AND EXISTS ("
+            "  SELECT 1 FROM substrate_reverie_chain c "
+            "  WHERE c.chain_json -> 'thought_ids' ? t.thought_id"
+            ")"
+        )
+        params: dict[str, Any] = {"limit": _REVERIE_CONTEXT_CANDIDATE_LIMIT}
+        if max_age_sec is not None:
+            # `now() - make_interval(secs => :x)` freshness idiom (review
+            # finding: at least 6 other repo call sites already hand-roll
+            # this same shape -- vision_reader.py, orion-hub's
+            # curiosity_hint.py/chat_history_rehydrate.py/
+            # tension_outreach_trigger.py, orion-sql-writer's
+            # vision_object_permanence.py, orion-field-digester's store.py).
+            # Not extracted into a shared helper here: doing that well means
+            # touching multiple services' modules, a bigger change than this
+            # small additive patch's scope -- a real repo-wide cleanup
+            # candidate, not something to half-do as a side effect of one
+            # new call site.
+            where_sql += " AND t.created_at > now() - make_interval(secs => :max_age_sec)"
+            params["max_age_sec"] = float(max_age_sec)
+
         engine = _get_engine()
         with engine.connect() as conn:
             rows = (
                 conn.execute(
                     text(
                         "SELECT thought_json FROM substrate_reverie_thought t "
-                        "WHERE t.interpretation <> '' "
-                        "AND EXISTS ( "
-                        "  SELECT 1 FROM substrate_reverie_chain c "
-                        "  WHERE c.chain_json -> 'thought_ids' ? t.thought_id "
-                        ") "
+                        f"WHERE {where_sql} "
                         "ORDER BY t.created_at DESC LIMIT :limit"
                     ),
-                    {"limit": _REVERIE_CONTEXT_CANDIDATE_LIMIT},
+                    params,
                 )
                 .mappings()
                 .all()
@@ -561,11 +662,275 @@ def load_latest_reverie_interpretation() -> str | None:
                 # a coherent prefix instead of a mid-word fragment baked
                 # into the diffusion prompt and rendered verbatim in the Hub
                 # Reverie tab.
-                trimmed, _truncated = truncate_at_word_boundary(value, MAX_REVERIE_CONTEXT_CHARS)
+                limit_chars = MAX_REVERIE_CONTEXT_CHARS if char_limit is None else char_limit
+                trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
                 return trimmed
         return None
     except Exception as exc:
         logger.debug("reverie context-seed load failed: %s", exc)
+        return None
+
+
+# Cap on the self-study body handed into a diffusion prompt (§ cap-all-
+# collections). Was 400 chars (real bodies average ~1080 chars, measured
+# live 2026-08-27) until Patch 7 (design doc §18) found the REAL binding
+# constraint isn't the 400-char cap at all -- it's the diffusion model's
+# CLIP text encoder, which silently truncates any prompt over 77 tokens
+# (verified live with the actual tokenizer: a real self-study body at the
+# 400-char cap alone tokenizes to 104 tokens WITH its framing prefix,
+# already over budget by itself, before prior_description or a style
+# suffix are even added). 150 chars keeps this clause (with its "Orion
+# recently noticed: " prefix) around 47 tokens -- real margin for
+# prior_description/style to coexist. Self-study's dense, jargon-heavy
+# prose (hyphens, underscores, table/column names) tokenizes markedly
+# worse per character than natural narration (~3.8 chars/token measured,
+# vs context_text's ~5 chars/token) -- that is why this cap is tighter
+# than MAX_REVERIE_CONTEXT_CHARS despite both feeding the same 77-token
+# budget.
+MAX_SELF_STUDY_CONTEXT_CHARS = 150
+
+# The ONLY four source_ref prefixes self_study_analysis.py's SOURCE_SPECS
+# actually writes (services/orion-cortex-exec/app/self_study_analysis.py,
+# `source_ref=f"{result.source}:{result.finding_digest}"`) -- deterministic,
+# templated, numeric window-contrast prose, never free-form LLM narration.
+# A whitelist, not a "source_ref NOT LIKE 'curiosity:%'" blacklist: safer
+# against a future new producer writing source_kind='self_study' under some
+# other prefix this list doesn't yet know about (fails closed -- an unknown
+# prefix is excluded, not admitted by default).
+#
+# Real incident this list exists because of (2026-08-27): the SAME
+# source_kind='self_study' also covers a separate, free-form LLM-narrated
+# "Curiosity" reflection (source_ref prefix "curiosity:") that turned out to
+# quote real, sensitive personal content when reflecting on memory patterns
+# (a live sample referenced "wife Amanda, hospital" while discussing which
+# crystallizations get kept vs rejected) -- confirmed live before this list
+# was written, not a hypothetical. The four prefixes below are the deliberate
+# subset of source_kind='self_study' this reader will EVER touch.
+#
+# Derived from orion.schemas.self_study_analysis.ANALYSIS_SOURCES at call
+# time (review finding: an earlier version hardcoded a private duplicate of
+# that shared schema tuple with no import tying them together -- if the real
+# producer's source list ever changed, this privacy-critical allowlist would
+# silently go stale instead of failing loud). Computed inside the function
+# below, not at module import time -- this module's own docstring: "never
+# the heavy orion.substrate package", and its top-level imports are
+# stdlib-only by convention (see `SpontaneousThoughtV1`'s own TYPE_CHECKING-
+# only import above) even though `self_study_analysis` itself is confirmed
+# pydantic/stdlib-only and safe to import.
+#
+# NOT wired to grow automatically if ANALYSIS_SOURCES gains a fifth source:
+# a new analysis producer must be independently reviewed for real content
+# (the same live-data check that qualified these four) before this allowlist
+# admits it -- see this comment's own reasoning for why an allowlist that
+# silently grows with new producers would defeat the point.
+
+
+def load_latest_self_study_reflection(
+    *, char_limit: int | None = None, max_age_sec: float | None = None
+) -> str | None:
+    """Most recent real self-study analysis body -- a second, richer
+    context-seed for the visual chain alongside `load_latest_reverie_
+    interpretation` (design doc §16).
+
+    Source: `journal_entries` rows self_study_analysis.py's four
+    deterministic window-contrast analyses write (concept induction, vision
+    events, affective state, co-creation signals) -- real quantified
+    self-observation ("vision events dropped 0.36x vs baseline, a status
+    category disappeared"), not a bare narration sentence. Restricted to
+    ONLY those four producers, by `source_ref` prefix -- see the module-level
+    comment above this function for the real live incident (a sibling
+    `source_kind='self_study'` producer, the free-form "Curiosity"
+    reflection, was confirmed live to quote sensitive personal content) that
+    makes this an allowlist, not "any self_study row". Matched via SQL
+    `starts_with()`, not `LIKE ... %` (review finding: every one of the four
+    prefixes contains an underscore, which `LIKE` treats as a single-
+    character wildcard, not a literal -- `starts_with()` does exact literal
+    prefix matching, closing a real gap in the allowlist's own "fails
+    closed" guarantee).
+
+    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s
+    own contract exactly (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded).
+    `max_age_sec` should be looser than the reverie context's 900s default --
+    these analyses fire on their own 6-72h window-contrast cadence (real
+    values seen in bodies: "last 6h", "last 12h", "last 72h"), not a fast
+    per-tick producer, so a tight window would read as permanently absent.
+
+    Read-only, best-effort: None on any error, empty table, or nothing
+    matching the four safe prefixes -- degrades exactly like an absent
+    `context_text` does (visual_chain.build_visual_prompt).
+
+    Performance note (review finding, not fixed): with `max_age_sec=None`,
+    the `source_ref` prefix filter cannot use an index and Postgres runs a
+    full `journal_entries` scan (live `EXPLAIN ANALYZE`, 2026-08-27: ~23ms /
+    4,747 buffers against 38,886 rows, vs ~0.2ms / 85 buffers when
+    `max_age_sec` is bound). `visual_chain.py`, this function's only real
+    caller, always passes `settings.self_study_context_max_age_sec`, so this
+    is not reachable in production today -- but any future caller that
+    omits `max_age_sec` reproduces the full scan. A sibling function in this
+    codebase, `services/orion-cortex-exec/app/self_study_analysis.py::
+    recently_journaled`, deliberately moved away from this exact `source_ref`
+    pattern-match shape for this exact reason -- worth revisiting the same
+    way if a second unbounded caller ever appears.
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+        from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
+
+        safe_prefixes = tuple(f"{source}:" for source in ANALYSIS_SOURCES)
+        prefix_clauses = " OR ".join(
+            f"starts_with(source_ref, :prefix{i})" for i in range(len(safe_prefixes))
+        )
+        params: dict[str, Any] = {
+            f"prefix{i}": prefix for i, prefix in enumerate(safe_prefixes)
+        }
+        where_sql = f"source_kind = 'self_study' AND body <> '' AND ({prefix_clauses})"
+        if max_age_sec is not None:
+            # Same now() - make_interval() freshness idiom load_latest_
+            # reverie_interpretation already uses -- see that function's own
+            # comment on the repo-wide precedent for this shape.
+            where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
+            params["max_age_sec"] = float(max_age_sec)
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        f"SELECT body FROM journal_entries WHERE {where_sql} "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    params,
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("body") or "").strip()
+        if not value:
+            return None
+        limit_chars = MAX_SELF_STUDY_CONTEXT_CHARS if char_limit is None else char_limit
+        trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        return trimmed
+    except Exception as exc:
+        logger.debug("self-study context-seed load failed: %s", exc)
+        return None
+
+
+# Cap on the crystallization summary handed into a diffusion prompt (§
+# cap-all-collections). Was 400 chars (matching self_study's old cap) until
+# Patch 7 (design doc §18) found the real binding constraint is the
+# diffusion model's 77-token CLIP text-encoder budget, not this char count
+# -- verified live with the real tokenizer. 180 chars keeps this clause
+# (with its "Orion remembers: " prefix) around 44 tokens. Crystallization
+# summaries are closer to natural conversational English than self-study's
+# jargon-heavy prose (~4 chars/token measured vs self-study's ~3.8), so
+# this cap sits between MAX_SELF_STUDY_CONTEXT_CHARS and
+# MAX_REVERIE_CONTEXT_CHARS rather than matching either.
+MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 180
+
+
+def load_latest_memory_crystallization(
+    *, char_limit: int | None = None, max_age_sec: float | None = None
+) -> str | None:
+    """Most recent GENUINELY REVIEWED memory crystallization's `summary` --
+    a third context-seed for the visual chain (design doc §17), sourced
+    from the Recall system's `memory_crystallizations` table.
+
+    Deliberately unfiltered by content (verbatim `summary`, whatever it
+    holds) -- an explicit design decision (Juniper, 2026-08-27), reversing
+    Patch 5's declined-candidate call on this same table. That reversal
+    rests on audience, not content: the only consumer of this function's
+    output is this service's own `reverie_visual_chain` row via
+    `reverie_routes.py`'s `/api/reverie/visual/recent`, which has no
+    `ports:` mapping and no auth/multi-user surface -- Juniper is the only
+    possible viewer, and she is also the original source of everything
+    this table holds. See design doc §17 for the full writeup.
+
+    **Real correction, caught live 2026-08-28 (design doc §20)**: this
+    function originally filtered on `status = 'active'` alone, described
+    in this docstring as meaning the crystallization pipeline's "own
+    governor already accepted" the content. Verified against real data
+    that this is FALSE for most of the table: `orion.memory.crystallization
+    .formation_policy.AUTO_ACTIVE_KINDS` (`semantic`, `episode`,
+    `open_loop`, `procedure`) sets `status='active'` immediately on
+    creation, with NO governor review at all -- confirmed live via
+    `memory_crystallization_history` (the pipeline's own audit trail):
+    of 652 real `active` rows (live, 2026-08-28), only 21 distinct
+    crystallizations have ANY history entry at all, and every one of those
+    21 (`kind='stance'`, the one kind `formation_policy.py` actually
+    routes to `GOVERNOR_QUEUE`) carries a real `op='approve'` (actor
+    `orion_journal`) -- 5 of those 21 also carry later `evidence_removed`
+    entries, which is why the raw history-table row count for this set is
+    28, not 21; the entity count that matters here is 21. The other 631 --
+    including the row that triggered this fix, a `kind='semantic'`
+    IT-troubleshooting aside that became a "shared-life memory" and got
+    rendered into a generated image with zero review -- were never
+    approved by anyone or anything. `status='active'` alone was never a
+    meaningful governance signal for this reader; it was a lifecycle
+    default most rows get by
+    construction.
+
+    Fixed: this reader now also requires a real `memory_crystallization_
+    history` row with `op='approve'` for the same `crystallization_id` --
+    the pipeline's own actual, auditable "someone/something made a
+    deliberate decision about this" signal, not the near-universal
+    `status='active'` default. This narrows the real candidate pool a lot
+    (21 rows as of this fix, vs. 651+ under the old filter) -- an accepted
+    tradeoff: a context-seed that is honestly sparse beats one that
+    surfaces content nobody ever actually reviewed.
+
+    `char_limit`/`max_age_sec` follow the other two context-seed readers'
+    contract exactly (None = MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS /
+    unbounded).
+
+    Read-only, best-effort: None on any error, empty table, or nothing
+    both `status='active'` AND actually approved -- degrades exactly like
+    an absent `context_text` does (visual_chain.build_visual_prompt).
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+
+        where_sql = (
+            "mc.status = 'active' AND mc.summary <> '' AND EXISTS ("
+            "  SELECT 1 FROM memory_crystallization_history h"
+            "  WHERE h.crystallization_id = mc.crystallization_id AND h.op = 'approve'"
+            ")"
+        )
+        params: dict[str, Any] = {}
+        if max_age_sec is not None:
+            where_sql += " AND mc.created_at > now() - make_interval(secs => :max_age_sec)"
+            params["max_age_sec"] = float(max_age_sec)
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        f"SELECT mc.summary FROM memory_crystallizations mc WHERE {where_sql} "
+                        "ORDER BY mc.created_at DESC LIMIT 1"
+                    ),
+                    params,
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("summary") or "").strip()
+        if not value:
+            return None
+        limit_chars = (
+            MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS if char_limit is None else char_limit
+        )
+        trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        return trimmed
+    except Exception as exc:
+        logger.debug("memory crystallization context-seed load failed: %s", exc)
         return None
 
 

@@ -27,8 +27,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `TTS_MODEL_NAME` | `tts_models/multilingual/multi-dataset/xtts_v2` | Coqui model id. |
 | `TTS_USE_GPU` | `true` | Pass GPU flag to Coqui. |
 | `TTS_DEFAULT_LANGUAGE` | `en` | Default language code. |
-| `TTS_DEFAULT_SPEAKER` | (empty) | Built-in XTTS speaker name. |
-| `TTS_DEFAULT_SPEAKER_WAV` | (empty) | Reference `.wav` under `TTS_VOICE_PROFILE_DIR`. |
+| `TTS_DEFAULT_SPEAKER` | `Ana Florence` | Built-in XTTS speaker name -- fallback only while `TTS_DEFAULT_SPEAKER_WAV` is set (see below). |
+| `TTS_DEFAULT_SPEAKER_WAV` | `/models/voices/orion_reference.wav` | Reference `.wav` under `TTS_VOICE_PROFILE_DIR` -- takes precedence over `TTS_DEFAULT_SPEAKER` whenever set. Live default since 2026-08-27 (cloned voice); the `.wav` itself is a host asset, not checked into git. |
 | `TTS_SPLIT_SENTENCES` | `true` | XTTS sentence splitting. |
 | `TTS_VOICE_PROFILE_DIR` | `/models/voices` | Voice profile mount inside container. |
 | `CHANNEL_TTS_INTAKE` | `orion:tts:intake` | Input channel. |

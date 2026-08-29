@@ -76,7 +76,7 @@ Legacy spark introspection channels/kinds are disabled by default; you can re-ad
 (`*_RETENTION_DAYS` env keys, **default 3** for the grammar tables, **10** for
 `substrate_proposal_frames`). Each is a batched `DELETE ... LIMIT batch_size` loop
 (`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`,
-shared across all six tables), capped so a huge backlog can't turn a pass into an
+shared across all seven tables), capped so a huge backlog can't turn a pass into an
 unbounded operation. See `app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
 
 Retention runs on a **60-second timer** (`GRAMMAR_RETENTION_INTERVAL_SEC`,
@@ -99,8 +99,8 @@ nobody read. The timer was added first and the startup pass left in place alongs
 
 Three caps bound a cycle. `GRAMMAR_RETENTION_PERIODIC_MAX_BATCHES` (3) and
 `_MAX_ELAPSED_SEC` (20) bound **one table**; `_MAX_CYCLE_SEC` (45) bounds **the whole
-cycle**. That third one was a genuinely missing bound -- six tables x a 20s per-table cap is
-a 120s cycle on a 60s timer, with nothing anywhere saying so.
+cycle**. That third one was a genuinely missing bound -- seven tables x a 20s per-table cap is
+a 140s cycle on a 60s timer, with nothing anywhere saying so.
 
 The cycle budget is split as a **fair share** (remaining budget / remaining eligible tables),
 not first-come, because `GRAMMAR_RETENTION_TABLES` has a fixed order: whichever table is
@@ -123,14 +123,17 @@ so the real period is ~68s, and ~795k rows/day arrive into that table meanwhile.
 host already I/O-stalled ~22% of wall time, and where this same pass was measured driving
 stall to ~21%. Converging in a day is not worth buying with that. Raise it only with an I/O
 measurement in hand -- **and raise `_MAX_CYCLE_SEC` with it**: at ~1.11s/batch, 10 batches
-needs ~11.1s, which is above the 7.5s fair share a 45s budget gives the first of six tables,
+needs ~11.1s, which is above the ~6.43s fair share a 45s budget gives the first of seven
+tables (it was 7.5s at six; adding orion_biometrics_cluster on 2026-08-28 cut every
+table's share by 14%),
 so the batch increase would be silently clipped. `effective_max_elapsed_sec` on
 `/grammar/truth` reports the cap a run was actually handed, which is the field to read next
 to `capped_by_elapsed_limit`.
 
 **One boot-time caveat:** for the first cycle interval after a restart (~68s measured) all
-six tables report `*_retention_not_run` and `/health` reads `degraded`. That is expected and
-was widened from two tables to six by removing the startup pass. There is no `healthcheck`
+seven tables report `*_retention_not_run` and `/health` reads `degraded`. That is expected and
+was widened from two tables to six by removing the startup pass, then to seven when
+orion_biometrics_cluster was added. There is no `healthcheck`
 block in this service's compose file, so nothing restarts on it.
 
 `grammar_events` and `grammar_traces` additionally respect a **cursor floor**: retention
@@ -275,7 +278,7 @@ docker exec -e PGPASSWORD=postgres <sql-db-container> psql -U postgres -d <db> -
 ```
 
 `build_grammar_truth_snapshot()` (`app/grammar_truth.py`) reports live status for all
-six tables' retention under `grammar_retention`/`other_table_retention`, and flags
+seven tables' retention under `grammar_retention`/`other_table_retention`, and flags
 `degraded_reasons` if an index is missing or a retention run failed/never ran.
 
 **Known gap (updated 2026-08-20):** `grammar_traces` is now covered -- see above. Still

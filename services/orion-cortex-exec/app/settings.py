@@ -203,6 +203,13 @@ class Settings(BaseSettings):
     orion_situation_perception_stream_id: str = Field(
         "cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_ID"
     )
+    # 2026-08-26: how long Orion stays quiet about a fresh identity mismatch
+    # after asking about it once for this camera stream -- see
+    # orion/situational/identity_ask_cooldown.py's module docstring. 1200s
+    # (20min) default.
+    orion_situation_identity_ask_cooldown_seconds: int = Field(
+        1200, alias="ORION_SITUATION_IDENTITY_ASK_COOLDOWN_SECONDS"
+    )
     # 2026-08-25: Juniper's facial+vocal affect read (orion-affectgpt-worker
     # via orion-juniper-affective-state), mirrored into a single Redis key
     # by orion/situational/juniper_affect_state.py. Default ON, unlike

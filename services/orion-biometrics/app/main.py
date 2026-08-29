@@ -271,9 +271,11 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
 
     try:
         sample_data = collect_biometrics()
+        secondary_cabinet_path = (settings.CABINET_SENSORS_B_PATH or "").strip() or None
         sensors = load_cabinet_sensors_snapshot(
             settings.CABINET_SENSORS_PATH,
             stale_after_sec=settings.CABINET_SENSOR_STALE_AFTER_SEC,
+            secondary_path=secondary_cabinet_path,
         )
         if sensors is not None:
             sample_data["sensors"] = sensors

@@ -10,9 +10,12 @@ RUNTIME_ROOT="$(orion_resolve_runtime_root "$REPO_ROOT")"
 VENV_PYTHON="$(orion_resolve_runtime_python "$REPO_ROOT")"
 UDEV_SRC="$REPO_ROOT/deploy/udev/99-orion-cabinet-nano.rules"
 UNIT_SRC="$REPO_ROOT/deploy/systemd/orion-cabinet-sensors.service"
+UNIT_B_SRC="$REPO_ROOT/deploy/systemd/orion-cabinet-sensors-b.service"
 UDEV_DST="/etc/udev/rules.d/99-orion-cabinet-nano.rules"
 UNIT_DST="/etc/systemd/system/orion-cabinet-sensors.service"
+UNIT_B_DST="/etc/systemd/system/orion-cabinet-sensors-b.service"
 DEFAULT_ENV="/etc/default/orion-cabinet-sensors"
+DEFAULT_ENV_B="/etc/default/orion-cabinet-sensors-b"
 SERVICE_USER="${ORION_CABINET_SERVICE_USER:-athena}"
 
 if [[ ! -x "$VENV_PYTHON" ]]; then
@@ -32,7 +35,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
     exit 1
 fi
 
-if [[ ! -f "$UDEV_SRC" ]] || [[ ! -f "$UNIT_SRC" ]]; then
+if [[ ! -f "$UDEV_SRC" ]] || [[ ! -f "$UNIT_SRC" ]] || [[ ! -f "$UNIT_B_SRC" ]]; then
     echo "error: missing deploy artifacts under $REPO_ROOT/deploy/" >&2
     exit 1
 fi
@@ -47,6 +50,12 @@ install -m 0644 "$tmp_unit" "$UNIT_DST"
 rm -f "$tmp_unit"
 echo "Installed $UNIT_DST (ORION_ROOT=$RUNTIME_ROOT)"
 
+tmp_unit_b="$(mktemp)"
+sed "s|@ORION_ROOT@|${RUNTIME_ROOT}|g" "$UNIT_B_SRC" >"$tmp_unit_b"
+install -m 0644 "$tmp_unit_b" "$UNIT_B_DST"
+rm -f "$tmp_unit_b"
+echo "Installed $UNIT_B_DST (ORION_ROOT=$RUNTIME_ROOT)"
+
 if [[ ! -f "$DEFAULT_ENV" ]]; then
     cat >"$DEFAULT_ENV" <<EOF
 # Orion cabinet sensor reader — override service user if needed.
@@ -56,6 +65,18 @@ EOF
     echo "Created $DEFAULT_ENV"
 else
     echo "$DEFAULT_ENV already exists (left unchanged)"
+fi
+
+if [[ ! -f "$DEFAULT_ENV_B" ]]; then
+    cat >"$DEFAULT_ENV_B" <<'EOF'
+# Orion cabinet sensor reader B (MMC5603 + BNO085 Nano).
+# REQUIRED when two Nanos are connected — pin each service to one by-id path:
+# ORION_CABINET_DEVICE_GLOB=/dev/serial/by-id/usb-Arduino_Nano_ESP32_<serial-b>-if01
+EOF
+    chmod 0644 "$DEFAULT_ENV_B"
+    echo "Created $DEFAULT_ENV_B (set ORION_CABINET_DEVICE_GLOB before enabling service B)"
+else
+    echo "$DEFAULT_ENV_B already exists (left unchanged)"
 fi
 
 if ! getent group plugdev >/dev/null 2>&1; then
@@ -78,6 +99,7 @@ echo "Reloaded udev rules (tty + Arduino USB/DFU)"
 
 systemctl daemon-reload
 systemctl enable orion-cabinet-sensors.service
+systemctl enable orion-cabinet-sensors-b.service
 
 OVERRIDE_DIR="/etc/systemd/system/orion-cabinet-sensors.service.d"
 mkdir -p "$OVERRIDE_DIR"
@@ -89,6 +111,8 @@ echo "Wrote $OVERRIDE_DIR/user.conf (User=$SERVICE_USER)"
 
 systemctl daemon-reload
 systemctl restart orion-cabinet-sensors.service
-echo "Enabled and restarted orion-cabinet-sensors.service"
+echo "Enabled orion-cabinet-sensors.service (restarted)"
+echo "Nano B unit installed but NOT started — set ORION_CABINET_DEVICE_GLOB in $DEFAULT_ENV_B then:"
+echo "  sudo systemctl start orion-cabinet-sensors-b.service"
 
 systemctl --no-pager --full status orion-cabinet-sensors.service || true

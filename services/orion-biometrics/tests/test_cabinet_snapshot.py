@@ -134,3 +134,50 @@ def test_fresh_sensors_produce_measurements_without_zero_fill(tmp_path: Path) ->
     assert "cabinet_temp_c" in measurements
     assert measurements["cabinet_temp_c"] == pytest.approx(24.6)
     assert all(value != 0.0 for key, value in measurements.items() if key.endswith("_raw"))
+
+
+def test_dual_nano_merge_in_biometrics_loader(tmp_path: Path) -> None:
+    primary = tmp_path / "a.json"
+    secondary = tmp_path / "b.json"
+    _write_snapshot(
+        primary,
+        status="ok",
+        frame={
+            "schema": "orion.sensor_frame.v1",
+            "seq": 1,
+            "uptime_ms": 1000,
+            "environment": {"temp_c": 28.0, "humidity_pct": 20.0, "pressure_hpa": 900.0, "gas_resistance_ohm": 1000.0},
+            "lidar": {"distance_mm": 100.0, "status": 0},
+        },
+    )
+    _write_snapshot(
+        secondary,
+        status="ok",
+        frame={
+            "schema": "orion.sensor_frame.v1",
+            "seq": 2,
+            "uptime_ms": 2000,
+            "magnetic": {"x_ut": 1.0, "y_ut": 2.0, "z_ut": 3.0, "magnitude_ut": 40.0},
+            "imu": {
+                "accel_x": 0.0,
+                "accel_y": 0.0,
+                "accel_z": 9.80665,
+                "yaw_deg": 2.0,
+                "pitch_deg": 0.0,
+                "roll_deg": 0.0,
+            },
+        },
+    )
+
+    sensors = load_cabinet_sensors_snapshot(
+        primary,
+        secondary_path=secondary,
+        stale_after_sec=10.0,
+        now=NOW,
+    )
+    assert sensors is not None
+    assert sensors["stale"] is False
+    measurements = extract_cabinet_measurements(sensors)
+    assert measurements["cabinet_temp_c"] == pytest.approx(28.0)
+    assert measurements["cabinet_magnetic_ut"] == pytest.approx(40.0)
+    assert measurements["cabinet_lidar_mm"] == pytest.approx(100.0)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Human-readable cabinet sensor health from boot + latest snapshots.
+# Human-readable cabinet sensor health from boot + latest snapshots (one or two Nanos).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,8 +11,10 @@ VENV_PYTHON="$(orion_resolve_runtime_python "$REPO_ROOT")"
 
 BOOT="${ORION_CABINET_BOOT_PATH:-/run/orion-sensors/boot.json}"
 LATEST="${ORION_CABINET_SENSORS_PATH:-/run/orion-sensors/latest.json}"
+BOOT_B="${ORION_CABINET_BOOT_B_PATH:-/run/orion-sensors/b/boot.json}"
+LATEST_B="${ORION_CABINET_SENSORS_B_PATH:-/run/orion-sensors/b/latest.json}"
 
-export BOOT LATEST
+export BOOT LATEST BOOT_B LATEST_B
 export PYTHONPATH="$RUNTIME_ROOT"
 
 exec "$VENV_PYTHON" - <<'PY'
@@ -24,6 +26,8 @@ from pathlib import Path
 
 boot_path = Path(__import__("os").environ["BOOT"])
 latest_path = Path(__import__("os").environ["LATEST"])
+boot_b_path = Path(__import__("os").environ["BOOT_B"])
+latest_b_path = Path(__import__("os").environ["LATEST_B"])
 
 DETAIL_HINTS = {
     "not_on_bus": "no I2C ACK at boot — check wiring, power, or sensor not populated",
@@ -36,6 +40,7 @@ SENSOR_TO_FRAME = {
     "bme680": "environment",
     "ltr390": "uv",
     "lis3mdl": "magnetic",
+    "mmc5603": "magnetic",
     "pmsa003i": "particulate",
     "vl53l1x": "lidar",
     "bno085": "imu",
@@ -51,11 +56,12 @@ def load(path: Path) -> dict | None:
         return None
 
 
-print(f"== boot snapshot: {boot_path} ==")
-boot = load(boot_path)
-if boot is None:
-    print("MISSING — flash firmware with boot diagnostics and restart reader, or reboot Nano")
-else:
+def print_boot(label: str, path: Path) -> None:
+    print(f"== boot snapshot ({label}): {path} ==")
+    boot = load(path)
+    if boot is None:
+        print("MISSING — flash firmware with boot diagnostics and restart reader, or reboot Nano")
+        return
     i2c = boot.get("i2c") or {}
     addrs = i2c.get("addresses") or []
     print(f"I2C scan ({i2c.get('sda_pin','?')}/{i2c.get('scl_pin','?')}): {', '.join(addrs) or 'none'}")
@@ -76,18 +82,45 @@ else:
                 line += f"\n      → {hint}"
         print(line)
 
-print(f"\n== live frame: {latest_path} ==")
-latest = load(latest_path)
-if latest is None:
-    print("MISSING")
-    sys.exit(1)
 
-print(f"status={latest.get('status')} device={latest.get('device')}")
-frame = latest.get("frame") or {}
-for sensor, block in SENSOR_TO_FRAME.items():
-    present = block in frame and frame.get(block) is not None
-    print(f"  {block}: {'present' if present else 'absent'}")
+def print_live(label: str, path: Path) -> None:
+    print(f"\n== live frame ({label}): {path} ==")
+    latest = load(path)
+    if latest is None:
+        print("MISSING")
+        return
+    print(f"status={latest.get('status')} device={latest.get('device')}")
+    frame = latest.get("frame") or {}
+    for block in SENSOR_TO_FRAME.values():
+        present = block in frame and frame.get(block) is not None
+        print(f"  {block}: {'present' if present else 'absent'}")
 
-if boot is None:
+
+print_boot("nano-a", boot_path)
+print_live("nano-a", latest_path)
+
+if latest_b_path.is_file() or boot_b_path.is_file():
+    print()
+    print_boot("nano-b", boot_b_path)
+    print_live("nano-b", latest_b_path)
+
+    from orion.telemetry.cabinet_snapshot_merge import load_merged_cabinet_sensors
+
+    merged = load_merged_cabinet_sensors(
+        latest_path,
+        secondary_path=latest_b_path,
+        stale_after_sec=10.0,
+    )
+    print("\n== merged (biometrics view) ==")
+    if merged is None:
+        print("MISSING")
+        sys.exit(1)
+    print(f"stale={merged.get('stale')} received_at={merged.get('received_at')}")
+    frame = merged.get("frame") or {}
+    for block in sorted(set(SENSOR_TO_FRAME.values())):
+        present = block in frame and frame.get(block) is not None
+        print(f"  {block}: {'present' if present else 'absent'}")
+
+if load(boot_path) is None and not latest_b_path.is_file():
     sys.exit(1)
 PY

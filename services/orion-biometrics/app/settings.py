@@ -156,6 +156,7 @@ class Settings(BaseSettings):
     # Written by scripts/orion_cabinet_sensor_reader.py on the Athena host.
     # Missing file => BiometricsSampleV1.sensors stays absent (not {}).
     CABINET_SENSORS_PATH: str = Field(default="/run/orion-sensors/latest.json")
+    CABINET_SENSORS_B_PATH: str = Field(default="")
     CABINET_SENSOR_STALE_AFTER_SEC: float = Field(default=10.0)
 
     # Athena USB microphone ambient-level snapshot (host-local, read-only bind).

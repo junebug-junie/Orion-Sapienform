@@ -108,6 +108,8 @@ def client(tmp_path: Path, monkeypatch):
     boot_path = tmp_path / "boot.json"
     monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_SENSORS_PATH", str(sensors_path))
     monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_BOOT_PATH", str(boot_path))
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_SENSORS_B_PATH", "")
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_BOOT_B_PATH", "")
     monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
     monkeypatch.setattr(cabinet_sensors_routes, "_TRACKER", cabinet_sensors_routes.CabinetSensorTracker(
         cabinet_sensors_routes.CabinetPressureConfig()
@@ -157,7 +159,8 @@ def test_fresh_frame_includes_magnetic_and_uv_measurements(client):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["snapshot"] == snapshot
+    assert body["snapshot"]["frame"] == snapshot["frame"]
+    assert body["sources"]["a"]["snapshot"] == snapshot
     assert body["boot"] == boot
     assert body["age_sec"] == pytest.approx(5.0)
     assert body["measurements"]["cabinet_magnetic_ut"] == pytest.approx(78.01)
@@ -176,7 +179,8 @@ def test_stale_status_returns_ok_false_but_keeps_snapshot(client):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
-    assert body["snapshot"] == snapshot
+    assert body["snapshot"]["frame"] == snapshot["frame"]
+    assert body["snapshot"]["status"] == "stale"
     assert body["measurements"] == {}
     assert body["pressures"]["cabinet_sensor_staleness"] == pytest.approx(1.0)
 
@@ -189,7 +193,8 @@ def test_stale_age_returns_ok_false_but_keeps_snapshot(client):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
-    assert body["snapshot"] == snapshot
+    assert body["snapshot"]["frame"] == snapshot["frame"]
+    assert body["snapshot"]["status"] == "stale"
     assert body["age_sec"] == pytest.approx(25.0)
     assert body["pressures"]["cabinet_sensor_staleness"] == pytest.approx(1.0)
 
@@ -244,3 +249,61 @@ def test_router_registered_on_api_routes():
 
     paths = {getattr(route, "path", None) for route in api_routes.router.routes}
     assert "/api/cabinet/sensors/latest" in paths
+
+
+def test_dual_nano_merge_in_latest(tmp_path: Path, monkeypatch) -> None:
+    sensors_a = tmp_path / "a.json"
+    sensors_b = tmp_path / "b.json"
+    boot_a = tmp_path / "boot-a.json"
+    boot_b = tmp_path / "boot-b.json"
+    _write_snapshot(
+        sensors_a,
+        frame={
+            "schema": "orion.sensor_frame.v1",
+            "seq": 1,
+            "uptime_ms": 100,
+            "environment": {"temp_c": 28.0},
+            "lidar": {"distance_mm": 50.0, "status": 0},
+        },
+    )
+    _write_snapshot(
+        sensors_b,
+        frame={
+            "schema": "orion.sensor_frame.v1",
+            "seq": 2,
+            "uptime_ms": 200,
+            "magnetic": {"magnitude_ut": 42.0, "x_ut": 1.0, "y_ut": 2.0, "z_ut": 3.0},
+            "imu": {"accel_x": 0.0, "accel_y": 0.0, "accel_z": 9.8, "yaw_deg": 3.0},
+        },
+    )
+    _write_boot(boot_a)
+    _write_boot(boot_b)
+
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_SENSORS_PATH", str(sensors_a))
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_BOOT_PATH", str(boot_a))
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_SENSORS_B_PATH", str(sensors_b))
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_BOOT_B_PATH", str(boot_b))
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
+    monkeypatch.setattr(
+        cabinet_sensors_routes,
+        "_TRACKER",
+        cabinet_sensors_routes.CabinetSensorTracker(
+            cabinet_sensors_routes.CabinetPressureConfig()
+        ),
+    )
+    monkeypatch.setattr(cabinet_sensors_routes, "_now_utc", lambda: NOW)
+
+    app = FastAPI()
+    app.include_router(cabinet_sensors_routes.router)
+    tc = TestClient(app)
+
+    r = tc.get("/api/cabinet/sensors/latest")
+    body = r.json()
+    assert body["ok"] is True
+    frame = body["snapshot"]["frame"]
+    assert frame["environment"]["temp_c"] == pytest.approx(28.0)
+    assert frame["lidar"]["distance_mm"] == pytest.approx(50.0)
+    assert frame["magnetic"]["magnitude_ut"] == pytest.approx(42.0)
+    assert frame["imu"]["yaw_deg"] == pytest.approx(3.0)
+    assert "a" in body["sources"]
+    assert "b" in body["sources"]

@@ -28,6 +28,7 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_skills_docker_health_enabled",
     "actions_journaling_enabled",
     "actions_journaling_daily_enabled",
+    "actions_journal_capability_gaps_enabled",
     "actions_journaling_collapse_dense_only",
     "actions_journal_post_persist_notify_enabled",
     "actions_self_experiments_enabled",
@@ -143,6 +144,12 @@ class Settings(BaseSettings):
 
     actions_journaling_enabled: bool = Field(True, alias="ACTIONS_JOURNALING_ENABLED")
     actions_journaling_daily_enabled: bool = Field(False, alias="ACTIONS_JOURNALING_DAILY_ENABLED")
+    # Fold capability-absence episodes (a node gone dark, vision blind) into the
+    # daily journal seed. Adds no new journal entries -- one key on the seed of the
+    # entry Orion already writes. See app/capability_gap_journal.py.
+    actions_journal_capability_gaps_enabled: bool = Field(
+        True, alias="ACTIONS_JOURNAL_CAPABILITY_GAPS_ENABLED"
+    )
     actions_journaling_cooldown_seconds: int = Field(21600, alias="ACTIONS_JOURNALING_COOLDOWN_SECONDS")
     actions_journaling_collapse_dense_only: bool = Field(True, alias="ACTIONS_JOURNALING_COLLAPSE_DENSE_ONLY")
     actions_journal_session_id: str = Field("orion_journal", alias="ACTIONS_JOURNAL_SESSION_ID")

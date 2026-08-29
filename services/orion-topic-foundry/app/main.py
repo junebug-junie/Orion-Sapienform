@@ -51,6 +51,19 @@ async def lifespan(app: FastAPI):
     global heartbeat_chassis
     ensure_tables()
     logger.info("Topic Foundry service starting")
+    # Runs execute as in-process BackgroundTasks and this service has one
+    # replica, so a run left `running`/`queued` at startup has no worker that
+    # could still advance it -- it is restart residue and will sit there
+    # forever. Confirmed live 2026-08-29: six such runs, the oldest 21 hours
+    # old, and ZERO complete runs for the Orion model, so the concept-atlas
+    # ingest returned `topic_foundry_no_completed_run` and the graph had no
+    # source at all. See app/services/run_recovery.py.
+    try:
+        from app.services.run_recovery import recover_stranded_runs
+
+        recover_stranded_runs()
+    except Exception as exc:  # noqa: BLE001 - never block startup on recovery
+        logger.warning("run_recovery_startup_failed error=%s", exc)
     drift_task = None
     if settings.topic_foundry_drift_daemon:
         logger.info("Starting drift daemon")

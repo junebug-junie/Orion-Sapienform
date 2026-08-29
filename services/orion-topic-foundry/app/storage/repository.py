@@ -328,6 +328,21 @@ def list_runs(*, limit: int = 50) -> List[Dict[str, Any]]:
             return cur.fetchall() or []
 
 
+def list_non_terminal_runs() -> List[Dict[str, Any]]:
+    """Every run still sitting in a non-terminal status.
+
+    Only meaningful at process start -- see app/services/run_recovery.py's
+    module docstring for why such a row is always restart residue.
+    """
+    with pg_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM topic_foundry_runs WHERE status IN ('running', 'queued') "
+                "ORDER BY created_at ASC"
+            )
+            return cur.fetchall() or []
+
+
 def list_runs_paginated(
     *,
     limit: int,

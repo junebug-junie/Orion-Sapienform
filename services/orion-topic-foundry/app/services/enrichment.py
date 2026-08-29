@@ -14,6 +14,7 @@ from app.services.bus_events import get_bus_publisher
 from app.services.kg_edges import generate_edges_for_run
 from app.services.llm_client import get_llm_client
 from app.settings import settings
+from app.services.run_recovery import terminal_status_for_enrichment
 from app.services.enrichment_contract import (
     coerce_aspects,
     coerce_meaning,
@@ -41,45 +42,78 @@ def _run_enrichment(run_id: UUID, *, force: bool, enricher: Optional[str], limit
         return
     stats = run_row.get("stats") or {}
     started = utc_now()
-    status = run_row.get("status") or "complete"
+    status = str(run_row.get("status") or "").strip().lower()
     if status == "failed":
         logger.warning("Skipping enrichment for failed run_id=%s", run_id)
         return
+    # Reentrancy guard. The scheduler triggers enrichment every tick, so a
+    # second pass starting while a first is in flight is reachable in normal
+    # operation -- and it used to be the thing that latched the run: it read
+    # status="running" at entry and wrote that same value back as the
+    # terminal state. Refusing outright is correct, not merely safer: the
+    # in-flight pass is already covering this run's segments.
+    if run_row.get("stage") == "enriching" and status == "running":
+        logger.warning(
+            "enrichment_already_in_flight run_id=%s -- refusing to start a second pass", run_id
+        )
+        return
+
+    # Computed BEFORE the "running" write and never read back from the row,
+    # so a concurrent writer cannot make this echo a non-terminal status.
+    terminal_status = terminal_status_for_enrichment(run_row)
 
     update_run_payload = _build_run_record_for_update(run_row, stage="enriching", status="running")
     update_run(update_run_payload)
 
-    spec = _load_enrichment_spec(run_row)
-    taxonomy = load_taxonomy(spec.aspect_taxonomy)
-    chosen_enricher = enricher or ("llm" if settings.topic_foundry_llm_enable else "heuristic")
-
-    segments = fetch_segments(UUID(run_row["run_id"]), has_enrichment=None)
-    if not force:
-        segments = [seg for seg in segments if seg.get("enriched_at") is None]
-    if limit:
-        segments = segments[:limit]
-    text_map = _load_segment_text_map(run_row)
-
     enriched_count = 0
     failed_count = 0
     enriched_payloads: List[Dict[str, Any]] = []
-    for segment in segments:
-        try:
-            enrichment = _enrich_segment(segment, taxonomy, chosen_enricher, text_map)
-            update_segment_enrichment(UUID(segment["segment_id"]), enrichment=enrichment, enrichment_version="v1")
-            enriched_count += 1
-            enriched_payloads.append({"segment_id": segment["segment_id"], "enrichment": enrichment})
-        except Exception as exc:  # noqa: BLE001
-            failed_count += 1
-            logger.warning("Enrichment failed segment_id=%s error=%s", segment.get("segment_id"), exc)
+    # try/finally starts HERE, immediately after the status="running" write,
+    # not just around the segment loop. Without it ANY raise below left the
+    # run pinned at status="running" with nothing anywhere that would ever
+    # move it -- and fetch_latest_completed_run filters on status='complete',
+    # so a single stranded run silently removes itself from every consumer.
+    # The spec load, taxonomy load, segment fetch and text-map load are all
+    # inside deliberately: each does real I/O and each can raise.
+    try:
+        spec = _load_enrichment_spec(run_row)
+        taxonomy = load_taxonomy(spec.aspect_taxonomy)
+        chosen_enricher = enricher or ("llm" if settings.topic_foundry_llm_enable else "heuristic")
 
-    stats["segments_enriched"] = stats.get("segments_enriched", 0) + enriched_count
-    stats["enrichment_failed"] = stats.get("enrichment_failed", 0) + failed_count
-    stats["enrichment_secs"] = stats.get("enrichment_secs", 0) + _elapsed_secs(started)
+        segments = fetch_segments(UUID(run_row["run_id"]), has_enrichment=None)
+        if not force:
+            segments = [seg for seg in segments if seg.get("enriched_at") is None]
+        if limit:
+            segments = segments[:limit]
+        text_map = _load_segment_text_map(run_row)
 
-    update_run_payload = _build_run_record_for_update(run_row, stage="enriched", status=status)
-    update_run_payload.stats = stats
-    update_run(update_run_payload)
+        for segment in segments:
+            try:
+                enrichment = _enrich_segment(segment, taxonomy, chosen_enricher, text_map)
+                update_segment_enrichment(UUID(segment["segment_id"]), enrichment=enrichment, enrichment_version="v1")
+                enriched_count += 1
+                enriched_payloads.append({"segment_id": segment["segment_id"], "enrichment": enrichment})
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                logger.warning("Enrichment failed segment_id=%s error=%s", segment.get("segment_id"), exc)
+    except Exception:  # noqa: BLE001
+        # Deliberately re-raised, not swallowed: before this patch there was
+        # no try at all, so a raise here already propagated out of the
+        # BackgroundTask, and _run_training's own except still needs to see
+        # it to mark the run failed. The only thing that changes is that the
+        # run no longer stays pinned at status="running" on the way out.
+        logger.exception("enrichment_run_failed run_id=%s", run_id)
+        raise
+    finally:
+        stats["segments_enriched"] = stats.get("segments_enriched", 0) + enriched_count
+        stats["enrichment_failed"] = stats.get("enrichment_failed", 0) + failed_count
+        stats["enrichment_secs"] = stats.get("enrichment_secs", 0) + _elapsed_secs(started)
+
+        update_run_payload = _build_run_record_for_update(
+            run_row, stage="enriched", status=terminal_status
+        )
+        update_run_payload.stats = stats
+        update_run(update_run_payload)
 
     _write_enrichment_artifacts(run_row, enriched_payloads, taxonomy, chosen_enricher, enriched_count, failed_count)
     _publish_enrich_complete(run_row, enriched_count, failed_count)

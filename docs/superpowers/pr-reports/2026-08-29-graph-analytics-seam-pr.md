@@ -104,10 +104,10 @@ Applied to the three new numbers, per CLAUDE.md §0A.
 ## Tests run
 
 ```text
-orion/graph/tests                                    89 passed
+orion/graph/tests                                               100 passed
 services/orion-hub/tests/test_concept_atlas_routes.py            33 passed
-services/orion-hub/tests/test_concept_atlas_structure_route.py   11 passed
-services/orion-hub/static/js  (node --test)          82 passed, 0 failed
+services/orion-hub/tests/test_concept_atlas_structure_route.py   17 passed
+services/orion-hub/static/js  (node --test)                      86 passed, 0 failed
 ```
 
 Mutation-tested, every mutation asserted present in the file before running so a no-op replacement cannot read as a pass:
@@ -122,7 +122,18 @@ route   5/5 killed   the original path collision · duplicate handler name ·
 js      12/12 killed evidence counting · in-place mutation · dropped count ·
                      label replacement · kept edges · diagnosis cutoffs ·
                      component split · plural · NaN guard
+
+review fixes 11/11 killed
+                     analytics: self-exclusion · directed pair count ·
+                                dropped label filter
+                     route:     comparison window · raw-edge saturation ·
+                                work back on the loop · client per request ·
+                                dead measure blanks the card
+                     js:        singleton double-count · folded ignores
+                                survival · dropped always zero
 ```
+
+A second harness bug worth recording: the first JS mutation run raised on a stale target **before** its restore line, leaving a mutation in the file that the next run then adopted as its baseline and faithfully "restored" — printing `restored: True` over a corrupted file. The failure surfaced several steps later as a test that looked like a fresh regression. Every harness here now restores in `try/finally` and asserts a known-good marker is present in the baseline before mutating.
 
 One JS mutation initially **survived** (`edges > 0` guard). Investigated rather than patched over: the branch is unreachable from the real route, since `edge_count` is the sum of `edge_type_counts`. Kept as defence against a stale cached bundle and covered by a test feeding exactly that inconsistent payload — without the guard the card renders "NaN%".
 
@@ -179,7 +190,45 @@ Read-only enforcement, live: `CREATE (:Tmp)` through the read-only client →
 
 ## Review findings fixed
 
-Review ran in a subagent (`/code-review high`). See the follow-up commit on this branch.
+`/code-review high` in a subagent. **Ten findings, all real, all fixed** in `16f71cef6`.
+
+- **Finding:** `componentShapeLine` double-counted the largest component when it was itself a singleton — `{components:48, largest:1, singletons:48}` rendered `"48 components: 1 of 1 + 48 singletons"`, 49 components across the parts. That is `orion_worldview`'s exact live shape, i.e. the graph the line most needs to describe.
+  - **Fix:** `largest > 1` instead of `> 0`.
+  - **Evidence:** the test that "covered" this used two `assert.match` calls and passed on the wrong string. Tightened to `assert.equal` against the full line; the mutation restoring `> 0` now fails 2 tests.
+
+- **Finding:** a node could render in both "Most influential (pageRank)" and "Bridges" — whose tooltip reads *not top pageRank*. The comparison window was 5; the UI rendered 6.
+  - **Fix:** `_SUMMARY_PAGERANK_COMPARISON_N = _SUMMARY_TOP_N`, one constant.
+  - **Evidence:** live `influence/bridge overlap: set()`. A test asserts both the empty intersection and the constants' equality. This changed a real answer — `messy middle authenticity` is pageRank #6 and is correctly no longer called a bridge; the old test had encoded the bug and failed on the fix.
+
+- **Finding:** `dominant_edge_saturation` divided the dominant type's raw edge count by concept pairs regardless of that type's endpoints. `supports` runs evidence→concept.
+  - **Fix:** `GraphAnalytics.connected_pair_count(rel_type, label=...)` counts **distinct unordered pairs** of the right label, so direction cannot double-count and the ratio cannot exceed 1.0.
+  - **Evidence:** measured live — `supports` holds 80 edges and joins **0** concept pairs; the old formula would have printed "5.2% of every possible pair", and an evidence-heavy run would have exceeded 100%. Now reports `0.0`.
+
+- **Finding:** `StructureSummary.saturation(node_count=...)` combined a graph-wide edge count with a subpopulation denominator, and the documented call returned 461/1540 = 29.9%, not the 19.9% the docstring claimed.
+  - **Fix:** removed the override. My own test had quietly sidestepped the trap by constructing a separate `StructureSummary` rather than using the parameter.
+  - **Evidence:** `test_saturation_takes_no_denominator_override` asserts it raises.
+
+- **Finding:** ~6 synchronous Redis round trips (~30ms, and betweenness is O(V·E)) ran inline in an `async def`, and a fresh `ConnectionPool` leaked per request.
+  - **Fix:** `asyncio.to_thread` around all blocking work; client cached per `(uri, graph)`.
+  - **Evidence:** 112ms first call → 26ms second. Two tests: one asserts every blocking call sits inside the threaded block, one asserts the client is constructed once across two calls. Repo precedent: `api_routes.py:1406`.
+
+- **Finding:** one failing measure returned `available=false` and blanked counts that had already succeeded.
+  - **Fix:** per-measure try/except; failures listed in a new `degraded_measures` field.
+  - **Evidence:** a test kills `algo.HarmonicCentrality` and asserts `node_count == 136` survives with `degraded_measures == ["harmonic"]`.
+
+- **Finding:** `collapsedCount` reported evidence as "folded in" that was actually dropped — when the promotion filter removed the concept it supported, its information survived nowhere.
+  - **Fix:** split into `foldedCount` / `droppedCount`; the status line names both.
+  - **Evidence:** a test with one landing and one orphaned evidence node asserts 1/1, and that the two sum to the removed total.
+
+- **Finding:** the evidence toggle called `refreshAll()` — four endpoints and three whole-graph centrality runs — for a pure client-side transform of a payload already held.
+  - **Fix:** split `renderNetworkPayload()` out of `fetchNetwork()`; the toggle re-renders from the cached payload.
+
+- **Finding:** the `read_only` docstring overclaimed. redis-py's `Graph.query` catches `ResponseError` and, on `"unknown command"`, silently re-issues as a writable `GRAPH.QUERY`.
+  - **Fix:** docstring now states the caveat and says explicitly this is defence in depth, not an authorization boundary — the real boundary is the FalkorDB ACL.
+
+- **Finding:** `neighborhood()` could return the query node as its own 2-hop neighbour; Cypher's uniqueness rule forbids reusing a *relationship*, not revisiting a *node*.
+  - **Fix:** `WHERE m <> s`.
+  - **Evidence:** 0 occurrences on the live graph today, so this closes a latent case rather than an observed bug — stated as such rather than claimed as a live fix.
 
 ## Restart required
 

@@ -27,8 +27,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `TTS_MODEL_NAME` | `tts_models/multilingual/multi-dataset/xtts_v2` | Coqui model id. |
 | `TTS_USE_GPU` | `true` | Pass GPU flag to Coqui. |
 | `TTS_DEFAULT_LANGUAGE` | `en` | Default language code. |
-| `TTS_DEFAULT_SPEAKER` | `Ana Florence` | Built-in XTTS speaker name -- fallback only while `TTS_DEFAULT_SPEAKER_WAV` is set (see below). |
-| `TTS_DEFAULT_SPEAKER_WAV` | `/models/voices/orion_reference.wav` | Reference `.wav` under `TTS_VOICE_PROFILE_DIR` -- takes precedence over `TTS_DEFAULT_SPEAKER` whenever set. Live default since 2026-08-27 (cloned voice); the `.wav` itself is a host asset, not checked into git. |
+| `TTS_DEFAULT_SPEAKER` | `Ana Florence` | Built-in XTTS speaker name -- used only when `TTS_DEFAULT_SPEAKER_WAV` is unset (see below). |
+| `TTS_DEFAULT_SPEAKER_WAV` | `/models/voices/orion_reference_v2.wav` | Reference `.wav` under `TTS_VOICE_PROFILE_DIR`. **Full resolve order (`app/tts.py:85-110`) is `options.speaker_wav` > `TTS_DEFAULT_SPEAKER_WAV` > `voice_id` > `TTS_DEFAULT_SPEAKER`** -- note this key outranks a per-request `voice_id`, not just `TTS_DEFAULT_SPEAKER`. Live default since 2026-08-29 (see "Changing the voice" below); the `.wav` itself is a host asset, not checked into git. |
 | `TTS_SPLIT_SENTENCES` | `true` | XTTS sentence splitting. |
 | `TTS_VOICE_PROFILE_DIR` | `/models/voices` | Voice profile mount inside container. |
 | `CHANNEL_TTS_INTAKE` | `orion:tts:intake` | Input channel. |
@@ -104,6 +104,108 @@ CUDA state through a probe it can reach), not reinventing a second,
 in-process, un-persisted rate limiter. Left as a named follow-up rather
 than silently uncovered.
 
+## Changing the voice
+
+**XTTS-v2 is zero-shot. There is no fine-tuning step and no checkpoint to
+retrain.** The voice is entirely determined by the single reference `.wav`
+that `TTS_DEFAULT_SPEAKER_WAV` points at, so "retraining Orion's voice"
+means building a new reference and repointing that key. Coqui conditions on
+at most ~30s of it (`gpt_cond_len` / `max_ref_len`, both 30 in the shipped
+`xtts_v2` checkpoint's own `config.json` -- **not** the installed library's
+class defaults, which are 12 and 10), and truncation is from the START of
+the file, so a longer file buys nothing and a bad first 30s ruins it.
+
+Build a new reference from a source recording:
+
+1. **Pick a single-speaker window.** Transcribe the source first and read
+   the segment table -- an interviewer, a backchannel, or a second voice
+   anywhere inside the window gets baked into the clone. Prefer the longest
+   stretch with no silence gap over ~0.6s, up to ~30s.
+2. **Cut, downmix, resample** -- match the existing reference's container
+   format (24 kHz mono `pcm_s16le`):
+   ```bash
+   ffmpeg -ss <t0> -to <t1> -i <source> -ac 1 -ar 24000 -c:a pcm_s16le raw.wav
+   ```
+3. **Match the level of the reference you are replacing**, with static gain
+   only. Measure both with ffmpeg's `ebur128` filter, then apply the
+   difference:
+   ```bash
+   ffmpeg -i raw.wav -af "volume=<delta>dB" -ac 1 -ar 24000 \
+          -c:a pcm_s16le <new_name>.wav
+   ```
+   Matching loudness on purpose means timbre is the only variable that
+   changes between reference versions. Do **not** apply compression, EQ, or
+   de-noise -- those alter the very timbre the speaker encoder is being
+   asked to copy.
+4. **Install under a NEW filename** in `TTS_VOICE_PROFILE_HOST_DIR` (the
+   bind mount is picked up live; no restart is needed for the file itself to
+   become visible), keeping the previous reference in place as a rollback
+   target. **Never overwrite an installed reference in place.** Conditioning
+   latents are recomputed on every request and nothing caches them, so an
+   overwrite takes effect immediately -- with no restart, no config change,
+   and no trace -- while silently destroying the rollback target this
+   procedure promises.
+5. **Repoint** `TTS_DEFAULT_SPEAKER_WAV` in the service `.env` and
+   `.env_example`, then **recreate** the container:
+   ```bash
+   scripts/safe_docker_build.sh orion-whisper-tts up -d --force-recreate --no-build
+   ```
+   `docker compose restart` will **not** work: it restarts the existing
+   container with its already-baked environment, so an `env_file` change is
+   simply not picked up and the old voice keeps playing.
+
+**A green `up -d` is not evidence the new path is valid.** `TTSEngine` is
+constructed lazily on the first synthesis request
+(`app/tts_worker.py:22-25`), so `_validate_xtts_defaults` and its
+`is_file()` check never run at boot, and `/health` does not touch the
+engine. A typo'd or missing reference gives you a container that is Up,
+healthy, and fails hard on Orion's first real turn. Always run the
+round-trip check below.
+
+### Verifying a voice change
+
+Config being set is not proof the voice moved. Two checks, both against the
+live bus path:
+
+- **Round-trip the audio.** Synthesize over `orion:tts:intake` and confirm
+  the reply's `metadata.speaker_wav_basename` is the new file AND that the
+  returned audio transcribes back as the requested text -- schema-valid
+  bytes are not evidence of intelligible speech.
+- **Measure speaker similarity against a matched control.** A cosine score
+  on its own has no scale. Synthesize the *same text* from both the old and
+  the new reference, embed all four files with XTTS's own speaker encoder
+  (`Xtts.get_conditioning_latents`), and check that each synthesis is
+  closest to its own reference. For the 2026-08-29 change:
+
+  |             | `ref_new`  | `ref_old`  |
+  | :---------- | :--------- | :--------- |
+  | `synth_new` | **+0.6364**| +0.4608    |
+  | `synth_old` | +0.3337    | **+0.5515**|
+
+  **What this supports:** the diagonal dominates in both rows, so the config
+  change genuinely moved the output and each synthesis tracks the reference
+  it was given. That is the claim worth making.
+
+  **What it does NOT support** -- flagged in review 2026-08-29, after an
+  earlier draft of this file claimed it: that the new reference "clones
+  better" than the old. Three reasons. Each cell is **n=1**, and XTTS
+  decoding is stochastic (`full_inference(..., do_sample=True)`), so no
+  spread is known. Comparing +0.6364 to +0.5515 is a cross-reference
+  magnitude comparison, and self-similarity magnitude varies with intrinsic
+  properties of a reference independent of clone quality. And the control
+  row actively undercuts it: `ref_new`/`ref_old` is +0.6498, i.e. the two
+  references resemble each other *more* than the new synthesis resembles its
+  own reference. To earn a quality comparison, take k draws per cell and
+  report the spread.
+
+The source recording and the exact chain used for the live reference are
+kept on the host at `/mnt/telemetry/models/coqui/voice_sources/` (not in
+git). Deliberately a sibling of `TTS_VOICE_PROFILE_HOST_DIR`, not a
+subdirectory of it: that directory is bind-mounted into the container and
+`_resolve_speaker_wav_path` accepts anything beneath it, so nesting the
+sources there would make raw source recordings reachable as a
+caller-supplied `options.speaker_wav`.
+
 ## Running
 
 ### Docker Compose (GPU host)
@@ -157,7 +259,7 @@ print(getattr(t, 'speakers', None) or 'no speakers attr')
 
 ### Smoke test (inside container)
 
-Set either `TTS_DEFAULT_SPEAKER=Ana Florence` or place `orion_reference.wav` under `/models/voices` and set `TTS_DEFAULT_SPEAKER_WAV=/models/voices/orion_reference.wav`.
+Set either `TTS_DEFAULT_SPEAKER=Ana Florence` or place `orion_reference_v2.wav` under `/models/voices` and set `TTS_DEFAULT_SPEAKER_WAV=/models/voices/orion_reference_v2.wav`.
 
 ```bash
 docker compose exec whisper-tts python3 scripts/smoke_xtts.py
@@ -190,15 +292,21 @@ Wrap as `legacy.message` on `orion:tts:intake` if not using typed envelopes.
 
 Kind: `tts.synthesize.request`, `reply_to`: `orion:tts:result:<uuid>`.
 
+> **Inert under the current live config.** `TTS_DEFAULT_SPEAKER_WAV` is set,
+> and it outranks `voice_id` (`app/tts.py:89` before `:96`). This request
+> synthesizes with `orion_reference_v2.wav` and returns `"speaker": null`;
+> the `voice_id` is echoed into metadata but not used. To actually select a
+> built-in speaker per request, unset `TTS_DEFAULT_SPEAKER_WAV`.
+
 ### 3. Reference voice via `options.speaker_wav`
 
 ```json
 {
   "text": "Hello Juniper. This is Orion with the upgraded voice.",
-  "voice_id": "orion_reference.wav",
+  "voice_id": "orion_reference_v2.wav",
   "language": "en",
   "options": {
-    "speaker_wav": "/models/voices/orion_reference.wav",
+    "speaker_wav": "/models/voices/orion_reference_v2.wav",
     "split_sentences": true
   }
 }
@@ -214,9 +322,19 @@ Kind: `tts.synthesize.request`, `reply_to`: `orion:tts:result:<uuid>`.
 }
 ```
 
+> **Inert under the current live config.** `TTS_DEFAULT_SPEAKER_WAV` is set,
+> and it outranks `voice_id` (`app/tts.py:89` before `:96`). This request
+> synthesizes with `orion_reference_v2.wav` and returns `"speaker": null`;
+> the `voice_id` is echoed into metadata but not used. To actually select a
+> built-in speaker per request, unset `TTS_DEFAULT_SPEAKER_WAV`.
+
 ## Replies
 
 **Legacy:** `{ "trace_id", "audio_b64", "mime_type", "metadata" }`
+
+`metadata` keys (`app/tts.py:112-121` and `:245-249`): `backend`,
+`model_name`, `language`, `voice_id`, `speaker`, `speaker_wav_basename`,
+`speaker_wav_used`, `split_sentences`, `synthesis_ms`, `gpu_enabled`.
 
 **Typed:** `tts.synthesize.result` with `TTSResultPayload` (`audio_b64`, `content_type`, `duration_sec`, `metadata`).
 

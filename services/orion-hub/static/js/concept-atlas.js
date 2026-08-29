@@ -82,6 +82,142 @@ function edgeLabelMinZoomedFontSize(showAll) {
   return showAll ? 0 : EDGE_LABEL_MIN_ZOOMED_FONT_PX;
 }
 
+// 80 of orion_substrate's 136 nodes are Evidence nodes (verified live
+// 2026-08-29). They carry no label of their own -- EvidenceNodeV1 has no
+// label field -- so concept_atlas_routes.py::_display_labels names each one
+// "Evidence for <the concept it supports>". The result is that 59% of the
+// canvas is scaffolding repeating its neighbour's name, which is the single
+// biggest reason the picture reads as an unreadable hairball.
+//
+// Collapsing folds each evidence node into a count on the concept it
+// supports, so the same information survives (n pieces of evidence back this
+// concept) without n extra dots and n extra edges. On the live graph this
+// takes the default view from 136 nodes to 56.
+//
+// Kept as a pure function next to applyClientPromotionStateFilter rather
+// than a cytoscape style rule, because a hidden-but-mounted node still
+// participates in the cose layout and would keep pushing real concepts
+// apart -- the clutter would move, not go away.
+function collapseEvidenceNodes(nodes, edges, collapse) {
+  if (!collapse) return { nodes, edges, collapsedCount: 0, foldedCount: 0, droppedCount: 0 };
+  const isEvidence = (n) => n.node_kind === "evidence";
+  const evidenceIds = new Set(nodes.filter(isEvidence).map((n) => n.id));
+  if (!evidenceIds.size) return { nodes, edges, collapsedCount: 0, foldedCount: 0, droppedCount: 0 };
+
+  // `supports` runs evidence -> concept (see the topic_foundry adapter), so
+  // the target is the concept that gains the count. Counted from edges
+  // rather than from a node field because no such field exists in the
+  // payload -- deriving it here keeps the route unchanged.
+  const counts = new Map();
+  edges.forEach((e) => {
+    if (e.predicate !== "supports") return;
+    if (!evidenceIds.has(e.source)) return;
+    counts.set(e.target, (counts.get(e.target) || 0) + 1);
+  });
+
+  const kept = nodes
+    .filter((n) => !isEvidence(n))
+    .map((n) => (counts.has(n.id) ? Object.assign({}, n, { evidence_count: counts.get(n.id) }) : n));
+  const keptIds = new Set(kept.map((n) => n.id));
+  const keptEdges = edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target));
+
+  // FOLDED and DROPPED are different things and the status line must not
+  // conflate them. An evidence node whose concept is absent from this view --
+  // the promotion_state filter removed it, or it was never in the slice --
+  // contributes to no count anywhere; it just disappears. Reporting it as
+  // "folded in" would claim its information survived when it did not.
+  // `foldedCount` sums the counts actually attached to a surviving concept.
+  let foldedCount = 0;
+  counts.forEach((n, conceptId) => {
+    if (keptIds.has(conceptId)) foldedCount += n;
+  });
+  return {
+    nodes: kept,
+    edges: keptEdges,
+    collapsedCount: evidenceIds.size,
+    foldedCount,
+    droppedCount: evidenceIds.size - foldedCount,
+  };
+}
+
+// synthetic_label (see concept_atlas_routes.py's node_payload):
+// topic-foundry's adapter falls back to a bare "topic_<id>" placeholder when
+// a clustering run produced neither a real topic label nor keywords --
+// non-blank, but not a human label. Rendered with an explicit suffix instead
+// of masquerading as a real concept name so it reads as "unlabeled," not
+// "broken."
+//
+// The evidence count is appended rather than replacing anything, so a
+// collapsed concept still reads as itself first: "Home lab infrastructure
+// (3 evidence)".
+function nodeDisplayLabel(n) {
+  const base = n.synthetic_label ? `${n.label || n.id} (unlabeled topic)` : n.label || n.id;
+  const count = n.evidence_count || 0;
+  return count > 0 ? `${base} (${count} evidence)` : base;
+}
+
+// --- structural diagnosis ---------------------------------------------------
+//
+// These two numbers decide only whether to SHOW the interpretive line; the
+// line's content is the measured numbers themselves, so nothing here is a
+// tuned score. A graph below either cutoff simply gets the raw stats with no
+// commentary, which is the honest default -- a hint that fires on every graph
+// would be noise, and one that invents a severity band would be a knob
+// pretending to be a finding.
+const DOMINANT_EDGE_SHARE_HINT = 0.5; // one edge type is more than half of all edges
+const SATURATION_HINT = 0.1; // ...and links >10% of every possible pair
+
+// Reads the /structure payload and says what shape the graph is in, in plain
+// words, with the measured numbers inline.
+//
+// The finding it exists to state (live orion_substrate, 2026-08-29): 307 of
+// 461 edges are `co_occurs_with`, a same-day co-occurrence proxy. Over 56
+// concepts that links 19.9% of every possible pair, and label propagation
+// returns exactly one community as a result. No centrality measure or layout
+// change fixes that -- the graph is a hairball because its dominant edge
+// carries almost no information, which is an upstream producer problem.
+function structureDiagnosis(payload) {
+  if (!payload || !payload.available) return null;
+  const edges = payload.edge_count || 0;
+  const dominant = payload.dominant_edge_type;
+  const dominantCount = dominant ? (payload.edge_type_counts || {})[dominant] || 0 : 0;
+  const share = edges > 0 ? dominantCount / edges : 0;
+  const saturation = payload.dominant_edge_saturation;
+  if (!dominant || saturation === null || saturation === undefined) return null;
+  if (share < DOMINANT_EDGE_SHARE_HINT || saturation < SATURATION_HINT) return null;
+  return (
+    `${dominantCount} of ${edges} edges (${Math.round(share * 100)}%) are \u2018${dominant}\u2019, ` +
+    `linking ${(saturation * 100).toFixed(1)}% of every possible pair among ` +
+    `${payload.concept_count} concepts. At that density there is no community ` +
+    `structure left to find \u2014 the density is an edge-semantics problem upstream, ` +
+    `not a layout problem here.`
+  );
+}
+
+// "12 components" on its own is not a fact about structure -- on the live
+// graph it is one blob of 116, one island of 10, and 10 singletons of retired
+// telemetry. Spelling that out is the difference between a number and a read.
+function componentShapeLine(payload) {
+  if (!payload || !payload.available) return "";
+  const total = payload.component_count || 0;
+  const largest = payload.largest_component_size || 0;
+  const singletons = payload.singleton_count || 0;
+  if (!total) return "no components";
+  // `largest > 1`, not `> 0`: when every component is a singleton the largest
+  // IS a singleton, so counting it separately reported it twice --
+  // {components:48, largest:1, singletons:48} rendered "48 components: 1 of 1
+  // + 48 singletons", 49 components across the parts plus a meaningless
+  // "1 of 1" blob. That is exactly orion_worldview's live shape (48 nodes, 0
+  // edges), i.e. the graph this line most needs to describe correctly.
+  const hasBlob = largest > 1;
+  const middle = total - singletons - (hasBlob ? 1 : 0);
+  const parts = [];
+  if (hasBlob) parts.push(`1 of ${largest}`);
+  if (middle > 0) parts.push(`${middle} smaller`);
+  if (singletons > 0) parts.push(`${singletons} singleton${singletons === 1 ? "" : "s"}`);
+  return `${total} component${total === 1 ? "" : "s"}: ${parts.join(" + ")}`;
+}
+
 if (typeof document !== "undefined") {
 (function () {
   const STATUS = document.getElementById("caStatus");
@@ -104,6 +240,14 @@ if (typeof document !== "undefined") {
   const NETWORK_CY_HOST = document.getElementById("caNetworkCy");
   const NETWORK_INSPECTOR = document.getElementById("caNetworkInspector");
   const SHOW_ALL_LABELS = document.getElementById("caShowAllLabels");
+  const COLLAPSE_EVIDENCE = document.getElementById("caCollapseEvidence");
+
+  const STRUCTURE_STATUS = document.getElementById("caStructureStatus");
+  const STRUCTURE_STATS = document.getElementById("caStructureStats");
+  const STRUCTURE_COMPONENTS = document.getElementById("caStructureComponents");
+  const STRUCTURE_INFLUENCE = document.getElementById("caStructureInfluence");
+  const STRUCTURE_BRIDGES = document.getElementById("caStructureBridges");
+  const STRUCTURE_NOTE = document.getElementById("caStructureNote");
 
   const CLUSTERING_BODY = document.getElementById("caClusteringBody");
 
@@ -125,6 +269,13 @@ if (typeof document !== "undefined") {
   // gives orientation without the clutter; the checkbox opts back into the
   // old always-on behavior for anyone who wants to read every label.
   let showAllLabels = false;
+  // Default ON: the uncollapsed view is 136 nodes of which 80 say nothing
+  // but "Evidence for <neighbour>". Opting IN to that is the right default,
+  // not opting out of it.
+  let collapseEvidence = true;
+  // Last /network payload, so the evidence toggle re-renders instead of refetching.
+  let lastNetworkPayload = null;
+  let lastPromotionState = "";
 
   // Deterministic hash -> hue so a given topic_id always renders the same
   // color across refreshes/filters, without needing a server-assigned color
@@ -268,13 +419,7 @@ if (typeof document !== "undefined") {
     const cyNodes = nodes.map((n) => ({
       data: {
         id: n.id,
-        // synthetic_label (see concept_atlas_routes.py's node_payload):
-        // topic-foundry's adapter falls back to a bare "topic_<id>"
-        // placeholder when a clustering run produced neither a real topic
-        // label nor keywords -- non-blank, but not a human label. Rendered
-        // with an explicit suffix instead of masquerading as a real concept
-        // name so it reads as "unlabeled," not "broken."
-        label: n.synthetic_label ? `${n.label || n.id} (unlabeled topic)` : n.label || n.id,
+        label: nodeDisplayLabel(n),
         nodeKind: n.node_kind,
         anchorScope: n.anchor_scope,
         promotionState: n.promotion_state,
@@ -287,6 +432,7 @@ if (typeof document !== "undefined") {
         topicId: n.topic_id === undefined ? null : n.topic_id,
         origin: n.origin || "concept",
         syntheticLabel: !!n.synthetic_label,
+        evidenceCount: n.evidence_count || 0,
       },
     }));
     const cyEdges = edges.map((e) => ({
@@ -311,6 +457,7 @@ if (typeof document !== "undefined") {
       ["id", nodeData.id],
       ["label", nodeData.label],
       ["node_kind", nodeData.nodeKind],
+      ["evidence", nodeData.evidenceCount ? `${nodeData.evidenceCount} node(s) folded in` : "—"],
       ["anchor_scope", nodeData.anchorScope],
       ["promotion_state", nodeData.promotionState],
       ["activation", nodeData.activation],
@@ -449,7 +596,25 @@ if (typeof document !== "undefined") {
         if (NETWORK_STATUS) NETWORK_STATUS.textContent = payload.reason || "unavailable";
         return;
       }
-      const filtered = applyClientPromotionStateFilter(payload.nodes || [], payload.edges || [], promotionState);
+      lastNetworkPayload = payload;
+      lastPromotionState = promotionState;
+      renderNetworkPayload(payload, promotionState);
+    } catch (e) {
+      destroyCy();
+      if (NETWORK_CY_HOST) NETWORK_CY_HOST.textContent = `Network error: ${e.message || e}`;
+      if (NETWORK_STATUS) NETWORK_STATUS.textContent = "error";
+    }
+  }
+
+  // Split out of fetchNetwork so the evidence toggle can re-render the graph
+  // it already has. Collapsing is a pure transform of the /network payload, so
+  // re-fetching for it cost four endpoint round trips and three whole-graph
+  // centrality runs (/structure re-runs pageRank, betweenness and harmonic) to
+  // tick a checkbox.
+  function renderNetworkPayload(payload, promotionState) {
+      const promotionFiltered = applyClientPromotionStateFilter(payload.nodes || [], payload.edges || [], promotionState);
+      const collapsed = collapseEvidenceNodes(promotionFiltered.nodes, promotionFiltered.edges, collapseEvidence);
+      const filtered = { nodes: collapsed.nodes, edges: collapsed.edges };
       mountCytoscape(graphToElements(filtered.nodes, filtered.edges));
       renderInspector(null);
       if (NETWORK_STATUS) {
@@ -466,7 +631,16 @@ if (typeof document !== "undefined") {
         const shownComponents = new Set(
           filtered.nodes.map((n) => n.component_id).filter((id) => id !== undefined && id !== null)
         );
-        const base = `${filtered.nodes.length} node(s), ${filtered.edges.length} edge(s), ${payload.god_node_count || 0} god node(s), ${shownComponents.size} component(s)`;
+        // Naming the collapsed count rather than silently showing a smaller
+        // graph: a node count that shrank with no explanation reads as data
+        // loss, which is exactly the complaint this view already earns.
+        const collapsedNote = collapsed.collapsedCount
+          ? `, ${collapsed.foldedCount} evidence node(s) folded in` +
+            (collapsed.droppedCount
+              ? `, ${collapsed.droppedCount} dropped (supported concept not in view)`
+              : "")
+          : "";
+        const base = `${filtered.nodes.length} node(s), ${filtered.edges.length} edge(s), ${payload.god_node_count || 0} god node(s), ${shownComponents.size} component(s)${collapsedNote}`;
         // Surfaced when a non-default store backend (e.g. graphdb) fell back
         // to a stale snapshot after an upstream query failure -- see
         // concept_atlas_routes.py's "degraded" comment. The default
@@ -474,10 +648,86 @@ if (typeof document !== "undefined") {
         NETWORK_STATUS.textContent = payload.degraded ? `${base} — DEGRADED: ${payload.degraded_error || "stale data"}` : base;
         NETWORK_STATUS.classList.toggle("text-amber-400", !!payload.degraded);
       }
+  }
+
+
+  // --- Graph structure card (whole-graph, engine-computed) -----------------
+
+  function renderRankedList(host, rows, emptyText) {
+    if (!host) return;
+    host.innerHTML = "";
+    if (!rows || !rows.length) {
+      host.innerHTML = `<p class="text-gray-600">${escapeHtml(emptyText)}</p>`;
+      return;
+    }
+    rows.slice(0, 6).forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "flex items-center justify-between gap-2";
+      // A node with no label of its own falls back to its id rather than
+      // rendering blank -- an empty row reads as a bug, not as a nameless node.
+      row.innerHTML =
+        `<span class="truncate">${escapeHtml(r.label || r.node_id || "(unnamed)")}</span>` +
+        `<span class="text-gray-500 shrink-0">${escapeHtml(Number(r.score).toFixed(3))}</span>`;
+      host.appendChild(row);
+    });
+  }
+
+  async function fetchStructure() {
+    if (!STRUCTURE_STATS) return;
+    try {
+      const payload = await apiFetch("/api/substrate/concepts/structure");
+      if (!payload.available) {
+        if (STRUCTURE_STATUS) STRUCTURE_STATUS.textContent = payload.reason || "unavailable";
+        STRUCTURE_STATS.innerHTML = "";
+        if (STRUCTURE_NOTE) STRUCTURE_NOTE.textContent = "";
+        return;
+      }
+      if (STRUCTURE_STATUS) STRUCTURE_STATUS.textContent = payload.graph || "";
+
+      STRUCTURE_STATS.innerHTML = "";
+      STRUCTURE_STATS.appendChild(statTile("nodes", payload.node_count));
+      STRUCTURE_STATS.appendChild(statTile("concepts", payload.concept_count));
+      STRUCTURE_STATS.appendChild(statTile("edges", payload.edge_count));
+      STRUCTURE_STATS.appendChild(
+        statTile(
+          "pair saturation",
+          payload.dominant_edge_saturation === null || payload.dominant_edge_saturation === undefined
+            ? "—"
+            : `${(payload.dominant_edge_saturation * 100).toFixed(1)}%`
+        )
+      );
+
+      if (STRUCTURE_COMPONENTS) {
+        STRUCTURE_COMPONENTS.innerHTML = "";
+        const shape = document.createElement("div");
+        shape.className = "text-gray-300 mb-1";
+        shape.textContent = componentShapeLine(payload);
+        STRUCTURE_COMPONENTS.appendChild(shape);
+        // Singletons are named, not just counted: on the live graph all ten are
+        // retired telemetry nodes, which is only actionable if you can see
+        // which ones they are.
+        (payload.components || [])
+          .filter((c) => c.is_singleton)
+          .slice(0, 12)
+          .forEach((c) => {
+            const row = document.createElement("div");
+            row.className = "text-gray-500 truncate";
+            row.textContent = `· ${(c.sample_labels || [])[0] || c.component_id}`;
+            STRUCTURE_COMPONENTS.appendChild(row);
+          });
+      }
+
+      renderRankedList(STRUCTURE_INFLUENCE, (payload.rankings || {}).pagerank, "none");
+      renderRankedList(STRUCTURE_BRIDGES, payload.bridges, "no bridges distinct from the influence ranking");
+
+      if (STRUCTURE_NOTE) {
+        const note = structureDiagnosis(payload);
+        STRUCTURE_NOTE.textContent = note || "";
+        STRUCTURE_NOTE.className = note ? "text-[11px] leading-relaxed text-amber-300/90" : "text-[11px]";
+      }
     } catch (e) {
-      destroyCy();
-      if (NETWORK_CY_HOST) NETWORK_CY_HOST.textContent = `Network error: ${e.message || e}`;
-      if (NETWORK_STATUS) NETWORK_STATUS.textContent = "error";
+      if (STRUCTURE_STATUS) STRUCTURE_STATUS.textContent = "error";
+      if (STRUCTURE_NOTE) STRUCTURE_NOTE.textContent = `Structure error: ${e.message || e}`;
     }
   }
 
@@ -524,7 +774,7 @@ if (typeof document !== "undefined") {
     setStatus("Loading…");
     // Independent try/catch per card so one failing endpoint never blanks
     // the others (Phase 8 acceptance check).
-    const results = await Promise.allSettled([fetchSummary(), fetchNetwork(), fetchClustering()]);
+    const results = await Promise.allSettled([fetchSummary(), fetchStructure(), fetchNetwork(), fetchClustering()]);
     if (myGeneration !== fetchGeneration) return; // superseded by a newer refresh
     const failed = results.filter((r) => r.status === "rejected").length;
     setStatus(failed ? `Loaded with ${failed} card error(s)` : "Loaded", failed > 0);
@@ -552,6 +802,21 @@ if (typeof document !== "undefined") {
         // plain data changes -- style().update() forces re-evaluation
         // without destroying/remounting the whole graph.
         if (cy) cy.style().update();
+      });
+    }
+    if (COLLAPSE_EVIDENCE) {
+      COLLAPSE_EVIDENCE.checked = collapseEvidence;
+      COLLAPSE_EVIDENCE.addEventListener("change", () => {
+        collapseEvidence = !!COLLAPSE_EVIDENCE.checked;
+        // Unlike the label toggle above, this changes the node SET, so a
+        // style().update() is not enough -- the graph has to be rebuilt and
+        // the layout re-run over the new element list. It does NOT need new
+        // data: collapsing is a pure transform of the payload already held.
+        if (lastNetworkPayload) {
+          renderNetworkPayload(lastNetworkPayload, lastPromotionState);
+        } else {
+          refreshAll();
+        }
       });
     }
     if (CLEAR_FILTERS_BTN) {
@@ -591,5 +856,11 @@ if (typeof module !== "undefined" && module.exports) {
     EDGE_LABEL_MIN_ZOOMED_FONT_PX,
     GOD_NODE_FONT_PX,
     NODE_FONT_PX,
+    collapseEvidenceNodes,
+    nodeDisplayLabel,
+    structureDiagnosis,
+    componentShapeLine,
+    DOMINANT_EDGE_SHARE_HINT,
+    SATURATION_HINT,
   };
 }

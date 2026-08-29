@@ -78,6 +78,32 @@
       </div>
     </section>
 
+    <section id="caStructureCard" class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-white">Graph structure</h2>
+        <span id="caStructureStatus" class="text-[10px] text-gray-500"></span>
+      </div>
+      <p class="text-[10px] text-gray-500 leading-relaxed">
+        Computed by the graph engine over the whole graph, unfiltered — not over the slice drawn below.
+      </p>
+      <div id="caStructureStats" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+        <div>
+          <h3 class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Components</h3>
+          <div id="caStructureComponents" class="text-gray-300 space-y-0.5"></div>
+        </div>
+        <div>
+          <h3 class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Most influential (pageRank)</h3>
+          <div id="caStructureInfluence" class="text-gray-300 space-y-0.5"></div>
+        </div>
+        <div>
+          <h3 class="text-[10px] uppercase tracking-wide text-gray-500 mb-1" title="High betweenness, not top pageRank: nodes the graph routes through rather than nodes it points at.">Bridges</h3>
+          <div id="caStructureBridges" class="text-gray-300 space-y-0.5"></div>
+        </div>
+      </div>
+      <div id="caStructureNote" class="text-[11px] leading-relaxed"></div>
+    </section>
+
     <section id="caNetworkCard" class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <h2 class="text-sm font-semibold text-white">Network drill-down</h2>
@@ -85,6 +111,10 @@
           <label class="flex items-center gap-1.5 text-[10px] text-gray-400 cursor-pointer">
             <input id="caShowAllLabels" type="checkbox" class="accent-indigo-500" />
             Show all labels
+          </label>
+          <label class="flex items-center gap-1.5 text-[10px] text-gray-400 cursor-pointer" title="Evidence nodes carry no label of their own and are named after the concept they support. Folding them in shows each concept once, with a count.">
+            <input id="caCollapseEvidence" type="checkbox" class="accent-indigo-500" checked />
+            Fold in evidence
           </label>
           <span id="caNetworkStatus" class="text-[10px] text-gray-500"></span>
         </div>

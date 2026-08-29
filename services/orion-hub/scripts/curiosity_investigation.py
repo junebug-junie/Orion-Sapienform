@@ -98,9 +98,11 @@ from orion.curiosity.study_material import (
     assemble_study_material,
 )
 from orion.curiosity.worldview import (
+    FindingConnectivity,
     TurnOutcome,
     WorldviewReader,
     WorldviewSnapshot,
+    read_finding_connectivity,
     read_hop_notes,
     read_run_footprint,
     read_snapshot,
@@ -343,6 +345,31 @@ def signal_block_reason(inp: SignalGateInputs) -> Optional[str]:
 def format_footprint(footprint: dict[str, int]) -> str:
     """`{'Prior': 2, 'Hop': 5}` -> `"Hop 5, Prior 2"`. Empty string for {}."""
     return ", ".join(f"{label} {n}" for label, n in sorted(footprint.items()))
+
+
+def format_evidence(
+    evidence: Optional[FindingConnectivity], *, graph_configured: bool = True
+) -> str:
+    """A named function rather than an inline conditional so the cases that
+    matter are testable. `None` renders "unreadable", NOT "0/0 joined".
+
+    Those two would be indistinguishable in the log while meaning opposite
+    things -- "the graph did not answer" versus "Orion wrote findings and
+    joined none of them" -- and the second is the live reading this metric was
+    built to catch, so collapsing them would blind the one instrument watching
+    for it. Same rule `format_footprint`'s caller applies one field over.
+
+    `graph_configured=False` is the THIRD state and it is not an outage.
+    `HUB_CURIOSITY_GRAPH_ORION_PASSWORD` ships blank in `.env_example`, so a
+    default install has no reader at all and `_read_turn_result` short-circuits
+    to all-empty. Rendering that as "unreadable" would have an operator
+    watching for FalkorDB to come back from an outage that was never happening
+    -- which is this field's own conflation, one level out, on the deployment
+    that is most likely to be someone's first.
+    """
+    if not graph_configured:
+        return "no graph"
+    return "unreadable" if evidence is None else evidence.summary()
 
 
 def build_investigation_journal_entry(
@@ -684,29 +711,44 @@ class CuriosityInvestigation:
 
     async def _read_turn_result(
         self, run_id: str
-    ) -> Tuple[Optional[TurnOutcome], Optional[dict[str, int]], list[tuple[int, str]]]:
+    ) -> Tuple[
+        Optional[TurnOutcome],
+        Optional[dict[str, int]],
+        list[tuple[int, str]],
+        Optional[FindingConnectivity],
+    ]:
         """What the turn left behind in Orion's own graph.
 
         A `None` footprint means the graph could not answer, which is NOT the
-        same as Orion having written nothing -- see `read_run_footprint`."""
+        same as Orion having written nothing -- see `read_run_footprint`. The
+        same rule holds for the connectivity read next to it.
+
+        All four reads share ONE `to_thread` hop rather than getting their own.
+        They are sequential queries against the same reader either way, and
+        splitting them would buy no concurrency while giving a partial result
+        four ways to be half-populated."""
         if self._reader is None:
-            return None, None, []
+            return None, None, [], None
         reader = self._reader
 
         def _read() -> Tuple[
-            Optional[TurnOutcome], Optional[dict[str, int]], list[tuple[int, str]]
+            Optional[TurnOutcome],
+            Optional[dict[str, int]],
+            list[tuple[int, str]],
+            Optional[FindingConnectivity],
         ]:
             return (
                 read_turn_outcome(reader, run_id),
                 read_run_footprint(reader, run_id),
                 read_hop_notes(reader, run_id),
+                read_finding_connectivity(reader, run_id),
             )
 
         try:
             return await asyncio.to_thread(_read)
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_turn_result_read_failed run=%s err=%s", run_id, exc)
-            return None, None, []
+            return None, None, [], None
 
     # --- the tick ----------------------------------------------------------
 
@@ -1159,7 +1201,7 @@ class CuriosityInvestigation:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
             return "empty_generation"
 
-        outcome, footprint, hops = await self._read_turn_result(run_id)
+        outcome, footprint, hops, evidence = await self._read_turn_result(run_id)
 
         await self._journal(
             material=material,
@@ -1171,12 +1213,18 @@ class CuriosityInvestigation:
             graph_footprint=footprint,
             hop_notes=hops,
         )
+        # `evidence=` is OPERATOR TELEMETRY and stays out of the journal on
+        # purpose. The journal is Orion's own written result; an orphan-rate
+        # statistic there would be a health check wearing Orion's voice, and
+        # nothing reads a journal entry back into a later prompt anyway, so it
+        # would inform no one it was not already informing here.
         logger.info(
-            "curiosity_investigation_journaled run=%s chars=%s wrote=%s hops=%s "
-            "continue=%s reach_out=%s corr=%s",
+            "curiosity_investigation_journaled run=%s chars=%s wrote=%s evidence=%s "
+            "hops=%s continue=%s reach_out=%s corr=%s",
             run_id,
             len(text),
             "unreadable" if footprint is None else (format_footprint(footprint) or "nothing"),
+            format_evidence(evidence, graph_configured=self._reader is not None),
             len(hops),
             bool(outcome and outcome.continue_line),
             bool(outcome and outcome.reach_out),

@@ -15,6 +15,7 @@ import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.curiosity.study_material import StudyMaterial, assemble_study_material
+from orion.curiosity.worldview import FindingConnectivity
 # NOT `from scripts import curiosity_investigation as ci`: with the repo-root
 # tests on the same pytest invocation, `scripts` resolves to the repo-root
 # package instead of this service's, and collection fails with ImportError --
@@ -26,6 +27,7 @@ from scripts.curiosity_investigation import (
     SchedulingGateInputs,
     SignalGateInputs,
     build_investigation_journal_entry,
+    format_evidence,
     in_window,
     window_is_configured,
     paced_cooldown_sec,
@@ -1561,3 +1563,87 @@ def test_a_turn_that_raises_an_ordinary_error_still_costs_its_slot() -> None:
         asyncio.run(loop.tick())
     now = datetime.now(timezone.utc)
     assert int(bus.redis.values[loop._daily_key(now)]) == 3
+
+
+# --- was the finding joined to anything -------------------------------------
+#
+# `wrote=` proves an edge was drawn somewhere in the run. `evidence=` proves
+# the FINDINGS were what got joined, which is the claim the kickoff prompt's
+# edge instruction actually makes. First live reading, run `d05ef10b303a` on
+# 2026-08-29: `Finding 2, Hop 1, PriorRevision 2, TurnOutcome 1` in the
+# footprint and `0/2 joined` here, on a run that refuted two priors and wrote
+# findings plainly bearing on a third. The footprint alone reads as a
+# productive run, because it is one.
+
+
+def test_an_unreadable_connectivity_read_is_not_reported_as_zero_joined() -> None:
+    """The two states that must never render alike.
+
+    `None` is "the graph did not answer". `0/2 joined` is "Orion wrote two
+    findings and connected neither" -- the live failure this metric exists to
+    catch. An inline `evidence.summary() if evidence else ...` would print
+    the same string for both if the empty case ever grew a default, so the
+    distinction gets a named function and a test rather than a conditional.
+    """
+    assert format_evidence(None) == "unreadable"
+    assert format_evidence(FindingConnectivity(total=2, connected=0)) == "0/2 joined"
+    assert format_evidence(FindingConnectivity(total=0, connected=0)) == "no findings"
+
+
+def test_a_graph_that_was_never_configured_is_not_reported_as_an_outage() -> None:
+    """The third state, and the one a default install actually hits.
+
+    `HUB_CURIOSITY_GRAPH_ORION_PASSWORD` ships blank in `.env_example`, so
+    `self._reader is None` and every run would have logged `evidence=unreadable`
+    -- sending an operator to look for a FalkorDB outage that was never
+    happening. This field was introduced specifically to keep "did not answer"
+    apart from "answered zero"; inheriting that same conflation one level out,
+    on the most common deployment, would defeat the point of adding it.
+    """
+    assert format_evidence(None, graph_configured=False) == "no graph"
+    assert format_evidence(None, graph_configured=True) == "unreadable"
+
+
+def test_the_turn_result_read_carries_connectivity_alongside_the_footprint() -> None:
+    """All four reads come back from one `to_thread` hop.
+
+    ASSERTS THE CONNECTIVITY QUERY WAS ACTUALLY ISSUED, not merely that the
+    tuple has four slots: the stub returns `[]` for an unmatched needle, so a
+    result assertion alone would pass against a loop that never called the new
+    reader at all.
+    """
+
+    class _Reader:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def query(self, cypher: str):
+            self.queries.append(cypher)
+            if "AS connected" in cypher:
+                return [{"total": 3, "connected": 1}]
+            if "MATCH (n) WHERE n.run_id" in cypher:
+                return [{"label": "Finding", "n": 3}]
+            return []
+
+    loop = _loop(_FakeBus())
+    reader = _Reader()
+    loop._reader = reader  # type: ignore[assignment]
+
+    outcome, footprint, hops, evidence = asyncio.run(loop._read_turn_result("abc123"))
+
+    assert footprint == {"Finding": 3}
+    assert evidence == FindingConnectivity(total=3, connected=1)
+    assert evidence.orphaned == 2
+    assert any("AS connected" in q for q in reader.queries), (
+        "the connectivity query was never issued; this test proves nothing without it"
+    )
+
+
+def test_a_loop_with_no_reader_returns_four_empties_not_three() -> None:
+    """The arity guard. `_read_turn_result` gained a fourth slot and has
+    exactly one caller, which unpacks positionally -- a stale early return
+    would raise ValueError inside the tick, after the turn had already run and
+    spent a slot."""
+    loop = _loop(_FakeBus())
+    loop._reader = None
+    assert asyncio.run(loop._read_turn_result("abc123")) == (None, None, [], None)

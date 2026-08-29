@@ -124,12 +124,18 @@ def test_sweep_ignores_expected_offline_nodes() -> None:
     assert sweep_absent_nodes(node_bio=bio, now=FIXED_TS) == []
 
 
-def test_sweep_flags_a_node_that_has_never_reported() -> None:
-    """The `prometheus` case: catalogued `expected_online: true` with
-    monitoring/logs/metrics, and zero rows in orion_biometrics across the whole
-    table's history. `last_seen_at is None` is stale, not exempt."""
-    bio = _bio({"prometheus": _state("prometheus", expected_online=True, last_seen_at=None)})
-    assert sweep_absent_nodes(node_bio=bio, now=FIXED_TS) == ["prometheus"]
+def test_sweep_flags_a_projection_node_with_no_last_seen_at() -> None:
+    """`last_seen_at is None` for a node that IS in the projection counts as stale.
+
+    Deliberately NOT claiming to cover the `prometheus` case. prometheus is
+    catalogued `expected_online: true` with monitoring/logs/metrics and has never
+    written an orion_biometrics row -- so it is absent from the projection entirely
+    (live check 2026-08-29: the projection holds only atlas, circe, athena) and this
+    function cannot see it. Catching never-reported nodes needs a catalog sweep;
+    phase 2. See sweep_absent_nodes()'s docstring.
+    """
+    bio = _bio({"circe": _state("circe", expected_online=True, last_seen_at=None)})
+    assert sweep_absent_nodes(node_bio=bio, now=FIXED_TS) == ["circe"]
 
 
 def test_sweep_is_quiet_just_under_the_threshold() -> None:

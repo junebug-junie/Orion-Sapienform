@@ -111,6 +111,13 @@ them already exists as schema; the joins are missing.
 
 ### Phase 2 (not this patch)
 
+- **Sweep the catalog, not just the projection.** `sweep_absent_nodes()` iterates
+  `node_bio.nodes`, which is built from received events, so a node that has never reported
+  once is invisible to it. Live 2026-08-29 the projection holds only `atlas`, `circe`,
+  `athena` -- while `prometheus` is catalogued `expected_online: true` with
+  `monitoring/logs/metrics: true` and has never written an `orion_biometrics` row in the
+  table's entire history. A declared node that never appears is the quietest possible
+  failure and phase 1 does not catch it.
 - `CapabilityAvailabilityProjectionV1`: `capability -> {providers, available_providers,
   degraded_since}`. Reducer over the pressure projection. The single authoritative answer
   to "is C servable".

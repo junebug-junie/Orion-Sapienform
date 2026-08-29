@@ -102,11 +102,17 @@ def sweep_absent_nodes(
     `invoke_biometrics_pressure()` the event path uses, so absence and presence
     produce the same downstream shapes.
 
-    A node whose `last_seen_at` is None has never reported in this projection's
-    lifetime. That is treated as stale (`_is_stale` returns True for None), which
-    is deliberate: a declared-online node that has never once appeared is exactly
-    the `prometheus` case -- catalogued `expected_online: true`, `monitoring: true`,
-    and zero rows in `orion_biometrics` across the table's whole history.
+    A node whose `last_seen_at` is None but which IS present in the projection is
+    treated as stale (`_is_stale` returns True for None).
+
+    **Known gap, deliberate for phase 1:** this iterates `node_bio.nodes`, which is
+    built from received biometrics events. A node that has never reported even once
+    is not in that projection at all and therefore cannot be swept here. That is not
+    hypothetical -- `prometheus` is catalogued `expected_online: true` with
+    `monitoring/logs/metrics: true` and has never written a single `orion_biometrics`
+    row; the live projection contains only `atlas`, `circe`, `athena`. Catching a
+    never-reported node requires sweeping the catalog, not the projection, and is
+    tracked as a phase-2 item in the design doc rather than silently implied here.
     """
     clock = _utc_now(now)
     absent: list[str] = []

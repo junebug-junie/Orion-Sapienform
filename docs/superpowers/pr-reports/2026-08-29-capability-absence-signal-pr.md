@@ -45,7 +45,7 @@ layer modelled load and never presence.
 - `orion/substrate/biometrics_loop/pressure_organ.py`: `sweep_absent_nodes()` + Rule F
 - `orion/substrate/biometrics_loop/candidate_events.py`: `semantic_role` in `trace_id`
 - `orion/substrate/biometrics_loop/pressure_reducer.py`: expand real capability names
-- `tests/test_capability_absence_signal.py`: 10 tests (new)
+- `tests/test_capability_absence_signal.py`: 9 tests (new)
 - `docs/superpowers/specs/2026-08-29-capability-absence-signal-design.md`: design (new)
 
 ## Schema / bus / API changes
@@ -68,7 +68,7 @@ no sync was required.
 ## Tests run
 
 ```text
-pytest tests/test_capability_absence_signal.py -q            -> 10 passed
+pytest tests/test_capability_absence_signal.py -q            -> 9 passed
 pytest tests/test_biometrics_pressure_organ.py \
        tests/test_node_pressure_reducer.py \
        tests/test_biometrics_pipeline_ilo_pressures.py \

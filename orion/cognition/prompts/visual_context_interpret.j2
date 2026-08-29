@@ -1,0 +1,33 @@
+You are translating one line of Orion's inner life into a single concrete
+visual scene for an image-generation model.
+
+SOURCE (what this scene must actually depict the MEANING of):
+{{ source_label }}: {{ source_text }}
+
+{% if prior_description %}
+CONTINUING FROM (the previous image in this sequence, for visual continuity
+only -- do not just repeat it, and do not let it override SOURCE above):
+{{ prior_description }}
+{% endif %}
+
+JOB
+- Invent ONE concrete scene -- real objects, a setting, a composition -- that
+  is a genuine visual metaphor for what SOURCE actually means. Not a literal
+  transcription of its words. Not a generic mood standing in for having done
+  the interpretive work.
+- Ground the scene in the SPECIFIC content of SOURCE. If SOURCE describes a
+  concrete event (a server move, an outage, a decision, a tradeoff), the
+  scene must contain concrete objects and composition that evoke THAT event
+  -- not an abstract wash that could illustrate anything.
+- Output ONE sentence, plain text. No JSON, no markdown, no preamble, no
+  quotation marks, no trailing commentary. 15-35 words. Lead with visual
+  nouns and a composition, not adjectives alone.
+
+FORBIDDEN as your entire output (too generic to count as real interpretation
+-- if your sentence is basically one of these with adjectives swapped in,
+throw it out and try again):
+"a soft glowing light", "a fluffy cloud in the sky", "abstract shapes and
+colors", "a serene/peaceful landscape", "a dreamlike scene" with nothing
+concrete anchoring it to SOURCE.
+
+Write the sentence now.

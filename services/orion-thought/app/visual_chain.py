@@ -112,6 +112,36 @@ decision (different VRAM footprint, different generation parameters, a
 fresh Circe GPU/VRAM check) -- out of scope for this patch, which fixes
 the model actually running today.
 
+Patch 8 (design doc §22): FLUX.1-schnell shipped (§19) and Patch 7's rotation
+fixed which clause reaches the model, but Juniper's next report was the real
+remaining gap -- "how does this translate into fluffy cloud??" pointed at a
+`memory_text` clause about moving a server between Ethernet ports. Every
+context-seed above is composed VERBATIM into the prompt (`build_visual_prompt`
+is pure string concatenation, no semantic step at all); the diffusion model
+then pattern-matches whatever concrete nouns happen to be in that raw text,
+and generic abstract prose has none -- so it falls back to its own generic
+"soft dreamlike style" priors (clouds, nebulas, aqueducts), regardless of how
+correctly the text was selected, capped, and displayed.
+
+`interpret_context_for_visual` below closes this: one metacog-routed
+cortex-exec call (`visual_context_interpret` verb) that asks the LLM to
+invent a concrete visual metaphor for the selected slot's actual meaning,
+run between `select_context_slot` and `build_visual_prompt`. Deliberately
+the SAME reuse the text-reverie chain already established for its own
+metacog-routed narration call (`reverie.py`'s `_metacog_route()`) -- not a
+new mechanism, and per Juniper's stated priority ("diffusion trumps text if
+we are too tight"), this call always stays on plain `metacog` (never
+`metacog_background`), so it is never the one waiting under lane contention.
+Fails open on any timeout/error/empty response straight back to the raw
+selected-slot text -- `build_visual_prompt`'s own fallback behavior is
+completely unchanged, so a metacog outage degrades this run's imagery
+quality, never breaks the chain. Default ON
+(`ORION_VISUAL_CHAIN_INTERPRETATION_ENABLED`): this is the actual fix for
+the reported bug, not an experiment to observe first -- unlike Patch 8's
+sibling `ORION_REVERIE_METACOG_BACKGROUND_ENABLED` (a routing-priority
+change Juniper explicitly wanted to watch fail before activating), there is
+no failure mode here worth observing unmitigated first.
+
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
 `prior_description`), not a multi-step loop within one run like the text
@@ -159,12 +189,15 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
+from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
 from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
+from .cortex_client import CortexExecClient
 from .settings import settings
 from .store import (
     load_latest_memory_crystallization,
@@ -182,6 +215,20 @@ logger = logging.getLogger("orion-thought.visual_chain")
 # written anything). Deliberately small and neutral -- this only needs to
 # produce *something* real to generate and observe.
 DEFAULT_SEED_PROMPT = "a calm orion, soft abstract light, dreaming"
+
+# Patch 8: the metacog interpretation call's route/lane, named rather than three independent
+# literals -- review caught this live 2026-08-29. Deliberately NOT a settings flag or shared
+# helper with reverie.py's own _metacog_route(): unlike reverie's calls,
+# ORION_REVERIE_METACOG_BACKGROUND_ENABLED must never move this one -- per Juniper's stated
+# priority ("diffusion trumps text if we are too tight"), this call is the one that must never
+# wait, in every configuration. If a future patch ever wants this to become conditional, that is
+# a deliberate policy change to make here explicitly, not something a shared helper should paper
+# over.
+_INTERPRETATION_LLM_ROUTE = "metacog"
+# Same background-lane/no-chat-fallback contract reverie.py's own metacog-routed calls use
+# (build_reverie_context, build_expectation_judge_context) -- named here so this call site's
+# intent reads the same way, not because the two files share a helper.
+_METACOG_LLM_LANE_OPTIONS: dict[str, Any] = {"llm_lane": "background", "allow_chat_fallback": False}
 
 # Defense-in-depth single-flight guard (module docstring). Not the mechanism
 # that makes overlap structurally impossible -- the worker loop's own
@@ -280,6 +327,97 @@ def select_context_slot(
     idx = rotation_index % len(available)
     slot_name, slot_text = available[idx]
     return slot_name, slot_text, rotation_index + 1
+
+
+def build_visual_interpretation_plan_request(
+    *,
+    source_label: str,
+    source_text: str,
+    prior_description: str | None,
+    correlation_id: str,
+) -> PlanExecutionRequest:
+    """Plan request for the `visual_context_interpret` verb (Patch 8, module
+    docstring). Always plain `metacog`, never `metacog_background` -- see
+    Patch 8's writeup on why this call is the one that must never wait.
+    """
+    plan = build_plan_for_verb("visual_context_interpret", mode=_INTERPRETATION_LLM_ROUTE)
+    return PlanExecutionRequest(
+        plan=plan,
+        args=PlanExecutionArgs(
+            request_id=correlation_id,
+            trigger_source=settings.service_name,
+            extra={
+                "llm_profile": _INTERPRETATION_LLM_ROUTE,
+                "mode": _INTERPRETATION_LLM_ROUTE,
+                "llm_route": _INTERPRETATION_LLM_ROUTE,
+                "execution_lane": "background",
+            },
+        ),
+        context={
+            "source_label": source_label,
+            "source_text": source_text,
+            "prior_description": (prior_description or "").strip() or None,
+            "options": _METACOG_LLM_LANE_OPTIONS,
+        },
+    )
+
+
+async def interpret_context_for_visual(
+    bus: OrionBusAsync,
+    *,
+    cortex_client: CortexExecClient | None,
+    slot_name: str,
+    slot_text: str,
+    prior_description: str | None,
+    correlation_id: str,
+    timeout_sec: float,
+) -> str | None:
+    """Turn the selected context-seed clause into a concrete visual metaphor
+    via one metacog-routed cortex-exec call (Patch 8, module docstring).
+
+    Fails open to `None` on ANY failure -- timeout, RPC error, malformed or
+    empty response -- never raises. The caller falls back to `slot_text`
+    unchanged, exactly today's behavior, so a metacog outage degrades this
+    run's imagery, never breaks the chain.
+    """
+    client = cortex_client or CortexExecClient(
+        bus, request_channel=settings.channel_cortex_exec_request
+    )
+    label = _CONTEXT_SLOT_LABELS.get(slot_name, "Orion notices")
+    plan_request = build_visual_interpretation_plan_request(
+        source_label=label,
+        source_text=slot_text,
+        prior_description=prior_description,
+        correlation_id=correlation_id,
+    )
+    try:
+        exec_result = await client.execute_plan(
+            source=_source(),
+            req=plan_request,
+            correlation_id=correlation_id,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        logger.warning(
+            "visual chain interpretation call failed slot=%s corr=%s err=%s",
+            slot_name, correlation_id, exc,
+        )
+        return None
+    raw = exec_result.get("final_text") if isinstance(exec_result, dict) else None
+    if not isinstance(raw, str):
+        # Review finding: extract_stance_react_payload was built for stance_react's richer
+        # multi-step fallback chain (a nested step's structured/json/payload dict). This
+        # verb's plan has exactly one step with plain-text output -- final_text is the only
+        # shape ever expected, so a missing or non-string result is logged and treated as a
+        # failure to interpret, not silently degraded through a fallback chain meant for a
+        # different verb.
+        logger.warning(
+            "visual chain interpretation result missing final_text slot=%s corr=%s",
+            slot_name, correlation_id,
+        )
+        return None
+    text = raw.strip()
+    return text or None
 
 
 def build_visual_prompt(
@@ -483,7 +621,7 @@ async def request_caption(
 
 
 async def run_visual_chain_once(
-    bus: OrionBusAsync, *, now_fn: Any = _now
+    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None
 ) -> ReverieVisualChainV1 | None:
     """One generate -> store -> observe -> persist run. Returns the chain
     readout, or None if a run was already in flight (single-flight no-op,
@@ -493,12 +631,27 @@ async def run_visual_chain_once(
         logger.info("visual chain skipped: run already in flight")
         return None
 
-    async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
-                                  prior_description: str | None, context_text: str | None,
-                                  self_study_text: str | None, memory_text: str | None,
-                                  context_slot_used: str | None, context_slot_rotation: int,
-                                  continuity_streak: int, continuity_reset: bool
-                                  ) -> ReverieVisualChainV1:
+    async def _generation_failed(
+        *,
+        chain_id: str,
+        error: BaseException,
+        prompt: str,
+        prior_description: str | None,
+        context_text: str | None,
+        self_study_text: str | None,
+        memory_text: str | None,
+        context_slot_used: str | None,
+        context_slot_rotation: int,
+        context_slot_interpreted: str | None,
+        continuity_streak: int,
+        continuity_reset: bool,
+    ) -> ReverieVisualChainV1:
+        # Review finding: this closure's positional parameter list had grown to 12 args
+        # across Patches 4-8, several adjacent int/bool/str-or-None values with nothing
+        # stopping a future edit from silently transposing two of them (e.g.
+        # continuity_streak/continuity_reset) at a call site -- keyword-only forces every
+        # call site to name each value, so a transposition is a TypeError, not a silent
+        # data-corruption bug in a persisted chain_json row.
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
@@ -512,6 +665,7 @@ async def run_visual_chain_once(
                 "memory_text": memory_text,
                 "context_slot_used": context_slot_used,
                 "context_slot_rotation": context_slot_rotation,
+                "context_slot_interpreted": context_slot_interpreted,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "error": str(error),
@@ -587,7 +741,24 @@ async def run_visual_chain_once(
         context_slot_used, context_slot_text, context_slot_rotation = select_context_slot(
             context_text, self_study_text, memory_text, context_slot_rotation
         )
-        prompt = build_visual_prompt(effective_prior, context_slot_used, context_slot_text)
+        # Patch 8 (module docstring): turn the raw selected clause into a concrete visual
+        # metaphor before composing the prompt. Fails open to None -- build_visual_prompt then
+        # gets context_slot_text unchanged, exactly Patch 7's behavior, so a metacog outage
+        # degrades this run's imagery, never breaks the chain.
+        context_slot_interpreted: str | None = None
+        if context_slot_used and context_slot_text and settings.visual_chain_interpretation_enabled:
+            context_slot_interpreted = await interpret_context_for_visual(
+                bus,
+                cortex_client=cortex_client,
+                slot_name=context_slot_used,
+                slot_text=context_slot_text,
+                prior_description=effective_prior,
+                correlation_id=chain_id,
+                timeout_sec=settings.visual_chain_interpretation_timeout_sec,
+            )
+        prompt = build_visual_prompt(
+            effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
+        )
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -598,9 +769,18 @@ async def run_visual_chain_once(
             )
         except Exception as exc:
             return await _generation_failed(
-                chain_id, exc, prompt, continuity_fallback, context_text, self_study_text,
-                memory_text, context_slot_used, context_slot_rotation,
-                continuity_streak, continuity_reset,
+                chain_id=chain_id,
+                error=exc,
+                prompt=prompt,
+                prior_description=continuity_fallback,
+                context_text=context_text,
+                self_study_text=self_study_text,
+                memory_text=memory_text,
+                context_slot_used=context_slot_used,
+                context_slot_rotation=context_slot_rotation,
+                context_slot_interpreted=context_slot_interpreted,
+                continuity_streak=continuity_streak,
+                continuity_reset=continuity_reset,
             )
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
@@ -626,9 +806,18 @@ async def run_visual_chain_once(
 
         if isinstance(store_result, BaseException):
             return await _generation_failed(
-                chain_id, store_result, prompt, continuity_fallback, context_text, self_study_text,
-                memory_text, context_slot_used, context_slot_rotation,
-                continuity_streak, continuity_reset,
+                chain_id=chain_id,
+                error=store_result,
+                prompt=prompt,
+                prior_description=continuity_fallback,
+                context_text=context_text,
+                self_study_text=self_study_text,
+                memory_text=memory_text,
+                context_slot_used=context_slot_used,
+                context_slot_rotation=context_slot_rotation,
+                context_slot_interpreted=context_slot_interpreted,
+                continuity_streak=continuity_streak,
+                continuity_reset=continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
 
@@ -666,6 +855,7 @@ async def run_visual_chain_once(
                 "memory_text": memory_text,
                 "context_slot_used": context_slot_used,
                 "context_slot_rotation": context_slot_rotation,
+                "context_slot_interpreted": context_slot_interpreted,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "artifact_sha256": stored.sha256,

@@ -505,7 +505,15 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering of that thought"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    # Review finding: without an explicit cortex_client, a real context_slot_used here
+    # (Patch 8) would fire interpret_context_for_visual against this SAME fake bus, whose
+    # rpc_request was only configured to answer the vision-caption RPC -- it happened to
+    # fail open safely by coincidence (the vision-shaped payload doesn't match final_text),
+    # not by anything this test asserted. Explicit stub makes that failure-open path
+    # deliberate, not accidental.
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     assert "a real reverie thought" in chain.chain_json["prompt"]
@@ -537,7 +545,13 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
 
-    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+    # Patch 8: an explicit cortex_client stub, not a bare AsyncMock() bus -- this test is
+    # about the generation-failure path, not interpretation, and a bare AsyncMock's
+    # auto-mocked bus.rpc_request/.codec chain otherwise produces an unrelated "coroutine
+    # was never awaited" warning once interpret_context_for_visual also runs.
+    chain = await visual_chain.run_visual_chain_once(
+        AsyncMock(), cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["context_text"] == "a real reverie thought"
@@ -651,14 +665,21 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "e" * 64)
 
+    # Review finding: a real context_slot_used here would otherwise fire
+    # interpret_context_for_visual against the same fake bus configured only for the
+    # vision-caption RPC -- explicit stub makes the fail-open path deliberate.
+    cortex_client = _FakeCortexClient(error=RuntimeError("not exercised here"))
+
     # Run 1: no prior yet -- seeds from context, streak stays 0 (nothing to cap).
-    r1 = await visual_chain.run_visual_chain_once(_fake_bus(_vision_result_payload("an aqueduct")))
+    r1 = await visual_chain.run_visual_chain_once(
+        _fake_bus(_vision_result_payload("an aqueduct")), cortex_client=cortex_client
+    )
     assert r1.chain_json["continuity_streak"] == 0
     assert r1.chain_json["continuity_reset"] is False
 
     # Run 2: real continuity available, streak 0 < cap(2) -- continuity used, streak -> 1.
     r2 = await visual_chain.run_visual_chain_once(
-        _fake_bus(_vision_result_payload("an aqueduct at dusk"))
+        _fake_bus(_vision_result_payload("an aqueduct at dusk")), cortex_client=cortex_client
     )
     assert "an aqueduct" in generate_prompts[1]
     assert r2.chain_json["continuity_streak"] == 1
@@ -666,7 +687,7 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
 
     # Run 3: streak 1 < cap(2) -- still allowed, streak -> 2.
     r3 = await visual_chain.run_visual_chain_once(
-        _fake_bus(_vision_result_payload("the same aqueduct again"))
+        _fake_bus(_vision_result_payload("the same aqueduct again")), cortex_client=cortex_client
     )
     assert "an aqueduct at dusk" in generate_prompts[2]
     assert r3.chain_json["continuity_streak"] == 2
@@ -676,7 +697,8 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     # prompt must NOT contain the prior continuity text, proving the cap
     # actually changed what got generated, not just what got recorded.
     r4 = await visual_chain.run_visual_chain_once(
-        _fake_bus(_vision_result_payload("something completely different"))
+        _fake_bus(_vision_result_payload("something completely different")),
+        cortex_client=cortex_client,
     )
     assert "the same aqueduct again" not in generate_prompts[3]
     assert r4.chain_json["continuity_streak"] == 0
@@ -718,7 +740,13 @@ async def test_continuity_reset_survives_a_failed_generation(tmp_path, monkeypat
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
 
-    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+    # Patch 8: an explicit cortex_client stub, not a bare AsyncMock() bus -- this test is
+    # about the generation-failure path, not interpretation, and a bare AsyncMock's
+    # auto-mocked bus.rpc_request/.codec chain otherwise produces an unrelated "coroutine
+    # was never awaited" warning once interpret_context_for_visual also runs.
+    chain = await visual_chain.run_visual_chain_once(
+        AsyncMock(), cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["continuity_reset"] is True
@@ -798,7 +826,9 @@ async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_js
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering of that observation"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     assert "vision events dropped 0.36x vs baseline" in chain.chain_json["prompt"]
@@ -833,7 +863,13 @@ async def test_run_visual_chain_once_generation_failure_records_self_study_text(
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
 
-    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+    # Patch 8: an explicit cortex_client stub, not a bare AsyncMock() bus -- this test is
+    # about the generation-failure path, not interpretation, and a bare AsyncMock's
+    # auto-mocked bus.rpc_request/.codec chain otherwise produces an unrelated "coroutine
+    # was never awaited" warning once interpret_context_for_visual also runs.
+    chain = await visual_chain.run_visual_chain_once(
+        AsyncMock(), cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["self_study_text"] == "vision events dropped 0.36x vs baseline"
@@ -866,7 +902,9 @@ async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering of that memory"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     assert "Orion and Juniper talked through the mesh work" in chain.chain_json["prompt"]
@@ -901,7 +939,13 @@ async def test_run_visual_chain_once_generation_failure_records_memory_text(
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
 
-    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+    # Patch 8: an explicit cortex_client stub, not a bare AsyncMock() bus -- this test is
+    # about the generation-failure path, not interpretation, and a bare AsyncMock's
+    # auto-mocked bus.rpc_request/.codec chain otherwise produces an unrelated "coroutine
+    # was never awaited" warning once interpret_context_for_visual also runs.
+    chain = await visual_chain.run_visual_chain_once(
+        AsyncMock(), cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["memory_text"] == "Orion and Juniper talked through the mesh work"
@@ -940,7 +984,9 @@ async def test_run_visual_chain_once_uses_only_one_context_seed_per_run_when_all
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
 
     bus = _fake_bus(_vision_result_payload("a rendering"))
-    chain = await visual_chain.run_visual_chain_once(bus)
+    chain = await visual_chain.run_visual_chain_once(
+        bus, cortex_client=_FakeCortexClient(error=RuntimeError("not exercised here"))
+    )
 
     assert chain is not None
     # Rotation starts at index 0 -> "context" wins this run.
@@ -993,11 +1039,265 @@ async def test_context_slot_rotation_advances_across_successive_runs(tmp_path, m
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "j" * 64)
 
+    cortex_client = _FakeCortexClient(error=RuntimeError("not exercised here"))
     slots_used = []
     for _ in range(4):
         chain = await visual_chain.run_visual_chain_once(
-            _fake_bus(_vision_result_payload("a rendering"))
+            _fake_bus(_vision_result_payload("a rendering")), cortex_client=cortex_client
         )
         slots_used.append(chain.chain_json["context_slot_used"])
 
     assert slots_used == ["context", "self_study", "memory", "context"]
+
+
+# --- Patch 8: metacog interpretation step -----------------------------------
+#
+# The real remaining gap after Patch 7 fixed which clause reaches the model:
+# build_visual_prompt is pure string concatenation, so the diffusion model
+# pattern-matches whatever concrete nouns happen to be in the raw text --
+# generic abstract prose has none, hence the clouds/nebulas/aqueducts
+# fallback. interpret_context_for_visual is the fix: one metacog-routed
+# cortex-exec call that invents a concrete visual metaphor before the prompt
+# is built. Fails open to the raw slot text on ANY failure -- Patch 7's
+# behavior is the fallback, not replaced.
+
+
+class _FakeCortexClient:
+    """Stub CortexExecClient -- captures the plan_request it was given and
+    returns/raises whatever the test configures, no real bus/RPC plumbing."""
+
+    def __init__(self, *, result: dict[str, Any] | None = None, error: BaseException | None = None):
+        self.result = result
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute_plan(self, *, source, req, correlation_id, timeout_sec):
+        self.calls.append(
+            {"source": source, "req": req, "correlation_id": correlation_id, "timeout_sec": timeout_sec}
+        )
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def test_build_visual_interpretation_plan_request_always_plain_metacog():
+    """Never metacog_background -- this call must always dispatch immediately,
+    per Juniper's stated priority ('diffusion trumps text if we are too
+    tight'). Unlike reverie.py's _metacog_route(), there is no flag branch
+    here at all -- this is load-bearing, not an oversight."""
+    from app import visual_chain
+
+    req = visual_chain.build_visual_interpretation_plan_request(
+        source_label="Orion remembers",
+        source_text="we moved a server between Ethernet ports",
+        prior_description="a lantern swinging over black water",
+        correlation_id="corr-1",
+    )
+    assert req.args.extra["llm_route"] == "metacog"
+    assert req.args.extra["mode"] == "metacog"
+    assert req.context["options"]["llm_lane"] == "background"
+    assert req.context["options"]["allow_chat_fallback"] is False
+    assert req.context["source_label"] == "Orion remembers"
+    assert req.context["source_text"] == "we moved a server between Ethernet ports"
+    assert req.context["prior_description"] == "a lantern swinging over black water"
+
+
+def test_build_visual_interpretation_plan_request_blank_prior_becomes_none():
+    from app import visual_chain
+
+    req = visual_chain.build_visual_interpretation_plan_request(
+        source_label="Orion remembers", source_text="x", prior_description="   ",
+        correlation_id="corr-1",
+    )
+    assert req.context["prior_description"] is None
+
+
+@pytest.mark.asyncio
+async def test_interpret_context_for_visual_returns_stripped_text_on_success():
+    from app import visual_chain
+
+    client = _FakeCortexClient(result={"final_text": "  a lantern over black water  "})
+    text = await visual_chain.interpret_context_for_visual(
+        AsyncMock(), cortex_client=client, slot_name="memory", slot_text="raw clause",
+        prior_description=None, correlation_id="corr-1", timeout_sec=30.0,
+    )
+    assert text == "a lantern over black water"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_interpret_context_for_visual_none_on_timeout():
+    import asyncio as _asyncio
+
+    from app import visual_chain
+
+    client = _FakeCortexClient(error=_asyncio.TimeoutError())
+    text = await visual_chain.interpret_context_for_visual(
+        AsyncMock(), cortex_client=client, slot_name="context", slot_text="raw clause",
+        prior_description=None, correlation_id="corr-1", timeout_sec=30.0,
+    )
+    assert text is None
+
+
+@pytest.mark.asyncio
+async def test_interpret_context_for_visual_none_on_malformed_result():
+    from app import visual_chain
+
+    client = _FakeCortexClient(result={"no_final_text_or_steps_here": True})
+    text = await visual_chain.interpret_context_for_visual(
+        AsyncMock(), cortex_client=client, slot_name="context", slot_text="raw clause",
+        prior_description=None, correlation_id="corr-1", timeout_sec=30.0,
+    )
+    assert text is None
+
+
+@pytest.mark.asyncio
+async def test_interpret_context_for_visual_none_on_blank_text():
+    from app import visual_chain
+
+    client = _FakeCortexClient(result={"final_text": "   "})
+    text = await visual_chain.interpret_context_for_visual(
+        AsyncMock(), cortex_client=client, slot_name="context", slot_text="raw clause",
+        prior_description=None, correlation_id="corr-1", timeout_sec=30.0,
+    )
+    assert text is None
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_uses_interpreted_text_in_prompt(tmp_path, monkeypatch):
+    """The actual fix, end to end: when interpretation succeeds, the concrete
+    metaphor -- not the raw abstract clause -- is what reaches the diffusion
+    prompt, and both are recorded (chain_json keeps the raw slot text under
+    its own field unchanged; the interpretation is a new, separate field)."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_memory_crystallization",
+        lambda **kw: "we moved a server between Ethernet ports",
+    )
+
+    generate_calls: list[str] = []
+    monkeypatch.setattr(
+        visual_chain, "call_diffusion_generate",
+        lambda prompt, **kw: generate_calls.append(prompt) or _fake_png(),
+    )
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "e" * 64)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    client = _FakeCortexClient(
+        result={"final_text": "a tangle of unplugged Ethernet cables coiled beside an empty rack slot"}
+    )
+    bus = _fake_bus(_vision_result_payload("a rendering"))
+    chain = await visual_chain.run_visual_chain_once(bus, cortex_client=client)
+
+    assert chain is not None
+    assert len(client.calls) == 1
+    assert "unplugged Ethernet cables" in generate_calls[0]
+    assert "we moved a server between Ethernet ports" not in generate_calls[0]
+    assert chain.chain_json["memory_text"] == "we moved a server between Ethernet ports"
+    assert (
+        chain.chain_json["context_slot_interpreted"]
+        == "a tangle of unplugged Ethernet cables coiled beside an empty rack slot"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_falls_back_to_raw_slot_text_on_interpretation_failure(
+    tmp_path, monkeypatch
+):
+    """Fail-open, exactly Patch 7's own behavior when nothing was selected --
+    a metacog outage must degrade to the raw clause, never break the run."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_memory_crystallization", lambda **kw: "the raw clause"
+    )
+
+    generate_calls: list[str] = []
+    monkeypatch.setattr(
+        visual_chain, "call_diffusion_generate",
+        lambda prompt, **kw: generate_calls.append(prompt) or _fake_png(),
+    )
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "f" * 64)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    client = _FakeCortexClient(error=RuntimeError("metacog lane down"))
+    bus = _fake_bus(_vision_result_payload("a rendering"))
+    chain = await visual_chain.run_visual_chain_once(bus, cortex_client=client)
+
+    assert chain is not None
+    assert "the raw clause" in generate_calls[0]
+    assert chain.chain_json["context_slot_interpreted"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_skips_interpretation_when_disabled(tmp_path, monkeypatch):
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_interpretation_enabled", False)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_memory_crystallization", lambda **kw: "the raw clause"
+    )
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "g" * 64)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    client = _FakeCortexClient(result={"final_text": "should never be called"})
+    bus = _fake_bus(_vision_result_payload("a rendering"))
+    chain = await visual_chain.run_visual_chain_once(bus, cortex_client=client)
+
+    assert chain is not None
+    assert client.calls == []
+    assert chain.chain_json["context_slot_interpreted"] is None
+    assert "the raw clause" in chain.chain_json["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_skips_interpretation_when_no_slot_available(
+    tmp_path, monkeypatch
+):
+    """Nothing to interpret when select_context_slot itself picked nothing --
+    the interpretation call must not fire on an empty/None slot."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "h" * 64)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    client = _FakeCortexClient(result={"final_text": "should never be called"})
+    bus = _fake_bus(_vision_result_payload("a rendering"))
+    chain = await visual_chain.run_visual_chain_once(bus, cortex_client=client)
+
+    assert chain is not None
+    assert client.calls == []
+    assert chain.chain_json["context_slot_interpreted"] is None

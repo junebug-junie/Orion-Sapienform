@@ -1,0 +1,27 @@
+name: visual_context_interpret
+label: Visual Context Interpret
+description: >
+  Turn one selected reverie context-seed clause (visual_chain.py's
+  select_context_slot winner) into a single concrete, paintable visual scene
+  for orion-diffusion-host -- interpretation of what the clause means, not a
+  literal transcription of its words and not a generic mood substituting for
+  having done that work. Read-only; emits no action by itself.
+
+category: ExecutiveControl
+priority: normal
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 45000
+
+services:
+  - LLMGatewayService
+
+prompt_template: visual_context_interpret.j2
+
+steps:
+  - name: llm_visual_context_interpret
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: visual_context_interpret.j2
+    requires_gpu: true

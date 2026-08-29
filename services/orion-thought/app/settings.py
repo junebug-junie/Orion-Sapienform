@@ -242,6 +242,21 @@ class ThoughtSettings(BaseSettings):
     visual_chain_diffusion_timeout_sec: float = Field(
         120.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
     )
+    # Patch 8 (visual_chain.py module docstring, design doc §22): the LLM interpretation step
+    # between the selected context-seed and the diffusion prompt. Default ON -- this is the
+    # actual fix for "how does this translate into fluffy cloud??", not an experiment to
+    # observe unmitigated first (unlike reverie_metacog_background_enabled above, a routing
+    # change with its own explicit observe-first request). Always plain `metacog` (never
+    # `metacog_background`) -- see that call's own docstring for why it must never wait.
+    visual_chain_interpretation_enabled: bool = Field(
+        True, alias="ORION_VISUAL_CHAIN_INTERPRETATION_ENABLED"
+    )
+    # Live-measured 2026-08-29 (docs/superpowers/specs/2026-08-20-reverie-visual-chain-
+    # design.md §21): metacog's real completions run ~1.7-2.3s, one observed 8.9s outlier.
+    # 30s gives real margin without meaningfully delaying the diffusion call that follows.
+    visual_chain_interpretation_timeout_sec: float = Field(
+        30.0, alias="ORION_VISUAL_CHAIN_INTERPRETATION_TIMEOUT_SEC"
+    )
     # Content-addressed image storage (orion.reverie.visual_storage, design
     # doc §6). Overridable so tests never touch the real mount.
     visual_chain_storage_dir: str = Field(

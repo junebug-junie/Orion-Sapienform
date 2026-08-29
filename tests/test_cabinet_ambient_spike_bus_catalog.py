@@ -19,6 +19,7 @@ def test_cabinet_ambient_spike_channel_cataloged() -> None:
     assert entry["schema_id"] == "CabinetAmbientSpikeV1"
     assert entry["message_kind"] == "cabinet.ambient.spike.v1"
     assert "orion-biometrics" in entry["producer_services"]
+    assert "orion-sql-writer" in entry["consumer_services"]
 
 
 def test_cabinet_ambient_spike_schema_registry_aligns_with_resolve() -> None:

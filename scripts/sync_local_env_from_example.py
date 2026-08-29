@@ -101,6 +101,16 @@ NEVER_SYNC_KEYS = frozenset(
 
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
+    # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
+    # matched any prefix below, and the service itself was absent from
+    # DEFAULT_SERVICES, so the default invocation considered ZERO of them
+    # while printing "No changes needed (feature keys already match
+    # .env_example)" -- output indistinguishable from a real pass. Found
+    # by running a deliberate divergence past it (PR #1956).
+    "TTS_",
+    "STT_",
+    "WHISPER_TTS_",
+    "CUDA_WATCHDOG_",
     "CRYSTALLIZER_",
     "ACTIVATION_",
     "MEMORY_FORMATION_",
@@ -333,6 +343,7 @@ DEFAULT_SERVICES = (
     "orion-vector-host",
     "orion-embodiment",
     "orion-signals",
+    "orion-whisper-tts",
 )
 
 

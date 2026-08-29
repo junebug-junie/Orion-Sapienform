@@ -151,7 +151,23 @@ Backfill protocol (CLAUDE.md §14): the six affected rows were snapshotted to
 `/tmp/topic-foundry-run-recovery/before.csv` before the reaper ran, and the result to
 `after.csv`. Six rows, status/stage only; no row deleted, no content rewritten.
 
-**The final redeploy (review-fix commit) is NOT yet verified live** -- see Risks.
+Final redeploy, verified live after an unrelated `pg_dump` released the table lock:
+
+```text
+run_recovery_scan_clean stranded=0
+
+$ curl -X POST .../runs/<failed run>/enrich
+   409 {"detail": "Run is failed, not complete; enrichment runs on completed runs only"}
+$ curl -X POST .../runs/<complete run>/enrich
+   200
+
+$ curl -X POST .../api/substrate/concepts/ingest-topic-foundry
+   {"available": true, "segments_fetched": 375, "segments_with_speakers": 255,
+    "participation_edges": 34, "edges_written": 170}
+
+$ psql -c "select status, count(*) from topic_foundry_runs group by 1"
+   complete 13 | failed 4 | running 1   (the one just triggered, legitimately in flight)
+```
 
 ## Review findings fixed
 
@@ -240,19 +256,17 @@ scripts/safe_docker_build.sh orion-topic-foundry up -d topic-foundry
 
 ## Risks / concerns
 
-- Severity: **medium**. Concern: the review-fix commit built and started, but the
-  container has not reached healthy. It is blocked on something unrelated to this
-  branch -- `ensure_tables()`'s `ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT
-  EXISTS spec_hash` is waiting on a relation lock held by a running `pg_dump`
-  (`pg_blocking_pids` confirms it). The earlier boots of this same code succeeded, so
-  the reaper and the lifecycle fix are verified; the 409 gate is verified only by
-  test. Mitigation: the service starts on its own when the backup completes; a
-  background watcher is polling `/health`.
-- Severity: low, **pre-existing, not introduced here**. Concern: topic-foundry runs
-  DDL on every boot with no `lock_timeout`, so any redeploy overlapping a backup
-  hangs startup indefinitely -- and the queued `ACCESS EXCLUSIVE` request then blocks
-  every other reader of `topic_foundry_runs` behind it. Proposed follow-up: a
-  `lock_timeout` plus a startup log line naming the blocker.
+- Severity: low, **pre-existing, not introduced here, and hit live during this
+  branch's own deploy**. The review-fix redeploy hung for ~35 minutes at "Waiting for
+  application startup": `ensure_tables()`'s `ALTER TABLE topic_foundry_runs ADD COLUMN
+  IF NOT EXISTS spec_hash` was queued on a relation lock held by a running `pg_dump`
+  (`pg_blocking_pids` named it). topic-foundry runs DDL on **every** boot with no
+  `lock_timeout`, so any redeploy overlapping a backup hangs startup indefinitely --
+  and the queued `ACCESS EXCLUSIVE` request then blocks every other reader of
+  `topic_foundry_runs` behind it, including plain `SELECT`s from unrelated sessions.
+  It cleared on its own when the dump finished. Proposed follow-up: a `lock_timeout`
+  on the DDL plus a startup log line naming the blocking pid, so this reads as a
+  diagnosable wait rather than a hang.
 - Severity: low. Concern: the reaper closes a segment-bearing run as `complete` on
   the strength of segments existing. `insert_segments` is a single `execute_values` in
   one transaction, so there is no partial-segment case, and the artifact fix above
@@ -261,4 +275,5 @@ scripts/safe_docker_build.sh orion-topic-foundry up -d topic-foundry
 
 ## Status
 
-DONE_WITH_CONCERNS -- final deploy not yet health-verified (external lock).
+DONE_WITH_CONCERNS -- fully deployed and live-verified; concerns are the pre-existing
+boot-time DDL lock hazard above and the follow-ups it and the spec record.

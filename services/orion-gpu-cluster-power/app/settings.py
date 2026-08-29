@@ -11,6 +11,13 @@ class Settings(BaseSettings):
 
     # service name you’re passing from compose
     service_name: str = Field("gpu-cluster-power", alias="SERVICE_NAME")
+    # api.py reads settings.service_version when building its ServiceRef and its
+    # heartbeat envelope. It was never defined here, so every heartbeat raised
+    # AttributeError: 'Settings' object has no attribute 'service_version' -- the
+    # service has been crash-looping that tick and publishing no heartbeat at all.
+    # Observed continuously in orion-athena-gpu-cluster-power logs on 2026-08-29,
+    # one line per tick, while a real GPU host was offline for 45 minutes.
+    service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
 
     # Storage
     storage_root: str = Field("/mnt/graphdb", alias="STORAGE_ROOT")

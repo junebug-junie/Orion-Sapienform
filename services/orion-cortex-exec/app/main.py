@@ -26,6 +26,7 @@ from orion.schemas.cortex.exec import CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.llm.backend_errors import is_backend_error_text
 from orion.schemas.metacognitive_trace import MetacognitiveTraceEnvelope, MetacognitiveTraceV1
 from orion.substrate.appraisal.contract import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from .settings import settings
@@ -246,7 +247,29 @@ async def _publish_cognition_trace_for_plan_result(
             _debug_snippet(metacog_payload.content),
             reasoning_trace is None,
         )
-    if metacog_payload.content:
+    # A backend failure is not reasoning. When no real reasoning trace exists this
+    # falls back to `res.final_text`, and on a gateway failure that text IS the
+    # error sentinel -- so the fallback would publish a transport error labelled
+    # `trace_role="reasoning"`. Confirmed live 2026-08-29: during a ~45 min circe
+    # outage, 663 gateway timeouts produced 936 rows of `orion_metacognitive_trace`
+    # (back to 2026-08-16) whose recorded "reasoning" is
+    # "[Error: llamacpp timed out after waiting]", model "unknown".
+    #
+    # Dropped rather than relabelled because `TraceRole` is a closed Literal
+    # (orion/schemas/metacognitive_trace.py) with no honest value for this, and
+    # widening it would be a contract change to carry a non-event. Nothing is lost:
+    # the failure is already recorded on the gateway's own ERROR lines, in
+    # rpc_health latency, and as an `rpc_transport_timeout` grammar atom. Only the
+    # *fallback* path is gated -- a genuine reasoning trace that happens to discuss
+    # an error is untouched, since `reasoning_trace is not None` there.
+    if reasoning_trace is None and is_backend_error_text(metacog_payload.content):
+        logger.warning(
+            "Suppressed metacog trace corr=%s: fallback content is a backend error, "
+            "not reasoning (content_len=%s)",
+            corr_id,
+            _debug_len(metacog_payload.content),
+        )
+    elif metacog_payload.content:
         metacog_envelope = MetacognitiveTraceEnvelope(
             source=_source(),
             correlation_id=_uuid_from_correlation_id(corr_id),

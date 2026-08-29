@@ -24,6 +24,8 @@ from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload
+from orion.llm.backend_errors import BACKEND_ERROR_PREFIX
+
 from .llm_uncertainty import (
     extract_llm_uncertainty_from_native_completion,
     extract_llm_uncertainty_from_openai_response,
@@ -1347,14 +1349,14 @@ def _execute_openai_chat(
             _timeout_summary(_resolve_http_read_timeout_sec(body)),
         )
         return {
-            "text": f"[Error: {backend_name} timed out after waiting]",
+            "text": f"{BACKEND_ERROR_PREFIX}{backend_name} timed out after waiting]",
             "spark_meta": spark_meta,
             "raw": {},
         }
     except Exception as e:
         logger.error(f"[LLM-GW] {backend_name} error: {e}", exc_info=True)
         return {
-            "text": f"[Error: {backend_name} failed: {str(e)}]",
+            "text": f"{BACKEND_ERROR_PREFIX}{backend_name} failed: {str(e)}]",
             "spark_meta": spark_meta,
             "raw": {},
         }

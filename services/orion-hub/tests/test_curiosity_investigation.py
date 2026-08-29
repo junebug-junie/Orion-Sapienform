@@ -15,15 +15,22 @@ import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.curiosity.study_material import StudyMaterial, assemble_study_material
-from scripts import curiosity_investigation as ci
+# NOT `from scripts import curiosity_investigation as ci`: with the repo-root
+# tests on the same pytest invocation, `scripts` resolves to the repo-root
+# package instead of this service's, and collection fails with ImportError --
+# which pytest reports as an ERROR rather than a failure, so a run that looks
+# like it "ended" has actually run nothing in this file.
 from scripts.curiosity_investigation import (
     MIN_HARNESS_STEPS,
     CuriosityInvestigation,
     SchedulingGateInputs,
     SignalGateInputs,
     build_investigation_journal_entry,
+    in_window,
+    paced_cooldown_sec,
     scheduling_block_reason,
     signal_block_reason,
+    window_seconds,
 )
 
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
@@ -1182,7 +1189,7 @@ def test_window_spread_is_what_paces_runs_not_the_configured_floor():
     # budget last the day. The 30-minute floor must NOT win here -- if it did,
     # the whole cap would still be spent by 03:00.
     assert (
-        ci.paced_cooldown_sec(
+        paced_cooldown_sec(
             min_cooldown_sec=1800.0, daily_cap=6, start_hour=8, end_hour=22
         )
         == 8400.0
@@ -1194,7 +1201,7 @@ def test_the_floor_wins_when_a_big_cap_would_space_runs_closer_than_a_turn():
     # the run lock serialises them, and the greedy back-to-back behaviour this
     # function removes comes straight back.
     assert (
-        ci.paced_cooldown_sec(
+        paced_cooldown_sec(
             min_cooldown_sec=1800.0, daily_cap=100, start_hour=8, end_hour=22
         )
         == 1800.0
@@ -1214,36 +1221,36 @@ def test_an_unset_window_paces_exactly_as_before():
     # 86400/6 == 14400 would be indistinguishable from the floor. 5.0 cannot be
     # confused with any spread: a 24h day over 6 runs is 14400s.
     assert (
-        ci.paced_cooldown_sec(
+        paced_cooldown_sec(
             min_cooldown_sec=5.0, daily_cap=6, start_hour=0, end_hour=0
         )
         == 5.0
     )
     # And a zero floor must stay zero rather than becoming 14400.
     assert (
-        ci.paced_cooldown_sec(
+        paced_cooldown_sec(
             min_cooldown_sec=0.0, daily_cap=6, start_hour=0, end_hour=0
         )
         == 0.0
     )
-    assert ci.in_window(3, 0, 0) is True
+    assert in_window(3, 0, 0) is True
 
 
 def test_a_window_that_spans_midnight_is_not_read_inside_out():
     # 22-06 is a legitimate configuration and the naive `start <= h < end`
     # would make it match nothing at all.
-    assert ci.in_window(23, 22, 6) is True
-    assert ci.in_window(2, 22, 6) is True
-    assert ci.in_window(12, 22, 6) is False
-    assert ci.window_seconds(22, 6) == 8 * 3600
+    assert in_window(23, 22, 6) is True
+    assert in_window(2, 22, 6) is True
+    assert in_window(12, 22, 6) is False
+    assert window_seconds(22, 6) == 8 * 3600
 
 
 def test_the_window_is_half_open_so_no_run_starts_as_it_closes():
     # A turn takes ~20 minutes. Starting one at 22:00 finishes outside the
     # window Juniper asked for.
-    assert ci.in_window(21, 8, 22) is True
-    assert ci.in_window(22, 8, 22) is False
-    assert ci.in_window(7, 8, 22) is False
+    assert in_window(21, 8, 22) is True
+    assert in_window(22, 8, 22) is False
+    assert in_window(7, 8, 22) is False
 
 
 def test_three_in_the_morning_is_blocked_even_with_budget_and_no_cooldown():
@@ -1251,8 +1258,8 @@ def test_three_in_the_morning_is_blocked_even_with_budget_and_no_cooldown():
     # expired. Before the window that combination ran; it is the reason the
     # whole cap was gone before Juniper woke up.
     assert (
-        ci.scheduling_block_reason(
-            ci.SchedulingGateInputs(
+        scheduling_block_reason(
+            SchedulingGateInputs(
                 enabled=True,
                 seconds_since_last=99999.0,
                 min_cooldown_sec=8400.0,
@@ -1271,8 +1278,8 @@ def test_a_spent_budget_outranks_the_window_in_the_reason_reported():
     # Both are true at 03:00 with the cap spent. `daily_cap` is the more
     # informative answer, so it must be the one logged.
     assert (
-        ci.scheduling_block_reason(
-            ci.SchedulingGateInputs(
+        scheduling_block_reason(
+            SchedulingGateInputs(
                 enabled=True,
                 seconds_since_last=99999.0,
                 min_cooldown_sec=8400.0,
@@ -1289,8 +1296,8 @@ def test_a_spent_budget_outranks_the_window_in_the_reason_reported():
 
 def test_inside_the_window_with_budget_and_no_cooldown_runs():
     assert (
-        ci.scheduling_block_reason(
-            ci.SchedulingGateInputs(
+        scheduling_block_reason(
+            SchedulingGateInputs(
                 enabled=True,
                 seconds_since_last=99999.0,
                 min_cooldown_sec=8400.0,
@@ -1310,8 +1317,8 @@ def test_the_window_never_applies_when_local_hour_is_unknown():
     # window that fired on an unknown hour would block a deployment whose
     # timezone failed to load, which is a silent stop rather than a fallback.
     assert (
-        ci.scheduling_block_reason(
-            ci.SchedulingGateInputs(
+        scheduling_block_reason(
+            SchedulingGateInputs(
                 enabled=True,
                 seconds_since_last=99999.0,
                 min_cooldown_sec=1.0,

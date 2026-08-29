@@ -430,6 +430,33 @@ def run_footprint_cypher(run_id: str) -> str:
     )
 
 
+def run_edge_footprint_cypher(run_id: str) -> str:
+    """The EDGES that run drew, by type.
+
+    A separate query because Cypher cannot count nodes and relationships in one
+    `MATCH` without either a cartesian product or an `OPTIONAL MATCH` whose null
+    row lands in the node counts.
+
+    THIS EXISTS BECAUSE THE FOOTPRINT COULD NOT SEE AN EDGE AT ALL. Every write
+    Orion is asked for was reported by `run_footprint_cypher`, which matches
+    nodes only -- so an edge, once written, would have shown up nowhere: not in
+    the journal, not in the `wrote=` log line, not on the atlas page. Adding the
+    instruction without adding this would have been a capability nobody could
+    confirm Orion had used.
+
+    Counted by type rather than in total so that CONTRADICTS -- the edge that
+    actually costs something to write, because it cuts against a claim Orion
+    holds -- is visible as its own number rather than averaged into a total
+    with SUPPORTS.
+    """
+    if not _RUN_ID_RE.match(str(run_id or "")):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH ()-[r]->() WHERE r.run_id = '{run_id}' "
+        "RETURN type(r) AS label, count(r) AS n"
+    )
+
+
 def outcome_for_run_cypher(run_id: str) -> str:
     """The `:TurnOutcome` THIS run wrote, not merely the newest one.
 
@@ -705,6 +732,12 @@ def read_run_footprint(
     """
     try:
         rows = reader.query(run_footprint_cypher(run_id))
+        # A second read rather than a second query shape: see
+        # `run_edge_footprint_cypher`. Inside the same try because an
+        # unreadable graph must stay `None` -- reporting the nodes and
+        # silently dropping the edges would be the unreadable-vs-empty
+        # conflation this function exists to refuse, one level down.
+        rows = list(rows) + list(reader.query(run_edge_footprint_cypher(run_id)))
     except (WorldviewUnavailable, ValueError) as exc:
         logger.warning("curiosity_run_footprint_read_failed run=%s err=%s", run_id, exc)
         return None

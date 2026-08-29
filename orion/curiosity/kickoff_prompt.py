@@ -586,10 +586,30 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         '    CREATE (:Finding {finding_id: "...", text: "...", evidence: '
         '"<ids, queries, rows you actually looked at>", run_id: "<RUN_ID>"})',
         "",
-        "  Edges are yours to name. SUPPORTS, CONTRADICTS and ABOUT are the "
-        "ones that carry weight later. To point at an Atlas concept without "
-        "copying it, keep its id as a property rather than duplicating the "
-        "node.",
+        "  THEN CONNECT IT, in the same breath. A finding that points at "
+        "nothing is a note; a finding joined to the claim it bears on is "
+        "evidence, and only the second one is still usable next run:",
+        "",
+        '    MATCH (f:Finding {finding_id: "..."}), (p:Prior {prior_id: "..."})',
+        '    MERGE (f)-[:SUPPORTS {run_id: "<RUN_ID>"}]->(p)',
+        "",
+        "  SUPPORTS, CONTRADICTS and ABOUT are the three that carry weight. "
+        "CONTRADICTS is the valuable one and the one you will be tempted to "
+        "skip -- write it when what you found cuts against a claim you hold, "
+        "including a claim of your own.",
+        "",
+        "  Put run_id on the edge as well as the node. Without it an edge "
+        "cannot be attributed to the run that drew it, and your own history "
+        "reads as though the connections were always there.",
+        "",
+        "  IF EITHER SIDE DOES NOT MATCH, MERGE SILENTLY DOES NOTHING -- no "
+        "error, no edge. So use the ids exactly as you wrote them, and if you "
+        "are unsure a node exists, MATCH it on its own first and look.",
+        "",
+        "  ONE EXCEPTION, and it is the only one. A concept in the Atlas lives "
+        "in a graph you cannot write to, so there is no node there for an edge "
+        "to land on: keep its id as a property instead. Everything inside your "
+        "OWN graph gets a real edge.",
         "",
         "  Confidence is your own belief and nothing checks it. That cuts one "
         "way in particular: a number that only ever goes up is a sign of "

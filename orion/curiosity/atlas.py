@@ -99,14 +99,32 @@ ATLAS_OUTCOMES_CYPHER = (
 # Juniper, reading the first version of this page: "I don't see any use of
 # concept induction profiles." She was right, and the page could not have shown
 # it: Orion is handed a sample of 651 concepts and 550 induction relations every
-# single run, the prompt gives it `CREATE (:Concept ...)` and the SUPPORTS /
-# CONTRADICTS / ABOUT edges, and across every run so far it has written none of
-# either. Its whole graph is disconnected nodes about one subject.
+# single run, and across every run so far it has written no Concept edges at
+# all. Its whole graph is disconnected nodes about one subject.
+#
+# THE SENTENCE HERE USED TO SAY "the prompt gives it ... the SUPPORTS /
+# CONTRADICTS / ABOUT edges", AND THAT WAS WRONG. Checked against the real
+# prompt text on 2026-08-29: every node had a copy-pasteable `CREATE`, and
+# edges had one sentence -- "Edges are yours to name" -- with no syntax
+# anywhere, immediately followed by advice to keep an id "as a property rather
+# than duplicating the node". Orion was not ignoring the instruction; there was
+# no instruction. Measured the same day: 8 runs, 12 Hops, 9 Findings, 5 Priors,
+# 1 Concept, and `db.relationshipTypes()` empty. The ACL was never the limit --
+# the selector grants `+graph.query` on this graph.
 ATLAS_UNUSED_CYPHER = (
     f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 )
 
 ATLAS_EDGES_CYPHER = "MATCH ()-[r]->() RETURN count(r) AS n"
+
+# Edges by type and run, so the growth panel can show a connection being drawn
+# the same way it shows a node being written. Split from ATLAS_GROWTH_CYPHER
+# because a single MATCH covering both would need an OPTIONAL MATCH whose null
+# rows land in the node counts.
+ATLAS_EDGE_GROWTH_CYPHER = (
+    "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL "
+    "RETURN type(r) AS label, r.run_id AS run_id, count(r) AS n"
+)
 
 # Every node, by label and run, so graph growth is counted from the same source
 # the other reads use rather than by summing them (a label nobody has a reader
@@ -403,7 +421,13 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
         finding_rows = reader.query(ATLAS_FINDINGS_CYPHER)
         hop_rows = reader.query(ATLAS_HOPS_CYPHER)
         outcome_rows = reader.query(ATLAS_OUTCOMES_CYPHER)
-        growth_rows = reader.query(ATLAS_GROWTH_CYPHER)
+        # Node growth and edge growth are concatenated into ONE list on
+        # purpose: the growth panel folds by `label`, so a connection Orion drew
+        # renders alongside the nodes it drew in the same run rather than
+        # needing a second panel nobody looks at.
+        growth_rows = list(reader.query(ATLAS_GROWTH_CYPHER)) + list(
+            reader.query(ATLAS_EDGE_GROWTH_CYPHER)
+        )
         concept_rows = reader.query(ATLAS_UNUSED_CYPHER)
         edge_rows = reader.query(ATLAS_EDGES_CYPHER)
     except WorldviewUnavailable as exc:

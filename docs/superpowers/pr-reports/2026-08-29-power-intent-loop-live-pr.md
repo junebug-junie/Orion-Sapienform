@@ -25,6 +25,41 @@ mean_watts    53.38                energy        1074.379 J
 
 102 W above baseline, sampled at 0.894 Hz across the declared window. Measured, not estimated.
 
+## Review findings fixed
+
+Five findings from `/code-review 1959 high`. All real, all fixed.
+
+- **Finding: the new test could load FLUX onto the live GPU.** `test_contradictory_config_is_loud` used `with TestClient(app)`, entering the lifespan and firing `_load_model_background()` -- a real multi-GB load onto GPU 2 on any host with torch, contending with the running service. `test_health.py`'s docstring documents this exact rule.
+  - Fix: extracted `warn_on_contradictory_power_intent_config()` to module scope; the test calls it directly.
+  - Evidence: 30 tests pass with no lifespan entry anywhere in the file.
+
+- **Finding: the same lifespan exit poisoned later tests.** It ran `_gpu_executor.shutdown()` on the module-global executor, so any later test hitting `/generate` would raise `cannot schedule new futures after shutdown`. Only alphabetical file ordering hid it.
+  - Fix: same as above.
+
+- **Finding: `if bus is None: return` was still a silent discard** -- the exact shape this PR exists to remove. Enabling the bus made it newly reachable: `start_background()` now really awaits `bus.connect()`, and lifespan catches a failure into one boot warning and sets `_heartbeat_chassis = None` permanently with no retry. One Redis blip at container start would mute every declaration for the container's life.
+  - Fix: latched ERROR naming the cause. Test asserts exactly one line across two calls.
+
+- **Finding: the sampling window measured half the job.** `DURATION_SEC=20.0` against real FLUX generations measured at 41.2 / 42.2 / 43.1 / 46.7 s.
+  - Fix: 60.0, with the deadline margin 40 -> 120 (otherwise `min(60, 40)` clamps it straight back to 40 and the change is a no-op).
+  - Evidence -- three live settlements, same workload:
+
+    | window | samples | peak W | mean W | baseline W | joules |
+    |--------|---------|--------|--------|------------|--------|
+    | 20.1 s | 18      | 144.46 | 53.4   | 42.10      | 1074.4 |
+    | 20.4 s | 18      | **48.49** | 45.9 | 41.86     | 935.8  |
+    | 60.5 s | 54      | **255.21** | 49.7 | 41.69    | 3006.2 |
+
+    The 60 s window finds a 255 W peak, 77% above the best 20 s reading. The second row is the damning one: a 20 s window recorded a 48.49 W peak against a 41.86 W baseline -- that run measured essentially nothing, because the window landed entirely in the CPU-offload staging phase. Two runs of the same job gave peaks of 144 W and 48 W depending on where the window fell. The peak was noise, not a measurement.
+
+- **Finding: the sampler blocked the biometrics event loop.** `settle()` called `subprocess.run(nvidia-smi, timeout=2.0)` bare, ~20x per generation, stalling the SystemHealth heartbeat, the iLO/PDU pollers and the hub's intake Hunter.
+  - Fix: `asyncio.to_thread`, which still accepts the plain sync samplers the existing tests inject.
+  - Evidence: 12 power-intent tests pass unchanged.
+  - **Honest limit:** `achieved_sample_hz` is unchanged (0.894 -> 0.893). It was never going to move -- the loop does `sample` then `sleep(interval)`, so the period is `interval + sample_duration` regardless of which thread the sample runs on. This fix stops the sampler stalling *co-resident tasks*; it does not make the rate accurate. Sampling at a true 1 Hz would require subtracting elapsed time from the sleep. Not done here.
+
+## Env parity gap found while fixing the above
+
+Athena's `services/orion-diffusion-host/.env` was missing **all four** `DIFFUSION_POWER_INTENT_*` keys -- not stale values, absent entirely. Added.
+
 ## Current architecture (before this patch)
 
 ```

@@ -24,6 +24,7 @@ from orion.schemas.biometrics_projection import (
 from orion.schemas.grammar import GrammarEventV1, GrammarProvenanceV1
 from orion.substrate.biometrics_loop.pressure_organ import (
     DEFAULT_STALE_AFTER_SEC,
+    sweep_suppressible_nodes,
     invoke_biometrics_pressure,
     sweep_absent_nodes,
 )
@@ -594,3 +595,98 @@ def test_unknown_node_still_falls_back_to_the_stored_flag(catalog: NodeCatalog) 
         }
     )
     assert sweep_absent_nodes(node_bio=bio, catalog=catalog, now=FIXED_TS) == ["brand-new-box"]
+
+
+def _pressure_with(node_id: str, *, pressures: list[str], impacts: list[str]):
+    return ActiveNodePressureProjectionV1(
+        projection_id="proj_active_pressure",
+        generated_at=FIXED_TS,
+        nodes={
+            node_id: ActiveNodePressureStateV1(
+                node_id=node_id,
+                availability_status="stale",
+                last_updated_at=FIXED_TS,
+                active_pressures=list(pressures),
+                capability_impacts=list(impacts),
+            )
+        },
+    )
+
+
+ATLAS_RESIDUE = [
+    "capability:batch_inference",
+    "capability:embedding",
+    "capability:local_llm_heavy",
+    "capability:local_llm_quick",
+]
+
+
+def test_retired_node_with_stale_state_is_offered_for_suppression(
+    catalog: NodeCatalog,
+) -> None:
+    """The exact live residue on 2026-08-29 after atlas was wrongly swept."""
+    bio = _bio(
+        {"atlas": _state("atlas", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
+    )
+    assert sweep_suppressible_nodes(
+        node_bio=bio,
+        active_pressure=_pressure_with(
+            "atlas", pressures=["strain", "availability"], impacts=ATLAS_RESIDUE
+        ),
+        catalog=catalog,
+        now=FIXED_TS,
+    ) == ["atlas"]
+
+
+def test_suppression_sweep_terminates_once_there_is_nothing_to_clear(
+    catalog: NodeCatalog,
+) -> None:
+    """Self-limiting by construction -- otherwise this becomes the permanent alarm
+    it exists to remove."""
+    bio = _bio(
+        {"atlas": _state("atlas", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
+    )
+    assert (
+        sweep_suppressible_nodes(
+            node_bio=bio,
+            active_pressure=_pressure_with("atlas", pressures=[], impacts=[]),
+            catalog=catalog,
+            now=FIXED_TS,
+        )
+        == []
+    )
+
+
+def test_a_live_node_is_never_offered_for_suppression(catalog: NodeCatalog) -> None:
+    bio = _bio({"circe": _state("circe", expected_online=True, last_seen_at=FIXED_TS)})
+    assert (
+        sweep_suppressible_nodes(
+            node_bio=bio,
+            active_pressure=_pressure_with("circe", pressures=["strain"], impacts=["capability:x"]),
+            catalog=catalog,
+            now=FIXED_TS,
+        )
+        == []
+    )
+
+
+def test_suppression_actually_clears_the_residue(catalog: NodeCatalog) -> None:
+    """End to end: sweep -> trigger -> Rule A -> reducer -> cleared projection."""
+    bio = _bio(
+        {"atlas": _state("atlas", expected_online=True, last_seen_at=FIXED_TS - timedelta(days=9))}
+    )
+    prior = _pressure_with(
+        "atlas", pressures=["strain", "availability"], impacts=ATLAS_RESIDUE
+    )
+    emission = invoke_biometrics_pressure(
+        trigger_event=_trigger("atlas"),
+        node_bio=bio,
+        active_pressure=prior,
+        catalog=catalog,
+        now=FIXED_TS,
+    )
+    assert "node_pressure_suppressed" in _roles(emission)
+    projection, _ = _reduce(emission, catalog, prior=prior)
+    state = projection.nodes["atlas"]
+    assert state.capability_impacts == [], "residue must be cleared"
+    assert state.availability_status == "suppressed"

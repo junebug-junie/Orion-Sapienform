@@ -72,14 +72,52 @@ scripts/safe_docker_build.sh orion-substrate-runtime up -d --build
 Verify: `docker logs --since 10m orion-athena-substrate-runtime | grep biometrics_absence_sweep`
 should be **silent** while every real node is reporting -- and must never name `atlas`.
 
+## Second half: clearing the residue the false alarm already wrote
+
+Confirmed live after #1940 deployed without this fix: the sweep fired **142 times in 20
+minutes**, every one naming `atlas`, and wrote real state to the projection:
+
+```text
+atlas -> pressures=["strain","availability"]
+         impacts=["capability:batch_inference","capability:embedding",
+                  "capability:local_llm_heavy","capability:local_llm_quick"]
+```
+
+Making the catalog authoritative stops the sweep -- but it does **not** clear what was
+already written, and nothing else can: `node_availability_recovered` only fires when a node
+starts reporting again, and a decommissioned box never will. The row would freeze forever and
+keep feeding the concept graph via `biometrics_ctx.py`.
+
+- `sweep_suppressible_nodes()`: retired (`expected_online: false`) + stale + **still carrying
+  state**. Self-terminating by construction -- a node only qualifies while it still has
+  something to clear, so it goes quiet on its own and cannot become the permanent alarm it
+  exists to remove.
+- `node_pressure_suppressed` (Rule A) now clears `capability_impacts` and sets
+  `availability_status="suppressed"`. It is the only reachable clearing path for a node that
+  will never report again.
+
+**Silver lining worth stating plainly:** this false alarm is also the first live proof the
+detector works end to end. `capability_impacts` had been `[]` in every row ever written; the
+full chain (sweep -> synthetic trigger -> organ -> reducer -> projection) fired correctly. It
+found a genuinely absent node. The node was just the wrong one.
+
+### Three stale tests this surfaced
+
+`test_biometrics_pressure_organ.py` had three tests asserting a world where **circe is
+offline and atlas is online** -- the pre-2026-07-18 catalog. They passed only because the
+organ read the test's own projection value instead of the catalog. Once the catalog became
+authoritative their premises were simply false. Retargeted each to a node whose catalog entry
+actually matches the rule under test; the rules themselves are unchanged.
+
 ## Risks / concerns
 
 - Severity: low. A node the catalog does not know still falls back to the stored flag, so an
   uncatalogued node is not silently ignored. Covered by a test.
-- Severity: low, NOT fixed. The stale `expected_online: true` **row for atlas remains in the
-  projection**; this patch stops it being read, it does not heal it. Same class as the known
+- Severity: low. The stale `expected_online: true` value on atlas's projection row is still
+  wrong at rest -- this patch stops it being *read* and clears the pressure state it caused,
+  but does not rewrite the cached flag itself. Same class as the known
   `reconcile_field_state_with_lattice()` gap (fills missing keys, never heals persisted stale
-  ones). Harmless now that the catalog wins, but it is still a wrong value at rest.
+  ones).
 - Severity: low, unchanged. This is still a signal, not a notification. Nothing yet turns a
   capability transition into something that reaches Juniper, and `notify_attempts` has 0 rows
   ever.

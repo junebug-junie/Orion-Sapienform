@@ -175,6 +175,50 @@ def sweep_absent_nodes(
     return sorted(absent)
 
 
+def sweep_suppressible_nodes(
+    *,
+    node_bio: NodeBiometricsProjectionV1,
+    active_pressure: ActiveNodePressureProjectionV1,
+    catalog: NodeCatalog,
+    stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
+    now: datetime | None = None,
+) -> list[str]:
+    """Retired nodes still carrying pressure state that nothing can clear.
+
+    The counterpart to `sweep_absent_nodes()`, and the fix for a one-way ratchet in
+    the one case the recovery path structurally cannot reach. Rule B'
+    (`node_availability_recovered`) only fires when a node starts reporting again;
+    a decommissioned box never will, so anything written while it was still believed
+    online stays in `substrate_active_node_pressure_projection` permanently and keeps
+    reaching the concept graph.
+
+    Confirmed live 2026-08-29: `atlas` -- decommissioned 2026-08-21, its GPUs now
+    physically inside circe -- had accumulated an `availability` pressure and four
+    `capability:*` impacts, because its cached `expected_online` was stale and it was
+    being swept as if absent.
+
+    **Self-terminating by construction:** a node only qualifies while it still HAS
+    something to clear, so this emits until the suppression lands and then goes quiet
+    on its own. It cannot become the permanent alarm it exists to remove.
+    """
+    clock = _utc_now(now)
+    out: list[str] = []
+    for node_id, state in (node_bio.nodes or {}).items():
+        if _expected_online(node_id, state, catalog) is not False:
+            continue
+        if not _is_stale(
+            last_seen_at=state.last_seen_at, stale_after_sec=stale_after_sec, now=clock
+        ):
+            continue
+        prior = (active_pressure.nodes or {}).get(node_id)
+        if prior is None:
+            continue
+        if not prior.active_pressures and not prior.capability_impacts:
+            continue
+        out.append(node_id)
+    return sorted(out)
+
+
 def build_absence_trigger_event(node_id: str, *, now: datetime | None = None) -> GrammarEventV1:
     """A synthetic trigger for a node that is not sending anything.
 

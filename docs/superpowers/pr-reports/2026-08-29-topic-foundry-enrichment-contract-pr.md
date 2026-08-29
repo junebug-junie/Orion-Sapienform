@@ -18,7 +18,12 @@ Spec: `docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-d
   key that is present-but-wrong-typed.
 - New `app/services/enrichment_contract.py` holds the declared shape as constants
   plus coercion. **The prompt's shape block is generated from the same constants the
-  coercion validates against**, so the instruction and the validator cannot drift.
+  coercion validates against**, so the key names and the numeric ranges given to the
+  model cannot drift from what the coercion accepts. It does not make the model obey
+  -- the coercion is what handles disobedience -- and unknown keys are deliberately
+  preserved, so "use these keys" is an instruction, not an invariant.
+- `MEANING_EDGE_PREDICATES` is the single source of the four list keys, so `kg_edges`
+  derives its predicates from the same table the prompt is built from.
 - `kg_edges` no longer swallows the resulting `JSONDecodeError` into `{}` -- that
   was the entire explanation for `topic_foundry_edges` holding 0 rows for all time.
 
@@ -116,16 +121,21 @@ endpoint it already called stops 500ing.
 ```text
 # new tests
 $ pytest tests/test_enrichment_contract.py -q
-23 passed in 4.99s
+38 passed in 2.57s
 
 # full topic-foundry suite (collectible subset)
 $ pytest tests -q --ignore=tests/test_drift_reducer_loading.py \
     --ignore=tests/test_heartbeat_chassis.py --ignore=tests/test_training_umap_reduction.py
-1 failed, 52 passed in 5.48s
+1 failed, 67 passed in 3.05s
 
 # hub consumer side
 $ pytest tests -q -k "concept or atlas or topic_foundry"
-160 passed, 1647 deselected in 41.08s
+160 passed, 1647 deselected in 21.34s
+
+# JS (app.js touched)
+$ node --check static/js/app.js   -> OK
+$ node --test static/js/
+# pass 56  # fail 0
 ```
 
 Pre-existing failures, unrelated to this change and not introduced by it:
@@ -212,3 +222,127 @@ scripts/safe_docker_build.sh orion-topic-foundry up -d topic-foundry
 - Severity: low. Concern: `unstructured: true` is a new key that consumers do not yet
   branch on. Mitigation: it is additive inside an already-`Dict[str, Any]` field, and
   the only consumer that needs it (`kg_edges`) reads it in this same patch.
+
+## Review findings fixed
+
+Code review ran in a subagent against commit `6950e22a8`. Verdict: 1 must-fix,
+8 should-fix, 6 nits. Every material finding is fixed in `8ac0653e9`. The review
+independently re-verified the live numbers and the blast-radius question came
+back clean (no read-coerce-then-persist path; `training.py:365` is the only
+`SegmentRecord` feeding `insert_segments` and it never passes these fields).
+
+- **Finding (must-fix): `str()` on a non-string list item corrupts it irreversibly.**
+  - Fix: `_as_text()` reads an object for a name-ish key, else re-encodes with
+    `json.dumps`. `_as_object` does the same for a non-object structure.
+  - Evidence: `coerce_meaning({"entities": [{"name": "orion", "type": "person"}]})`
+    was `["{'name': 'orion', 'type': 'person'}"]` -- a Python repr, not parseable
+    JSON, persisted to `jsonb` permanently by `_finalize_enrichment`. Now `["orion"]`.
+    A nameless object round-trips: `json.loads(coerced[0]) == {"id": 7, "ok": True}`.
+    Two tests; mutation back to `str(item)` fails both.
+
+- **Finding: the prompt declared a sentiment range contradicting the other producer
+  and the only UI consumer.**
+  - Fix: `SENTIMENT_RANGES` is per-key -- `valence`/`stance` are `-1..1`,
+    `arousal`/`uncertainty`/`friction` are `0..1`. Out-of-range is dropped, not
+    clamped (clamping `-0.8` friction to `0.0` presents an out-of-contract reading
+    as a confident calm one).
+  - Evidence: `_heuristic_enrich` emits `friction` 0.1/0.7 and `app.js:2708` buckets
+    it `0-0.3 / 0.3-0.7 / 0.7-1.0`, so a compliant model emitting `friction: -0.8`
+    would have landed in the **low-friction** bucket and read as calm. Mutating the
+    ranges back to uniform `-1..1` fails 2 tests.
+
+- **Finding: `float(True)` is `1.0`, and `float("NaN")` succeeds then breaks the write.**
+  - Fix: `bool` is rejected before the float attempt; `math.isfinite` guards the rest.
+  - Evidence: `json.dumps` emits a bare `NaN` token, which Postgres `jsonb` rejects
+    outright -- an unguarded NaN would fail the whole segment's write, where the old
+    prose string persisted harmlessly. Mutations fail 1 and 3 tests respectively.
+
+- **Finding: `_as_object` on a falsy non-None scalar fabricates a summary.**
+  - Fix: bare scalars return `None`.
+  - Evidence: `coerce_meaning(0)` was `{"summary": "0", "unstructured": True}`, which
+    then tripped the "enricher returned prose" warning for something that is not prose.
+
+- **Finding: `MEANING_LIST_KEYS`'s comment claimed it was "exactly the keys kg_edges
+  reads", but nothing enforced it -- four hardcoded `meaning.get(...)` calls.**
+  - Fix: `MEANING_EDGE_PREDICATES: {key: (predicate, confidence)}` is now the single
+    source, `MEANING_LIST_KEYS = tuple(MEANING_EDGE_PREDICATES)`, and
+    `_edges_from_segment` iterates it. Structural, not asserted.
+  - Evidence: `test_edge_builder_follows_the_shared_predicate_table` monkeypatches the
+    table with a key nothing hardcodes; re-hardcoding `meaning.get("entities")` fails it.
+
+- **Finding: the kg_edges root-cause claim was half true -- a second, uncovered path to
+  zero edges.**
+  - Fix: run-level `kg_edges_run_produced_no_edges` warning, naming the enricher.
+  - Evidence: `_heuristic_enrich` hardcodes `questions`/`claims`/`next_steps`/`entities`
+    to `[]`, so a heuristic run yields exactly 0 edges with a well-formed `meaning`
+    object and **no** `unstructured` marker -- the per-segment warning is blind to it.
+    3 tests, including one that stays quiet for a run with nothing enriched.
+
+- **Finding: the per-segment warning asserted "no edges from this segment", only true
+  for the `{summary, unstructured}` shape.**
+  - Fix: gated on `not edges` and moved after the edge build.
+
+- **Finding: `unstructured` was inert -- the only reader in the repo was one log line,
+  so consumers still silently read coerced prose as real (empty) structure.**
+  - Fix: `app.js` Topic Studio segment panel now carries `summary` and `unstructured`
+    (both detail render paths), and the friction facet filter excludes unmeasured
+    segments instead of defaulting them to 0.
+  - Evidence: the panel built `{intent, outcome, questions, next_steps}` from a
+    prose-coerced row as four nulls -- reading as "the enricher produced nothing" --
+    while the preserved text sat unread on the wire; and `Number(sentiment?.friction
+    ?? 0)` filed all of them under `0-0.3`, presenting unmeasured segments as calm.
+
+- **Finding: `test_prompt_shape_block_names_every_key_the_coercion_validates` could
+  not fail against any input** -- it asserted a postcondition of the generator it
+  called. Replaced with the predicate-table test above, plus one pinning the
+  asymmetric ranges.
+
+- **Finding: `test_finalize_coerces_a_present_but_wrong_typed_key` asserted only
+  `isinstance(dict)`**, which a coerce-to-`{}` implementation would pass -- the exact
+  data-destroying failure its sibling test guards against on the read side. Now
+  asserts the prose survives.
+
+- **Finding: docstring claimed more than the code delivers.** The generated block also
+  said "Use exactly these keys", which `coerce_meaning` explicitly contradicts by
+  preserving unknown keys. Reworded, and the module now states plainly which SQL-side
+  consumers the read coercion cannot reach.
+
+- **Finding (nit): `aspects` and `title` carry the identical latent defect.**
+  - Fix: `coerce_aspects` on both paths (`_finalize_enrichment` and a `SegmentRecord`
+    validator). `title` is a plain text column and was left alone.
+  - Evidence: latent, not live -- `jsonb_typeof(aspects) = 'array'` on all 701 rows.
+
+- **Finding (nit): the evals gap should be stated explicitly.** Done above.
+
+### Mutation testing, review-fix round
+
+Each mutation was asserted present in the file before running, so a no-op
+replacement cannot read as a pass.
+
+| mutation | result |
+|---|---|
+| `_as_text` back to `str(item)` | 2 tests fail |
+| uniform `-1..1` sentiment ranges | 2 tests fail |
+| drop the `bool` guard | 1 test fails |
+| drop the finite/range guard | 3 tests fail |
+| `kg_edges` back to a hardcoded `entities` key | 1 test fails |
+| drop the run-level zero-edge warning | 1 test fails |
+
+### Post-fix live re-verification
+
+Rebuilt and redeployed, then re-ran the same checks:
+
+```text
+$ curl ".../segments?run_id=f9443362-...&limit=1000"                  -> 200
+$ curl -X POST .../api/substrate/concepts/ingest-topic-foundry
+   segments_fetched 375, segments_with_speakers 255,
+   participation_edges 34, edges_written 170, segment_topic_map_buckets 19
+$ curl ".../kg/edges?run_id=d3adedab-...&predicate=mentions"          -> 14 edges
+   objects: 10g pipe, athena, circe, coat, concept field, concept region,
+            repair pressure, rocky outcrop, sustained pressure, wind
+```
+
+## Status
+
+DONE_WITH_CONCERNS -- see Risks / concerns above, plus the four follow-ups recorded
+in the spec (tick landing, wedged runs, no training retry, stale `enriched_count`).

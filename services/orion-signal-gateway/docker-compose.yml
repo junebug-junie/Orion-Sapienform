@@ -45,7 +45,7 @@ services:
     image: grafana/tempo:2.7.1
     command: ["-target=all", "-config.file=/etc/tempo.yaml"]
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/tempo.yaml:/etc/tempo.yaml:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/tempo.yaml:/etc/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
       - "${TEMPO_HTTP_PORT:-3200}:3200"
@@ -71,7 +71,7 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_USERS_DEFAULT_THEME: dark
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "${GRAFANA_HTTP_PORT:-3001}:3000"
@@ -88,7 +88,7 @@ services:
     image: otel/opentelemetry-collector-contrib:0.115.1
     command: ["--config=/etc/otel/collector-config.yaml"]
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP

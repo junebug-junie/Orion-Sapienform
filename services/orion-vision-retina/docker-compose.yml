@@ -50,8 +50,8 @@ services:
       # on carbon).
       - PULSE_SERVER=unix:/run/user/${PULSE_SERVER_UID:-1000}/pulse/native
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
       # Frame dirs are only used by RETINA_FRAME_MODE=local. In percept_store
       # mode nothing is written to disk, and these mounts are inert -- harmless
       # to keep so one compose file serves both deployments.

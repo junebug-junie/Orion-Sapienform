@@ -14,7 +14,7 @@ services:
       - "${PORT}:8000"
     volumes:
       - ${CHROMA_DATA_PATH}:/chroma/chroma
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vector-db/scripts/chroma_preflight.py:/opt/orion/chroma_preflight.py:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vector-db/scripts/chroma_preflight.py:/opt/orion/chroma_preflight.py:ro
     entrypoint:
       - /bin/sh
       - -c

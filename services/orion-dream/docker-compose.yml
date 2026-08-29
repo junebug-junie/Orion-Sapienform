@@ -58,7 +58,7 @@ services:
     ports:
       - "${PORT}:${PORT}"
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-dream/sql:/app/sql
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-dream/sql:/app/sql
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/logs/dream/logs:/app/logs
     env_file:
       - .env

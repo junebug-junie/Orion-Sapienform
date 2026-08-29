@@ -10,7 +10,7 @@ services:
     ports:
       - "${PORT:-7161}:${PORT:-7161}"
     volumes:
-      - ${ORION_REPO_ROOT:-../..}:/repo:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
       - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
     environment:
       PROJECT: ${PROJECT}

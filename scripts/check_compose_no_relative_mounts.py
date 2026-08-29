@@ -14,9 +14,9 @@ that tree would have broken the container on its next restart.
 
 Those two policies cannot both hold. Worktrees are disposable by design;
 prod mounts must not be. The resolution is that host paths are absolute,
-rooted at ${ORION_REPO_ROOT}, so the mount is identical no matter which tree
+rooted at ${ORION_HOST_REPO_ROOT}, so the mount is identical no matter which tree
 the deploy was driven from -- while a developer can still point a local run
-at their own worktree by setting ORION_REPO_ROOT.
+at their own worktree by setting ORION_HOST_REPO_ROOT.
 
 This is the deterministic gate for that rule, per CLAUDE.md section 4: the
 fix for a repeated latent failure is a failing check, not a louder prompt.
@@ -34,6 +34,12 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # Named volumes (no slash), absolute paths, and ${VAR}-rooted paths are fine.
 _RELATIVE_SOURCE = re.compile(r"^\s*-\s*(\.{1,2}/[^:]*):")
 
+# A ${VAR:-../..} default is just as relative, and the first version of this
+# gate missed exactly that shape in orion-mesh-guardian. Any interpolation
+# whose FALLBACK is a relative path resolves against the compose file dir
+# whenever the variable is unset -- which is the normal case on a fresh host.
+_RELATIVE_DEFAULT = re.compile(r"^\s*-\s*\$\{[A-Z_][A-Z0-9_]*:-(\.{1,2}/[^}]*)\}")
+
 
 def main() -> int:
     offenders: list[tuple[str, int, str]] = []
@@ -43,7 +49,7 @@ def main() -> int:
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if line.lstrip().startswith("#"):
                 continue
-            m = _RELATIVE_SOURCE.match(line)
+            m = _RELATIVE_SOURCE.match(line) or _RELATIVE_DEFAULT.match(line)
             if m:
                 offenders.append((str(path.relative_to(REPO)), lineno, m.group(1)))
 
@@ -57,8 +63,8 @@ def main() -> int:
         for rel, lineno, src in offenders:
             print(f"    {rel}:{lineno}  {src}")
         print("")
-        print("  Fix: root the host path at ${ORION_REPO_ROOT}, e.g.")
-        print("    - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/foo:/app/config/foo:ro")
+        print("  Fix: root the host path at ${ORION_HOST_REPO_ROOT}, e.g.")
+        print("    - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/foo:/app/config/foo:ro")
         return 1
 
     print(f"compose relative-mount gate: PASS ({len(composes)} compose files, 0 relative host mounts)")

@@ -81,7 +81,7 @@ services:
       - AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC=${AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC:-300.0}
 
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/biometrics:/app/config/biometrics:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/biometrics:/app/config/biometrics:ro
       - /mnt/scripts/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/logs/biometrics/logs:/app/logs
       # Read-only host disk-capacity telemetry mounts (piggybacked onto the

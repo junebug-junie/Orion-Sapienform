@@ -2415,3 +2415,125 @@ def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
         "chat_presence": False,
         "embodied_presence": False,
     }
+
+
+# --------------------------------------------------------------------------
+# Daily cap survives a restart
+# --------------------------------------------------------------------------
+
+
+def _stub_sent_count(monkeypatch, value, *, calls=None):
+    """Patch the module `_recover_sent_today` imports from, not a local name."""
+    import scripts.endogenous_outreach_decisions as decisions
+
+    def fake_count(local_date, tz_name):
+        if calls is not None:
+            calls.append((local_date, tz_name))
+        return value
+
+    monkeypatch.setattr(decisions, "count_sent_on", fake_count)
+
+
+def test_a_restart_does_not_hand_orion_a_fresh_daily_cap(monkeypatch) -> None:
+    """The live bug, 2026-08-28: 4 sends by 12:29 MDT, `daily_cap` blocking at
+    20:12, then a 5th send at 20:54 -- four minutes after a deploy restart,
+    with no day rollover. `_sent_today` is in-process and was initialised to 0,
+    so every restart reset the cap. This repo deploys several times a day."""
+    outreach = _outreach(daily_cap=4)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "an unprompted thought")
+    _stub_sent_count(monkeypatch, 4)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "daily_cap", (
+        "a restarted process re-sent against an already-exhausted daily cap"
+    )
+    assert result["outreach"] is False
+
+
+def test_the_recovered_count_leaves_room_when_it_is_under_the_cap(monkeypatch) -> None:
+    """The gate must not simply always block -- recovering 1-of-4 still sends."""
+    outreach = _outreach(daily_cap=4)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "an unprompted thought")
+    _stub_sent_count(monkeypatch, 1)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert outreach.status()["sent_today"] == 2, "the recovered count must be the base, not 0"
+
+
+def test_recovery_is_read_once_then_cached(monkeypatch) -> None:
+    """It runs on every decision, so it must not re-query the decision log on
+    every 10s tick for the life of the process."""
+    calls: list = []
+    outreach = _outreach(daily_cap=4)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "PASS")
+    _stub_sent_count(monkeypatch, 0, calls=calls)
+
+    asyncio.run(outreach.maybe_outreach())
+    asyncio.run(outreach.maybe_outreach())
+    asyncio.run(outreach.maybe_outreach())
+
+    assert len(calls) == 1, f"decision log re-read {len(calls)} times"
+
+
+def test_a_failed_recovery_retries_on_the_next_tick(monkeypatch) -> None:
+    """A database briefly unavailable at boot must self-heal, not leave the
+    count wrong for the rest of the day. `None` means unknown, never zero."""
+    calls: list = []
+    outreach = _outreach(daily_cap=4)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "PASS")
+    _stub_sent_count(monkeypatch, None, calls=calls)
+
+    asyncio.run(outreach.maybe_outreach())
+    assert len(calls) == 1
+    assert outreach.status()["sent_today"] == 0, "a failed read must not invent a count"
+
+    _stub_sent_count(monkeypatch, 4, calls=calls)
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert len(calls) == 2, "a failed recovery was never retried"
+    assert result["reason"] == "daily_cap"
+
+
+def test_recovery_uses_the_timezone_actually_in_effect(monkeypatch) -> None:
+    """`self.timezone_name` can fall back to UTC when ZoneInfo rejects it.
+    Postgres must bucket the day the way this process does, or the recovered
+    count is for a different day than the gate is reasoning about."""
+    calls: list = []
+    outreach = _outreach(daily_cap=4, timezone_name="Not/AZone")
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "PASS")
+    _stub_sent_count(monkeypatch, 0, calls=calls)
+
+    asyncio.run(outreach.maybe_outreach())
+
+    assert calls[0][1] == "UTC", f"queried Postgres with {calls[0][1]!r}, not the effective zone"
+
+
+def test_a_day_rollover_still_zeroes_without_re_reading(monkeypatch) -> None:
+    """A day ROLLOVER genuinely means zero sends so far -- unlike process
+    start. Conflating the two is the bug; over-correcting into a re-read on
+    every midnight would be a second one."""
+    calls: list = []
+    outreach = _outreach(daily_cap=4)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "PASS")
+    _stub_sent_count(monkeypatch, 4, calls=calls)
+
+    assert asyncio.run(outreach.maybe_outreach())["reason"] == "daily_cap"
+
+    from datetime import date as _date
+
+    outreach._roll_daily_counter(_date(2999, 1, 1))
+
+    assert outreach._sent_today == 0
+    assert asyncio.run(outreach.maybe_outreach())["reason"] != "daily_cap"
+    assert len(calls) == 1, "a day rollover re-read the decision log"

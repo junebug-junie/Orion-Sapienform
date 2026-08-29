@@ -895,12 +895,12 @@ class EndogenousOutreach:
         self._last_outreach_at: Optional[float] = None
         self._sent_today = 0
         self._counter_day: Optional[date] = None
+        # A fresh process has no idea how many outreaches today already
+        # carried, and 0 is a GUESS, not a reading. Until the real count is
+        # recovered from the decision log this flag stays False and every
+        # tick retries. See `_recover_sent_today`.
+        self._sent_today_recovered = False
         self._last_result: Dict[str, Any] = {}
-        # Set once per cycle, immediately after context is gathered; read by
-        # `_record`. Reset to None at the top of every cycle so a gate that
-        # returns BEFORE context exists (quiet_hours, cooldown, daily_cap)
-        # cannot inherit the previous tick's lanes -- that would be worse than
-        # recording nothing, since it would read as evidence.
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -1002,8 +1002,59 @@ class EndogenousOutreach:
 
     def _roll_daily_counter(self, today: date) -> None:
         if self._counter_day != today:
+            # A day ROLLOVER genuinely means zero sends so far, so nothing is
+            # left to recover once we have crossed one. PROCESS START also
+            # lands here (`_counter_day` begins None) and means the opposite:
+            # unknown. Conflating those two is the bug `_recover_sent_today`
+            # exists for, so only a real rollover clears the flag.
+            rolled_over = self._counter_day is not None
             self._counter_day = today
             self._sent_today = 0
+            if rolled_over:
+                self._sent_today_recovered = True
+
+    async def _recover_sent_today(self) -> None:
+        """Recover today's delivered count from the decision log. Idempotent.
+
+        WHY: `_sent_today` is in-process, initialised to 0, and reset only on
+        a day rollover -- nothing rehydrated it, so **every container restart
+        handed Orion a fresh daily cap.** Confirmed live 2026-08-28: four
+        sends by 12:29 MDT, `daily_cap` blocking at 20:12, then a fifth send
+        at 20:54 -- four minutes after a deploy restart, no day change in
+        between. This repo deploys several times a day, so a cap meant to
+        bound interruptions of Juniper was bounded by nothing.
+
+        Best-effort and retried every tick until it succeeds, so a database
+        that is briefly unavailable at boot self-heals rather than leaving the
+        count wrong for the rest of the day. On failure the counter keeps its
+        pre-existing meaning (0 = the old behaviour) rather than blocking
+        outreach outright: a database that cannot answer this count also
+        cannot serve `_gather_context`, so such a tick ends in
+        `no_grounding_context` anyway, and a hard gate here would buy nothing
+        for the cost of a new failure mode.
+        """
+        if self._sent_today_recovered:
+            return
+        local_date = datetime.now(tz=self._tz).date()
+        # `str(self._tz)` -- the zone ACTUALLY in effect -- not
+        # `self.timezone_name`, so Postgres buckets the day exactly the way
+        # this process does even if the configured name fell back to UTC.
+        from scripts.endogenous_outreach_decisions import count_sent_on
+
+        recovered = await asyncio.to_thread(
+            count_sent_on, local_date.isoformat(), str(self._tz)
+        )
+        if recovered is None:
+            return
+        self._counter_day = local_date
+        self._sent_today = recovered
+        self._sent_today_recovered = True
+        logger.info(
+            "endogenous_outreach_sent_today_recovered date=%s sent_today=%d cap=%d",
+            local_date.isoformat(),
+            recovered,
+            self.daily_cap,
+        )
 
     def _turn_in_flight(self) -> bool:
         return any(
@@ -1103,6 +1154,7 @@ class EndogenousOutreach:
         is unauthenticated, so a carve-out here would make "off by default" a
         lie that one POST could undo.
         """
+        await self._recover_sent_today()
         if self._send_lock.locked():
             # Never reaches `_outreach_once` -- pass `force` explicitly
             # rather than reading any shared instance attribute. Review

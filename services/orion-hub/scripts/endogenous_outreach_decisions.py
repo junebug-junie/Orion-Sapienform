@@ -145,3 +145,47 @@ def record_decision(
         ).start()
     except Exception as exc:
         logger.warning("endogenous_outreach_decision_record_failed error=%s", exc)
+
+
+def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
+    """How many outreaches were already delivered on ``local_date``.
+
+    Returns ``None`` — meaning UNKNOWN, never zero — when the table, the
+    engine, or `POSTGRES_URI` is unavailable. The caller must not read a
+    failure as "nothing sent yet": that is precisely the bug this exists to
+    close, and reading absence as zero would reintroduce it silently.
+
+    WHY THIS READ EXISTS: `EndogenousOutreach._sent_today` is an in-process
+    counter initialised to 0 in `__init__` and reset only on a day rollover.
+    Nothing rehydrated it, so **every container restart granted Orion a fresh
+    daily cap.** Confirmed live 2026-08-28: 4 sends by 12:29 MDT, then
+    `daily_cap` blocking at 20:12, then a 5th send at 20:54 -- four minutes
+    after a deploy restart, with no day rollover in between. Deploys happen
+    several times a day in this repo, so the cap that is supposed to bound
+    interruptions at `daily_cap` per day was bounded by nothing.
+
+    Counts `reason='sent'` rows, which is the same set the counter increments:
+    both the organic tick and `offer_message` (the curiosity loop) bump it,
+    because the cap is deliberately SHARED -- from the receiving end they are
+    the same interruption.
+    """
+    try:
+        from scripts.pg_engine import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        if engine is None:
+            return None
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT count(*) FROM endogenous_outreach_decisions "
+                    "WHERE reason = 'sent' "
+                    "AND (decided_at AT TIME ZONE :tz)::date = CAST(:d AS date)"
+                ),
+                {"tz": tz_name, "d": local_date},
+            ).scalar()
+        return None if row is None else int(row)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_count_sent_failed date=%s: %s", local_date, exc)
+        return None

@@ -1730,3 +1730,155 @@ async def concept_atlas_page() -> HTMLResponse:
             "Expires": "0",
         },
     )
+
+
+# --- whole-graph structural summary -----------------------------------------
+#
+# DELIBERATELY NOT A REPLACEMENT FOR THE /network PAYLOAD'S OWN component ids.
+# Those are computed by `_compute_connected_components` over the ALREADY
+# FILTERED node/edge lists, which is the correct answer to "what is connected
+# in the view you are looking at" -- swapping in engine-wide `algo.WCC` there
+# would report components whose members the caller cannot see, because
+# scope/min_activation/focus removed them. This route answers the other
+# question: what shape is the whole graph in, unfiltered. Both are real; they
+# are not duplicates.
+#
+# WHY THIS EXISTS AT ALL. The atlas page could already say "136 nodes, 461
+# edges, 12 components" and none of that told Juniper what was in there. The
+# numbers that do, all verified live 2026-08-29 and none of them previously
+# visible anywhere:
+#   * 12 components is 1 blob of 116 + 1 island of 10 + 10 singletons, and
+#     every singleton is retired telemetry (`node:substrate.transport` among
+#     them -- a metric CLAUDE.md records as retired outright, still holding a
+#     node here).
+#   * 307 of the 461 edges are `co_occurs_with`, a same-day co-occurrence
+#     proxy. Over 56 concepts that is 19.9% of every possible pair, which is
+#     why `communities()` returns exactly one community. The hairball is an
+#     edge-semantics problem, not a layout problem, and `saturation` is the
+#     number that says so.
+#   * pageRank and betweenness disagree: Orion and Juniper are pageRank #1/#2
+#     and absent from the betweenness top 8. `bridges` surfaces that.
+
+_SUMMARY_TOP_N = 8
+_SUMMARY_PAGERANK_COMPARISON_N = 5
+
+
+def _build_graph_analytics(graph: Optional[str]) -> tuple[Any, str]:
+    """Build a read-only GraphAnalytics for the requested graph, or (None, label).
+
+    Resolves the same config the substrate store builders already use rather
+    than minting new keys -- there is no new env surface in this route.
+
+    ``FALKORDB_URI``/``FALKORDB_SUBSTRATE_GRAPH`` come off ``settings`` because
+    both are real Settings fields (app/settings.py) and both are in Hub's
+    compose ``environment:`` allowlist; reading them with ``os.getenv`` instead
+    works in the container but returns "" under any in-process caller that
+    loads config through pydantic-settings, which is how this route first came
+    back ``available=false`` in testing.
+
+    ``FALKORDB_AITOWN_SUBSTRATE_GRAPH`` is deliberately still an ``os.getenv``
+    read with the SAME default string
+    ``orion/substrate/falkor_store.py::build_aitown_falkor_substrate_store_from_env``
+    uses, so the two resolve to the same graph. app/settings.py has a standing
+    note explaining that no Settings field exists for it precisely because
+    nothing read it; keeping this an env read adds a consumer without adding
+    the config surface that note was guarding against.
+    """
+    import os
+
+    from orion.graph.analytics import GraphAnalytics
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    requested = (graph or "").strip().lower()
+    if requested in ("aitown", "ai_town", "ai-town"):
+        label = "aitown"
+        graph_name = str(os.getenv("FALKORDB_AITOWN_SUBSTRATE_GRAPH", "orion_substrate_aitown")).strip()
+    else:
+        label = "substrate"
+        graph_name = str(getattr(settings, "FALKORDB_SUBSTRATE_GRAPH", "") or "orion_substrate").strip()
+
+    uri = str(getattr(settings, "FALKORDB_URI", "") or "").strip()
+    if not uri or not graph_name:
+        return None, label
+    client = RedisGraphQueryClient(uri=uri, graph_name=graph_name, read_only=True)
+    return GraphAnalytics(client), label
+
+
+def _ranked_payload(ranked: Any) -> list[dict[str, Any]]:
+    return [
+        {"node_id": r.node_id, "label": r.label, "score": round(float(r.score), 6)}
+        for r in ranked
+    ]
+
+
+# NOT named "summary": /api/substrate/concepts/summary is already taken by the
+# stat-tile endpoint above (concept_atlas_summary), and a second route on the
+# same path does not raise -- FastAPI silently serves whichever registered
+# first, so the new one would have been dead on arrival. Caught by a route test
+# asserting the payload rather than by the app failing to start.
+@router.get("/api/substrate/concepts/structure")
+async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[str, Any]:
+    analytics, graph_label = _build_graph_analytics(graph)
+    if analytics is None:
+        return _unavailable("falkordb_uri_unset", graph=graph_label)
+
+    try:
+        summary = analytics.summary()
+        concept_count = analytics.node_count("Concept")
+        rankings = {
+            measure: _ranked_payload(analytics.rank(measure, top_n=_SUMMARY_TOP_N))
+            for measure in ("pagerank", "betweenness", "harmonic")
+        }
+    except Exception as exc:  # noqa: BLE001 - never 500 an operator page
+        logger.warning("concept_atlas_summary_failed graph=%s error=%s", graph_label, exc)
+        return _unavailable("graph_analytics_error", str(exc), graph=graph_label)
+
+    # The finding this route exists to make visible: nodes that hold the graph
+    # together but do not top the influence ranking. Compared against pageRank
+    # rather than against the /network route's god-node set on purpose -- god
+    # nodes are partly hand-seeded (canonical concepts are god nodes by
+    # authority, not by structure), so comparing to them would conflate "we
+    # decided this matters" with "the graph's shape says this matters".
+    top_pagerank_ids = {r["node_id"] for r in rankings["pagerank"][:_SUMMARY_PAGERANK_COMPARISON_N]}
+    bridges = [r for r in rankings["betweenness"] if r["node_id"] not in top_pagerank_ids and r["score"] > 0.0]
+
+    dominant = summary.dominant_edge_type
+    dominant_count = summary.edge_type_counts.get(dominant, 0) if dominant else 0
+    # Saturation of the dominant edge type over the population it can actually
+    # connect. Concept-concept edges cannot land on an Evidence node, so the
+    # graph-wide node count is the wrong (flattering) denominator -- it
+    # understates saturation by ~6x on the live graph.
+    from orion.graph.analytics import StructureSummary
+
+    dominant_saturation = (
+        StructureSummary(node_count=concept_count, edge_count=dominant_count).saturation()
+        if concept_count >= 2
+        else None
+    )
+
+    return {
+        "available": True,
+        "graph": graph_label,
+        "node_count": summary.node_count,
+        "concept_count": concept_count,
+        "edge_count": summary.edge_count,
+        "edge_type_counts": summary.edge_type_counts,
+        "dominant_edge_type": dominant,
+        "dominant_edge_saturation": (
+            round(dominant_saturation, 4) if dominant_saturation is not None else None
+        ),
+        "component_count": summary.component_count,
+        "largest_component_size": summary.largest_component_size,
+        "singleton_count": summary.singleton_count,
+        "components": [
+            {
+                "component_id": c.component_id,
+                "size": c.size,
+                "is_singleton": c.is_singleton,
+                "sample_labels": list(c.sample_labels),
+            }
+            for c in summary.components
+        ],
+        "rankings": rankings,
+        "bridges": bridges,
+    }

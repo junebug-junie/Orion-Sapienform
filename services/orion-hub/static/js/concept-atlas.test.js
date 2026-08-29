@@ -9,6 +9,10 @@ const {
   EDGE_LABEL_MIN_ZOOMED_FONT_PX,
   GOD_NODE_FONT_PX,
   NODE_FONT_PX,
+  collapseEvidenceNodes,
+  nodeDisplayLabel,
+  structureDiagnosis,
+  componentShapeLine,
 } = require("./concept-atlas.js");
 
 // The bug this locks down (confirmed live 2026-08-29, from a screenshot):
@@ -89,4 +93,232 @@ test("the page copy no longer promises god-node-only labels", () => {
   );
   assert.doesNotMatch(template, /Only god-node labels show by default/);
   assert.match(template, /Every node is labelled/);
+});
+
+
+// --- evidence collapse ------------------------------------------------------
+//
+// Live shape being defended (orion_substrate, 2026-08-29): 136 nodes, of which
+// 80 are Evidence nodes with no label of their own. The route names each one
+// "Evidence for <concept>", so 59% of the rendered canvas repeated its
+// neighbour's name. Folding them into a count takes the default view to 56.
+
+function evidenceFixture() {
+  // 2 concepts, 3 evidence nodes: c1 has 2, c2 has 1.
+  return {
+    nodes: [
+      { id: "c1", node_kind: "concept", label: "Home lab infrastructure" },
+      { id: "c2", node_kind: "concept", label: "Light folding concept" },
+      { id: "e1", node_kind: "evidence", label: "Evidence for Home lab infrastructure" },
+      { id: "e2", node_kind: "evidence", label: "Evidence for Home lab infrastructure" },
+      { id: "e3", node_kind: "evidence", label: "Evidence for Light folding concept" },
+    ],
+    edges: [
+      { source: "e1", target: "c1", predicate: "supports" },
+      { source: "e2", target: "c1", predicate: "supports" },
+      { source: "e3", target: "c2", predicate: "supports" },
+      { source: "c1", target: "c2", predicate: "co_occurs_with" },
+    ],
+  };
+}
+
+test("collapse folds evidence nodes into a count on the concept they support", () => {
+  const { nodes, edges } = evidenceFixture();
+  const out = collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(out.nodes.length, 2);
+  assert.equal(out.collapsedCount, 3);
+  assert.equal(out.nodes.find((n) => n.id === "c1").evidence_count, 2);
+  assert.equal(out.nodes.find((n) => n.id === "c2").evidence_count, 1);
+});
+
+test("collapse drops the edges to folded nodes but keeps concept-concept edges", () => {
+  const { nodes, edges } = evidenceFixture();
+  const out = collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(out.edges.length, 1);
+  assert.equal(out.edges[0].predicate, "co_occurs_with");
+});
+
+test("collapse disabled is a pass-through that adds no count", () => {
+  const { nodes, edges } = evidenceFixture();
+  const out = collapseEvidenceNodes(nodes, edges, false);
+  assert.equal(out.nodes.length, 5);
+  assert.equal(out.edges.length, 4);
+  assert.equal(out.collapsedCount, 0);
+  assert.equal(out.nodes.every((n) => n.evidence_count === undefined), true);
+});
+
+test("collapse does not mutate the caller's nodes", () => {
+  // The load path reuses the payload across renders; a mutating collapse
+  // would make the count compound on every toggle.
+  const { nodes, edges } = evidenceFixture();
+  collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(nodes.find((n) => n.id === "c1").evidence_count, undefined);
+  assert.equal(nodes.length, 5);
+});
+
+test("a graph with no evidence nodes is untouched and reports nothing folded", () => {
+  const nodes = [{ id: "c1", node_kind: "concept", label: "A" }];
+  const edges = [];
+  const out = collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(out.collapsedCount, 0);
+  assert.equal(out.nodes, nodes, "should return the same array, not a copy");
+});
+
+test("only `supports` edges from evidence contribute to the count", () => {
+  // An entity -> concept `supports` edge must not inflate the evidence count:
+  // entities are hydrated into this same node list and are not evidence.
+  const nodes = [
+    { id: "c1", node_kind: "concept", label: "A" },
+    { id: "n1", node_kind: "entity", label: "Juniper" },
+    { id: "e1", node_kind: "evidence" },
+  ];
+  const edges = [
+    { source: "n1", target: "c1", predicate: "supports" },
+    { source: "e1", target: "c1", predicate: "supports" },
+    { source: "e1", target: "c1", predicate: "co_occurs_with" },
+  ];
+  const out = collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(out.nodes.find((n) => n.id === "c1").evidence_count, 1);
+  assert.equal(out.nodes.length, 2, "the entity node survives the collapse");
+});
+
+test("evidence with no supports edge is still removed, counted nowhere", () => {
+  const nodes = [
+    { id: "c1", node_kind: "concept", label: "A" },
+    { id: "e1", node_kind: "evidence" },
+  ];
+  const out = collapseEvidenceNodes(nodes, [], true);
+  assert.equal(out.nodes.length, 1);
+  assert.equal(out.collapsedCount, 1);
+  assert.equal(out.nodes[0].evidence_count, undefined);
+});
+
+test("label appends the evidence count without replacing the concept name", () => {
+  assert.equal(
+    nodeDisplayLabel({ id: "c1", label: "Home lab infrastructure", evidence_count: 3 }),
+    "Home lab infrastructure (3 evidence)"
+  );
+  assert.equal(nodeDisplayLabel({ id: "c1", label: "Home lab infrastructure" }), "Home lab infrastructure");
+  assert.equal(nodeDisplayLabel({ id: "c1", label: "A", evidence_count: 0 }), "A");
+});
+
+test("label keeps the unlabeled-topic marker and stacks the count after it", () => {
+  assert.equal(
+    nodeDisplayLabel({ id: "x", label: "topic_7", synthetic_label: true, evidence_count: 2 }),
+    "topic_7 (unlabeled topic) (2 evidence)"
+  );
+});
+
+test("label falls back to the node id when there is no label at all", () => {
+  assert.equal(nodeDisplayLabel({ id: "sub-evidence-abc" }), "sub-evidence-abc");
+});
+
+
+// --- structural diagnosis ---------------------------------------------------
+
+function livePayload(overrides) {
+  // orion_substrate as measured 2026-08-29.
+  return Object.assign(
+    {
+      available: true,
+      node_count: 136,
+      concept_count: 56,
+      edge_count: 461,
+      edge_type_counts: { co_occurs_with: 307, supports: 80, associated_with: 74 },
+      dominant_edge_type: "co_occurs_with",
+      dominant_edge_saturation: 0.1994,
+      component_count: 12,
+      largest_component_size: 116,
+      singleton_count: 10,
+    },
+    overrides || {}
+  );
+}
+
+test("diagnosis states the measured numbers, not a severity band", () => {
+  const note = structureDiagnosis(livePayload());
+  assert.match(note, /307 of 461 edges \(67%\)/);
+  assert.match(note, /19\.9% of every possible pair/);
+  assert.match(note, /56 concepts/);
+  assert.match(note, /co_occurs_with/);
+});
+
+test("diagnosis stays silent when one edge type does not dominate", () => {
+  // Same saturation, but the dominant type is under half the edges.
+  const note = structureDiagnosis(
+    livePayload({ edge_type_counts: { co_occurs_with: 200, supports: 261 }, edge_count: 461 })
+  );
+  assert.equal(note, null);
+});
+
+test("diagnosis stays silent on a sparse graph even when one type dominates", () => {
+  const note = structureDiagnosis(livePayload({ dominant_edge_saturation: 0.02 }));
+  assert.equal(note, null);
+});
+
+test("diagnosis stays silent when the payload cannot support the claim", () => {
+  assert.equal(structureDiagnosis(null), null);
+  assert.equal(structureDiagnosis({ available: false }), null);
+  assert.equal(structureDiagnosis(livePayload({ dominant_edge_type: null })), null);
+  assert.equal(structureDiagnosis(livePayload({ dominant_edge_saturation: null })), null);
+  assert.equal(structureDiagnosis(livePayload({ dominant_edge_saturation: undefined })), null);
+});
+
+test("diagnosis does not divide by zero on an edgeless graph", () => {
+  // orion_worldview live 2026-08-29: 48 nodes, 0 edges of any type.
+  const note = structureDiagnosis(
+    livePayload({ edge_count: 0, edge_type_counts: {}, dominant_edge_type: null, dominant_edge_saturation: null })
+  );
+  assert.equal(note, null);
+});
+
+// --- component shape line ---------------------------------------------------
+
+test("component line splits the blob, the middle, and the singletons", () => {
+  // "12 components" alone says nothing; this is the read.
+  assert.equal(componentShapeLine(livePayload()), "12 components: 1 of 116 + 1 smaller + 10 singletons");
+});
+
+test("component line handles an all-singletons graph", () => {
+  // orion_worldview: 48 nodes, 0 edges -> 48 components of 1.
+  const line = componentShapeLine(
+    livePayload({ component_count: 48, largest_component_size: 1, singleton_count: 48 })
+  );
+  assert.match(line, /48 components/);
+  assert.match(line, /48 singletons/);
+});
+
+test("component line handles a single fully-connected graph", () => {
+  // orion_bus_synapse: 313 nodes, 1 component, no singletons.
+  assert.equal(
+    componentShapeLine(livePayload({ component_count: 1, largest_component_size: 313, singleton_count: 0 })),
+    "1 component: 1 of 313"
+  );
+});
+
+test("component line says so rather than rendering an empty split", () => {
+  assert.equal(componentShapeLine(livePayload({ component_count: 0 })), "no components");
+  assert.equal(componentShapeLine({ available: false }), "");
+  assert.equal(componentShapeLine(null), "");
+});
+
+test("component line uses the singular for exactly one singleton", () => {
+  const line = componentShapeLine(
+    livePayload({ component_count: 2, largest_component_size: 5, singleton_count: 1 })
+  );
+  assert.match(line, /1 singleton$/);
+});
+
+test("diagnosis never renders NaN from an internally inconsistent payload", () => {
+  // Unreachable from the current route (edge_count is the sum of
+  // edge_type_counts, so 0 edges implies dominant_edge_type is null), but
+  // reachable from a stale cached bundle or a future route that reports the
+  // two fields independently. Without the `edges > 0` guard the share is
+  // NaN, every comparison against it is false, and the card renders the
+  // sentence with "NaN%" in it -- a confidently wrong number rather than
+  // silence.
+  const note = structureDiagnosis(
+    livePayload({ edge_count: 0, dominant_edge_type: "co_occurs_with", edge_type_counts: {} })
+  );
+  assert.equal(note, null);
 });

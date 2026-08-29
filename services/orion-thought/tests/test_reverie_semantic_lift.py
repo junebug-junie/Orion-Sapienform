@@ -176,3 +176,75 @@ async def test_semantic_lift_plan_uses_metacog_background_route_when_flag_enable
     req = captured["req"]
     assert req.context.get("llm_route") == "metacog_background"
     assert req.args.extra.get("llm_route") == "metacog_background"
+
+
+@pytest.mark.asyncio
+async def test_semantic_lift_timeout_reports_to_metacog_health_monitor(monkeypatch):
+    """The metacog health monitor exists to observe THIS call's real timeout rate -- unlike
+    plain reverie (test_reverie_spontaneous_thought.py's regression tests), a semantic-lift
+    tick's execute_plan call really is routed to metacog, so its timeout must reach the
+    monitor."""
+    import asyncio
+
+    from app import reverie
+    from orion.schemas.reverie import ConcernCardV1
+
+    monkeypatch.setattr(reverie.settings, "reverie_semantic_lift_enabled", True)
+    card = ConcernCardV1.from_harness_turn(
+        coalition_ref="harness_closure:corr-1",
+        user_message_excerpt="Will the deploy slip if we cut testing?",
+        stance_imperative="Name the testing tradeoff before reassuring.",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.reverie_health_monitor.check_reverie_metacog_timeout",
+        lambda timed_out: calls.append(timed_out),
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    with patch.object(reverie, "resolve_concern_cards", return_value=[card]):
+        result = await reverie.run_reverie_once(
+            bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+        )
+    assert result is None
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_semantic_lift_success_reports_to_metacog_health_monitor(monkeypatch):
+    from app import reverie
+    from orion.schemas.reverie import ConcernCardV1
+
+    monkeypatch.setattr(reverie.settings, "reverie_semantic_lift_enabled", True)
+    card = ConcernCardV1.from_harness_turn(
+        coalition_ref="harness_closure:corr-1",
+        user_message_excerpt="Will the deploy slip if we cut testing?",
+        stance_imperative="Name the testing tradeoff before reassuring.",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.reverie_health_monitor.check_reverie_metacog_timeout",
+        lambda timed_out: calls.append(timed_out),
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({
+            "interpretation": (
+                "I keep circling whether cutting testing makes the deploy slip — "
+                "that tradeoff is still open."
+            ),
+            "evidence_refs": ["ol-1"],
+        })
+    })
+
+    with patch.object(reverie, "resolve_concern_cards", return_value=[card]):
+        result = await reverie.run_reverie_once(
+            bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+        )
+    assert result is not None
+    assert calls == [False]

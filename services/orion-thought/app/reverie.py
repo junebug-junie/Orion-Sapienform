@@ -619,6 +619,17 @@ async def run_reverie_once(
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
         )
+        # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
+        # duplicated here (not returned by that function) because only a call that actually set
+        # llm_route to metacog/metacog_background should feed the health monitor below. Review
+        # caught this live 2026-08-29: ORION_REVERIE_SEMANTIC_LIFT_ENABLED defaults false, so most
+        # ticks never touch metacog at all, and reporting every plain-reverie timeout as a
+        # "metacog timed out" attention item would corrupt the exact evidence
+        # ORION_REVERIE_METACOG_BACKGROUND_ENABLED's "off for now" period exists to collect.
+        is_metacog_call = settings.reverie_semantic_lift_enabled and bool(concern_cards)
+        report_metacog_health = is_metacog_call and settings.reverie_metacog_timeout_attention_enabled
+        if report_metacog_health:
+            from .reverie_health_monitor import check_reverie_metacog_timeout
         try:
             exec_result = await client.execute_plan(
                 source=_source(),
@@ -627,15 +638,11 @@ async def run_reverie_once(
                 timeout_sec=settings.stance_react_timeout_sec,
             )
         except asyncio.TimeoutError:
-            if settings.reverie_metacog_timeout_attention_enabled:
-                from .reverie_health_monitor import check_reverie_metacog_timeout
-
+            if report_metacog_health:
                 check_reverie_metacog_timeout(True)
             raise
         else:
-            if settings.reverie_metacog_timeout_attention_enabled:
-                from .reverie_health_monitor import check_reverie_metacog_timeout
-
+            if report_metacog_health:
                 check_reverie_metacog_timeout(False)
         raw_payload = extract_stance_react_payload(exec_result)
 

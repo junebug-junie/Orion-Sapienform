@@ -156,6 +156,27 @@ if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     )
 
 
+# Routes that must resolve to the SAME deterministic profile/model, even though they are
+# distinct route ids (different admission policy) sharing one upstream worker.
+# `orion-cortex-exec/app/executor.py` and `orion-llm-gateway/app/llm_backend.py` each pin
+# `settings.atlas_metacog_profile_name` when a caller omits an explicit profile, so metacog
+# "just works" without every caller naming a model -- review caught live 2026-08-29 that both
+# checks were an exact `route == "metacog"` string match, so a caller sent to `metacog_background`
+# would silently stop being pinned and fall through to the gateway's generic default profile
+# instead of circe-worker-2's real model. Single source here so the two checks can't
+# independently drift the way ACCEPTED_LLM_ROUTES's own docstring already describes happening
+# to route acceptance. `quick`/`quick_background` have no analogous pin today, so this starts
+# metacog-only, not a generic "background implies same profile as its sibling" rule -- a future
+# `_background` lane needing the same guarantee should add itself here explicitly.
+METACOG_LLM_ROUTES: FrozenSet[str] = frozenset({"metacog", "metacog_background"})
+
+if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
+    raise RuntimeError(
+        "METACOG_LLM_ROUTES names routes that are not accepted: "
+        f"{sorted(METACOG_LLM_ROUTES - ACCEPTED_LLM_ROUTES)}"
+    )
+
+
 # Routes that exist for an automated/system caller, never for a human's interactive Compute
 # picker -- distinct from BACKGROUND_LLM_ROUTES on purpose. `harness` (FCC/Claude Code CLI
 # turns) must dispatch immediately, not wait for slot slack the way a background lane does, so

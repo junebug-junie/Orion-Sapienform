@@ -1344,11 +1344,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 # scripts/chat_turn_affect.py for why (up to ~195s) and for
                 # the honest consequence (this capture colours the NEXT
                 # turn, not this one).
+                # subtitle: the transcript Hub ALREADY has from the browser
+                # microphone, passed on the PRE leg only. This reverses an
+                # earlier deliberate choice to send "" (see the
+                # /capture_and_assess route docstring in
+                # orion-juniper-affective-state), and the reversal is the
+                # point: that choice was correct only while the affect
+                # capture recorded its own audio a few seconds later, which
+                # it no longer does. Juniper's report, 2026-08-26 -- two
+                # divorced audio recordings meant the affect read could only
+                # be grounded by her repeating herself into a worse mic.
+                #
+                # POST gets no subtitle deliberately: she is not speaking
+                # then, so there is no transcript belonging to that window,
+                # and reusing this one would present her opening words as if
+                # they were her reaction to Orion's reply.
                 chat_turn_affect.fire(
                     settings=settings,
                     trigger=chat_turn_affect.TRIGGER_PRE,
                     correlation_id=trace_id,
                     is_voice_turn=not is_text_input,
+                    subtitle=transcript,
                 )
                 orion_turn_frames: list[dict] = []
                 try:

@@ -115,7 +115,7 @@ def test_fire_returns_none_when_base_url_unconfigured():
 def test_fire_sends_trigger_and_chat_correlation_id(monkeypatch):
     seen = {}
 
-    def _fake_call(base_url, timeout_sec, trigger, *, chat_correlation_id=None):
+    def _fake_call(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
         seen.update(
             base_url=base_url,
             timeout_sec=timeout_sec,
@@ -286,7 +286,7 @@ def test_post_leg_waits_for_its_own_pre_leg_instead_of_racing_it(monkeypatch):
     order = []
     gate = {"open": False}
 
-    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None):
+    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
         order.append(f"start:{trigger}")
         if trigger == chat_turn_affect.TRIGGER_PRE:
             import time
@@ -335,7 +335,7 @@ def test_post_leg_still_runs_when_the_pre_leg_failed(monkeypatch):
     gets -- not a reason to skip it too."""
     seen = []
 
-    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None):
+    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
         if trigger == chat_turn_affect.TRIGGER_PRE:
             raise requests.ConnectionError("affect down")
         seen.append(trigger)
@@ -437,3 +437,116 @@ def test_manual_and_ambient_request_bodies_are_unchanged(monkeypatch):
         "http://x", 1.0, "chat_turn_pre", chat_correlation_id="corr-7"
     )
     assert posted["json"] == {"trigger": "chat_turn_pre", "chat_correlation_id": "corr-7"}
+
+
+# ==========================================================================
+# The transcript merge (2026-08-26).
+#
+# Juniper: the mic button produced two divorced audio recordings, and the
+# second one could only be grounded by her repeating herself. Hub already
+# holds the transcript from the browser mic before the pre leg fires; these
+# pin that it actually reaches the wire.
+# ==========================================================================
+
+
+def test_pre_leg_sends_the_transcript_hub_already_has(monkeypatch):
+    seen = {}
+
+    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
+        seen["subtitle"] = subtitle
+        return {"result": {"ok": True}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake)
+
+    async def _run():
+        task = chat_turn_affect.fire(
+            settings=_settings(),
+            trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-sub",
+            is_voice_turn=True,
+            subtitle="I'm feeling really tired.",
+        )
+        assert task is not None
+        await task
+
+    asyncio.run(_run())
+    assert seen["subtitle"] == "I'm feeling really tired."
+
+
+def test_post_leg_sends_no_transcript(monkeypatch):
+    """She is not speaking when the post leg fires, so no transcript belongs
+    to that window. Reusing the pre leg's would present her opening words as
+    if they were her reaction to Orion's reply."""
+    seen = {}
+
+    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
+        seen["subtitle"] = subtitle
+        return {"result": {"ok": True}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake)
+
+    async def _run():
+        task = chat_turn_affect.fire(
+            settings=_settings(),
+            trigger=chat_turn_affect.TRIGGER_POST,
+            correlation_id="corr-sub-post",
+            is_voice_turn=True,
+        )
+        assert task is not None
+        await task
+
+    asyncio.run(_run())
+    assert seen["subtitle"] is None
+
+
+def test_typed_turn_never_forwards_the_message_as_a_spoken_subtitle(monkeypatch):
+    """Scope "all" fires on typed turns too. The subtitle is rendered to the VL
+    model as "the person said this around the time these frames were captured",
+    so forwarding a typed message would assert she spoke words she silently
+    typed. The frames are still read; the words are dropped.
+    """
+    seen = {}
+
+    def _fake_call(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
+        seen["subtitle"] = subtitle
+        return {"result": {"ok": True, "raw_response": "calm"}, "capture": {}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake_call)
+
+    async def _run():
+        task = chat_turn_affect.fire(
+            settings=_settings(AFFECT_CHAT_TURN_SCOPE="all"),
+            trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-typed",
+            is_voice_turn=False,
+            subtitle="I'm fine.",
+        )
+        assert task is not None, "scope=all should still fire on a typed turn"
+        await task
+
+    asyncio.run(_run())
+    assert seen["subtitle"] is None
+
+
+def test_voice_turn_still_forwards_the_subtitle(monkeypatch):
+    """Guard the fix above from over-reaching: the voice path must be unchanged."""
+    seen = {}
+
+    def _fake_call(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
+        seen["subtitle"] = subtitle
+        return {"result": {"ok": True, "raw_response": "calm"}, "capture": {}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake_call)
+
+    async def _run():
+        task = chat_turn_affect.fire(
+            settings=_settings(AFFECT_CHAT_TURN_SCOPE="all"),
+            trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-voice",
+            is_voice_turn=True,
+            subtitle="I'm feeling really tired.",
+        )
+        await task
+
+    asyncio.run(_run())
+    assert seen["subtitle"] == "I'm feeling really tired."

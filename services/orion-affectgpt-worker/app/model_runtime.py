@@ -207,6 +207,7 @@ class AffectGptRuntime:
             audio_path=audio_path,
             peak_threshold=s.AFFECTGPT_TRANSCRIBE_NEAR_SILENT_PEAK_INT16,
             language=s.AFFECTGPT_WHISPER_LANGUAGE,
+            max_no_speech_prob=s.AFFECTGPT_TRANSCRIBE_MAX_NO_SPEECH_PROB,
         )
         if subtitle_source == "transcribed" or transcribe_meta is not None:
             # Only recorded when Whisper actually ran (resolve_subtitle

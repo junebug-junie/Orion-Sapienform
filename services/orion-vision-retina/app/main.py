@@ -106,7 +106,9 @@ class RetinaService:
         await self.source.stop()
         await self.bus.close()
 
-    async def capture_and_upload_clip(self) -> RetinaClipCaptureResultPayload:
+    async def capture_and_upload_clip(
+        self, *, want_audio: bool = True
+    ) -> RetinaClipCaptureResultPayload:
         """Shared body for both POST /capture/clip and the bus RPC consumer
         -- record a clip, upload video+audio to percept-store, return refs.
         Raises ClipCaptureError / PerceptUploadError / OSError; callers map
@@ -145,23 +147,37 @@ class RetinaService:
                     width=s.RETINA_CLIP_WIDTH,
                     height=s.RETINA_CLIP_HEIGHT,
                     timeout_sec=s.RETINA_CLIP_TIMEOUT_SEC,
+                    want_audio=want_audio,
                 )
-            video_sha256, audio_sha256 = await asyncio.gather(
+            # The audio upload is skipped entirely (not "uploaded empty") when
+            # the mic was never armed: percept-store rejects a zero-byte body
+            # with HTTP 400, so posting b"" would turn a deliberate, correct
+            # video-only capture into a hard capture failure.
+            uploads = [
                 asyncio.to_thread(
                     upload_bytes,
                     result.video_bytes,
                     base_url=s.RETINA_PERCEPT_STORE_URL,
                     token=s.RETINA_PERCEPT_STORE_TOKEN or None,
                     timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
-                ),
-                asyncio.to_thread(
-                    upload_bytes,
-                    result.audio_bytes,
-                    base_url=s.RETINA_PERCEPT_STORE_URL,
-                    token=s.RETINA_PERCEPT_STORE_TOKEN or None,
-                    timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
-                ),
-            )
+                )
+            ]
+            if result.audio_bytes:
+                uploads.append(
+                    asyncio.to_thread(
+                        upload_bytes,
+                        result.audio_bytes,
+                        base_url=s.RETINA_PERCEPT_STORE_URL,
+                        token=s.RETINA_PERCEPT_STORE_TOKEN or None,
+                        timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
+                    )
+                )
+            uploaded = await asyncio.gather(*uploads)
+            video_sha256 = uploaded[0]
+            # None, not "" -- audio_sha256 is Optional on the result payload,
+            # and a caller must be able to tell "no microphone was opened"
+            # from "a microphone was opened and produced something".
+            audio_sha256 = uploaded[1] if len(uploaded) > 1 else None
             # Marks completion, not request time -- the cooldown above
             # measures time since a capture actually FINISHED, not since it
             # was last attempted. Set while still holding the lock so a
@@ -169,7 +185,8 @@ class RetinaService:
             # value the instant it acquires the lock next.
             self._last_clip_capture_ts = time.time()
         logger.info(
-            f"[RETINA] clip captured+uploaded video={video_sha256[:12]} audio={audio_sha256[:12]}"
+            f"[RETINA] clip captured+uploaded video={video_sha256[:12]} "
+            f"audio={audio_sha256[:12] if audio_sha256 else 'none(mic-not-armed)'}"
         )
         return RetinaClipCaptureResultPayload(
             ok=True,
@@ -177,7 +194,7 @@ class RetinaService:
             audio_sha256=audio_sha256,
             duration_sec=result.duration_sec,
             video_bytes=len(result.video_bytes),
-            audio_bytes=len(result.audio_bytes),
+            audio_bytes=len(result.audio_bytes) or None,
         )
 
     async def _clip_consume_loop(self) -> None:
@@ -259,7 +276,9 @@ class RetinaService:
                 )
             else:
                 try:
-                    result = await self.capture_and_upload_clip()
+                    result = await self.capture_and_upload_clip(
+                        want_audio=req.want_audio
+                    )
                 except ClipCaptureCooldownError as exc:
                     # Caught before the broader ClipCaptureError below --
                     # cooldown deserves its own error_code, not "capture_error".

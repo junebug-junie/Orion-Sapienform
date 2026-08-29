@@ -191,3 +191,100 @@ def test_resolve_subtitle_near_silent_with_whisper_available_reports_none(silent
     assert source == "none"
     assert transcript is None
     assert meta["silence_gate"] == "rejected"
+
+
+# ==========================================================================
+# no_speech_prob filter (2026-08-26)
+#
+# The amplitude gate at peak=50 PASSED a real clip measured at peak=114 /
+# rms=8.68 and Whisper returned a fully-formed sentence about Egyptians on a
+# turn where Juniper had actually said "I'm feeling really tired." A
+# downstream model then read her affect off the invented sentence.
+#
+# Amplitude cannot catch that -- 0.15% of full scale is still "loud enough"
+# numerically, and a hallucination is perfectly well-formed output, so there
+# is nothing about the STRING to match on either. The model's own
+# per-segment confidence is the only signal that separates them.
+# ==========================================================================
+
+from app.transcribe import keep_only_speech_segments
+
+
+def _seg(text, prob):
+    return {"text": text, "no_speech_prob": prob}
+
+
+def test_confident_silence_segments_are_dropped_entirely():
+    """The exact shape of the live failure: one confident-silence segment
+    carrying a fluent, entirely fabricated sentence."""
+    result = {
+        "text": " Thanks for the light. Thanks for the eyesight.",
+        "segments": [_seg(" Thanks for the light. Thanks for the eyesight.", 0.94)],
+    }
+    text, meta = keep_only_speech_segments(result, 0.6)
+    assert text == ""
+    assert meta["segments_total"] == 1
+    assert meta["segments_kept"] == 0
+    assert meta["max_no_speech_prob_seen"] == 0.94
+
+
+def test_real_speech_is_kept():
+    result = {
+        "text": " I'm feeling really tired.",
+        "segments": [_seg(" I'm feeling really tired.", 0.02)],
+    }
+    text, meta = keep_only_speech_segments(result, 0.6)
+    assert text == "I'm feeling really tired."
+    assert meta["segments_kept"] == 1
+
+
+def test_mixed_clip_keeps_only_the_speech():
+    result = {
+        "text": " Hello there. Thanks for watching.",
+        "segments": [_seg(" Hello there.", 0.05), _seg(" Thanks for watching.", 0.91)],
+    }
+    text, _ = keep_only_speech_segments(result, 0.6)
+    assert text == "Hello there."
+
+
+def test_threshold_is_honoured_not_hardcoded():
+    result = {"text": " maybe", "segments": [_seg(" maybe", 0.5)]}
+    assert keep_only_speech_segments(result, 0.6)[0] == "maybe"
+    assert keep_only_speech_segments(result, 0.4)[0] == ""
+
+
+def test_missing_segments_falls_back_to_raw_text():
+    """Absent evidence is not evidence of silence -- a model returning no
+    segment structure must not have its output silently discarded."""
+    text, meta = keep_only_speech_segments({"text": " hello"}, 0.6)
+    assert text == "hello"
+    assert meta["no_speech_filter"] == "unavailable"
+
+
+def test_malformed_segment_entries_do_not_crash():
+    result = {"text": " hi", "segments": [None, "junk", _seg(" hi", 0.1)]}
+    assert keep_only_speech_segments(result, 0.6)[0] == "hi"
+
+
+def test_non_numeric_no_speech_prob_is_treated_as_speech():
+    """A garbage prob must not silently discard real speech -- fail toward
+    keeping what the model transcribed, since the amplitude gate already ran."""
+    result = {"text": " hi", "segments": [{"text": " hi", "no_speech_prob": "bad"}]}
+    assert keep_only_speech_segments(result, 0.6)[0] == "hi"
+
+
+def test_segments_present_but_all_unparseable_keeps_the_raw_text():
+    """Regression: a non-empty `segments` list whose entries are not dicts (a
+    Whisper variant returning objects, a serialization change) used to fall
+    through the loop, collect no probs, and return "" -- silently discarding a
+    real transcript while `meta` claimed the filter had run. The gate would be
+    the last thing anyone suspected, because its own telemetry said it worked.
+    """
+    result = {
+        "text": "I'm feeling really tired.",
+        "segments": ["not-a-dict", 42, None],
+    }
+    text, meta = keep_only_speech_segments(result, 0.6)
+    assert text == "I'm feeling really tired."
+    assert meta["no_speech_filter"] == "unavailable"
+    assert meta["reason"] == "no_parseable_segments"

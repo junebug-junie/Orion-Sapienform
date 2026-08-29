@@ -360,7 +360,17 @@ class JuniperAffectiveStateService:
         # single id (Juniper's ask, 2026-08-22: "ensure the data model has
         # good ability to be correlative with other components in the mesh").
         corr_id = uuid.uuid4()
-        capture = await self._capture_clip_via_retina(corr_id=corr_id)
+        # want_audio=False on the vision path: the microphone is never armed
+        # for an affect capture at all. Juniper's report, 2026-08-26 -- pressing
+        # the mic button produced two divorced audio recordings, and the second
+        # one (carbon's DMIC, recorded after she stopped speaking) was both
+        # useless and the source of Whisper's hallucinated subtitles. The
+        # transcript Hub already has from the browser mic is threaded in
+        # instead, so there is exactly one recording of her voice in the
+        # system and she never has to say anything twice.
+        capture = await self._capture_clip_via_retina(
+            corr_id=corr_id, want_audio=not use_vision
+        )
         if not capture.ok:
             result = AffectGptAssessResultPayload(
                 ok=False,
@@ -460,7 +470,7 @@ class JuniperAffectiveStateService:
         return capture, result, event
 
     async def _capture_clip_via_retina(
-        self, *, corr_id: "uuid.UUID | None" = None
+        self, *, corr_id: "uuid.UUID | None" = None, want_audio: bool = True
     ) -> RetinaClipCaptureResultPayload:
         """Bus RPC twin of orion-vision-retina's POST /capture/clip. Mirrors
         _call_worker below almost exactly -- same RPC/decode/validate shape,
@@ -477,7 +487,8 @@ class JuniperAffectiveStateService:
             correlation_id=corr_id,
             reply_to=reply_channel,
             payload=RetinaClipCaptureRequestPayload(
-                target_stream_id=settings.AFFECT_TARGET_STREAM_ID
+                target_stream_id=settings.AFFECT_TARGET_STREAM_ID,
+                want_audio=want_audio,
             ).model_dump(),
         )
         try:

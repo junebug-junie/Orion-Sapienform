@@ -196,6 +196,35 @@ class RetinaClipCaptureRequestPayload(BaseModel):
             "default -- a caller must say which camera it means."
         ),
     )
+    want_audio: bool = Field(
+        default=True,
+        description=(
+            "Whether to arm the microphone at all for this capture. Added "
+            "2026-08-26 and the one exception to this schema's "
+            "'no caller-tunable recording parameters' rule above, because it "
+            "does not tune a recording -- it declines one.\n"
+            "\n"
+            "Juniper's own report: pressing the mic button produced TWO "
+            "divorced audio recordings -- the browser's (real, usable, "
+            "already transcribed) and, seconds later, a second one from "
+            "carbon's built-in DMIC for the affect read. The second is "
+            "recorded AFTER she stops speaking, so it captures a room at "
+            "-49.2 dB peak, and the affect worker's Whisper pass then "
+            "hallucinated sentences from that noise floor -- confirmed live: "
+            "\"Thanks for the light, Egyptians\" and a repetition-looped "
+            "\"Tired, tired, tired\" on a turn where she actually said "
+            "\"I'm feeling really tired.\" The affect read was then grounded "
+            "in sentences she never said. Feeding the second recording "
+            "anything real would have required her to repeat herself into a "
+            "worse microphone.\n"
+            "\n"
+            "So the vision affect backend passes False: it takes the video "
+            "here and the transcript Hub ALREADY has from the browser mic. "
+            "One audio recording exists in the system, and it is hers. "
+            "Default True purely for backward compatibility with the "
+            "affectgpt rollback path, which still needs a wav to Whisper."
+        ),
+    )
 
 
 class RetinaClipCaptureResultPayload(BaseModel):

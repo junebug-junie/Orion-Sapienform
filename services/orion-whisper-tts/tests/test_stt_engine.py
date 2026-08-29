@@ -198,3 +198,73 @@ def test_stt_worker_publishes_typed_envelope() -> None:
     assert "derive_child" in worker_src
     assert 'kind="system.error"' in worker_src
     assert 'request.format or "wav"' in worker_src
+
+
+# ==========================================================================
+# no_speech_prob filter (2026-08-26) -- the LIVE chat path.
+#
+# Higher stakes than the sibling gate in orion-affectgpt-worker: fabricated
+# text here becomes a chat turn, so Orion would answer something Juniper
+# never said. Same defect though -- the identically-configured peak=50 gate
+# passed a clip at peak=114/rms=8.68 and Whisper invented a fluent sentence.
+# ==========================================================================
+
+# Loaded via this file's own importlib helper -- there is no `app` package
+# on sys.path here (no conftest); the module is loaded by file path.
+def _filter(result, threshold):
+    return _load_stt_module()._keep_only_speech_segments(result, threshold)
+
+
+def _seg(text, prob):
+    return {"text": text, "no_speech_prob": prob}
+
+
+def test_confident_silence_never_becomes_a_chat_turn():
+    result = {
+        "text": " Thanks for the light. Thanks for the eyesight.",
+        "segments": [_seg(" Thanks for the light. Thanks for the eyesight.", 0.94)],
+    }
+    text, meta = _filter(result, 0.6)
+    assert text == ""
+    assert meta["segments_kept"] == 0
+
+
+def test_real_speech_still_reaches_the_turn():
+    result = {
+        "text": " I'm feeling really tired.",
+        "segments": [_seg(" I'm feeling really tired.", 0.02)],
+    }
+    assert _filter(result, 0.6)[0] == "I'm feeling really tired."
+
+
+def test_missing_segments_falls_back_rather_than_dropping_a_real_turn():
+    """Failing closed here would silently swallow Juniper's actual speech,
+    which is worse than the hallucination this guard exists to stop."""
+    text, meta = _filter({"text": " hello"}, 0.6)
+    assert text == "hello"
+    assert meta["no_speech_filter"] == "unavailable"
+
+
+def test_partial_silence_keeps_the_spoken_half():
+    result = {
+        "text": " Hey Orion. Thanks for watching.",
+        "segments": [_seg(" Hey Orion.", 0.03), _seg(" Thanks for watching.", 0.88)],
+    }
+    assert _filter(result, 0.6)[0] == "Hey Orion."
+
+
+def test_segments_present_but_all_unparseable_keeps_the_raw_text():
+    """Same regression as orion-affectgpt-worker's copy of this filter. Here it
+    is worse: returning "" mutes a live voice turn, and Hub reports "No speech
+    detected in recording" for audio that transcribed fine.
+    """
+    from app.stt import _keep_only_speech_segments
+
+    result = {
+        "text": "I'm feeling really tired.",
+        "segments": ["not-a-dict", 42, None],
+    }
+    text, meta = _keep_only_speech_segments(result, 0.6)
+    assert text == "I'm feeling really tired."
+    assert meta["no_speech_filter"] == "unavailable"
+    assert meta["reason"] == "no_parseable_segments"

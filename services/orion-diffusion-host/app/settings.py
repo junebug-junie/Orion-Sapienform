@@ -116,9 +116,9 @@ class Settings(BaseSettings):
     DIFFUSION_POWER_INTENT_GPU_INDEX: int = 2
     # A first guess at how long to hold the sample window open. Deliberately NOT an
     # expected_watts -- that stays None until real settlements produce a distribution.
-    DIFFUSION_POWER_INTENT_DURATION_SEC: float = 20.0
+    DIFFUSION_POWER_INTENT_DURATION_SEC: float = 60.0
     # Hard stop under which the settler closes the window regardless.
-    DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC: float = 40.0
+    DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC: float = 120.0
     DIFFUSION_DTYPE: str = "fp16"
     DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD: bool = True
     DIFFUSION_NUM_INFERENCE_STEPS: int = 4

@@ -32,8 +32,6 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.power import PowerIntentV1
 
-from fastapi.testclient import TestClient
-
 import app.main as main
 
 
@@ -108,20 +106,59 @@ def test_bus_failure_is_swallowed_so_generation_survives(monkeypatch):
     asyncio.run(main._publish_power_intent())  # must not raise
 
 
-def test_contradictory_config_is_loud(monkeypatch, caplog):
+def test_contradictory_config_is_loud(monkeypatch):
     """POWER_INTENT on + bus off is silently fatal to the loop, because
-    publish() early-returns when disabled. Startup must say so."""
-    import logging
+    publish() early-returns when disabled. Startup must say so.
 
+    Calls the check directly rather than entering the lifespan via
+    `with TestClient(app)`. Entering it fires _load_model_background(), which
+    on any host with torch installed (Circe, or inside the container) starts a
+    real multi-GB FLUX load onto the live GPU 2 and contends with the running
+    service -- and its exit calls _gpu_executor.shutdown(), poisoning
+    /generate for every later test in the same process. test_health.py's
+    module docstring documents exactly this rule.
+    """
     monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
     monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", False)
 
     records: list[str] = []
     handler_id = main.logger.add(lambda m: records.append(str(m)), level="ERROR")
     try:
-        with TestClient(main.app):
-            pass
+        main.warn_on_contradictory_power_intent_config()
     finally:
         main.logger.remove(handler_id)
 
     assert any("power_intent_enabled_but_bus_disabled" in r for r in records), records
+
+
+def test_no_warning_when_the_config_is_coherent(monkeypatch):
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+    monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", True)
+
+    records: list[str] = []
+    handler_id = main.logger.add(lambda m: records.append(str(m)), level="ERROR")
+    try:
+        main.warn_on_contradictory_power_intent_config()
+    finally:
+        main.logger.remove(handler_id)
+
+    assert records == []
+
+
+def test_an_absent_chassis_is_reported_not_silently_skipped(monkeypatch):
+    """A failed chassis start is never retried, so this early return would
+    otherwise mute the loop for the container's whole life."""
+    monkeypatch.setattr(main, "_heartbeat_chassis", None)
+    monkeypatch.setattr(main, "_power_intent_no_bus_warned", False)
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+
+    records: list[str] = []
+    handler_id = main.logger.add(lambda m: records.append(str(m)), level="ERROR")
+    try:
+        asyncio.run(main._publish_power_intent())
+        asyncio.run(main._publish_power_intent())  # latched: still one line
+    finally:
+        main.logger.remove(handler_id)
+
+    hits = [r for r in records if "power_intent_no_bus" in r]
+    assert len(hits) == 1, f"expected exactly one latched error, got {len(hits)}"

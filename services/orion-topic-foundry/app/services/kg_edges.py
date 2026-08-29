@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 from uuid import UUID, uuid4
 
+from app.services.enrichment_contract import MEANING_EDGE_PREDICATES, coerce_meaning
 from app.storage.repository import fetch_model, fetch_run, fetch_segments, replace_edges_for_run, utc_now
 
 
@@ -23,6 +24,28 @@ def generate_edges_for_run(run_id: UUID, *, min_confidence: float = 0.2) -> int:
     edges: List[Dict[str, Any]] = []
     for segment in segments:
         edges.extend(_edges_from_segment(segment, model_name=model_name, min_confidence=min_confidence))
+
+    # A run that enriched real segments and produced zero edges is always a
+    # defect, and until now it was completely silent -- topic_foundry_edges
+    # held 0 rows for all time with nothing anywhere saying why. There are two
+    # distinct causes and the per-segment warning below only covers one of
+    # them: `_heuristic_enrich` hardcodes questions/claims/next_steps/entities
+    # to [], so every heuristically-enriched run yields exactly 0 edges with a
+    # perfectly well-formed `meaning` object and no `unstructured` marker.
+    # This check catches both, and names the enricher so they are
+    # distinguishable.
+    if segments and not edges:
+        enrichers = sorted(
+            {str(seg.get("enrichment_version") or "unknown") for seg in segments}
+        )
+        logger.warning(
+            "kg_edges_run_produced_no_edges run_id=%s enriched_segments=%s enrichment_versions=%s "
+            "-- every enriched segment yielded zero edges; check the enricher's `meaning` output "
+            "against app/services/enrichment_contract.py",
+            run_id,
+            len(segments),
+            ",".join(enrichers),
+        )
 
     replace_edges_for_run(run_id=run_id, edges=edges)
     _write_edge_artifacts(run_row, edges)
@@ -45,56 +68,39 @@ def _edges_from_segment(
     model_name: str,
     min_confidence: float,
 ) -> List[Dict[str, Any]]:
-    meaning = segment.get("meaning") or {}
-    if isinstance(meaning, str):
-        try:
-            meaning = json.loads(meaning)
-        except json.JSONDecodeError:
-            meaning = {}
+    meaning = coerce_meaning(segment.get("meaning")) or {}
     edges: List[Dict[str, Any]] = []
     created_at = utc_now()
     segment_id = UUID(segment["segment_id"])
 
-    edges.extend(
-        _edges_from_list(
-            segment_id,
-            model_name,
-            "mentions",
-            meaning.get("entities", []),
-            confidence=0.6,
-            created_at=created_at,
+    # Derived from MEANING_EDGE_PREDICATES rather than four hardcoded
+    # meaning.get(...) calls, so renaming a key moves the prompt, the
+    # coercion and this builder together. Before, a rename would have left
+    # this reading the dead names and emitting 0 edges silently -- the exact
+    # failure class this file's fix exists to remove.
+    for key, (predicate, confidence) in MEANING_EDGE_PREDICATES.items():
+        edges.extend(
+            _edges_from_list(
+                segment_id,
+                model_name,
+                predicate,
+                meaning.get(key, []),
+                confidence=confidence,
+                created_at=created_at,
+            )
         )
-    )
-    edges.extend(
-        _edges_from_list(
-            segment_id,
-            model_name,
-            "asks_about",
-            meaning.get("questions", []),
-            confidence=0.5,
-            created_at=created_at,
+
+    # The old code caught JSONDecodeError and silently substituted {}. That is
+    # one of the two reasons topic_foundry_edges had 0 rows for all time (see
+    # generate_edges_for_run for the other). Gated on `not edges` rather than
+    # on the marker alone, so this never claims "no edges" about a segment
+    # that carried prose in `summary` AND real entities alongside it.
+    if meaning.get("unstructured") and not edges:
+        logger.warning(
+            "kg_edges_segment_meaning_unstructured segment_id=%s -- enricher returned prose, "
+            "not the object shape declared in app/services/enrichment_contract.py; no edges from this segment",
+            segment.get("segment_id"),
         )
-    )
-    edges.extend(
-        _edges_from_list(
-            segment_id,
-            model_name,
-            "claims_about",
-            meaning.get("claims", []),
-            confidence=0.7,
-            created_at=created_at,
-        )
-    )
-    edges.extend(
-        _edges_from_list(
-            segment_id,
-            model_name,
-            "next_step",
-            meaning.get("next_steps", []),
-            confidence=0.8,
-            created_at=created_at,
-        )
-    )
 
     return [edge for edge in edges if edge["confidence"] >= min_confidence]
 

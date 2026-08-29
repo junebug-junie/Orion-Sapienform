@@ -281,11 +281,26 @@ test("component line splits the blob, the middle, and the singletons", () => {
 
 test("component line handles an all-singletons graph", () => {
   // orion_worldview: 48 nodes, 0 edges -> 48 components of 1.
-  const line = componentShapeLine(
-    livePayload({ component_count: 48, largest_component_size: 1, singleton_count: 48 })
+  //
+  // assert.equal, NOT assert.match. This test originally used two match()
+  // calls for /48 components/ and /48 singletons/, and passed on the wrong
+  // string: the largest component IS a singleton here, so it was counted
+  // twice and the line read "48 components: 1 of 1 + 48 singletons" -- 49
+  // components across the parts. Both regexes matched that happily. A whole-
+  // string assertion is what catches an extra clause.
+  assert.equal(
+    componentShapeLine(
+      livePayload({ component_count: 48, largest_component_size: 1, singleton_count: 48 })
+    ),
+    "48 components: 48 singletons"
   );
-  assert.match(line, /48 components/);
-  assert.match(line, /48 singletons/);
+});
+
+test("component line does not invent a blob for a two-singleton graph", () => {
+  assert.equal(
+    componentShapeLine(livePayload({ component_count: 2, largest_component_size: 1, singleton_count: 2 })),
+    "2 components: 2 singletons"
+  );
 });
 
 test("component line handles a single fully-connected graph", () => {
@@ -321,4 +336,50 @@ test("diagnosis never renders NaN from an internally inconsistent payload", () =
     livePayload({ edge_count: 0, dominant_edge_type: "co_occurs_with", edge_type_counts: {} })
   );
   assert.equal(note, null);
+});
+
+
+// --- folded vs dropped ------------------------------------------------------
+
+test("evidence whose concept is not in the view is dropped, not counted as folded", () => {
+  // The promotion_state filter can remove a concept while keeping the evidence
+  // that supports it. That evidence contributes to no count anywhere -- it just
+  // disappears -- so reporting it as "folded in" would claim its information
+  // survived when it did not.
+  const nodes = [
+    { id: "c1", node_kind: "concept", label: "kept" },
+    { id: "e1", node_kind: "evidence" },
+    { id: "e2", node_kind: "evidence" },
+  ];
+  const edges = [
+    { source: "e1", target: "c1", predicate: "supports" },
+    { source: "e2", target: "c_absent", predicate: "supports" },
+  ];
+  const out = collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(out.collapsedCount, 2, "both evidence nodes left the canvas");
+  assert.equal(out.foldedCount, 1, "only one landed on a surviving concept");
+  assert.equal(out.droppedCount, 1);
+  assert.equal(out.nodes.find((n) => n.id === "c1").evidence_count, 1);
+});
+
+test("folded and dropped sum to the number of evidence nodes removed", () => {
+  const { nodes, edges } = evidenceFixture();
+  const out = collapseEvidenceNodes(nodes, edges, true);
+  assert.equal(out.foldedCount + out.droppedCount, out.collapsedCount);
+  assert.equal(out.droppedCount, 0, "every evidence node in this fixture has a surviving concept");
+  assert.equal(out.foldedCount, 3);
+});
+
+test("the disabled and no-evidence paths report the same shape", () => {
+  // The status line reads these fields unconditionally; an early return that
+  // omits them renders "undefined evidence node(s) folded in".
+  const { nodes, edges } = evidenceFixture();
+  for (const out of [
+    collapseEvidenceNodes(nodes, edges, false),
+    collapseEvidenceNodes([{ id: "c1", node_kind: "concept" }], [], true),
+  ]) {
+    assert.equal(out.foldedCount, 0);
+    assert.equal(out.droppedCount, 0);
+    assert.equal(out.collapsedCount, 0);
+  }
 });

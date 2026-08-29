@@ -19,6 +19,7 @@ to an honest "unavailable" response instead of fabricating data or raising a
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -1760,7 +1761,14 @@ async def concept_atlas_page() -> HTMLResponse:
 #     and absent from the betweenness top 8. `bridges` surfaces that.
 
 _SUMMARY_TOP_N = 8
-_SUMMARY_PAGERANK_COMPARISON_N = 5
+# MUST equal the number of pageRank rows concept-atlas.js renders. They were 5
+# and 6: a node at pageRank rank 6 could then appear in the influence column
+# AND under "Bridges", whose tooltip says "not top pageRank" -- the card
+# contradicting itself on screen. One constant, asserted against the JS.
+_SUMMARY_PAGERANK_COMPARISON_N = _SUMMARY_TOP_N
+
+
+_ANALYTICS_CACHE: dict[tuple[str, str], Any] = {}
 
 
 def _build_graph_analytics(graph: Optional[str]) -> tuple[Any, str]:
@@ -1800,8 +1808,15 @@ def _build_graph_analytics(graph: Optional[str]) -> tuple[Any, str]:
     uri = str(getattr(settings, "FALKORDB_URI", "") or "").strip()
     if not uri or not graph_name:
         return None, label
-    client = RedisGraphQueryClient(uri=uri, graph_name=graph_name, read_only=True)
-    return GraphAnalytics(client), label
+    # Cached per (uri, graph): RedisGraphQueryClient builds a redis.Redis, and
+    # each one carries its own ConnectionPool. Constructing a fresh client per
+    # request leaks a pool per request -- nothing here closes them.
+    cache_key = (uri, graph_name)
+    cached = _ANALYTICS_CACHE.get(cache_key)
+    if cached is None:
+        cached = GraphAnalytics(RedisGraphQueryClient(uri=uri, graph_name=graph_name, read_only=True))
+        _ANALYTICS_CACHE[cache_key] = cached
+    return cached, label
 
 
 def _ranked_payload(ranked: Any) -> list[dict[str, Any]]:
@@ -1822,16 +1837,68 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
     if analytics is None:
         return _unavailable("falkordb_uri_unset", graph=graph_label)
 
-    try:
+    def _collect() -> dict[str, Any]:
+        """All the blocking Redis work, in one place, off the event loop.
+
+        Every call below is a synchronous round trip -- roughly six of them,
+        ~30ms on the live graph, and betweenness is O(V*E) so it grows with the
+        graph rather than with the request. Running that inline in an
+        ``async def`` stalls the whole loop for every other Hub request. Same
+        finding, same fix as api_routes.py:1406 (review, 2026-08-22).
+
+        Each ranking is collected independently: the module docstring's whole
+        point is that procedure behaviour varies per build, so one measure
+        raising must not blank the node/edge/component census that already
+        succeeded. A failed measure comes back as an empty list plus a name in
+        `degraded_measures`, which the payload reports honestly.
+        """
         summary = analytics.summary()
         concept_count = analytics.node_count("Concept")
-        rankings = {
-            measure: _ranked_payload(analytics.rank(measure, top_n=_SUMMARY_TOP_N))
-            for measure in ("pagerank", "betweenness", "harmonic")
+        rankings: dict[str, list[dict[str, Any]]] = {}
+        degraded_measures: list[str] = []
+        for measure in ("pagerank", "betweenness", "harmonic"):
+            try:
+                rankings[measure] = _ranked_payload(analytics.rank(measure, top_n=_SUMMARY_TOP_N))
+            except Exception as exc:  # noqa: BLE001 - one dead procedure must not blank the card
+                logger.warning(
+                    "concept_atlas_structure_measure_failed graph=%s measure=%s error=%s",
+                    graph_label, measure, exc,
+                )
+                rankings[measure] = []
+                degraded_measures.append(measure)
+
+        dominant = summary.dominant_edge_type
+        # Saturation is a statement about CONCEPT PAIRS, so both halves of the
+        # ratio must be about concept pairs. Counting the dominant type's raw
+        # edges against C(concepts, 2) is wrong whenever that type does not
+        # join two concepts: `supports` runs evidence -> concept and joins
+        # exactly 0 concept pairs while holding 80 edges (measured live
+        # 2026-08-29), which the old formula would have rendered as "5.2% of
+        # every possible pair". An evidence-heavy run could push it past 100%.
+        # connected_pair_count asks the graph instead of assuming.
+        pair_count = analytics.connected_pair_count(dominant, label="Concept") if dominant else 0
+        saturation = analytics.pair_saturation(pair_count, concept_count) if dominant else None
+        return {
+            "summary": summary,
+            "concept_count": concept_count,
+            "rankings": rankings,
+            "degraded_measures": degraded_measures,
+            "dominant": dominant,
+            "dominant_pair_count": pair_count,
+            "saturation": saturation,
         }
+
+    try:
+        collected = await asyncio.to_thread(_collect)
     except Exception as exc:  # noqa: BLE001 - never 500 an operator page
-        logger.warning("concept_atlas_summary_failed graph=%s error=%s", graph_label, exc)
+        logger.warning("concept_atlas_structure_failed graph=%s error=%s", graph_label, exc)
         return _unavailable("graph_analytics_error", str(exc), graph=graph_label)
+
+    summary = collected["summary"]
+    concept_count = collected["concept_count"]
+    rankings = collected["rankings"]
+    dominant = collected["dominant"]
+    saturation = collected["saturation"]
 
     # The finding this route exists to make visible: nodes that hold the graph
     # together but do not top the influence ranking. Compared against pageRank
@@ -1839,22 +1906,11 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
     # nodes are partly hand-seeded (canonical concepts are god nodes by
     # authority, not by structure), so comparing to them would conflate "we
     # decided this matters" with "the graph's shape says this matters".
-    top_pagerank_ids = {r["node_id"] for r in rankings["pagerank"][:_SUMMARY_PAGERANK_COMPARISON_N]}
-    bridges = [r for r in rankings["betweenness"] if r["node_id"] not in top_pagerank_ids and r["score"] > 0.0]
-
-    dominant = summary.dominant_edge_type
-    dominant_count = summary.edge_type_counts.get(dominant, 0) if dominant else 0
-    # Saturation of the dominant edge type over the population it can actually
-    # connect. Concept-concept edges cannot land on an Evidence node, so the
-    # graph-wide node count is the wrong (flattering) denominator -- it
-    # understates saturation by ~6x on the live graph.
-    from orion.graph.analytics import StructureSummary
-
-    dominant_saturation = (
-        StructureSummary(node_count=concept_count, edge_count=dominant_count).saturation()
-        if concept_count >= 2
-        else None
-    )
+    top_pagerank_ids = {r["node_id"] for r in rankings.get("pagerank", [])[:_SUMMARY_PAGERANK_COMPARISON_N]}
+    bridges = [
+        r for r in rankings.get("betweenness", [])
+        if r["node_id"] not in top_pagerank_ids and r["score"] > 0.0
+    ]
 
     return {
         "available": True,
@@ -1864,9 +1920,9 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
         "edge_count": summary.edge_count,
         "edge_type_counts": summary.edge_type_counts,
         "dominant_edge_type": dominant,
-        "dominant_edge_saturation": (
-            round(dominant_saturation, 4) if dominant_saturation is not None else None
-        ),
+        "dominant_edge_pair_count": collected["dominant_pair_count"],
+        "dominant_edge_saturation": (round(saturation, 4) if saturation is not None else None),
+        "degraded_measures": collected["degraded_measures"],
         "component_count": summary.component_count,
         "largest_component_size": summary.largest_component_size,
         "singleton_count": summary.singleton_count,

@@ -317,17 +317,77 @@ def test_saturation_is_edges_over_possible_pairs():
     assert s.saturation() == pytest.approx(0.1994, abs=1e-4)
 
 
-def test_saturation_denominator_can_be_overridden_to_the_real_subpopulation():
-    """The graph holds 136 nodes but only 56 of them can carry a concept-concept
-    edge, so the graph-wide denominator understates saturation ~6x."""
-    s = _substrate_summary()
-    graph_wide = s.saturation()
-    concepts_only = StructureSummary(
-        node_count=56, edge_count=s.edge_type_counts["co_occurs_with"]
-    ).saturation()
-    assert graph_wide == pytest.approx(461 / (136 * 135 / 2))
-    assert concepts_only == pytest.approx(0.1994, abs=1e-4)
-    assert concepts_only > graph_wide * 3
+def test_saturation_takes_no_denominator_override():
+    """It used to accept `node_count=`, which was a trap: the numerator stayed
+    `self.edge_count` (ALL edge types), so the documented
+    `summary.saturation(node_count=56)` returned 461/1540 = 29.9% -- counting
+    80 `supports` and 74 `associated_with` edges, neither of which can join two
+    concepts, as concept pairs. Ask GraphAnalytics.pair_saturation instead.
+    """
+    with pytest.raises(TypeError):
+        _substrate_summary().saturation(56)  # type: ignore[call-arg]
+
+
+def test_pair_saturation_is_pairs_over_possible_pairs():
+    """Hand-computed: 307 distinct concept pairs over 56 concepts.
+    56*55/2 = 1540; 307/1540 = 0.19935...
+    """
+    assert GraphAnalytics.pair_saturation(307, 56) == pytest.approx(307 / 1540)
+    assert GraphAnalytics.pair_saturation(307, 56) == pytest.approx(0.1994, abs=1e-4)
+
+
+@pytest.mark.parametrize("population", [0, 1])
+def test_pair_saturation_undefined_below_two_nodes(population):
+    assert GraphAnalytics.pair_saturation(5, population) is None
+
+
+def test_pair_saturation_cannot_exceed_one_given_distinct_pairs():
+    """The bug this replaced: an edge count (not a pair count) over concept
+    pairs. 1000 `supports` edges over 20 concepts rendered as 526.3%.
+    A distinct-pair numerator is bounded by the denominator by construction."""
+    assert GraphAnalytics.pair_saturation(190, 20) == 1.0
+
+
+def test_connected_pair_count_counts_unordered_pairs_of_the_right_label():
+    client = StubClient([{"pairs": 307}])
+    n = GraphAnalytics(client).connected_pair_count("co_occurs_with", label="Concept")
+    assert n == 307
+    # Undirected match plus an id ordering, so a->b and b->a are ONE pair.
+    assert "-[r:co_occurs_with]-" in client.cypher
+    assert "->" not in client.cypher
+    assert "ID(a) < ID(b)" in client.cypher
+    assert "count(DISTINCT [ID(a), ID(b)])" in client.cypher
+    assert "(a:Concept)" in client.cypher and "(b:Concept)" in client.cypher
+
+
+def test_connected_pair_count_without_a_label_matches_any_node():
+    client = StubClient([{"pairs": 3}])
+    GraphAnalytics(client).connected_pair_count("supports")
+    assert "(a)-[r:supports]-(b)" in client.cypher
+
+
+def test_connected_pair_count_zero_is_a_real_answer():
+    """`supports` runs evidence -> concept: it holds 80 edges and joins exactly
+    0 concept pairs (measured live). Zero here is correct, not a failure."""
+    assert GraphAnalytics(StubClient([{"pairs": 0}])).connected_pair_count("supports", label="Concept") == 0
+    assert GraphAnalytics(StubClient([])).connected_pair_count("supports", label="Concept") == 0
+
+
+@pytest.mark.parametrize("bad", ["x) RETURN 1 //", "a|b", "has-dash"])
+def test_connected_pair_count_rejects_injection(bad):
+    with pytest.raises(ValueError):
+        GraphAnalytics(StubClient()).connected_pair_count(bad, label="Concept")
+    with pytest.raises(ValueError, match="non-identifier label"):
+        GraphAnalytics(StubClient()).connected_pair_count("supports", label=bad)
+
+
+def test_neighborhood_excludes_the_query_node_itself():
+    """Cypher's uniqueness rule forbids reusing a RELATIONSHIP, not returning
+    to the same NODE, so with two distinct edges between one pair the source
+    comes back as its own 2-hop neighbour."""
+    client = StubClient([])
+    GraphAnalytics(client).neighborhood("a", depth=2)
+    assert "WHERE m <> s" in client.cypher
 
 
 @pytest.mark.parametrize("n", [0, 1])

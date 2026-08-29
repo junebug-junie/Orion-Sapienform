@@ -66,6 +66,7 @@ def _live_shaped_analytics():
     class StubAnalytics:
         def __init__(self):
             self.rank_calls = []
+            self.pair_calls = []
 
         def summary(self):
             return StructureSummary(
@@ -88,6 +89,17 @@ def _live_shaped_analytics():
 
         def node_count(self, label=None):
             return 56 if label == "Concept" else 136
+
+        def connected_pair_count(self, rel_type, *, label=None):
+            self.pair_calls.append((rel_type, label))
+            # live: co_occurs_with joins 307 concept pairs, supports joins 0
+            return {"co_occurs_with": 307, "supports": 0, "associated_with": 74}.get(rel_type, 0)
+
+        @staticmethod
+        def pair_saturation(pair_count, population):
+            if population < 2:
+                return None
+            return pair_count / (population * (population - 1) / 2)
 
         def rank(self, measure, *, top_n=8):
             self.rank_calls.append((measure, top_n))
@@ -155,9 +167,15 @@ def test_bridges_surface_nodes_that_top_betweenness_but_not_pagerank(client, stu
     body = client.get("/api/substrate/concepts/structure").json()
     labels = [b["label"] for b in body["bridges"]]
     assert "Light folding concept" in labels
-    assert "messy middle authenticity" in labels
+    assert "Home lab infrastructure" in labels
     assert "Orion" not in labels
     assert "Juniper" not in labels
+    # `messy middle authenticity` is high on BOTH measures (pageRank #6 in this
+    # fixture), so it is correctly not listed as a bridge. It used to appear
+    # here because the comparison window was 5 while the UI rendered 6 -- the
+    # card then showed it in the influence column and under "Bridges", whose
+    # tooltip reads "not top pageRank".
+    assert "messy middle authenticity" not in labels
 
 
 def test_bridges_exclude_zero_scoring_nodes(client, stub_summary):
@@ -264,3 +282,118 @@ def test_no_two_route_handlers_share_a_name():
     names = Counter(r.name for r in router.routes if getattr(r, "name", None))
     duplicates = {name: n for name, n in names.items() if n > 1}
     assert duplicates == {}, f"duplicate route handler names: {duplicates}"
+
+
+def test_saturation_is_measured_from_real_pairs_not_assumed_endpoints(client, stub_summary):
+    """The numerator must come from connected_pair_count, not from the raw edge
+    count of whatever type happens to dominate. `supports` runs evidence ->
+    concept: 80 edges, 0 concept pairs. The old formula rendered that as 5.2%
+    "of every possible pair", and an evidence-heavy run would have pushed it
+    past 100%.
+    """
+    body = client.get("/api/substrate/concepts/structure").json()
+    assert ("co_occurs_with", "Concept") in stub_summary.pair_calls
+    assert body["dominant_edge_pair_count"] == 307
+    assert body["dominant_edge_saturation"] == pytest.approx(0.1994, abs=1e-4)
+
+
+def test_saturation_is_zero_when_the_dominant_type_joins_no_concept_pairs(client, monkeypatch):
+    import scripts.concept_atlas_routes as mod
+
+    stub = _live_shaped_analytics()
+    original = stub.summary
+
+    def supports_dominant():
+        s = original()
+        object.__setattr__(s, "edge_type_counts", {"supports": 400, "co_occurs_with": 61})
+        return s
+
+    stub.summary = supports_dominant
+    monkeypatch.setattr(mod, "_build_graph_analytics", lambda graph: (stub, "substrate"))
+    body = client.get("/api/substrate/concepts/structure").json()
+    assert body["dominant_edge_type"] == "supports"
+    assert body["dominant_edge_pair_count"] == 0
+    assert body["dominant_edge_saturation"] == 0.0, "must not report 400/1540 = 26% for an edge that joins no pairs"
+
+
+def test_a_node_cannot_be_both_most_influential_and_a_bridge(client, stub_summary):
+    """The bridges tooltip says "not top pageRank". The comparison window and
+    the rendered window must therefore be the same size -- they were 5 and 6,
+    so pageRank rank 6 appeared in both columns.
+    """
+    import scripts.concept_atlas_routes as mod
+
+    body = client.get("/api/substrate/concepts/structure").json()
+    shown_pagerank = {r["node_id"] for r in body["rankings"]["pagerank"]}
+    bridge_ids = {b["node_id"] for b in body["bridges"]}
+    assert shown_pagerank & bridge_ids == set()
+    assert mod._SUMMARY_PAGERANK_COMPARISON_N == mod._SUMMARY_TOP_N
+
+
+def test_one_dead_measure_does_not_blank_the_census(client, monkeypatch):
+    """Procedure behaviour varies per build -- three of this engine's ten
+    return zero rows. A ranking that raises must cost its own column, not the
+    node/edge/component counts that already succeeded."""
+    import scripts.concept_atlas_routes as mod
+
+    stub = _live_shaped_analytics()
+    real_rank = stub.rank
+
+    def flaky(measure, *, top_n=8):
+        if measure == "harmonic":
+            raise RuntimeError("Procedure `algo.HarmonicCentrality` not supported")
+        return real_rank(measure, top_n=top_n)
+
+    stub.rank = flaky
+    monkeypatch.setattr(mod, "_build_graph_analytics", lambda graph: (stub, "substrate"))
+    body = client.get("/api/substrate/concepts/structure").json()
+    assert body["available"] is True
+    assert body["node_count"] == 136, "the census survived a dead measure"
+    assert body["degraded_measures"] == ["harmonic"]
+    assert body["rankings"]["harmonic"] == []
+    assert body["rankings"]["pagerank"], "the working measures still returned"
+
+
+def test_the_analytics_client_is_reused_across_requests():
+    """Each RedisGraphQueryClient carries its own ConnectionPool and nothing
+    closes it, so building one per request leaks a pool per request."""
+    _ensure_hub_scripts_import_path()
+    import scripts.concept_atlas_routes as mod
+
+    mod._ANALYTICS_CACHE.clear()
+    built = []
+
+    class FakeClient:
+        def __init__(self, **kw):
+            built.append(kw)
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        import orion.graph.falkor_client as fc
+
+        monkey.setattr(fc, "RedisGraphQueryClient", FakeClient)
+        monkey.setattr(mod.settings, "FALKORDB_URI", "redis://127.0.0.1:6380", raising=False)
+        first, _ = mod._build_graph_analytics(None)
+        second, _ = mod._build_graph_analytics(None)
+        assert first is second
+        assert len(built) == 1, f"a client was constructed per call: {len(built)}"
+    finally:
+        monkey.undo()
+        mod._ANALYTICS_CACHE.clear()
+
+
+def test_the_blocking_graph_work_runs_off_the_event_loop():
+    """~30ms of synchronous Redis round trips per page load, and betweenness is
+    O(V*E) so it grows with the graph rather than the request. Same finding and
+    same fix as api_routes.py:1406."""
+    _ensure_hub_scripts_import_path()
+    import inspect
+
+    import scripts.concept_atlas_routes as mod
+
+    src = inspect.getsource(mod.concept_atlas_structure)
+    assert "asyncio.to_thread" in src
+    # every blocking call must be inside the threaded helper, not the coroutine
+    threaded = src[src.index("def _collect()"):src.index("collected = await asyncio.to_thread")]
+    for call in ("analytics.summary()", "analytics.node_count(", "analytics.rank(", "analytics.connected_pair_count("):
+        assert call in threaded, f"{call} is not inside the threaded block"

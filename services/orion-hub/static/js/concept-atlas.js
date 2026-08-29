@@ -99,10 +99,10 @@ function edgeLabelMinZoomedFontSize(showAll) {
 // participates in the cose layout and would keep pushing real concepts
 // apart -- the clutter would move, not go away.
 function collapseEvidenceNodes(nodes, edges, collapse) {
-  if (!collapse) return { nodes, edges, collapsedCount: 0 };
+  if (!collapse) return { nodes, edges, collapsedCount: 0, foldedCount: 0, droppedCount: 0 };
   const isEvidence = (n) => n.node_kind === "evidence";
   const evidenceIds = new Set(nodes.filter(isEvidence).map((n) => n.id));
-  if (!evidenceIds.size) return { nodes, edges, collapsedCount: 0 };
+  if (!evidenceIds.size) return { nodes, edges, collapsedCount: 0, foldedCount: 0, droppedCount: 0 };
 
   // `supports` runs evidence -> concept (see the topic_foundry adapter), so
   // the target is the concept that gains the count. Counted from edges
@@ -120,7 +120,24 @@ function collapseEvidenceNodes(nodes, edges, collapse) {
     .map((n) => (counts.has(n.id) ? Object.assign({}, n, { evidence_count: counts.get(n.id) }) : n));
   const keptIds = new Set(kept.map((n) => n.id));
   const keptEdges = edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target));
-  return { nodes: kept, edges: keptEdges, collapsedCount: evidenceIds.size };
+
+  // FOLDED and DROPPED are different things and the status line must not
+  // conflate them. An evidence node whose concept is absent from this view --
+  // the promotion_state filter removed it, or it was never in the slice --
+  // contributes to no count anywhere; it just disappears. Reporting it as
+  // "folded in" would claim its information survived when it did not.
+  // `foldedCount` sums the counts actually attached to a surviving concept.
+  let foldedCount = 0;
+  counts.forEach((n, conceptId) => {
+    if (keptIds.has(conceptId)) foldedCount += n;
+  });
+  return {
+    nodes: kept,
+    edges: keptEdges,
+    collapsedCount: evidenceIds.size,
+    foldedCount,
+    droppedCount: evidenceIds.size - foldedCount,
+  };
 }
 
 // synthetic_label (see concept_atlas_routes.py's node_payload):
@@ -186,9 +203,16 @@ function componentShapeLine(payload) {
   const largest = payload.largest_component_size || 0;
   const singletons = payload.singleton_count || 0;
   if (!total) return "no components";
-  const middle = total - singletons - (largest > 0 ? 1 : 0);
+  // `largest > 1`, not `> 0`: when every component is a singleton the largest
+  // IS a singleton, so counting it separately reported it twice --
+  // {components:48, largest:1, singletons:48} rendered "48 components: 1 of 1
+  // + 48 singletons", 49 components across the parts plus a meaningless
+  // "1 of 1" blob. That is exactly orion_worldview's live shape (48 nodes, 0
+  // edges), i.e. the graph this line most needs to describe correctly.
+  const hasBlob = largest > 1;
+  const middle = total - singletons - (hasBlob ? 1 : 0);
   const parts = [];
-  if (largest > 0) parts.push(`1 of ${largest}`);
+  if (hasBlob) parts.push(`1 of ${largest}`);
   if (middle > 0) parts.push(`${middle} smaller`);
   if (singletons > 0) parts.push(`${singletons} singleton${singletons === 1 ? "" : "s"}`);
   return `${total} component${total === 1 ? "" : "s"}: ${parts.join(" + ")}`;
@@ -249,6 +273,9 @@ if (typeof document !== "undefined") {
   // but "Evidence for <neighbour>". Opting IN to that is the right default,
   // not opting out of it.
   let collapseEvidence = true;
+  // Last /network payload, so the evidence toggle re-renders instead of refetching.
+  let lastNetworkPayload = null;
+  let lastPromotionState = "";
 
   // Deterministic hash -> hue so a given topic_id always renders the same
   // color across refreshes/filters, without needing a server-assigned color
@@ -569,6 +596,22 @@ if (typeof document !== "undefined") {
         if (NETWORK_STATUS) NETWORK_STATUS.textContent = payload.reason || "unavailable";
         return;
       }
+      lastNetworkPayload = payload;
+      lastPromotionState = promotionState;
+      renderNetworkPayload(payload, promotionState);
+    } catch (e) {
+      destroyCy();
+      if (NETWORK_CY_HOST) NETWORK_CY_HOST.textContent = `Network error: ${e.message || e}`;
+      if (NETWORK_STATUS) NETWORK_STATUS.textContent = "error";
+    }
+  }
+
+  // Split out of fetchNetwork so the evidence toggle can re-render the graph
+  // it already has. Collapsing is a pure transform of the /network payload, so
+  // re-fetching for it cost four endpoint round trips and three whole-graph
+  // centrality runs (/structure re-runs pageRank, betweenness and harmonic) to
+  // tick a checkbox.
+  function renderNetworkPayload(payload, promotionState) {
       const promotionFiltered = applyClientPromotionStateFilter(payload.nodes || [], payload.edges || [], promotionState);
       const collapsed = collapseEvidenceNodes(promotionFiltered.nodes, promotionFiltered.edges, collapseEvidence);
       const filtered = { nodes: collapsed.nodes, edges: collapsed.edges };
@@ -592,7 +635,10 @@ if (typeof document !== "undefined") {
         // graph: a node count that shrank with no explanation reads as data
         // loss, which is exactly the complaint this view already earns.
         const collapsedNote = collapsed.collapsedCount
-          ? `, ${collapsed.collapsedCount} evidence node(s) folded in`
+          ? `, ${collapsed.foldedCount} evidence node(s) folded in` +
+            (collapsed.droppedCount
+              ? `, ${collapsed.droppedCount} dropped (supported concept not in view)`
+              : "")
           : "";
         const base = `${filtered.nodes.length} node(s), ${filtered.edges.length} edge(s), ${payload.god_node_count || 0} god node(s), ${shownComponents.size} component(s)${collapsedNote}`;
         // Surfaced when a non-default store backend (e.g. graphdb) fell back
@@ -602,11 +648,6 @@ if (typeof document !== "undefined") {
         NETWORK_STATUS.textContent = payload.degraded ? `${base} — DEGRADED: ${payload.degraded_error || "stale data"}` : base;
         NETWORK_STATUS.classList.toggle("text-amber-400", !!payload.degraded);
       }
-    } catch (e) {
-      destroyCy();
-      if (NETWORK_CY_HOST) NETWORK_CY_HOST.textContent = `Network error: ${e.message || e}`;
-      if (NETWORK_STATUS) NETWORK_STATUS.textContent = "error";
-    }
   }
 
 
@@ -769,8 +810,13 @@ if (typeof document !== "undefined") {
         collapseEvidence = !!COLLAPSE_EVIDENCE.checked;
         // Unlike the label toggle above, this changes the node SET, so a
         // style().update() is not enough -- the graph has to be rebuilt and
-        // the layout re-run over the new element list.
-        refreshAll();
+        // the layout re-run over the new element list. It does NOT need new
+        // data: collapsing is a pure transform of the payload already held.
+        if (lastNetworkPayload) {
+          renderNetworkPayload(lastNetworkPayload, lastPromotionState);
+        } else {
+          refreshAll();
+        }
       });
     }
     if (CLEAR_FILTERS_BTN) {

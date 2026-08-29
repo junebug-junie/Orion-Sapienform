@@ -56,11 +56,23 @@ class RecordingFalkorClient:
 class RedisGraphQueryClient:
     """Minimal sync Redis GRAPH.QUERY client for FalkorDB.
 
-    ``read_only=True`` sends ``GRAPH.RO_QUERY`` instead, so a bug in a reader
-    cannot write -- the engine refuses a mutating clause outright rather than
-    relying on the caller only having composed read queries. This is the same
-    belt-and-braces ``orion/curiosity/worldview.py`` applies to Orion's own
-    graph; it defaults to False so every existing writer is unchanged.
+    ``read_only=True`` sends ``GRAPH.RO_QUERY``, so a bug in a reader cannot
+    write -- the engine refuses a mutating clause outright rather than relying
+    on the caller only having composed read queries. Verified live 2026-08-29:
+    ``CREATE (:Tmp)`` through this path returns "graph.RO_QUERY is to be
+    executed only on read-only queries". Same belt-and-braces
+    ``orion/curiosity/worldview.py`` applies to Orion's own graph; defaults to
+    False so every existing writer is unchanged.
+
+    ONE CAVEAT, because the guarantee is not unconditional. redis-py's
+    ``Graph.query`` catches ``ResponseError`` and, on ``"unknown command"``
+    with ``read_only=True``, silently RE-ISSUES the query as a writable
+    ``GRAPH.QUERY``. That path only triggers against a FalkorDB build with no
+    ``GRAPH.RO_QUERY`` at all (this deployment has it -- see the refusal
+    above), but on such a build the read-only promise degrades with no signal
+    to the caller. Do not treat this flag as an authorization boundary; it is
+    defence in depth behind a caller that already only composes reads. The
+    real boundary for Orion's own graph is a FalkorDB ACL, not this flag.
     """
 
     def __init__(self, *, uri: str, graph_name: str, read_only: bool = False) -> None:

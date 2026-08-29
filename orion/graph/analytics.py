@@ -160,21 +160,22 @@ class StructureSummary:
             return None
         return max(self.edge_type_counts.items(), key=lambda kv: kv[1])[0]
 
-    def saturation(self, node_count: Optional[int] = None) -> Optional[float]:
-        """Edges as a fraction of all possible undirected pairs.
+    def saturation(self) -> Optional[float]:
+        """Edges as a fraction of all possible undirected pairs of THIS graph.
 
-        The legibility number. A graph whose edges are a co-occurrence proxy
-        saturates: on live ``orion_substrate`` 2026-08-29, 307 ``co_occurs_with``
-        edges over 56 concepts is 307/1540 = **19.9% of every possible pair**,
-        which is why ``communities()`` returns a single community there. High
-        saturation means no algorithm will find structure, because there is
-        none to find -- the fix is upstream, in what the producer calls an edge.
+        Deliberately has no ``node_count`` override. It used to take one, so a
+        caller could ask about a subpopulation (concepts only) -- but the
+        numerator stayed ``self.edge_count``, the sum over EVERY edge type. On
+        live orion_substrate the documented call returned 461/1540 = 29.9%,
+        silently counting 80 ``supports`` and 74 ``associated_with`` edges --
+        neither of which can connect two concepts -- as if they were concept
+        pairs. The parameter made a wrong number easy to reach and a right one
+        impossible, so it is gone.
 
-        ``node_count`` overrides the graph-wide count so a caller can ask the
-        question about the subpopulation an edge type actually connects (e.g.
-        concepts only), which is the honest denominator.
+        To ask "how saturated is one edge type over one population", use
+        ``GraphAnalytics.pair_saturation``, which counts the real endpoints.
         """
-        n = self.node_count if node_count is None else node_count
+        n = self.node_count
         if n < 2:
             return None
         return self.edge_count / (n * (n - 1) / 2)
@@ -267,6 +268,47 @@ class GraphAnalytics:
             "MATCH ()-[r]->() RETURN type(r) AS edge_type, count(r) AS n ORDER BY n DESC",
         )
         return {str(r.get("edge_type")): int(r.get("n", 0)) for r in rows if r.get("edge_type")}
+
+    def connected_pair_count(self, rel_type: str, *, label: Optional[str] = None) -> int:
+        """Distinct unordered node pairs joined by ``rel_type``.
+
+        The honest numerator for a saturation ratio, because it answers what a
+        pair-density question actually asks. Two things it fixes over counting
+        relationships directly:
+
+        * **Direction.** ``a -[co_occurs_with]-> b`` and ``b -[..]-> a`` are two
+          relationships and one pair. Counting relationships can exceed the
+          number of possible pairs and report a density above 100%.
+        * **Endpoints.** ``supports`` runs evidence -> concept and
+          ``associated_with`` runs concept -> entity. Neither lands on a pair of
+          concepts: measured live 2026-08-29, ``supports`` joins exactly **0**
+          concept pairs while holding 80 edges. Dividing 80 by the number of
+          concept pairs would report 5.2% density for an edge type that creates
+          none.
+        """
+        types = _validated_rel_types([rel_type])
+        if not types:
+            return 0
+        if label is not None and not _REL_TYPE_RE.match(str(label)):
+            raise ValueError(f"refusing to build Cypher for a non-identifier label: {label!r}")
+        node = f":{label}" if label else ""
+        rows = _rows(
+            self._client,
+            f"MATCH (a{node})-[r:{types[0]}]-(b{node}) WHERE ID(a) < ID(b) "
+            "RETURN count(DISTINCT [ID(a), ID(b)]) AS pairs",
+        )
+        return int(rows[0].get("pairs", 0)) if rows else 0
+
+    @staticmethod
+    def pair_saturation(pair_count: int, population: int) -> Optional[float]:
+        """``pair_count`` as a fraction of every possible pair among ``population``.
+
+        None when the population cannot form a pair. Never exceeds 1.0 given a
+        distinct-pair numerator from ``connected_pair_count``.
+        """
+        if population < 2:
+            return None
+        return pair_count / (population * (population - 1) / 2)
 
     # --- structure ----------------------------------------------------------
 
@@ -375,6 +417,14 @@ class GraphAnalytics:
             self._client,
             f"MATCH (s) WHERE s.{self._id} = $node_id "
             f"MATCH p = (s)-[{rel}*1..{d}]-(m) "
+            # Cypher's relationship-uniqueness rule forbids reusing the SAME
+            # relationship, not returning to the same NODE: with two distinct
+            # edges between one pair -- which this graph can hold, since
+            # co_occurs_with is written directionally and both directions
+            # occur -- `m` can be `s` again at hops=2, drawing the focus node
+            # as its own neighbour. Zero occurrences on the live graph today,
+            # so this is a latent case being closed, not an observed bug.
+            "WHERE m <> s "
             "WITH m, min(length(p)) AS hops "
             f"RETURN m.{self._id} AS node_id, m.{self._label} AS label, hops "
             f"ORDER BY hops ASC, label ASC LIMIT {max(1, int(limit))}",

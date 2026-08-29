@@ -13,9 +13,9 @@ services:
       - ROUTER_POLICY_PATH=/app/config/vision_frame_router.yaml
       - DRY_RUN=${DRY_RUN:-false}
     volumes:
-      - ./app:/app/app
-      - ../../orion:/app/orion
-      - ../../config/vision_frame_router.yaml:/app/config/vision_frame_router.yaml:ro
+      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-frame-router/app:/app/app
+      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
+      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/vision_frame_router.yaml:/app/config/vision_frame_router.yaml:ro
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro
     networks:
       - app-net

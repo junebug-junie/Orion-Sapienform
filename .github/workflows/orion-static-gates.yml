@@ -88,6 +88,13 @@ jobs:
       - name: Service hostname references
         run: python scripts/check_service_hostname_refs.py
 
+      # A relative bind mount resolves against the compose file's own directory
+      # at `up` time, so deploying from a worktree -- which safe_docker_build.sh
+      # REQUIRES -- pins that disposable tree as production infrastructure.
+      # Caught live 2026-08-29 on orion-circe-biometrics.
+      - name: Compose host mounts must not be relative
+        run: python scripts/check_compose_no_relative_mounts.py
+
       - name: Journal dispatch registry completeness
         run: python scripts/check_journal_dispatch_registry.py
 

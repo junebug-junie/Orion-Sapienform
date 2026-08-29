@@ -254,8 +254,18 @@ class FindingConnectivity:
 
     @property
     def orphaned(self) -> int:
-        """Findings this run wrote that point at nothing."""
-        return max(0, self.total - self.connected)
+        """Findings this run wrote that point at nothing. NOT clamped at 0.
+
+        `max(0, ...)` was the obvious guard and it was wrong, in the one
+        derived number an orphan-rate alert would actually read. `connected`
+        is deliberately not clamped to `total` by the reader, because
+        `connected > total` is impossible by construction and therefore means
+        the instrument broke -- and a clamp here would turn that same broken
+        reading into a serene `0 orphans` while `summary()` was still honestly
+        printing `5/2 joined`. A negative orphan count is nonsense on its face,
+        which is the point: it is loud, and it cannot be mistaken for health.
+        """
+        return self.total - self.connected
 
     def summary(self) -> str:
         """For the log line. `total == 0` is not a failure -- see the reader."""
@@ -823,7 +833,18 @@ def read_finding_connectivity(
     A run that wrote NO findings reads `total=0`, which is neither a failure
     nor unreadable -- it is a run that spent its turn on something else, and
     collapsing it into `None` would report an unreachable graph every time
-    Orion revised priors instead of forming findings.
+    Orion revised priors instead of forming findings. That case arrives as a
+    real ROW, verified against the live graph: a run_id with no findings at
+    all returns `(total=0, connected=0)`, not an empty result.
+
+    Which is why NO ROWS is `None` and not `(0, 0)`. `rows_from_reply` returns
+    `[]` only when the reply does not have the shape it expects -- a driver or
+    protocol change under us -- so an empty list here is an INSTRUMENT
+    FAILURE, and the first version of this function rendered it as the benign
+    `no findings`. That is the unreadable-vs-empty conflation this module
+    refuses everywhere else, arriving in the one reader built to keep those
+    apart: every run would have logged a healthy-looking string while the
+    metric was silently dead.
 
     `connected` is NOT clamped to `total`. That comparison is impossible by
     construction, so a value that violated it would mean the query or the
@@ -838,7 +859,10 @@ def read_finding_connectivity(
         )
         return None
     if not rows:
-        return FindingConnectivity(total=0, connected=0)
+        logger.warning(
+            "curiosity_finding_connectivity_unparseable run=%s", run_id
+        )
+        return None
     row = rows[0]
     return FindingConnectivity(
         total=_as_int(row.get("total"), 0),

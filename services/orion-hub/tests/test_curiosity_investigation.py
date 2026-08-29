@@ -1590,6 +1590,20 @@ def test_an_unreadable_connectivity_read_is_not_reported_as_zero_joined() -> Non
     assert format_evidence(FindingConnectivity(total=0, connected=0)) == "no findings"
 
 
+def test_a_graph_that_was_never_configured_is_not_reported_as_an_outage() -> None:
+    """The third state, and the one a default install actually hits.
+
+    `HUB_CURIOSITY_GRAPH_ORION_PASSWORD` ships blank in `.env_example`, so
+    `self._reader is None` and every run would have logged `evidence=unreadable`
+    -- sending an operator to look for a FalkorDB outage that was never
+    happening. This field was introduced specifically to keep "did not answer"
+    apart from "answered zero"; inheriting that same conflation one level out,
+    on the most common deployment, would defeat the point of adding it.
+    """
+    assert format_evidence(None, graph_configured=False) == "no graph"
+    assert format_evidence(None, graph_configured=True) == "unreadable"
+
+
 def test_the_turn_result_read_carries_connectivity_alongside_the_footprint() -> None:
     """All four reads come back from one `to_thread` hop.
 

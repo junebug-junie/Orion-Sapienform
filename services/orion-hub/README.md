@@ -639,14 +639,24 @@ identical `wrote=`, and only the second is what the kickoff prompt asks Orion
 for. A finding joined to the claim it bears on is evidence; a finding that
 points at nothing is a note nothing can use next run.
 
-Three readings, three different meanings:
+**It counts any edge, in either direction, to any neighbour** — not only
+`Finding -> Prior`. That is deliberate, and it is a real limit worth stating:
+the prompt teaches `SUPPORTS`, `CONTRADICTS` and `ABOUT` as the three that
+carry weight, and `ABOUT` legitimately points at a `:Concept`. So a run
+reading `2/2 joined` may have joined both findings to concepts and touched no
+claim at all. Narrowing the query to priors would make it answer something
+narrower than the instruction it is watching; reading the edge types out of
+`wrote=` alongside it is how you tell those apart.
+
+Five readings, five different meanings:
 
 | `evidence=` | Means |
 | --- | --- |
-| `3/3 joined` | every finding this run wrote is attached to a claim |
+| `3/3 joined` | every finding this run wrote is joined to something |
 | `0/2 joined` | Orion wrote findings and connected none of them |
 | `no findings` | an ordinary run that spent its turn elsewhere — not a failure |
-| `unreadable` | the graph did not answer; **not** the same as `0/0` |
+| `unreadable` | the graph did not answer, or sent a reply the driver could not parse |
+| `no graph` | no reader is configured at all — the `.env_example` default, **not** an outage |
 
 It is scoped to what **this** run connected, read immediately after the turn,
 so a later run that joins an older finding does not retroactively improve an

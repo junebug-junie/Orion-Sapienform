@@ -115,7 +115,7 @@ the gate lane. Not claiming eval coverage. The live acceptance check for the
 instruction this metric watches is a longitudinal reading across runs, and it
 has one sample so far.
 
-## Mutation testing
+## Mutation testing, before review
 
 8 mutations, each asserted to have actually landed in the file before the run,
 file restored after. All 8 RED:
@@ -146,6 +146,65 @@ That run was not a bad run. 55 harness steps, grounded, refuted two priors,
 wrote a policy note. It wrote findings plainly bearing on
 `gate_bias_manual_review_7736d5271d97` and connected none of them. The
 footprint alone reads as productive, because it was.
+
+## Review findings fixed
+
+Six findings, all fixed. The reviewer probed the live FalkorDB rather than
+reading the code, which is what turned the first one up.
+
+- **Finding: an unparseable reply rendered as a healthy run.** `if not rows:
+  return FindingConnectivity(0, 0)` logged the benign `no findings`. Verified
+  live: a run with no findings returns a real `(0, 0)` ROW, so `rows == []` is
+  reachable only when `rows_from_reply` cannot parse the reply — a driver or
+  protocol change. Every run would have logged a healthy string while the
+  metric was silently dead.
+  - Fix: return `None` and log `curiosity_finding_connectivity_unparseable`.
+  - Evidence: `GRAPH.RO_QUERY orion_worldview` on a run_id with no findings
+    returns `total=0, connected=0`. Mutation reverting the fix → RED.
+
+- **Finding: the test locked the bug in.** The no-findings case used the
+  default `_FakeReader()` (returns `[]`) — a reply the real graph never sends
+  — so it pinned the broken-reply path to a healthy reading.
+  - Fix: the fake now returns a real `(0, 0)` row; the empty-reply case got
+    its own test asserting `None`.
+  - Evidence: 106 pass; mutation → RED.
+
+- **Finding: `orphaned` laundered a broken instrument.** The reader refuses to
+  clamp `connected` to `total`, but `orphaned` clamped with `max(0, ...)` — so
+  `(total=2, connected=5)` printed an honest `5/2 joined` while the one derived
+  number an alert would read said `0 orphans`. My own test asserted that `0`,
+  cementing the contradiction into the test named for refusing it.
+  - Fix: `orphaned` is unclamped. Negative is nonsense on its face, which is
+    the point. The test now asserts `-3`.
+  - Evidence: mutation restoring the clamp → RED.
+
+- **Finding: the README overclaimed what the query measures.** `3/3 joined` was
+  documented as "attached to a claim". The query counts any edge, undirected,
+  any type, any neighbour — so two `ABOUT -> :Concept` edges read `2/2 joined`
+  while no finding touches a `Prior`.
+  - Fix: reworded to "joined to something", plus a paragraph stating the limit
+    outright and why narrowing to priors would answer something narrower than
+    the instruction being watched. The query is unchanged — it should match
+    what the prompt teaches, and the prompt teaches `ABOUT`.
+
+- **Finding: "Three readings" above a four-row table, and the `unreadable` row
+  contrasted against `0/0`, a string the code cannot emit.**
+  - Fix: five rows, header says five, counted against the rendered table.
+
+- **Finding: a graph that was never configured read as an outage.**
+  `HUB_CURIOSITY_GRAPH_ORION_PASSWORD` ships blank in `.env_example`, so a
+  default install has no reader and every run logged `evidence=unreadable` —
+  sending an operator hunting a FalkorDB outage that was not happening. This
+  field exists to keep "did not answer" apart from "answered zero" and had
+  inherited that same conflation one level out.
+  - Fix: `format_evidence(..., graph_configured=)` renders `no graph`.
+  - Evidence: mutation reverting it → RED.
+
+## Mutation testing, after the fixes
+
+11 mutations, each asserted to have landed before the run, both files restored
+after. All 11 RED — including one per review fix, so reverting any of them
+fails a test.
 
 ## Restart required
 

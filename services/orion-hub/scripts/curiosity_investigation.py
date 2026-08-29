@@ -347,16 +347,28 @@ def format_footprint(footprint: dict[str, int]) -> str:
     return ", ".join(f"{label} {n}" for label, n in sorted(footprint.items()))
 
 
-def format_evidence(evidence: Optional[FindingConnectivity]) -> str:
-    """A named function rather than an inline conditional so the one case that
-    matters is testable: `None` renders "unreadable", NOT "0/0 joined".
+def format_evidence(
+    evidence: Optional[FindingConnectivity], *, graph_configured: bool = True
+) -> str:
+    """A named function rather than an inline conditional so the cases that
+    matter are testable. `None` renders "unreadable", NOT "0/0 joined".
 
     Those two would be indistinguishable in the log while meaning opposite
     things -- "the graph did not answer" versus "Orion wrote findings and
     joined none of them" -- and the second is the live reading this metric was
     built to catch, so collapsing them would blind the one instrument watching
     for it. Same rule `format_footprint`'s caller applies one field over.
+
+    `graph_configured=False` is the THIRD state and it is not an outage.
+    `HUB_CURIOSITY_GRAPH_ORION_PASSWORD` ships blank in `.env_example`, so a
+    default install has no reader at all and `_read_turn_result` short-circuits
+    to all-empty. Rendering that as "unreadable" would have an operator
+    watching for FalkorDB to come back from an outage that was never happening
+    -- which is this field's own conflation, one level out, on the deployment
+    that is most likely to be someone's first.
     """
+    if not graph_configured:
+        return "no graph"
     return "unreadable" if evidence is None else evidence.summary()
 
 
@@ -1212,7 +1224,7 @@ class CuriosityInvestigation:
             run_id,
             len(text),
             "unreadable" if footprint is None else (format_footprint(footprint) or "nothing"),
-            format_evidence(evidence),
+            format_evidence(evidence, graph_configured=self._reader is not None),
             len(hops),
             bool(outcome and outcome.continue_line),
             bool(outcome and outcome.reach_out),

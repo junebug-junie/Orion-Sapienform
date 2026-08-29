@@ -1019,12 +1019,35 @@ def test_an_unreadable_graph_is_none_and_no_findings_is_zero() -> None:
     `None` is "the graph did not answer". `total=0` is "this run wrote no
     findings", which is an ordinary run that spent its turn revising priors --
     reporting that as unreadable would cry wolf on a healthy run.
+
+    THE NO-FINDINGS FAKE RETURNS A ROW, because the real graph does. Verified
+    live: a run_id with no findings answers `(total=0, connected=0)`. An
+    earlier version of this test used the default `_FakeReader()` -- which
+    returns `[]` -- as its stand-in for that case, a reply FalkorDB never
+    sends, so it pinned the unparseable-reply path to a healthy reading and
+    locked in the bug the test below now covers.
     """
     assert read_finding_connectivity(_FakeReader(raises=True), "abc123") is None
 
-    empty = read_finding_connectivity(_FakeReader(), "abc123")
+    empty = read_finding_connectivity(
+        _FakeReader(answers={_CONNECTED: [{"total": 0, "connected": 0}]}), "abc123"
+    )
     assert empty == FindingConnectivity(total=0, connected=0)
     assert empty.summary() == "no findings"
+
+
+def test_a_reply_the_driver_could_not_parse_is_unreadable_not_empty() -> None:
+    """`rows_from_reply` returns `[]` ONLY on a reply shape it does not
+    recognise -- a driver or protocol change under us -- because a genuine
+    zero-finding run comes back as a real `(0, 0)` row (asserted above, and
+    confirmed against the live graph).
+
+    So no rows means the INSTRUMENT broke, and rendering it as the benign
+    `no findings` would log a healthy-looking string on every run while the
+    metric was silently dead. That is the unreadable-vs-empty conflation this
+    module refuses everywhere else, arriving inside the reader built to keep
+    those two apart."""
+    assert read_finding_connectivity(_FakeReader(), "abc123") is None
 
 
 def test_connectivity_refuses_a_non_hex_run_id() -> None:
@@ -1047,8 +1070,14 @@ def test_a_broken_instrument_is_not_flattened_into_a_healthy_reading() -> None:
     reader = _FakeReader(answers={_CONNECTED: [{"total": 2, "connected": 5}]})
     result = read_finding_connectivity(reader, "abc123")
     assert result.connected == 5 and result.total == 2
-    assert result.orphaned == 0
     assert result.summary() == "5/2 joined"
+
+    # AND `orphaned` MUST NOT LAUNDER IT EITHER. This asserted `== 0` while
+    # the property clamped with `max(0, ...)`, which meant the one derived
+    # number an orphan-rate alert would read rendered a broken instrument as
+    # a perfectly healthy run -- cemented by the test named for refusing
+    # exactly that. Negative is nonsense on its face, which is the point.
+    assert result.orphaned == -3
 
 
 def test_the_summary_reports_the_live_all_orphaned_case() -> None:

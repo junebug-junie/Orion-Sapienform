@@ -22,6 +22,7 @@ from app.models import (
     WindowingSpec,
 )
 from app.services.enrichment import enqueue_enrichment
+from app.services.run_recovery import enrich_refusal_reason
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
 from app.storage.repository import (
@@ -174,6 +175,16 @@ def enrich_run_endpoint(run_id: UUID, payload: RunEnrichRequest, background_task
     row = fetch_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
+    # Enrichment is a post-pass over a run whose segments already exist, and
+    # it now ends by writing a terminal status (see
+    # app/services/run_recovery.py::terminal_status_for_enrichment). Without
+    # this gate, enriching a `queued` or `running` run promotes it to
+    # `complete` -- and since the Hub resolves "latest completed run" by
+    # created_at DESC, a brand-new zero-segment run would win and the concept
+    # atlas would ingest a run with no segments and no topics.
+    refusal = enrich_refusal_reason(row)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     enqueue_enrichment(background_tasks, run_id, force=payload.force, enricher=payload.enricher, limit=payload.limit)
     stats = row.get("stats") or {}
     return RunEnrichResponse(

@@ -63,12 +63,13 @@ def _run_enrichment(
     if status == "failed":
         logger.warning("Skipping enrichment for failed run_id=%s", run_id)
         return
-    # Reentrancy guard. The scheduler triggers enrichment every tick, so a
-    # second pass starting while a first is in flight is reachable in normal
-    # operation -- and it used to be the thing that latched the run: it read
-    # status="running" at entry and wrote that same value back as the
-    # terminal state. Refusing outright is correct, not merely safer: the
-    # in-flight pass is already covering this run's segments.
+    # Reentrancy guard. NOT reachable from the Hub scheduler -- it resolves
+    # its target through GET /runs?status=complete&limit=1, so the moment a
+    # first pass writes status="running" the run leaves that result set and
+    # cannot be handed to a second pass. Reachable from a concurrent manual
+    # or smoke-script POST /runs/{id}/enrich, which is why the guard stays.
+    # Refusing outright is correct, not merely safer: the in-flight pass is
+    # already covering this run's segments.
     if not owns_run and run_row.get("stage") == "enriching" and status == "running":
         logger.warning(
             "enrichment_already_in_flight run_id=%s -- refusing to start a second pass", run_id
@@ -122,15 +123,35 @@ def _run_enrichment(
         logger.exception("enrichment_run_failed run_id=%s", run_id)
         raise
     finally:
-        stats["segments_enriched"] = stats.get("segments_enriched", 0) + enriched_count
-        stats["enrichment_failed"] = stats.get("enrichment_failed", 0) + failed_count
-        stats["enrichment_secs"] = stats.get("enrichment_secs", 0) + _elapsed_secs(started)
+        # This block is itself wrapped, because a raise in HERE re-creates the
+        # exact bug being fixed and hides it better: _build_run_record_for_update
+        # subscripts specs["dataset"]/["windowing"]/["model"] bare, and
+        # update_run does real I/O. An unguarded failure would replace the
+        # original exception AND leave the run pinned at status="running",
+        # indistinguishable from the pre-patch behaviour in code that now
+        # looks protected.
+        try:
+            stats["segments_enriched"] = stats.get("segments_enriched", 0) + enriched_count
+            stats["enrichment_failed"] = stats.get("enrichment_failed", 0) + failed_count
+            stats["enrichment_secs"] = stats.get("enrichment_secs", 0) + _elapsed_secs(started)
 
-        update_run_payload = _build_run_record_for_update(
-            run_row, stage="enriched", status=terminal_status
-        )
-        update_run_payload.stats = stats
-        update_run(update_run_payload)
+            # Only claim "enriched" if something actually was. On the raise
+            # path enriched_count is 0 and nothing was read at all; recording
+            # that as a completed enrichment pass would be the same class of
+            # lie as an empty semantic projection reported as success.
+            final_stage = "enriched" if enriched_count else (run_row.get("stage") or "trained")
+            update_run_payload = _build_run_record_for_update(
+                run_row, stage=final_stage, status=terminal_status
+            )
+            update_run_payload.stats = stats
+            update_run(update_run_payload)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "enrichment_terminal_write_failed run_id=%s -- run may still be pinned at "
+                "status=running; the startup reaper in app/services/run_recovery.py will "
+                "close it on the next restart",
+                run_id,
+            )
 
     _write_enrichment_artifacts(run_row, enriched_payloads, taxonomy, chosen_enricher, enriched_count, failed_count)
     _publish_enrich_complete(run_row, enriched_count, failed_count)

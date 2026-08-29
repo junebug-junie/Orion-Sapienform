@@ -336,9 +336,14 @@ def list_non_terminal_runs() -> List[Dict[str, Any]]:
     """
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Predicate built from run_recovery's own constant, not hardcoded
+            # literals: the two must never disagree about what "non-terminal"
+            # means, or runs in the missing status sit un-reaped forever.
+            from app.services.run_recovery import NON_TERMINAL_STATUSES
+
             cur.execute(
-                "SELECT * FROM topic_foundry_runs WHERE status IN ('running', 'queued') "
-                "ORDER BY created_at ASC"
+                "SELECT * FROM topic_foundry_runs WHERE status = ANY(%s) ORDER BY created_at ASC",
+                (sorted(NON_TERMINAL_STATUSES),),
             )
             return cur.fetchall() or []
 

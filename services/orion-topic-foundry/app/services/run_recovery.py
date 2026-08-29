@@ -1,15 +1,24 @@
 """Recover runs that a process restart stranded mid-flight.
 
 Runs execute **in this process**, as FastAPI ``BackgroundTasks``
-(``enqueue_enrichment``, ``enqueue_training``). ``services/orion-topic-foundry/
-docker-compose.yml`` declares no ``deploy.replicas``, so there is exactly one.
-Together those give a real invariant, not a staleness heuristic:
+(``enqueue_enrichment``, ``enqueue_training``). ``app/storage/repository.py``
+is the only writer of ``topic_foundry_runs`` anywhere in the repo, the
+Dockerfile's CMD is a bare ``uvicorn app.main:app`` with no ``--workers``, and
+the compose file declares no ``deploy.replicas``. Together those give a real
+invariant, not a staleness heuristic:
 
     at process start, no run can legitimately be `running` or `queued`
 
 -- there is no worker anywhere that could still be advancing it. Any such row
 is the residue of a container restart, and it will stay that way forever,
 because nothing else ever writes a terminal status for it.
+
+The precondition is precisely **one service instance per database**, which is
+stronger than "one replica". ``container_name: orion-${NODE_NAME}-topic-foundry``
+says this service is meant to be node-scoped and ``TOPIC_FOUNDRY_PG_DSN`` is a
+plain DSN, so if a second node were ever pointed at the same database, node B's
+startup would reap node A's live run. Do not relax that without replacing this
+invariant with a real lease or heartbeat.
 
 Why this exists (confirmed live 2026-08-29): six runs sat in
 ``running/enriching``, the oldest for 21 hours, and **zero** runs were
@@ -19,16 +28,26 @@ Why this exists (confirmed live 2026-08-29): six runs sat in
 whole graph had no source run at all. Two of the six were stranded by ordinary
 redeploys of this service; one had been stuck since the previous morning.
 
-Two distinct defects produced them, both fixed alongside this module:
+**The incident had one cause**, and a second latent defect was found while
+fixing it. Both are fixed alongside this module; do not conflate them.
 
-1. ``_run_enrichment`` had no ``try/finally``. It wrote ``status="running"``
-   up front and restored the previous status only on the success path, so any
-   raise -- or any container restart -- left the run ``running`` permanently.
-2. It restored the status it had *read at entry*. A second enrichment started
-   while a first was in flight read ``"running"`` and wrote ``"running"``
-   back as the terminal state, latching the run even on a clean finish. The
-   scheduler triggers enrichment every tick, so this was reachable in normal
-   operation.
+1. **The cause.** ``_run_enrichment`` had no ``try/finally``. It wrote
+   ``status="running"`` up front and restored the previous status only on the
+   success path, so any raise -- or any container restart -- left the run
+   ``running`` permanently. All six stranded rows carried a pre-existing
+   ``completed_at`` and real ``topics_summary`` artifacts, i.e. they entered
+   enrichment already ``complete``; defect 2 would have restored ``complete``
+   for every one of them, harmlessly. Defect 1 alone explains all six.
+2. **Latent, not the cause.** It restored the status it had *read at entry*,
+   so a second pass starting while a first was in flight read ``"running"``
+   and wrote it back as the terminal state. Reachable via ``_run_training``'s
+   inline ``run_enrichment_sync`` (which genuinely presents
+   ``status="running"`` at entry) and via a concurrent manual or smoke-script
+   ``POST /runs/{id}/enrich`` -- but **not** via the Hub scheduler, contrary
+   to what an earlier version of this docstring claimed. The scheduler
+   resolves its target through ``GET /runs?status=complete&limit=1``, so the
+   moment pass 1 writes ``status="running"`` the run drops out of that result
+   set and cannot be handed to a second pass.
 
 The decision function here is pure and takes counts rather than a connection,
 so the policy is testable without a database. See ``tests/test_run_recovery.py``.
@@ -43,9 +62,16 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("topic-foundry.run-recovery")
 
 # Statuses that cannot survive a process restart, because only this process
-# ever advances them.
+# ever advances them. ``repository.list_non_terminal_runs`` builds its SQL
+# predicate from this exact set rather than hardcoding the literals, so the
+# policy here and the rows the reaper is handed cannot desynchronize -- adding
+# a status to one without the other would silently leave every run in it
+# un-reaped forever.
 NON_TERMINAL_STATUSES = frozenset({"running", "queued"})
 
+# Every status a run is allowed to come to rest in. ``recovery_decision`` and
+# ``terminal_status_for_enrichment`` may only ever return one of these; that is
+# the property the whole module exists to guarantee.
 TERMINAL_STATUSES = frozenset({"complete", "failed"})
 
 INTERRUPTED_ERROR = (
@@ -191,3 +217,23 @@ def recover_stranded_runs() -> int:
         "run_recovery_complete stranded=%s recovered=%s", len(stranded), recovered
     )
     return recovered
+
+
+def enrich_refusal_reason(run: Dict[str, Any]) -> Optional[str]:
+    """Why ``POST /runs/{id}/enrich`` must refuse this run, or ``None``.
+
+    Enrichment is a post-pass over a run whose segments already exist, and it
+    ends by writing a terminal status (see ``terminal_status_for_enrichment``).
+    Without this precondition, enriching a ``queued`` or ``running`` run
+    promotes it to ``complete`` -- and the Hub resolves "latest completed run"
+    by ``created_at DESC``, so a brand-new zero-segment run would win and the
+    concept atlas would ingest a run with no segments and no topics.
+
+    Pure, and separate from the route, so the rule is testable without
+    importing ``app.routers.runs`` (which pulls in the sklearn/joblib
+    training stack).
+    """
+    status = str(run.get("status") or "").strip().lower()
+    if status == "complete":
+        return None
+    return f"Run is {status or 'unknown'}, not complete; enrichment runs on completed runs only"

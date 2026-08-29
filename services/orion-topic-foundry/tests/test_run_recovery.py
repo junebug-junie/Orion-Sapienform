@@ -9,7 +9,9 @@ had no source run at all. Two were stranded by ordinary redeploys.
 
 from __future__ import annotations
 
+import inspect
 import logging
+import pathlib
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -25,6 +27,9 @@ from app.services.run_recovery import (
 )
 
 RUN_ID = "11111111-1111-1111-1111-111111111111"
+REAL_STATS = {"cluster_count": 7, "docs_generated": 394, "outlier_pct": 0.27}
+REAL_ARTIFACTS = {"run_dir": "/data/runs/abc", "topics_summary": "/data/runs/abc/topics.json"}
+ORIGINAL_COMPLETED_AT = datetime(2026, 8, 28, 5, 9, 31, tzinfo=timezone.utc)
 
 
 # A real RunSpecSnapshot payload -- the recovery path rebuilds a RunRecord
@@ -54,11 +59,15 @@ def _run(**overrides):
         "spec_hash": "abc",
         "status": "running",
         "stage": "enriching",
-        "stats": {},
-        "artifact_paths": {},
+        # Real values, not {}: update_run writes the WHOLE row, so a reaper
+        # that forgot to carry these forward would silently destroy the
+        # training stats and artifact paths of every run it recovered. With
+        # empty fixtures nothing could ever catch that.
+        "stats": REAL_STATS,
+        "artifact_paths": REAL_ARTIFACTS,
         "created_at": datetime.now(timezone.utc),
         "started_at": None,
-        "completed_at": None,
+        "completed_at": ORIGINAL_COMPLETED_AT,
         "error": None,
     }
     row.update(overrides)
@@ -103,11 +112,33 @@ def test_a_terminal_run_is_left_alone(status: str) -> None:
     assert recovery_decision(_run(status=status), segment_count=10, enriched_count=10) is None
 
 
-@pytest.mark.parametrize("status", sorted(NON_TERMINAL_STATUSES))
+@pytest.mark.parametrize("status", ["running", "queued"])
 def test_every_non_terminal_status_is_recovered(status: str) -> None:
-    # `queued` strands just as permanently as `running` -- a run enqueued as
-    # a BackgroundTask that never started has no worker either.
+    # Literals, deliberately. Parametrizing over NON_TERMINAL_STATUSES would
+    # make this self-referential -- recovery_decision branches on that same
+    # frozenset, so dropping "queued" from it would shrink the test with it
+    # and still report green. `queued` strands just as permanently as
+    # `running`: a run enqueued as a BackgroundTask that never started has no
+    # worker either.
     assert recovery_decision(_run(status=status), segment_count=1, enriched_count=0) is not None
+
+
+def test_the_policy_constant_and_the_reaper_sql_cannot_desynchronize() -> None:
+    # list_non_terminal_runs builds its predicate from this set. If the two
+    # ever disagree, every run in the missing status sits un-reaped forever
+    # -- which is the incident, permanently.
+    from app.storage import repository
+
+    assert NON_TERMINAL_STATUSES == frozenset({"running", "queued"})
+    assert TERMINAL_STATUSES == frozenset({"complete", "failed"})
+    assert NON_TERMINAL_STATUSES.isdisjoint(TERMINAL_STATUSES)
+    source = inspect.getsource(repository.list_non_terminal_runs)
+    assert "NON_TERMINAL_STATUSES" in source, "the SQL no longer references the constant"
+    # And the constant must be what the query actually uses. Merely importing
+    # it while the SQL hardcodes the literals alongside is the desync this
+    # guards against, so check for the literals directly.
+    for literal in ('"running"', "'running'", '"queued"', "'queued'"):
+        assert literal not in source, f"the SQL hardcodes {literal} again"
 
 
 def test_recovery_decision_always_lands_on_a_terminal_status() -> None:
@@ -119,17 +150,13 @@ def test_recovery_decision_always_lands_on_a_terminal_status() -> None:
 # --- terminal_status_for_enrichment ---------------------------------------
 
 
-def test_enrichment_never_restores_a_non_terminal_status() -> None:
-    # The original latch: _run_enrichment read status at entry and wrote it
-    # back as the terminal state, so a second pass starting during a first
-    # one pinned the run at "running" forever.
-    for status in ("running", "queued", "", None):
-        assert terminal_status_for_enrichment({"status": status}) not in NON_TERMINAL_STATUSES
-
-
 def test_enrichment_restores_complete_for_a_healthy_run() -> None:
+    # The original latch: _run_enrichment read status at entry and wrote it
+    # back as the terminal state, pinning the run at "running" forever.
     assert terminal_status_for_enrichment({"status": "complete"}) == "complete"
     assert terminal_status_for_enrichment({"status": "running"}) == "complete"
+    assert terminal_status_for_enrichment({"status": "queued"}) == "complete"
+    assert terminal_status_for_enrichment({"status": None}) == "complete"
 
 
 def test_enrichment_does_not_promote_a_failed_run_to_complete() -> None:
@@ -155,9 +182,18 @@ def _stub_enrichment(monkeypatch, run_row, *, fetch_segments_raises=False):
     def _fetch_segments(run_id, has_enrichment=None):
         if fetch_segments_raises:
             raise RuntimeError("database went away mid-enrichment")
-        return []
+        # One real segment, so the success path actually enriches something.
+        # With an empty list enriched_count stays 0 and the stage assertions
+        # below would pass against an implementation that never ran at all.
+        return [{"segment_id": str(uuid4()), "enriched_at": None}]
 
     monkeypatch.setattr(enrichment_module, "fetch_segments", _fetch_segments)
+    monkeypatch.setattr(
+        enrichment_module, "_enrich_segment", lambda seg, tax, enr, tmap: {"meaning": {}}
+    )
+    monkeypatch.setattr(
+        enrichment_module, "update_segment_enrichment", lambda sid, **kw: None
+    )
     return writes
 
 
@@ -176,7 +212,10 @@ def test_enrichment_restores_a_terminal_status_even_when_it_raises(
         enrichment_module._run_enrichment(UUID(RUN_ID), force=False, enricher="heuristic", limit=None)
     assert writes[0] == ("running", "enriching")
     assert writes[-1][0] == "complete"
-    assert writes[-1][0] not in NON_TERMINAL_STATUSES
+    # And it must not claim the pass succeeded: nothing was read at all, so
+    # recording stage="enriched" would be the same class of lie as reporting
+    # an empty projection as a success.
+    assert writes[-1][1] != "enriched"
 
 
 def test_enrichment_restores_complete_on_the_success_path(
@@ -211,22 +250,64 @@ def test_enrichment_still_skips_a_failed_run(monkeypatch: pytest.MonkeyPatch) ->
 # --- the reaper -----------------------------------------------------------
 
 
-def test_reaper_closes_every_stranded_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    rows = [_run(run_id=RUN_ID), _run(run_id=str(uuid4()), stage="training")]
+def _stub_reaper(monkeypatch, rows, *, segments=375, enriched=157):
     updated = []
     monkeypatch.setattr(
         "app.storage.repository.list_non_terminal_runs", lambda: rows, raising=False
     )
+    # Keyword-only, matching the real count_segments(run_id, *, has_enrichment=...)
+    # signature -- a looser stub would let a caller that passes it positionally
+    # pass here and TypeError in production.
     monkeypatch.setattr(
         "app.storage.repository.count_segments",
-        lambda run_id, has_enrichment=None: (375 if has_enrichment is None else 157),
+        lambda run_id, *, has_enrichment=None, **kw: (enriched if has_enrichment else segments),
         raising=False,
     )
     monkeypatch.setattr(
         "app.storage.repository.update_run", lambda record: updated.append(record), raising=False
     )
+    return updated
+
+
+def test_reaper_closes_every_stranded_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [_run(run_id=RUN_ID), _run(run_id=str(uuid4()), stage="training")]
+    updated = _stub_reaper(monkeypatch, rows)
     assert recovery_module.recover_stranded_runs() == 2
     assert [r.status for r in updated] == ["complete", "complete"]
+
+
+def test_reaper_preserves_everything_update_run_overwrites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # update_run is a full-row SET, not a partial patch. A reaper that wrote
+    # stats={} / artifact_paths={} / completed_at=now would look identical in
+    # every other test here and would have permanently destroyed the training
+    # artifacts and real completion times of all five runs recovered on
+    # 2026-08-29 -- the rows the PR cites as proof it worked.
+    updated = _stub_reaper(monkeypatch, [_run(run_id=RUN_ID)])
+    assert recovery_module.recover_stranded_runs() == 1
+    record = updated[0]
+    assert record.stats == REAL_STATS
+    assert record.artifact_paths == REAL_ARTIFACTS
+    assert record.completed_at == ORIGINAL_COMPLETED_AT
+
+
+def test_reaper_stamps_a_completion_time_only_when_there_was_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updated = _stub_reaper(monkeypatch, [_run(run_id=RUN_ID, completed_at=None)])
+    recovery_module.recover_stranded_runs()
+    assert updated[0].completed_at is not None
+
+
+def test_reaper_writes_an_error_only_on_the_failed_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A run served as `complete` must not carry an error string, or every
+    # future reader wonders what is wrong with it.
+    healthy = _stub_reaper(monkeypatch, [_run(run_id=RUN_ID)])
+    recovery_module.recover_stranded_runs()
+    assert healthy[0].error is None
 
 
 def test_reaper_returns_zero_and_never_raises_when_the_scan_fails(
@@ -274,3 +355,56 @@ def test_the_background_task_path_does_not_set_owns_run(
         _BG(), UUID(RUN_ID), force=False, enricher="heuristic", limit=None
     )
     assert captured["kwargs"].get("owns_run") is not True
+
+
+def test_a_write_failure_in_the_finally_does_not_mask_the_real_exception(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A raise inside the finally re-creates the original bug and hides it
+    # better: it would replace the real exception AND leave the run pinned at
+    # status="running", in code that now looks protected.
+    run_row = _run(status="complete", stage="trained")
+    _stub_enrichment(monkeypatch, run_row, fetch_segments_raises=True)
+
+    # The FIRST update_run is the status="running" write, which happens
+    # before the try. Only the second one -- the terminal restore inside the
+    # finally -- is the case under test.
+    calls = {"n": 0}
+
+    def _boom(record):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("postgres went away during the terminal write")
+
+    monkeypatch.setattr(enrichment_module, "update_run", _boom)
+    with caplog.at_level(logging.ERROR, logger="topic-foundry.enrichment"):
+        with pytest.raises(RuntimeError, match="database went away mid-enrichment"):
+            enrichment_module._run_enrichment(
+                UUID(RUN_ID), force=False, enricher="heuristic", limit=None
+            )
+    assert "enrichment_terminal_write_failed" in caplog.text
+
+
+# --- POST /runs/{id}/enrich may only touch a completed run
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "failed", "", None])
+def test_enrich_is_refused_for_a_run_that_is_not_complete(status) -> None:
+    reason = recovery_module.enrich_refusal_reason({"status": status})
+    assert reason is not None
+    assert "not complete" in reason
+
+
+def test_enrich_is_allowed_for_a_completed_run() -> None:
+    assert recovery_module.enrich_refusal_reason({"status": "complete"}) is None
+
+
+def test_the_enrich_route_actually_calls_the_predicate() -> None:
+    # The predicate is only worth anything if the route uses it. Importing
+    # app.routers.runs here would pull in the sklearn/joblib training stack,
+    # so this reads the source instead -- the same trick the Hub scheduler
+    # policy test uses, and it fails just as hard if the wiring is removed.
+    source = pathlib.Path(__file__).resolve().parents[1] / "app" / "routers" / "runs.py"
+    text = source.read_text()
+    assert "enrich_refusal_reason(row)" in text
+    assert "status_code=409" in text

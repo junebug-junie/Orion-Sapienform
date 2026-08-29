@@ -69,9 +69,9 @@ None.
 ## Tests run
 
 ```text
-python3 scripts/check_system_health_producers.py  -> OK (12 construction sites checked)
+python3 scripts/check_system_health_producers.py  -> OK (11 AST-verified sites)
 make check-system-health-producers                -> OK
-pytest tests/test_system_health_producers.py -q   -> 6 passed
+pytest tests/test_system_health_producers.py -q   -> 7 passed
 ```
 
 **Mutation-tested against the real files, not a synthetic fixture** (this repo has been
@@ -101,9 +101,61 @@ scripts/safe_docker_build.sh orion-gpu-cluster-power up -d --build
 Verify with: `docker logs --since 5m orion-athena-gpu-cluster-power | grep -c "Heartbeat failed"`
 -> expect **0**, and confirm a message actually lands on `orion:system:health`.
 
+## Review findings fixed
+
+8 findings, all fixed.
+
+- **Finding 1 (HIGH) -- my fix would have made things worse.** All producers sleep 30s but
+  passed no `heartbeat_interval_sec`, so the payload carried the schema default `10.0`.
+  `orion-equilibrium-service` computes `grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0)`
+  = **30.0s** and marks a service `"down"` past it. A 30s period against a 30s grace is zero
+  margin: any event-loop delay flips it to `down`, emits a spurious transition and pushes
+  `distress_score`. The three services would have gone from silent to actively lying.
+  - Verified the math myself at `service.py`'s status check before accepting.
+  - Fix: widened well past the reported three. **Seven** producers had this
+    (`gpu-cluster-power`, `bus-tap`, `rag`, `vision-edge`, `context-exec`, `whisper-tts`,
+    `llamacpp-host`) -- including services publishing successfully today, surviving on
+    latency luck. All now declare `30.0`. `vision-frame-router`, `vision-retina` and
+    `graph-compression` now thread their real configured period instead of hardcoding.
+  - The gate enforces it, so an eighth cannot regress.
+- **Finding 2 (MEDIUM)** -- the gate exited 0 when it inspected nothing, and its count was a
+  substring count that included `class SystemHealthV1(BaseModel):`.
+  - Fix: count AST-verified calls (now correctly reports **11**, not 12) and fail below
+    `MIN_EXPECTED_SITES`. `SKIP_PARTS` now matches paths relative to the repo root, so a
+    checkout under a directory named `tests` no longer skips the entire repo.
+  - Evidence: pointing `SEARCH_ROOTS` at a nonexistent dir now exits 1.
+- **Finding 3 (MEDIUM)** -- aliased imports were invisible. Review's probe
+  (`import SystemHealthV1 as SH`, then `SH(...)` missing both required fields) produced zero
+  problems.
+  - Fix: resolve aliases from the module's `Import`/`ImportFrom` nodes.
+  - Evidence: re-running review's exact probe now reports both problems.
+  - I did **not** flag `model_validate` as review suggested: it fully validates, and it is how
+    the legitimate consumer reads heartbeats off the bus
+    (`orion-equilibrium-service/app/service.py:1198`). Flagging it was a false positive in my
+    first cut. Only `model_construct`, which genuinely skips validation, is flagged.
+- **Finding 4 (MEDIUM)** -- the gate was not in `.github/workflows/orion-static-gates.yml`,
+  the only workflow that runs gates, so nothing executed it unless a human typed the target.
+  That is the exact "nudge you can skip" failure this patch is written against.
+  - Fix: added as a step. It meets every criterion in that workflow's own header
+    (stdlib-only, no live infra, green on main).
+- **Finding 5** -- the anti-drift test grepped the gate's source text, which a docstring
+  mention would satisfy.
+  - Fix: imports the gate module and compares `set(REQUIRED_KWARGS)` to the model's required
+    set **both directions**, so a stale entry is caught too.
+- **Finding 6** -- the parametrization ran three byte-identical validations and the payload
+  was hand-written, so it could not catch a producer drifting.
+  - Fix: replaced with a test that reads the declared interval and the real `sleep()` out of
+    each producer and asserts they agree. Mutation-verified: setting rag's interval back to
+    `10.0` fails with `declares 10.0s but sleeps 30s`.
+- **Finding 7** -- `pytest.raises(Exception)` around a call missing two fields.
+  - Fix: `pytest.raises(ValidationError)`, omitting only `boot_id`.
+- **Finding 8** -- target missing from `.PHONY`. Added.
+
 ## Risks / concerns
 
-- Severity: low. Purely additive to the payload; the three services were publishing nothing.
+- Severity: low. Purely additive for the three that published nothing. For the four that
+  already publish, the only change is a corrected `heartbeat_interval_sec`, which widens
+  equilibrium's grace from 30s to 90s -- strictly fewer false `down` classifications.
 - Severity: low. `BOOT_ID` is generated at import time, so it changes on reload as well as
   restart. Same as whisper-tts's existing convention; consistency chosen over a private
   variant.

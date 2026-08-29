@@ -53,9 +53,15 @@ def make_health_envelope(
     policy_path: str,
     metrics: RouterMetrics,
     state: RouterState,
+    heartbeat_interval_sec: float,
     status: str = "ok",
 ) -> BaseEnvelope:
+    # Threaded from the caller's real loop period rather than left at the schema
+    # default: orion-equilibrium-service computes grace = interval * 3.0 and marks
+    # the service "down" past it, so a hardcoded 10.0 silently mislabels any
+    # deployment that overrides HEALTH_INTERVAL_SECONDS.
     payload = SystemHealthV1(
+        heartbeat_interval_sec=heartbeat_interval_sec,
         service=service_name,
         version=service_version,
         boot_id=BOOT_ID,

@@ -100,3 +100,12 @@ jobs:
 
       - name: Daily schedule collisions (report-only)
         run: python scripts/check_daily_schedule_collisions.py
+
+      # Stdlib-only, no live infra, green on main. Every SystemHealthV1(...) call
+      # site must pass the fields the model requires plus heartbeat_interval_sec.
+      # Producers build the payload inside a heartbeat loop's try/except, so a
+      # missing field logs a warning per tick and publishes nothing while the
+      # container stays Up and /health stays 200 -- found live in three services at
+      # once on 2026-08-29, one of which had never published a heartbeat.
+      - name: SystemHealthV1 producers pass required fields
+        run: python scripts/check_system_health_producers.py

@@ -229,6 +229,52 @@ class RecentRun:
 
 
 @dataclass(frozen=True)
+class FindingConnectivity:
+    """How many of ONE run's findings were joined to anything at all.
+
+    THE FOOTPRINT CANNOT ANSWER THIS, which is the only reason it exists.
+    `run_footprint_cypher` reports `Finding 3` and `run_edge_footprint_cypher`
+    reports `-> SUPPORTS 3`, and those two numbers are IDENTICAL whether all
+    three edges hang off one finding or one edge hangs off each. Only a
+    per-finding degree separates those cases, and the difference between them
+    is the entire question: a finding that points at nothing is exactly the
+    defect the kickoff prompt's edge instruction was written to fix, so
+    "did the instruction take" cannot be read off the counts already collected.
+
+    SCOPED TO WHAT THIS RUN CONNECTED, deliberately. It is read immediately
+    after the turn, so a later run that joins an older finding does not
+    retroactively improve an earlier run's number -- and must not, because the
+    instruction Orion is measured against here says to connect the finding in
+    the same breath as writing it. A corpus-wide orphan rate is a different
+    question and would need a different reader.
+    """
+
+    total: int
+    connected: int
+
+    @property
+    def orphaned(self) -> int:
+        """Findings this run wrote that point at nothing. NOT clamped at 0.
+
+        `max(0, ...)` was the obvious guard and it was wrong, in the one
+        derived number an orphan-rate alert would actually read. `connected`
+        is deliberately not clamped to `total` by the reader, because
+        `connected > total` is impossible by construction and therefore means
+        the instrument broke -- and a clamp here would turn that same broken
+        reading into a serene `0 orphans` while `summary()` was still honestly
+        printing `5/2 joined`. A negative orphan count is nonsense on its face,
+        which is the point: it is loud, and it cannot be mistaken for health.
+        """
+        return self.total - self.connected
+
+    def summary(self) -> str:
+        """For the log line. `total == 0` is not a failure -- see the reader."""
+        if self.total <= 0:
+            return "no findings"
+        return f"{self.connected}/{self.total} joined"
+
+
+@dataclass(frozen=True)
 class WorldviewSnapshot:
     """Everything Hub read from Orion's graph for one run's presentation."""
 
@@ -458,6 +504,33 @@ def run_edge_footprint_cypher(run_id: str) -> str:
     return (
         f"MATCH ()-[r]->() WHERE r.run_id = '{run_id}' "
         "RETURN '-> ' + type(r) AS label, count(r) AS n"
+    )
+
+
+def finding_connectivity_cypher(run_id: str) -> str:
+    """Per-finding degree for ONE run, collapsed to (total, connected).
+
+    `(f)-[r]-()` is UNDIRECTED on purpose. Every edge the prompt teaches runs
+    outward from the finding, but the question this answers is "joined to
+    anything", and an inbound edge from some later shape would still mean the
+    finding is not an orphan. Matching on direction would quietly answer a
+    narrower question than the function's name promises.
+
+    The degree is counted PER FINDING and then summed as a 0/1, so a finding
+    carrying three edges counts once rather than three times -- without that
+    step this would be a second edge count and would tell us nothing the
+    footprint does not already say. Verified against a live FalkorDB before
+    being wired in: three findings with edges on two of them reads
+    `connected=2`, and stays 2 when a second edge is added to one of them.
+    """
+    if not _RUN_ID_RE.match(str(run_id or "")):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH (f:{LABEL_FINDING}) WHERE f.run_id = '{run_id}' "
+        "OPTIONAL MATCH (f)-[r]-() "
+        "WITH f, count(r) AS deg "
+        "RETURN count(f) AS total, "
+        "sum(CASE WHEN deg > 0 THEN 1 ELSE 0 END) AS connected"
     )
 
 
@@ -750,6 +823,51 @@ def read_run_footprint(
         for r in rows
         if _as_int(r.get("n"), 0) > 0
     }
+
+
+def read_finding_connectivity(
+    reader: WorldviewReader, run_id: str
+) -> Optional[FindingConnectivity]:
+    """`None` when the graph could not answer, the same rule as the footprint.
+
+    A run that wrote NO findings reads `total=0`, which is neither a failure
+    nor unreadable -- it is a run that spent its turn on something else, and
+    collapsing it into `None` would report an unreachable graph every time
+    Orion revised priors instead of forming findings. That case arrives as a
+    real ROW, verified against the live graph: a run_id with no findings at
+    all returns `(total=0, connected=0)`, not an empty result.
+
+    Which is why NO ROWS is `None` and not `(0, 0)`. `rows_from_reply` returns
+    `[]` only when the reply does not have the shape it expects -- a driver or
+    protocol change under us -- so an empty list here is an INSTRUMENT
+    FAILURE, and the first version of this function rendered it as the benign
+    `no findings`. That is the unreadable-vs-empty conflation this module
+    refuses everywhere else, arriving in the one reader built to keep those
+    apart: every run would have logged a healthy-looking string while the
+    metric was silently dead.
+
+    `connected` is NOT clamped to `total`. That comparison is impossible by
+    construction, so a value that violated it would mean the query or the
+    driver had changed under us, and silently flattening it would hide exactly
+    the instrument failure this metric exists to be trusted against.
+    """
+    try:
+        rows = list(reader.query(finding_connectivity_cypher(run_id)))
+    except (WorldviewUnavailable, ValueError) as exc:
+        logger.warning(
+            "curiosity_finding_connectivity_read_failed run=%s err=%s", run_id, exc
+        )
+        return None
+    if not rows:
+        logger.warning(
+            "curiosity_finding_connectivity_unparseable run=%s", run_id
+        )
+        return None
+    row = rows[0]
+    return FindingConnectivity(
+        total=_as_int(row.get("total"), 0),
+        connected=_as_int(row.get("connected"), 0),
+    )
 
 
 def read_hop_notes(reader: WorldviewReader, run_id: str) -> list[tuple[int, str]]:

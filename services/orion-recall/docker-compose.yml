@@ -206,7 +206,7 @@ services:
       - SCHEMA_GRAPH_COMPRESSION_REGION_MATERIALIZED_V1=${SCHEMA_GRAPH_COMPRESSION_REGION_MATERIALIZED_V1}
       - MESSAGE_KIND_GRAPH_COMPRESSION_REGION_MATERIALIZED=${MESSAGE_KIND_GRAPH_COMPRESSION_REGION_MATERIALIZED}
     volumes:
-      - ./app:/app/app
+      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-recall/app:/app/app
     ports:
       - "${PORT}:${PORT}"
     healthcheck:

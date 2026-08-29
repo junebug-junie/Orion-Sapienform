@@ -46,6 +46,7 @@ from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.world_pulse import WorldPulseRunResultV1
+from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .world_pulse_journal import handle_world_pulse_run_result_journal
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -2137,12 +2138,40 @@ async def lifespan(app: FastAPI):
                     window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
                     # Keep timezone in scheduler logic, but avoid injecting it into journal prompts
                     # where location inferences (e.g., "Denver") can be overfit by the model.
+                    # Capability-absence episodes (a node gone dark, vision blind) for
+                    # this window. build_daily_seed_payload omits the key entirely when
+                    # nothing was absent, so a quiet day's seed stays byte-identical to
+                    # the pre-patch one and this adds no journal entries of its own.
+                    gaps: list[dict[str, Any]] = []
+                    if settings.actions_journal_capability_gaps_enabled:
+                        # Own try/except, not the loop's shared handler at the bottom
+                        # of this iteration: an enrichment that cannot be rendered
+                        # must never cost the journal entry itself, nor starve the
+                        # workflow-schedule claim that runs after it.
+                        try:
+                            gaps = await collect_capability_gaps(
+                                notify_url=settings.notify_url,
+                                notify_api_token=settings.notify_api_token,
+                                window_start_utc=window.window_start_utc,
+                                window_end_utc=window.window_end_utc,
+                            )
+                        except Exception:
+                            logger.exception("journal_daily_capability_gaps_failed date=%s", window.request_date)
+                            gaps = []
+                        if gaps:
+                            logger.info(
+                                "journal_daily_capability_gaps date=%s count=%d reasons=%s",
+                                window.request_date,
+                                len(gaps),
+                                ",".join(sorted({str(g.get("reason")) for g in gaps})),
+                            )
                     journal_seed = json.dumps(
-                        {
-                            "request_date": window.request_date,
-                            "window_start_utc": window.window_start_utc,
-                            "window_end_utc": window.window_end_utc,
-                        },
+                        build_daily_seed_payload(
+                            request_date=window.request_date,
+                            window_start_utc=window.window_start_utc,
+                            window_end_utc=window.window_end_utc,
+                            gaps=gaps,
+                        ),
                         sort_keys=True,
                     )
                     trigger = build_scheduler_trigger(

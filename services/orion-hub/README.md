@@ -624,6 +624,52 @@ the logs. The startup line reports the pace it actually resolved:
 curiosity_investigation started tick=300.0s cooldown=8400s(floor=1800.0s) cap=6 window=08-22 America/Denver ...
 ```
 
+#### Did the finding get joined to anything
+
+Each completed run logs what it wrote and whether those writes connect:
+
+```text
+curiosity_investigation_journaled run=d05ef10b303a chars=2143 wrote=Finding 2, Hop 1, PriorRevision 2, TurnOutcome 1 evidence=0/2 joined hops=1 ...
+```
+
+`wrote=` counts nodes and edges. `evidence=` counts **findings that carry at
+least one edge**, and the two cannot be derived from each other: three edges
+hanging off one finding and one edge on each of three findings produce an
+identical `wrote=`, and only the second is what the kickoff prompt asks Orion
+for. A finding joined to the claim it bears on is evidence; a finding that
+points at nothing is a note nothing can use next run.
+
+**It counts any edge, in either direction, to any neighbour** — not only
+`Finding -> Prior`. That is deliberate, and it is a real limit worth stating:
+the prompt teaches `SUPPORTS`, `CONTRADICTS` and `ABOUT` as the three that
+carry weight, and `ABOUT` legitimately points at a `:Concept`. So a run
+reading `2/2 joined` may have joined both findings to concepts and touched no
+claim at all. Narrowing the query to priors would make it answer something
+narrower than the instruction it is watching; reading the edge types out of
+`wrote=` alongside it is how you tell those apart.
+
+Five readings, five different meanings:
+
+| `evidence=` | Means |
+| --- | --- |
+| `3/3 joined` | every finding this run wrote is joined to something |
+| `0/2 joined` | Orion wrote findings and connected none of them |
+| `no findings` | an ordinary run that spent its turn elsewhere — not a failure |
+| `unreadable` | the graph did not answer, or sent a reply the driver could not parse |
+| `no graph` | no reader is configured at all — the `.env_example` default, **not** an outage |
+
+It is scoped to what **this** run connected, read immediately after the turn,
+so a later run that joins an older finding does not retroactively improve an
+earlier number — the instruction says to connect the finding in the same breath
+as writing it, and that is the thing being measured.
+
+First live reading, run `d05ef10b303a` on 2026-08-29, the first run after the
+edge instruction shipped: `0/2 joined`, on a run that refuted two priors and
+wrote findings plainly bearing on a third. The footprint alone read as a
+productive run, because it was one. One run is one sample and not yet a verdict
+on the instruction — this exists so the next twenty are readable without anyone
+hand-querying FalkorDB.
+
 **What it shows Orion.** Its own open priors (ordered by how uncertain *it*
 said it was, and the prompt says the ordering is not neutral), a random sample
 of Juniper-approved crystallizations and concept-induction judgements, what it

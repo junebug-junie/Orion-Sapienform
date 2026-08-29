@@ -75,6 +75,12 @@ class RedisGraphQueryClient:
     real boundary for Orion's own graph is a FalkorDB ACL, not this flag.
     """
 
+    # Class-level default so an instance built with __new__ -- which tests in
+    # this repo do, to exercise graph_query without opening a real Redis
+    # connection (orion/substrate/tests/test_falkor_store.py) -- still has a
+    # defined mode instead of raising AttributeError inside graph_query.
+    _read_only: bool = False
+
     def __init__(self, *, uri: str, graph_name: str, read_only: bool = False) -> None:
         import redis
         from redis.commands.graph import Graph
@@ -108,7 +114,16 @@ class RedisGraphQueryClient:
         a list of single characters when a caller iterates it. Caught live
         2026-08-29; both modes now share one parser and one behaviour.
         """
-        result = self._graph.query(cypher, params=params, read_only=self._read_only)
+        # The read_only kwarg is passed ONLY when it is actually set. redis-py's
+        # Graph.query accepts it, but this codebase also drives graph_query with
+        # stand-in Graph objects whose query() takes just (cypher, params) --
+        # unconditionally forwarding a third kwarg breaks them for a value that
+        # changes nothing. The default path is therefore byte-identical to the
+        # call this method made before read-only mode existed.
+        if self._read_only:
+            result = self._graph.query(cypher, params=params, read_only=True)
+        else:
+            result = self._graph.query(cypher, params=params)
         # redis-py exposes list-shaped result_set rows and keeps column names on
         # QueryResult.header as [type, name] pairs. Zip to dicts so callers can
         # address fields by name (native multi-column and legacy 2-column alike).

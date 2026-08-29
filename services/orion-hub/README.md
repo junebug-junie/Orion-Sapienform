@@ -1935,6 +1935,15 @@ Open Hub → **Cabinet**. Missing snapshot shows a no-snapshot message naming
 `orion-cabinet-sensors.service`. Pressure strip is labeled **activity (Hub)** (process-local
 baselines; operator-debug only).
 
+API: `GET /api/cabinet/sensors/latest`, `GET /api/cabinet/sensors/history?window=24h|3d|7d`
+(`scripts/cabinet_sensors_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
+while `#cabinet` is visible; sensor history fetches on tab activation, window toggle, or Refresh.
+
+**Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
+ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
+biometrics → sql-writer rows with `cabinet_temp_c` and related keys on node
+`CABINET_AMBIENT_HISTORY_NODE` (default `athena`).
+
 ### Cabinet ambient audio (live + multi-day charts)
 
 Below the Nano tiles, **Cabinet ambient audio** shows live RMS/peak/age from the host ALSA

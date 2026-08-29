@@ -37,7 +37,22 @@ def build_pressure_candidate_events(
     if clock.tzinfo is None:
         clock = clock.replace(tzinfo=timezone.utc)
     ts = _safe_ts(clock)
-    trace_id = f"substrate.pressure:{node_id}:{ts}"
+    # `semantic_role` is part of the trace id, not just the atom id. Without it,
+    # every rule that fires for the same node in the same tick produced the SAME
+    # trace_id, `group_candidate_events_by_trace()` merged them into one trace, and
+    # the reducer -- which takes one atom per trace -- silently dropped all but the
+    # first. Confirmed pre-existing 2026-08-29 against shipping rules only: a node
+    # with `gpu` hint 0.7 and a prior active pressure fires Rule C
+    # (node_pressure_reinforced) and Rule E (node_capability_impact) together, and
+    # both landed in a single trace with the capability impact discarded. That is a
+    # second, independent reason `node_capability_impact` had 0 rows in
+    # `grammar_atoms` for its entire lifetime, on top of Rule E only being reachable
+    # by GPU saturation.
+    #
+    # Position matters: `parse_pressure_trace_id()` (ids.py) does
+    # `trace_id.split(":", 2)[1]` to recover the node, so the role goes AFTER the
+    # node id and that parser is unaffected.
+    trace_id = f"substrate.pressure:{node_id}:{semantic_role}:{ts}"
 
     provenance = GrammarProvenanceV1(
         source_service=PRESSURE_SOURCE_SERVICE,

@@ -75,6 +75,54 @@ def _primary_hint_kind(hints: dict) -> str:
     return ranked[0][0] if ranked else "strain"
 
 
+def sweep_absent_nodes(
+    *,
+    node_bio: NodeBiometricsProjectionV1,
+    stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
+    now: datetime | None = None,
+) -> list[str]:
+    """Node ids that are `expected_online` and have gone stale.
+
+    This is the trigger `invoke_biometrics_pressure()` never had. That function
+    resolves its subject node from the *incoming* event
+    (`_node_id_from_trigger()`), so a node that stops reporting entirely is never
+    evaluated at all -- Rule B ("expected online + stale -> availability
+    concern") can only ever fire for a node that is still talking. A node that is
+    genuinely gone is structurally invisible to it.
+
+    Confirmed live 2026-08-29: circe (`expected_online: true`, 5 declared
+    capabilities) went dark 00:01:16Z -> 00:47:04Z and its
+    `last_accepted_at["availability"]` never moved off 2026-08-19T03:13:33Z. Four
+    other detectors saw the outage inside two minutes; this one could not, by
+    construction.
+
+    Pure function over the projection that already carries `last_seen_at` and
+    `expected_online` per node -- no new state, no new storage, no clock of its
+    own beyond the injected `now`. Callers pair each returned id with the same
+    `invoke_biometrics_pressure()` the event path uses, so absence and presence
+    produce the same downstream shapes.
+
+    A node whose `last_seen_at` is None has never reported in this projection's
+    lifetime. That is treated as stale (`_is_stale` returns True for None), which
+    is deliberate: a declared-online node that has never once appeared is exactly
+    the `prometheus` case -- catalogued `expected_online: true`, `monitoring: true`,
+    and zero rows in `orion_biometrics` across the table's whole history.
+    """
+    clock = _utc_now(now)
+    absent: list[str] = []
+    for node_id, state in (node_bio.nodes or {}).items():
+        if state.expected_online is not True:
+            continue
+        if not _is_stale(
+            last_seen_at=state.last_seen_at,
+            stale_after_sec=stale_after_sec,
+            now=clock,
+        ):
+            continue
+        absent.append(node_id)
+    return sorted(absent)
+
+
 def invoke_biometrics_pressure(
     *,
     trigger_event: GrammarEventV1,
@@ -145,6 +193,35 @@ def invoke_biometrics_pressure(
                 observed_at=clock,
             )
         )
+        # Rule F: absence is a capability impact too. Rule E (below) is the only
+        # other emitter of `node_capability_impact` and it fires on
+        # `gpu_hint >= GPU_HINT_THRESHOLD` -- GPU *saturation*. A node that is gone
+        # reports no hints at all, so before this branch existed capability impact
+        # was structurally unreachable by absence: `grammar_atoms` held 0 rows with
+        # this role, ever, and `capability_impacts` was `[]` in every
+        # `substrate_active_node_pressure_projection` row ever written. The role,
+        # the ROLE_TO_PRESSURE_KIND mapping and the reducer arm all already
+        # existed; nothing could reach them.
+        #
+        # One event per stale node, not one per capability: `build_pressure_
+        # candidate_events` derives `atom_id` from `{trace_id}:{semantic_role}` and
+        # `trace_id` from `{node_id}:{ts}`, so per-capability events in the same
+        # tick would collide on both. The reducer expands this single event into
+        # the node's real declared capabilities from the catalog profile it has
+        # already resolved (see pressure_reducer.py's node_capability_impact arm).
+        # Repeat ticks during a long outage are absorbed by that reducer's
+        # existing per-node+pressure_kind merge window, so a 45-minute outage does
+        # not become a 45-minute event storm.
+        if capabilities:
+            candidates.append(
+                build_pressure_candidate_events(
+                    node_id=node_id,
+                    semantic_role="node_capability_impact",
+                    evidence_event_ids=evidence,
+                    confidence=max(min_confidence, 0.8),
+                    observed_at=clock,
+                )
+            )
 
     # Rule B': expected online + fresh + a prior availability concern is
     # still flagged -> recovered. The symmetric counterpart Rule B needed

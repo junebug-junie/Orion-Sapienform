@@ -226,9 +226,27 @@ def reduce_node_pressure_candidates(
                     if pressure not in node_state.suppressed_pressures:
                         node_state.suppressed_pressures.append(pressure)
         elif role == "node_capability_impact":
-            label = f"capability:{pressure_kind}"
-            if label not in node_state.capability_impacts:
-                node_state.capability_impacts.append(label)
+            # Expand to the node's real declared capabilities from the catalog
+            # profile already resolved above. This used to be
+            # `label = f"capability:{pressure_kind}"`, and `pressure_kind` here is
+            # the constant "capability" (ROLE_TO_PRESSURE_KIND), so the only value
+            # this arm could ever append was the literal string
+            # "capability:capability" -- schema-valid and meaningless. It was never
+            # caught because nothing had ever emitted this role: `grammar_atoms`
+            # held 0 rows for it and `capability_impacts` was `[]` in every
+            # projection row ever written, so the dead arm never ran.
+            #
+            # `profile.capabilities` is the catalog's dict[str, bool]; only the
+            # truthy ones are real declarations (node_catalog.yaml lists both, e.g.
+            # circe has `graphdb: false` alongside `local_llm_heavy: true`).
+            # Sorted for deterministic ordering across ticks, since this list is
+            # persisted and diffed into StateDeltaV1.before/after.
+            for capability in sorted(
+                name for name, declared in (profile.capabilities or {}).items() if declared
+            ):
+                label = f"capability:{capability}"
+                if label not in node_state.capability_impacts:
+                    node_state.capability_impacts.append(label)
 
         updated.nodes[canonical_node_id] = node_state
         accepted.append(atom_event_id)

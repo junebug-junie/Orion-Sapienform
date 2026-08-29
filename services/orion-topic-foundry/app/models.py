@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.services.enrichment_contract import coerce_meaning, coerce_sentiment
+from app.services.enrichment_contract import coerce_aspects, coerce_meaning, coerce_sentiment
 
 
 class DatasetSpec(BaseModel):
@@ -161,6 +161,11 @@ class SegmentRecord(BaseModel):
     @classmethod
     def _coerce_sentiment(cls, value: Any) -> Any:
         return coerce_sentiment(value)
+
+    @field_validator("aspects", mode="before")
+    @classmethod
+    def _coerce_aspects(cls, value: Any) -> Any:
+        return coerce_aspects(value)
 
 
 class DatasetCreateRequest(BaseModel):

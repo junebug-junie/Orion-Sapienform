@@ -15,6 +15,7 @@ from app.services.kg_edges import generate_edges_for_run
 from app.services.llm_client import get_llm_client
 from app.settings import settings
 from app.services.enrichment_contract import (
+    coerce_aspects,
     coerce_meaning,
     coerce_sentiment,
     describe_enrichment_shape,
@@ -240,9 +241,14 @@ def _extract_evidence(text: str) -> List[str]:
 def _finalize_enrichment(raw: Dict[str, Any]) -> Dict[str, Any]:
     result = raw.copy()
     result.setdefault("title", "untitled")
-    result.setdefault("aspects", [])
     result.setdefault("aspect_scores", {})
     result.setdefault("evidence_spans", [])
+    # `aspects` carries the identical latent defect: SegmentRecord declares
+    # Optional[List[str]] and would 500 the same endpoint the same way. Live
+    # check 2026-08-29 found jsonb_typeof(aspects)='array' on all 701
+    # enriched rows, so this is latent rather than live -- fixed because it
+    # is one line and the same bug.
+    result["aspects"] = coerce_aspects(result.get("aspects")) or []
     # setdefault is a NO-OP for a key that is present but wrong-typed, which
     # is exactly the failure that put 552 prose strings into two jsonb
     # columns declared Dict[str, Any]. Coerce, do not default: a string that

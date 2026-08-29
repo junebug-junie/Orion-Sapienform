@@ -2705,6 +2705,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (type === "friction") {
         filtered = filtered.filter((segment) => {
+          // A segment whose sentiment was coerced from prose has no friction
+          // reading at all. Defaulting it to 0 would file every one of them
+          // under "0-0.3", i.e. present unmeasured segments as calm ones.
+          if (segment.sentiment?.unstructured === true) return false;
           const friction = Number(segment.sentiment?.friction ?? segment.friction ?? 0);
           if (Number.isNaN(friction)) return false;
           if (value === "0-0.3") return friction <= 0.3;
@@ -13213,6 +13217,14 @@ document.addEventListener("DOMContentLoaded", () => {
               outcome: meaning.outcome || null,
               questions: meaning.questions || null,
               next_steps: meaning.next_steps || null,
+              // The enricher sometimes returns prose instead of the object
+              // shape (see services/orion-topic-foundry/app/services/
+              // enrichment_contract.py). Without these two, such a segment
+              // renders as four nulls -- indistinguishable from "the
+              // enricher produced nothing" -- while the text it actually
+              // wrote sits unread on the wire.
+              summary: meaning.summary || null,
+              unstructured: meaning.unstructured === true,
             },
             provenance: {
               row_ids_count: rowIds ?? null,
@@ -13248,6 +13260,8 @@ document.addEventListener("DOMContentLoaded", () => {
           outcome: meaning.outcome || null,
           questions: meaning.questions || null,
           next_steps: meaning.next_steps || null,
+          summary: meaning.summary || null,
+          unstructured: meaning.unstructured === true,
         },
         provenance: {
           row_ids_count: rowIds ?? null,

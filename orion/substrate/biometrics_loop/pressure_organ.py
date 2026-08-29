@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha1
 from uuid import uuid4
 
 from orion.biometrics.node_catalog import NodeCatalog
@@ -9,7 +10,7 @@ from orion.schemas.biometrics_projection import (
     ActiveNodePressureStateV1,
     NodeBiometricsProjectionV1,
 )
-from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.grammar import GrammarEventV1, GrammarProvenanceV1
 from orion.schemas.organ_emission import OrganEmissionV1
 
 from .candidate_events import PRESSURE_SOURCE_COMPONENT, build_pressure_candidate_events
@@ -24,8 +25,14 @@ ALLOWED_PRESSURE_ROLES = frozenset(
         "node_availability_recovered",
         "node_pressure_suppressed",
         "node_capability_impact",
+        "node_capability_absent",
     }
 )
+
+# The capabilities Rule E's saturation gate actually tests for. Exported because
+# the reducer must expand a saturation impact to exactly this set and no wider --
+# a GPU crossing a routine load line says nothing about `training` or `dream_batch`.
+LLM_CAPABILITIES = ("local_llm_heavy", "local_llm_quick", "llm_inference")
 
 DEFAULT_STALE_AFTER_SEC = 180
 DEFAULT_MIN_CONFIDENCE = 0.60
@@ -73,6 +80,102 @@ def _primary_hint_kind(hints: dict) -> str:
         reverse=True,
     )
     return ranked[0][0] if ranked else "strain"
+
+
+def sweep_absent_nodes(
+    *,
+    node_bio: NodeBiometricsProjectionV1,
+    stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
+    now: datetime | None = None,
+) -> list[str]:
+    """Node ids that are `expected_online` and have gone stale.
+
+    This is the trigger `invoke_biometrics_pressure()` never had. That function
+    resolves its subject node from the *incoming* event
+    (`_node_id_from_trigger()`), so a node that stops reporting entirely is never
+    evaluated at all -- Rule B ("expected online + stale -> availability
+    concern") can only ever fire for a node that is still talking. A node that is
+    genuinely gone is structurally invisible to it.
+
+    Confirmed live 2026-08-29: circe (`expected_online: true`, 5 declared
+    capabilities) went dark 00:01:16Z -> 00:47:04Z and its
+    `last_accepted_at["availability"]` never moved off 2026-08-19T03:13:33Z. Four
+    other detectors saw the outage inside two minutes; this one could not, by
+    construction.
+
+    Pure function over the projection that already carries `last_seen_at` and
+    `expected_online` per node -- no new state, no new storage, no clock of its
+    own beyond the injected `now`. Callers pair each returned id with the same
+    `invoke_biometrics_pressure()` the event path uses, so absence and presence
+    produce the same downstream shapes.
+
+    A node whose `last_seen_at` is None but which IS present in the projection is
+    treated as stale (`_is_stale` returns True for None).
+
+    **Known gap, deliberate for phase 1:** this iterates `node_bio.nodes`, which is
+    built from received biometrics events. A node that has never reported even once
+    is not in that projection at all and therefore cannot be swept here. That is not
+    hypothetical -- `prometheus` is catalogued `expected_online: true` with
+    `monitoring/logs/metrics: true` and has never written a single `orion_biometrics`
+    row; the live projection contains only `atlas`, `circe`, `athena`. Catching a
+    never-reported node requires sweeping the catalog, not the projection, and is
+    tracked as a phase-2 item in the design doc rather than silently implied here.
+
+    `stale_after_sec` defaults to this module's `DEFAULT_STALE_AFTER_SEC` (180), NOT
+    to the runtime's configured `biometrics_node_stale_after_sec`
+    (`services/orion-substrate-runtime/app/settings.py`, env-overridable via
+    `BIOMETRICS_NODE_STALE_AFTER_SEC`). The phase-2 caller MUST thread that setting
+    through, or an operator override will make this sweep and the event-triggered
+    path disagree about what "stale" means.
+    """
+    clock = _utc_now(now)
+    absent: list[str] = []
+    for node_id, state in (node_bio.nodes or {}).items():
+        if state.expected_online is not True:
+            continue
+        if not _is_stale(
+            last_seen_at=state.last_seen_at,
+            stale_after_sec=stale_after_sec,
+            now=clock,
+        ):
+            continue
+        absent.append(node_id)
+    return sorted(absent)
+
+
+def build_absence_trigger_event(node_id: str, *, now: datetime | None = None) -> GrammarEventV1:
+    """A synthetic trigger for a node that is not sending anything.
+
+    `invoke_biometrics_pressure()` resolves its subject from the trigger event's
+    trace_id, so a node that has gone silent produces no trigger and is never
+    evaluated. `sweep_absent_nodes()` finds those nodes; this manufactures the
+    trigger they cannot send for themselves, in the same
+    `biometrics.node:{node}:{ts}` shape `parse_biometrics_trace_id()` already reads,
+    so the organ needs no special case for absence.
+
+    Marked `source_component="biometrics_absence_sweep"` so a synthetic trigger is
+    always distinguishable from a real reported sample in the trace record -- an
+    absence signal that looked like a report would be its own kind of lie.
+
+    The event_id is derived from node + timestamp rather than random, so a tick that
+    runs twice for the same node at the same clock produces the same id instead of
+    two indistinguishable rows.
+    """
+    clock = _utc_now(now)
+    ts = clock.isoformat().replace("+00:00", "Z")
+    return GrammarEventV1(
+        event_id=f"gev_absence_{sha1(f'{node_id}|{ts}'.encode()).hexdigest()[:16]}",
+        event_kind="atom_emitted",
+        trace_id=f"biometrics.node:{node_id}:{ts}",
+        emitted_at=clock,
+        observed_at=clock,
+        layer="substrate",
+        dimensions=["telemetry", "node"],
+        provenance=GrammarProvenanceV1(
+            source_service="orion-substrate-runtime",
+            source_component="biometrics_absence_sweep",
+        ),
+    )
 
 
 def invoke_biometrics_pressure(
@@ -145,6 +248,35 @@ def invoke_biometrics_pressure(
                 observed_at=clock,
             )
         )
+        # Rule F: absence is a capability impact too. Rule E (below) is the only
+        # other emitter of `node_capability_impact` and it fires on
+        # `gpu_hint >= GPU_HINT_THRESHOLD` -- GPU *saturation*. A node that is gone
+        # reports no hints at all, so before this branch existed capability impact
+        # was structurally unreachable by absence: `grammar_atoms` held 0 rows with
+        # this role, ever, and `capability_impacts` was `[]` in every
+        # `substrate_active_node_pressure_projection` row ever written. The role,
+        # the ROLE_TO_PRESSURE_KIND mapping and the reducer arm all already
+        # existed; nothing could reach them.
+        #
+        # One event per stale node, not one per capability: `build_pressure_
+        # candidate_events` derives `atom_id` from `{trace_id}:{semantic_role}` and
+        # `trace_id` from `{node_id}:{ts}`, so per-capability events in the same
+        # tick would collide on both. The reducer expands this single event into
+        # the node's real declared capabilities from the catalog profile it has
+        # already resolved (see pressure_reducer.py's node_capability_impact arm).
+        # Repeat ticks during a long outage are absorbed by that reducer's
+        # existing per-node+pressure_kind merge window, so a 45-minute outage does
+        # not become a 45-minute event storm.
+        if capabilities:
+            candidates.append(
+                build_pressure_candidate_events(
+                    node_id=node_id,
+                    semantic_role="node_capability_absent",
+                    evidence_event_ids=evidence,
+                    confidence=max(min_confidence, 0.8),
+                    observed_at=clock,
+                )
+            )
 
     # Rule B': expected online + fresh + a prior availability concern is
     # still flagged -> recovered. The symmetric counterpart Rule B needed
@@ -207,10 +339,7 @@ def invoke_biometrics_pressure(
         )
 
     # Rule E: llm inference capability + gpu hint -> capability impact
-    has_llm = any(
-        cap in capabilities
-        for cap in ("local_llm_heavy", "local_llm_quick", "llm_inference")
-    )
+    has_llm = any(cap in capabilities for cap in LLM_CAPABILITIES)
     gpu_hint = float(hints.get("gpu", 0.0))
     if has_llm and gpu_hint >= GPU_HINT_THRESHOLD:
         candidates.append(

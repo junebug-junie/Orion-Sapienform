@@ -359,6 +359,57 @@ exactly `0.000`, and `terminal_reason` is always `'max_steps'`. They carry no in
 daydream is enrichment only and is **not** part of `is_empty()`: having been
 daydreaming is never on its own a reason to interrupt Juniper.
 
+**Which lanes actually reached the prompt (2026-08-28).** A decision row that
+built a prompt carries a `grounding` object in
+`endogenous_outreach_decisions.result_json`:
+
+```json
+"grounding": {"daydream": true, "daydream_age_sec": 317, "curiosity_summaries": 1,
+              "recent_turns": 2, "tension": true, "chat_presence": false,
+              "embodied_presence": false}
+```
+
+This exists because the prompt itself is **not** observable anywhere. It is built
+in memory, handed to generation, and dropped — not in the decision log, not in the
+container logs, and not in Postgres (`emit_observation` puts it on the substrate as
+a molecule, which has no queryable Postgres sink). Found immediately after the
+daydream lane shipped, when the obvious question — *"did that outreach actually see
+a daydream?"* — turned out to have no answer. Every lane added to this prompt was
+unfalsifiable in production: an outreach that silently lost a lane and one that
+never had it looked identical.
+
+Booleans and counts only, never the caption or summary text — logging the text
+would copy real content into a second store with its own retention and quietly
+widen the privacy boundary stated above.
+
+Each field reports what the prompt text **rendered**, not what was fetched. These
+differ: `fetch_presence` returns a full row for an `absent` camera, but
+`presence_fragment` returns `None` for any state that is not `present`/`recent`, so
+no camera line renders. The first version of this reported the fetched row and was
+wrong on live data on day one — anything claimed here must be traceable to a line
+in the prompt.
+
+The trace is written only for cycles that actually built a prompt. Rows WITHOUT a
+`grounding` key are:
+
+| Row | Why no key |
+|---|---|
+| gated (`quiet_hours`, `cooldown`, `daily_cap`, `turn_in_flight`, `already_sending`) | returned before context was gathered |
+| `no_grounding_context` | context was gathered but `is_empty()` skipped the tick, so no prompt exists for lanes to reach |
+| `source`-tagged rows from `offer_message` | the curiosity loop composes its text elsewhere and never builds an `OutreachContext` |
+
+None of these inherit a previous cycle's lanes: the summary is a local passed into
+`_record`, not instance state. That is deliberate and mutation-tested — stale lanes
+would be worse than none, because they read as evidence rather than as a gap.
+
+```sql
+-- did the last few real outreaches see a daydream?
+SELECT decided_at, reason, result_json->'grounding' AS grounding
+FROM endogenous_outreach_decisions
+WHERE result_json ? 'grounding'
+ORDER BY decided_at DESC LIMIT 10;
+```
+
 #### Evals
 
 `services/orion-hub/evals/` is this service's first eval directory. It exists

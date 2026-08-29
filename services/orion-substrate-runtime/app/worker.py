@@ -38,6 +38,10 @@ from orion.substrate.biometrics_loop.pipeline import (
     _empty_pressure,
     process_biometrics_grammar_events,
 )
+from orion.substrate.biometrics_loop.pressure_organ import (
+    build_absence_trigger_event,
+    sweep_absent_nodes,
+)
 from orion.substrate.execution_loop.constants import (
     EXECUTION_GRAMMAR_CURSOR_NAME,
     EXECUTION_TRAJECTORY_PROJECTION_ID,
@@ -930,16 +934,89 @@ class BiometricsSubstrateWorker:
         )
         return event.event_id
 
+    def _absence_sweep(self, now: datetime) -> list[GrammarEventV1]:
+        """Evaluate nodes that are sending nothing.
+
+        The event-driven path below can only ever assess a node that is currently
+        reporting: `invoke_biometrics_pressure()` resolves its subject from the
+        incoming event. A node that goes fully dark produces no trigger and is
+        therefore never assessed at all -- confirmed live 2026-08-29, when circe
+        (`expected_online: true`, 5 declared capabilities) was gone 00:01:16Z ->
+        00:47:04Z and its `last_accepted_at["availability"]` never moved off
+        2026-08-19.
+
+        Runs BEFORE `_tick`'s `if not events` early return, deliberately. If every
+        node goes silent at once there are no biometrics events to fetch, the tick
+        would return early, and the sweep would be skipped in exactly the total
+        outage it exists to catch.
+
+        Feeds synthetic triggers through the same pipeline as real events with
+        `enable_node_reducer=False`: the organ, the pressure reducer, the receipts
+        and the publish path are all shared, and only the node-biometrics projection
+        is left untouched, since a synthetic trigger is not a report and must never
+        refresh `last_seen_at`.
+        """
+        if not self._settings.enable_biometrics_pressure_organ:
+            return []
+
+        node_bio = self._store.load_node_biometrics(NODE_BIOMETRICS_PROJECTION_ID)
+        if node_bio is None:
+            return []
+
+        absent = sweep_absent_nodes(
+            node_bio=node_bio,
+            stale_after_sec=self._settings.biometrics_node_stale_after_sec,
+            now=now,
+        )
+        if not absent:
+            return []
+
+        logger.warning(
+            "biometrics_absence_sweep nodes=%s stale_after_sec=%s",
+            ",".join(absent),
+            self._settings.biometrics_node_stale_after_sec,
+        )
+
+        published: list[GrammarEventV1] = []
+        try:
+            process_biometrics_grammar_events(
+                events=[build_absence_trigger_event(n, now=now) for n in absent],
+                catalog=self._catalog,
+                load_node_bio=lambda: node_bio,
+                save_node_bio=lambda _p: None,
+                load_pressure=lambda: (
+                    self._store.load_active_pressure(ACTIVE_NODE_PRESSURE_PROJECTION_ID)
+                    or _empty_pressure(now)
+                ),
+                save_pressure=self._store.save_active_pressure,
+                save_receipt=self._store.save_receipt,
+                save_emission=self._store.save_emission,
+                publish_accepted=published.extend,
+                enable_node_reducer=False,
+                enable_organ=True,
+                enable_pressure_reducer=self._settings.enable_node_pressure_reducer,
+                stale_after_sec=self._settings.biometrics_node_stale_after_sec,
+                min_confidence=self._settings.biometrics_pressure_min_confidence,
+                now=now,
+            )
+        except Exception:
+            # Never let the absence path take down the ordinary tick: a node being
+            # gone must not also stop the nodes that are still reporting.
+            logger.warning("biometrics_absence_sweep failed", exc_info=True)
+            return []
+        return published
+
     def _tick(self) -> tuple[str | None, list[GrammarEventV1]]:
         spec = REDUCER_SPECS[0]
         events = self._store.fetch_biometrics_grammar_events(
             limit=spec.batch_limit(self._settings),
         )
-        if not events:
-            return None, []
-
         now = datetime.now(timezone.utc)
-        published: list[GrammarEventV1] = []
+        absence_published = self._absence_sweep(now)
+
+        if not events:
+            return None, absence_published
+        published: list[GrammarEventV1] = list(absence_published)
 
         def load_node_bio() -> NodeBiometricsProjectionV1:
             loaded = self._store.load_node_biometrics(NODE_BIOMETRICS_PROJECTION_ID)

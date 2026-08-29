@@ -84,14 +84,28 @@ services:
       - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
       - ${TTS_VOICE_PROFILE_HOST_DIR:-/mnt/telemetry/models/coqui/voices}:/models/voices:ro
 
-    gpus: all
-    # Compose v3+ syntax for GPUs (Docker 20.10+)
+    # GPU pin. Deliberately NOT `gpus: all` / `count: all` (the previous form,
+    # replaced 2026-08-29): those hand the container every visible card and
+    # leave torch to pick cuda:0. That is harmless on athena, which has one
+    # card, and wrong on circe, where cuda:0 is a V100 carrying other lanes
+    # and the card this service wants is the P100 at nvidia-smi index 4.
+    #
+    # `device_ids` is the only form here that actually pins a specific card
+    # (`docker run --gpus '"device=N"'` is a different, CLI-only schema, and
+    # `count:` and `device_ids:` are mutually exclusive). Same pattern as
+    # services/orion-affectgpt-worker/docker-compose.yml.
+    #
+    # The value is the HOST's nvidia-smi index. Docker always remaps the
+    # pinned physical device to container-local index 0, so TTS_USE_GPU and
+    # every torch call inside still see cuda:0 regardless -- do not "fix"
+    # anything to cuda:4. Verify a pin with `docker inspect` DeviceIDs plus
+    # nvidia-smi on the host, never from a log line inside the container.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${WHISPER_TTS_GPU_DEVICE_ID:-0}"]
               capabilities: [gpu]
 
     ports:

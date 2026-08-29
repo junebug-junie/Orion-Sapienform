@@ -243,6 +243,52 @@ async def test_tick_publishes_grounded_thought():
 
 
 @pytest.mark.asyncio
+async def test_tick_reports_metacog_timeout_to_health_monitor_and_degrades_to_none(monkeypatch):
+    """A cortex-exec timeout on the metacog call must reach the health monitor (so a
+    real outage under load surfaces as a Hub attention item, not just a log line) and
+    still degrade the tick to None -- the hard "a tick must never raise" constraint."""
+    import asyncio
+
+    from app import reverie
+
+    calls = []
+    monkeypatch.setattr(
+        "app.reverie_health_monitor.check_reverie_metacog_timeout",
+        lambda timed_out: calls.append(timed_out),
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(side_effect=asyncio.TimeoutError())
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is None
+    bus.publish.assert_not_called()
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_tick_reports_metacog_success_to_health_monitor(monkeypatch):
+    from app import reverie
+
+    calls = []
+    monkeypatch.setattr(
+        "app.reverie_health_monitor.check_reverie_metacog_timeout",
+        lambda timed_out: calls.append(timed_out),
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+    })
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is not None
+    assert calls == [False]
+
+
+@pytest.mark.asyncio
 async def test_tick_persists_published_thought(monkeypatch):
     from app import reverie
 

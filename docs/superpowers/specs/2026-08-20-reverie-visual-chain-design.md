@@ -829,6 +829,80 @@ also-real question: was this content ever actually decided-upon by
 anything, the way the reader's own docstring claimed. It was not, for the
 overwhelming majority of the table.
 
+## 21. Metacog lane contention groundwork (this changeset, flag-gated + off)
+
+Discussion (§18-§20's visual-fidelity gap): the fix for "why does everything
+render as generic clouds/aqueducts" is an LLM interpretation step between
+the selected context-seed clause and `build_visual_prompt` -- reusing the
+same metacog-routed `CortexExecClient` call the text chain already makes
+(`reverie.py`, `llm_route: "metacog"`), not a new mechanism. Before building
+that step, Juniper asked whether it would be "competing or just reusing"
+the lane, and directed: "I'd want to throttle the text reverie -- diffusion
+trumps text if we are too tight."
+
+**Live-measured, not assumed** (2026-08-29, SSH to Circe): metacog
+(`orion-atlas-llamacpp-metacog`, `circe-worker-2`, `CUDA_VISIBLE_DEVICES_
+OVERRIDE=5` -- Tesla V100-16GB, physically separate from diffusion-host's
+GPU2) is NOT capacity-starved the way `quick`'s fast lane is. Live `/slots`
+read 4/4 idle at query time; 10 minutes of logs showed 27 completions
+(~1/22s average), two interleaved patterns (~129-180 tok/~1.7s and
+~1.7k-1.9k tok/~1.8-2.3s), and one real 8.9s outlier against that ~1.7-2.3s
+norm. So this is a tail-latency concern, not a starved-lane rescue --
+correcting an earlier, wrong assumption in this same investigation that
+~18s log cadence meant 2 slots cycling under contention; it meant multi-service
+traffic volume (`orion-cortex-exec`, `orion-mind`, `orion-memory-
+consolidation`, `orion-llm-gateway`, `orion-vision-council`, `orion-actions`
+all route through it) against 4 mostly-idle slots.
+
+Also found live and unrelated to this fix, left alone: the `agent` route
+(`LLM_GATEWAY_ROUTE_TABLE_JSON`, port 8014) is not a llama.cpp worker at
+all -- it answers as `orion-circe-diffusion-host` (confirmed: `/health`
+returns `{"service":"diffusion-host",...}`, `/v1/models` 404s instead of
+listing). `route_catalog.py`'s health probe treats any HTTP 200 as `up`, so
+`GET /routes` has been reporting `agent` healthy while it silently serves
+the wrong service -- likely a port collision from diffusion-host's own
+deploy. Flagged for a separate patch, not fixed here.
+
+**What shipped, mirroring `quick_background`'s exact pattern (orion/llm/
+routes.py, services/orion-llm-gateway/.env_example)**: a new
+`metacog_background` route, same URL/served_by as `metacog`
+(`circe-worker-2`), `priority: "background"`, `reserved_free_slots: 1` (vs.
+`quick_background`'s 2, reflecting the lower measured contention). It waits
+for `/slots` slack via the existing `priority_admission.py` mechanism --
+no new gateway code.
+
+**Deliberately NOT activated yet.** Juniper: "can we add a flag to keep the
+routing override off for now? i want to see how much it fails under load."
+`ORION_REVERIE_METACOG_BACKGROUND_ENABLED` (orion-thought, default `false`)
+gates `reverie.py`'s `_metacog_route()` helper -- while off, both of
+reverie's route-override sites (`build_reverie_context`,
+`build_reverie_plan_request`) keep sending plain `metacog`, unchanged from
+today. Flipping it moves those calls onto `metacog_background`, so a future
+visual-chain interpretation call staying on plain `metacog` would never
+wait behind them.
+
+**Making that "off for now" period observable, not just logged.**
+`reverie_health_monitor.py` (new module) mirrors `resonance_monitor.py`
+(this service) and `orion-field-digester/app/health_monitor.py`'s
+`HealthMonitor`: an edge-triggered `orion-notify` attention request keyed
+on one fixed check, `reverie_metacog_timeout`, firing once on a
+healthy->unhealthy transition (the reverie tick's cortex-exec call to
+metacog raising `asyncio.TimeoutError`) and a recovery note once it stops
+-- not once per ~90s tick, which would page continuously through any real
+outage. Wired into `run_reverie_once`'s existing `execute_plan` call site,
+scoped to that one call only (a non-timeout failure elsewhere in the tick
+does not touch this check). Gated by `ORION_REVERIE_METACOG_TIMEOUT_
+ATTENTION_ENABLED` (default `true`) -- reuses `notify_base_url`/
+`notify_api_token`, already configured in this service for the resonance
+monitor.
+
+Net effect: nothing about reverie's real dispatch behavior changes yet.
+What changes is that its real timeout rate under the current, unmitigated
+routing becomes visible in Hub's Pending Attention panel, so the decision
+to flip `ORION_REVERIE_METACOG_BACKGROUND_ENABLED` on can be made from
+evidence instead of the same live-measurement-vs-assumption gap this
+section opened with.
+
 **Fix**: `load_latest_memory_crystallization` now requires `EXISTS (SELECT
 1 FROM memory_crystallization_history WHERE crystallization_id = ... AND
 op = 'approve')` in addition to `status = 'active'`. This narrows the real

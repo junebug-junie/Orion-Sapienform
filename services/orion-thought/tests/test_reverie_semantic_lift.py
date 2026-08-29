@@ -127,3 +127,52 @@ async def test_semantic_lift_plan_uses_metacog_background_channel(monkeypatch):
     assert req.context.get("mode") == "metacog"
     assert req.context.get("llm_route") == "metacog"
     assert req.args.extra.get("execution_lane") == "background"
+
+
+@pytest.mark.asyncio
+async def test_semantic_lift_plan_uses_metacog_background_route_when_flag_enabled(monkeypatch):
+    """ORION_REVERIE_METACOG_BACKGROUND_ENABLED default-off: this flag is what actually
+    moves reverie's metacog calls onto the yielding `metacog_background` route
+    (orion/llm/routes.py) instead of the evenly-competing `metacog` one -- see
+    reverie.py's `_metacog_route()`."""
+    from app import reverie
+    from orion.schemas.reverie import ConcernCardV1
+
+    monkeypatch.setattr(reverie.settings, "reverie_semantic_lift_enabled", True)
+    monkeypatch.setattr(reverie.settings, "reverie_metacog_background_enabled", True)
+    card = ConcernCardV1.from_harness_turn(
+        coalition_ref="harness_closure:corr-1",
+        user_message_excerpt="Will the deploy slip if we cut testing?",
+        stance_imperative="Name the testing tradeoff before reassuring.",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )
+    assert card is not None
+    bus = AsyncMock()
+    captured = {}
+
+    class _Cortex:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def execute_plan(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "final_text": json.dumps({
+                    "interpretation": (
+                        "I keep circling whether cutting testing makes the deploy slip — "
+                        "that tradeoff is still open."
+                    ),
+                    "evidence_refs": ["ol-1"],
+                })
+            }
+
+    with patch.object(reverie, "resolve_concern_cards", return_value=[card]):
+        result = await reverie.run_reverie_once(
+            bus,
+            broadcast_reader=lambda: _broadcast(),
+            cortex_client=_Cortex(),
+        )
+    assert result is not None
+    req = captured["req"]
+    assert req.context.get("llm_route") == "metacog_background"
+    assert req.args.extra.get("llm_route") == "metacog_background"

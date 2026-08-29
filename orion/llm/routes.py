@@ -89,7 +89,7 @@ from typing import FrozenSet, Optional
 #: other. `harness` is also in SYSTEM_LLM_ROUTES below: it is never meant to be a human's
 #: interactive Compute choice, and that is enforced, not just documented -- see that set for why.
 ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
-    {"chat", "quick", "metacog", "quick_background", "agent", "harness"}
+    {"chat", "quick", "metacog", "metacog_background", "quick_background", "agent", "harness"}
 )
 
 #: Historical spellings of `quick`, kept working because live config still carries them.
@@ -114,6 +114,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "quick",
     "quick_background",
     "metacog",
+    "metacog_background",
     "agent",
     "harness",
 )
@@ -138,7 +139,15 @@ if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
 # LLM_GATEWAY_ROUTE_TABLE_JSON (reported `not_configured`, priority null). In both, a background
 # lane would be offered to a human as an ordinary one. Consumers therefore treat a route as
 # background if EITHER the payload says so or it appears here -- fail-safe, never fail-open.
-BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background"})
+#
+# `metacog_background` (2026-08-29): same pattern, second pilot. Live measurement on Circe found
+# metacog (circe-worker-2, GPU5) is NOT capacity-starved the way the fast lane is -- 4 slots,
+# ~1 completion/22s average, mostly idle when polled live -- so this is a tail-latency guard (a
+# real 8.9s outlier was observed against a ~1.7-2.3s norm), not a rescue for a saturated lane.
+# Default OFF: reverie.py's route override stays "metacog" until
+# ORION_REVERIE_METACOG_BACKGROUND_ENABLED is flipped on, so the unmitigated failure/timeout rate
+# under real load can be observed first.
+BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background", "metacog_background"})
 
 if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(

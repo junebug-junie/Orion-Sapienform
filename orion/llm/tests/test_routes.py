@@ -55,6 +55,23 @@ def test_harness_is_a_system_route_hidden_from_the_human_picker() -> None:
     assert "harness" not in BACKGROUND_LLM_ROUTES
 
 
+def test_metacog_background_is_accepted_background_and_displayed() -> None:
+    # Second pilot of the `quick_background` pattern (2026-08-29): shares metacog's upstream
+    # (circe-worker-2/GPU5) but yields for /slots slack. Nothing routes onto it by default --
+    # see ORION_REVERIE_METACOG_BACKGROUND_ENABLED in services/orion-thought/.env_example.
+    assert "metacog_background" in ACCEPTED_LLM_ROUTES
+    assert "metacog_background" in LLM_ROUTE_DISPLAY_ORDER
+    assert "metacog_background" in BACKGROUND_LLM_ROUTES
+    assert "metacog_background" not in SYSTEM_LLM_ROUTES
+
+
+def test_metacog_background_is_a_valid_caller_override() -> None:
+    # Unlike `harness`, this is a real caller-selectable override -- reverie.py's
+    # `_metacog_route()` sets it explicitly once its own flag is on.
+    assert normalize_llm_route("metacog_background") == "metacog_background"
+    assert normalize_llm_route("METACOG_BACKGROUND") == "metacog_background"
+
+
 def test_system_and_background_routes_are_mutually_exclusive() -> None:
     # orion/llm/routes.py raises at import if this is ever violated; this test exists so the
     # invariant shows up in a normal test run too, not only as an import-time RuntimeError.

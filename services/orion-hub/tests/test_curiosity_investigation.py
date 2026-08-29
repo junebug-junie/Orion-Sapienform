@@ -15,14 +15,23 @@ import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.curiosity.study_material import StudyMaterial, assemble_study_material
+# NOT `from scripts import curiosity_investigation as ci`: with the repo-root
+# tests on the same pytest invocation, `scripts` resolves to the repo-root
+# package instead of this service's, and collection fails with ImportError --
+# which pytest reports as an ERROR rather than a failure, so a run that looks
+# like it "ended" has actually run nothing in this file.
 from scripts.curiosity_investigation import (
     MIN_HARNESS_STEPS,
     CuriosityInvestigation,
     SchedulingGateInputs,
     SignalGateInputs,
     build_investigation_journal_entry,
+    in_window,
+    window_is_configured,
+    paced_cooldown_sec,
     scheduling_block_reason,
     signal_block_reason,
+    window_seconds,
 )
 
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
@@ -1183,6 +1192,298 @@ def test_two_turns_cannot_run_at_once() -> None:
 
     assert asyncio.run(_both()) == "already_running"
 
+
+# --- the waking window ----------------------------------------------------
+#
+# These exist because the daily cap was a budget and never a pace. Live on
+# 2026-08-28 the cap of 6 freed at local midnight and every run fired between
+# 00:48 and 02:57, then 240 consecutive ticks logged `blocked reason=daily_cap`
+# through the entire day Juniper was awake to watch them.
+
+
+def test_window_spread_is_what_paces_runs_not_the_configured_floor():
+    # 14 waking hours over 6 runs is one every 2h20m, which is what makes the
+    # budget last the day. The 30-minute floor must NOT win here -- if it did,
+    # the whole cap would still be spent by 03:00.
+    assert (
+        paced_cooldown_sec(
+            min_cooldown_sec=1800.0, daily_cap=6, start_hour=8, end_hour=22
+        )
+        == 8400.0
+    )
+
+
+def test_the_floor_wins_when_a_big_cap_would_space_runs_closer_than_a_turn():
+    # A turn takes ~20 minutes. Without the floor, cap=100 gives 8.4 minutes,
+    # the run lock serialises them, and the greedy back-to-back behaviour this
+    # function removes comes straight back.
+    assert (
+        paced_cooldown_sec(
+            min_cooldown_sec=1800.0, daily_cap=100, start_hour=8, end_hour=22
+        )
+        == 1800.0
+    )
+
+
+def test_an_unset_window_paces_exactly_as_before():
+    """START == END is the opt-out and must return the floor UNTOUCHED.
+
+    The first version of this test asserted `== 14400.0` against a floor of
+    14400 and a cap of 6, and passed against an implementation that derived
+    86400/6 from a notional 24-hour day -- the same number by coincidence. It
+    took `test_the_daily_cap_survives_a_restart` going red to show that every
+    deployment without a window had silently been re-paced. The numbers below
+    are chosen so no 24h-derived value can equal the expected one.
+    """
+    # 86400/6 == 14400 would be indistinguishable from the floor. 5.0 cannot be
+    # confused with any spread: a 24h day over 6 runs is 14400s.
+    assert (
+        paced_cooldown_sec(
+            min_cooldown_sec=5.0, daily_cap=6, start_hour=0, end_hour=0
+        )
+        == 5.0
+    )
+    # And a zero floor must stay zero rather than becoming 14400.
+    assert (
+        paced_cooldown_sec(
+            min_cooldown_sec=0.0, daily_cap=6, start_hour=0, end_hour=0
+        )
+        == 0.0
+    )
+    assert in_window(3, 0, 0) is True
+
+
+def test_a_window_that_spans_midnight_is_not_read_inside_out():
+    # 22-06 is a legitimate configuration and the naive `start <= h < end`
+    # would make it match nothing at all.
+    assert in_window(23, 22, 6) is True
+    assert in_window(2, 22, 6) is True
+    assert in_window(12, 22, 6) is False
+    assert window_seconds(22, 6) == 8 * 3600
+
+
+def test_the_window_is_half_open_so_no_run_starts_as_it_closes():
+    # A turn takes ~20 minutes. Starting one at 22:00 finishes outside the
+    # window Juniper asked for.
+    assert in_window(21, 8, 22) is True
+    assert in_window(22, 8, 22) is False
+    assert in_window(7, 8, 22) is False
+
+
+def test_three_in_the_morning_is_blocked_even_with_budget_and_no_cooldown():
+    # The exact live state at 03:00 on 2026-08-28: budget left, cooldown long
+    # expired. Before the window that combination ran; it is the reason the
+    # whole cap was gone before Juniper woke up.
+    assert (
+        scheduling_block_reason(
+            SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=8400.0,
+                done_today=1,
+                daily_cap=6,
+                local_hour=3,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        == "outside_window"
+    )
+
+
+def test_a_spent_budget_outranks_the_window_in_the_reason_reported():
+    # Both are true at 03:00 with the cap spent. `daily_cap` is the more
+    # informative answer, so it must be the one logged.
+    assert (
+        scheduling_block_reason(
+            SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=8400.0,
+                done_today=6,
+                daily_cap=6,
+                local_hour=3,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        == "daily_cap"
+    )
+
+
+def test_inside_the_window_with_budget_and_no_cooldown_runs():
+    assert (
+        scheduling_block_reason(
+            SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=8400.0,
+                done_today=1,
+                daily_cap=6,
+                local_hour=14,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        is None
+    )
+
+
+def test_the_window_never_applies_when_local_hour_is_unknown():
+    # `local_hour=None` is how "no window configured" reaches the gate. A
+    # window that fired on an unknown hour would block a deployment whose
+    # timezone failed to load, which is a silent stop rather than a fallback.
+    assert (
+        scheduling_block_reason(
+            SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=1.0,
+                done_today=0,
+                daily_cap=6,
+                local_hour=None,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        is None
+    )
+
+
+# --- the window as the APPLIANCE, not the calculator ------------------------
+#
+# The tests above call the pure functions directly. Review demonstrated that
+# replacing the whole `local_hour=(...)` expression in `tick()` with
+# `local_hour=None` -- i.e. Orion runs at 3am again, the exact behaviour this
+# branch exists to remove -- left 80/80 green. Nothing drove a real clock
+# through `tick()`. These do.
+
+
+def _at(loop: CuriosityInvestigation, when: datetime):
+    """Run one tick with the wall clock pinned to `when`.
+
+    PATCHES `tick.__globals__`, NOT `import scripts.curiosity_investigation`.
+    Under this repo's layout that import resolves to a DIFFERENT module object
+    than the one `CuriosityInvestigation` was defined in -- verified by id:
+    `mod.__dict__` and `type(loop).tick.__globals__` are two distinct dicts
+    with the same `__module__` name, because the hub `scripts` package is
+    imported once by the test file and again through pytest's own path
+    insertion. Patching the wrong copy leaves the real clock in place, and
+    every test expecting a block then reports "ran" -- green for the tests that
+    expect None, and silently meaningless. The class's own globals are the one
+    dict the running code is guaranteed to read.
+    """
+    g = CuriosityInvestigation.tick.__globals__
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when.astimezone(tz) if tz else when
+
+    real, g["datetime"] = g["datetime"], _Clock
+    try:
+        return asyncio.run(loop.tick())
+    finally:
+        g["datetime"] = real
+
+
+def _windowed(bus, **over):
+    kwargs = dict(min_cooldown_sec=0.0, daily_cap=6, window_start_hour=8,
+                  window_end_hour=22, timezone_name="America/Denver")
+    kwargs.update(over)
+    return _loop(bus, **kwargs)
+
+
+def test_a_tick_at_three_in_the_morning_does_not_investigate() -> None:
+    # 09:00 UTC on 2026-08-29 is 03:00 MDT -- the hour the whole cap was being
+    # spent in. Budget available, no cooldown, and it must still refuse.
+    bus = _FakeBus()
+    got = _at(_windowed(bus), datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc))
+    assert got == "outside_window"
+
+
+def test_the_same_tick_six_hours_later_does_investigate() -> None:
+    # 15:00 UTC is 09:00 MDT. Same loop, same budget, inside the window.
+    bus = _FakeBus()
+    got = _at(_windowed(bus), datetime(2026, 8, 29, 15, 0, tzinfo=timezone.utc))
+    assert got is None
+
+
+def test_the_window_is_read_in_junipers_zone_not_the_containers() -> None:
+    """The container sets no TZ, so `datetime.now()` there is UTC. 04:00 UTC is
+    22:00 MDT the previous evening -- outside an 08-22 window -- while 04 is
+    comfortably inside it read as UTC. A loop reading its own locale would run."""
+    bus = _FakeBus()
+    got = _at(_windowed(bus), datetime(2026, 8, 30, 4, 0, tzinfo=timezone.utc))
+    assert got == "outside_window"
+
+
+def test_force_overrides_the_window() -> None:
+    # The commit claims force skips all three scheduling gates. Nothing tested
+    # the third, and removing "outside_window" from that set stayed green.
+    bus = _FakeBus()
+    loop = _windowed(bus)
+    when = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
+    g = CuriosityInvestigation.tick.__globals__
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when.astimezone(tz) if tz else when
+
+    real, g["datetime"] = g["datetime"], _Clock
+    try:
+        assert asyncio.run(loop.tick()) == "outside_window"
+        assert asyncio.run(loop.tick(force=True)) is None
+    finally:
+        g["datetime"] = real
+
+
+def test_an_unconfigured_window_runs_at_any_hour() -> None:
+    # START == END must reproduce the old behaviour through the real tick, not
+    # merely in `paced_cooldown_sec`.
+    bus = _FakeBus()
+    loop = _windowed(bus, window_start_hour=0, window_end_hour=0)
+    assert _at(loop, datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)) is None
+
+
+def test_a_timezone_that_failed_to_load_disables_the_window() -> None:
+    """`timezone.utc` is truthy, so guarding on `self._tz` could never be False:
+    a typo'd zone would evaluate 08-22 in UTC -- 02:00-16:00 in Denver -- and
+    quietly rebuild the 3am cluster while the config insisted it was bounded.
+    Running unbounded is the honest failure; running on a guessed clock is not.
+    """
+    bus = _FakeBus()
+    loop = _windowed(bus, timezone_name="America/Denvor")
+    assert loop._tz_loaded is False
+    # 02:00 UTC is chosen so the two behaviours DISAGREE. The first version of
+    # this test used 09:00 UTC, which is hour 9 read as UTC and therefore
+    # inside an 08-22 window either way -- it returned None against both the
+    # fix and the bug, and the mutation stayed green. Read as UTC, 02:00 is
+    # outside the window, so the buggy guard blocks and the correct one runs.
+    assert _at(loop, datetime(2026, 8, 29, 2, 0, tzinfo=timezone.utc)) is None
+
+
+def test_minus_one_disables_the_window_the_way_quiet_hours_documents() -> None:
+    """`HUB_ENDOGENOUS_OUTREACH_QUIET_*` documents "equal values or -1 disable
+    it". An operator copying that convention onto these keys must not get a
+    live, wrong window -- and the two halves must AGREE about it: before this,
+    `in_window(h, 8, -1)` admitted hours 8-23 while `window_seconds(8, -1)`
+    returned 15h, so the derived pace was computed from a window length that
+    was not the one being enforced."""
+    assert window_is_configured(8, -1) is False
+    assert window_is_configured(-1, 22) is False
+    assert in_window(3, 8, -1) is True, "a disabled window must admit every hour"
+    assert window_seconds(8, -1) == 24 * 3600
+    assert paced_cooldown_sec(
+        min_cooldown_sec=5.0, daily_cap=6, start_hour=8, end_hour=-1
+    ) == 5.0
+
+
+def test_a_tick_runs_at_any_hour_when_the_window_is_disabled_by_minus_one() -> None:
+    bus = _FakeBus()
+    loop = _windowed(bus, window_start_hour=-1)
+    assert _at(loop, datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)) is None
 
 # --- a redeploy should not cost a run --------------------------------------
 

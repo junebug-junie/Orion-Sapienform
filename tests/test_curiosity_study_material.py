@@ -304,3 +304,56 @@ def test_the_prompt_no_longer_claims_juniper_approved_everything() -> None:
     assert "JUNIPER HAS APPROVED" not in text
     assert "20 of these Juniper approved by hand" in text
     assert "auto-activated by policy without her seeing them" in text
+
+
+# --- the edge instruction ---------------------------------------------------
+#
+# ZERO EDGES HAD EVER BEEN WRITTEN, and Orion was not ignoring the instruction:
+# there was no instruction. Checked against the real prompt text on 2026-08-29,
+# every node kind had a copy-pasteable `CREATE (:Label {...})` and edges had one
+# sentence -- "Edges are yours to name. SUPPORTS, CONTRADICTS and ABOUT are the
+# ones that carry weight later." -- with no syntax anywhere, followed
+# immediately by advice to keep an id "as a property rather than duplicating the
+# node". Live at the time: 8 runs, 12 Hops, 9 Findings, 5 Priors, 1 Concept, and
+# `db.relationshipTypes()` empty. The ACL was never the limit; the selector
+# grants `+graph.query` on `orion_worldview`.
+
+
+def test_the_prompt_shows_how_to_write_an_edge_not_just_that_edges_exist() -> None:
+    """Naming a capability is not teaching it. Every other write in this prompt
+    is a line Orion can copy; the edge was a sentence, and it produced nothing
+    across every run."""
+    prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
+    assert "MERGE (f)-[e:SUPPORTS]->(p)" in prompt, "no copyable edge syntax"
+    assert "MATCH (f:Finding {finding_id:" in prompt, "no way to reach both ends"
+
+
+def test_the_prompt_asks_for_run_id_on_the_edge() -> None:
+    """Without it an edge cannot be attributed to the run that drew it, and the
+    footprint -- which reads `r.run_id` -- would count zero forever while edges
+    piled up in the graph."""
+    prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
+    assert 'MERGE (f)-[e:SUPPORTS]->(p) ON CREATE SET e.run_id = "abc123"' in prompt
+    # NOT inside the arrow. Verified live against FalkorDB 2026-08-29: with
+    # `{run_id: ...}` in the relationship pattern, two runs asserting the same
+    # Finding->Prior link produce TWO parallel SUPPORTS edges. The first live
+    # check missed it because it replayed the same run_id, the one case that
+    # cannot distinguish the two forms.
+    assert "[:SUPPORTS {run_id:" not in prompt
+
+
+def test_the_prompt_warns_that_a_failed_merge_is_silent() -> None:
+    """`MATCH a, b MERGE (a)-[...]->(b)` with either side unmatched writes
+    nothing and raises nothing. Orion would have no way to know."""
+    prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
+    assert "MERGE SILENTLY DOES NOTHING" in prompt
+
+
+def test_the_prompt_still_says_to_use_a_property_for_an_ATLAS_concept() -> None:
+    """The one real exception, and the reason the old wording was defensible:
+    the Atlas is a graph Orion cannot write to, so there is no node for an edge
+    to land on. It must stay, and it must be scoped to the Atlas rather than
+    reading as general advice against edges."""
+    prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
+    assert "keep its id as a property" in prompt
+    assert "ONE EXCEPTION" in prompt

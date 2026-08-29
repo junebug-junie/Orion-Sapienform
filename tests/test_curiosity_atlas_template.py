@@ -121,6 +121,16 @@ def _segments(growth_html: str) -> list[int]:
     return [int(m or 0) for m in re.findall(r'class="seg"[^>]*>(\d*)<', growth_html)]
 
 
+def _series_vars(growth_html: str) -> list[str]:
+    """Which palette slot each segment actually drew with.
+
+    Read off the rendered style rather than from KIND_ORDER, so a kind that
+    falls through to the last colour is indistinguishable from one that was
+    assigned it -- which is the bug this exists to catch.
+    """
+    return re.findall(r"var\((--series-\d+)\)", growth_html)
+
+
 def test_every_node_kind_gets_a_segment_even_one_nobody_hardcoded(tmp_path) -> None:
     """The growth query counts every labelled node and `total_added` sums all of
     them. A segment list filtered to a hardcoded set made the bar disagree with
@@ -141,13 +151,43 @@ def test_the_segments_always_sum_to_the_total_column(tmp_path) -> None:
     assert sum(_segments(out["growth"])) == total == 11
 
 
-def test_a_seventh_kind_folds_into_other_rather_than_inventing_a_hue(tmp_path) -> None:
-    added = {k: 1 for k in
-             ["Prior", "Finding", "Hop", "TurnOutcome", "PriorRevision",
-              "Concept", "Extra1", "Extra2"]}
-    out = _render(_payload(runs=[_run(added=added, total_added=8)]), tmp_path)
+# The palette carries NINE slots: six node kinds plus the three edge kinds.
+# Before the edge kinds were listed, `-> SUPPORTS`, `-> CONTRADICTS` and
+# `-> ABOUT` all fell through to the final colour -- one hue for three
+# different edges -- and a run writing six node labels plus a single edge
+# crossed the fold threshold and pushed real node labels into grey.
+_KNOWN_KINDS = ["Prior", "Finding", "Hop", "TurnOutcome", "PriorRevision",
+                "Concept", "-> SUPPORTS", "-> CONTRADICTS", "-> ABOUT"]
+
+
+def test_every_named_kind_gets_its_own_hue_with_nothing_folded(tmp_path) -> None:
+    added = {k: 1 for k in _KNOWN_KINDS}
+    out = _render(_payload(runs=[_run(added=added, total_added=9)]), tmp_path)
+    assert "Other" not in out["growth"], "a named kind was folded away"
+    assert sum(_segments(out["growth"])) == 9
+
+
+def test_the_kind_after_the_last_slot_folds_rather_than_inventing_a_hue(tmp_path) -> None:
+    added = {k: 1 for k in _KNOWN_KINDS + ["Extra1", "Extra2"]}
+    out = _render(_payload(runs=[_run(added=added, total_added=11)]), tmp_path)
     assert "Other" in out["growth"]
-    assert sum(_segments(out["growth"])) == 8, "folding must not lose a node"
+    assert sum(_segments(out["growth"])) == 11, "folding must not lose a node"
+
+
+def test_an_edge_kind_does_not_take_a_node_kinds_colour(tmp_path) -> None:
+    """The failure this guards is silent and visual: three distinct edge types
+    rendering as one another, in a legend that looks complete."""
+    added = {k: 1 for k in _KNOWN_KINDS}
+    out = _render(_payload(runs=[_run(added=added, total_added=9)]), tmp_path)
+    # Each slot appears twice -- once in the bar, once in the legend swatch --
+    # so the claim is that NINE DISTINCT slots are in play, not that no var
+    # repeats. Before the edge kinds were named, the three edge types all drew
+    # `--series-9` and this collapsed to seven.
+    used = _series_vars(out["growth"])
+    assert len(set(used)) == len(_KNOWN_KINDS), (
+        f"{len(set(used))} distinct colours for {len(_KNOWN_KINDS)} kinds: "
+        f"{sorted(set(used))}"
+    )
 
 
 def test_a_run_killed_mid_write_is_not_reported_as_having_written_nothing(tmp_path) -> None:

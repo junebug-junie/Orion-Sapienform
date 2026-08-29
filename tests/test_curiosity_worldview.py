@@ -28,6 +28,7 @@ from orion.curiosity.worldview import (
     read_snapshot,
     read_turn_outcome,
     rows_from_reply,
+    run_edge_footprint_cypher,
     run_footprint_cypher,
     select_priors,
 )
@@ -875,3 +876,77 @@ def test_the_thread_query_does_not_use_collect() -> None:
 
     assert "collect(" not in RECENT_RUNS_CYPHER
     assert "p.claim AS claim" in RECENT_RUNS_CYPHER
+
+
+# --- edges are part of the footprint ----------------------------------------
+#
+# They were not, and that is why nobody noticed Orion had never drawn one.
+# Measured live 2026-08-29: 8 runs, 12 Hops, 9 Findings, 5 Priors, 1 Concept,
+# and `db.relationshipTypes()` empty on `orion_worldview`. The footprint --
+# the journal line, the `wrote=` log, the atlas growth panel -- matched nodes
+# only, so a connection would have been invisible even once written.
+
+
+def test_the_footprint_reports_edges_alongside_nodes() -> None:
+    # The two needles are what FalkorDB would actually discriminate on: the
+    # node query binds `(n)` and the edge query binds `()-[r]->()`. A fake
+    # keyed on a looser substring would pass here whether or not the edge
+    # query is issued at all.
+    reader = _FakeReader(answers={
+        "MATCH (n) WHERE n.run_id": [{"label": "Finding", "n": 3}],
+        "MATCH ()-[r]->() WHERE r.run_id": [
+            {"label": "SUPPORTS", "n": 2}, {"label": "CONTRADICTS", "n": 1},
+        ],
+    })
+    assert read_run_footprint(reader, "abc123") == {
+        "Finding": 3, "SUPPORTS": 2, "CONTRADICTS": 1,
+    }
+
+
+def test_a_run_that_wrote_nodes_but_drew_no_edges_says_so_by_omission() -> None:
+    """The live case for every run so far: nodes present, no edge key at all --
+    NOT an edge key at zero, which would read as "tried and failed".
+
+    ASSERTS THE EDGE QUERY WAS ACTUALLY ISSUED. `_FakeReader` returns `[]` for
+    any unmatched needle, so the result assertion alone held whether or not the
+    edge read happened -- it passed against the pre-commit code. A review nit,
+    and the same shape as a mutation that no-ops."""
+    reader = _FakeReader(answers={
+        "MATCH (n) WHERE n.run_id": [{"label": "Finding", "n": 3}],
+    })
+    assert read_run_footprint(reader, "abc123") == {"Finding": 3}
+    assert any("-[r]->" in q for q in reader.queries), (
+        "the edge query was never issued; this test proves nothing without it"
+    )
+
+
+def test_an_unreadable_edge_query_makes_the_whole_footprint_unknown() -> None:
+    """Nodes-but-no-edges and nodes-with-an-unreadable-edge-query must not
+    render identically. The second is the unreadable-vs-empty conflation this
+    module refuses everywhere else, one level down."""
+
+    class _EdgesFail(_FakeReader):
+        def query(self, cypher: str):
+            if "-[r]->" in cypher:
+                raise WorldviewUnavailable("ConnectionError: nope")
+            return super().query(cypher)
+
+    reader = _EdgesFail(answers={
+        "MATCH (n) WHERE n.run_id": [{"label": "Finding", "n": 3}],
+    })
+    assert read_run_footprint(reader, "abc123") is None
+
+
+def test_the_edge_footprint_refuses_a_non_hex_run_id() -> None:
+    # Same injection guard the node query has: the run id is interpolated into
+    # Cypher, so it must never come from anywhere but the loop's own hex id.
+    with pytest.raises(ValueError):
+        run_edge_footprint_cypher("'; MATCH (n) DETACH DELETE n //")
+
+
+def test_the_edge_footprint_counts_by_type_not_in_total() -> None:
+    # CONTRADICTS is the edge that costs something to write, because it cuts
+    # against a claim Orion holds. Averaged into a total it is invisible.
+    cypher = run_edge_footprint_cypher("a1b2c3d4e5f6")
+    assert "type(r) AS label" in cypher
+    assert "r.run_id = 'a1b2c3d4e5f6'" in cypher

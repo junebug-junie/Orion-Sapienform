@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from orion.curiosity.atlas import (
+    ATLAS_EDGE_GROWTH_CYPHER,
     ATLAS_GROWTH_CYPHER,
     ATLAS_PRIORS_CYPHER,
     ATLAS_REVISIONS_CYPHER,
@@ -458,3 +459,47 @@ def test_an_iso_written_at_is_parsed_rather_than_read_as_missing() -> None:
     assert _stamp_ms(None) is None
     assert _stamp_ms("") is None
     assert _stamp_ms("not a date") is None
+
+
+# --- edges in the growth panel ----------------------------------------------
+#
+# Review deleted the `+ list(reader.query(ATLAS_EDGE_GROWTH_CYPHER))` term from
+# `read_atlas` and all 154 tests stayed green: `ATLAS_EDGE_GROWTH_CYPHER`
+# appeared nowhere in `tests/`. Half of "make an edge visible" was unguarded --
+# the half that reaches the page Juniper actually looks at.
+
+
+def test_the_growth_panel_reads_edges_as_well_as_nodes() -> None:
+    reader = _Reader(answers={
+        "MATCH (n) WHERE n.run_id IS NOT NULL": [
+            {"label": "Finding", "run_id": "r1", "n": 3},
+        ],
+        "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL": [
+            {"label": "-> SUPPORTS", "run_id": "r1", "n": 2},
+        ],
+    })
+    view = read_atlas(reader)
+    run = next(r for r in view.runs if r.run_id == "r1")
+    assert run.added == {"Finding": 3, "-> SUPPORTS": 2}
+    assert run.total_added == 5, "an edge Orion drew is part of what it wrote"
+
+
+def test_an_edge_type_named_like_a_node_label_does_not_delete_it() -> None:
+    """Both queries feed ONE fold keyed on `label`, and edge rows are appended
+    last, so an unprefixed collision silently overwrote the node count -- 4
+    Concept nodes plus 1 Concept-typed edge rendering as `1`, with the real
+    history being the half destroyed. The `-> ` prefix is the fix; this asserts
+    the prefix is actually in the query rather than assumed."""
+    assert "'-> ' + type(r)" in ATLAS_EDGE_GROWTH_CYPHER
+    reader = _Reader(answers={
+        "MATCH (n) WHERE n.run_id IS NOT NULL": [
+            {"label": "Concept", "run_id": "r1", "n": 4},
+        ],
+        "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL": [
+            {"label": "-> Concept", "run_id": "r1", "n": 1},
+        ],
+    })
+    run = next(r for r in read_atlas(reader).runs if r.run_id == "r1")
+    assert run.added["Concept"] == 4, "the node count was overwritten"
+    assert run.added["-> Concept"] == 1
+    assert run.total_added == 5

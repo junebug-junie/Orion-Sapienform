@@ -522,6 +522,26 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_INVESTIGATION_DAILY_CAP: int = Field(
         default=3, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
     )
+    # The hours, in HUB_ENDOGENOUS_OUTREACH_TZ, that the cap is spread across.
+    # The cap alone was a budget and never a pace: it frees at local midnight,
+    # so the loop spent all six of 2026-08-28's runs between 00:48 and 02:57 and
+    # then sat blocked for twenty hours. Setting these makes the gap between
+    # runs `window / cap`, with MIN_COOLDOWN_SEC as a floor.
+    # START == END disables the window and restores the previous behaviour.
+    # BOUNDED, because an out-of-range hour is a PERMANENT SILENT DEADLOCK
+    # rather than a bad schedule: `START=24, END=25` puts zero of the 24 hours
+    # inside the window, so every tick returns `outside_window` forever, logged
+    # at INFO, indistinguishable from ordinary night blocking. Curiosity would
+    # be dead with nothing saying so. `ge=-1` keeps -1 available as the disable
+    # sentinel the sibling quiet-hours keys already use. A review finding.
+    HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR: int = Field(
+        default=8, ge=-1, le=23,
+        alias="HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR",
+    )
+    HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR: int = Field(
+        default=22, ge=-1, le=23,
+        alias="HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR",
+    )
     # Budgeted from the harness's OWN ceilings, not copied from outreach.
     # Measured live 2026-08-26: outreach's 300s is far too short for an
     # investigation, because an investigation actually uses tools. The first

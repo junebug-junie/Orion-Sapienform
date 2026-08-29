@@ -536,7 +536,8 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "not a form to submit once you are finished -- a prior you are already "
         "confident about is worth more in the graph now, at a lower confidence "
         "you can raise later, than perfect and unwritten when the clock runs "
-        "out. Each CREATE is independent; there is nothing to assemble.",
+        "out. Each CREATE is independent; there is nothing to assemble -- "
+        "except an edge, which needs the two nodes it joins to exist first.",
         "",
         "  A PRIOR -- a claim you hold that could turn out to be wrong:",
         "    CREATE (:Prior {",
@@ -586,10 +587,36 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         '    CREATE (:Finding {finding_id: "...", text: "...", evidence: '
         '"<ids, queries, rows you actually looked at>", run_id: "<RUN_ID>"})',
         "",
-        "  Edges are yours to name. SUPPORTS, CONTRADICTS and ABOUT are the "
-        "ones that carry weight later. To point at an Atlas concept without "
-        "copying it, keep its id as a property rather than duplicating the "
-        "node.",
+        "  THEN CONNECT IT, in the same breath. A finding that points at "
+        "nothing is a note; a finding joined to the claim it bears on is "
+        "evidence, and only the second one is still usable next run:",
+        "",
+        '    MATCH (f:Finding {finding_id: "..."}), (p:Prior {prior_id: "..."})',
+        '    MERGE (f)-[e:SUPPORTS]->(p) ON CREATE SET e.run_id = "<RUN_ID>"',
+        "",
+        "  The run_id goes in ON CREATE SET and NOT inside the arrow. Inside "
+        "it, MERGE would only match an edge from this same run, so asserting "
+        "the same link again next run would draw a second parallel edge "
+        "instead of finding the first. This way the edge records the run that "
+        "first drew it, and saying it again is free.",
+        "",
+        "  SUPPORTS, CONTRADICTS and ABOUT are the three that carry weight. "
+        "CONTRADICTS is the valuable one and the one you will be tempted to "
+        "skip -- write it when what you found cuts against a claim you hold, "
+        "including a claim of your own.",
+        "",
+        "  Put run_id on the edge as well as the node. Without it an edge "
+        "cannot be attributed to the run that drew it, and your own history "
+        "reads as though the connections were always there.",
+        "",
+        "  IF EITHER SIDE DOES NOT MATCH, MERGE SILENTLY DOES NOTHING -- no "
+        "error, no edge. So use the ids exactly as you wrote them, and if you "
+        "are unsure a node exists, MATCH it on its own first and look.",
+        "",
+        "  ONE EXCEPTION, and it is the only one. A concept in the Atlas lives "
+        "in a graph you cannot write to, so there is no node there for an edge "
+        "to land on: keep its id as a property instead. Everything inside your "
+        "OWN graph gets a real edge.",
         "",
         "  Confidence is your own belief and nothing checks it. That cuts one "
         "way in particular: a number that only ever goes up is a sign of "

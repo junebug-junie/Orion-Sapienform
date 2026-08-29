@@ -519,6 +519,8 @@ async def startup_event():
                 tick_interval_sec=settings.HUB_CURIOSITY_INVESTIGATION_TICK_SEC,
                 min_cooldown_sec=settings.HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC,
                 daily_cap=settings.HUB_CURIOSITY_INVESTIGATION_DAILY_CAP,
+                window_start_hour=settings.HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR,
+                window_end_hour=settings.HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR,
                 timeout_sec=settings.HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC,
                 session_id=settings.HUB_CURIOSITY_INVESTIGATION_SESSION_ID,
                 crystallization_sample=settings.HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE,

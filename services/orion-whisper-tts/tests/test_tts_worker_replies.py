@@ -25,7 +25,9 @@ async def test_typed_reply_includes_metadata() -> None:
     envelope = BaseEnvelope(
         kind="tts.synthesize.request",
         source=ServiceRef(name="hub", version="0.1.0"),
-        correlation_id="cid-1",
+        # BaseEnvelope.correlation_id is a strict UUID -- the old "cid-1"
+        # placeholder stopped validating when the schema tightened.
+        correlation_id="11111111-1111-4111-8111-111111111111",
         reply_to="orion:tts:result:test",
         payload=TTSRequestPayload(
             text="hi",
@@ -62,7 +64,7 @@ async def test_legacy_reply_includes_metadata_and_mime_type() -> None:
     envelope = BaseEnvelope(
         kind="legacy.message",
         source=ServiceRef(name="hub", version="0.1.0"),
-        correlation_id="cid-legacy",
+        correlation_id="22222222-2222-4222-8222-222222222222",
         reply_to=None,
         payload={
             "text": "hi",

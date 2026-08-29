@@ -12,7 +12,7 @@ services:
     ports:
       - "${CONTEXT_EXEC_PORT:-8096}:8096"
     volumes:
-      - ../..:/repo:ro
+      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
       - ${CONTEXT_EXEC_HOST_STORAGE_ROOT:-/mnt/rlm-nvme/context-exec}:/var/lib/orion/context-exec
     environment:
       SERVICE_NAME: context-exec

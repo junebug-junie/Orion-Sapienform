@@ -1,5 +1,6 @@
 ## service to exclude from auto rebuilding
 # one service per line
+orion-whisper-tts
 orion-bus
 orion-agent-council
 

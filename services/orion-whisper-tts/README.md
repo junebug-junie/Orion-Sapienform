@@ -120,6 +120,83 @@ On startup you should see **TTS configured** logs (`backend`, `model`, `gpu`, de
 
 Mount reference voices on the host at `TTS_VOICE_PROFILE_HOST_DIR` (default `/mnt/telemetry/models/coqui/voices`) → `/models/voices`.
 
+### Running on circe (P100 lane)
+
+This service is a **single-instance** service. TTS intake dispatch is Redis
+**pub/sub** (`app/tts_worker.py`: `bus.subscribe(settings.channel_tts_intake)`),
+not a consumer group, so two running instances both receive every request,
+both synthesize, and both reply on the same reply channel — the caller keeps
+whichever answer lands first. That is the exact failure mode that already
+bit the vision-host lanes (PR #1859/#1860). **Moving this service means
+stopping the old instance, not adding a second one.**
+
+Because it is a move rather than a parallel lane, there is deliberately no
+`docker-compose.circe.yml`: the one compose file serves both hosts and the
+only host-specific value is the GPU pin, read from
+`WHISPER_TTS_GPU_DEVICE_ID`. A second compose file would duplicate ~100
+lines that then drift (this README and `.env_example` already did exactly
+that once).
+
+| host | GPUs | `WHISPER_TTS_GPU_DEVICE_ID` | card |
+| :--- | :--- | :--- | :--- |
+| athena | 1 | `0` (the default) | Tesla P4, 8GB, shared with vision-host/vision-edge |
+| circe | 7 | `4` | **Tesla P100-PCIE-16GB** |
+
+Verify the card before pinning — do not trust this table or any prior note.
+circe's inventory has changed more than once (it had six GPUs with the P100
+at index 3 as recently as 2026-08-25; as of 2026-08-29 it has seven and the
+P100 is index 4):
+
+```bash
+ssh circe@circe "nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv"
+```
+
+One-time host prep on circe (needs root; `/mnt/telemetry` is a 388G NVMe
+with real headroom, unlike `/mnt/storage-warm`, which is a directory on the
+root LV and was 91% full):
+
+```bash
+sudo mkdir -p /mnt/telemetry/models/coqui/tts /mnt/telemetry/models/coqui/voices
+sudo chown -R circe:circe /mnt/telemetry/models/coqui
+```
+
+Then stage the model cache and the reference voice from athena (~2GB; a
+copy rather than a re-download so circe gets byte-identical weights):
+
+```bash
+rsync -av --info=progress2 /mnt/telemetry/models/coqui/tts/   circe@circe:/mnt/telemetry/models/coqui/tts/
+rsync -av                  /mnt/telemetry/models/coqui/voices/ circe@circe:/mnt/telemetry/models/coqui/voices/
+```
+
+Set `WHISPER_TTS_GPU_DEVICE_ID=4` in circe's own
+`services/orion-whisper-tts/.env`, then, **from a worktree on circe**:
+
+```bash
+scripts/safe_docker_build.sh orion-whisper-tts up -d --build
+```
+
+Cut over in this order, so the window where nobody is serving TTS is a few
+seconds and rollback is one command:
+
+1. Build on circe first, with athena still serving.
+2. Stop athena: `docker stop orion-athena-whisper-tts`
+3. Start circe. Any successful synthesis is now unambiguously circe's —
+   with both up you cannot tell which instance answered.
+4. Verify (see below). To roll back, start athena's container again and
+   stop circe's.
+
+Confirm the pin landed on the intended physical card, from the **host**:
+
+```bash
+docker inspect orion-circe-whisper-tts --format '{{json .HostConfig.DeviceRequests}}'
+ssh circe@circe "nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv"
+```
+
+Do **not** confirm from a log line inside the container. Docker remaps the
+pinned card to container-local index 0, so torch always reports `cuda:0`
+whichever card it got, and a torch index that disagreed with the nvidia-smi
+slot has silently misreported the card in this repo before.
+
 ### Pre-download XTTS-v2 to the telemetry cache
 
 Coqui stores weights under `~/.local/share/tts` in the container, which maps to `/mnt/telemetry/models/coqui/tts` on the host. Run once after build (before first bus request):

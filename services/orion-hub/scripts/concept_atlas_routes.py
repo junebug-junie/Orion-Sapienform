@@ -56,6 +56,10 @@ router = APIRouter(tags=["concept-atlas"])
 # spec's explicit non-goal of no precomputed ranking job), so this is
 # computed fresh on every request rather than cached.
 _GOD_NODE_TOP_N = 5
+# orion/substrate/adapters/topic_foundry.py sets this as provenance.producer on
+# every node it emits. Unlike metadata["source"], it is a native Cypher column
+# and therefore survives rehydration -- see the "origin" comment below.
+_TOPIC_FOUNDRY_PRODUCER = "topic_foundry_adapter"
 
 _VALID_ANCHOR_SCOPES = {"orion", "juniper", "claude", "relationship", "world", "session"}
 
@@ -695,6 +699,13 @@ class _CountingSubstrateStore:
     identity-resolver reads) via ``__getattr__``.
     """
 
+    # An unbroken run of this many node-write failures is treated as the store
+    # being down rather than the nodes being bad, and the exception is allowed
+    # to propagate. Deliberately not tuned to separate "bad kind" from "dead
+    # store" by counting alone -- the successful-write counter reset is what
+    # does that. This is only a bound on how long a dead store can be retried.
+    MAX_CONSECUTIVE_NODE_FAILURES = 10
+
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.concepts_written = 0
@@ -717,6 +728,16 @@ class _CountingSubstrateStore:
         self.skipped_nodes: list[dict[str, Any]] = []
         self.skipped_edges = 0
         self._failed_node_ids: set[str] = set()
+        self._consecutive_failures = 0
+
+    @property
+    def wrote_anything(self) -> bool:
+        return bool(
+            self.concepts_written
+            or self.evidence_nodes_written
+            or self.entities_written
+            or self.edges_written
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -733,13 +754,39 @@ class _CountingSubstrateStore:
             self._inner.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
         except Exception as exc:  # noqa: BLE001 - one bad node must not cost the run its edges
             node_id = str(getattr(node, "node_id", "") or "")
-            self._failed_node_ids.add(node_id)
+            # Only a REAL id joins the skip set. An empty id would otherwise sit
+            # in it as a sentinel and match any later edge whose endpoint ref is
+            # missing, dropping that edge and blaming `endpoint_not_written`
+            # for an unrelated cause. Schema-typed SubstrateEdgeV1 refs are
+            # min_length=3 so this cannot misfire today, but the wrapper is
+            # duck-typed and a sentinel comparison is the wrong shape regardless.
+            if node_id:
+                self._failed_node_ids.add(node_id)
             self.skipped_nodes.append({"node_id": node_id, "node_kind": kind, "error": str(exc)})
+            self._consecutive_failures += 1
             logger.warning(
                 "concept_atlas_ingest_node_skipped node_id=%s node_kind=%s error=%s",
                 node_id, kind, exc,
             )
+            # RESILIENCE IS FOR A BAD NODE, NOT A DEAD STORE. Swallowing every
+            # failure turns an unreachable FalkorDB into N caught exceptions, a
+            # normally-completing apply_record, and a route that answers
+            # `available: true` with every count at zero -- strictly worse than
+            # the abort it replaced, and indistinguishable in the scheduler's
+            # tick log from "no new data". It also costs N x connect-timeout.
+            # An unbroken run of failures is a store problem, not a node
+            # problem, so past this many the exception is allowed to propagate
+            # to the route's _unavailable("substrate_store_write_failed") as
+            # before. A single unwritable kind resets the counter on the next
+            # success and never reaches it.
+            if self._consecutive_failures >= self.MAX_CONSECUTIVE_NODE_FAILURES:
+                logger.error(
+                    "concept_atlas_ingest_aborted_consecutive_failures count=%d last_error=%s",
+                    self._consecutive_failures, exc,
+                )
+                raise
             return
+        self._consecutive_failures = 0
         if kind == "concept":
             self.concepts_written += 1
         elif kind == "evidence":
@@ -1296,9 +1343,33 @@ async def concept_atlas_network(
             # both fields lets the UI render those honestly (e.g. muted /
             # unlabeled) instead of indistinguishable from a real induced or
             # golden-seeded concept.
-            "origin": "topic_foundry" if n.metadata.get("source") == "orion-topic-foundry" else "concept",
+            # Derived from provenance.producer, NOT metadata["source"].
+            # `source` is not in falkor_codec's closed metadata allowlist, so
+            # it does not survive a rehydrate (forced at most every
+            # snapshot_force_refresh_ceiling_sec) -- under the live
+            # SUBSTRATE_STORE_BACKEND=falkor every node read back therefore had
+            # source=None and every one of these evaluated to "concept".
+            # provenance_producer IS a native column and does survive:
+            # confirmed live 2026-08-29, 43 concepts carry
+            # producer='topic_foundry_adapter'. Same fact, from the field that
+            # is actually persisted, rather than growing the allowlist.
+            "origin": (
+                "topic_foundry"
+                if getattr(n.provenance, "producer", None) == _TOPIC_FOUNDRY_PRODUCER
+                or (isinstance(n.metadata, dict) and n.metadata.get("source") == "orion-topic-foundry")
+                else "concept"
+            ),
+            # Same hydration trap as "origin" above: gating on
+            # metadata["source"] made this permanently False under the live
+            # falkor backend, so a genuinely unlabeled "topic_<id>" cluster
+            # rendered as if it were a real concept name -- the exact
+            # dishonest-label case this field was added to prevent.
             "synthetic_label": bool(
-                n.metadata.get("source") == "orion-topic-foundry" and str(n.label or "").startswith("topic_")
+                (
+                    getattr(n.provenance, "producer", None) == _TOPIC_FOUNDRY_PRODUCER
+                    or (isinstance(n.metadata, dict) and n.metadata.get("source") == "orion-topic-foundry")
+                )
+                and str(n.label or "").startswith("topic_")
             ),
         }
         for n in nodes
@@ -1618,6 +1689,51 @@ def _ingest_topic_foundry_run(
     # triggered trigger, not a hot path, and the route already runs as a sync
     # def in FastAPI's threadpool (see this function's own docstring), so the
     # added synchronous LLM round trips do not block the event loop.
+    # Second, independent guard on the same failure the consecutive-failure
+    # breaker bounds. The breaker decides how long a dead store is retried;
+    # this decides how the result is REPORTED, and either alone leaves a hole:
+    # a store failing most-but-not-all writes never trips the breaker, yet
+    # reporting it `available: true` is the "success response hiding a
+    # fallback" this route has been bitten by before.
+    #
+    # The line is break-even -- more nodes failed than landed -- not a tuned
+    # ratio. It is the point past which the run did not produce a usable graph,
+    # and it is what separates the two cases this patch has to tell apart:
+    #
+    #   one unwritable KIND   many concepts/evidence land, a few entities do
+    #                         not -> written > skipped -> available, with the
+    #                         skips surfaced. Reporting this unavailable would
+    #                         throw away the edges the resilience exists to save.
+    #   a broken STORE        few or no writes land -> skipped >= written ->
+    #                         unavailable, exactly as before this patch.
+    #
+    # Reason stays `substrate_store_write_failed`: from a caller's side the
+    # store write did fail, and the pre-existing contract for that case (real
+    # partial counts, never a lie of all zeros) is preserved rather than
+    # replaced with a new reason string nothing knows.
+    written_nodes = (
+        counting_store.concepts_written
+        + counting_store.evidence_nodes_written
+        + counting_store.entities_written
+    )
+    if counting_store.skipped_nodes and len(counting_store.skipped_nodes) > written_nodes:
+        logger.error(
+            "%s_ingest_topic_foundry_mostly_failed run_id=%s written=%d skipped=%d kinds=%s",
+            log_prefix, run_id, written_nodes, len(counting_store.skipped_nodes),
+            sorted({str(i.get("node_kind")) for i in counting_store.skipped_nodes}),
+        )
+        return _unavailable(
+            "substrate_store_write_failed",
+            str((counting_store.skipped_nodes[0] or {}).get("error") or ""),
+            run_id=run_id,
+            concepts_written=counting_store.concepts_written,
+            evidence_nodes_written=counting_store.evidence_nodes_written,
+            entities_written=counting_store.entities_written,
+            edges_written=counting_store.edges_written,
+            skipped_nodes=len(counting_store.skipped_nodes),
+            skipped_edges=counting_store.skipped_edges,
+        )
+
     if counting_store.skipped_nodes or counting_store.skipped_edges:
         logger.warning(
             "%s_ingest_topic_foundry_degraded run_id=%s skipped_nodes=%d skipped_edges=%d kinds=%s",

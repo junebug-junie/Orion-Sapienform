@@ -137,6 +137,12 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # decode_entity_node falls back to "unknown"/[] for real stored values.
     "entity_type",
     "aliases_json",
+    # topic_id has had a complete encode/decode pair since the topic-foundry
+    # work (_topic_foundry_properties_from_metadata /
+    # _topic_foundry_metadata_from_row) and was simply never listed here, so
+    # the decoder could only ever see NULL and drop it. Every hydrated node
+    # therefore lost its cluster id -- and the atlas colours nodes by it.
+    "topic_id",
     "anchor_scope",
     "subject_ref",
     "promotion_state",
@@ -404,7 +410,7 @@ class FalkorSubstrateStore:
             except Exception:
                 logger.warning("falkor_substrate_legacy_node_invalid")
                 continue
-            if getattr(node, "node_kind", None) not in ("concept", "evidence"):
+            if getattr(node, "node_kind", None) not in DURABLE_NODE_KINDS:
                 logger.warning(
                     "falkor_substrate_legacy_node_skipped node_kind=%s node_id=%s",
                     getattr(node, "node_kind", None),

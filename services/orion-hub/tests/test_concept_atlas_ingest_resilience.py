@@ -185,16 +185,30 @@ def test_entity_nodes_now_reach_the_store_at_all():
     assert cs.entities_written == 1
 
 
-def test_a_node_with_no_id_still_records_a_skip():
+def test_a_node_with_no_id_records_a_skip_without_poisoning_the_set():
     """Defensive: the skip path must not itself raise on a malformed node, or
-    the resilience mechanism reintroduces the abort it exists to prevent."""
+    the resilience mechanism reintroduces the abort it exists to prevent.
+
+    And an empty id must NOT join _failed_node_ids: it would sit there as a
+    sentinel matching any later edge whose endpoint ref is missing, dropping
+    that edge and blaming `endpoint_not_written` for an unrelated cause."""
     class _Bad:
         node_kind = "entity"
 
-    cs = _counting(_RefusingStore())
+    class _EdgeWithNoRefs:
+        source = _Ref("")
+        target = _Ref("")
+        predicate = "supports"
+
+    inner = _RefusingStore()
+    cs = _counting(inner)
     cs.upsert_node(identity_key=None, node=_Bad())
     assert len(cs.skipped_nodes) == 1
     assert cs.skipped_nodes[0]["node_id"] == ""
+
+    cs.upsert_edge(identity_key="x", edge=_EdgeWithNoRefs())
+    assert cs.skipped_edges == 0, "an unrelated edge must not be blamed on the id-less skip"
+    assert cs.edges_written == 1
 
 
 def test_getattr_passthrough_still_works():
@@ -203,3 +217,73 @@ def test_getattr_passthrough_still_works():
     inner = _RefusingStore()
     inner.snapshot = lambda: "snap"
     assert _counting(inner).snapshot() == "snap"
+
+
+# --- a dead store must not read as success ---------------------------------
+
+
+class _DeadStore:
+    """Every write fails -- FalkorDB unreachable."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    def upsert_node(self, *, identity_key=None, node=None, skip_metadata_keys=None):
+        self.attempts += 1
+        raise ConnectionError("Error 111 connecting to 127.0.0.1:6380. Connection refused.")
+
+    def upsert_edge(self, *, identity_key, edge):
+        raise ConnectionError("Error 111 connecting to 127.0.0.1:6380. Connection refused.")
+
+
+def test_an_unbroken_run_of_failures_stops_being_swallowed():
+    """Swallowing every failure turns an unreachable store into N caught
+    exceptions, a normally-completing apply_record, and a route answering
+    `available: true` with every count at zero -- strictly worse than the abort
+    it replaced. Past the bound the exception propagates as before."""
+    _ensure_hub_scripts_import_path()
+    from scripts.concept_atlas_routes import _CountingSubstrateStore
+
+    inner = _DeadStore()
+    cs = _CountingSubstrateStore(inner)
+
+    with pytest.raises(ConnectionError):
+        for i in range(_CountingSubstrateStore.MAX_CONSECUTIVE_NODE_FAILURES + 5):
+            cs.upsert_node(identity_key=f"c{i}", node=_Node(f"c{i}", "concept"))
+
+    assert inner.attempts == _CountingSubstrateStore.MAX_CONSECUTIVE_NODE_FAILURES, (
+        "must stop retrying a dead store, not pay N x connect-timeout"
+    )
+
+
+def test_a_success_resets_the_failure_run():
+    """A single unwritable kind interleaved with successes must never trip the
+    breaker, however many such nodes a run contains."""
+    _ensure_hub_scripts_import_path()
+    from scripts.concept_atlas_routes import _CountingSubstrateStore
+
+    cs = _counting(_RefusingStore())
+    for i in range(_CountingSubstrateStore.MAX_CONSECUTIVE_NODE_FAILURES * 3):
+        cs.upsert_node(identity_key=f"e{i}", node=_Node(f"e{i}", "entity"))   # refused
+        cs.upsert_node(identity_key=f"c{i}", node=_Node(f"c{i}", "concept"))  # ok
+
+    assert cs.concepts_written == _CountingSubstrateStore.MAX_CONSECUTIVE_NODE_FAILURES * 3
+    assert len(cs.skipped_nodes) == _CountingSubstrateStore.MAX_CONSECUTIVE_NODE_FAILURES * 3
+
+
+def test_wrote_anything_is_false_only_when_nothing_landed():
+    inner = _RefusingStore()
+    cs = _counting(inner)
+    cs.upsert_node(identity_key="e1", node=_Node("e1", "entity"))  # refused
+    assert cs.wrote_anything is False
+
+    cs.upsert_node(identity_key="c1", node=_Node("c1", "concept"))
+    assert cs.wrote_anything is True
+
+
+def test_wrote_anything_counts_an_edge_only_run():
+    """A run that merged existing nodes and wrote only edges still produced
+    something; reporting it as "wrote nothing" would be wrong."""
+    cs = _counting(_RefusingStore())
+    cs.upsert_edge(identity_key="co", edge=_Edge("a", "b", predicate="co_occurs_with"))
+    assert cs.wrote_anything is True

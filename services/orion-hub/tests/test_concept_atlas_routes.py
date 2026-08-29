@@ -909,3 +909,88 @@ def test_scheduler_startup_tick_defaults_on() -> None:
 
     field = Settings.model_fields["SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP"]
     assert field.default is True
+
+
+# --- origin / synthetic_label must survive hydration -------------------------
+#
+# Both fields gated on metadata["source"] == "orion-topic-foundry". `source` is
+# not in falkor_codec's closed metadata allowlist, so under the live
+# SUBSTRATE_STORE_BACKEND=falkor it does not survive a rehydrate (forced at
+# most every snapshot_force_refresh_ceiling_sec). Every node read back had
+# source=None, so `origin` was permanently "concept" and `synthetic_label`
+# permanently False -- the latter meaning a genuinely unlabeled "topic_<id>"
+# cluster rendered as if it were a real concept name, the exact dishonest
+# label that field exists to prevent. provenance.producer IS a native column
+# and does survive: confirmed live 2026-08-29, 43 concepts carry
+# producer='topic_foundry_adapter'.
+
+
+def _hydrated_topic_foundry_node(node_id, label):
+    """A node as it comes back from Falkor: producer intact, metadata empty."""
+    from orion.core.schemas.cognitive_substrate import (
+        ConceptNodeV1,
+        SubstrateActivationV1,
+        SubstrateProvenanceV1,
+        SubstrateSignalBundleV1,
+    )
+
+    return ConceptNodeV1(
+        node_id=node_id,
+        label=label,
+        anchor_scope="world",
+        promotion_state="proposed",
+        temporal=_temporal(),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="topic_foundry.run_topic",
+            source_channel="test",
+            producer="topic_foundry_adapter",
+        ),
+        signals=SubstrateSignalBundleV1(
+            confidence=0.7, salience=0.5, activation=SubstrateActivationV1(activation=0.4)
+        ),
+        metadata={},  # `source` did not survive hydration
+    )
+
+
+def test_origin_survives_hydration_via_provenance_producer(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="c:1", node=_hydrated_topic_foundry_node("c-1", "Home lab"))
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    body = client.get("/api/substrate/concepts/network").json()
+    node = next(n for n in body["nodes"] if n["id"] == "c-1")
+    assert node["origin"] == "topic_foundry", "metadata['source'] does not survive Falkor hydration"
+
+
+def test_synthetic_label_survives_hydration_via_provenance_producer(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="c:2", node=_hydrated_topic_foundry_node("c-2", "topic_17"))
+    store.upsert_node(identity_key="c:3", node=_hydrated_topic_foundry_node("c-3", "Home lab"))
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    body = client.get("/api/substrate/concepts/network").json()
+    by_id = {n["id"]: n for n in body["nodes"]}
+    assert by_id["c-2"]["synthetic_label"] is True, "a bare topic_<id> must not read as a real name"
+    assert by_id["c-3"]["synthetic_label"] is False, "a real label must not be flagged synthetic"
+
+
+def test_a_non_topic_foundry_node_is_not_claimed_by_the_producer_check(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Widening the check must not relabel every node as topic-foundry."""
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: _build_store())
+    body = client.get("/api/substrate/concepts/network").json()
+    assert {n["origin"] for n in body["nodes"]} == {"concept"}

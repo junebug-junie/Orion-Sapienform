@@ -1598,3 +1598,71 @@ def test_entity_columns_are_hydrated_back():
 
     assert "entity_type" in NATIVE_NODE_RETURN_FIELDS
     assert "aliases_json" in NATIVE_NODE_RETURN_FIELDS
+
+
+def test_topic_id_survives_hydration():
+    """topic_id has had a complete encode/decode pair since the topic-foundry
+    work and was simply never listed in NATIVE_NODE_RETURN_FIELDS, so the
+    decoder could only ever see NULL. Every hydrated node lost its cluster id
+    -- and the atlas colours nodes by exactly that field."""
+    from orion.substrate.falkor_codec import (
+        _topic_foundry_metadata_from_row,
+        encode_node_properties,
+    )
+    from orion.substrate.falkor_store import NATIVE_NODE_RETURN_FIELDS
+
+    assert "topic_id" in NATIVE_NODE_RETURN_FIELDS
+
+    node = _concept_node_with_topic_id(7)
+    row = encode_node_properties(node, identity_key="concept:t7")
+    assert row["topic_id"] == 7
+    # what hydration would actually see, given the column list
+    hydrated_row = {k: v for k, v in row.items() if k in NATIVE_NODE_RETURN_FIELDS}
+    assert _topic_foundry_metadata_from_row(hydrated_row) == {"topic_id": 7}
+
+
+def _concept_node_with_topic_id(topic_id):
+    from orion.core.schemas.cognitive_substrate import ConceptNodeV1
+
+    return ConceptNodeV1(
+        node_id=f"concept-topic-{topic_id}",
+        label=f"topic_{topic_id}",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="topic_foundry.run_topic",
+            source_channel="test",
+            producer="topic_foundry_adapter",
+        ),
+        metadata={"topic_id": topic_id, "run_id": "run-1"},
+    )
+
+
+def test_no_hardcoded_durable_kind_tuple_survives_anywhere_in_the_module():
+    """The earlier guard test asserted TWO call sites and passed while a THIRD
+    -- _migrate_legacy_payload_nodes -- still carried its own hardcoded copy,
+    permanently skipping legacy payload rows of a kind the store had just
+    learned to persist. Asserting the literal is absent finds any copy,
+    including one added later, which is what "cannot drift" has to mean."""
+    from pathlib import Path
+
+    import orion.substrate.falkor_store as store_mod
+
+    source = Path(store_mod.__file__).read_text()
+    assert '("concept", "evidence")' not in source
+    assert '("concept", "evidence", "entity")' not in source, (
+        "even the correct tuple must not be re-hardcoded; import DURABLE_NODE_KINDS"
+    )
+    assert source.count("DURABLE_NODE_KINDS") >= 3  # import + both guards
+
+
+def test_legacy_payload_migration_accepts_every_durable_kind():
+    import inspect
+
+    from orion.substrate.falkor_codec import DURABLE_NODE_KINDS
+    import orion.substrate.falkor_store as store_mod
+
+    src = inspect.getsource(store_mod.FalkorSubstrateStore._migrate_legacy_payload_nodes)
+    assert "DURABLE_NODE_KINDS" in src
+    assert "entity" in DURABLE_NODE_KINDS

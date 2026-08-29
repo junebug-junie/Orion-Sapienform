@@ -497,3 +497,56 @@ def test_post_leg_sends_no_transcript(monkeypatch):
 
     asyncio.run(_run())
     assert seen["subtitle"] is None
+
+
+def test_typed_turn_never_forwards_the_message_as_a_spoken_subtitle(monkeypatch):
+    """Scope "all" fires on typed turns too. The subtitle is rendered to the VL
+    model as "the person said this around the time these frames were captured",
+    so forwarding a typed message would assert she spoke words she silently
+    typed. The frames are still read; the words are dropped.
+    """
+    seen = {}
+
+    def _fake_call(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
+        seen["subtitle"] = subtitle
+        return {"result": {"ok": True, "raw_response": "calm"}, "capture": {}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake_call)
+
+    async def _run():
+        task = chat_turn_affect.fire(
+            settings=_settings(AFFECT_CHAT_TURN_SCOPE="all"),
+            trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-typed",
+            is_voice_turn=False,
+            subtitle="I'm fine.",
+        )
+        assert task is not None, "scope=all should still fire on a typed turn"
+        await task
+
+    asyncio.run(_run())
+    assert seen["subtitle"] is None
+
+
+def test_voice_turn_still_forwards_the_subtitle(monkeypatch):
+    """Guard the fix above from over-reaching: the voice path must be unchanged."""
+    seen = {}
+
+    def _fake_call(base_url, timeout_sec, trigger, *, chat_correlation_id=None, subtitle=None):
+        seen["subtitle"] = subtitle
+        return {"result": {"ok": True, "raw_response": "calm"}, "capture": {}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake_call)
+
+    async def _run():
+        task = chat_turn_affect.fire(
+            settings=_settings(AFFECT_CHAT_TURN_SCOPE="all"),
+            trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-voice",
+            is_voice_turn=True,
+            subtitle="I'm feeling really tired.",
+        )
+        await task
+
+    asyncio.run(_run())
+    assert seen["subtitle"] == "I'm feeling really tired."

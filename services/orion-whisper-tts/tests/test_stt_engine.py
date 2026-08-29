@@ -251,3 +251,20 @@ def test_partial_silence_keeps_the_spoken_half():
         "segments": [_seg(" Hey Orion.", 0.03), _seg(" Thanks for watching.", 0.88)],
     }
     assert _filter(result, 0.6)[0] == "Hey Orion."
+
+
+def test_segments_present_but_all_unparseable_keeps_the_raw_text():
+    """Same regression as orion-affectgpt-worker's copy of this filter. Here it
+    is worse: returning "" mutes a live voice turn, and Hub reports "No speech
+    detected in recording" for audio that transcribed fine.
+    """
+    from app.stt import _keep_only_speech_segments
+
+    result = {
+        "text": "I'm feeling really tired.",
+        "segments": ["not-a-dict", 42, None],
+    }
+    text, meta = _keep_only_speech_segments(result, 0.6)
+    assert text == "I'm feeling really tired."
+    assert meta["no_speech_filter"] == "unavailable"
+    assert meta["reason"] == "no_parseable_segments"

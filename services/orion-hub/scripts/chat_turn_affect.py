@@ -232,6 +232,13 @@ def fire(
     """
     if not should_fire(settings, is_voice_turn=is_voice_turn):
         return None
+    if not is_voice_turn:
+        # Scope "all" fires on typed turns too, but a typed message was never
+        # spoken. Passing it through would render "the person said this around
+        # the time these frames were captured: ..." to a VL model reading her
+        # face, about text she silently typed. The frames are still worth
+        # reading on a text turn; the words are not hers to attribute to speech.
+        subtitle = None
     base = str(getattr(settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", "") or "").strip().rstrip("/")
     if not base:
         # Same honest-degradation contract the manual route already has

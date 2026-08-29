@@ -271,3 +271,20 @@ def test_non_numeric_no_speech_prob_is_treated_as_speech():
     keeping what the model transcribed, since the amplitude gate already ran."""
     result = {"text": " hi", "segments": [{"text": " hi", "no_speech_prob": "bad"}]}
     assert keep_only_speech_segments(result, 0.6)[0] == "hi"
+
+
+def test_segments_present_but_all_unparseable_keeps_the_raw_text():
+    """Regression: a non-empty `segments` list whose entries are not dicts (a
+    Whisper variant returning objects, a serialization change) used to fall
+    through the loop, collect no probs, and return "" -- silently discarding a
+    real transcript while `meta` claimed the filter had run. The gate would be
+    the last thing anyone suspected, because its own telemetry said it worked.
+    """
+    result = {
+        "text": "I'm feeling really tired.",
+        "segments": ["not-a-dict", 42, None],
+    }
+    text, meta = keep_only_speech_segments(result, 0.6)
+    assert text == "I'm feeling really tired."
+    assert meta["no_speech_filter"] == "unavailable"
+    assert meta["reason"] == "no_parseable_segments"

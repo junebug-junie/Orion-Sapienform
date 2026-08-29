@@ -145,6 +145,18 @@ def keep_only_speech_segments(
         if prob <= max_no_speech_prob:
             kept.append(str(seg.get("text") or ""))
 
+    if not probs:
+        # Every entry was present but unparseable (a Whisper variant returning
+        # objects rather than dicts, a serialization change). Falling through
+        # would return "" and silently discard a real transcript while the meta
+        # claimed the filter had run and evaluated zero segments -- the gate
+        # would be the last thing anyone suspected. Same contract as the
+        # no-segments branch above: absent evidence is not evidence of silence.
+        return raw_text, {
+            "no_speech_filter": "unavailable",
+            "reason": "no_parseable_segments",
+        }
+
     meta: dict[str, Any] = {
         "no_speech_filter": "applied",
         "segments_total": len(probs),

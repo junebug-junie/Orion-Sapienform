@@ -391,6 +391,16 @@ def _run_training(
         insert_segments(segment_records)
 
         run.stage = "trained"
+        # Assigned BEFORE the enrichment step, not after it. Enrichment can
+        # take minutes, and app/services/run_recovery.py's startup reaper
+        # closes a restart-stranded run as `complete` on the strength of it
+        # having segments -- so a row that reaches enrichment with
+        # artifact_paths={} would be recovered as a complete run whose
+        # topics_summary artifact does not exist, and _load_topic_labels
+        # would then serve every topic label as None. A complete run must
+        # never be able to point at nothing.
+        run.stats = stats
+        run.artifact_paths = artifact_paths
         if run.specs.enrichment.enable_enrichment:
             run.stage = "enriching"
             update_run(run)

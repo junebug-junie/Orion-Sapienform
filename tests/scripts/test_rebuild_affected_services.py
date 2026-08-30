@@ -62,9 +62,38 @@ def test_orion_curiosity_import_closure() -> None:
 
 def test_orion_bus_contract_broadcast() -> None:
     payload = _resolve(["orion/bus/channels.yaml"], ROOT)
-    assert "orion-hub" in payload["services"]
-    assert "orion-actions" in payload["services"]
-    assert len(payload["services"]) > 10
+    assert payload["services"] == []
+    assert "orion/bus/channels.yaml" in payload["skipped"]
+
+
+def test_orion_graph_not_in_import_allowlist() -> None:
+    payload = _resolve(["orion/graph/analytics.py"], ROOT)
+    assert payload["services"] == []
+    assert "not in orion_import_packages" in payload["reasons"]["orion/graph/analytics.py"]
+
+
+def test_exclude_services_respected(mini_repo: Path) -> None:
+    excludes = ROOT / "mesh-utilities" / "common" / "exclude_services.txt"
+    (mini_repo / "mesh-utilities" / "common").mkdir(parents=True)
+    (mini_repo / "mesh-utilities" / "common" / "exclude_services.txt").write_text(
+        "orion-actions\n", encoding="utf-8"
+    )
+    payload = _resolve(["services/orion-actions/app/main.py"], mini_repo)
+    assert payload["services"] == []
+
+
+def test_actual_pull_scope() -> None:
+    """Atlas graph pull: direct service touches only (no bus blast, no graph fan-out)."""
+    paths = [
+        "orion/bus/channels.yaml",
+        "orion/graph/analytics.py",
+        "services/orion-embodiment/app/worker.py",
+        "services/orion-hub/scripts/concept_atlas_routes.py",
+        "services/orion-social-memory/app/main.py",
+        "services/orion-ai-town/scripts/generate_descriptions.py",
+    ]
+    payload = _resolve(paths, ROOT)
+    assert payload["services"] == ["orion-embodiment", "orion-hub", "orion-social-memory"]
 
 
 def test_root_tests_skipped() -> None:

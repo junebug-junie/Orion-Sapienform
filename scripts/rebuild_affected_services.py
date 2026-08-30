@@ -222,6 +222,11 @@ def resolve_affected_services(
     skip_exact = set(mapping.get("skip_exact") or [])
     script_services: dict[str, list[str]] = mapping.get("script_services") or {}
     orion_extra: dict[str, list[str]] = mapping.get("orion_package_extra_services") or {}
+    orion_import_packages_raw = mapping.get("orion_import_packages")
+    if orion_import_packages_raw is None:
+        orion_import_allowlist: set[str] | None = None
+    else:
+        orion_import_allowlist = set(orion_import_packages_raw)
 
     affected: set[str] = set()
     skipped: list[str] = []
@@ -242,6 +247,12 @@ def resolve_affected_services(
                 reasons[path] = f"under {prefix.rstrip('/')} (no auto rebuild)"
                 matched_skip = True
                 break
+        if not matched_skip and path.startswith(f"{_ORION_DIR}/"):
+            parts = path.split("/")
+            if len(parts) >= 3 and parts[2] == "tests":
+                skipped.append(path)
+                reasons[path] = "orion package tests (no auto rebuild)"
+                matched_skip = True
         if matched_skip:
             continue
 
@@ -255,7 +266,7 @@ def resolve_affected_services(
                 reasons[path] = f"unknown service directory {service!r}"
             continue
 
-        if any(_path_matches_prefix(path, p) for p in contract_prefixes):
+        if contract_prefixes and any(_path_matches_prefix(path, p) for p in contract_prefixes):
             for svc in orion_copy_services:
                 affected.add(svc)
             reasons[path] = "contract path → all services with COPY orion"
@@ -263,6 +274,12 @@ def resolve_affected_services(
 
         orion_pkg = _orion_package_from_path(path)
         if orion_pkg:
+            if orion_import_allowlist is not None and orion_pkg not in orion_import_allowlist:
+                skipped.append(path)
+                reasons[path] = (
+                    f"orion/{orion_pkg}/ not in orion_import_packages (direct services/ changes only)"
+                )
+                continue
             for svc in _direct_and_one_hop_service_consumers(orion_pkg, import_index):
                 affected.add(svc)
             for svc in orion_extra.get(orion_pkg, []):

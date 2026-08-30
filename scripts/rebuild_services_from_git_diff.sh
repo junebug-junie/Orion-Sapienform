@@ -82,6 +82,9 @@ if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     exit 0
 fi
 
+echo "rebuild_services_from_git_diff.sh: affected services:"
+printf '  - %s\n' $SERVICES
+
 if [ "$LIST_ONLY" = "1" ]; then
     printf '%s\n' "$SERVICES"
     exit 0

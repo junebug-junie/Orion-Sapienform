@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     social_memory_commitment_max_open: int = Field(3, alias="SOCIAL_MEMORY_COMMITMENT_MAX_OPEN")
     social_memory_style_adaptation_enabled: bool = Field(True, alias="SOCIAL_MEMORY_STYLE_ADAPTATION_ENABLED")
     social_memory_style_confidence_floor: float = Field(0.35, alias="SOCIAL_MEMORY_STYLE_CONFIDENCE_FLOOR")
+    social_memory_ingest_token: str = Field("", alias="SOCIAL_MEMORY_INGEST_TOKEN")
 
 
 settings = Settings()

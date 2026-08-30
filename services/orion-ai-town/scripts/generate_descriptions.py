@@ -30,16 +30,7 @@ CONSTANTS_TS = _SERVICE / "upstream" / "convex" / "constants.ts"
 GENERATED = _SERVICE / "cards" / "generated"
 
 # Fixed NPC order (matches the seeded roster / sprite table).
-NPC_ORDER = [
-    "mara_vale",
-    "nico_sable",
-    "elian_cross",
-    "juno_park",
-    "tessa_quinn",
-    "vale_moreno",
-    "sofia_bell",
-    "cam_lin",
-]
+NPC_ORDER = ["mara_vale", "nico_sable", "sofia_bell", "cam_lin"]
 
 
 def _collapse(text: str | None) -> str:
@@ -47,18 +38,26 @@ def _collapse(text: str | None) -> str:
 
 
 def compose_identity(card: dict) -> str:
-    """Rich, third-person identity injected into the agent's prompts."""
+    """Job-first identity: role, style, today's loop, objects, one-sentence pressure."""
+    name = str(card.get("name") or "They").strip()
+    role = _collapse(card.get("role"))
+    style = _collapse(card.get("conversation_style"))
+    loop = card.get("daily_loop") or []
+    today = _collapse(loop[0]) if loop else ""
     parts = [
+        f"{name} is the town's {role}." if role else "",
+        style,
+        f"Today: {today}." if today else "",
         _collapse(card.get("public_description")),
-        _collapse(card.get("deeper_bio")),
-        _collapse(card.get("orion_dynamic")),
     ]
     pressure = _collapse(card.get("private_pressure"))
     if pressure:
-        parts.append(f"Privately: {pressure}")
-    signature = _collapse(card.get("signature_line"))
-    if signature:
-        parts.append(f"A line they often use: {signature}")
+        first = pressure.split(".")[0].strip()
+        parts.append(first + "." if first and not first.endswith(".") else first)
+    dynamic = _collapse(card.get("orion_dynamic"))
+    if dynamic:
+        first = dynamic.split(".")[0].strip()
+        parts.append(first + "." if first and not first.endswith(".") else first)
     return " ".join(p for p in parts if p)
 
 

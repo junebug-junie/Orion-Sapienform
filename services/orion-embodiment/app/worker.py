@@ -40,6 +40,7 @@ from orion.schemas.embodiment import (
     EmbodimentOutcomeV1,
     WorldPerceptionV1,
 )
+from orion.town_cast import ORION_DISPLAY_NAME, slug_for_name, thread_id_for
 
 logger = logging.getLogger("orion.embodiment.worker")
 
@@ -460,7 +461,9 @@ class EmbodimentWorker:
         participant_kind = "human" if other.get("is_human") else "npc"
         participant_name = str(other.get("name") or participant_id)
         correlation_id = str(uuid4())
-        external_participant = {
+        # chat_history may keep the Convex player_id; social-memory-facing
+        # participant_id is the town_cast slug when known.
+        chat_external_participant = {
             "participant_id": participant_id,
             "participant_name": participant_name,
             "participant_kind": participant_kind,
@@ -469,14 +472,23 @@ class EmbodimentWorker:
         # grouping genuinely should distinguish separate conversation instances.
         chat_client_meta = {
             "external_room": {"platform": "aitown", "room_id": convo_id},
-            "external_participant": external_participant,
+            "external_participant": chat_external_participant,
         }
-        # orion-social-memory's room_id must be the stable venue constant, not
-        # convo_id -- see SOCIAL_MEMORY_ROOM_ID's docstring.
-        social_client_meta = {
-            "external_room": {"platform": "aitown", "room_id": SOCIAL_MEMORY_ROOM_ID},
-            "external_participant": external_participant,
-        }
+        slug = slug_for_name(participant_name)
+        social_client_meta = None
+        if slug is not None:
+            social_room = {"platform": "aitown", "room_id": SOCIAL_MEMORY_ROOM_ID}
+            thread_id = thread_id_for(ORION_DISPLAY_NAME, participant_name)
+            if thread_id:
+                social_room["thread_id"] = thread_id
+            social_client_meta = {
+                "external_room": social_room,
+                "external_participant": {
+                    "participant_id": slug,
+                    "participant_name": participant_name,
+                    "participant_kind": participant_kind,
+                },
+            }
         try:
             chat_turn = ChatHistoryTurnV1(
                 correlation_id=correlation_id,
@@ -496,29 +508,30 @@ class EmbodimentWorker:
             )
         except Exception:
             logger.exception("embodiment_chat_history_turn_publish_failed convo=%s", convo_id)
-        try:
-            social_turn = SocialRoomTurnV1(
-                correlation_id=correlation_id,
-                session_id=f"aitown:{convo_id}",
-                source=self._settings.service_name,
-                prompt=prompt_text,
-                response=response_text,
-                text=f"{participant_name}: {prompt_text}\nOrion: {response_text}".strip(),
-                tags=["aitown"],
-                client_meta=social_client_meta,
-            )
-            social_env = BaseEnvelope(
-                kind=SOCIAL_TURN_KIND, source=self._service_ref(),
-                correlation_id=correlation_id, payload=social_turn.model_dump(mode="json"),
-            )
-            await publish_with_reconnect(
-                self._bus, SOCIAL_TURN_CHANNEL, social_env, log_label="embodiment_social_turn"
-            )
-        except Exception:
-            logger.exception("embodiment_social_turn_publish_failed convo=%s", convo_id)
+        if social_client_meta is not None:
+            try:
+                social_turn = SocialRoomTurnV1(
+                    correlation_id=correlation_id,
+                    session_id=f"aitown:{convo_id}",
+                    source=self._settings.service_name,
+                    prompt=prompt_text,
+                    response=response_text,
+                    text=f"{participant_name}: {prompt_text}\nOrion: {response_text}".strip(),
+                    tags=["aitown"],
+                    client_meta=social_client_meta,
+                )
+                social_env = BaseEnvelope(
+                    kind=SOCIAL_TURN_KIND, source=self._service_ref(),
+                    correlation_id=correlation_id, payload=social_turn.model_dump(mode="json"),
+                )
+                await publish_with_reconnect(
+                    self._bus, SOCIAL_TURN_CHANNEL, social_env, log_label="embodiment_social_turn"
+                )
+            except Exception:
+                logger.exception("embodiment_social_turn_publish_failed convo=%s", convo_id)
         return correlation_id
 
-    def _fetch_participant_continuity(self, participant_id: str, convo_id: str) -> Optional[str]:
+    def _fetch_participant_continuity(self, participant_name: str, convo_id: str) -> Optional[str]:
         """Read-back half of conversation memory: the partner's already-synthesized
         orion-social-memory relationship summary, as a short natural-language string
         for the speech prompt's metadata (not the user_message itself -- see
@@ -530,16 +543,19 @@ class EmbodimentWorker:
 
         Queries the fixed SOCIAL_MEMORY_ROOM_ID, not convo_id (only used here for
         logging context) -- must match whatever room_id _publish_conversation_memory
-        writes under, or this would always find nothing.
+        writes under, or this would always find nothing. ``participant_id`` in the
+        query is the town_cast slug for ``participant_name``; unknown names skip
+        HTTP (fail-open).
         """
         if not getattr(self._settings, "conversation_memory_enabled", False):
             return None
         base = str(getattr(self._settings, "social_memory_url", "") or "").rstrip("/")
-        if not base or not participant_id:
+        slug = slug_for_name(participant_name)
+        if not base or slug is None:
             return None
         timeout = float(getattr(self._settings, "social_memory_timeout_sec", 3.0))
         params = urllib.parse.urlencode({
-            "platform": "aitown", "room_id": SOCIAL_MEMORY_ROOM_ID, "participant_id": participant_id,
+            "platform": "aitown", "room_id": SOCIAL_MEMORY_ROOM_ID, "participant_id": slug,
         })
         try:
             req = urllib.request.Request(f"{base}/summary?{params}", method="GET")
@@ -948,12 +964,12 @@ class EmbodimentWorker:
 
         prompt = build_speech_prompt(perception, own)
         other = convo.get("other") or {}
-        partner_id = str(other.get("player_id") or "").strip()
+        partner_name = str(other.get("name") or "").strip()
         participant_continuity = None
-        if partner_id:
+        if partner_name:
             try:
                 participant_continuity = await asyncio.to_thread(
-                    self._fetch_participant_continuity, partner_id, convo_id
+                    self._fetch_participant_continuity, partner_name, convo_id
                 )
             except Exception:
                 logger.debug("embodiment_participant_continuity_fetch_failed convo=%s", convo_id, exc_info=True)

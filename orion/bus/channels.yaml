@@ -1289,7 +1289,7 @@ channels:
     kind: "event"
     schema_id: "SocialRoomTurnV1"
     message_kind: "social.turn.v1"
-    producer_services: ["orion-hub", "orion-embodiment"]
+    producer_services: ["orion-hub", "orion-embodiment", "orion-social-memory"]
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-03-21"

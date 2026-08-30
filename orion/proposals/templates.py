@@ -16,6 +16,8 @@ ProposalKind = Literal[
     # cast_proposal_kind()'s cast() is a static-only no-op, so the omission
     # was never a runtime bug, only a stale type hint.
     "maintain",
+    # 2026-08-30: first outward kind -- see orion/schemas/proposal_frame.py.
+    "express",
 ]
 
 TargetKind = Literal[

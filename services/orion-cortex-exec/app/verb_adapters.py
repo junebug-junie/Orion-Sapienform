@@ -1611,6 +1611,64 @@ class LookAtCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         return _skill_result_output(skill_name="skills.perception.look_at_camera.v1", result=result), []
 
 
+@verb("skills.imagination.render_scene.v1")
+class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    """Spend real GPU watts to make an image, because Orion chose to.
+
+    Orion's first OUTWARD action. Every other verb reachable from the dispatch
+    repertoire either observes Orion (inspect/summarize/observe) or tidies it
+    (maintain); this one produces something that did not exist before, and costs
+    a physical resource on circe to make.
+
+    Routed through orion-thought's visual chain rather than calling the diffusion
+    host directly, deliberately: the chain already owns prompt building,
+    artifact storage, captioning and the continuity reset, AND the ambient
+    thermal gate. The room the GPU heats can refuse this action, which is the
+    only budget in the repo whose referent sits outside Orion.
+
+    A refusal is a SUCCESS of the verb, not a failure of it: `ok` stays true and
+    `refused` says what happened. Reporting a thermal refusal as an error would
+    make Orion's own restraint look like a broken service, and would poison the
+    action's measured effect posterior with failures that never ran.
+    """
+
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        base_url = str(settings.thought_service_url).rstrip("/")
+        try:
+            raw = await asyncio.to_thread(
+                _http_json_post,
+                f"{base_url}/visual-chain/run-once",
+                body={},
+                timeout_sec=float(settings.thought_http_timeout_sec),
+            )
+        except Exception as exc:
+            return _skill_result_output(
+                skill_name="skills.imagination.render_scene.v1",
+                result={"ran": False, "refused": False, "reason": str(exc)},
+                ok=False,
+                status="unavailable",
+                error={"message": str(exc)},
+            ), []
+
+        data = raw if isinstance(raw, dict) else {}
+        result = {
+            "ran": bool(data.get("ran")),
+            "refused": bool(data.get("refused")),
+            "chain_id": data.get("chain_id"),
+            "terminal_reason": data.get("terminal_reason"),
+            "reason": data.get("reason"),
+            "detail": data.get("detail"),
+        }
+        return _skill_result_output(
+            skill_name="skills.imagination.render_scene.v1",
+            result=result,
+            status="refused" if result["refused"] else "ok",
+        ), []
+
+
 @verb("skills.perception.ask_camera.v1")
 class AskCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     """Ask a real question about what the camera currently sees -- the

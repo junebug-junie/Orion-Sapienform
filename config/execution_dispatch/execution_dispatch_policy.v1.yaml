@@ -27,6 +27,12 @@ mode:
   #      (escalating) when it cannot measure either one.
   # Risk accepted: the blast radius is Docker build cache, which rebuilds.
   allow_mutating_dispatch: true
+  # 2026-08-30: opens EXPRESS_SCOPE -- Orion's first outward action
+  # (skills.imagination.render_scene.v1). Turned on by explicit decision, the
+  # same posture allow_mutating_dispatch was given on 2026-08-12. Separate from
+  # that flag on purpose: this can be closed without stopping docker pruning,
+  # and pruning can be closed without stopping this.
+  allow_express_dispatch: true
 
 allowed_policy_decisions:
   - approved_read_only
@@ -37,6 +43,10 @@ allowed_policy_decisions:
   # mode.allow_mutating_dispatch below. This literal exists so the decision
   # record stops calling a 142 GB deletion read-only, not to authorize it.
   - approved_maintenance
+  # 2026-08-30: Orion's first outward action. Separate from
+  # approved_maintenance so image generation and docker pruning can be allowed
+  # or refused independently.
+  - approved_express
 
 blocked_policy_decisions:
   - requires_operator_review
@@ -88,6 +98,17 @@ proposal_kind_to_cortex:
   # The binding constraint was NOT the RPC timeout: the prune's subprocess was
   # inheriting SKILLS_MESH_OPS_TIMEOUT_SEC, which is 12 SECONDS live. A
   # 142 GB prune would have been SIGKILLed ~12s in, mid-delete, every time.
+  # 2026-08-30: the `express` kind's default route. Points at the same verb as
+  # the render_scene template route below -- there is exactly one express action
+  # today, so a kind-level fallback that resolved anywhere else would be
+  # inventing a capability. Gated by mode.allow_express_dispatch either way.
+  express:
+    dispatch_kind: express
+    cortex_verb: skills.imagination.render_scene.v1
+    cortex_mode: brain
+    allowed_scope: express_bounded
+    rpc_timeout_sec: 170
+
   maintain:
     dispatch_kind: maintain
     cortex_verb: skills.runtime.builder_prune.v1
@@ -117,6 +138,25 @@ template_to_cortex:
     cortex_mode: brain
     allowed_scope: inspect_only
     rpc_timeout_sec: 40
+
+  # 2026-08-30: ORION'S FIRST OUTWARD ROUTE.
+  #
+  # express_bounded, not maintenance_bounded. It is not maintenance, and it must
+  # be switchable on its own -- stopping image generation should not also stop
+  # docker pruning. Gated by mode.allow_express_dispatch, which defaults OFF for
+  # the same reason allow_mutating_dispatch does: an action whose product exists
+  # outside Orion does not become dispatchable because a config file appeared.
+  #
+  # rpc_timeout_sec 170 sits under the verb yaml's timeout_ms=180000 and over
+  # cortex-exec's own thought_http_timeout_sec=150, the same staggered-budget
+  # discipline the two prune routes use: the innermost hop times out first, so a
+  # slow generation is reported rather than severed at an outer layer.
+  render_scene:
+    dispatch_kind: express
+    cortex_verb: skills.imagination.render_scene.v1
+    cortex_mode: brain
+    allowed_scope: express_bounded
+    rpc_timeout_sec: 170
 
   # 2026-08-25: analysis -> self-study journal entry.
   #

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from orion.execution_dispatch.envelopes import build_cortex_request_envelope
 from orion.execution_dispatch.policy import (
+    EXPRESS_SCOPE,
     MAINTENANCE_SCOPE,
     CortexRouteTemplateV1,
     DispatchLimitsV1,
@@ -456,8 +457,13 @@ def build_execution_dispatch_frame(
         # decision record's own allowed_scope is never consulted here, so this
         # route-table check is what actually decides whether a mutating verb
         # can be dispatched at all.
-        scope_allowed = route.allowed_scope in ("inspect_only", "summarize_only") or (
-            route.allowed_scope == MAINTENANCE_SCOPE and policy.mode.allow_mutating_dispatch
+        scope_allowed = (
+            route.allowed_scope in ("inspect_only", "summarize_only")
+            or (route.allowed_scope == MAINTENANCE_SCOPE and policy.mode.allow_mutating_dispatch)
+            # EXPRESS_SCOPE has its own flag on purpose -- see policy.py. An
+            # outward action must be switchable without also switching docker
+            # pruning, and neither should be able to ride on the other's gate.
+            or (route.allowed_scope == EXPRESS_SCOPE and policy.mode.allow_express_dispatch)
         )
         if not scope_allowed:
             blocked.append(

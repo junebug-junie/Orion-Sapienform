@@ -379,6 +379,20 @@ class Settings(BaseSettings):
         "http://orion-athena-vision-window:8000", alias="VISION_WINDOW_SERVICE_URL"
     )
     vision_window_http_timeout_sec: float = Field(5.0, alias="VISION_WINDOW_HTTP_TIMEOUT_SEC")
+    # skills.imagination.render_scene.v1 -- Orion's first OUTWARD action, run
+    # through orion-thought's visual chain so it inherits that chain's prompt
+    # building, storage, captioning and its ambient thermal gate rather than
+    # calling the diffusion host directly. Verified live 2026-08-30 that
+    # orion-athena-thought:7155 resolves and accepts from inside cortex-exec.
+    #
+    # The timeout must exceed the chain's own generation budget (~50-56s on
+    # FLUX.1-schnell) plus captioning, and sit UNDER the verb yaml's
+    # timeout_ms=180000, so a slow generation is reported by the verb rather
+    # than severed here.
+    thought_service_url: str = Field(
+        "http://orion-athena-thought:7155", alias="ORION_THOUGHT_SERVICE_URL"
+    )
+    thought_http_timeout_sec: float = Field(150.0, alias="ORION_THOUGHT_HTTP_TIMEOUT_SEC")
     # skills.perception.ask_camera.v1 -- the "direct vision-host RPC" the
     # comment above named as out of scope for look_at_camera's first cut.
     # Posts task_type=vqa straight to vision-host's own HTTP endpoint,

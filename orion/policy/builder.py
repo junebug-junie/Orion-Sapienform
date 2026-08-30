@@ -64,6 +64,10 @@ def build_policy_decision_frame(
     approved_for_execution = [d for d in decisions if d.decision == "approved_for_execution"]
     approved_read_only = [d for d in decisions if d.decision == "approved_read_only"]
     approved_maintenance = [d for d in decisions if d.decision == "approved_maintenance"]
+    # Must be collected AND added to approved_decisions below: an approval that
+    # is not in that list never reaches execution dispatch, which is a silent
+    # drop between two layers rather than a refusal anyone can see.
+    approved_express = [d for d in decisions if d.decision == "approved_express"]
     review = [d for d in decisions if d.decision == "requires_operator_review"]
     deferred = [d for d in decisions if d.decision == "deferred"]
     rejected = [d for d in decisions if d.decision == "rejected"]
@@ -79,7 +83,7 @@ def build_policy_decision_frame(
         source_field_tick_id=proposal_frame.source_field_tick_id,
         policy_id=policy.policy_id,
         decisions=decisions,
-        approved_decisions=approved_for_execution + approved_read_only + approved_maintenance,
+        approved_decisions=approved_for_execution + approved_read_only + approved_maintenance + approved_express,
         review_required_decisions=review,
         deferred_decisions=deferred,
         rejected_decisions=rejected,

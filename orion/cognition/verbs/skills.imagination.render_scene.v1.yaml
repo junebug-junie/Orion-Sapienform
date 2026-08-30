@@ -1,0 +1,45 @@
+name: skills.imagination.render_scene.v1
+label: Skills — Render a Scene
+description: >
+  Spend real GPU watts on circe to make an image, by running one visual chain in
+  orion-thought (generate -> store -> observe -> persist).
+
+  Orion's FIRST outward action. Every other verb in the dispatch repertoire
+  either observes Orion or tidies it; this one produces something that did not
+  exist before and costs a physical resource to make. It is deliberately routed
+  through orion-thought's existing chain rather than calling the diffusion host
+  directly, so it inherits the prompt-building, storage, captioning, continuity
+  reset AND the ambient thermal gate -- the room the GPU heats can refuse it.
+
+  Until now this chain fired on a 600s timer. A cron is not a decision. Behind
+  this verb the same work has to win motor-seconds against everything else Orion
+  could do, on expected information per second, and can be refused.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: true
+requires_memory: false
+# The chain's own generation budget is ~50-56s on FLUX.1-schnell (see
+# orion-thought settings' own comment), plus captioning. 180s leaves real
+# headroom without letting a wedged call hold a dispatch slot indefinitely.
+timeout_ms: 180000
+max_recursion_depth: 0
+services: []
+input_schema:
+  type: object
+  properties: {}
+  additionalProperties: false
+output_schema:
+  type: object
+  properties:
+    ran: {type: boolean}
+    refused: {type: boolean}
+    chain_id: {type: [string, "null"]}
+    terminal_reason: {type: [string, "null"]}
+    reason: {type: [string, "null"]}
+plan:
+  - name: skills.imagination.render_scene.v1
+    description: Run one visual chain in orion-thought.
+    order: 0
+    services: []

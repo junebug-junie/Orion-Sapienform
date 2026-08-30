@@ -12,9 +12,16 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_ROOT))
 
-REPO_ROOT = SERVICE_ROOT.parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# In the CONTAINER, SERVICE_ROOT is /app and has no grandparent, so the old
+# unconditional `SERVICE_ROOT.parents[1]` raised IndexError on import -- this
+# script died on line 15 for every documented invocation
+# (`docker compose exec whisper-tts python3 scripts/smoke_xtts.py`, README).
+# Only add a repo root when one actually exists, i.e. when running from a
+# checkout rather than from inside the image.
+if len(SERVICE_ROOT.parents) >= 2:
+    REPO_ROOT = SERVICE_ROOT.parents[1]
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
 
 from app.settings import Settings  # noqa: E402
 from app.tts import TTSEngine  # noqa: E402

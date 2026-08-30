@@ -86,6 +86,26 @@ def resolve_synthesis_plan(
         resolved = _resolve_speaker_wav_path(speaker_wav, cfg.tts_voice_profile_dir)
         speaker_wav = str(resolved)
         speaker_wav_used = True
+    elif speaker:
+        # An explicit per-request `options.speaker` outranks the HOST DEFAULT
+        # reference wav. Before this, `speaker` was popped from options above
+        # and then silently discarded whenever TTS_DEFAULT_SPEAKER_WAV was set
+        # (which is the live config on every host), because the kwargs builder
+        # below prefers speaker_wav. The caller asked for a named voice and got
+        # the cloned one, with no error and nothing in the metadata to say so.
+        #
+        # Consequence found live 2026-08-30: with a reference voice configured
+        # there was NO way to request a built-in XTTS speaker over the bus at
+        # all, so a voice-quality A/B against the built-in speakers could not
+        # be run through the normal path.
+        #
+        # Deliberately narrow. This branch can regress nothing, because the
+        # value it now honours was previously discarded -- no caller can depend
+        # on it being ignored. `voice_id` is intentionally NOT moved above the
+        # host default in the same patch: it is already routed below and Hub
+        # sends it, so re-ranking it would change live behaviour rather than
+        # un-break dead behaviour.
+        pass
     elif cfg.tts_default_speaker_wav:
         resolved = _resolve_speaker_wav_path(
             cfg.tts_default_speaker_wav,

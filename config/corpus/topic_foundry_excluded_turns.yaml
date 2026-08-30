@@ -1,0 +1,60 @@
+# Chat turns excluded from topic-foundry's training corpus.
+#
+# WHY THIS IS A LIST OF IDS AND NOT A FILTER RULE.
+#
+# The problem it solves is semantic, not structural. AI Town material reaches
+# the main corpus through Orion's OWN turns -- he brings something from AI Town
+# into a real conversation with Juniper, her reply gets logged, and
+# topic-foundry induces a concept from it. Verified 2026-08-30: every layer of
+# separation is intact and none of it helps.
+#
+#   FALKORDB_AITOWN_SUBSTRATE_GRAPH = orion_substrate_aitown   (correct)
+#   aitown dataset source_table     = aitown_chat_history_log  (correct)
+#   'light folding' rows: 14 in aitown_chat_history_log, 2 in chat_history_log
+#
+# The two rows in the main corpus carry NO marker distinguishing them -- same
+# `source` (hub_ws), same `session_id` (orion_journal), same client_meta and
+# spark_meta shape as every other real turn. There is nothing to key a rule on.
+# A keyword filter would also miss them: neither row contains the string "AI
+# Town". One of them is Juniper asking *"what light folding thing?"* -- i.e.
+# her not recognising material Orion had imported.
+#
+# So this is an explicit, operator-curated list, in the same doctrine as
+# scripts/purge_aitown_polluted_substrate_concepts.py, whose own docstring
+# says a newly-discovered polluted run "needs its own provenance trace, not a
+# rerun of this script with a loosened filter". Classification belongs with
+# Juniper, who can tell; the code's job is to apply it reliably and to make
+# what it removed visible.
+#
+# WHY IT MATTERS AT THIS SIZE. The main corpus is 273 rows. These two -- 0.7%
+# of it -- produced a concept that reached the TOP THREE by betweenness in the
+# whole atlas, was re-induced across five separate runs, and accumulated 38
+# concept edges and 22 entity edges. A tiny corpus makes stray turns dominant.
+#
+# TO ADD AN ENTRY: append the chat_history_log.id with a reason and the date.
+# TO REMOVE ONE: delete it and re-run training; nothing is destroyed, these
+# rows stay in Postgres untouched. This only decides what topic-foundry LEARNS
+# from, never what is stored.
+
+excluded_turn_ids:
+  - id: "324c0b06-36d6-4362-a547-29711c239857"
+    reason: "AI Town material imported into real chat; clustered into topic 'Light folding concept'"
+    excluded_on: "2026-08-30"
+    identified_by: "juniper"
+  - id: "de4a86e2-aaee-4bdc-a859-48b88867d48d"
+    reason: "Juniper asking 'what light folding thing?' -- her reply to the imported AI Town material"
+    excluded_on: "2026-08-30"
+    identified_by: "juniper"
+
+# Candidates NOT excluded, listed so the decision is visible rather than
+# silently made. These six turns mention AI Town explicitly, but they are
+# Juniper and Orion TALKING ABOUT AI Town as a project -- which is real
+# Orion/Juniper conversation and arguably belongs in the corpus. Excluding
+# them is a judgement call, not a bug fix, so it is left to an operator.
+#
+#   2026-07-24  "quick check: aitown disabled, confirming harness runs clean"
+#   2026-07-29  "eek, can you try again? I just changed a setting."
+#   2026-07-31  "how are things going over at AI Town?"
+#   2026-07-31  "I'm asking if you have any memories from AI Town."
+#   2026-08-30  "Got AI Town back online. I'm going to make updates..."
+#   2026-08-30  "Mostly sharpening and giving them more continuity between turns."

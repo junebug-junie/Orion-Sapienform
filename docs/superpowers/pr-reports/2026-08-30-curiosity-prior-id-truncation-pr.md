@@ -127,6 +127,81 @@ the prompt and reading what it actually renders would have shown it.
 The `:PriorRevision` carrying `prior_id: "curation confidence=0.75"` was filed
 in that same report as an unrelated pre-existing defect. It is this bug.
 
+## Review findings fixed
+
+Eight findings. All eight fixed. Every one was about a surface the fix should
+have covered and did not — the reviewer found no defect in the change itself.
+
+- **Finding: the fix created a new instance of the bug it fixes.** Printing
+  `crystallization_id` hands Orion a citeable id for a Postgres row that is a
+  node in neither graph, while the prompt's exception paragraph named the
+  Atlas as the *only* property-instead-of-edge case. Orion could now MERGE
+  onto a `:Crystallization` that does not exist — the same silent no-op,
+  relocated onto the surface this PR opened.
+  - Fix: the paragraph now names `crystallization_id` and `decision_id` as
+    Postgres rows, property-only, "never in a MATCH".
+  - Evidence: mutation reverting the whole paragraph → RED.
+
+- **Finding: `RECENT_SETTLED_CYPHER` never returned `prior_id`,** and the
+  settled list printed none — four lines above "Nothing stops you reopening
+  one", which is a `MATCH (p:Prior {prior_id: "..."}) SET`. Same defect class,
+  same function, left unfixed by the first pass.
+  - Root cause of the miss: my adversarial probe passed a fake id into the
+    `claim` slot of a `(claim, status)` tuple and read it back out of the
+    rendered claim, so the surface cleared a check it had never been subject
+    to. The second false-positive probe of this session.
+  - Fix: the query returns the id, the tuple carries it, the list prints it.
+
+- **Finding: `RelationCard.preview` was left out.** Relations are the other
+  menu Orion picks from and the prompt asks for `evidence: "<ids, queries,
+  rows you actually looked at>"`. It offered no id in the resolvable case.
+  I had scoped it out on a grep for `decision_id` in the prompt, which the
+  general wording does not contain.
+  - Fix: prints `decision_id`.
+
+- **Finding: `prior_id:` now appears in two visually identical forms** — the
+  menu label and the CREATE template's `"<something unique>"` placeholder.
+  Given the failure was "a string that resembles an identifier", that is not
+  a detail.
+  - Fix: the instruction names all three id labels and explicitly warns off
+    the placeholder. Mutation removing that warning → RED.
+
+- **Finding: the instruction is emitted on the empty-graph path** where no
+  list is printed. Reworded as a legend ("`prior_id:` under a claim") that
+  does not assert a list exists; `crystallization_id` and `decision_id` are
+  printed on that path regardless.
+
+- **Finding: crystallizations got the id but no prompt line** connecting it to
+  the `formed_from` property that justified the change. Covered by the same
+  rewrite.
+
+- **Finding: `test_the_preview_never_offers_a_shortened_id_as_the_id` was
+  narrower than its own docstring** — it asserted only `_LONG_ID[:8]`, so a
+  suffix or hash prefix put back in the bracket would pass.
+  - Fix: asserts every prefix and suffix from 4 chars up. Mutation using
+    `prior_id[-8:]` → RED.
+
+- **Finding: the label read `formed from:` while the property is
+  `formed_from`.** Fixed. This one had no test at all — caught by mutation
+  after the fix, not by the review that suggested it.
+
+## Mutation testing, after review
+
+9 mutations, all RED. Two came back GREEN on the first attempt:
+
+- `formed_from` label — a genuinely weak spot. I changed the label on review
+  advice and pinned nothing. Test added.
+- the exception paragraph — my **mutation** was ineffective, not the test
+  weak: it replaced only the paragraph's first line and left every asserted
+  string in place. Re-run against the whole paragraph → RED.
+
+## Observed, not fixed
+
+`_priors_section` returns early when there is neither a live nor a stale prior
+(`kickoff_prompt.py:132`), so a graph holding **only** closed priors never
+renders the settled list — and cannot be told it has claims it could reopen.
+Pre-existing, out of scope, recorded in the test that tripped over it.
+
 ## Restart required
 
 Hub bakes `orion/` into its image:

@@ -379,11 +379,14 @@ def test_recently_settled_reads_closed_priors_from_orions_own_graph() -> None:
     # "p.status IN ['refuted'" is a substring of LIVE_PRIORS_CYPHER's own
     # `NOT p.status IN [...]` and of COUNTS_CYPHER, so it answered all three.
     reader = _FakeReader(answers={"ORDER BY p.last_tested_at": [
-        {"claim": "the vision tier is on demand", "status": "refuted"},
-        {"claim": "", "status": "supported"},
+        {"claim": "the vision tier is on demand", "status": "refuted",
+         "prior_id": "vision_tier_on_demand_0f1e2d3c4b5a"},
+        {"claim": "", "status": "supported", "prior_id": "dropped_no_claim"},
     ]})
     view = read_snapshot(reader, sample=8, stale_after=3)
-    assert view.recently_settled == [("the vision tier is on demand", "refuted")]
+    assert view.recently_settled == [
+        ("the vision tier is on demand", "refuted", "vision_tier_on_demand_0f1e2d3c4b5a")
+    ]
 
 
 def test_live_and_settled_reads_are_actually_different_queries() -> None:
@@ -765,11 +768,11 @@ def test_the_settled_read_does_not_also_answer_the_live_read(caplog) -> None:
     back as priors too and `build_prior` dropped them -- a green test that had
     stopped isolating the thing it named."""
     reader = _FakeReader(answers={"ORDER BY p.last_tested_at": [
-        {"claim": "a closed claim", "status": "refuted"},
+        {"claim": "a closed claim", "status": "refuted", "prior_id": "closed_1a2b3c"},
     ]})
     with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
         view = read_snapshot(reader, sample=8, stale_after=3)
-    assert view.recently_settled == [("a closed claim", "refuted")]
+    assert view.recently_settled == [("a closed claim", "refuted", "closed_1a2b3c")]
     assert view.live_priors == []
     assert "curiosity_worldview_unreadable_priors" not in caplog.text
 
@@ -1122,6 +1125,21 @@ def _prior(prior_id: str = _LONG_ID, **over) -> Prior:
     return Prior(**base)
 
 
+def test_the_labels_match_the_property_names_they_fill() -> None:
+    """`formed_from`, not "formed from".
+
+    These labelled lines are load-bearing now -- they are where Orion is told
+    to read an id from. An earlier run scraped `prior_id: "curation
+    confidence=0.75"` off this very block, so a label that does not match the
+    property name it fills is the same near-miss one step removed. Caught by a
+    mutation, not by review: the label was changed on advice and nothing
+    pinned it.
+    """
+    preview = _prior(formed_from="a crystallization").preview()
+    assert "formed_from: a crystallization" in preview
+    assert "formed from:" not in preview
+
+
 def test_the_preview_carries_the_whole_prior_id() -> None:
     """A shortened id is not a shorter id, it is a different string. MERGE
     binds by exact match or it binds to nothing, silently."""
@@ -1139,7 +1157,13 @@ def test_the_preview_never_offers_a_shortened_id_as_the_id() -> None:
     token at all.
     """
     bracket = _prior().preview().split("]")[0]
-    assert _LONG_ID[:8] not in bracket
+    # ASSERTED AGAINST THE WHOLE ID, not just its first 8 characters. The
+    # earlier form only checked `_LONG_ID[:8]`, so it would have passed for
+    # `prior_id[-8:]`, a hash prefix, or any other derived short token put back
+    # in the bracket -- narrower than the contract the docstring states.
+    for n in range(4, len(_LONG_ID) + 1):
+        assert _LONG_ID[:n] not in bracket, f"a {n}-char prefix is in the bracket"
+        assert _LONG_ID[-n:] not in bracket, f"a {n}-char suffix is in the bracket"
     assert "confidence=" in bracket, "the bracket should still carry the numbers"
 
 
@@ -1173,4 +1197,50 @@ def test_the_prompt_says_where_the_prior_id_comes_from() -> None:
     from orion.curiosity.worldview import WorldviewSnapshot
 
     text = _prompt(view=WorldviewSnapshot(live_priors=[_prior()], live_total=1))
-    assert "`prior_id:` LINE" in text
+    assert "EVERY ID YOU ARE ASKED FOR IS PRINTED ON THE MENU" in text
+    # AND it must warn off the CREATE template's placeholder, which is printed
+    # at the same indent under the same `prior_id:` label a few lines up. The
+    # bug being fixed was a string that RESEMBLED an identifier, so a second
+    # id-shaped thing in the prompt is not a detail.
+    assert "<something unique>" in text, "the placeholder is still in the prompt"
+    assert "one is for ids you are CREATING" in text
+
+
+def test_a_settled_prior_can_be_reopened_by_the_id_it_is_shown_with() -> None:
+    """The prompt says "nothing stops you reopening one", and reopening is
+    `MATCH (p:Prior {prior_id: "..."}) SET ...` -- an exact-string bind.
+
+    `RECENT_SETTLED_CYPHER` did not select the id and the list did not print
+    one, so a run that took that invitation matched an invented string and
+    silently no-opped. This survived the first pass of the truncation fix
+    because the probe that cleared it passed a fake id into the `claim` slot
+    of a (claim, status) tuple and read it back out of the rendered claim.
+    """
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    assert "p.prior_id AS prior_id" in RECENT_SETTLED_CYPHER
+
+    settled_id = "vision_tier_on_demand_0f1e2d3c4b5a"
+    # A live prior is required for the settled list to render at all --
+    # `_priors_section` returns early when there is neither a live nor a stale
+    # one (kickoff_prompt.py:132), so a graph holding ONLY closed priors never
+    # sees this list. Pre-existing and out of scope here; noted in the PR
+    # report rather than silently worked around.
+    text = _prompt(view=WorldviewSnapshot(
+        live_priors=[_prior()],
+        live_total=1,
+        recently_settled=[("the vision tier is on demand", "refuted", settled_id)],
+        closed_total=1,
+    ))
+    assert settled_id in text
+
+
+def test_the_ids_that_are_not_nodes_are_named_as_such() -> None:
+    """A `crystallization_id` and a `decision_id` are Postgres rows. Printing
+    them (which this change does, so Orion can cite them) hands Orion two new
+    id-shaped strings that no MATCH can ever bind -- so the prompt has to say
+    so, or the fix relocates the silent-no-op onto the surface it just opened.
+    """
+    text = _prompt()
+    assert "crystallization_id` and a `decision_id` are Postgres rows" in text
+    assert "never in a MATCH" in text

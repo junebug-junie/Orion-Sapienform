@@ -100,7 +100,17 @@ class RelationCard:
         confidence = f" ({self.confidence:.2f})" if self.confidence is not None else ""
         left = _clip(self.candidate_text) or f"[{self.candidate_id} — not kept]"
         right = _clip(self.target_text) or "[no target recorded]"
-        return f"{left}\n      --{self.relation}{confidence}-->  {right}"
+        # `decision_id` for the same reason `CrystallizationCard` prints its
+        # own: relations are one of the two menus Orion picks from, the prompt
+        # asks for `evidence: "<ids, queries, rows you actually looked at>"`,
+        # and this card offered no id at all in the resolvable case --
+        # `candidate_id` appeared only in the "not kept" fallback. A run that
+        # picked a relation had nothing to cite and invented a label, which is
+        # what every live `formed_from` value turned out to be.
+        return (
+            f"{left}\n      --{self.relation}{confidence}-->  {right}"
+            f"\n      decision_id: {self.decision_id}"
+        )
 
 
 @dataclass

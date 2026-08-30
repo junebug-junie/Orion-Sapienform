@@ -365,8 +365,8 @@ def test_the_prompt_still_says_to_use_a_property_for_an_ATLAS_concept() -> None:
     to land on. It must stay, and it must be scoped to the Atlas rather than
     reading as general advice against edges."""
     prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
-    assert "keep its id as a property" in prompt
-    assert "ONE EXCEPTION" in prompt
+    assert "A concept in the Atlas lives in a graph you cannot write to" in prompt
+    assert "never in a MATCH" in prompt
 
 
 # --- the id has to be usable, not decorative --------------------------------
@@ -398,3 +398,16 @@ def test_the_prompt_carries_the_full_id_of_every_concept_it_offers() -> None:
     cid = "9d8c7b6a-5e4f-4321-8fed-cba098765432"
     material = _material(approved_rows=[_crystallization(cid, subject="a subject")])
     assert cid in build_kickoff_prompt(material)
+
+
+def test_the_relation_menu_offers_its_decision_id() -> None:
+    """Relations are the other menu Orion picks from, and the prompt asks for
+    `evidence: "<ids, queries, rows you actually looked at>"`. This card
+    offered no id at all in the resolvable case -- `candidate_id` appeared
+    only in the "not kept" fallback -- so a run that picked a relation had
+    nothing to cite. Every live `formed_from` value turned out to be an
+    invented label, for exactly this reason on the concept side."""
+    material = _material(relation_rows=[_relation("d1")])
+    preview = material.relations[0].preview()
+    assert "decision_id: d1" in preview
+    assert "d1" in build_kickoff_prompt(material), "rendered but dropped assembling the prompt"

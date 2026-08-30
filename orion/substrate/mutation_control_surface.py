@@ -39,7 +39,16 @@ class RuntimeControlSurfaceStore:
 
     def __post_init__(self) -> None:
         self._memory = {}
-        self.postgres_url = self.postgres_url or _resolve_postgres_url()
+        # An explicitly-passed sql_db_path is a deliberate isolation request and
+        # must win over an ambient env Postgres URL. It did not, and the result is
+        # visible in production: `substrate_runtime_control_surface` holds a row
+        # written by actor "scheduler_seed" -- a string that exists nowhere but a
+        # pytest fixture -- with 4,925 updates on it. Test runs that passed
+        # sql_db_path for isolation still resolved DATABASE_URL from the ambient
+        # environment and wrote Orion's live routing threshold instead.
+        explicit_sqlite_only = bool(self.sql_db_path) and not self.postgres_url
+        if not explicit_sqlite_only:
+            self.postgres_url = self.postgres_url or _resolve_postgres_url()
         self.sql_db_path = self.sql_db_path or _resolve_sqlite_path()
         if self.postgres_url:
             try:

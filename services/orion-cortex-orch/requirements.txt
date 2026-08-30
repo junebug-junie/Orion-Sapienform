@@ -10,6 +10,11 @@ orjson>=3.10.0
 jinja2==3.1.6
 loguru>=0.7
 spacy==3.8.13
+# Required by orion/substrate/mutation_control_surface.py, which decision_router.py
+# uses to read routing.chat_reflective_lane_threshold. Without it the store catches
+# ImportError and falls back to a per-process in-memory dict -- silently, with the
+# Postgres URL correctly configured. Pinned to match orion-hub, the writer.
+SQLAlchemy==2.0.43
 psycopg2-binary==2.9.9
 asyncpg==0.29.0
 httpx>=0.27.0,<0.28.0

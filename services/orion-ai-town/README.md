@@ -216,7 +216,7 @@ minutes on a large table set.
 
 ## Cast cards (source of truth)
 
-The full character set — the 8 NPCs plus **Juniper Feld** (human) and **Orion** (external join) — lives as authored cards in `cards/town_cards.yaml`. This is the single source of truth for identities.
+The live character set — **Mara Vale**, **Nico Sable**, **Sofia Bell**, and **Cam Lin**, plus **Juniper Feld** (human) and **Orion** (external join) — lives as authored cards in `cards/town_cards.yaml`. This is the single source of truth for identities. Retired cards (Juno Park, Tessa Quinn, Vale Moreno, Dr. Elian Cross) are archived at `cards/archived/2026-08-29-retired-cast.yaml` — do not delete them.
 
 Regenerate the AI Town artifacts from the cards with the deterministic generator (run from repo root):
 
@@ -233,7 +233,7 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 ## Orion embodiment
 
-`patches/orion-character.patch` seeds the fresh 8-NPC town cast in AI Town's `Descriptions`: Mara Vale, Nico Sable, Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno, Sofia Bell, and Cam Lin (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and her rich join description in `convex/world.ts`).
+`patches/orion-character.patch` seeds the four live NPCs in AI Town's `Descriptions`: Mara Vale, Nico Sable, Sofia Bell, and Cam Lin (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and her rich join description in `convex/world.ts`). A world wipe is still required after recasting (`testing:wipeAllTables` then `init`) — see Fresh game / reset below.
 
 > Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast.
 
@@ -246,7 +246,7 @@ cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh
 cd upstream && npx convex dev --once            # redeploy Convex functions
 npx convex run testing:stop
 npx convex run testing:wipeAllTables            # internalMutation; wipes all world/memory tables
-npx convex run init                             # seeds the 8 NPCs from Descriptions
+npx convex run init                             # seeds the 4 NPCs from Descriptions
 npx convex run testing:resume
 # re-bootstrap Orion's external body:
 cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write

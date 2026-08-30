@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
 import yaml
 
 _SERVICE = Path(__file__).resolve().parents[1]
@@ -12,6 +13,8 @@ _CARDS = _SERVICE / "cards" / "town_cards.yaml"
 _spec = importlib.util.spec_from_file_location("gen_descriptions", _GEN)
 gen = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gen)
+
+_BANNED_BAIT = ("lighting", "glow", "shadows", "echoes")
 
 
 def _cards():
@@ -24,12 +27,62 @@ def test_cards_have_all_expected_ids():
     assert {"juniper_feld", "orion"}.issubset(ids)
 
 
-def test_compose_identity_is_rich_and_collapsed():
+def test_npc_order_is_the_live_four():
+    assert gen.NPC_ORDER == ["mara_vale", "nico_sable", "sofia_bell", "cam_lin"]
+
+
+def test_compose_identity_uses_job_fields_not_signature():
     by = {c["id"]: c for c in _cards()["characters"]}
     ident = gen.compose_identity(by["mara_vale"])
-    assert len(ident) > 400  # rich, not a one-liner
-    assert "\n" not in ident  # whitespace collapsed
-    assert "description of your logs" in ident  # signature line folded in
+    assert "\n" not in ident
+    assert "systems cartographer" in ident.lower()
+    assert "Today:" in ident
+    assert "diagrams" in ident.lower() or "maps" in ident.lower()
+    assert "description of your logs" not in ident.lower()
+    for bait in _BANNED_BAIT:
+        assert bait not in ident.lower()
+
+
+def test_live_identities_have_no_light_bait():
+    by = {c["id"]: c for c in _cards()["characters"]}
+    for cid in gen.NPC_ORDER:
+        ident = gen.compose_identity(by[cid]).lower()
+        for bait in _BANNED_BAIT:
+            assert bait not in ident, f"{cid} identity contains {bait}"
+
+
+def test_plans_come_from_daily_loop():
+    cards = _cards()
+    by = {c["id"]: c for c in cards["characters"]}
+    for cid in gen.NPC_ORDER:
+        loop0 = " ".join(by[cid]["daily_loop"][0].split()).lower()
+        # plan is second person; must share a concrete noun/verb from daily_loop[0]
+        plan = cards["plans"][cid].lower()
+        assert plan.startswith("you ")
+        assert any(token in plan for token in loop0.split() if len(token) > 4)
+
+
+def test_render_descriptions_emits_four_valid_sprites():
+    ts = gen.render_descriptions(_cards())
+    assert ts.count("    character: '") == 4
+    for cid in gen.NPC_ORDER:
+        assert f"character: '{_cards()['sprites'][cid]}'" in ts
+    for dead in ("Juno Park", "Tessa Quinn", "Vale Moreno", "Dr. Elian Cross", "Elian Cross"):
+        assert dead not in ts
+
+
+def test_orion_blurb_does_not_name_retired_cast():
+    by = {c["id"]: c for c in _cards()["characters"]}
+    blurb = gen.compose_presence_blurb(by["orion"])
+    for dead in ("Elian", "Juno", "Tessa", "Vale"):
+        assert dead not in blurb
+
+
+def test_archived_retired_cast_exists():
+    archived = _SERVICE / "cards" / "archived" / "2026-08-29-retired-cast.yaml"
+    text = archived.read_text(encoding="utf-8")
+    for name in ("Juno Park", "Tessa Quinn", "Vale Moreno", "Dr. Elian Cross"):
+        assert name in text
 
 
 def test_compose_presence_blurb_orion_uses_they():
@@ -37,14 +90,6 @@ def test_compose_presence_blurb_orion_uses_they():
     blurb = gen.compose_presence_blurb(by["orion"])
     assert "synthetic mind" in blurb
     assert "A line they often use:" in blurb
-
-
-def test_render_descriptions_emits_eight_valid_sprites():
-    ts = gen.render_descriptions(_cards())
-    assert ts.count("    character: '") == len(gen.NPC_ORDER)
-    for cid, sprite in _cards()["sprites"].items():
-        if cid in gen.NPC_ORDER:
-            assert f"character: '{sprite}'" in ts
 
 
 def test_ts_escaping_neutralizes_template_literal_injection():
@@ -69,6 +114,7 @@ def test_signature_intro_pronoun_agreement():
     assert gen._signature_intro(None) == "they often use"
 
 
+@pytest.mark.skipif(not gen.WORLD_TS.exists(), reason="upstream/world.ts not cloned")
 def test_juniper_blurb_present_in_world_ts():
     """Drift guard: the composed Juniper blurb must be spliced into world.ts."""
     world = (gen.WORLD_TS).read_text(encoding="utf-8")

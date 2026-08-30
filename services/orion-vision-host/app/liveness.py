@@ -101,6 +101,9 @@ class VisionLivenessWatcher:
         self._alerting: bool = False
         self._last_alert_at: Optional[float] = None
         self._alert_unconfirmed: bool = False
+        # Which transition is awaiting confirmation: an alert rolls back to
+        # not-alerting, a recovery rolls back to STILL-alerting so it retries.
+        self._pending_kind: Optional[str] = None
 
         # Durable arm/clear state. Without it a restart between the alert and the
         # clear loses the recovery forever -- live on 2026-08-29, eight
@@ -108,6 +111,15 @@ class VisionLivenessWatcher:
         # See app/liveness_state.py for the evidence and the design.
         self._state_store = state_store
         self._last_now: Optional[float] = None
+        # True while the arm state came from disk rather than from failures this
+        # process actually observed. A restored watcher has an EMPTY sample
+        # deque, so the thin-sample clear branch would otherwise declare
+        # recovery on the first single success -- posting "Vision is working
+        # again" off one sample while the GPU is still broken.
+        self._restored_alerting: bool = False
+        # Surfaced on /health via snapshot(): on a read-only or full volume the
+        # whole fix is inert and nothing anywhere would have said so.
+        self._state_write_ok: Optional[bool] = None
         self._restore_state()
 
     def _restore_state(self) -> None:
@@ -137,8 +149,17 @@ class VisionLivenessWatcher:
             return now_mono - max(0.0, now_wall - float(wall))
 
         self._alerting = True
+        self._restored_alerting = True
         self._failing_since = _to_mono(getattr(state, "failing_since_wall", None))
-        self._last_alert_at = _to_mono(getattr(state, "last_alert_at_wall", None))
+
+        # `_last_alert_at` is deliberately NOT restored (review finding, HIGH).
+        # Restoring it suppressed the next alert for the whole cooldown, and it
+        # bought nothing: `_alerting=True` is restored too, and the arm path
+        # short-circuits on `if self._alerting` long before the cooldown check,
+        # so duplicate-alert suppression during the incident is already covered.
+        # Keeping it turned a 225s detection gap into 3590s -- measured, with a
+        # single fake clock driving both time.monotonic() and time.time().
+        self._last_alert_at = None
 
     def _persist_state(self) -> None:
         """Write current arm state. Called only on transitions, not per sample."""
@@ -153,14 +174,15 @@ class VisionLivenessWatcher:
             def _to_wall(mono: Optional[float]) -> Optional[float]:
                 return None if mono is None else now_wall - (now_mono - float(mono))
 
-            self._state_store.save(
+            self._state_write_ok = bool(self._state_store.save(
                 PersistedLivenessState(
                     alerting=self._alerting,
                     failing_since_wall=_to_wall(self._failing_since),
                     last_alert_at_wall=_to_wall(self._last_alert_at),
                 )
-            )
+            ))
         except Exception:
+            self._state_write_ok = False
             return
 
     # -- introspection, for /health and tests -------------------------------
@@ -182,6 +204,9 @@ class VisionLivenessWatcher:
             "window_sec": self._window_sec,
             "arm_fail_rate": self._arm_fail_rate,
             "clear_fail_rate": self._clear_fail_rate,
+            "state_path": getattr(self._state_store, "path", None),
+            "state_write_ok": self._state_write_ok,
+            "arm_restored_from_disk": self._restored_alerting,
         }
 
     # -- internals ----------------------------------------------------------
@@ -243,8 +268,14 @@ class VisionLivenessWatcher:
         if count < self._min_samples:
             if count > 0 and rate == 0.0:
                 self._failing_since = None
-                if self._alerting:
+                # A restored arm has an empty deque, so "a full window with zero
+                # failures" is not what this branch is seeing -- it is seeing one
+                # or two samples since boot. Require the sample floor before
+                # believing a restored incident is over.
+                if self._alerting and not self._restored_alerting:
                     self._alerting = False
+                    self._alert_unconfirmed = True
+                    self._pending_kind = "recovery"
                     self._persist_state()
                     return LivenessDecision(
                         recovered=True,
@@ -287,8 +318,10 @@ class VisionLivenessWatcher:
             # Provisional. The caller confirms via note_alert_delivered();
             # see that method for why this is not committed here.
             self._alerting = True
+            self._restored_alerting = False   # observed in-process now, not restored
             self._last_alert_at = ts
             self._alert_unconfirmed = True
+            self._pending_kind = "alert"
             return LivenessDecision(
                 alert=True,
                 reason=f"{int(rate * 100)}% of vision tasks failing ({top or 'unknown'})",
@@ -313,6 +346,9 @@ class VisionLivenessWatcher:
             self._failing_since = None
             if self._alerting:
                 self._alerting = False
+                self._restored_alerting = False
+                self._alert_unconfirmed = True
+                self._pending_kind = "recovery"
                 self._persist_state()
                 return LivenessDecision(
                     recovered=True,
@@ -344,10 +380,18 @@ class VisionLivenessWatcher:
         """
         if not self._alert_unconfirmed:
             return
+        kind = self._pending_kind
         self._alert_unconfirmed = False
+        self._pending_kind = None
         if not delivered:
-            self._alerting = False
-            self._last_alert_at = None
+            if kind == "recovery":
+                # The clear was decided but never announced. Roll back to
+                # alerting so the next healthy sample re-emits it, rather than
+                # persisting a silent close nobody was ever told about.
+                self._alerting = True
+            else:
+                self._alerting = False
+                self._last_alert_at = None
         # Persist either way: a confirmed arm must survive a restart (that is the
         # whole point), and a rollback must not leave a stale armed file behind
         # that would resurrect an alert this process decided never happened.

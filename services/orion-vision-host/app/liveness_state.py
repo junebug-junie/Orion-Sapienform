@@ -111,7 +111,13 @@ class LivenessStateStore:
             logger.warning("liveness state unreadable (%s): %s -- starting clean", self._path, exc)
             return PersistedLivenessState()
 
-        if not isinstance(raw, dict) or int(raw.get("version") or 0) != STATE_VERSION:
+        try:
+            version_ok = isinstance(raw, dict) and int(raw.get("version") or 0) == STATE_VERSION
+        except (TypeError, ValueError):
+            # A non-numeric "version" (e.g. a list) used to raise straight out of
+            # load(), contradicting this method's "Never raises" contract.
+            version_ok = False
+        if not version_ok:
             logger.warning("liveness state version mismatch in %s -- starting clean", self._path)
             return PersistedLivenessState()
 

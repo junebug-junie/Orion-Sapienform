@@ -1,0 +1,38 @@
+diff --git a/convex/aiTown/player.ts b/convex/aiTown/player.ts
+index e429f5a..48af407 100644
+--- a/convex/aiTown/player.ts
++++ b/convex/aiTown/player.ts
+@@ -5,7 +5,6 @@ import { playerId } from './ids';
+ import {
+   PATHFINDING_TIMEOUT,
+   PATHFINDING_BACKOFF,
+-  HUMAN_IDLE_TOO_LONG,
+   MAX_HUMAN_PLAYERS,
+   MAX_PATHFINDS_PER_STEP,
+ } from '../constants';
+@@ -81,10 +80,9 @@ export class Player {
+     this.speed = speed;
+   }
+ 
+-  tick(game: Game, now: number) {
+-    if (this.human && this.lastInput < now - HUMAN_IDLE_TOO_LONG) {
+-      this.leave(game, now);
+-    }
++  tick(_game: Game, _now: number) {
++    // No human idle kick. lastInput was only set at join, so the old
++    // HUMAN_IDLE_TOO_LONG check was a 5-minute session fuse.
+   }
+ 
+   tickPathfinding(game: Game, now: number) {
+diff --git a/convex/constants.ts b/convex/constants.ts
+--- a/convex/constants.ts
++++ b/convex/constants.ts
+@@ -77,8 +77,6 @@ export const AGENT_WAKEUP_THRESHOLD = 1000;
+ export const VACUUM_MAX_AGE = 2 * 7 * 24 * 60 * 60 * 1000;
+ export const DELETE_BATCH_SIZE = 64;
+ 
+-export const HUMAN_IDLE_TOO_LONG = 5 * 60 * 1000;
+-
+ export const ACTIVITIES = [
+   { description: 'reading a book', emoji: '📖', duration: 60_000 },
+   { description: 'daydreaming', emoji: '🤔', duration: 60_000 },

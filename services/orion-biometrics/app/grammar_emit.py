@@ -5,6 +5,12 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from orion.grammar.atom_signals import (
+    clamp01,
+    uncertainty_from_induction_volatility,
+    uncertainty_from_inverse_confidence,
+    uncertainty_from_telemetry_error_rate,
+)
 from orion.schemas.grammar import (
     GrammarAtomV1,
     GrammarEdgeV1,
@@ -62,6 +68,41 @@ def _safe_ts(value: datetime) -> str:
 def _hash_id(*parts: object, prefix: str) -> str:
     raw = "|".join(str(p) for p in parts)
     return f"{prefix}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _apply_biometrics_atom_uncertainty(
+    atoms: dict[str, GrammarAtomV1],
+    *,
+    summary: BiometricsSummaryV1,
+    induction: BiometricsInductionV1,
+    node_profile: NodeProfile,
+) -> None:
+    """Stamp uncertainty from telemetry_error_rate and induction volatility."""
+    base = clamp01(
+        max(
+            uncertainty_from_telemetry_error_rate(summary.telemetry_error_rate),
+            uncertainty_from_induction_volatility(induction),
+        )
+    )
+    degraded = (summary.telemetry_error_rate or 0.0) > 0.1
+    for atom in atoms.values():
+        conf = atom.confidence if atom.confidence is not None else 1.0
+        sal = atom.salience if atom.salience is not None else 0.0
+        role = atom.semantic_role
+        if role in {
+            "cabinet_sensor_staleness_signal",
+            "cabinet_ambient_audio_staleness_signal",
+        }:
+            u = 0.9 if sal > 0.5 else base
+        elif role == "node_availability":
+            u = max(base, 0.65 if degraded else base)
+        elif role.endswith("_pressure_signal") or role.endswith("_activity_signal"):
+            u = max(base, sal * 0.5)
+        elif not node_profile.known:
+            u = max(base, uncertainty_from_inverse_confidence(conf))
+        else:
+            u = base
+        atom.uncertainty = clamp01(u)
 
 
 def _availability_summary(
@@ -377,6 +418,13 @@ def build_biometrics_node_grammar_events(
             source_event_id=f"{node_id}:{ts}",
             payload_ref=f"biometrics.ambient_audio.staleness:{node_id}:{ts}",
         )
+
+    _apply_biometrics_atom_uncertainty(
+        atoms,
+        summary=summary,
+        induction=induction,
+        node_profile=node_profile,
+    )
 
     edge_specs = [
         ("node_context", "telemetry_sample", "references"),

@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from orion.grammar.atom_signals import (
+    uncertainty_from_inverse_confidence,
+)
 from orion.schemas.grammar import (
     GrammarAtomV1,
     GrammarEdgeV1,
@@ -119,6 +122,7 @@ def build_chat_turn_grammar_events(
         text_value=session_id,
         confidence=1.0,
         salience=0.6,
+        uncertainty=0.1,
         source_event_id=turn_id,
         payload_ref=f"hub.session:{session_id}",
     )
@@ -134,6 +138,7 @@ def build_chat_turn_grammar_events(
         text_value=None,  # NEVER store raw text
         confidence=1.0,
         salience=min(1.0, 0.4 + word_count / 200.0),
+        uncertainty=0.12,
         source_event_id=turn_id,
         payload_ref=f"hub.chat:{session_id}:{turn_id}",
     )
@@ -174,6 +179,7 @@ def build_chat_turn_grammar_events(
             text_value=None,
             confidence=repair_pressure_confidence,
             salience=repair_pressure_level,
+            uncertainty=uncertainty_from_inverse_confidence(repair_pressure_confidence),
             source_event_id=turn_id,
             payload_ref=f"hub.repair_pressure:{turn_id}",
         )
@@ -214,6 +220,7 @@ def build_chat_turn_grammar_events(
             text_value=stance_disposition,
             confidence=1.0,
             salience=1.0 if stance_disposition != "proceed" else 0.3,
+            uncertainty=0.65 if stance_disposition != "proceed" else 0.2,
             source_event_id=turn_id,
             payload_ref=f"hub.stance:{turn_id}",
         )
@@ -394,6 +401,7 @@ def build_turn_timeout_grammar_events(
         ),
         confidence=1.0,
         salience=0.9,
+        uncertainty=0.95,
         source_event_id=correlation_id,
     )
     return [

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from orion.grammar.atom_signals import uncertainty_for_cortex_exec_atom
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.grammar import (
     GrammarAtomV1,
@@ -121,6 +122,16 @@ class CortexExecGrammarCollector:
         # the sibling GrammarEventV1 envelope. Same source timestamp as
         # _atom_observed_at, set together so the two can never drift.
         atom.time_range = TimeRangeV1(start=now, end=now)
+        if atom.uncertainty is None:
+            atom = atom.model_copy(
+                update={
+                    "uncertainty": uncertainty_for_cortex_exec_atom(
+                        atom_type=atom.atom_type,
+                        semantic_role=atom.semantic_role,
+                        confidence=atom.confidence if atom.confidence is not None else 1.0,
+                    )
+                }
+            )
         self._atoms[key] = atom
         self._atom_observed_at[atom.atom_id] = now
 

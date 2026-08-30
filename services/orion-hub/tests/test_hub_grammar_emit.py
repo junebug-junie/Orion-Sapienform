@@ -179,3 +179,18 @@ def test_relation_types_are_valid():
             assert ev.edge.relation_type in valid_types, (
                 f"Invalid relation_type: {ev.edge.relation_type!r}"
             )
+
+
+def test_all_atoms_emit_non_null_uncertainty() -> None:
+    events = _build(
+        has_repair_signal=True,
+        repair_pressure_level=0.75,
+        repair_pressure_confidence=0.9,
+        stance_disposition="defer",
+    )
+    atoms = [ev.atom for ev in events if ev.atom is not None]
+    assert atoms
+    for atom in atoms:
+        assert atom.uncertainty is not None
+    repair = next(a for a in atoms if a.semantic_role == "repair_signal")
+    assert repair.uncertainty == pytest.approx(0.1)

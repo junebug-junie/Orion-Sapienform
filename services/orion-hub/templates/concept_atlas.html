@@ -87,7 +87,7 @@
         Computed by the graph engine over the whole graph, unfiltered — not over the slice drawn below.
       </p>
       <div id="caStructureStats" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
         <div>
           <h3 class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Components</h3>
           <div id="caStructureComponents" class="text-gray-300 space-y-0.5"></div>
@@ -100,8 +100,46 @@
           <h3 class="text-[10px] uppercase tracking-wide text-gray-500 mb-1" title="High betweenness, not top pageRank: nodes the graph routes through rather than nodes it points at.">Bridges</h3>
           <div id="caStructureBridges" class="text-gray-300 space-y-0.5"></div>
         </div>
+        <div>
+          <h3 class="text-[10px] uppercase tracking-wide text-gray-500 mb-1" title="Label propagation. Small communities are often near-duplicate concepts the induction pipeline minted separately.">Communities</h3>
+          <div id="caStructureCommunities" class="text-gray-300 space-y-0.5"></div>
+        </div>
       </div>
       <div id="caStructureNote" class="text-[11px] leading-relaxed"></div>
+    </section>
+
+    <section id="caDrilldownCard" class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-white">Drill-down</h2>
+        <span id="caDrilldownStatus" class="text-[10px] text-gray-500"></span>
+      </div>
+      <p class="text-[10px] text-gray-500 leading-relaxed">
+        Queries the graph engine directly over the <em>whole</em> graph — unlike the canvas below, these answers are not limited to the fetched window.
+      </p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="flex flex-col gap-2">
+          <h3 class="text-[10px] uppercase tracking-wide text-gray-500">Neighbourhood</h3>
+          <div class="flex items-center gap-2">
+            <input id="caNeighborNode" type="text" placeholder="node name or id" class="flex-1 rounded bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-200" />
+            <select id="caNeighborDepth" class="rounded bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-200">
+              <option value="1">1 hop</option>
+              <option value="2">2 hops</option>
+              <option value="3">3 hops</option>
+            </select>
+            <button id="caNeighborBtn" class="rounded bg-indigo-600 hover:bg-indigo-500 px-2 py-1 text-xs text-white">Go</button>
+          </div>
+          <div id="caNeighborResult" class="text-xs text-gray-300 space-y-0.5 max-h-56 overflow-y-auto"></div>
+        </div>
+        <div class="flex flex-col gap-2">
+          <h3 class="text-[10px] uppercase tracking-wide text-gray-500">Path between</h3>
+          <div class="flex items-center gap-2">
+            <input id="caPathFrom" type="text" placeholder="from" class="flex-1 rounded bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-200" />
+            <input id="caPathTo" type="text" placeholder="to" class="flex-1 rounded bg-gray-900 border border-gray-800 px-2 py-1 text-xs text-gray-200" />
+            <button id="caPathBtn" class="rounded bg-indigo-600 hover:bg-indigo-500 px-2 py-1 text-xs text-white">Go</button>
+          </div>
+          <div id="caPathResult" class="text-xs text-gray-300 leading-relaxed"></div>
+        </div>
+      </div>
     </section>
 
     <section id="caNetworkCard" class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col gap-2">
@@ -117,6 +155,7 @@
             Fold in evidence
           </label>
           <span id="caNetworkStatus" class="text-[10px] text-gray-500"></span>
+          <span id="caNetworkCoverage" class="text-[10px] text-amber-400"></span>
         </div>
       </div>
       <div class="flex items-center gap-3 text-[10px] text-gray-400 flex-wrap">

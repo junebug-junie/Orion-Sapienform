@@ -433,3 +433,81 @@ def test_a_zero_edge_graph_reads_as_all_singletons():
 def test_backend_failure_surfaces_as_a_typed_error():
     with pytest.raises(GraphAnalyticsError, match="graph query failed"):
         GraphAnalytics(ExplodingClient()).components()
+
+
+# --- resolve_node -----------------------------------------------------------
+#
+# Callers hold a label, not an id: a click on the atlas, or a name typed into a
+# box. Labels are NOT unique in this graph -- live 2026-08-30, "Hospital"
+# prefix-matches three distinct concepts and community detection surfaced
+# near-duplicates like "Rest and support" / "Rest and recovery" -- so a single
+# silent guess would answer a traversal question about the wrong node.
+
+
+def test_resolve_node_prefers_an_exact_id_over_an_exact_label():
+    """The rank column is what orders them. Collapsing it to a constant makes
+    a node whose LABEL matches outrank the node whose ID matches."""
+    client = StubClient([{"node_id": "n1", "label": "Orion", "rank": 0}])
+    out = GraphAnalytics(client).resolve_node("sub-concept-seed-orion")
+    assert "CASE WHEN n.node_id = $needle THEN 0 ELSE 1 END AS rank" in client.cypher
+    assert "ORDER BY rank ASC" in client.cypher
+    assert out[0].score == 0.0
+
+
+def test_resolve_node_matches_id_or_label_in_one_query():
+    client = StubClient([])
+    GraphAnalytics(client).resolve_node("Orion")
+    first = client.calls[0][0]
+    assert "n.node_id = $needle OR n.label = $needle" in first
+    assert client.calls[0][1] == {"needle": "Orion"}, "the needle is a bound parameter, not interpolated"
+
+
+def test_resolve_node_falls_back_to_prefix_only_when_nothing_exact():
+    client = StubClient([], [{"node_id": "c1", "label": "Rest and recovery", "rank": 2}])
+    out = GraphAnalytics(client).resolve_node("Rest and")
+    assert len(client.calls) == 2, "prefix query runs only after the exact query came back empty"
+    assert "STARTS WITH $needle" in client.calls[1][0]
+    assert out[0].label == "Rest and recovery"
+    assert out[0].score == 2.0
+
+
+def test_resolve_node_does_not_run_the_prefix_query_when_exact_matched():
+    client = StubClient([{"node_id": "n1", "label": "Orion", "rank": 0}])
+    GraphAnalytics(client).resolve_node("Orion")
+    assert len(client.calls) == 1
+
+
+def test_resolve_node_returns_every_candidate_rather_than_guessing():
+    rows = [
+        {"node_id": "c-h1", "label": "Hospital and family chaos", "rank": 2},
+        {"node_id": "c-h2", "label": "Hospital and fear experience", "rank": 2},
+        {"node_id": "c-h3", "label": "Hospital and medical concerns", "rank": 2},
+    ]
+    out = GraphAnalytics(StubClient([], rows)).resolve_node("Hospital")
+    assert len(out) == 3, "ambiguity is the caller's to resolve, not ours to hide"
+
+
+def test_resolve_node_uses_the_configured_properties():
+    client = StubClient([])
+    GraphAnalytics(client, id_property="turn_id", label_property="source_kind").resolve_node("x")
+    assert "n.turn_id = $needle OR n.source_kind = $needle" in client.calls[0][0]
+    assert "n.node_id" not in client.calls[0][0]
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_resolve_node_short_circuits_on_blank_input(blank):
+    client = StubClient([{"node_id": "n1", "label": "x", "rank": 0}])
+    assert GraphAnalytics(client).resolve_node(blank) == ()
+    assert client.calls == [], "a blank needle must not hit the graph at all"
+
+
+def test_resolve_node_drops_rows_with_no_id():
+    rows = [{"node_id": None, "label": "ghost", "rank": 1}, {"node_id": "n2", "label": "real", "rank": 1}]
+    out = GraphAnalytics(StubClient(rows)).resolve_node("x")
+    assert [n.node_id for n in out] == ["n2"]
+
+
+def test_resolve_node_limit_floors_at_one():
+    client = StubClient([])
+    GraphAnalytics(client).resolve_node("x", limit=0)
+    assert "LIMIT 1" in client.calls[0][0]

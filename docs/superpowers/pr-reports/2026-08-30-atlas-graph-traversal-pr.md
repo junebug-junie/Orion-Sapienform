@@ -94,9 +94,9 @@ None — no keys added, removed or renamed; `.env_example` untouched, so no sync
 
 ```text
 orion/graph/tests + substrate falkor suites              191 passed
-services/orion-hub concept-atlas suites (5 files)        129 passed
-services/orion-hub/static/js (node --test)                98 passed
-                                                   418 passed, 0 failed
+services/orion-hub concept-atlas suites (5 files)        138 passed
+services/orion-hub/static/js (node --test)               102 passed
+                                                   431 passed, 0 failed
 ```
 
 Mutation-tested, every mutation asserted present in the file before running:
@@ -114,6 +114,8 @@ Mutation-tested, every mutation asserted present in the file before running:
 ```
 
 One survived the first sweep — `resolve_node` had no analytics tests at all, only route-level coverage through a stub. Eight added; all four of its mutations then died.
+
+Review fixes mutation-tested separately: **13/13 killed** (communities unrestricted · predicate changed · exact-id priority dropped · limit ceiling removed · truncation back to `>=` · over-fetch probe row leaking · path reporting candidates for the resolved endpoint · hydration boundary compare · hydration never reported · candidate hint back to the `||` chain · coverage ignoring rendered counts). Two survived the first pass, both because I had asserted a *constant* rather than the *behaviour* — the mutation reverting `communities(rel_types=...)` to a bare call passed a test that only pinned the tuple's value.
 
 ## Evals run
 
@@ -144,7 +146,48 @@ degraded_measures: []
 
 ## Review findings fixed
 
-`/code-review high` ran in a subagent; see the follow-up commit on this branch.
+`/code-review high` in a subagent. **Ten findings, all real. Four of them meant the feature did not work.**
+
+- **The communities card rendered the 8 LARGEST communities.** `communities()` returns `ORDER BY size DESC`, so slicing the head took the giant blobs — the exact opposite of the card's purpose. The `size <= 3` amber branch could never fire and the near-duplicate pairs this whole feature was built to surface never rendered at all.
+  - **Fix:** smallest-first, with the main cluster summarised in one line instead of occupying the list.
+
+- **`communities()` was called unrestricted while its comment cited a restricted measurement.** Re-measured live before deciding: `unrestricted → 3 communities, 1 small` vs `associated_with → 8 communities, 6 small`, and every duplicate pair appears **only** in the restricted run. The route was documenting a query it did not make.
+  - **Fix:** `_COMMUNITY_REL_TYPES = ("associated_with",)`, passed through. A test asserts the predicate reaches the call — the first version pinned only the constant, and the mutation that reverted the call survived it.
+
+- **The coverage line raced `/structure`.** Both fetches fire in one `Promise.allSettled` and `/structure` is ~7 blocking round trips against `/network`'s one, so `/network` almost always resolved first with `lastStructurePayload` still `null`. The percentage this feature exists to produce never appeared until a second refresh.
+  - **Fix:** a shared `renderCoverage()` both call, so whichever lands second completes the line.
+
+- **`candidateHint` used a `||` chain over arrays.** An empty array is truthy in JS, so the chain stops at the first *defined* list even when empty — and `/path` sent candidates for both endpoints. An ambiguous `to` rendered `did you mean: <the from endpoint that had resolved fine>`, hiding the three real alternatives. Both endpoints missing rendered "ambiguous name" for a not-found error.
+  - **Fix on both sides:** the route sends candidates only for the endpoint that failed (plus `unresolved_endpoints`), and the UI picks by content rather than by definedness.
+
+- **Coverage counted the raw payload; the status line beside it counted rendered nodes.** With evidence folded, the two lines disagreed about the same canvas — in a feature whose entire point is honest reporting.
+  - **Fix:** coverage takes the post-filter counts.
+
+- **`_resolved_or_candidates` discarded the only preference the rank column encodes**, lumping rank 0 (exact id) with rank 1 (exact label). The atlas tap handler seeds the box with an exact `node_id`; if another node carried that string as its *label*, the route answered `node_ambiguous` for a node identified by primary key. The accompanying comment also described a state that cannot occur.
+  - **Fix:** rank 0 wins outright, then the rank-0/1 set. Test constructs exactly that collision.
+
+- **`/neighborhood`'s `limit` had no ceiling** while `depth` was clamped — `?limit=1000000` returned every reachable node in one payload.
+  - **Fix:** `_NEIGHBORHOOD_MAX_LIMIT`. Live: `limit=10M → clamped to 1000`.
+
+- **Truncation used `>= limit`, which fires when exactly `limit` rows exist and nothing was dropped.** A warning that cries wolf on an untruncated view erodes the trust this reporting exists to earn.
+  - **Fix, exact rather than conservative:** neighborhood over-fetches one row and trims; hydration flags the actual early break. Two tests pin the exactly-full boundary.
+
+- **The drill-down queries had no generation guard**, so a slower reply could overwrite a newer one — real given depth-3 neighborhood is ~48ms and path depth-4 is ~384ms.
+
+- **Once the path `from` box had content, no canvas tap could re-set it.** Now alternates from → to → from.
+
+Re-measured live after the fixes — the restricted call finds more than when I first measured, including a literal word-swap duplicate:
+
+```text
+communities: 10 total, 8 small (restricted to associated_with)
+    2: ['Assistant Behavior and Role', 'Assistant Role and Behavior']
+    2: ['Family trip planning', 'Family trip updates']
+    2: ['Rest and support', 'Rest and recovery']
+    2: ['AI Model Transparency', 'AI Model Configuration']
+path ambiguous -> from_candidates: []  unresolved: ['to']
+neighborhood limit=10  -> 10 nodes, truncated=True
+neighborhood limit=10M -> clamped to 1000, 63 nodes
+```
 
 ## Restart required
 

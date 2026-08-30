@@ -7,8 +7,8 @@ array only; imports + ``characters`` sprite table are left untouched).
 
 NPC identities are the rich, prompt-injected self-descriptions read by
 ``convex/agent/conversation.ts`` at prompt time. Juniper (human) and Orion
-(external join) are NOT emitted here — Juniper's blurb goes in ``convex/world.ts``
-and Orion's card is applied by the embodiment bootstrap.
+(external join) are NOT emitted here — Juniper's sprite + blurb go in
+``convex/world.ts`` and Orion's card is applied by the embodiment bootstrap.
 
 Run from repo root:  python services/orion-ai-town/scripts/generate_descriptions.py
 Idempotent: re-running with unchanged cards produces an unchanged file.
@@ -123,15 +123,17 @@ def _ts_single(text: str) -> str:
 _WORLD_DESC_RE = re.compile(
     r"(?m)^(?P<indent>[ \t]*)description: `(?:[^`\\]|\\.)*`,$"
 )
+_WORLD_CHAR_RE = re.compile(r"(?m)^(?P<indent>[ \t]*)character: .*,$")
 _DEFAULT_NAME_RE = re.compile(r"(?m)^export const DEFAULT_NAME = '(?:[^'\\]|\\.)*';$")
 
 
 def patch_juniper(cards: dict) -> list[str]:
     """Splice Juniper (human player) into constants.ts (DEFAULT_NAME) and
-    world.ts (join description) so those patches are reproducible from the cards.
-    Returns the list of changed file labels."""
+    world.ts (join sprite + description) so those patches are reproducible
+    from the cards. Returns the list of changed file labels."""
     by_id = {c["id"]: c for c in cards["characters"]}
     juniper = by_id["juniper_feld"]
+    sprite = cards["sprites"]["juniper_feld"]
     changed: list[str] = []
 
     const_src = CONSTANTS_TS.read_text(encoding="utf-8")
@@ -145,9 +147,14 @@ def patch_juniper(cards: dict) -> list[str]:
         changed.append("convex/constants.ts")
 
     world_src = WORLD_TS.read_text(encoding="utf-8")
+    new_world, n = _WORLD_CHAR_RE.subn(
+        lambda m: f"{m.group('indent')}character: '{sprite}',", world_src, count=1
+    )
+    if n != 1:
+        raise SystemExit(f"world.ts: expected 1 join character, found {n}")
     desc = _ts_backtick(compose_presence_blurb(juniper))
     new_world, n = _WORLD_DESC_RE.subn(
-        lambda m: f"{m.group('indent')}description: `{desc}`,", world_src, count=1
+        lambda m: f"{m.group('indent')}description: `{desc}`,", new_world, count=1
     )
     if n != 1:
         raise SystemExit(f"world.ts: expected 1 join description, found {n}")

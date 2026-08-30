@@ -46,10 +46,21 @@ beats config truth, and three of them are listed but inert:
   demonstrably returns rows, not an oversight.
 
 COST. ``path()`` is the one expensive call: undirected variable-length
-enumeration measured **143ms at depth 4** on a 136-node graph, against 1.6ms
-for a depth-2 ``neighborhood()``. It grows badly with depth and graph size, so
-``max_depth`` is capped at ``MAX_PATH_DEPTH`` and callers should treat it as an
-on-demand operator query, never something a page render fans out over.
+enumeration, and it degrades with BOTH depth and graph size. Measured on the
+real ``orion_substrate``:
+
+    depth 4, 136 nodes   143ms
+    depth 4, 671 nodes   384ms      <- same query, 5x the graph
+    depth 3, 671 nodes    25ms
+    depth 2, 671 nodes     2ms
+
+So the default is depth 3 and ``MAX_PATH_DEPTH`` is the ceiling, not the
+recommendation. Treat it as an on-demand operator query -- never something a
+page render fans out over, and re-measure before raising the cap: the 671-node
+figure was 136 nodes' figure only weeks earlier.
+
+``neighborhood()`` is cheap by comparison and safe to call per interaction:
+6ms at depth 1, 15ms at depth 2, 48ms at depth 3 on the same 671-node graph.
 
 READ-ONLY. Every string this module emits is a ``CALL``/``MATCH``/``RETURN``
 read. ``test_analytics.py`` asserts that against the emitted Cypher rather
@@ -394,6 +405,48 @@ class GraphAnalytics:
                 score=float(r.get("score") or 0.0),
             )
             for r in rows
+        )
+
+    def resolve_node(self, value: str, *, limit: int = 5) -> tuple[RankedNode, ...]:
+        """Find nodes by exact id, then by exact label, then by prefix.
+
+        Callers hold a label, not an id: a click on the atlas, or a name typed
+        into a box. Returning candidates rather than one guess matters because
+        labels are NOT unique in this graph -- live 2026-08-30, community
+        detection surfaced near-duplicate concepts ("Rest and support" /
+        "Rest and recovery"), so silently picking the first match would answer
+        a traversal question about a node the caller did not mean.
+
+        Ordered exact-id, exact-label, prefix so a caller can take the first
+        result when there is exactly one and disambiguate when there is not.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ()
+        rows = _rows(
+            self._client,
+            f"MATCH (n) WHERE n.{self._id} = $needle OR n.{self._label} = $needle "
+            f"RETURN n.{self._id} AS node_id, n.{self._label} AS label, "
+            f"CASE WHEN n.{self._id} = $needle THEN 0 ELSE 1 END AS rank "
+            f"ORDER BY rank ASC LIMIT {max(1, int(limit))}",
+            {"needle": text},
+        )
+        if not rows:
+            rows = _rows(
+                self._client,
+                f"MATCH (n) WHERE n.{self._label} STARTS WITH $needle "
+                f"RETURN n.{self._id} AS node_id, n.{self._label} AS label, 2 AS rank "
+                f"ORDER BY label ASC LIMIT {max(1, int(limit))}",
+                {"needle": text},
+            )
+        return tuple(
+            RankedNode(
+                node_id=str(r.get("node_id") or ""),
+                label=(str(r["label"]) if r.get("label") else None),
+                score=float(r.get("rank") or 0.0),
+            )
+            for r in rows
+            if r.get("node_id")
         )
 
     # --- traversal ----------------------------------------------------------

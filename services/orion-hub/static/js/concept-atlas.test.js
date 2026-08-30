@@ -13,6 +13,9 @@ const {
   nodeDisplayLabel,
   structureDiagnosis,
   componentShapeLine,
+  coverageLine,
+  candidateHint,
+  formatPath,
 } = require("./concept-atlas.js");
 
 // The bug this locks down (confirmed live 2026-08-29, from a screenshot):
@@ -382,4 +385,163 @@ test("the disabled and no-evidence paths report the same shape", () => {
     assert.equal(out.droppedCount, 0);
     assert.equal(out.collapsedCount, 0);
   }
+});
+
+
+// --- coverage: the canvas is a window on the graph, not the graph -----------
+//
+// Live 2026-08-30: /network fetches query_concept_region(limit_nodes=300,
+// limit_edges=600) and the EDGE cap is what binds -- 600 of 1464 edges come
+// back, the 464 entity nodes hang off associated_with edges outside that
+// window, and the canvas renders 102 of 671 nodes with zero entities. The
+// payload had carried `truncated: true` the whole time and nothing showed it.
+
+test("coverage names how much of the graph is actually on screen", () => {
+  const line = coverageLine(
+    { available: true, truncated: true, nodes: new Array(102), edges: new Array(600) },
+    { available: true, node_count: 671, edge_count: 1464 }
+  );
+  assert.match(line, /102 of 671 nodes/);
+  assert.match(line, /15%/);
+  assert.match(line, /600 of 1464 edges/);
+});
+
+test("coverage stays silent when nothing was cut", () => {
+  // A warning on every render trains the reader to ignore it.
+  assert.equal(
+    coverageLine(
+      { available: true, truncated: false, nodes: new Array(10), edges: new Array(5) },
+      { available: true, node_count: 10, edge_count: 5 }
+    ),
+    ""
+  );
+});
+
+test("coverage still reports truncation without whole-graph totals", () => {
+  // /structure can be unavailable while /network is fine; saying "cut, by an
+  // unknown amount" beats implying the canvas is everything.
+  const line = coverageLine(
+    { available: true, truncated: true, nodes: new Array(102), edges: new Array(600) },
+    null
+  );
+  assert.match(line, /truncated/);
+  assert.doesNotMatch(line, /NaN|undefined/);
+});
+
+test("coverage reports hydration truncation too, not just the region fetch", () => {
+  const line = coverageLine(
+    { available: true, truncated: false, hydration_truncated: true, nodes: new Array(4), edges: [] },
+    { available: true, node_count: 671, edge_count: 1464 }
+  );
+  assert.match(line, /truncated/);
+});
+
+test("coverage says nothing about an unavailable payload", () => {
+  assert.equal(coverageLine({ available: false }, { available: true, node_count: 5, edge_count: 5 }), "");
+  assert.equal(coverageLine(null, null), "");
+});
+
+// --- ambiguity must be shown, never guessed --------------------------------
+
+test("candidate hint lists the real alternatives", () => {
+  // "Hospital" prefix-matches three distinct concepts live; drilling into
+  // whichever came back first would answer a different question than asked.
+  const hint = candidateHint({
+    available: false,
+    reason: "node_ambiguous",
+    candidates: [{ label: "Hospital and family chaos" }, { label: "Hospital and medical concerns" }],
+  });
+  assert.match(hint, /Hospital and family chaos/);
+  assert.match(hint, /Hospital and medical concerns/);
+});
+
+test("candidate hint distinguishes not-found from ambiguous", () => {
+  assert.match(candidateHint({ available: false, reason: "node_not_found" }), /no node matches/);
+  assert.match(candidateHint({ available: false, reason: "invalid_rel_types" }), /invalid predicate/);
+});
+
+test("candidate hint reads path endpoint candidates too", () => {
+  const hint = candidateHint({
+    available: false,
+    reason: "endpoint_not_resolved",
+    from_candidates: [{ label: "Rest and support" }, { label: "Rest and recovery" }],
+  });
+  assert.match(hint, /Rest and support/);
+});
+
+test("candidate hint says nothing about a successful payload", () => {
+  assert.equal(candidateHint({ available: true }), "");
+});
+
+// --- path: empty is not the same as disconnected ---------------------------
+
+test("path renders the hop chain in order", () => {
+  assert.equal(
+    formatPath({ available: true, hops: [{ label: "Orion" }, { label: "Sync Issue Resolution" }, { label: "Juniper" }] }),
+    "Orion  →  Sync Issue Resolution  →  Juniper"
+  );
+});
+
+test("an empty path says how far it looked, not that they are unconnected", () => {
+  const text = formatPath({ available: true, hops: [], searched_to_depth: 3 });
+  assert.match(text, /within 3 hop/);
+  assert.match(text, /may still be connected/);
+  assert.doesNotMatch(text, /not connected|disconnected/);
+});
+
+test("path falls back to the node id when a hop has no label", () => {
+  assert.equal(formatPath({ available: true, hops: [{ node_id: "sub-evidence-1" }] }), "sub-evidence-1");
+});
+
+// --- review fixes -----------------------------------------------------------
+
+test("candidate hint ignores an empty list rather than stopping on it", () => {
+  // `[] || x` does not fall through: an empty array is truthy. /path used to
+  // send candidates for BOTH endpoints, so a `||` chain rendered
+  // "did you mean: Orion" for the endpoint that had resolved cleanly and hid
+  // the three real alternatives for the ambiguous one.
+  const hint = candidateHint({
+    available: false,
+    reason: "endpoint_not_resolved",
+    from_candidates: [],
+    to_candidates: [{ label: "Hospital and family chaos" }, { label: "Hospital and medical concerns" }],
+  });
+  assert.match(hint, /Hospital and family chaos/);
+  assert.doesNotMatch(hint, /Orion/);
+});
+
+test("candidate hint reports not-found when every list is empty", () => {
+  // Both endpoints missing -> both lists []. Truthy-empty made cands.length 0
+  // and the reason branch below rendered "ambiguous name" for a not-found.
+  const hint = candidateHint({
+    available: false,
+    reason: "node_not_found",
+    from_candidates: [],
+    to_candidates: [],
+  });
+  assert.match(hint, /no node matches/);
+  assert.doesNotMatch(hint, /ambiguous/);
+});
+
+test("coverage reports the rendered counts, not the raw payload", () => {
+  // With evidence folded in, the status line beside this one reads the
+  // post-filter count. Two different counts of the same canvas would be
+  // exactly the dishonesty this line exists to remove.
+  const line = coverageLine(
+    { available: true, truncated: true, nodes: new Array(102), edges: new Array(600) },
+    { available: true, node_count: 671, edge_count: 1464 },
+    { nodes: 62, edges: 340 }
+  );
+  assert.match(line, /62 of 671 nodes/);
+  assert.match(line, /340 of 1464 edges/);
+  assert.doesNotMatch(line, /102/);
+});
+
+test("coverage falls back to payload counts when no rendered counts are given", () => {
+  const line = coverageLine(
+    { available: true, truncated: true, nodes: new Array(102), edges: new Array(600) },
+    { available: true, node_count: 671, edge_count: 1464 },
+    null
+  );
+  assert.match(line, /102 of 671 nodes/);
 });

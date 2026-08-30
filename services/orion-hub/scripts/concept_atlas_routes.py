@@ -1236,11 +1236,20 @@ async def concept_atlas_network(
     # those filters by construction (it was never eligible for them), not
     # smuggled past them. Bounded by _NETWORK_HYDRATION_MAX_EXTRA_NODES.
     hydrated_count = 0
+    # Distinct from `hydrated_count == cap`: hydrating exactly the cap when the
+    # cap was also exactly how many candidates existed drops nothing, and a
+    # truncation warning that fires when nothing was cut erodes the trust this
+    # reporting exists to earn. Set only where the loop actually stops early.
+    hydration_stopped_early = False
     for e in edges:
         if hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+            hydration_stopped_early = True
             break
         for candidate_id in (e.source.node_id, e.target.node_id):
-            if candidate_id in node_ids or hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+            if candidate_id in node_ids:
+                continue
+            if hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+                hydration_stopped_early = True
                 continue
             try:
                 candidate_node = store.get_node_by_id(candidate_id)
@@ -1412,6 +1421,17 @@ async def concept_atlas_network(
         "god_node_count": len(god_ids),
         "component_count": len(set(component_of.values())),
         "truncated": bool(result.truncated),
+        # The concept-region fetch is not the only cap. Non-concept nodes are
+        # hydrated separately, bounded by _NETWORK_HYDRATION_MAX_EXTRA_NODES,
+        # and that bound was invisible in the payload. It stopped being
+        # academic on 2026-08-30: the substrate went from 136 nodes (fitting
+        # inside every cap) to 671, of which 464 are the newly-durable entity
+        # nodes -- and this view renders none of them. A canvas silently
+        # showing a shrinking fraction of the graph is the same class of
+        # dishonesty as an unlabeled node claiming to be a concept.
+        "hydration_truncated": hydration_stopped_early,
+        "hydrated_count": hydrated_count,
+        "hydration_limit": _NETWORK_HYDRATION_MAX_EXTRA_NODES,
         "degraded": degraded,
         "degraded_error": getattr(result, "error", None) if degraded else None,
         "graph": graph_label,
@@ -1949,6 +1969,11 @@ async def concept_atlas_page() -> HTMLResponse:
 #   * pageRank and betweenness disagree: Orion and Juniper are pageRank #1/#2
 #     and absent from the betweenness top 8. `bridges` surfaces that.
 
+# Label propagation is run over this predicate only -- see the measurement in
+# the communities block below. A tuple so the module constant cannot be mutated
+# by a caller holding the list the route passes down.
+_COMMUNITY_REL_TYPES: tuple[str, ...] = ("associated_with",)
+
 _SUMMARY_TOP_N = 8
 # MUST equal the number of pageRank rows concept-atlas.js renders. They were 5
 # and 6: a node at pageRank rank 6 could then appear in the influence column
@@ -2056,6 +2081,46 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
                 rankings[measure] = []
                 degraded_measures.append(measure)
 
+        # Communities were worth adding only once the graph could hold them.
+        # At 136 nodes / 307 edges labelPropagation returned exactly ONE
+        # community for every edge-type restriction tried, and this was
+        # deliberately left out as a reader for a thing with nothing to read.
+        # At 671 nodes / 1464 edges (2026-08-30) it finds real structure, and
+        # the most useful part is not thematic grouping but DUPLICATE
+        # DETECTION: restricted to associated_with it surfaced
+        # ("Rest and support", "Rest and recovery"),
+        # ("Hospital and family chaos", "Hospital and medical concerns") and
+        # ("AI Model Transparency", "AI Model Configuration") as their own
+        # 2-3 member communities -- near-duplicate concepts the induction
+        # pipeline minted separately.
+        #
+        # RESTRICTED, because that is the configuration the evidence was
+        # gathered under and the difference is not marginal. Re-measured live
+        # 2026-08-30 on the same 671-node graph:
+        #
+        #     unrestricted       3 communities, 1 of size <= 3
+        #     associated_with    8 communities, 6 of size <= 3
+        #
+        # and every duplicate pair named above -- ("Rest and support", "Rest
+        # and recovery"), ("AI Model Transparency", "AI Model Configuration"),
+        # ("Hospital and family chaos", "Hospital and medical concerns") --
+        # appears ONLY in the restricted run. Running unrestricted and citing
+        # the restricted result would be documenting a query this route does
+        # not make.
+        try:
+            communities = [
+                {
+                    "community_id": c.component_id,
+                    "size": c.size,
+                    "sample_labels": list(c.sample_labels),
+                }
+                for c in analytics.communities(rel_types=list(_COMMUNITY_REL_TYPES))
+            ]
+        except Exception as exc:  # noqa: BLE001 - one dead procedure must not blank the card
+            logger.warning("concept_atlas_structure_communities_failed error=%s", exc)
+            communities = []
+            degraded_measures.append("communities")
+
         dominant = summary.dominant_edge_type
         # Saturation is a statement about CONCEPT PAIRS, so both halves of the
         # ratio must be about concept pairs. Counting the dominant type's raw
@@ -2071,6 +2136,7 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
             "summary": summary,
             "concept_count": concept_count,
             "rankings": rankings,
+            "communities": communities,
             "degraded_measures": degraded_measures,
             "dominant": dominant,
             "dominant_pair_count": pair_count,
@@ -2125,5 +2191,230 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
             for c in summary.components
         ],
         "rankings": rankings,
+        "communities": collected["communities"],
         "bridges": bridges,
+    }
+
+
+# --- engine-side drill-down --------------------------------------------------
+#
+# WHY THESE ARE NOT JUST FILTERS ON /network. The network route fetches
+# `query_concept_region(limit_nodes=300, limit_edges=600)` and then hydrates
+# edge-reachable non-concept nodes up to _NETWORK_HYDRATION_MAX_EXTRA_NODES
+# (100). Its `focus` parameter filters *that already-truncated slice*, so it
+# answers "neighbours among the ones we happened to fetch", not "neighbours".
+#
+# That distinction was academic when the graph was 136 nodes and fit entirely
+# inside both caps. It is not any more: on 2026-08-30 the substrate holds 671
+# nodes (72 concept / 135 evidence / 464 entity) and 1464 edges, so the caps
+# bind and the node kind most likely to be cut is the newest one -- /network
+# currently renders zero of the 464 entities.
+#
+# These routes ask the ENGINE, against the whole graph, so their answers do not
+# depend on what a slice happened to contain.
+
+_NEIGHBORHOOD_DEFAULT_DEPTH = 1
+_NEIGHBORHOOD_DEFAULT_LIMIT = 200
+# depth is clamped by GraphAnalytics; limit was not clamped anywhere, so
+# ?limit=1000000 returned every reachable node in one payload -- on the live
+# graph that is all 671 of them, and it grows with the substrate.
+_NEIGHBORHOOD_MAX_LIMIT = 1000
+_PATH_DEFAULT_MAX_DEPTH = 3
+
+
+def _parse_rel_types(raw: Optional[str]) -> Optional[list[str]]:
+    """Comma-separated predicate filter, or None for "any".
+
+    Left unvalidated here on purpose: GraphAnalytics rejects non-identifiers at
+    the Cypher boundary (it is the injection boundary and owns that check), and
+    duplicating the rule here would be a second place for it to drift.
+    """
+    if not raw or not str(raw).strip():
+        return None
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    return parts or None
+
+
+def _resolved_or_candidates(analytics: Any, value: str) -> tuple[Optional[str], list[dict[str, Any]]]:
+    """(node_id, candidates). node_id is set only on an unambiguous match.
+
+    Labels are NOT unique here -- "Hospital" prefix-matches three distinct
+    concepts live -- so a silent first-match would answer a traversal question
+    about a node the caller did not mean. Ambiguity is returned to the caller
+    to resolve, never guessed.
+    """
+    matches = analytics.resolve_node(value)
+    if not matches:
+        return None, []
+    candidates = [{"node_id": m.node_id, "label": m.label} for m in matches]
+    # resolve_node ranks 0 = exact id, 1 = exact label, 2 = prefix, and it only
+    # runs the prefix query when the exact one returned nothing -- so rank 2
+    # rows never coexist with rank 0/1 rows. Treating 0 and 1 as one bucket
+    # therefore does not "prefer exact over prefix" (that cannot arise); it
+    # throws away the ONLY preference the rank column encodes.
+    #
+    # It matters because the atlas tap handler seeds the box with an exact
+    # node_id: if any other node happens to carry that same string as its
+    # LABEL, the exact query returns two rows and the route would answer
+    # `node_ambiguous` for a node the caller identified by primary key.
+    by_id = [m for m in matches if m.score == 0.0]
+    if len(by_id) == 1:
+        return by_id[0].node_id, candidates
+    exact = [m for m in matches if m.score <= 1.0]
+    if len(exact) == 1:
+        return exact[0].node_id, candidates
+    if len(matches) == 1:
+        return matches[0].node_id, candidates
+    return None, candidates
+
+
+@router.get("/api/substrate/concepts/neighborhood")
+async def concept_atlas_neighborhood(
+    node: Optional[str] = Query(None),
+    depth: int = Query(_NEIGHBORHOOD_DEFAULT_DEPTH),
+    rel_types: Optional[str] = Query(None),
+    limit: int = Query(_NEIGHBORHOOD_DEFAULT_LIMIT),
+    graph: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    from orion.graph.analytics import MAX_NEIGHBOURHOOD_DEPTH
+
+    analytics, graph_label = _build_graph_analytics(graph)
+    if analytics is None:
+        return _unavailable("falkordb_uri_unset", graph=graph_label)
+    needle = (node or "").strip()
+    if not needle:
+        return _unavailable("node_required", graph=graph_label, nodes=[])
+
+    effective_limit = max(1, min(int(limit), _NEIGHBORHOOD_MAX_LIMIT))
+
+    def _collect() -> dict[str, Any]:
+        node_id, candidates = _resolved_or_candidates(analytics, needle)
+        if node_id is None:
+            return {"node_id": None, "candidates": candidates, "nodes": [], "truncated": False}
+        # Ask for one MORE than the caller wants. `len(nodes) >= limit` cannot
+        # tell "cut short" from "exactly this many exist", and a truncation
+        # warning that fires when nothing was dropped erodes the same trust
+        # this patch is trying to earn. One extra row answers it exactly.
+        found = analytics.neighborhood(
+            node_id,
+            depth=depth,
+            rel_types=_parse_rel_types(rel_types),
+            limit=effective_limit + 1,
+        )
+        truncated = len(found) > effective_limit
+        return {
+            "node_id": node_id,
+            "candidates": candidates,
+            "nodes": found[:effective_limit],
+            "truncated": truncated,
+        }
+
+    try:
+        collected = await asyncio.to_thread(_collect)
+    except ValueError as exc:  # bad rel_types -- a caller error, not a backend one
+        return _unavailable("invalid_rel_types", str(exc), graph=graph_label, nodes=[])
+    except Exception as exc:  # noqa: BLE001 - never 500 an operator page
+        logger.warning("concept_atlas_neighborhood_failed node=%s error=%s", needle, exc)
+        return _unavailable("graph_analytics_error", str(exc), graph=graph_label, nodes=[])
+
+    if collected["node_id"] is None:
+        return _unavailable(
+            "node_not_found" if not collected["candidates"] else "node_ambiguous",
+            graph=graph_label,
+            nodes=[],
+            candidates=collected["candidates"],
+        )
+
+    nodes = collected["nodes"]
+    return {
+        "available": True,
+        "graph": graph_label,
+        "node_id": collected["node_id"],
+        "query": needle,
+        "depth": min(max(1, int(depth)), MAX_NEIGHBOURHOOD_DEPTH),
+        "nodes": [
+            {"node_id": n.node_id, "label": n.label, "hops": int(n.score)} for n in nodes
+        ],
+        "limit": effective_limit,
+        # A neighbourhood cut short at the limit is a different fact from a
+        # small neighbourhood, and the caller cannot tell them apart from the
+        # list alone -- the same silent-truncation trap /network's hydration
+        # cap already falls into. Determined by over-fetching one row, so this
+        # is exact rather than a >= guess that fires on the boundary.
+        "truncated": bool(collected["truncated"]),
+    }
+
+
+@router.get("/api/substrate/concepts/path")
+async def concept_atlas_path(
+    source: Optional[str] = Query(None, alias="from"),
+    target: Optional[str] = Query(None, alias="to"),
+    max_depth: int = Query(_PATH_DEFAULT_MAX_DEPTH),
+    rel_types: Optional[str] = Query(None),
+    graph: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    from orion.graph.analytics import MAX_PATH_DEPTH
+
+    analytics, graph_label = _build_graph_analytics(graph)
+    if analytics is None:
+        return _unavailable("falkordb_uri_unset", graph=graph_label)
+    a_text, b_text = (source or "").strip(), (target or "").strip()
+    if not a_text or not b_text:
+        return _unavailable("from_and_to_required", graph=graph_label, hops=[])
+
+    def _collect() -> dict[str, Any]:
+        a_id, a_cands = _resolved_or_candidates(analytics, a_text)
+        b_id, b_cands = _resolved_or_candidates(analytics, b_text)
+        if a_id is None or b_id is None:
+            # Candidates ONLY for the endpoint that failed. _resolved_or_candidates
+            # returns the full match list even on a clean resolve, so reporting
+            # both made a caller that reads "the first non-empty list" suggest
+            # alternatives for the endpoint that was already fine: from="Orion"
+            # (resolved) + to="Hospital" (3 matches) rendered
+            # "did you mean: Orion" and hid the three real ones.
+            return {
+                "hops": [],
+                "unresolved": True,
+                "from_candidates": [] if a_id is not None else a_cands,
+                "to_candidates": [] if b_id is not None else b_cands,
+                "unresolved_endpoints": [
+                    name for name, resolved in (("from", a_id), ("to", b_id)) if resolved is None
+                ],
+            }
+        hops = analytics.path(
+            a_id, b_id, max_depth=max_depth, rel_types=_parse_rel_types(rel_types)
+        )
+        return {"hops": hops, "unresolved": False, "from_id": a_id, "to_id": b_id}
+
+    try:
+        collected = await asyncio.to_thread(_collect)
+    except ValueError as exc:
+        return _unavailable("invalid_rel_types", str(exc), graph=graph_label, hops=[])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("concept_atlas_path_failed from=%s to=%s error=%s", a_text, b_text, exc)
+        return _unavailable("graph_analytics_error", str(exc), graph=graph_label, hops=[])
+
+    if collected.get("unresolved"):
+        return _unavailable(
+            "endpoint_not_resolved",
+            graph=graph_label,
+            hops=[],
+            from_candidates=collected["from_candidates"],
+            to_candidates=collected["to_candidates"],
+            unresolved_endpoints=collected["unresolved_endpoints"],
+        )
+
+    hops = collected["hops"]
+    return {
+        "available": True,
+        "graph": graph_label,
+        "from_id": collected["from_id"],
+        "to_id": collected["to_id"],
+        "max_depth": min(max(1, int(max_depth)), MAX_PATH_DEPTH),
+        "hops": [{"node_id": h.node_id, "label": h.label, "index": int(h.score)} for h in hops],
+        # Empty means "no path within max_depth", NOT "not connected". Said in
+        # the payload because a caller cannot distinguish them and the honest
+        # next step (raise the depth, or check components) depends on which.
+        "found": bool(hops),
+        "searched_to_depth": min(max(1, int(max_depth)), MAX_PATH_DEPTH),
     }

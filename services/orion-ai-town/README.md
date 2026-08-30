@@ -216,7 +216,7 @@ minutes on a large table set.
 
 ## Cast cards (source of truth)
 
-The full character set — the 8 NPCs plus **Juniper Feld** (human) and **Orion** (external join) — lives as authored cards in `cards/town_cards.yaml`. This is the single source of truth for identities.
+The live character set — **Mara Vale**, **Nico Sable**, **Sofia Bell**, and **Cam Lin**, plus **Juniper Feld** (human) and **Orion** (external join) — lives as authored cards in `cards/town_cards.yaml`. This is the single source of truth for identities. Retired cards (Juno Park, Tessa Quinn, Vale Moreno, Dr. Elian Cross) are archived at `cards/archived/2026-08-29-retired-cast.yaml` — do not delete them.
 
 Regenerate the AI Town artifacts from the cards with the deterministic generator (run from repo root):
 
@@ -233,7 +233,7 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 ## Orion embodiment
 
-`patches/orion-character.patch` seeds the fresh 8-NPC town cast in AI Town's `Descriptions`: Mara Vale, Nico Sable, Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno, Sofia Bell, and Cam Lin (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and her rich join description in `convex/world.ts`).
+`patches/orion-character.patch` is the tracked diff for AI Town's `Descriptions` array (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). **Live cards, `generate_descriptions.py`, and the checked-in patch seed four NPCs** — Mara Vale, Nico Sable, Sofia Bell, and Cam Lin. Retired cards (Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno) are archived at `cards/archived/2026-08-29-retired-cast.yaml`. Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and her rich join description in `convex/world.ts`). A world wipe is still required after recasting (`testing:wipeAllTables` then `init`) — see Fresh game / reset below.
 
 > Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast.
 
@@ -241,12 +241,14 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 Reseed the town from scratch (destructive — wipes all world/memory tables). Operator-run:
 
+Live cards, `generate_descriptions.py`, and the tracked `orion-character.patch` seed **four** NPCs (see Cast cards above). This recipe applies the tracked patch first, so `init` seeds the four live identities in `Descriptions`.
+
 ```bash
-cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh
+cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh  # tracked patch seeds four NPCs
 cd upstream && npx convex dev --once            # redeploy Convex functions
 npx convex run testing:stop
 npx convex run testing:wipeAllTables            # internalMutation; wipes all world/memory tables
-npx convex run init                             # seeds the 8 NPCs from Descriptions
+npx convex run init                             # seeds the four live Descriptions after patches
 npx convex run testing:resume
 # re-bootstrap Orion's external body:
 cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write
@@ -290,6 +292,25 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 - **3 minute grace** after an NPC speaks before it considers speaking again (`HUMAN_REPLY_GRACE_MS`)
 
 Orion's external embodiment worker already walks on `walkingOver` via `approach_player` intents in `services/orion-embodiment/app/worker.py`.
+
+### Town continuity ingest (`patches/orion-town-continuity-ingest.patch`)
+
+NPC-to-NPC openers fetch `aitown-town` continuity in `startConversationMessage` (`GET /summary` → `What you remember:` when non-empty). Human (Juniper) conversations skip that start path — `orion-town-chat-turns.patch` waits for the human's first line — and GET `/summary` on the first continue instead (`priorMessages.length <= 1`). Later continues do not fetch again. NPC continue/leave still `POST /ingest-turn` (fire-and-forget, 3s abort) when the other player is not Orion. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open (3s `AbortSignal.timeout`) and never block the speech return path. Slugs are the same six hardcoded names as `orion/town_cast.py`.
+
+These are **Convex env vars** (operator `npx convex env set` from `upstream/`), not this service's Python `.env`:
+
+| Convex env | Example | Meaning |
+|------------|---------|---------|
+| `SOCIAL_MEMORY_URL` | `http://<mesh-ip>:8765` | `orion-social-memory` base URL (`GET /summary`, `POST /ingest-turn`) |
+| `SOCIAL_MEMORY_INGEST_TOKEN` | same token as social-memory | Bearer token for `POST /ingest-turn` |
+| `AITOWN_ORION_NAME` | `Orion` | Other-player name that skips Convex ingest (embodiment owns that dyad) |
+
+```bash
+cd services/orion-ai-town/upstream
+npx convex env set SOCIAL_MEMORY_URL http://<mesh-ip>:8765
+npx convex env set SOCIAL_MEMORY_INGEST_TOKEN "<token>"
+npx convex env set AITOWN_ORION_NAME Orion
+```
 
 ### NPC cooldown tuning (`patches/orion-npc-cooldown-tuning.patch`)
 

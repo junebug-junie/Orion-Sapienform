@@ -1,13 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 622,
+  "metric_count": 620,
   "_last_change": {
-    "base": "merge base 20da10e3c (origin/main)",
-    "change_count": 2,
-    "high_severity_count": 0,
+    "base": "merge base 3049aaab4 (origin/main)",
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth",
-      "medium added metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio"
+      "high   routing_changed metric://bus_channel/orion-embodiment/orion:chat:social:turn (all_producers: ['orion-embodiment', 'orion-hub'] -> ['orion-embodiment', 'orion-hub', 'orion-social-memory'])"
     ]
   },
   "definitions": {
@@ -1089,7 +1088,8 @@
       "schema_id": "SocialRoomTurnV1",
       "all_producers": [
         "orion-embodiment",
-        "orion-hub"
+        "orion-hub",
+        "orion-social-memory"
       ],
       "declared_consumers": [
         "orion-sql-writer"
@@ -3821,31 +3821,7 @@
       "notes": "scalar field on AttentionSelfModelV1",
       "registry_source": "orion/inner_state_registry.py"
     },
-    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth": {
-      "schema_id": "AttentionSelfModelV1",
-      "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
-        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
-      ],
-      "upstream": [
-        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
-      ],
-      "notes": "scalar field on AttentionSelfModelV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio": {
-      "schema_id": "AttentionSelfModelV1",
-      "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
-        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
-      ],
-      "upstream": [
-        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
-      ],
-      "notes": "scalar field on AttentionSelfModelV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
         "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",

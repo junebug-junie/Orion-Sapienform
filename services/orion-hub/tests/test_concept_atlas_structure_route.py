@@ -67,6 +67,7 @@ def _live_shaped_analytics():
         def __init__(self):
             self.rank_calls = []
             self.pair_calls = []
+            self.community_calls = []
 
         def summary(self):
             return StructureSummary(
@@ -85,6 +86,15 @@ def _live_shaped_analytics():
                         )
                     ],
                 ),
+            )
+
+        def communities(self, *, rel_types=None, min_size=2):
+            from orion.graph.analytics import Component
+
+            self.community_calls.append(rel_types)
+            return (
+                Component("1", 645, ("Orion", "Juniper")),
+                Component("9", 2, ("Hospital and family chaos", "Hospital and medical concerns")),
             )
 
         def node_count(self, label=None):
@@ -397,3 +407,35 @@ def test_the_blocking_graph_work_runs_off_the_event_loop():
     threaded = src[src.index("def _collect()"):src.index("collected = await asyncio.to_thread")]
     for call in ("analytics.summary()", "analytics.node_count(", "analytics.rank(", "analytics.connected_pair_count("):
         assert call in threaded, f"{call} is not inside the threaded block"
+
+
+def test_structure_surfaces_communities(client, stub_summary):
+    """Left out originally on purpose: at 136 nodes / 307 edges label
+    propagation returned exactly ONE community for every edge-type restriction
+    tried, and a reader for a thing with nothing to read is dead weight. At 671
+    nodes / 1464 edges (2026-08-30) it finds real structure -- and the most
+    useful part is duplicate detection, not thematic grouping."""
+    body = client.get("/api/substrate/concepts/structure").json()
+    comms = body["communities"]
+    assert comms, "communities must reach the payload"
+    assert comms[0]["size"] == 645
+    dupes = [c for c in comms if c["size"] == 2][0]
+    assert "Hospital and family chaos" in dupes["sample_labels"]
+    assert "Hospital and medical concerns" in dupes["sample_labels"]
+
+
+def test_a_dead_community_procedure_does_not_blank_the_card(client, monkeypatch):
+    import scripts.concept_atlas_routes as mod
+
+    stub = _live_shaped_analytics()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Procedure `algo.labelPropagation` not supported")
+
+    stub.communities = boom
+    monkeypatch.setattr(mod, "_build_graph_analytics", lambda graph: (stub, "substrate"))
+    body = client.get("/api/substrate/concepts/structure").json()
+    assert body["available"] is True
+    assert body["node_count"] == 136, "the census survives a dead procedure"
+    assert body["communities"] == []
+    assert "communities" in body["degraded_measures"]

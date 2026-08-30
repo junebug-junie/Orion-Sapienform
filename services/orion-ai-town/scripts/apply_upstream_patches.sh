@@ -13,6 +13,7 @@ PATCHES=(
   "orion-npc-cooldown-tuning.patch"
   "orion-anti-repetition-prompt.patch"
   "orion-concrete-grounding-prompt.patch"
+  "orion-town-continuity-ingest.patch"
   "orion-input-counter-contention.patch"
 )
 

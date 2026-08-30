@@ -1151,3 +1151,55 @@ def test_every_payload_field_is_readable_for_every_durable_node_kind(
         assert node["label"], f"every node needs a readable label: {node}"
         assert node["origin"] in ("topic_foundry", "concept")
         assert isinstance(node["synthetic_label"], bool)
+
+
+# --- hydration truncation must mean "we actually dropped something" ---------
+
+
+def _evidence_with_edge(store, index, concept_id):
+    ev = _evidence_node(f"e-hyd-{index}")
+    store.upsert_node(identity_key=f"e:hyd:{index}", node=ev)
+    store.upsert_edge(
+        identity_key=f"edge:hyd:{index}",
+        edge=_edge(f"edge-hyd-{index}", f"e-hyd-{index}", concept_id, predicate="supports"),
+    )
+
+
+def test_hydration_truncation_is_not_claimed_when_nothing_was_dropped(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`hydrated_count >= cap` is True when exactly `cap` candidates existed and
+    ALL of them were hydrated -- nothing was cut, but the UI printed
+    "view truncated". A warning that fires on an untruncated view erodes the
+    trust this reporting exists to earn."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_NETWORK_HYDRATION_MAX_EXTRA_NODES", 2)
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="c:h", node=_hydrated_topic_foundry_node("c-h", "Anchor"))
+    for i in range(2):  # exactly the cap
+        _evidence_with_edge(store, i, "c-h")
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    body = client.get("/api/substrate/concepts/network").json()
+    assert body["hydrated_count"] == 2
+    assert body["hydration_truncated"] is False, "exactly-full is not truncated"
+
+
+def test_hydration_truncation_is_reported_when_something_was_dropped(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_NETWORK_HYDRATION_MAX_EXTRA_NODES", 2)
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="c:h", node=_hydrated_topic_foundry_node("c-h", "Anchor"))
+    for i in range(5):  # more than the cap
+        _evidence_with_edge(store, i, "c-h")
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    body = client.get("/api/substrate/concepts/network").json()
+    assert body["hydrated_count"] == 2
+    assert body["hydration_truncated"] is True

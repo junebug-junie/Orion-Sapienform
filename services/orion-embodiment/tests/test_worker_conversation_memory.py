@@ -49,17 +49,27 @@ def _worker(*, conversation_memory_enabled: bool = True, memory_enabled: bool = 
     return w
 
 
-def _perception_in_convo(*, other_is_human: bool = False) -> WorldPerceptionV1:
+def _perception_in_convo(
+    *,
+    other_is_human: bool = False,
+    partner_name: str = "Juniper Feld",
+    partner_id: str = "p9",
+) -> WorldPerceptionV1:
     return WorldPerceptionV1(
         player_id="orion",
         position={"x": 0.0, "y": 0.0},
-        nearby_players=[{"player_id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}, "distance": 1.0}],
+        nearby_players=[{"player_id": partner_id, "name": partner_name, "position": {"x": 1.0, "y": 0.0}, "distance": 1.0}],
         active_conversation={
             "conversation_id": "conv1",
             "status": "participating",
-            "participants": ["orion", "p9"],
-            "other": {"player_id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}, "is_human": other_is_human},
-            "messages": [{"author_id": "p9", "author": "Juniper", "text": "hey Orion"}],
+            "participants": ["orion", partner_id],
+            "other": {
+                "player_id": partner_id,
+                "name": partner_name,
+                "position": {"x": 1.0, "y": 0.0},
+                "is_human": other_is_human,
+            },
+            "messages": [{"author_id": partner_id, "author": partner_name, "text": "hey Orion"}],
         },
     )
 
@@ -107,11 +117,18 @@ def test_speak_once_publishes_to_both_channels_with_shared_correlation_id():
     # orion-social-memory must use the stable venue constant, not conv_id, or
     # every new conversation with the same NPC fragments into a disconnected
     # continuity row instead of accumulating one relationship over time.
-    assert social_turn.client_meta["external_room"] == {"platform": "aitown", "room_id": "aitown-town"}
-    for turn in (chat_turn, social_turn):
-        assert turn.client_meta["external_participant"] == {
-            "participant_id": "p9", "participant_name": "Juniper", "participant_kind": "human",
-        }
+    assert social_turn.client_meta["external_room"] == {
+        "platform": "aitown",
+        "room_id": "aitown-town",
+        "thread_id": "juniper-feld--orion",
+    }
+    # chat_history may keep the Convex player_id; social-memory-facing id is the slug.
+    assert chat_turn.client_meta["external_participant"] == {
+        "participant_id": "p9", "participant_name": "Juniper Feld", "participant_kind": "human",
+    }
+    assert social_turn.client_meta["external_participant"] == {
+        "participant_id": "juniper-feld", "participant_name": "Juniper Feld", "participant_kind": "human",
+    }
 
 
 def test_speak_once_tags_npc_participant_kind():
@@ -159,6 +176,35 @@ def test_publish_skipped_when_partner_id_unknown():
          patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
         asyncio.run(w._speak_once(perc))
     pub.assert_not_awaited()
+
+
+def test_speak_once_social_keys_sofia_bell_by_stable_slug():
+    w = _worker()
+    perc = _perception_in_convo(other_is_human=True, partner_name="Sofia Bell", partner_id="p:12")
+    with patch.object(w, "_request_utterance", new=AsyncMock(return_value="Hi Sofia!")), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
+         patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
+        asyncio.run(w._speak_once(perc))
+    chat_turn = ChatHistoryTurnV1.model_validate(_calls_on(pub, CHAT_HISTORY_TURN_CHANNEL)[0].args[2].payload)
+    social_turn = SocialRoomTurnV1.model_validate(_calls_on(pub, SOCIAL_TURN_CHANNEL)[0].args[2].payload)
+    assert chat_turn.client_meta["external_participant"]["participant_id"] == "p:12"
+    assert social_turn.client_meta["external_participant"]["participant_id"] == "sofia-bell"
+    assert social_turn.client_meta["external_room"]["thread_id"] == "orion--sofia-bell"
+
+
+def test_unknown_name_skips_social_publish_keeps_chat_history():
+    w = _worker()
+    perc = _perception_in_convo(partner_name="Dr. Elian Cross", partner_id="p:99")
+    with patch.object(w, "_request_utterance", new=AsyncMock(return_value="Hi!")), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
+         patch("app.worker.publish_with_reconnect", new=AsyncMock()) as pub:
+        asyncio.run(w._speak_once(perc))
+    assert len(_calls_on(pub, CHAT_HISTORY_TURN_CHANNEL)) == 1
+    assert _calls_on(pub, SOCIAL_TURN_CHANNEL) == []
+    chat_turn = ChatHistoryTurnV1.model_validate(_calls_on(pub, CHAT_HISTORY_TURN_CHANNEL)[0].args[2].payload)
+    assert chat_turn.client_meta["external_participant"]["participant_id"] == "p:99"
 
 
 def _perception(**kwargs) -> WorldPerceptionV1:
@@ -248,14 +294,15 @@ def test_fetch_participant_continuity_returns_summary_when_present():
     w._settings.social_memory_url = "http://socialmem:8765"
     body = {"participant": {"safe_continuity_summary": "Talked before, warm tone."}}
     with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen:
-        result = w._fetch_participant_continuity("p9", "conv1")
+        result = w._fetch_participant_continuity("Juniper Feld", "conv1")
     assert result == "Talked before, warm tone."
     called_url = urlopen.call_args.args[0].full_url
     assert "platform=aitown" in called_url
     # Fixed venue constant, not conv_id -- must match _publish_conversation_memory's
     # social-memory-facing room_id or continuity lookups always find nothing.
     assert "room_id=aitown-town" in called_url
-    assert "participant_id=p9" in called_url
+    assert "participant_id=juniper-feld" in called_url
+    assert "participant_id=p9" not in called_url
 
 
 def test_fetch_participant_continuity_uses_fixed_room_id_across_different_conversations():
@@ -263,10 +310,10 @@ def test_fetch_participant_continuity_uses_fixed_room_id_across_different_conver
     w._settings.social_memory_url = "http://socialmem:8765"
     body = {"participant": {"safe_continuity_summary": "Talked before."}}
     with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen:
-        w._fetch_participant_continuity("p9", "conv1")
+        w._fetch_participant_continuity("Juniper Feld", "conv1")
         first_url = urlopen.call_args.args[0].full_url
     with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen:
-        w._fetch_participant_continuity("p9", "conv2-a-totally-different-conversation")
+        w._fetch_participant_continuity("Juniper Feld", "conv2-a-totally-different-conversation")
         second_url = urlopen.call_args.args[0].full_url
     # Same partner, two different conversation ids -> same room_id query, so
     # both resolve to the same continuity row instead of fragmenting.
@@ -277,14 +324,14 @@ def test_fetch_participant_continuity_none_when_no_participant_row():
     w = _worker(conversation_memory_enabled=True)
     w._settings.social_memory_url = "http://socialmem:8765"
     with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response({"participant": None})):
-        assert w._fetch_participant_continuity("p9", "conv1") is None
+        assert w._fetch_participant_continuity("Juniper Feld", "conv1") is None
 
 
 def test_fetch_participant_continuity_none_when_disabled():
     w = _worker(conversation_memory_enabled=False)
     w._settings.social_memory_url = "http://socialmem:8765"
     with patch("app.worker.urllib.request.urlopen") as urlopen:
-        assert w._fetch_participant_continuity("p9", "conv1") is None
+        assert w._fetch_participant_continuity("Juniper Feld", "conv1") is None
     urlopen.assert_not_called()
 
 
@@ -292,7 +339,32 @@ def test_fetch_participant_continuity_fail_open_on_error():
     w = _worker(conversation_memory_enabled=True)
     w._settings.social_memory_url = "http://socialmem:8765"
     with patch("app.worker.urllib.request.urlopen", side_effect=OSError("boom")):
-        assert w._fetch_participant_continuity("p9", "conv1") is None
+        assert w._fetch_participant_continuity("Juniper Feld", "conv1") is None
+
+
+def test_fetch_participant_continuity_queries_sofia_bell_slug_not_convex_id():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    body = {"participant": {"safe_continuity_summary": "Talked before."}}
+    perc = _perception_in_convo(partner_name="Sofia Bell", partner_id="p:12")
+    with patch("app.worker.urllib.request.urlopen", return_value=_fake_urlopen_response(body)) as urlopen, \
+         patch.object(w, "_request_utterance", new=AsyncMock(return_value="Hi Sofia!")), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
+         patch("app.worker.publish_with_reconnect", new=AsyncMock()):
+        asyncio.run(w._speak_once(perc))
+    called_url = urlopen.call_args.args[0].full_url
+    assert "participant_id=sofia-bell" in called_url
+    assert "p:12" not in called_url
+    assert "p%3A12" not in called_url
+
+
+def test_fetch_unknown_name_returns_none_without_http():
+    w = _worker(conversation_memory_enabled=True)
+    w._settings.social_memory_url = "http://socialmem:8765"
+    with patch("app.worker.urllib.request.urlopen") as urlopen:
+        assert w._fetch_participant_continuity("Dr. Elian Cross", "conv1") is None
+    urlopen.assert_not_called()
 
 
 def test_speak_once_threads_participant_continuity_into_request_utterance():
@@ -305,7 +377,7 @@ def test_speak_once_threads_participant_continuity_into_request_utterance():
          patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
          patch("app.worker.publish_with_reconnect", new=AsyncMock()):
         asyncio.run(w._speak_once(_perception_in_convo(other_is_human=True)))
-    fetch.assert_called_once_with("p9", "conv1")
+    fetch.assert_called_once_with("Juniper Feld", "conv1")
     assert req.await_args.kwargs["participant_continuity"] == "Talked before, warm tone."
 
 

@@ -2,11 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 620,
   "_last_change": {
-    "base": "merge base e0d38e963 (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base 00fbc4d52 (origin/main)",
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-embodiment/orion:chat:social:turn (all_producers: ['orion-embodiment', 'orion-hub'] -> ['orion-embodiment', 'orion-hub', 'orion-social-memory'])"
     ]
   },
   "definitions": {
@@ -1088,7 +1088,8 @@
       "schema_id": "SocialRoomTurnV1",
       "all_producers": [
         "orion-embodiment",
-        "orion-hub"
+        "orion-hub",
+        "orion-social-memory"
       ],
       "declared_consumers": [
         "orion-sql-writer"

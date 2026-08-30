@@ -1,12 +1,12 @@
-"""Gate tests for the AI Town NPC continuity ingest/summary patch.
+"""Gate tests for the AI Town NPC continuity ingest/pair-turn patch.
 
 Companion to orion-concrete-grounding-prompt.patch: NPC-to-NPC openers fetch
-aitown-town continuity in startConversationMessage. Human (Juniper) chats skip
-that start path (orion-town-chat-turns.patch) and GET /summary on the first
-continue instead. Continue/leave still publish SocialRoomTurnV1 when the other
-is not Orion. Orion↔anyone stays embodiment-only. Fail-open: ingest and
-summary fetch time out in 3s and never block the speech return path. Slugs
-are hardcoded from orion/town_cast.py — never inferred.
+aitown-town pair/town turns in startConversationMessage. Human (Juniper) chats
+skip that start path (orion-town-chat-turns.patch) and GET /town-continuity on
+the first continue instead. Continue/leave still publish SocialRoomTurnV1 when
+the other is not Orion. Orion↔anyone stays embodiment-only. Fail-open: ingest
+and continuity fetch time out in 3s and never block the speech return path.
+Slugs are hardcoded from orion/town_cast.py — never inferred.
 """
 
 from __future__ import annotations
@@ -48,7 +48,9 @@ def test_continuity_patch_skips_orion_as_other():
 def test_continuity_patch_fetches_summary_once_at_start():
     patch = _PATCH.read_text(encoding="utf-8")
     assert "startConversationMessage" in patch
-    assert "/summary" in patch
+    assert "/town-continuity" in patch
+    assert "/summary" not in patch
+    assert "/ingest-turn" in patch
     assert "aitown-town" in patch
 
 
@@ -75,10 +77,29 @@ def test_continuity_patch_fetches_on_first_continue():
     patch = _PATCH.read_text(encoding="utf-8")
     assert "continueConversationMessage" in patch
     assert "priorMessages.length <= 1" in patch or "previousMessages.length <= 1" in patch
-    assert "What you remember:" in patch
+    assert "Earlier with them:" in patch
+    assert "From your other conversations:" in patch
+    assert "What you remember:" not in patch
+
+
+def test_continuity_patch_fetch_uses_speaker_and_other():
+    patch = _PATCH.read_text(encoding="utf-8")
+    assert "fetchTownContinuity(player.name, otherPlayer.name)" in patch
+    assert "thread_id" in patch
+    assert "speaker_id" in patch
+
+
+def test_continuity_patch_omits_topic_bag_labels():
+    patch = _PATCH.read_text(encoding="utf-8")
+    assert "What you remember:" not in patch
+    assert "safe_continuity_summary" not in patch
 
 
 def test_readme_says_juniper_gets_continuity_on_first_continue():
     readme = (_SERVICE / "README.md").read_text(encoding="utf-8")
     assert "first continue" in readme.lower()
     assert "Juniper chats never GET" not in readme
+    assert "GET /town-continuity" in readme or "`GET /town-continuity`" in readme
+    assert "thread_id" in readme
+    assert "speaker_id" in readme
+    assert "embodiment" in readme.lower() and "/summary" in readme

@@ -299,13 +299,13 @@ Orion's external embodiment worker already walks on `walkingOver` via `approach_
 
 ### Town continuity ingest (`patches/orion-town-continuity-ingest.patch`)
 
-NPC-to-NPC openers fetch `aitown-town` continuity in `startConversationMessage` (`GET /summary` → `What you remember:` when non-empty). Human (Juniper) conversations skip that start path — `orion-town-chat-turns.patch` waits for the human's first line — and GET `/summary` on the first continue instead (`priorMessages.length <= 1`). Later continues do not fetch again. NPC continue/leave still `POST /ingest-turn` (fire-and-forget, 3s abort) when the other player is not Orion. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open (3s `AbortSignal.timeout`) and never block the speech return path. Slugs are the same six hardcoded names as `orion/town_cast.py`.
+NPC-to-NPC openers fetch `aitown-town` continuity in `startConversationMessage` (`GET /town-continuity` with `thread_id` + `speaker_id` → `Earlier with them:` / `From your other conversations:` when non-empty). Human (Juniper) conversations skip that start path — `orion-town-chat-turns.patch` waits for the human's first line — and GET `/town-continuity` on the first continue instead (`priorMessages.length <= 1`). Later continues do not fetch again. Topic bags are not injected. Embodiment still uses `/summary`. NPC continue/leave still `POST /ingest-turn` (fire-and-forget, 3s abort) when the other player is not Orion. Orion↔anyone stays embodiment-only. Ingest and continuity fetch fail-open (3s `AbortSignal.timeout`) and never block the speech return path. Slugs are the same six hardcoded names as `orion/town_cast.py`.
 
 These are **Convex env vars** (operator `npx convex env set` from `upstream/`), not this service's Python `.env`:
 
 | Convex env | Example | Meaning |
 |------------|---------|---------|
-| `SOCIAL_MEMORY_URL` | `http://<mesh-ip>:8765` | `orion-social-memory` base URL (`GET /summary`, `POST /ingest-turn`) |
+| `SOCIAL_MEMORY_URL` | `http://<mesh-ip>:8765` | `orion-social-memory` base URL (`GET /town-continuity`, `POST /ingest-turn`; embodiment still uses `GET /summary`) |
 | `SOCIAL_MEMORY_INGEST_TOKEN` | same token as social-memory | Bearer token for `POST /ingest-turn` |
 | `AITOWN_ORION_NAME` | `Orion` | Other-player name that skips Convex ingest (embodiment owns that dyad) |
 

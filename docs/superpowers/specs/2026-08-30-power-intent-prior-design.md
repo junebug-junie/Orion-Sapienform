@@ -203,6 +203,15 @@ table was created:
 | settled | predicted | actual | residual | baseline |
 |---|---|---|---|---|
 | 2026-08-30 01:39:16 | 256.58 | 245.38 | **-11.20** | 47.6 |
+| 2026-08-30 01:40:28 | 250.98 | 246.19 | **-4.79** | 47.3 |
+
+The error shrank 57% (11.20 -> 4.79W) after one self-correction.
+
+**Not concluded from two points:** both residuals are negative. That could be a
+systematic overestimate -- the median of past PEAKS may be a biased predictor
+of the next peak -- or it could be coincidence at n=2. If the sign persists
+across the next dozen settlements the estimator needs revisiting. Recorded as
+an open question, not as a converging trend.
 
 Against the acceptance checks:
 

@@ -577,8 +577,23 @@ proposal_templates:
   # cold action scores 0.198 nats/sec against a 0.02 floor. It earns its slot by
   # being the one thing Orion does not already know the answer to.
   #
-  # base_priority 0.30 is mid-pack on purpose, matching observe_tension_via_camera.
-  # It should have to compete, not be crowned.
+  # base_priority 0.55, raised from 0.30 on the day it shipped after measuring
+  # the live result: 36 express candidates in 6 minutes, every one blocked
+  # `max_dispatch_candidates_exceeded`. It never lost on value -- it never
+  # reached the thing that judges value.
+  #
+  # This is a real ordering problem, not just a number. The 5-slot cap is a
+  # PRIORITY pre-filter and it runs BEFORE the allocator, so a cheap heuristic
+  # decides which candidates the expensive, correct one is even allowed to see.
+  # A cold action scoring 0.198 nats/sec -- 100x anything else in the arena --
+  # can be cut by a hand-typed float before the allocator is consulted. Raising
+  # this is the smallest honest fix; making the cap value-aware is the right one
+  # and is not this patch.
+  #
+  # 0.55 is chosen to clear the slate reliably, not to win outright: priority is
+  # base_priority + confidence * max(match, urgency), and prune_build_cache's own
+  # comment records 0.34 landing at rank 7.8 of 10. The allocator still decides
+  # whether it actually runs.
   render_scene:
     kind: express
     expected_signal: resource_pressure
@@ -587,7 +602,7 @@ proposal_templates:
     target_id: host:circe_gpu
     proposed_effect: increase_observability
     required_policy_gate: read_only
-    base_priority: 0.30
+    base_priority: 0.55
     base_risk: 0.08
     reversibility: 1.0
     dimensions:

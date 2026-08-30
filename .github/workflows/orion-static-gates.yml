@@ -109,3 +109,14 @@ jobs:
       # once on 2026-08-29, one of which had never published a heartbeat.
       - name: SystemHealthV1 producers pass required fields
         run: python scripts/check_system_health_producers.py
+
+      # Stdlib-only, no live infra. The substrate control surface fails OPEN: with
+      # no database configured it silently serves a per-process in-memory default
+      # instead of the value another service wrote. Found live 2026-08-30 with
+      # orion-hub on postgres (0.5) and orion-cortex-orch -- which reads the value
+      # on every routing decision -- on memory (0.75). Same code, same key, two
+      # stores, no symptom. Checks the declared dependency too: cortex-orch was
+      # correctly configured and STILL fell back, on a missing SQLAlchemy that the
+      # Postgres path swallows as ImportError.
+      - name: Substrate control surface consumers are configured
+        run: python scripts/check_control_surface_store_parity.py

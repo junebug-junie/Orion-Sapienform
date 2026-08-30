@@ -30,6 +30,7 @@ Exit 0 clean, 1 on violations.
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -48,31 +49,124 @@ RESOLVER_KEYS = (
 )
 
 
+def _module_path(module: str) -> Path | None:
+    candidate = REPO_ROOT / (module.replace(".", "/") + ".py")
+    if candidate.exists():
+        return candidate
+    package = REPO_ROOT / module.replace(".", "/") / "__init__.py"
+    return package if package.exists() else None
+
+
+def _imported_orion_modules(path: Path) -> set[str]:
+    """Every `orion.*` module a file imports, in either spelling.
+
+    Substring-matching the full dotted module name misses
+    `from orion.substrate import mutation_control_surface`, which is a form real
+    code in this repo uses -- and misses transitive reach entirely.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, SyntaxError):
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("orion."):
+                    found.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or not node.module or not node.module.startswith("orion"):
+                continue
+            found.add(node.module)
+            # `from orion.substrate import mutation_control_surface` -- the
+            # submodule is a name, not part of node.module.
+            for alias in node.names:
+                found.add(f"{node.module}.{alias.name}")
+    return found
+
+
+def _reaches_control_surface(path: Path, cache: dict[Path, bool], stack: set[Path]) -> bool:
+    """Does this file import the control surface, directly or transitively?
+
+    Transitive matters: orion-field-digester reaches it through
+    causal_geometry_producer -> mutation_trials -> get_chat_reflective_lane_threshold,
+    and a direct-import check reports that service as clean.
+    """
+    if path in cache:
+        return cache[path]
+    if path in stack:  # import cycle
+        return False
+    stack.add(path)
+    result = False
+    for module in _imported_orion_modules(path):
+        if module == CONTROL_SURFACE_MODULE or module.startswith(CONTROL_SURFACE_MODULE + "."):
+            result = True
+            break
+        target = _module_path(module)
+        if target is not None and _reaches_control_surface(target, cache, stack):
+            result = True
+            break
+    stack.discard(path)
+    cache[path] = result
+    return result
+
+
 def services_importing_control_surface() -> dict[str, list[Path]]:
     hits: dict[str, list[Path]] = {}
-    for path in SERVICES.glob("*/**/*.py"):
-        if "/tests/" in str(path) or "/evals/" in str(path):
+    cache: dict[Path, bool] = {}
+    for path in sorted(SERVICES.glob("*/**/*.py")):
+        parts = set(path.relative_to(SERVICES).parts)
+        if "tests" in parts or "evals" in parts or "node_modules" in parts:
             continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        if CONTROL_SURFACE_MODULE in text:
-            service = path.relative_to(SERVICES).parts[0]
-            hits.setdefault(service, []).append(path)
+        if _reaches_control_surface(path, cache, set()):
+            hits.setdefault(path.relative_to(SERVICES).parts[0], []).append(path)
     return hits
 
 
+def _nonempty_assignment(text: str, key: str) -> bool:
+    """True only if the key resolves to something non-empty.
+
+    Presence is not enough. `_resolve_postgres_url()` strips each value and falls
+    through on empty, so a bare passthrough is 100% fail-open:
+
+        - SUBSTRATE_CONTROL_PLANE_POSTGRES_URL=${SUBSTRATE_CONTROL_PLANE_POSTGRES_URL}
+          SUBSTRATE_CONTROL_PLANE_POSTGRES_URL: ${SUBSTRATE_CONTROL_PLANE_POSTGRES_URL:-}
+
+    orion-hub ships exactly the first form with the key empty in .env_example, and
+    works only because DATABASE_URL is also set. A presence check credits hub for
+    a key that is provably unset.
+    """
+    # Horizontal whitespace only after the separator: `\s*` matches newlines, so
+    # `KEY=` followed by `OTHER_KEY=` on the next line would capture that next
+    # line as this key's value and report an empty key as configured. That is
+    # exactly what it did for orion-hub, whose key IS empty.
+    pattern = rf"^[^\S\n]*-?[^\S\n]*{re.escape(key)}[^\S\n]*[:=][^\S\n]*([^\n]*)$"
+    for match in re.finditer(pattern, text, re.MULTILINE):
+        value = match.group(1).strip().strip('"').strip("'")
+        if not value:
+            continue
+        # ${VAR} / ${VAR:-} with no default resolves to empty when VAR is unset.
+        bare = re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*(:-\s*)?\}", value)
+        if bare:
+            continue
+        return True
+    return False
+
+
 def compose_configures_a_resolver_key(service: str) -> tuple[bool, str | None]:
+    """Look at compose AND .env_example: a service using `env_file:` legitimately
+    configures keys there rather than in an `environment:` block."""
     compose = SERVICES / service / "docker-compose.yml"
     if not compose.exists():
         return False, f"no docker-compose.yml at {compose.relative_to(REPO_ROOT)}"
-    text = compose.read_text(encoding="utf-8", errors="ignore")
+    sources: list[tuple[str, str]] = [("docker-compose.yml", compose.read_text(encoding="utf-8", errors="ignore"))]
+    env_example = SERVICES / service / ".env_example"
+    if env_example.exists():
+        sources.append((".env_example", env_example.read_text(encoding="utf-8", errors="ignore")))
     for key in RESOLVER_KEYS:
-        # Match the key in an environment position (`KEY:` or `- KEY=`), not a
-        # mention inside a comment.
-        if re.search(rf"^\s*-?\s*{re.escape(key)}\s*[:=]", text, re.MULTILINE):
-            return True, key
+        for origin, text in sources:
+            if _nonempty_assignment(text, key):
+                return True, f"{key} ({origin})"
     return False, None
 
 

@@ -5,10 +5,12 @@ import contextlib
 import logging
 from typing import Any, Dict
 
+from sqlalchemy import text
+
 from orion.inspection.social import build_social_inspection_snapshot
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
+from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1, TownContinuityReadV1
 from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
 from orion.schemas.social_context import (
     SocialContextCandidateV1,
@@ -58,6 +60,7 @@ from .models import (
     SocialStanceSnapshotSQL,
 )
 from .settings import Settings
+from .town_continuity import _parse_json, select_town_continuity
 from .synthesizer import (
     ClaimTrackingResult,
     artifact_dialogue_records,
@@ -1056,6 +1059,50 @@ class SocialMemoryService:
                 "context_selection_decision": context_selection_decision.model_dump(mode="json") if context_selection_decision else None,
                 "context_candidates": [item.model_dump(mode="json") for item in context_candidates[:12]],
             }
+        finally:
+            try:
+                sess.close()
+            finally:
+                remove_session()
+
+    async def get_town_continuity(
+        self,
+        *,
+        platform: str,
+        room_id: str,
+        thread_id: str,
+        speaker_id: str,
+    ) -> TownContinuityReadV1:
+        empty = TownContinuityReadV1(thread_id=thread_id, speaker_id=speaker_id)
+        sess = get_session()
+        try:
+            try:
+                result = sess.execute(
+                    text(
+                        "SELECT prompt, response, tags, redaction, client_meta, created_at "
+                        "FROM social_room_turns"
+                    )
+                )
+                rows = [
+                    {
+                        "prompt": row["prompt"],
+                        "response": row["response"],
+                        "tags": _parse_json(row["tags"], []),
+                        "redaction": _parse_json(row["redaction"], {}),
+                        "client_meta": _parse_json(row["client_meta"], {}),
+                        "created_at": row["created_at"],
+                    }
+                    for row in result.mappings()
+                ]
+            except Exception:
+                return empty
+            return select_town_continuity(
+                platform=platform,
+                room_id=room_id,
+                thread_id=thread_id,
+                speaker_id=speaker_id,
+                rows=rows,
+            )
         finally:
             try:
                 sess.close()

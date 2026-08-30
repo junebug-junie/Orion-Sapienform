@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import scoped_session, sessionmaker
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -2130,7 +2131,6 @@ def test_stale_calibration_candidate_softens_and_refresh_needed_hint_is_kept() -
     assert freshness_hint["inclusion_decision"] == "include"
 
 
-
 def test_context_window_keeps_blocked_private_material_out() -> None:
     svc, _ = _service_and_session()
     asyncio.run(
@@ -2147,3 +2147,151 @@ def test_context_window_keeps_blocked_private_material_out() -> None:
 
     assert "sealed_private" not in rendered
     assert "do not surface this" not in rendered
+
+
+_SOCIAL_ROOM_TURNS_DDL = """
+CREATE TABLE social_room_turns (
+  turn_id TEXT PRIMARY KEY,
+  prompt TEXT NOT NULL,
+  response TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  tags JSON,
+  redaction JSON,
+  client_meta JSON,
+  created_at TEXT
+)
+"""
+
+
+def _create_social_room_turns(Session) -> None:
+    with Session.bind.begin() as conn:
+        conn.execute(text(_SOCIAL_ROOM_TURNS_DDL))
+
+
+def _insert_social_room_turn(
+    Session,
+    *,
+    turn_id: str,
+    prompt: str,
+    response: str,
+    thread_id: str,
+    speaker_id: str,
+    speaker_name: str,
+    created_at: str,
+) -> None:
+    with Session.bind.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO social_room_turns "
+                "(turn_id, prompt, response, text, tags, redaction, client_meta, created_at) "
+                "VALUES (:turn_id, :prompt, :response, '', :tags, :redaction, :client_meta, :created_at)"
+            ),
+            {
+                "turn_id": turn_id,
+                "prompt": prompt,
+                "response": response,
+                "tags": json.dumps(["aitown"]),
+                "redaction": json.dumps({"recall_safe": True}),
+                "client_meta": json.dumps(
+                    {
+                        "external_room": {
+                            "platform": "aitown",
+                            "room_id": "aitown-town",
+                            "thread_id": thread_id,
+                        },
+                        "external_participant": {
+                            "participant_id": speaker_id,
+                            "participant_name": speaker_name,
+                        },
+                    }
+                ),
+                "created_at": created_at,
+            },
+        )
+
+
+def test_get_town_continuity_endpoint_requires_thread_and_speaker() -> None:
+    import app.main as main_mod
+
+    class _FakeTownContinuityService:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_town_continuity(self, **kwargs):
+            raise AssertionError("should not be called when thread_id is missing")
+
+    original_service = main_mod.service
+    main_mod.service = _FakeTownContinuityService()
+    try:
+        with TestClient(main_mod.app) as client:
+            resp = client.get(
+                "/town-continuity",
+                params={
+                    "platform": "aitown",
+                    "room_id": "aitown-town",
+                    "speaker_id": "nico-sable",
+                },
+            )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "thread_id_and_speaker_id_required"
+    finally:
+        main_mod.service = original_service
+
+
+def test_get_town_continuity_reads_social_room_turns() -> None:
+    svc, Session = _service_and_session()
+    _create_social_room_turns(Session)
+    _insert_social_room_turn(
+        Session,
+        turn_id="nico-juniper-1",
+        prompt="spill the tea",
+        response="the pie sat out and the crumbs were sugar",
+        thread_id="juniper-feld--nico-sable",
+        speaker_id="nico-sable",
+        speaker_name="Nico Sable",
+        created_at="2026-08-29T20:00:00+00:00",
+    )
+    _insert_social_room_turn(
+        Session,
+        turn_id="sofia-cam-1",
+        prompt="jailbreak",
+        response="not for nico",
+        thread_id="cam-lin--sofia-bell",
+        speaker_id="sofia-bell",
+        speaker_name="Sofia Bell",
+        created_at="2026-08-29T18:00:00+00:00",
+    )
+
+    body = asyncio.run(
+        svc.get_town_continuity(
+            platform="aitown",
+            room_id="aitown-town",
+            thread_id="juniper-feld--nico-sable",
+            speaker_id="nico-sable",
+        )
+    )
+
+    pair_texts = [turn.text for turn in body.pair_turns]
+    town_texts = [turn.text for turn in body.town_turns]
+    assert "spill the tea" in pair_texts
+    assert "jailbreak" not in pair_texts
+    assert "jailbreak" not in town_texts
+    assert "not for nico" not in pair_texts
+    assert "not for nico" not in town_texts
+
+
+def test_get_town_continuity_missing_table_is_empty() -> None:
+    svc, _ = _service_and_session()
+    body = asyncio.run(
+        svc.get_town_continuity(
+            platform="aitown",
+            room_id="aitown-town",
+            thread_id="juniper-feld--nico-sable",
+            speaker_id="nico-sable",
+        )
+    )
+    assert body.pair_turns == []
+    assert body.town_turns == []

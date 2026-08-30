@@ -88,6 +88,26 @@ async def summary(
     return await service.get_summary(platform=platform.strip(), room_id=room_id.strip(), participant_id=participant_id)
 
 
+@app.get("/town-continuity")
+async def town_continuity(
+    platform: str = Query(...),
+    room_id: str = Query(...),
+    thread_id: str = Query(""),
+    speaker_id: str = Query(""),
+) -> Dict[str, Any]:
+    if not platform.strip() or not room_id.strip():
+        raise HTTPException(status_code=400, detail="platform_and_room_id_required")
+    if not thread_id.strip() or not speaker_id.strip():
+        raise HTTPException(status_code=400, detail="thread_id_and_speaker_id_required")
+    body = await service.get_town_continuity(
+        platform=platform.strip(),
+        room_id=room_id.strip(),
+        thread_id=thread_id.strip(),
+        speaker_id=speaker_id.strip(),
+    )
+    return body.model_dump(mode="json")
+
+
 @app.get("/inspection")
 async def inspection(
     platform: str = Query(...),

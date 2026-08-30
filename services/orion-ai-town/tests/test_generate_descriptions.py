@@ -71,6 +71,14 @@ def test_render_descriptions_emits_four_valid_sprites():
         assert dead not in ts
 
 
+def test_character_patch_seeds_four_live_npcs_not_retired():
+    patch = (_SERVICE / "patches" / "orion-character.patch").read_text(encoding="utf-8")
+    for name in ("Mara Vale", "Nico Sable", "Sofia Bell", "Cam Lin"):
+        assert name in patch
+    for dead in ("Juno Park", "Tessa Quinn", "Vale Moreno", "Dr. Elian Cross"):
+        assert dead not in patch
+
+
 def test_orion_blurb_does_not_name_retired_cast():
     by = {c["id"]: c for c in _cards()["characters"]}
     blurb = gen.compose_presence_blurb(by["orion"])

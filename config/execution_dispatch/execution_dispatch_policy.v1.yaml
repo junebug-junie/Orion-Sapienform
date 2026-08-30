@@ -238,7 +238,24 @@ hard_blocks:
   - destructive_action
 
 limits:
-  max_dispatch_candidates: 5
+  # 2026-08-30: raised 5 -> 50 so it STOPS BEING A PRE-FILTER.
+  #
+  # This is a priority cut that runs BEFORE the allocator, so a hand-typed float
+  # decided which candidates the value-of-information scorer was allowed to see.
+  # Measured live: a cold action worth 0.198 nats/sec -- 100x anything else in
+  # the arena -- was cut 36 times in 6 minutes at base_priority 0.30, and never
+  # lost on value because it never reached the thing that judges value. A cheap
+  # heuristic gating the correct one is backwards.
+  #
+  # Not deleted, because the admission machinery underneath it is good (reserved
+  # slots, then a general pass that hands unclaimed reservations back). 50 sits
+  # well above the 11 candidates/frame observed live, so it no longer binds
+  # while staying a real backstop if a producer ever runs away.
+  #
+  # THE REAL SEND CAP IS UNCHANGED: max_dispatches_per_tick below is a separate,
+  # independent limit on what actually goes out, and the motor budget and the
+  # allocator both still apply. This widens what gets CONSIDERED, not what runs.
+  max_dispatch_candidates: 50
   # 2026-07-31 (docs/superpowers/specs/2026-07-30-execution-dispatch-
   # staleness-discard-design.md's Part 2): raised from 1 -- sends are now
   # concurrent (asyncio.gather(..., return_exceptions=True) in

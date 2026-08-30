@@ -676,6 +676,27 @@ class ExecutionDispatchRuntimeWorker:
                 )
             )
 
+        # PER-CANDIDATE SCORES, not just the refusal histogram. The aggregate
+        # `refusals={'unmeasurable': 2}` says two things were unmeasurable, never
+        # WHICH -- and a whole evening went into inferring from those counts what
+        # one line per candidate states outright. Debug level: this is 5-11 lines
+        # a tick and only wanted when a refusal is being argued with.
+        for c in candidates:
+            logger.debug(
+                # Candidate carries no signal_id -- candidate_from_dispatch uses
+                # it only to decide variance-vs-None and drops it. `measurable`
+                # is the readable proxy: False means the signal was absent.
+                "motor_allocator_candidate id=%s kind=%s target=%s "
+                "variance=%s cost_sec=%s nats_per_sec=%s measurable=%s",
+                c.dispatch_id,
+                c.dispatch_kind,
+                c.target_id,
+                c.posterior_variance,
+                c.cost_sec,
+                c.nats_per_sec,
+                c.measurable,
+            )
+
         allocation = allocate(
             candidates,
             allowance_sec=motor.remaining_sec,

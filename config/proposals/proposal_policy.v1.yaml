@@ -577,10 +577,13 @@ proposal_templates:
   # cold action scores 0.198 nats/sec against a 0.02 floor. It earns its slot by
   # being the one thing Orion does not already know the answer to.
   #
-  # base_priority 0.55, raised from 0.30 on the day it shipped after measuring
-  # the live result: 36 express candidates in 6 minutes, every one blocked
-  # `max_dispatch_candidates_exceeded`. It never lost on value -- it never
-  # reached the thing that judges value.
+  # base_priority BACK to 0.30, mid-pack, matching observe_tension_via_camera.
+  #
+  # It was raised to 0.55 earlier today purely to survive the 5-slot priority
+  # pre-filter (36 candidates cut in 6 minutes). That pre-filter has since been
+  # widened out of the way in execution_dispatch_policy.v1.yaml, so the hack is
+  # no longer needed and keeping it would be crowning this action rather than
+  # letting it earn its slot. The allocator decides on value now.
   #
   # This is a real ordering problem, not just a number. The 5-slot cap is a
   # PRIORITY pre-filter and it runs BEFORE the allocator, so a cheap heuristic
@@ -602,7 +605,7 @@ proposal_templates:
     target_id: host:circe_gpu
     proposed_effect: increase_observability
     required_policy_gate: read_only
-    base_priority: 0.55
+    base_priority: 0.30
     base_risk: 0.08
     reversibility: 1.0
     dimensions:

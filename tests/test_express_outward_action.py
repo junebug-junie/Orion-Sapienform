@@ -163,3 +163,132 @@ class TestItWillActuallyBeChosen:
 
     def test_it_is_kind_express_so_it_is_not_introspection(self) -> None:
         assert _render_scene_template()["kind"] == "express"
+
+
+class TestColdStartExemption:
+    """The floor is an absorbing state for EXPENSIVE actions without this.
+
+    Cold information is fixed at 0.5*ln(1 + prior/tau) = 0.99 nats, so any
+    action costing more than ~49s sits below a 0.02 floor forever, however much
+    better it is than the alternatives. Measured live 2026-08-30: render_scene
+    at 53.5s scored 0.0185 nats/sec -- 71x the best other candidate in the same
+    tick -- and was refused alongside them.
+    """
+
+    def _cold(self, cost_sec: float):
+        from orion.autonomy.allocator import candidate_from_dispatch
+        from orion.autonomy.prediction import DEFAULT_PRIOR_VARIANCE
+
+        return candidate_from_dispatch(
+            dispatch_id="render",
+            dispatch_kind="express",
+            target_id="host:circe_gpu",
+            signal_id="resource_pressure",
+            claimed_direction="increase",
+            cell_variances_by_volume=[],
+            cost_sec=cost_sec,
+            cold_variance=DEFAULT_PRIOR_VARIANCE,
+        )
+
+    def _measured(self):
+        from orion.autonomy.allocator import candidate_from_dispatch
+        from orion.autonomy.prediction import DEFAULT_PRIOR_VARIANCE
+
+        # The real live figures: variance 2.7e-05 over 3,429 observations.
+        return candidate_from_dispatch(
+            dispatch_id="inspect",
+            dispatch_kind="inspect",
+            target_id="capability:orchestration",
+            signal_id="execution_pressure",
+            claimed_direction="no_change",
+            cell_variances_by_volume=[(2.7e-05, 3429)],
+            cost_sec=5.29,
+            cold_variance=DEFAULT_PRIOR_VARIANCE,
+        )
+
+    def test_cold_start_is_recorded(self) -> None:
+        assert self._cold(53.49).cold_start is True
+        assert self._measured().cold_start is False
+
+    def test_an_expensive_cold_action_is_admitted_below_the_floor(self) -> None:
+        from orion.autonomy.allocator import allocate
+
+        cold = self._cold(53.49)
+        assert cold.nats_per_sec < 0.02, "fixture must actually be below the floor"
+        result = allocate([cold], allowance_sec=90000.0, min_nats_per_sec=0.02)
+        assert [c.dispatch_id for c in result.admitted] == ["render"]
+
+    def test_a_thoroughly_measured_action_is_still_refused(self) -> None:
+        """The exemption must not become a general floor reduction -- that would
+        admit actions we have correctly LEARNED are worthless."""
+        from orion.autonomy.allocator import allocate
+
+        result = allocate([self._measured()], allowance_sec=90000.0, min_nats_per_sec=0.02)
+        assert result.admitted == ()
+        assert [r for _, r in result.refused] == ["below_information_floor"]
+
+    def test_the_exemption_ends_after_a_single_observation(self) -> None:
+        """One sample is enough to stop being cold. Otherwise an action could
+        ride the exemption forever and never be judged on evidence."""
+        from orion.autonomy.allocator import allocate, candidate_from_dispatch
+        from orion.autonomy.prediction import DEFAULT_PRIOR_VARIANCE
+
+        after_one = candidate_from_dispatch(
+            dispatch_id="render",
+            dispatch_kind="express",
+            target_id="host:circe_gpu",
+            signal_id="resource_pressure",
+            claimed_direction="increase",
+            cell_variances_by_volume=[(1e-05, 1)],
+            cost_sec=53.49,
+            cold_variance=DEFAULT_PRIOR_VARIANCE,
+        )
+        assert after_one.cold_start is False
+        result = allocate([after_one], allowance_sec=90000.0, min_nats_per_sec=0.02)
+        assert [r for _, r in result.refused] == ["below_information_floor"]
+
+    def test_the_exemption_does_not_bypass_the_harm_gate(self) -> None:
+        """Learning is not a reason to do damage, cold or not."""
+        from orion.autonomy.allocator import Candidate, allocate
+
+        harmful = Candidate(
+            dispatch_id="harmful",
+            dispatch_kind="express",
+            target_id="host:circe_gpu",
+            posterior_variance=0.25,
+            cost_sec=53.49,
+            contrast=0.9,
+            contrast_sd=0.01,
+            claimed_direction="decrease",
+            cold_start=True,
+        )
+        result = allocate([harmful], allowance_sec=90000.0, min_nats_per_sec=0.02)
+        assert [r for _, r in result.refused] == ["confidently_harmful"]
+
+    def test_the_exemption_does_not_bypass_the_cost_requirement(self) -> None:
+        """An unmeasured COST is still refused -- that one could be enormous."""
+        from orion.autonomy.allocator import Candidate, allocate
+
+        no_cost = Candidate(
+            dispatch_id="no_cost",
+            dispatch_kind="express",
+            target_id="host:circe_gpu",
+            posterior_variance=0.25,
+            cost_sec=None,
+            cold_start=True,
+        )
+        result = allocate([no_cost], allowance_sec=90000.0, min_nats_per_sec=0.02)
+        assert [r for _, r in result.refused] == ["no_cost_estimate"]
+
+    def test_it_beats_the_alternatives_it_was_being_refused_alongside(self) -> None:
+        from orion.autonomy.allocator import allocate
+
+        result = allocate(
+            [self._cold(53.49), self._measured()],
+            allowance_sec=90000.0,
+            min_nats_per_sec=0.02,
+        )
+        assert [c.dispatch_id for c in result.admitted] == ["render"]
+        assert [(c.dispatch_id, r) for c, r in result.refused] == [
+            ("inspect", "below_information_floor")
+        ]

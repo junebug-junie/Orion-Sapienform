@@ -89,6 +89,7 @@ say. Percentages sum to 100% no matter how worthless the set.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Literal
@@ -164,6 +165,8 @@ def expected_information_gain_nats(
     return 0.5 * math.log(1.0 + (posterior_variance / observation_variance))
 
 
+logger = logging.getLogger("orion.autonomy.allocator")
+
 # Stamped onto a candidate the allocator refused, so the refusal leaves a row
 # on the saved frame instead of only a log line. Mirrors
 # orion.autonomy.contrast.HOLDBACK_BLOCK_REASON.
@@ -208,6 +211,11 @@ class Candidate:
     contrast_sd: float | None = None
     # "increase" / "decrease" / "no_change", or None if undeclared.
     claimed_direction: str | None = None
+
+    # True when `posterior_variance` came from the cold prior rather than from
+    # any observation -- i.e. this action has never run. Load-bearing: see the
+    # cold-start exemption in allocate().
+    cold_start: bool = False
 
     @property
     def measurable(self) -> bool:
@@ -308,9 +316,42 @@ def allocate(
             # expensive actions bypass the budget entirely.
             refused.append((candidate, "no_cost_estimate"))
             continue
-        if rate < min_nats_per_sec:
+        if rate < min_nats_per_sec and not candidate.cold_start:
             refused.append((candidate, "below_information_floor"))
             continue
+        # COLD-START EXEMPTION. An action that has never run cannot be refused
+        # on the information floor, because the rate being tested is entirely
+        # PRIOR -- there is no evidence yet, and refusing it forever is what
+        # stops the evidence from ever existing. The floor's job is retiring
+        # actions we have LEARNED are uninformative; it cannot do that job on
+        # something unmeasured.
+        #
+        # Without this the floor is an absorbing state for EXPENSIVE actions
+        # specifically. Cold information is a fixed 0.5*ln(1 + prior/tau) --
+        # 0.99 nats at the defaults -- so any action costing more than ~49s is
+        # structurally below a 0.02 floor forever, however much better it is
+        # than the alternatives. Measured live 2026-08-30: render_scene at
+        # 53.5s scored 0.0185 nats/sec, SEVENTY-ONE TIMES the best other
+        # candidate in the same tick (0.00026), and was refused while they were
+        # refused too -- the floor reporting "nothing here is worth doing" when
+        # the best thing available was 71x the runner-up.
+        #
+        # Deliberately NOT fixed by lowering min_nats_per_sec: that would admit
+        # thoroughly-measured actions we have correctly learned are worthless,
+        # which is the metric-gaming this repo bans. The exemption is narrow --
+        # it applies once per action, ends the moment a single observation
+        # exists, and changes nothing about the harm gate, the cost estimate
+        # requirement, the greedy ordering, or the allowance.
+        if rate < min_nats_per_sec:
+            logger.info(
+                "allocator_cold_start_exemption dispatch_id=%s kind=%s target=%s "
+                "rate=%.6f floor=%.6f -- never measured, admitted to produce evidence",
+                candidate.dispatch_id,
+                candidate.dispatch_kind,
+                candidate.target_id,
+                rate,
+                min_nats_per_sec,
+            )
         scored.append(candidate)
 
     # Ties broken by dispatch_id so the same input always yields the same
@@ -360,12 +401,14 @@ def candidate_from_dispatch(
     `signal_id is None` means UNMEASURABLE and yields `posterior_variance
     None`, not a cold start. See Candidate.posterior_variance.
     """
+    cold_start = False
     if signal_id is None:
         variance = None
     else:
         blended = expected_information_gain_across_bins(
             cell_variances_by_volume, observation_variance
         )
+        cold_start = blended is None
         variance = (
             cold_variance
             if blended is None
@@ -381,4 +424,5 @@ def candidate_from_dispatch(
         posterior_variance=variance,
         cost_sec=cost_sec,
         claimed_direction=claimed_direction,
+        cold_start=cold_start,
     )

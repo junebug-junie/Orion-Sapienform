@@ -10,6 +10,7 @@ per-backend adapter layer, so shape drift here would silently break scoring.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from app.storage import falkor_bus_synaptic_adapter as bsa
 
@@ -33,6 +34,10 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _recent_epoch(offset_sec: float = 60.0) -> float:
+    return time.time() - offset_sec
+
+
 def test_no_client_configured_returns_empty_list(monkeypatch) -> None:
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: None)
     out = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
@@ -40,9 +45,6 @@ def test_no_client_configured_returns_empty_list(monkeypatch) -> None:
 
 
 def test_no_anomalies_returns_empty_list_not_a_placeholder_fragment(monkeypatch) -> None:
-    # The common case, per this arc's own live-verified baseline (most edges
-    # are not anomalous most of the time) -- must be a real empty list, not a
-    # "nothing found" fragment (this repo's "no empty-shell cognition" rule).
     fake_client = _FakeFalkorClient(publish_rows=[], causal_rows=[])
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
 
@@ -54,7 +56,13 @@ def test_no_anomalies_returns_empty_list_not_a_placeholder_fragment(monkeypatch)
 def test_publish_anomaly_produces_a_real_fragment(monkeypatch) -> None:
     fake_client = _FakeFalkorClient(
         publish_rows=[
-            {"organ_id": "cortex-exec", "channel": "orion:cognition:trace", "zscore": 5.2, "count": 40}
+            {
+                "organ_id": "cortex-exec",
+                "channel": "orion:cognition:trace",
+                "zscore": 5.2,
+                "count": 40,
+                "last_seen_epoch": _recent_epoch(120),
+            }
         ]
     )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
@@ -65,21 +73,30 @@ def test_publish_anomaly_produces_a_real_fragment(monkeypatch) -> None:
     frag = out[0]
     assert frag["source"] == "bus_synaptic_anomaly"
     assert frag["source_ref"] == "falkordb"
-    # uri must be per-fragment-unique (== id), not a shared constant -- see
-    # test_multiple_real_anomalies_all_survive_fuse_candidates for why.
     assert frag["uri"] == frag["id"]
     assert "cortex-exec" in frag["text"]
     assert "orion:cognition:trace" in frag["text"]
     assert "5.2" in frag["text"]
-    assert frag["tags"] == ["bus_synaptic", "anomaly", "publish_gap"]
+    assert "inter-arrival gap" in frag["text"]
+    assert "not live traffic" in frag["text"]
+    assert "not current publish rate" in frag["text"]
+    assert frag["tags"] == ["bus_synaptic", "anomaly", "publish_gap", "stale_telemetry_snapshot"]
     assert frag["meta"]["zscore"] == 5.2
     assert frag["meta"]["count"] == 40
+    assert frag["meta"]["signal_kind"] == "publish_gap_zscore"
+    assert isinstance(frag["ts"], float)
 
 
 def test_causal_anomaly_produces_a_real_fragment(monkeypatch) -> None:
     fake_client = _FakeFalkorClient(
         causal_rows=[
-            {"source_organ": "orion-feedback-runtime", "target_organ": "spark-concept-induction", "zscore": -4.1, "count": 200}
+            {
+                "source_organ": "orion-feedback-runtime",
+                "target_organ": "spark-concept-induction",
+                "zscore": -4.1,
+                "count": 200,
+                "last_seen_epoch": _recent_epoch(300),
+            }
         ]
     )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
@@ -88,18 +105,33 @@ def test_causal_anomaly_produces_a_real_fragment(monkeypatch) -> None:
 
     assert len(out) == 1
     frag = out[0]
-    assert frag["tags"] == ["bus_synaptic", "anomaly", "causal_latency"]
+    assert frag["tags"] == ["bus_synaptic", "anomaly", "causal_latency", "stale_telemetry_snapshot"]
     assert "orion-feedback-runtime" in frag["text"]
     assert "spark-concept-induction" in frag["text"]
+    assert "not live traffic" in frag["text"]
 
 
 def test_both_anomaly_kinds_combine_and_respect_max_items(monkeypatch) -> None:
     fake_client = _FakeFalkorClient(
         publish_rows=[
-            {"organ_id": f"organ-{i}", "channel": "c", "zscore": 5.0, "count": 10} for i in range(3)
+            {
+                "organ_id": f"organ-{i}",
+                "channel": "c",
+                "zscore": 5.0,
+                "count": 10,
+                "last_seen_epoch": _recent_epoch(30),
+            }
+            for i in range(3)
         ],
         causal_rows=[
-            {"source_organ": "a", "target_organ": "b", "zscore": 4.0, "count": 10} for _ in range(3)
+            {
+                "source_organ": "a",
+                "target_organ": "b",
+                "zscore": 4.0,
+                "count": 10,
+                "last_seen_epoch": _recent_epoch(30),
+            }
+            for _ in range(3)
         ],
     )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
@@ -110,7 +142,9 @@ def test_both_anomaly_kinds_combine_and_respect_max_items(monkeypatch) -> None:
 
 
 def test_rows_missing_zscore_are_skipped_not_crashed(monkeypatch) -> None:
-    fake_client = _FakeFalkorClient(publish_rows=[{"organ_id": "x", "channel": "c", "zscore": None, "count": 1}])
+    fake_client = _FakeFalkorClient(
+        publish_rows=[{"organ_id": "x", "channel": "c", "zscore": None, "count": 1, "last_seen_epoch": _recent_epoch()}]
+    )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
 
     out = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
@@ -130,16 +164,26 @@ def test_graph_query_exception_fails_open_to_empty_list(monkeypatch) -> None:
     assert out == []
 
 
-def test_thresholds_are_threaded_through_to_both_queries(monkeypatch) -> None:
+def test_thresholds_and_recency_are_threaded_through_to_both_queries(monkeypatch) -> None:
     fake_client = _FakeFalkorClient()
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
+    before = time.time()
 
-    _run(bsa.fetch_bus_synaptic_anomaly_fragments(zscore_threshold=5.0, min_count=10))
+    _run(
+        bsa.fetch_bus_synaptic_anomaly_fragments(
+            zscore_threshold=5.0,
+            min_count=10,
+            max_edge_age_sec=7200.0,
+        )
+    )
 
     assert len(fake_client.calls) == 2
     for _, params in fake_client.calls:
         assert params["threshold"] == 5.0
         assert params["min_count"] == 10
+        assert params["min_last_seen_epoch"] >= before - 7200.0 - 1.0
+        assert params["min_last_seen_epoch"] <= before - 7200.0 + 1.0
+        assert "last_seen_epoch" in fake_client.calls[0][0]
 
 
 def test_get_bus_synaptic_falkor_client_returns_none_without_falkordb_uri(monkeypatch) -> None:
@@ -169,28 +213,39 @@ def _fusion_profile() -> dict:
 
 
 def test_multiple_real_anomalies_all_survive_fuse_candidates(monkeypatch) -> None:
-    # Regression test for a review-caught, live-reproduced bug: this
-    # adapter's fragments used to set a shared constant `uri`
-    # ("orion_bus_synapse") on every fragment. fusion.py::_key_for() dedupes
-    # on `uri` when present (it wins over `id`), so every anomaly from a
-    # single fetch collapsed into just one surviving fragment -- live-verified
-    # against real data (5 real anomalies in, 1 survived). `uri` must be
-    # per-fragment-unique, matching every sibling adapter's convention.
     from app.fusion import fuse_candidates
 
     fake_client = _FakeFalkorClient(
         publish_rows=[
-            {"organ_id": "cortex-orch", "channel": "orion:cortex:result*", "zscore": 7.1, "count": 10}
+            {
+                "organ_id": "cortex-orch",
+                "channel": "orion:cortex:result*",
+                "zscore": 7.1,
+                "count": 10,
+                "last_seen_epoch": _recent_epoch(45),
+            }
         ],
         causal_rows=[
-            {"source_organ": "actions", "target_organ": "spark-concept-induction", "zscore": 11.5, "count": 8},
-            {"source_organ": "orion-thought", "target_organ": "landing-pad", "zscore": 8.6, "count": 232},
+            {
+                "source_organ": "actions",
+                "target_organ": "spark-concept-induction",
+                "zscore": 11.5,
+                "count": 8,
+                "last_seen_epoch": _recent_epoch(45),
+            },
+            {
+                "source_organ": "orion-thought",
+                "target_organ": "landing-pad",
+                "zscore": 8.6,
+                "count": 232,
+                "last_seen_epoch": _recent_epoch(45),
+            },
         ],
     )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
 
     fragments = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
-    assert len(fragments) == 3  # sanity: the adapter itself returns all 3
+    assert len(fragments) == 3
 
     bundle, _ = fuse_candidates(candidates=fragments, profile=_fusion_profile(), diagnostic=True)
 

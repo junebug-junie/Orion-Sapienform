@@ -333,6 +333,14 @@ class Settings(BaseSettings):
     RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT")
     )
+    # Recency floor for fetch_bus_synaptic_anomaly_fragments(): exclude Falkor
+    # PUBLISHES/CAUSALLY_FOLLOWED_BY edges whose last_seen_epoch is older than
+    # this window. Without it, frozen gap_zscore on long-dead channels (e.g.
+    # orion:dream:log) reach unified-turn recall and read as live bus activity.
+    RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC: float = Field(
+        default=86400.0,
+        validation_alias=AliasChoices("RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC"),
+    )
     # Phase 2 of the entity-graph-reasoning arc (docs/superpowers/specs/
     # 2026-07-19-recall-entity-graph-reasoning-arc.md): fuse_candidates
     # (fusion.py) additively boosts a candidate's composite score when its

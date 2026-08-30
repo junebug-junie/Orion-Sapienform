@@ -1131,7 +1131,9 @@ async def _query_backends(
     )
     if bus_synaptic_anomaly_enabled:
         try:
-            bus_synaptic_anomalies = await fetch_bus_synaptic_anomaly_fragments()
+            bus_synaptic_anomalies = await fetch_bus_synaptic_anomaly_fragments(
+                max_edge_age_sec=float(settings.RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC),
+            )
         except Exception as exc:
             logger.debug(f"bus synaptic anomaly fetch skipped: {exc}")
             bus_synaptic_anomalies = []

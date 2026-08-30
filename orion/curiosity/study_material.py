@@ -75,7 +75,14 @@ class CrystallizationCard:
     def preview(self) -> str:
         text = _clip(self.subject or self.summary)
         salience = f" salience={self.salience:.2f}" if self.salience is not None else ""
-        return f"[{self.kind}{salience}] {text}"
+        # THE SAME DEFECT AS `Prior.preview`, one surface over: the prompt asks
+        # for `formed_from: "<what produced it: a crystallization id, ...>"`
+        # and this card showed no id at all. Measured live 2026-08-29, all six
+        # priors in `orion_worldview`: `formed_from` held file names
+        # ("intake_pipeline.py + formation_policy.py trace"), invented labels
+        # ("rejection_analysis_<run_id>"), prose, and one empty string. Not one
+        # traced to a crystallization, because the id was never on offer.
+        return f"[{self.kind}{salience}] {text}\n      crystallization_id: {self.crystallization_id}"
 
 
 @dataclass(frozen=True)

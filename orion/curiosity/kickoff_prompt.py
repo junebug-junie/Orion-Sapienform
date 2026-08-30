@@ -613,6 +613,11 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "error, no edge. So use the ids exactly as you wrote them, and if you "
         "are unsure a node exists, MATCH it on its own first and look.",
         "",
+        "  THE PRIOR'S ID IS THE `prior_id:` LINE printed under each claim in "
+        "the lists above, in full. Not the bracketed summary, not a shortening "
+        "of it, not a name you would give it -- the two sides of a MERGE bind "
+        "by exact string or they bind to nothing.",
+        "",
         "  ONE EXCEPTION, and it is the only one. A concept in the Atlas lives "
         "in a graph you cannot write to, so there is no node there for an edge "
         "to land on: keep its id as a property instead. Everything inside your "

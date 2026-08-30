@@ -195,7 +195,25 @@ class Prior:
             "never tested" if self.times_tested <= 0
             else f"tested {self.times_tested}x"
         )
-        line = f"[{self.prior_id[:8]} confidence={confidence}, {tested}] {_clip(self.claim)}"
+        line = f"[confidence={confidence}, {tested}] {_clip(self.claim)}"
+        # THE ID IS PRINTED IN FULL, ON ITS OWN LABELLED LINE. It used to be
+        # `prior_id[:8]`, inside the bracket next to the confidence -- and the
+        # prompt then asked Orion to `MATCH (p:Prior {prior_id: "..."})` to
+        # attach a finding to this claim. The full id appeared NOWHERE in the
+        # prompt, so that MATCH could not bind and the MERGE after it silently
+        # did nothing, which is exactly the failure the prompt warns about.
+        # Measured live 2026-08-29: zero edges had ever been written to
+        # `orion_worldview`, and run `d05ef10b303a` had named its own findings
+        # `editoria_settlement_...` -- `editorial_bias_...`[:8], the truncation
+        # read back as though it were the identifier. A prior revision from an
+        # earlier run recorded `prior_id: "curation confidence=0.75"`, which is
+        # this preview LINE scraped for an id that was not in it.
+        #
+        # Labelled and on its own line rather than merely un-truncated: a bare
+        # 52-character token sharing a bracket with `confidence=` and
+        # `tested 3x` is what made a shortened one look like a name in the
+        # first place.
+        line += f"\n      prior_id: {self.prior_id}"
         if self.formed_from:
             line += f"\n      formed from: {_clip(self.formed_from, 120)}"
         return line

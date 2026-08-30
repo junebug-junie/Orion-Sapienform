@@ -1088,3 +1088,89 @@ def test_the_summary_reports_the_live_all_orphaned_case() -> None:
     result = read_finding_connectivity(reader, "d05ef10b303a")
     assert result.summary() == "0/2 joined"
     assert result.orphaned == 2
+
+
+# --- the id Orion is shown has to be the id it can MATCH on -----------------
+#
+# It was `prior_id[:8]`, inside the bracket beside the confidence, while the
+# write instructions asked Orion to
+# `MATCH (p:Prior {prior_id: "..."})` and MERGE a finding onto it. The full id
+# appeared NOWHERE in the assembled prompt, so that MATCH could not bind and
+# the MERGE silently did nothing -- the exact failure the prompt itself warns
+# about, caused by the prompt.
+#
+# Measured live 2026-08-29: `CALL db.relationshipTypes()` empty on
+# `orion_worldview` -- not one edge had ever been written. Run `d05ef10b303a`
+# had named its own findings `editoria_settlement_...`, which is
+# `editorial_bias_concrete_over_atmospheric_32b42392f495`[:8]; the truncation
+# was read back as though it were the identifier. An earlier run recorded a
+# `:PriorRevision` with `prior_id: "curation confidence=0.75"` -- this preview
+# LINE, scraped for an id that was not in it.
+#
+# NOTHING FAILED WHEN THIS BROKE, because no test asserted the rendering at
+# all. These do.
+
+_LONG_ID = "editorial_bias_concrete_over_atmospheric_32b42392f495"
+
+
+def _prior(prior_id: str = _LONG_ID, **over) -> Prior:
+    base = dict(
+        prior_id=prior_id, claim="a claim", confidence=0.35,
+        status="revised", times_tested=3,
+    )
+    base.update(over)
+    return Prior(**base)
+
+
+def test_the_preview_carries_the_whole_prior_id() -> None:
+    """A shortened id is not a shorter id, it is a different string. MERGE
+    binds by exact match or it binds to nothing, silently."""
+    preview = _prior().preview()
+    assert f"prior_id: {_LONG_ID}" in preview
+
+
+def test_the_preview_never_offers_a_shortened_id_as_the_id() -> None:
+    """The failure was not a MISSING id, it was a PLAUSIBLE one.
+
+    `[editoria confidence=0.35, tested 3x]` reads as a name, and Orion used it
+    as one. So asserting the full id is present is not enough on its own --
+    a preview that printed both would still hand Orion something that looks
+    like an identifier and is not. The bracket must carry no bare id-shaped
+    token at all.
+    """
+    bracket = _prior().preview().split("]")[0]
+    assert _LONG_ID[:8] not in bracket
+    assert "confidence=" in bracket, "the bracket should still carry the numbers"
+
+
+def test_the_prompt_carries_the_full_id_of_every_prior_it_offers() -> None:
+    """THE END-TO-END FORM, and the one that would have caught this.
+
+    A unit test on `preview()` still passes if the id is rendered and then
+    dropped on the way into the prompt. Orion only ever sees the assembled
+    string, so that is the only place the assertion means anything.
+
+    Covers the STALE list too: those are the priors Orion is asked to retire,
+    which is also a `MATCH` on an exact id, and they were truncated the same
+    way.
+    """
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    stale_id = "stale_claim_that_will_not_settle_0123456789abcdef"
+    text = _prompt(view=WorldviewSnapshot(
+        live_priors=[_prior()],
+        stale_priors=[_prior(prior_id=stale_id, times_tested=9)],
+        live_total=1,
+    ))
+    assert _LONG_ID in text, "an offered prior's id is not in the prompt"
+    assert stale_id in text, "a stale prior's id is not in the prompt"
+
+
+def test_the_prompt_says_where_the_prior_id_comes_from() -> None:
+    """The MERGE warning said "use the ids exactly as you wrote them", which
+    only ever covered the FINDING side -- Orion writes that one. The prior's
+    id comes off the menu, and nothing said so."""
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    text = _prompt(view=WorldviewSnapshot(live_priors=[_prior()], live_total=1))
+    assert "`prior_id:` LINE" in text

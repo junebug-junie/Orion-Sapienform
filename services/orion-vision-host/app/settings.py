@@ -147,6 +147,16 @@ class Settings(BaseSettings):
     VISION_LIVENESS_CLEAR_FAIL_RATE: float = 0.2
     VISION_LIVENESS_SUSTAIN_SEC: float = 180.0
     VISION_LIVENESS_COOLDOWN_SEC: float = 3600.0
+    # Arm/clear state survives a restart. Without it a restart between the
+    # alert and the clear loses the recovery forever: live on 2026-08-29, 8
+    # vision_blind records since 08-21 and zero vision_recovered, ever.
+    # Lives on the existing /mnt/telemetry/orion-vision-host volume.
+    # Empty string disables persistence (in-memory only, prior behaviour).
+    # Opt-in: the real path is supplied by .env / .env_example. Defaulting it
+    # non-empty made docker-compose.circe-qwen.yml -- which has no `env_file:`
+    # and a strict `environment:` allowlist -- write a state file into a path it
+    # does not mount, on a lane where alerting is disabled anyway.
+    VISION_LIVENESS_STATE_PATH: str = ""
     NOTIFY_BASE_URL: str = ""
     NOTIFY_API_TOKEN: str = ""
     # NODE_NAME is already declared above -- a second declaration silently

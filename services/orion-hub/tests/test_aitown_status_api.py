@@ -26,7 +26,7 @@ from scripts.aitown_status import fetch_aitown_status
 
 class _Settings:
     HUB_AITOWN_ENABLED = False
-    HUB_FCC_ENV_PATH = "/tmp/nonexistent-fcc.env"
+    HUB_AITOWN_CONVEX_URL = ""
 
 
 def test_fetch_aitown_status_disabled() -> None:
@@ -35,12 +35,10 @@ def test_fetch_aitown_status_disabled() -> None:
     assert out["error"] == "aitown_disabled"
 
 
-def test_fetch_aitown_status_missing_convex_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_aitown_status_missing_convex_url() -> None:
     class _Enabled(_Settings):
         HUB_AITOWN_ENABLED = True
 
-    monkeypatch.setattr("scripts.fcc_env_catalog.load_fcc_env", lambda _p: {})
-    monkeypatch.setattr("scripts.fcc_env_catalog.expand_env_path", lambda p: p)
     out = fetch_aitown_status(_Enabled())
     assert out["ok"] is False
     assert out["error"] == "aitown_convex_url_missing"

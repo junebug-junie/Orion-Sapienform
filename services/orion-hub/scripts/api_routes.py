@@ -1888,9 +1888,9 @@ def _aitown_convex_internal_url() -> str:
     from scripts.aitown_status import _convex_base_from_settings
 
     base = _convex_base_from_settings(settings).rstrip("/")
-    if base:
-        return base
-    return "http://127.0.0.1:3210"
+    if not base:
+        raise HTTPException(status_code=400, detail="HUB_AITOWN_CONVEX_URL not configured")
+    return base
 
 
 def _aitown_convex_ws_url(path: str) -> str:

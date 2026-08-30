@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Fail loudly if AI Town's live LLM route resolves to a circe-hosted worker.
+"""Fail loudly if AI Town's live LLM route resolves to the chat lane.
 
-Circe is reserved for Juniper's direct deep/FCC conversations (see the
-2026-07-10 "Route AI Town and default LLM consumers to quick" fix and
-services/orion-llm-gateway/README.md) -- AI Town's own NPC dialogue must
-never compete for it.
+Juniper's direct deep/FCC conversations use the gateway `chat` route
+(circe-worker-1 post-Atlas decommission). AI Town NPC dialogue must use
+`quick_background` (circe-worker-fast-1) instead -- same physical host,
+different lane, background priority so town dialogue never blocks chat.
 
 Why this exists: that 2026-07-10 fix only changed `wire_llm_gateway.sh`'s
 *default*. This world's live Convex `LLM_MODEL` env var was set to "chat"
@@ -20,8 +20,8 @@ policy -- only the script default had been fixed, not the deployed state.
 This script checks the live state directly: it reads AI Town's actual
 deployed `LLM_MODEL`/`LLM_API_URL` from Convex, resolves that model through
 the gateway's own `/v1/models` (the gateway's live, authoritative view of
-which worker actually serves each route), and refuses to pass if that
-worker is circe-hosted.
+which worker actually serves each route), and refuses to pass if that route
+is the chat lane (`LLM_MODEL=chat` or served_by=circe-worker-1).
 """
 from __future__ import annotations
 
@@ -36,6 +36,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from orion.autonomy.fcc_env import expand_env_path, load_fcc_env as _load_fcc_env_file  # noqa: E402
 
 DEFAULT_FCC_ENV_PATH = os.path.expanduser("~/.fcc/.env")
+
+# Gateway route keys / served_by labels for Juniper's chat lane only.
+FORBIDDEN_CHAT_MODEL_IDS = frozenset({"chat"})
+FORBIDDEN_CHAT_SERVED_BY = frozenset({"circe-worker-1"})
 
 
 def load_fcc_env(path: str) -> None:
@@ -97,19 +101,24 @@ def resolve_served_by(models: list, model_id: str) -> Optional[str]:
 
 def check_not_circe(served_by: Optional[str], *, model_id: str, allow_circe: bool) -> Optional[str]:
     """Return an error message if the check fails, else None."""
+    if model_id in FORBIDDEN_CHAT_MODEL_IDS and not allow_circe:
+        return (
+            f"AI Town's LLM_MODEL={model_id!r} is the chat lane -- reserved for "
+            "Juniper's direct deep/FCC turns. Fix: re-run "
+            "services/orion-ai-town/scripts/wire_llm_gateway.sh (defaults to "
+            "quick_background)."
+        )
     if served_by is None:
         return (
             f"AI Town's configured model {model_id!r} was not found in the gateway's "
             "/v1/models list -- cannot confirm it's safe. Refusing to pass."
         )
-    if served_by.lower().startswith("circe") and not allow_circe:
+    if served_by.lower() in FORBIDDEN_CHAT_SERVED_BY and not allow_circe:
         return (
             f"AI Town's LLM_MODEL={model_id!r} resolves to served_by={served_by!r} -- "
-            "CIRCE. AI Town must never use circe (reserved for Juniper's direct deep/FCC "
-            "turns; see services/orion-llm-gateway/README.md). Fix: re-run "
-            "services/orion-ai-town/scripts/wire_llm_gateway.sh (defaults to the 'quick' "
-            "lane) against this world. If this is a deliberate, conscious exception, set "
-            "AITOWN_ALLOW_CIRCE=1."
+            "the chat worker. AI Town must use quick_background (circe-worker-fast-1), "
+            "not chat/circe-worker-1. Fix: re-run "
+            "services/orion-ai-town/scripts/wire_llm_gateway.sh."
         )
     return None
 

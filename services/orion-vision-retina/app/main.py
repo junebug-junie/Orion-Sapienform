@@ -463,6 +463,7 @@ class RetinaService:
                     source_type=self.settings.RETINA_SOURCE_TYPE,
                     source_ok=self._source_ok(),
                     metrics=self.metrics,
+                    heartbeat_interval_sec=self.settings.HEALTH_INTERVAL_SECONDS,
                     fps_target=self.settings.RETINA_FPS,
                     storage_dir=self.settings.FRAME_STORAGE_DIR,
                 )

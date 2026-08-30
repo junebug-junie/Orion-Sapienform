@@ -48,6 +48,13 @@ async def run_heartbeat():
                         status="ok",
                         boot_id=BOOT_ID,
                         last_seen_ts=datetime.now(timezone.utc),
+                        # heartbeat_interval_sec must match this loop's real period. Left at the
+                        # schema default of 10.0, orion-equilibrium-service computes
+                        # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
+                        # service "down" once delta > grace (service.py's status check). Publishing
+                        # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
+                        # it to down, emits a spurious transition and pushes distress_score.
+                        heartbeat_interval_sec=30.0,
                     ).model_dump(mode="json")
 
                     await system_bus.publish("orion:system:health", BaseEnvelope(

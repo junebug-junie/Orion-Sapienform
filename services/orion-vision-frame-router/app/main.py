@@ -138,6 +138,7 @@ class FrameRouterService:
                     policy_path=self.settings.ROUTER_POLICY_PATH,
                     metrics=self.metrics,
                     state=self.state,
+                    heartbeat_interval_sec=self.settings.HEALTH_INTERVAL_SECONDS,
                 )
                 await self.bus.publish(self.settings.CHANNEL_SYSTEM_HEALTH, env)
             except Exception as exc:

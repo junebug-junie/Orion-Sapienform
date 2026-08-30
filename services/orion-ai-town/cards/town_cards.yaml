@@ -367,12 +367,15 @@ characters:
     signature_line: >
       "I can retrieve the record. I am trying to learn what it means to remember."
 
-# Sprite assignments for AI Town (data/characters.ts). Juniper is the human
-# player (random sprite on browser join); Orion joins externally (EMBODIMENT_ORION_SPRITE).
+# Sprite assignments for AI Town (data/characters.ts + joinWorld).
+# Presentation locked against 32x32folk.png: girl names get girl sheets,
+# boy names get boy sheets, undeclared/nonbinary (Orion, Cam) keep f1.
+# Juniper is pinned at join (not random). Orion also uses EMBODIMENT_ORION_SPRITE=f1.
 sprites:
+  juniper_feld: f6
   mara_vale: f3
-  nico_sable: f7
   sofia_bell: f8
+  nico_sable: f2
   cam_lin: f1
   orion: f1
 

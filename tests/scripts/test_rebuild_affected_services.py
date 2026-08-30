@@ -11,17 +11,20 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "scripts" / "rebuild_affected_services.py"
 
 
-def _resolve(paths: list[str], repo_root: Path) -> dict:
+def _resolve(paths: list[str], repo_root: Path, host: str | None = None) -> dict:
+    cmd = [
+        sys.executable,
+        str(MODULE),
+        "--paths",
+        *paths,
+        "--json",
+        "--repo-root",
+        str(repo_root),
+    ]
+    if host:
+        cmd.extend(["--host", host])
     proc = subprocess.run(
-        [
-            sys.executable,
-            str(MODULE),
-            "--paths",
-            *paths,
-            "--json",
-            "--repo-root",
-            str(repo_root),
-        ],
+        cmd,
         capture_output=True,
         text=True,
         timeout=120,
@@ -94,6 +97,30 @@ def test_actual_pull_scope() -> None:
     ]
     payload = _resolve(paths, ROOT)
     assert payload["services"] == ["orion-embodiment", "orion-hub", "orion-social-memory"]
+
+
+def test_circe_host_allowlist_rebuilds_ai_town() -> None:
+    payload = _resolve(["services/orion-ai-town/scripts/generate_descriptions.py"], ROOT, host="circe")
+    assert payload["services"] == ["orion-ai-town"]
+    assert payload["mesh_host"] == "circe"
+
+
+def test_circe_host_allowlist_skips_athena_services() -> None:
+    paths = [
+        "services/orion-embodiment/app/worker.py",
+        "services/orion-hub/scripts/concept_atlas_routes.py",
+        "services/orion-ai-town/scripts/generate_descriptions.py",
+    ]
+    payload = _resolve(paths, ROOT, host="circe")
+    assert payload["services"] == ["orion-ai-town"]
+    assert "orion-hub" in payload["host_filtered_out"]
+    assert "orion-embodiment" in payload["host_filtered_out"]
+
+
+def test_athena_has_no_host_allowlist_by_default() -> None:
+    payload = _resolve(["services/orion-ai-town/scripts/generate_descriptions.py"], ROOT, host="athena")
+    assert payload["services"] == []
+    assert payload["host_allowlist"] == []
 
 
 def test_root_tests_skipped() -> None:

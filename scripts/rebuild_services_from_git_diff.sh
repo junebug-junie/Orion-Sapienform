@@ -78,7 +78,8 @@ if [ "$PY_RC" -ne 0 ]; then
 fi
 
 if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
-    echo "rebuild_services_from_git_diff.sh: no affected services to rebuild"
+    echo "rebuild_services_from_git_diff.sh: no affected services to rebuild on this host"
+    echo "rebuild_services_from_git_diff.sh: (see rebuild_affected_services stderr above for host filter details)"
     exit 0
 fi
 

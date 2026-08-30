@@ -1,0 +1,12 @@
+## Services that run on the circe mesh node (positive allowlist for post-merge rebuild).
+# When this file exists for the detected host, only listed services are eligible
+# to rebuild — mesh-utilities/common/exclude_services.txt does NOT apply on circe.
+# one service per line
+orion-ai-town
+orion-affectgpt-worker
+orion-biometrics
+orion-diffusion-host
+orion-juniper-affective-state
+orion-vision-host
+orion-whisper-tts
+orion-world-model

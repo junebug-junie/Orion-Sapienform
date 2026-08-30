@@ -8,7 +8,7 @@ from typing import Any, Dict
 from orion.inspection.social import build_social_inspection_snapshot
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.social_chat import SocialRoomTurnStoredV1
+from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
 from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
 from orion.schemas.social_context import (
     SocialContextCandidateV1,
@@ -1108,6 +1108,9 @@ class SocialMemoryService:
                 inspection.metadata.get("safety_omissions"),
             )
         return SocialInspectionSnapshotV1.model_validate(inspection).model_dump(mode="json")
+
+    async def ingest_turn(self, turn: SocialRoomTurnV1) -> None:
+        await self._publish("orion:chat:social:turn", "social.turn.v1", turn)
 
     async def _publish(self, channel: str, kind: str, payload: Any) -> None:
         if self.bus is None or not getattr(self.bus, "enabled", False):

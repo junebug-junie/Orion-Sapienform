@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import hmac
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.schemas.social_chat import SocialRoomTurnV1
 
 from .service import SocialMemoryService
 from .settings import settings
@@ -99,3 +101,23 @@ async def inspection(
         participant_id or "room",
     )
     return await service.get_inspection(platform=platform.strip(), room_id=room_id.strip(), participant_id=participant_id)
+
+
+def _ingest_token_authorized(authorization: str | None) -> bool:
+    expected = str(settings.social_memory_ingest_token or "")
+    provided = ""
+    raw = str(authorization or "")
+    if raw.startswith("Bearer "):
+        provided = raw[len("Bearer ") :]
+    if not expected or not provided:
+        return False
+    return hmac.compare_digest(expected, provided)
+
+
+@app.post("/ingest-turn")
+async def ingest_turn(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+    if not _ingest_token_authorized(request.headers.get("Authorization")):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    turn = SocialRoomTurnV1.model_validate(body)
+    await service.ingest_turn(turn)
+    return {"ok": True}

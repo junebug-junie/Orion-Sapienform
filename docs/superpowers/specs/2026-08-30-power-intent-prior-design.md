@@ -254,3 +254,49 @@ Against the acceptance checks:
 The self-correction in the last two lines is the point of the whole patch:
 Orion predicted 256.58, drew 245.38, was 11.2W high, and its next declaration
 moved down to 250.98 without anyone touching it.
+
+---
+
+## Follow-up at n=9 (2026-08-30 02:43, all autonomous)
+
+The design doc left two things open. Both are now answered by the visual
+chain's own unattended runs -- no hand-triggered generations after the first
+two rows.
+
+```text
+residuals   -11.20  -4.79  +6.73  -3.38  +8.91  +0.70  -3.03  +10.80  +11.59
+signs        4 negative, 5 positive
+mean signed  +1.81 W            (0 = unbiased)
+mean abs      6.79 W
+noise floor   6.38 W  = sd * sqrt(2/pi) for the measured process sd of 8.0
+```
+
+**1. The bias question is closed, against the concern I raised.** At n=2 both
+residuals were negative and this doc recorded a possible systematic
+overestimate. At n=9 the split is 4/5 and the signed mean is +1.81W. There is
+no evidence of bias.
+
+**2. The prior is operating essentially at the process noise floor.** Mean
+absolute error 6.79W against a floor of 6.38W -- within 6% of what a PERFECT
+predictor would still incur, because the workload's own variance is 8.0W.
+There is very little headroom for a cleverer estimator on this workload. That
+is a reason NOT to reach for an EWMA or a regression here.
+
+**3. An apparent upward trend that must NOT be claimed.** The last three
+residuals are -3.03, +10.80, +11.59, and mean actual peak rises from 247.67
+(first four) to 254.72 (last four), +7.05W, with the prior lagging by 5.01W.
+
+That is **1.25 standard errors** on a difference of two 4-sample means
+(SE = 5.66W at sd 8.0). Not significant. Two candidate explanations were
+checked and one was ruled out:
+
+- *Thermal drift* -- **ruled out.** `baseline_watts` is flat across all nine
+  rows: 41.7, 42.0, 41.7, 41.8, 41.7, 42.0, 41.7, 41.3 (the first row's 47.6
+  is residual heat from the rapid hand-triggered warm-up). The card is not
+  heating.
+- *Noise* -- consistent with the data and cannot be distinguished from a real
+  slow drift at this n.
+
+Recorded as unresolved. If the median-over-window prior is genuinely lagging a
+drifting process, the fix is a shorter window rather than a different
+estimator -- but nothing here establishes that yet. Re-check at n>=30.

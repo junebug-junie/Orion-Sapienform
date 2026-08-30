@@ -640,7 +640,28 @@ class ExecutionDispatchRuntimeWorker:
                     signal_id=signal,
                     claimed_direction=effect.direction if effect is not None else None,
                     cell_variances_by_volume=cells,
-                    cost_sec=costs.get((item.dispatch_kind, item.target_id)),
+                    # COLD-START COST. Without this the enforcing allocator is an
+                    # absorbing state: a never-run action has no measured cost,
+                    # `nats_per_sec` returns None, and it is refused
+                    # `no_cost_estimate` BEFORE the information floor is even
+                    # consulted. The only way to earn a cost estimate is to run,
+                    # and the only way to run is to have one -- so the escape
+                    # hatch this change documents ("the fix is better actions, or
+                    # declared signals on the templates") was structurally
+                    # unreachable, and lowering the floor could not reach it
+                    # either. Worse on a clock: load_action_cost_estimates only
+                    # looks back 24h, so with dispatch withheld every candidate
+                    # would decay to `no_cost_estimate` within a day.
+                    #
+                    # The counter-argument in `allocator.py` is real -- an
+                    # unmeasured cost is the one that could be enormous. It is
+                    # bounded here by the motor budget itself and by
+                    # max_dispatches_per_tick, and an action costs the typical
+                    # figure exactly once before it has a measured one.
+                    cost_sec=(
+                        costs.get((item.dispatch_kind, item.target_id))
+                        or self._settings.orion_dispatch_motor_typical_cost_sec
+                    ),
                     cold_variance=DEFAULT_PRIOR_VARIANCE,
                 )
             )
@@ -914,6 +935,16 @@ class ExecutionDispatchRuntimeWorker:
         # because an advisory budget whose only output is "still fine" is the
         # switch-that-changes-nothing this repo bans; the would-refuse count is
         # the evidence the enforce flip gets decided on.
+        # Bound BEFORE the branch. `allocation` is only assigned inside
+        # `if motor is not None:` but is read at the allocator-enforcement site
+        # below, so with no motor budget that read raised UnboundLocalError --
+        # every tick, and it takes save_dispatch_frame down with it, so the
+        # frame is lost and not merely the send. Both reachable paths are
+        # ROLLBACK levers: an allowance under budget.MIN_MEANINGFUL_ALLOWANCE_SEC
+        # (a state budget.py deliberately supports and documents), and advisory
+        # mode plus any transient failure reading spend. A crash on the lever you
+        # would pull to undo this change is the worst possible place for one.
+        allocation = None
         motor = self._derive_motor_budget(frame.generated_at)
         if motor is not None:
             pending = list(frame.candidates)
@@ -1008,6 +1039,22 @@ class ExecutionDispatchRuntimeWorker:
         allocator_admitted_ids: set[str] | None = None
         if self._settings.orion_dispatch_allocator_enforce and allocation is not None:
             allocator_admitted_ids = {c.dispatch_id for c in allocation.admitted}
+
+        # A PROBE TICK IS EXEMPT. Without this the allocator refuses the probe
+        # like any other candidate, `to_send` empties, the tick abandons, and
+        # `_evaluate_tripwire_probe()` is never reached -- so probe successes
+        # never accrue and THE TRIPWIRE CAN NEVER RE-ARM. That is defect #2 of
+        # the 2026-08-23 outage ("self-sealing -- once tripped, no new evidence
+        # could ever be gathered") reintroduced by a different route, in the
+        # same function whose tests exist to prevent it. The refund path makes
+        # it worse: `_refund_tripwire_probe` re-arms `_tripwire_next_probe_at`
+        # immediately, so the claim/refund cycle spins at the poll interval.
+        #
+        # A probe is not Orion choosing to act; it is the system testing whether
+        # it still can. Value-of-information is the wrong question to ask of it.
+        if allocator_admitted_ids is not None and self._tripwire_probe_in_flight:
+            logger.info("motor_allocator_exempt reason=tripwire_probe")
+            allocator_admitted_ids = None
 
         to_send: list[ExecutionDispatchCandidateV1] = []
         cumulative_risk = 0.0

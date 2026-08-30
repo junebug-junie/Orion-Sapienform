@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import logging
 import os
 from datetime import datetime, timedelta
@@ -40,8 +41,27 @@ from orion.schemas.notify import (
 from .settings import settings
 
 from .attention_escalation import attention_escalation_loop
-from .email_delivery import enrich_with_policy, maybe_send_email, should_send_email
+from .email_delivery import EmailOutcome, enrich_with_policy, maybe_send_email, should_send_email
 from .policy import Policy
+
+# Configure the root logger, or none of this service's own logging exists.
+#
+# Verified live in the running container on 2026-08-30: effective level
+# WARNING, `logging.getLogger().handlers == []`, and an emitted INFO record is
+# dropped. uvicorn configures its OWN loggers, so `docker logs` showed 203
+# access lines in 24h and zero application lines -- while 230 notifications
+# were created. Every `[NOTIFY]` breadcrumb ever written by this service has
+# gone nowhere, which is why nobody noticed that delivery accounting did not
+# exist.
+#
+# `force=True` because uvicorn may have already installed its own handlers by
+# the time this module is imported; without it basicConfig is a silent no-op.
+logging.basicConfig(
+    level=os.getenv("NOTIFY_LOG_LEVEL", "INFO").upper(),
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    force=True,
+)
 
 logger = logging.getLogger("orion-notify")
 
@@ -206,6 +226,7 @@ async def notify(
 
     email_transport: EmailTransport | None = getattr(request.app.state, "email_transport", None)
     should_send, send_reason = should_send_email(payload)
+    email_outcome = EmailOutcome("skipped", send_reason or "policy_declined")
     if should_send:
         logger.info(
             "[NOTIFY] email_send_eligible notification_id=%s event_kind=%s reason=%s",
@@ -214,6 +235,7 @@ async def notify(
             send_reason,
         )
         if email_transport is None:
+            email_outcome = EmailOutcome("skipped", "smtp_transport_unconfigured")
             logger.info(
                 "[NOTIFY] email_send_unavailable notification_id=%s event_kind=%s reason=smtp_transport_unconfigured",
                 payload.notification_id,
@@ -225,7 +247,7 @@ async def notify(
                 payload.notification_id,
                 payload.event_kind,
             )
-            maybe_send_email(email_transport, payload)
+            email_outcome = maybe_send_email(email_transport, payload)
 
     # 1. Publish In-App (if enabled)
     # We do this blindly as a router. Policy logic is stripped for statelessness or should be in the consumer.
@@ -254,9 +276,9 @@ async def notify(
             correlation_id=payload.correlation_id,
             session_id=payload.session_id,
             created_at=payload.created_at,
-            status="pending", # Initial status
+            status=_request_status(email_outcome),
+            drop_reason=_drop_reason(email_outcome),
             policy_action="publish",
-            drop_reason=None
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
 
@@ -277,7 +299,7 @@ async def attention_request(
         datetime.utcnow(),
     )
     email_transport: EmailTransport | None = getattr(request.app.state, "email_transport", None)
-    maybe_send_email(email_transport, notify_payload, immediate_critical_only=True)
+    email_outcome = maybe_send_email(email_transport, notify_payload, immediate_critical_only=True)
 
     bus: OrionBusAsync | None = request.app.state.bus
 
@@ -303,7 +325,8 @@ async def attention_request(
             correlation_id=notify_payload.correlation_id,
             session_id=notify_payload.session_id,
             created_at=notify_payload.created_at,
-            status="pending",
+            status=_request_status(email_outcome),
+            drop_reason=_drop_reason(email_outcome),
             policy_action="publish"
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
@@ -378,7 +401,10 @@ async def chat_message(
             correlation_id=notify_payload.correlation_id,
             session_id=notify_payload.session_id,
             created_at=notify_payload.created_at,
-            status="pending",
+            # /chat/message never attempts email, so there is no delivery
+            # outcome to record for this channel.
+            status="no_email",
+            drop_reason="endpoint_does_not_email",
             policy_action="publish"
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
@@ -586,6 +612,67 @@ async def _init_bus() -> OrionBusAsync | None:
         logger.error("Failed to connect Orion bus: %s", exc)
         return None
     return bus
+
+
+# Delivery status written onto the persisted `notify_requests` row.
+#
+# Before 2026-08-30 every site hardcoded "pending" and nothing ever updated it:
+# 10,900 rows since 2026-07-24, 100% pending, including emails Juniper confirmed
+# receiving.
+#
+# Safe to change, with one correction to an earlier claim in this file: it is
+# NOT true that "nothing filters on the stored column" -- services/
+# orion-notify-digest/app/digest.py:124,135 filter `status == "throttled"` and
+# `== "deduped"`. Neither value was ever written and neither is written here, so
+# those counters are unaffected, but the justification was wrong as stated. What
+# IS true is the part that matters for paging: the attention view derives its own
+# status from `attention_acked_at` (api_notify.py::_attention_to_schema), so
+# `/attention?status=pending` -- which health_monitor._has_open_alert depends on
+# for alert dedup -- never reads this column.
+#
+# "sent" means SMTP ACCEPTED the message, not that it reached an inbox.
+_EMAIL_STATUS_TO_REQUEST_STATUS = {
+    "sent": "sent",
+    "failed": "failed",
+    "skipped": "no_email",
+    # An email may still follow via attention_escalation; "no email" would be
+    # confidently wrong for the one severity class that reliably emails.
+    "deferred": "pending",
+}
+
+
+def _request_status(outcome: Optional["EmailOutcome"]) -> str:
+    """Map an EmailOutcome onto the persisted request status.
+
+    The fallback is LOUD on purpose. It returns "pending" -- the exact
+    known-bad value this whole change exists to eliminate -- so a new outcome
+    status, or a refactor that returns None again, would silently reproduce
+    100%-pending and look identical to the pre-fix state. The warning makes that
+    regression visible in the logs this same commit just made work.
+    """
+    status = getattr(outcome, "status", None)
+    mapped = _EMAIL_STATUS_TO_REQUEST_STATUS.get(str(status))
+    if mapped is None:
+        logger.warning(
+            "[NOTIFY] unmapped_email_outcome status=%r -- persisting 'pending'; "
+            "delivery accounting is degraded until this is mapped",
+            status,
+        )
+        return "pending"
+    return mapped
+
+
+def _drop_reason(outcome: Optional["EmailOutcome"], fallback: Optional[str] = None) -> Optional[str]:
+    """Why the email did not go out, for the already-persisted `drop_reason`.
+
+    `EmailOutcome.reason` distinguishes three materially different facts that
+    all collapse onto one status -- policy declined, no transport configured
+    (an email that SHOULD have gone out and could not), and deferred to
+    escalation. Recording only the status would throw away the one field that
+    says which.
+    """
+    reason = getattr(outcome, "reason", None)
+    return str(reason) if reason else fallback
 
 
 async def _publish_in_app_event(

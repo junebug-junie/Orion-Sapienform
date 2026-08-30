@@ -127,9 +127,24 @@ async def run_attention_escalation_once(
 
         escalation = _build_escalation_request(row, hub_url_base=hub_url_base)
         await proxy_post(f"/attention/{attention_id}/escalate", {})
-        maybe_send_email(email_transport, escalation)
+        # Review finding: this THIRD call site discarded the outcome -- and it is
+        # the one that sends the real escalation email to Juniper. Now captured
+        # and logged.
+        #
+        # `sent` deliberately still counts escalations PROCESSED, not emails
+        # delivered. That is existing intent, not an oversight:
+        # test_escalation_marks_before_send_even_if_smtp_fails asserts count == 1
+        # with a raising transport, because the attention is marked escalated via
+        # proxy_post before the send and must not be retried just because SMTP
+        # was down. The email outcome goes to the log line instead.
+        outcome = maybe_send_email(email_transport, escalation)
         sent += 1
-        logger.info("[NOTIFY] attention_escalated attention_id=%s", attention_id)
+        logger.info(
+            "[NOTIFY] attention_escalated attention_id=%s email_status=%s reason=%s",
+            attention_id,
+            getattr(outcome, "status", "unknown"),
+            getattr(outcome, "reason", None),
+        )
 
     return sent
 

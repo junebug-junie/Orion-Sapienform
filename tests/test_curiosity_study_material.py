@@ -169,14 +169,24 @@ def test_material_with_only_relations_still_counts_as_material() -> None:
 def test_long_subjects_are_clipped_for_the_menu_only() -> None:
     long_subject = "x" * 900
     material = _material(approved_rows=[_crystallization("c1", subject=long_subject)])
-    preview = material.crystallizations[0].preview()
-    assert len(preview) < 250 and preview.endswith("…")
+    # THE MENU ROW is the first line; the `crystallization_id:` line under it
+    # is deliberately not clipped, because a clipped id is the whole defect
+    # this pair of surfaces was fixed for.
+    menu_row = material.crystallizations[0].preview().splitlines()[0]
+    assert len(menu_row) < 250 and menu_row.endswith("…")
     assert material.crystallizations[0].subject == long_subject, "full text must survive"
 
 
 def test_newlines_do_not_break_the_menu_layout() -> None:
+    """A newline in Orion's own SUBJECT TEXT must not split the menu row.
+
+    Asserts that on the row, not on the whole preview: the preview now carries
+    a deliberate second line for the id, and `"\\n" not in preview()` would
+    forbid that while claiming to be about user content.
+    """
     material = _material(approved_rows=[_crystallization("c1", subject="line one\nline two")])
-    assert "\n" not in material.crystallizations[0].preview()
+    menu_row = material.crystallizations[0].preview().splitlines()[0]
+    assert "line one line two" in menu_row
 
 
 def test_shown_ids_are_recorded_so_a_run_is_reconstructable() -> None:
@@ -355,5 +365,49 @@ def test_the_prompt_still_says_to_use_a_property_for_an_ATLAS_concept() -> None:
     to land on. It must stay, and it must be scoped to the Atlas rather than
     reading as general advice against edges."""
     prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
-    assert "keep its id as a property" in prompt
-    assert "ONE EXCEPTION" in prompt
+    assert "A concept in the Atlas lives in a graph you cannot write to" in prompt
+    assert "never in a MATCH" in prompt
+
+
+# --- the id has to be usable, not decorative --------------------------------
+#
+# The prompt asks for `formed_from: "<what produced it: a crystallization id,
+# ...>"` and this card showed no id at all. Measured live 2026-08-29, all six
+# priors in `orion_worldview`: `formed_from` held file names, invented labels
+# ("rejection_analysis_<run_id>"), prose, and one empty string. Not one traced
+# to a crystallization. Nothing failed, because nothing asserted it.
+
+
+def test_the_crystallization_id_is_offered_in_full() -> None:
+    """Orion cannot cite an id it was never shown, and a shortened one is not
+    an id -- it is a string that resembles one, which is worse, because it
+    survives into the graph looking like provenance."""
+    cid = "3f2a9c1e-77b4-4f0d-9a6e-1c2d3e4f5a6b"
+    material = _material(approved_rows=[_crystallization(cid, subject="a subject")])
+    preview = material.crystallizations[0].preview()
+    assert cid in preview
+    assert f"crystallization_id: {cid}" in preview
+
+
+def test_the_prompt_carries_the_full_id_of_every_concept_it_offers() -> None:
+    """THE END-TO-END FORM, and the one that would have caught this.
+
+    A unit test on `preview()` passes if the id is rendered and then dropped
+    on the way into the prompt. Orion only ever sees the assembled string, so
+    that is where the id has to be."""
+    cid = "9d8c7b6a-5e4f-4321-8fed-cba098765432"
+    material = _material(approved_rows=[_crystallization(cid, subject="a subject")])
+    assert cid in build_kickoff_prompt(material)
+
+
+def test_the_relation_menu_offers_its_decision_id() -> None:
+    """Relations are the other menu Orion picks from, and the prompt asks for
+    `evidence: "<ids, queries, rows you actually looked at>"`. This card
+    offered no id at all in the resolvable case -- `candidate_id` appeared
+    only in the "not kept" fallback -- so a run that picked a relation had
+    nothing to cite. Every live `formed_from` value turned out to be an
+    invented label, for exactly this reason on the concept side."""
+    material = _material(relation_rows=[_relation("d1")])
+    preview = material.relations[0].preview()
+    assert "decision_id: d1" in preview
+    assert "d1" in build_kickoff_prompt(material), "rendered but dropped assembling the prompt"

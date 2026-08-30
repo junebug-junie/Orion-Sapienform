@@ -195,9 +195,31 @@ class Prior:
             "never tested" if self.times_tested <= 0
             else f"tested {self.times_tested}x"
         )
-        line = f"[{self.prior_id[:8]} confidence={confidence}, {tested}] {_clip(self.claim)}"
+        line = f"[confidence={confidence}, {tested}] {_clip(self.claim)}"
+        # THE ID IS PRINTED IN FULL, ON ITS OWN LABELLED LINE. It used to be
+        # `prior_id[:8]`, inside the bracket next to the confidence -- and the
+        # prompt then asked Orion to `MATCH (p:Prior {prior_id: "..."})` to
+        # attach a finding to this claim. The full id appeared NOWHERE in the
+        # prompt, so that MATCH could not bind and the MERGE after it silently
+        # did nothing, which is exactly the failure the prompt warns about.
+        # Measured live 2026-08-29: zero edges had ever been written to
+        # `orion_worldview`, and run `d05ef10b303a` had named its own findings
+        # `editoria_settlement_...` -- `editorial_bias_...`[:8], the truncation
+        # read back as though it were the identifier. A prior revision from an
+        # earlier run recorded `prior_id: "curation confidence=0.75"`, which is
+        # this preview LINE scraped for an id that was not in it.
+        #
+        # Labelled and on its own line rather than merely un-truncated: a bare
+        # 52-character token sharing a bracket with `confidence=` and
+        # `tested 3x` is what made a shortened one look like a name in the
+        # first place.
+        line += f"\n      prior_id: {self.prior_id}"
         if self.formed_from:
-            line += f"\n      formed from: {_clip(self.formed_from, 120)}"
+            # `formed_from`, not "formed from": these labelled lines are now
+            # load-bearing, and an earlier run scraped `prior_id: "curation
+            # confidence=0.75"` off this very block. A label that does not
+            # match the property name it fills is the same near-miss.
+            line += f"\n      formed_from: {_clip(self.formed_from, 120)}"
         return line
 
 
@@ -284,7 +306,10 @@ class WorldviewSnapshot:
     # bug CLOSED_STATUSES documents.
     live_priors: list[Prior] = field(default_factory=list)
     stale_priors: list[Prior] = field(default_factory=list)
-    recently_settled: list[tuple[str, str]] = field(default_factory=list)
+    # (claim, status, prior_id). The id is here so the prompt's "nothing stops
+    # you reopening one" is an offer Orion can actually take -- see
+    # RECENT_SETTLED_CYPHER.
+    recently_settled: list[tuple[str, str, str]] = field(default_factory=list)
     recent_runs: list[RecentRun] = field(default_factory=list)
     live_total: int = 0
     closed_total: int = 0
@@ -453,9 +478,16 @@ RECENT_RUNS_CYPHER = (
 # CLOSED, not merely "not open": a `supported` prior is still offered for
 # testing above, and listing it here as well would show Orion the same claim
 # twice in one prompt under two contradictory headings.
+# `p.prior_id` is RETURNED because the prompt invites Orion to reopen one of
+# these, and reopening is `MATCH (p:Prior {prior_id: "..."}) SET ...` -- an
+# exact-string bind. The query did not select the id and the list did not print
+# one, so a run that accepted that invitation matched an invented string and
+# silently no-opped. Same defect as the truncated `Prior.preview`, one list
+# further down, and it survived that fix because a probe passed a fake id into
+# the `claim` slot of the (claim, status) tuple and read it back as a pass.
 RECENT_SETTLED_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) WHERE {_CLOSED_WHERE} "
-    "RETURN p.claim AS claim, p.status AS status, "
+    "RETURN p.claim AS claim, p.status AS status, p.prior_id AS prior_id, "
     "p.last_tested_at AS last_tested_at "
     "ORDER BY p.last_tested_at DESC LIMIT 8"
 )
@@ -776,7 +808,11 @@ def read_snapshot(
         live_priors=offered,
         stale_priors=stale,
         recently_settled=[
-            (str(r.get("claim") or "").strip(), str(r.get("status") or "").strip())
+            (
+                str(r.get("claim") or "").strip(),
+                str(r.get("status") or "").strip(),
+                str(r.get("prior_id") or "").strip(),
+            )
             for r in settled_rows
             if str(r.get("claim") or "").strip()
         ],

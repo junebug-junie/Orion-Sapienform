@@ -8,6 +8,7 @@ from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
 )
+from orion.harness.situation_brief import append_situation_block_harness_brief
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
@@ -152,10 +153,12 @@ def compile_harness_prefix(
     motor prompt, in render order: the unified operator brief, grounding self
     block, backend self-context, situation context, Thought imperative and
     stance slice, autonomy slice, prior tool-fetch line, recent-turn history,
-    user message, repair overlay, and enabled MCP tool briefs. The full
-    `claude -p` prompt is this prefix plus the harness_motor_instruction that
-    build_harness_prompt (runner.py) appends on user-message turns — check
-    both when chasing unexpected motor context.
+    user message, repair overlay, enabled MCP tool briefs, and (when a
+    situation fragment was rendered) the canonical Situation-block explainer
+    (orion/harness/situation_brief.py). The full `claude -p` prompt is this
+    prefix plus the harness_motor_instruction that build_harness_prompt
+    (runner.py) appends on user-message turns — check both when chasing
+    unexpected motor context.
 
     Runtime evidence: the compiled prompt is what run_fcc_turn spawns with.
     Start here when the motor acted without stance or grounding context it
@@ -236,5 +239,9 @@ def compile_harness_prefix(
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
     append_self_index_harness_brief(parts)
+    append_situation_block_harness_brief(
+        parts,
+        situation_prompt_fragment=situation_prompt_fragment,
+    )
 
     return "\n".join(parts)

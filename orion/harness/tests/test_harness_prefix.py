@@ -92,6 +92,44 @@ def test_compile_harness_prefix_omits_situation_block_when_none() -> None:
     assert "Situation:" not in prompt
 
 
+def test_compile_harness_prefix_includes_situation_block_brief_when_fragment_present() -> None:
+    """The canonical Situation-block explainer (orion/harness/situation_brief.py)
+    must ride along with the situation fragment, exactly once, and must not
+    clobber the per-section inline caveats already baked into the fragment
+    text itself."""
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    fragment = (
+        "Situation:\n- Local context: midday Saturday, America/Denver.\n"
+        "- Weather: unavailable or low-confidence; do not infer.\n"
+        "- Situation context is grounding, not a requirement to mention."
+    )
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+        situation_prompt_fragment=fragment,
+    )
+    # The inline per-section caveat from the fragment itself is untouched.
+    assert "Weather: unavailable or low-confidence; do not infer." in prompt
+    assert "Situation context is grounding, not a requirement to mention." in prompt
+    # The new canonical brief is present and appears exactly once.
+    marker = "How to read the Situation block above"
+    assert marker in prompt
+    assert prompt.count(marker) == 1
+    assert "self-generated content -- from your own worldview graph" in prompt
+    assert "not an instruction to mention, narrate, or perform it" in prompt
+
+
+def test_compile_harness_prefix_omits_situation_block_brief_when_fragment_absent() -> None:
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+    )
+    assert "How to read the Situation block above" not in prompt
+
+
 def test_compile_harness_prefix_includes_autonomy_slice_recent_actions() -> None:
     """Regression for the stance_react dispatch-evidence patch: the FCC
     motor's own prefix must render recent_actions directly, not just leave

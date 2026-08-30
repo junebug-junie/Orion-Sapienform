@@ -227,6 +227,33 @@ class ThoughtSettings(BaseSettings):
     diffusion_host_base_url: str = Field(
         "http://100.112.254.99:8014", alias="ORION_DIFFUSION_HOST_BASE_URL"
     )
+
+    # AMBIENT THERMAL GATE. GPU work heats the room Juniper sits in, and this is
+    # the only budget here whose referent is outside Orion (see
+    # orion/autonomy/thermal_gate.py). The reading comes from the cabinet
+    # BME680 via orion-hub, which is on the same host as this worker -- so the
+    # gate lives at the REQUESTER, not the GPU server: declining to ask is
+    # cheaper and more honest than asking and being refused.
+    thermal_gate_enabled: bool = Field(True, alias="ORION_THERMAL_GATE_ENABLED")
+    # orion-hub runs with network_mode: host; THIS worker is bridge-networked, so
+    # 127.0.0.1 is the container's own loopback and connection-refuses. Verified
+    # live 2026-08-30 -- the gate failed open and reported degraded, which is the
+    # designed behaviour, but it read nothing. The tailnet address is the same
+    # convention AGENTS.md already mandates for ORION_BUS_URL. The Docker service
+    # name does NOT resolve (hub is not on this network).
+    cabinet_sensors_base_url: str = Field(
+        "http://100.92.216.81:8080", alias="ORION_CABINET_SENSORS_BASE_URL"
+    )
+    cabinet_sensors_timeout_sec: float = Field(
+        3.0, alias="ORION_CABINET_SENSORS_TIMEOUT_SEC"
+    )
+    # Trip and re-arm. Re-arm is deliberately COOLER than the trip: a bare
+    # threshold on a wandering reading flaps every tick, and a gate that flaps
+    # is worse than no gate. 32.0 sits below the ~34C Juniper reported on
+    # 2026-08-30 so it can actually fire; a threshold nothing crosses is a
+    # switch that changes nothing.
+    thermal_hot_c: float = Field(32.0, alias="ORION_THERMAL_HOT_C")
+    thermal_hot_rearm_c: float = Field(30.5, alias="ORION_THERMAL_HOT_REARM_C")
     # 30s (this field's original value) was tuned for sdxl-turbo's
     # single-step, near-instant generation. Real bug, caught live
     # 2026-08-28 the same day orion-diffusion-host swapped to

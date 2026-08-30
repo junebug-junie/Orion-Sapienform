@@ -164,6 +164,11 @@ def expected_information_gain_nats(
     return 0.5 * math.log(1.0 + (posterior_variance / observation_variance))
 
 
+# Stamped onto a candidate the allocator refused, so the refusal leaves a row
+# on the saved frame instead of only a log line. Mirrors
+# orion.autonomy.contrast.HOLDBACK_BLOCK_REASON.
+ALLOCATOR_BLOCK_REASON = "allocator_refused"
+
 @dataclass(frozen=True)
 class Candidate:
     """One action asking for a slice of the allowance."""

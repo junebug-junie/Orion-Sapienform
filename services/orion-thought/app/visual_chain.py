@@ -194,6 +194,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+from orion.autonomy.thermal_gate import ThermalVerdict, thermal_state
 from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
 from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
@@ -235,6 +236,77 @@ _METACOG_LLM_LANE_OPTIONS: dict[str, Any] = {"llm_lane": "background", "allow_ch
 # sequencing is -- but a real, testable property independent of caller
 # discipline (mirrors orion-diffusion-host's _generation_lock).
 _visual_chain_lock = asyncio.Lock()
+
+# Last thermal state, so the gate is hysteretic ACROSS runs rather than
+# re-deciding from scratch every 600s. Module-level for the same reason the
+# single-flight lock is: one worker, one process.
+_thermal_state: str = "normal"
+# Guards the read-modify-write of _thermal_state. Needed once the sensor
+# read became a real await -- see evaluate_thermal_gate.
+_thermal_state_lock = asyncio.Lock()
+
+
+def read_cabinet_temp_c() -> tuple[float | None, float | None]:
+    """(temp_c, age_sec) from orion-hub's cabinet sensor snapshot.
+
+    Returns (None, None) on any failure. Not a silent swallow: the caller turns
+    it into an `unknown` verdict that ALLOWS work and reports itself degraded,
+    because a dead sensor must not quietly remove a capability.
+    """
+    url = f"{settings.cabinet_sensors_base_url.rstrip('/')}/api/cabinet/sensors/latest"
+    try:
+        with urllib.request.urlopen(url, timeout=settings.cabinet_sensors_timeout_sec) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        logger.warning("cabinet sensor read failed url=%s err=%s", url, exc)
+        return None, None
+    snapshot = (payload or {}).get("snapshot") or {}
+    environment = (snapshot.get("frame") or {}).get("environment") or {}
+    temp = environment.get("temp_c")
+    age = payload.get("age_sec")
+    try:
+        return (None if temp is None else float(temp)), (None if age is None else float(age))
+    except (TypeError, ValueError):
+        return None, None
+
+
+async def evaluate_thermal_gate() -> ThermalVerdict:
+    """Should Orion spend GPU watts right now, given the room?
+
+    `read_cabinet_temp_c` does BLOCKING HTTP, so it runs in a thread: main.py
+    puts six concurrent tasks on this loop alongside the FastAPI /health app,
+    and a 3s socket timeout on the loop stalls every one of them. The Postgres
+    insert twenty lines down already gets this treatment; the network call is
+    the one that needed it more.
+
+    That thread hop is why the state update below needs the lock. Before it, the
+    read-modify-write of `_thermal_state` was atomic only ACCIDENTALLY -- there
+    was no await between the read and the write, so the event loop could not
+    interleave. Making the I/O properly async removes that accident, so the
+    mutual exclusion has to become explicit rather than inherited from a bug.
+    """
+    global _thermal_state
+    temp_c, age_sec = await asyncio.to_thread(read_cabinet_temp_c)
+    async with _thermal_state_lock:
+        return _apply_thermal_reading(temp_c, age_sec)
+
+
+def _apply_thermal_reading(temp_c: float | None, age_sec: float | None) -> ThermalVerdict:
+    """Classify and fold into the held state. Caller holds the lock."""
+    global _thermal_state
+    verdict = thermal_state(
+        temp_c=temp_c,
+        age_sec=age_sec,
+        previous_state=_thermal_state,  # type: ignore[arg-type]
+        hot_c=settings.thermal_hot_c,
+        hot_rearm_c=settings.thermal_hot_rearm_c,
+    )
+    # `unknown` must not overwrite the last real state. Otherwise one failed
+    # read drops the hysteresis, and the next good reading re-decides from
+    # "normal" -- which is how a hot room gets a free run.
+    if verdict.state != "unknown":
+        _thermal_state = verdict.state
+    return verdict
 
 
 def _source() -> ServiceRef:
@@ -630,6 +702,50 @@ async def run_visual_chain_once(
     if _visual_chain_lock.locked():
         logger.info("visual chain skipped: run already in flight")
         return None
+
+    # AMBIENT THERMAL GATE. Checked before the lock is taken and before any
+    # prompt work, because the cheapest way to not spend GPU watts is to not
+    # ask. The refusal is PERSISTED as a chain with terminal_reason
+    # "thermal_refused" rather than returning None, so "Orion declined because
+    # the room is hot" is a row someone can find -- an absence would be
+    # indistinguishable from the worker having died.
+    if settings.thermal_gate_enabled:
+        verdict = await evaluate_thermal_gate()
+        if verdict.degraded:
+            logger.warning(
+                "thermal gate degraded (%s): allowing GPU work on no reading",
+                verdict.reason,
+            )
+        if not verdict.allows_gpu_work:
+            chain_id = f"visual-{uuid4().hex[:12]}"
+            logger.info(
+                "visual chain refused by thermal gate chain=%s state=%s %s",
+                chain_id,
+                verdict.state,
+                verdict.reason,
+            )
+            chain = ReverieVisualChainV1(
+                chain_id=chain_id,
+                created_at=now_fn(),
+                terminal_reason="thermal_refused",
+                chain_json={
+                    "thermal_gate": {
+                        "state": verdict.state,
+                        "temp_c": verdict.temp_c,
+                        "age_sec": verdict.age_sec,
+                        "hot_c": settings.thermal_hot_c,
+                        "hot_rearm_c": settings.thermal_hot_rearm_c,
+                        "reason": verdict.reason,
+                    }
+                },
+            )
+            # to_thread, matching the other persist site: the store call is
+            # SYNCHRONOUS and blocking, so awaiting it directly would raise
+            # TypeError -- silently, inside this suppress, leaving the refusal
+            # unrecorded and looking exactly like a worker that stopped.
+            with suppress(Exception):
+                await asyncio.to_thread(persist_reverie_visual_chain, chain)
+            return chain
 
     async def _generation_failed(
         *,

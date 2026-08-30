@@ -241,12 +241,14 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 Reseed the town from scratch (destructive — wipes all world/memory tables). Operator-run:
 
+Live cards and `generate_descriptions.py` emit **four** NPCs; the tracked `orion-character.patch` still seeds **eight** until regenerated from cloned `upstream/` (see Cast cards above). This recipe applies the tracked patch first, so `init` seeds whatever is currently in `Descriptions` after that step — eight today, four only after you regenerate and refresh the patch.
+
 ```bash
-cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh
+cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh  # tracked patch still eight NPCs until regenerated
 cd upstream && npx convex dev --once            # redeploy Convex functions
 npx convex run testing:stop
 npx convex run testing:wipeAllTables            # internalMutation; wipes all world/memory tables
-npx convex run init                             # seeds the 4 NPCs from Descriptions
+npx convex run init                             # seeds whatever Descriptions contains after patches (eight until patch regen)
 npx convex run testing:resume
 # re-bootstrap Orion's external body:
 cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write

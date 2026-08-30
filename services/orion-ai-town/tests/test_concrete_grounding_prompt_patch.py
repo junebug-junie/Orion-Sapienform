@@ -44,7 +44,20 @@ def test_patch_registered_after_anti_repetition_patch():
 def test_patch_adds_concrete_grounding_instruction_to_continue_conversation():
     patch = _PATCH.read_text(encoding="utf-8")
     assert "continueConversationMessage" in patch
-    assert "+    `Ground your reply in something specific and concrete" in patch
+    assert "+    `Answer as your job" in patch
+
+
+def test_patch_does_not_name_light_bait_words():
+    patch = _PATCH.read_text(encoding="utf-8")
+    lowered = patch.lower()
+    for bait in ("light,", "shadows", "glow", "echoes", "silence"):
+        assert bait not in lowered
+
+
+def test_patch_uses_positive_job_contract():
+    patch = _PATCH.read_text(encoding="utf-8")
+    assert "Answer as your job" in patch
+    assert "Name a person, object, or task" in patch
 
 
 def test_patch_only_touches_conversation_file():

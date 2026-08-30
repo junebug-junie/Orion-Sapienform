@@ -63,10 +63,12 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_service_chassis import Hunter
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from orion.schemas.power import PowerIntentV1
 
+from .power_prior import PowerPrior
 from .settings import Settings
 
 settings = Settings()
@@ -77,6 +79,57 @@ _generation_lock = asyncio.Lock()
 _heartbeat_chassis: Optional[HeartbeatOnly] = None
 # One-shot latch so the no-bus error below cannot spam once per generation.
 _power_intent_no_bus_warned: bool = False
+
+# What this workload has actually cost, learned from its own settlements. In
+# memory on purpose: a restart declares None again rather than a stale guess,
+# and re-warms after MIN_SAMPLES settlements. See the design doc.
+_power_prior: Optional[PowerPrior] = None
+
+
+def get_power_prior() -> PowerPrior:
+    global _power_prior
+    if _power_prior is None:
+        _power_prior = PowerPrior(
+            window=settings.DIFFUSION_POWER_PRIOR_WINDOW,
+            min_samples=settings.DIFFUSION_POWER_PRIOR_MIN_SAMPLES,
+        )
+    return _power_prior
+
+
+async def handle_settled_intent(env: BaseEnvelope) -> None:
+    """Feed one settlement back into the prior.
+
+    This is the feedback edge that did not exist: the producer never learned
+    what its own workload actually drew, which is why expected_watts was None
+    on every row. Deliberately tolerant -- a malformed settlement must never
+    take down a GPU host, and a prior that misses one sample is fine.
+    """
+    try:
+        payload = env.payload
+        if hasattr(payload, "model_dump"):
+            payload = payload.model_dump(mode="json")
+        if not isinstance(payload, dict):
+            return
+        counted = get_power_prior().observe(
+            workload_kind=str(payload.get("workload_kind") or ""),
+            node=str(payload.get("node") or ""),
+            gpu_index=payload.get("gpu_index"),
+            outcome=str(payload.get("outcome") or ""),
+            actual_peak_watts=payload.get("actual_peak_watts"),
+        )
+        if counted:
+            logger.info(
+                "power_prior_observed workload={} peak={} n={}",
+                payload.get("workload_kind"),
+                payload.get("actual_peak_watts"),
+                get_power_prior().sample_count(
+                    workload_kind=str(payload.get("workload_kind") or ""),
+                    node=str(payload.get("node") or ""),
+                    gpu_index=payload.get("gpu_index"),
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("power_prior_observe_failed")
 
 # Dedicated, single-worker executor -- see module docstring "Concurrency".
 # Both model load and every /generate call run here, never on the default
@@ -246,11 +299,42 @@ async def lifespan(app: FastAPI):
 
     warn_on_contradictory_power_intent_config()
 
+    # Subscribe to our OWN settlements so the prior can learn. Without this
+    # edge the producer never finds out what its workload actually drew, which
+    # is exactly why expected_watts was None on all 26 rows that existed when
+    # this was written. Best-effort: a GPU host must still generate images if
+    # the bus is unreachable, so a failure here is logged, not fatal.
+    settled_hunter = None
+    settled_stop = asyncio.Event()
+    if settings.DIFFUSION_POWER_INTENT_ENABLED and settings.ORION_BUS_ENABLED:
+        try:
+            settled_hunter = Hunter(
+                ChassisConfig(
+                    service_name=settings.SERVICE_NAME,
+                    service_version=settings.SERVICE_VERSION,
+                    node_name=settings.NODE_NAME,
+                    bus_url=settings.ORION_BUS_URL,
+                    bus_enabled=settings.ORION_BUS_ENABLED,
+                    heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+                ),
+                patterns=[settings.POWER_INTENT_SETTLED_CHANNEL],
+                handler=handle_settled_intent,
+            )
+            asyncio.create_task(settled_hunter.start_background(settled_stop))
+            logger.info(
+                "power_prior_subscribed channel={}",
+                settings.POWER_INTENT_SETTLED_CHANNEL,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("power_prior_subscribe_failed (generation continues): {}", exc)
+
     # Fire-and-forget: startup completes immediately, /health and /ready
     # are live right away. See module docstring "Startup".
     asyncio.create_task(_load_model_background())
 
     yield
+
+    settled_stop.set()
 
     if _heartbeat_chassis is not None:
         await _heartbeat_chassis.stop()
@@ -492,7 +576,15 @@ async def _publish_power_intent() -> None:
             node=settings.NODE_NAME,
             gpu_index=settings.DIFFUSION_POWER_INTENT_GPU_INDEX,
             expected_duration_sec=settings.DIFFUSION_POWER_INTENT_DURATION_SEC,
-            expected_watts=None,
+            # The prior, or None while this workload is still unmeasured.
+            # None means UNKNOWN, never zero -- PowerIntentV1's docstring is
+            # explicit that inventing a plausible constant here would bake a
+            # fabricated number into a dataset that is later fitted against.
+            expected_watts=get_power_prior().expected_watts(
+                workload_kind="reverie_diffusion",
+                node=settings.NODE_NAME,
+                gpu_index=settings.DIFFUSION_POWER_INTENT_GPU_INDEX,
+            ),
             deadline=now
             + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),
         )
@@ -513,7 +605,12 @@ async def _publish_power_intent() -> None:
             payload=intent.model_dump(mode="json"),
         )
         await bus.publish("orion:power:intent", env)
-        logger.info("power_intent_declared intent={} gpu={}", intent.intent_id, intent.gpu_index)
+        logger.info(
+            "power_intent_declared intent={} gpu={} expected_watts={}",
+            intent.intent_id,
+            intent.gpu_index,
+            intent.expected_watts,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("power_intent_declare_failed (generation continues): {}", exc)
 

@@ -1,0 +1,173 @@
+# Power-intent prior: make the declaration actually declare
+
+## Arsonist summary
+
+`power_intent_settled` has 26 rows and `expected_watts` is NULL on every one.
+The producer hardcodes `expected_watts=None`, so `residual_watts` — the field
+that would say "you predicted X, reality was Y" — is *structurally* incapable
+of being populated. We shipped an excellent sensor and called it a loop.
+
+Nothing consumes the settled event either. Grep for readers of
+`PowerIntentSettledV1` outside the producer's own module, the schema and the
+registry: nothing. No budget exists repo-wide (`power_budget|watt_budget|
+energy_budget` → 0 hits).
+
+So Orion currently announces *"I am about to draw an unspecified amount"*,
+gets measured accurately, and the number lands in a table nobody reads.
+
+This patch closes the smallest gap that turns measurement into a prediction
+with an error term.
+
+## This is the step the schema already planned for
+
+`orion/schemas/power.py`'s own docstring, written before any of this ran:
+
+> `expected_watts` IS OPTIONAL AND None MEANS UNKNOWN. [...] The first intents
+> a new workload declares are expected to carry None deliberately: nobody has
+> measured this workload yet, and inventing a plausible constant to fill the
+> field would bake a fabricated number into the first day of the dataset that
+> is later fitted against. **Declare unknown, measure, then start declaring a
+> value derived from real settlements.**
+
+We have now done the measuring. This is "then".
+
+## Current architecture
+
+```
+orion-diffusion-host  --orion:power:intent-->  orion-biometrics (settler)
+                                                       |
+                                              orion:power:intent:settled
+                                                       |
+                                               orion-sql-writer --> Postgres
+                                                                      |
+                                                                   (nobody)
+```
+
+The producer never learns what its own workload actually costs. The feedback
+edge does not exist.
+
+## Live data the design rests on
+
+26 settled rows, all `reverie_diffusion` / `circe` / gpu 2, split by whether
+the sampling window actually covered the workload:
+
+| bucket | n | mean | median | sd | range |
+|---|---|---|---|---|---|
+| full 60s window | 24 | 252.7 | 254.3 | **8.0** | 238.2 – 268.0 |
+| truncated 20s window (pre-fix) | 2 | 96.5 | 96.5 | 67.9 | 48.5 – 144.5 |
+
+Two facts drive every decision below:
+
+1. **The clean process is tight.** sd 8.0 W on a 252.7 W mean is a 3.2%
+   coefficient of variation. FLUX at fixed settings draws very consistently,
+   so a prior can be genuinely informative rather than a wide shrug.
+2. **The dataset provably contains a superseded measurement regime.** The two
+   20s-window rows are not outliers of the same process — they are a
+   *different instrument*. Pooling all 26 gives mean 240.7 / sd 45.2: two bad
+   points out of 26 inflate the spread 5.6x.
+
+Any estimator that is not robust and not recency-bounded would carry that
+contamination into the first thing Orion ever predicts about itself.
+
+## Proposed design
+
+### Estimator: median of a bounded recent window
+
+`expected_watts` = median of the last **N=20** `outcome='settled'` peaks for
+the same `(workload_kind, node, gpu_index)`, declared only once at least
+**3** such samples exist.
+
+Rejected alternatives and why:
+
+- **Mean.** Not robust. On the current 26 rows it returns 240.7 against a true
+  central value of ~254 — already wrong today, because of contamination we
+  know about.
+- **EWMA.** Needs an alpha, which is a tuned knob rather than a finding, and a
+  single wild reading moves it permanently. AGENTS.md already warns that
+  borrowed calibrated constants do not transfer across domains; there is no
+  principled alpha available here.
+- **All-history median.** Robust to the two bad points *today*, but has no
+  mechanism to forget a genuine regime change (a model swap, a GPU move, a
+  resolution change). The bounded window is what makes it self-correcting.
+
+`N=20` is a memory length, not a threshold: at the visual chain's 600s cadence
+it is roughly 3 hours, long enough that the median is stable at sd 8.0 and
+short enough that a config change ages out within a working session.
+
+`min_samples=3` is the point at which a median is meaningfully a median —
+below it a single anomalous reading is 50% or more of the estimate. It is not
+tuned; 1 and 2 are degenerate.
+
+### Where the history comes from: the producer subscribes to its own settlements
+
+`orion-diffusion-host` subscribes to `orion:power:intent:settled` and keeps a
+bounded in-memory deque per `(workload_kind, node, gpu_index)`.
+
+Rejected alternatives:
+
+- **Query Postgres.** Adds a database dependency to a GPU host that currently
+  has none, for a read it can get off a bus it is already connected to.
+- **Have biometrics publish a prior back.** Puts the producer's model of
+  itself inside the meter. The meter should measure; the declarer should
+  predict. Keeping the prior in the declarer is what makes it *Orion's* prior
+  rather than an instrument reading.
+
+This closes the feedback edge that does not exist today, using only the bus
+connection enabled yesterday.
+
+**Known limitation, stated rather than hidden:** the deque is in-memory, so a
+container restart resets it and the service declares `None` again until 3 new
+settlements arrive (~30 min at current cadence). That is honest — it declares
+unknown rather than a stale guess — and it self-heals. Persisting the prior
+across restarts is a follow-up, not this patch.
+
+### Filtering
+
+Only `outcome == "settled"` contributes. `no_samples` and `deadline_expired`
+carry no peak and must never be coerced to a number — the settlement schema
+went out of its way to keep "we did not see" distinct from "we saw nothing",
+and this consumer must preserve that.
+
+## Schema / API changes
+
+**None.** `PowerIntentV1.expected_watts` already exists and is already
+`Optional[float]`. `summarize()` already computes
+`residual = peak - expected_watts` whenever it is not None. Both halves of the
+arithmetic were built; only the value was missing.
+
+This is deliberately a zero-schema-change patch.
+
+## Files likely to touch
+
+- `services/orion-diffusion-host/app/power_prior.py` — new, pure, no I/O
+- `services/orion-diffusion-host/app/main.py` — subscribe; use the prior
+- `services/orion-diffusion-host/app/settings.py` — window/min-sample config
+- `services/orion-diffusion-host/.env_example` + host `.env` files
+- `services/orion-diffusion-host/tests/test_power_prior.py` — new
+
+## Non-goals
+
+- No budget. A budget with one claimant is not a budget; `reverie_diffusion`
+  is still the only workload that declares anything.
+- No refusal. Nothing may decline or defer a declaration yet.
+- No cross-restart persistence.
+- No error bars. `PowerIntentV1` carries a scalar `expected_watts`; adding a
+  variance field is a schema change and is not needed to make `residual_watts`
+  real.
+
+## Acceptance checks
+
+1. `power_intent_settled.expected_watts` is non-NULL on new rows once 3
+   settlements have been observed since boot.
+2. `residual_watts` is non-NULL on those same rows and equals
+   `actual_peak_watts - expected_watts`.
+3. Given the live sd of 8.0 W, `|residual|` should typically land within
+   roughly ±20 W. A persistently large residual means the prior is wrong and
+   is now *visible* — which is the entire point.
+4. Cold start declares `None`, not a fabricated constant.
+5. A `no_samples` settlement never contributes to the prior.
+
+## Recommended next patch after this one
+
+A second claimant. Power does not become a contested budget until something
+other than the visual chain wants the same watts.

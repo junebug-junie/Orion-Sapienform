@@ -64,17 +64,26 @@ class EmailTransport:
             maintype, subtype = _split_mime(attachment.mime_type)
             msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment.filename)
 
+        # `send_message` raises SMTPRecipientsRefused only when EVERY recipient is
+        # refused. On a PARTIAL refusal it returns a dict of the refused
+        # addresses and does not raise -- so discarding the return value made a
+        # partially-refused message report as a clean send. NOTIFY_EMAIL_TO is a
+        # comma-separated list, so multi-recipient is a supported config; this is
+        # latent only because it currently holds one address.
         if self.use_tls:
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
                 server.starttls()
                 if self.smtp_username and self.smtp_password:
                     server.login(self.smtp_username, self.smtp_password)
-                server.send_message(msg)
+                refused = server.send_message(msg)
         else:
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
                 if self.smtp_username and self.smtp_password:
                     server.login(self.smtp_username, self.smtp_password)
-                server.send_message(msg)
+                refused = server.send_message(msg)
+
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
 
 
 def _split_mime(mime_type: Optional[str]) -> tuple[str, str]:

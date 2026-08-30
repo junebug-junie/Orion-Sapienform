@@ -99,22 +99,26 @@ def test_policy_decline_is_skipped_and_carries_the_reason(monkeypatch) -> None:
     assert out.reason == "severity_below_threshold"
 
 
-def test_immediate_critical_only_skips_non_critical(monkeypatch) -> None:
+def test_immediate_critical_only_defers_rather_than_declining(monkeypatch) -> None:
+    """"deferred", not "skipped": attention_escalation.py emails exactly
+    severity=="error" attentions past their ack deadline, so an email may still
+    follow. Live 2026-08-30, 37 of 46 error attentions escalated and every other
+    severity escalated zero times -- calling those "no email" would make the
+    column confidently wrong about the only class that reliably emails."""
     import app.email_delivery as ed
 
     monkeypatch.setattr(ed, "should_send_email", lambda p: (True, "ok"))
     t = _Transport()
-    out = maybe_send_email(t, _Payload(severity="warning"), immediate_critical_only=True)
-    assert out.status == "skipped"
+    out = maybe_send_email(t, _Payload(severity="error"), immediate_critical_only=True)
+    assert out.status == "deferred"
     assert "immediate_critical_only" in out.reason
-    assert t.sent == [], "a skipped send must not touch the transport"
+    assert t.sent == [], "a deferred send must not touch the transport"
 
 
 def test_maybe_send_email_always_returns_an_outcome(monkeypatch) -> None:
     """It used to return None on four of five paths; a None here silently maps
     back to "pending" and reintroduces the bug."""
     import app.email_delivery as ed
-    import inspect
 
     for should in (True, False):
         monkeypatch.setattr(ed, "should_send_email", lambda p, _s=should: (_s, "r"))
@@ -126,7 +130,6 @@ def test_maybe_send_email_always_returns_an_outcome(monkeypatch) -> None:
                 assert isinstance(out, EmailOutcome), "every path must return an outcome"
                 assert out.status in {"sent", "failed", "skipped"}
 
-    assert "None" not in str(inspect.signature(maybe_send_email).return_annotation)
 
 
 # --------------------------------------------------------------------------
@@ -155,18 +158,135 @@ def test_an_unknown_outcome_falls_back_to_pending() -> None:
     assert _request_status(EmailOutcome("weird", "r")) == "pending"
 
 
-def test_no_call_site_hardcodes_pending_on_a_persisted_record() -> None:
-    """Guards the actual regression: a future edit reintroducing a literal
-    `status="pending"` on a NotificationRecord. The one remaining literal is the
-    attention record, whose status is DERIVED at read time from
-    attention_acked_at (api_notify.py::_attention_to_schema), not stored."""
-    src = Path(SERVICE_DIR, "app", "main.py").read_text()
-    assert src.count('status="pending"') <= 1, (
-        "a persisted-record call site hardcodes pending again"
+# --------------------------------------------------------------------------
+# the endpoints themselves -- what actually gets persisted
+#
+# The previous guard here was a source-text grep. It counted characters, not
+# values, so `status=_request_status(email_outcome) and "pending"` -- a FULL
+# revert of this commit at both endpoints -- passed all 31 tests. These drive
+# the real handlers and assert the status on the NotificationRecord that is
+# actually published for persistence.
+# --------------------------------------------------------------------------
+
+def _app_request(monkeypatch, transport):
+    """A fake Request whose app.state carries what the handlers read."""
+    pytest.importorskip("fastapi")
+    from types import SimpleNamespace
+
+    from app import main as m
+
+    published: list = []
+    coros: list = []
+
+    async def _capture(bus, channel, record):
+        published.append(record)
+
+    monkeypatch.setattr(m, "_publish_persistence_event", _capture)
+    monkeypatch.setattr(m.asyncio, "create_task", lambda c: coros.append(c) or None)
+    monkeypatch.setattr(m, "_check_token", lambda *_a, **_k: None)
+
+    state = SimpleNamespace(
+        bus=object(),
+        email_transport=transport,
+        policy=SimpleNamespace(
+            evaluate=lambda payload, now: SimpleNamespace(
+                ack_deadline_minutes=60, escalation_channels=["email"],
+                should_send_email=True, drop_reason=None, action="publish",
+            )
+        ),
     )
-    assert src.count("_request_status(email_outcome)") == 2, (
-        "both email-bearing endpoints must record the real outcome"
+    return m, SimpleNamespace(app=SimpleNamespace(state=state)), published, coros
+
+
+async def _drain(coros, published):
+    for c in coros:
+        try:
+            await c
+        except Exception:
+            pass
+    return published
+
+
+@pytest.mark.asyncio
+async def test_notify_endpoint_persists_sent_when_the_email_goes_out(monkeypatch) -> None:
+    m, req, published, coros = _app_request(monkeypatch, _Transport())
+    monkeypatch.setattr(m, "should_send_email", lambda p: (True, "policy_ok"))
+    from orion.schemas.notify import NotificationRequest
+
+    await m.notify(
+        payload=NotificationRequest(
+            source_service="test", event_kind="test.kind", severity="critical",
+            title="t", body_text="b",
+        ),
+        request=req,
     )
+    records = await _drain(coros, published)
+    assert records, "no NotificationRecord was published"
+    assert records[0].status == "sent"
+
+
+@pytest.mark.asyncio
+async def test_notify_endpoint_persists_failed_when_smtp_raises(monkeypatch) -> None:
+    """The load-bearing one: a failure must never persist as success. This is
+    the shape that let 663 gateway timeouts get stored as result_status=ok."""
+    m, req, published, coros = _app_request(monkeypatch, _Transport(exc=RuntimeError("smtp down")))
+    monkeypatch.setattr(m, "should_send_email", lambda p: (True, "policy_ok"))
+    from orion.schemas.notify import NotificationRequest
+
+    await m.notify(
+        payload=NotificationRequest(
+            source_service="test", event_kind="test.kind", severity="critical",
+            title="t", body_text="b",
+        ),
+        request=req,
+    )
+    records = await _drain(coros, published)
+    assert records[0].status == "failed"
+    assert records[0].status != "pending", "the original bug, restored"
+
+
+@pytest.mark.asyncio
+async def test_notify_endpoint_persists_no_email_when_policy_declines(monkeypatch) -> None:
+    m, req, published, coros = _app_request(monkeypatch, _Transport())
+    monkeypatch.setattr(m, "should_send_email", lambda p: (False, "severity_below_threshold"))
+    from orion.schemas.notify import NotificationRequest
+
+    await m.notify(
+        payload=NotificationRequest(
+            source_service="test", event_kind="test.kind", severity="info",
+            title="t", body_text="b",
+        ),
+        request=req,
+    )
+    records = await _drain(coros, published)
+    assert records[0].status == "no_email"
+    assert records[0].drop_reason == "severity_below_threshold", "the WHY must survive"
+
+
+@pytest.mark.asyncio
+async def test_no_endpoint_can_persist_a_hardcoded_pending(monkeypatch) -> None:
+    """Behavioural replacement for the source grep that a full revert walked
+    through. Every email outcome must reach the record."""
+    from orion.schemas.notify import NotificationRequest
+
+    cases = [
+        (_Transport(), (True, "ok"), "sent"),
+        (_Transport(exc=RuntimeError("x")), (True, "ok"), "failed"),
+        (None, (True, "ok"), "no_email"),
+        (_Transport(), (False, "declined"), "no_email"),
+    ]
+    for transport, policy, expected in cases:
+        m, req, published, coros = _app_request(monkeypatch, transport)
+        monkeypatch.setattr(m, "should_send_email", lambda p, _r=policy: _r)
+        await m.notify(
+            payload=NotificationRequest(
+                source_service="test", event_kind="test.kind", severity="critical",
+                title="t", body_text="b",
+            ),
+            request=req,
+        )
+        records = await _drain(coros, published)
+        assert records[0].status == expected, f"{transport}/{policy} -> {records[0].status}"
 
 
 # --------------------------------------------------------------------------
@@ -216,3 +336,123 @@ def test_the_root_handler_writes_to_stdout() -> None:
     assert any(getattr(s, "name", None) == "<stdout>" or s is sys.stdout for s in streams), (
         f"root handler does not write to stdout: {streams}"
     )
+
+
+def test_a_partial_recipient_refusal_is_not_reported_as_sent(monkeypatch) -> None:
+    """smtplib.send_message raises only when EVERY recipient is refused; on a
+    partial refusal it RETURNS the refused addresses and does not raise. The
+    return was discarded, so a partially-refused message reported a clean send.
+    NOTIFY_EMAIL_TO is comma-separated, so multi-recipient is supported config.
+    """
+    import smtplib
+
+    import app.email_delivery as ed
+
+    class PartiallyRefusing:
+        def send(self, payload):
+            raise smtplib.SMTPRecipientsRefused({"nope@example.com": (550, b"No such user")})
+
+    monkeypatch.setattr(ed, "should_send_email", lambda p: (True, "ok"))
+    out = maybe_send_email(PartiallyRefusing(), _Payload())
+    assert out.status == "failed"
+    assert "Refused" in out.reason or "refused" in out.reason.lower()
+
+
+def test_deferred_maps_to_pending_not_no_email() -> None:
+    """The 37-of-46 case. `/attention/request` skips immediate email for
+    severity="error", but attention_escalation.py emails exactly that class past
+    the ack deadline -- so "no_email" would be confidently wrong about the only
+    severity that reliably emails, while "pending" is honest."""
+    pytest.importorskip("fastapi")
+    assert _request_status(EmailOutcome("deferred", "immediate_critical_only_severity_error")) == "pending"
+    assert _request_status(EmailOutcome("deferred", "x")) != "no_email"
+
+
+def test_an_unmapped_outcome_is_logged_loudly(caplog) -> None:
+    """The fallback returns the exact known-bad value this change exists to
+    remove, so it must be visible. A silent fallback reproduces 100%-pending and
+    looks identical to the pre-fix state."""
+    pytest.importorskip("fastapi")
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="orion-notify"):
+        assert _request_status(EmailOutcome("brand_new_status", "r")) == "pending"
+    assert any("unmapped_email_outcome" in r.getMessage() for r in caplog.records), (
+        "the degraded fallback must be logged"
+    )
+
+
+@pytest.mark.asyncio
+async def test_escalation_captures_the_email_outcome() -> None:
+    """The third call site. It sends the REAL escalation email to Juniper and
+    discarded its outcome -- the exact bug this commit exists to fix, still live
+    at a site the first pass missed."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.attention_escalation import run_attention_escalation_once
+
+    calls = []
+
+    class Recording:
+        def send(self, payload):
+            calls.append(payload)
+
+    old = datetime.now(timezone.utc) - timedelta(minutes=90)
+    row = {
+        "attention_id": "att-outcome", "severity": "error", "require_ack": True,
+        "acked_at": None, "escalated_at": None, "created_at": old.isoformat(),
+        "ack_deadline_minutes": 60, "reason": "attention_request",
+        "message": "m", "source_service": "svc",
+        "context": {"escalation_channels": ["email"]},
+    }
+    count = await run_attention_escalation_once(
+        email_transport=Recording(),
+        policy=SimpleNamespace(evaluate=lambda p, n: SimpleNamespace(
+            ack_deadline_minutes=60, escalation_channels=["email"])),
+        proxy_get=AsyncMock(return_value=[row]),
+        proxy_post=AsyncMock(return_value={"status": "escalated"}),
+        hub_url_base="",
+    )
+    assert count == 1
+    assert len(calls) == 1, "the escalation email must actually be attempted"
+
+    import app.attention_escalation as ae
+    import inspect
+    src = inspect.getsource(ae.run_attention_escalation_once)
+    assert "outcome = maybe_send_email(" in src, (
+        "the escalation call site must bind the outcome, not discard it"
+    )
+    assert "email_status=%s" in src, "and must report it in the log line"
+
+
+def test_the_real_transport_treats_a_partial_refusal_as_a_failure(monkeypatch) -> None:
+    """Exercises orion/notify/transport.py itself, not a stub that raises.
+
+    The earlier partial-refusal test used a fake transport that raised directly,
+    so it never touched the code that discards `send_message`'s return -- the
+    actual defect. smtplib returns refused recipients instead of raising when
+    only SOME are refused.
+    """
+    import smtplib
+
+    from orion.notify.transport import EmailTransport
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def login(self, *a): pass
+        def send_message(self, msg):
+            return {"nope@example.com": (550, b"No such user")}
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    tx = EmailTransport(
+        smtp_host="h", smtp_port=587, smtp_username="u", smtp_password="p",
+        use_tls=True, default_from="a@b.c",
+        default_to=["ok@example.com", "nope@example.com"],
+    )
+    with pytest.raises(smtplib.SMTPRecipientsRefused):
+        tx.send(_Payload(title="t", body_text="b", body_md=None, attachments=[]))

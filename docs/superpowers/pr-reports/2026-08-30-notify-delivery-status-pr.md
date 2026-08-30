@@ -21,7 +21,10 @@
 - `services/orion-notify/app/email_delivery.py`: `maybe_send_email()` returns `EmailOutcome(status, reason)` on all five paths instead of `None`.
 - `services/orion-notify/app/main.py`: `_request_status()` mapping; both email-bearing endpoints persist the real outcome; `/chat/message` records `no_email`; `logging.basicConfig`.
 - `services/orion-notify/.env_example` + `docker-compose.yml`: `NOTIFY_LOG_LEVEL`.
-- `services/orion-notify/tests/test_delivery_status.py`: new, 14 tests.
+- `services/orion-notify/tests/test_delivery_status.py`: new, 22 tests.
+- `services/orion-notify/app/attention_escalation.py`: the third call site now captures its outcome.
+- `orion/notify/transport.py`: partial recipient refusal now raises.
+- `services/orion-notify/README.md`: the status vocabulary and its cutover.
 
 ## The status vocabulary
 
@@ -74,7 +77,7 @@ uvicorn configures its own loggers, which is why `docker logs` showed 203 access
 ## Tests run
 
 ```text
-pytest services/orion-notify/tests -q  -> 31 passed
+pytest services/orion-notify/tests -q  -> 39 passed
 ```
 
 ### Mutation tests (real files, each anchor verified to match once)
@@ -108,7 +111,44 @@ None. services/orion-notify has no evals/ directory.
 
 ## Review findings fixed
 
-_Pending — review dispatched._
+Review found seven defects. Two were severe, and both were reproduced before fixing.
+
+- **The third email call site was missed, and it made the column lie in a NEW way.**
+  `attention_escalation.py:130` still discarded the outcome — and it is the site that sends the real escalation email. Worse, it interacts: `/attention/request` calls `maybe_send_email(..., immediate_critical_only=True)`, so `severity="error"` skipped → my code stamped `no_email`. But escalation emails **exactly** `severity == "error"` past the ack deadline. Live: **37 of 46 error attentions escalated; every other severity escalated zero times.** So the patch would have stamped `no_email` on the only class that reliably emails.
+  Fixed with a new `deferred` outcome (→ `pending`, honest: an email may still follow) and by capturing the outcome at the escalation site.
+  **Did not** take the review's suggestion to make `sent` count only successful sends: `test_escalation_marks_before_send_even_if_smtp_fails` deliberately asserts `count == 1` with a raising transport, because the attention is marked escalated before the send and must not be retried. That is existing intent, so the outcome goes to the log line instead.
+
+- **The entire headline change could be reverted with all 31 tests green.** My guard was a source-text grep counting characters, so `status=_request_status(email_outcome) and "pending"` — a full revert at both endpoints — walked straight through it. Replaced with tests that drive the real handlers and assert `status` on the published `NotificationRecord`. Verified: that mutation now fails 4 tests.
+
+- **`_request_status` failed silently back to the known-bad value.** Now typed and logs `unmapped_email_outcome` at WARNING — visible in the logs this same commit made work.
+
+- **`skipped` collapsed three different facts and threw the reason away.** `drop_reason` is a free, already-persisted column. Now carries policy decline vs unconfigured transport vs deferral. Also fixed `EmailOutcome.reason: str` → `Optional[str]` (`should_send_email` returns `(False, None)`).
+
+- **My "nothing filters on the stored column" claim was wrong.** `orion-notify-digest/app/digest.py:124,135` filter `status == "throttled"` / `"deduped"`. Behaviour is unaffected — neither value was ever written and neither is written here — but the justification was false and is corrected in both the code comment and the README.
+
+- **Partial recipient refusal reported as `sent`.** `smtplib.send_message` raises only when *every* recipient is refused; on partial refusal it returns the refused addresses and `transport.py` discarded them. Now raises. `NOTIFY_EMAIL_TO` is comma-separated, so this is supported config, latent only because it currently holds one address. `EmailTransport` is used solely by orion-notify, so the change is contained.
+
+- **Two vacuous assertions removed.** `"None" not in str(signature.return_annotation)` passes for `Optional[EmailOutcome]` and, under `from __future__ import annotations`, only ever saw the string `'EmailOutcome'`.
+
+- **README added** documenting the vocabulary, the pre/post cutover ambiguity, the digest consumer, and the known escalation gap (AGENTS §6/§16).
+
+### Mutations after the fixes — 9/9 caught
+
+| mutation | result |
+|---|---|
+| **full revert of the headline change** | CAUGHT (4 tests) |
+| silent fallback (no warning) | CAUGHT |
+| `drop_reason` discarded | CAUGHT |
+| `deferred` maps to `no_email` | CAUGHT |
+| `immediate_critical_only` skipped, not deferred | CAUGHT |
+| a failed send reports `sent` | CAUGHT (5 tests) |
+| no-transport returns `None` again | CAUGHT |
+| third call site discards the outcome again | CAUGHT |
+| partial recipient refusal ignored again | CAUGHT |
+
+### Claims the review confirmed held up
+
+Blast radius on paging dedup (verified independently and live); control flow around `email_outcome` (no `UnboundLocalError` reachable); `basicConfig(force=True)` not stomping uvicorn; no secret or PII at INFO; env parity including compose.
 
 ## Restart required
 

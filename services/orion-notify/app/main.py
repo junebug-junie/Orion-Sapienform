@@ -277,8 +277,8 @@ async def notify(
             session_id=payload.session_id,
             created_at=payload.created_at,
             status=_request_status(email_outcome),
+            drop_reason=_drop_reason(email_outcome),
             policy_action="publish",
-            drop_reason=None
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
 
@@ -326,6 +326,7 @@ async def attention_request(
             session_id=notify_payload.session_id,
             created_at=notify_payload.created_at,
             status=_request_status(email_outcome),
+            drop_reason=_drop_reason(email_outcome),
             policy_action="publish"
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
@@ -403,6 +404,7 @@ async def chat_message(
             # /chat/message never attempts email, so there is no delivery
             # outcome to record for this channel.
             status="no_email",
+            drop_reason="endpoint_does_not_email",
             policy_action="publish"
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
@@ -614,30 +616,63 @@ async def _init_bus() -> OrionBusAsync | None:
 
 # Delivery status written onto the persisted `notify_requests` row.
 #
-# Before 2026-08-30 every one of these sites hardcoded "pending" and nothing
-# anywhere ever updated it: 10,900 rows since 2026-07-24, 100% pending,
-# including emails Juniper confirmed receiving. Verified safe to change --
-# nothing filters on the stored column, and the attention view derives its own
-# status from `attention_acked_at` (api_notify.py:_attention_to_schema).
+# Before 2026-08-30 every site hardcoded "pending" and nothing ever updated it:
+# 10,900 rows since 2026-07-24, 100% pending, including emails Juniper confirmed
+# receiving.
 #
-# "sent" means SMTP ACCEPTED the message, not that it reached an inbox. Nothing
-# downstream of SMTP reports back, so do not read it as "Juniper saw it".
+# Safe to change, with one correction to an earlier claim in this file: it is
+# NOT true that "nothing filters on the stored column" -- services/
+# orion-notify-digest/app/digest.py:124,135 filter `status == "throttled"` and
+# `== "deduped"`. Neither value was ever written and neither is written here, so
+# those counters are unaffected, but the justification was wrong as stated. What
+# IS true is the part that matters for paging: the attention view derives its own
+# status from `attention_acked_at` (api_notify.py::_attention_to_schema), so
+# `/attention?status=pending` -- which health_monitor._has_open_alert depends on
+# for alert dedup -- never reads this column.
+#
+# "sent" means SMTP ACCEPTED the message, not that it reached an inbox.
 _EMAIL_STATUS_TO_REQUEST_STATUS = {
     "sent": "sent",
     "failed": "failed",
     "skipped": "no_email",
+    # An email may still follow via attention_escalation; "no email" would be
+    # confidently wrong for the one severity class that reliably emails.
+    "deferred": "pending",
 }
 
 
-def _request_status(outcome: Any) -> str:
+def _request_status(outcome: Optional["EmailOutcome"]) -> str:
     """Map an EmailOutcome onto the persisted request status.
 
-    Unknown/absent outcomes fall back to "pending", which now means what it says
-    -- nothing was attempted and nothing is known -- rather than being the only
-    value the column ever held.
+    The fallback is LOUD on purpose. It returns "pending" -- the exact
+    known-bad value this whole change exists to eliminate -- so a new outcome
+    status, or a refactor that returns None again, would silently reproduce
+    100%-pending and look identical to the pre-fix state. The warning makes that
+    regression visible in the logs this same commit just made work.
     """
     status = getattr(outcome, "status", None)
-    return _EMAIL_STATUS_TO_REQUEST_STATUS.get(str(status), "pending")
+    mapped = _EMAIL_STATUS_TO_REQUEST_STATUS.get(str(status))
+    if mapped is None:
+        logger.warning(
+            "[NOTIFY] unmapped_email_outcome status=%r -- persisting 'pending'; "
+            "delivery accounting is degraded until this is mapped",
+            status,
+        )
+        return "pending"
+    return mapped
+
+
+def _drop_reason(outcome: Optional["EmailOutcome"], fallback: Optional[str] = None) -> Optional[str]:
+    """Why the email did not go out, for the already-persisted `drop_reason`.
+
+    `EmailOutcome.reason` distinguishes three materially different facts that
+    all collapse onto one status -- policy declined, no transport configured
+    (an email that SHOULD have gone out and could not), and deferred to
+    escalation. Recording only the status would throw away the one field that
+    says which.
+    """
+    reason = getattr(outcome, "reason", None)
+    return str(reason) if reason else fallback
 
 
 async def _publish_in_app_event(

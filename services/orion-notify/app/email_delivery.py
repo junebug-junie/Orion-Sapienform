@@ -43,12 +43,20 @@ class EmailOutcome:
                    This is not proof it reached an inbox; nothing downstream of
                    SMTP reports back here. Do not read it as "Juniper saw it".
       "failed"  -- the send raised.
-      "skipped" -- no email was attempted: no transport configured, or policy
-                   said not to send for this notification.
+      "skipped"  -- no email was attempted and none will be: policy declined, or
+                    no SMTP transport is configured.
+      "deferred" -- not sent NOW, but a later path may still send it. Used for
+                    the attention endpoint's `immediate_critical_only` skip:
+                    `attention_escalation.py` emails exactly `severity=="error"`
+                    attentions past their ack deadline. Live 2026-08-30, 37 of
+                    46 error attentions escalated and every other severity
+                    escalated zero times -- so stamping those "no email" would
+                    make the column confidently wrong about the ONLY class that
+                    reliably emails.
     """
 
     status: str
-    reason: str
+    reason: Optional[str]
 
 
 def maybe_send_email(
@@ -70,7 +78,7 @@ def maybe_send_email(
         return EmailOutcome("skipped", "smtp_transport_unconfigured")
     severity = (payload.severity or "").lower()
     if immediate_critical_only and severity != "critical":
-        return EmailOutcome("skipped", f"immediate_critical_only_severity_{severity or 'unset'}")
+        return EmailOutcome("deferred", f"immediate_critical_only_severity_{severity or 'unset'}")
     should, reason = should_send_email(payload)
     if not should:
         return EmailOutcome("skipped", reason)

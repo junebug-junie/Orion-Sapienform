@@ -231,3 +231,42 @@ req = NotificationRequest(
 )
 client.send(req)
 ```
+
+## `notify_requests.status` -- what it means
+
+**Changed 2026-08-30 (PR #1991).** Before that date this column was written once
+as `"pending"` at every call site and never updated by anything: 10,900 rows
+since 2026-07-24, 100% pending, including emails that were definitely
+delivered. Rows created before the cutover carry the old, meaningless `pending`
+and cannot be told apart from a genuine post-cutover `pending` except by
+`created_at`. Nothing was backfilled -- there is no record anywhere of what
+happened to those, so a backfill would be invention.
+
+| value | meaning |
+|---|---|
+| `sent` | the SMTP transport accepted the message without raising. **Not proof it reached an inbox** -- nothing downstream of SMTP reports back. Do not read it as "Juniper saw it". |
+| `failed` | the send raised, including a partial recipient refusal |
+| `no_email` | no email was attempted and none will be: policy declined, no SMTP transport configured, or an endpoint that never emails (`/chat/message`) |
+| `pending` | nothing attempted yet, outcome unknown. Written when email is **deferred**: `/attention/request` skips immediate email for `severity != "critical"`, but `attention_escalation.py` emails `severity == "error"` attentions past their ack deadline, so an email may still follow. Also the loud fallback for an unmapped outcome (logged as `unmapped_email_outcome`). |
+
+`drop_reason` carries *why*, which the status alone collapses -- policy decline,
+unconfigured transport, and deferral are three materially different facts.
+
+**Not the same column as attention status.** `GET /attention?status=pending|acked`
+derives its value from `attention_require_ack` / `attention_acked_at`
+(`orion-sql-writer/app/api_notify.py::_attention_to_schema`), not from this
+column. `health_monitor._has_open_alert` depends on that derived view for alert
+dedup and is unaffected by anything here.
+
+**One consumer does read this column:** `orion-notify-digest/app/digest.py`
+filters `status == "throttled"` and `== "deduped"`. Neither value was ever
+written before this change and neither is written by it, so those counters are
+unaffected -- but the column is not unread, and a future value must not collide
+with those two.
+
+**Known gap:** an escalation email sent by `attention_escalation.py` does not
+update the parent row, which stays `pending`. The escalation
+`NotificationRequest` is never persisted as its own record either. Closing that
+needs a write-back path or a new persisted record, and is deliberately out of
+scope for PR #1991.
+

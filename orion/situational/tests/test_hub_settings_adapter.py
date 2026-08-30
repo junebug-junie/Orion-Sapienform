@@ -146,8 +146,17 @@ def test_adapter_curiosity_disabled_when_hub_sets_it_off() -> None:
 
 
 def test_adapter_curiosity_unconfigured_when_hub_has_no_graph_host() -> None:
-    """Real, distinct state -- a fresh hub deployment with the graph feature
-    never configured should not silently look like an error."""
+    """Adapter-level default when the caller supplies no
+    HUB_CURIOSITY_GRAPH_HOST attribute at all (e.g. a caller other than the
+    real `services/orion-hub/app/settings.py` `Settings` class, whose own
+    `HUB_CURIOSITY_GRAPH_HOST` field defaults to a non-empty
+    "127.0.0.1" -- a real Hub deployment is NOT "unconfigured" for
+    curiosity by default; see `test_adapter_reads_hub_curiosity_config_and_
+    reuses_existing_graph_keys` above for that case). What this test
+    verifies: the adapter must not silently invent a graph host out of
+    nowhere -- an absent attribute produces the real, distinct
+    "unconfigured" state (`_build_curiosity_context`'s own branch), not an
+    error and not a guessed default host."""
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(SimpleNamespace()))
 
     assert cfg.curiosity_enabled is True
@@ -170,6 +179,23 @@ def test_adapter_reverie_disabled_when_hub_sets_it_off() -> None:
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
 
     assert cfg.reverie_enabled is False
+
+
+def test_adapter_reads_hub_prompt_max_chars_override() -> None:
+    """2026-08-30: previously hardcoded to a bare 1200 with no env override
+    at all -- this is the regression test for that gap."""
+    hub_settings = SimpleNamespace(ORION_SITUATION_PROMPT_MAX_CHARS=9000)
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.prompt_max_chars == 9000
+
+
+def test_adapter_prompt_max_chars_defaults_to_7200_when_hub_settings_missing() -> None:
+    ns = hub_settings_to_runtime_namespace(SimpleNamespace())
+    assert ns.orion_situation_prompt_max_chars == 7200
+
+    cfg = settings_from_runtime(ns)
+    assert cfg.prompt_max_chars == 7200
 
 
 def test_adapter_falls_back_to_safe_defaults_when_hub_settings_missing_attrs() -> None:

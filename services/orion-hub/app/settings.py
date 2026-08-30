@@ -1016,6 +1016,17 @@ class Settings(BaseSettings):
     ORION_PRESENCE_PERSIST_ALLOWED: bool = Field(default=False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
     ORION_SITUATION_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_ENABLED")
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
+    # 2026-08-30, Juniper's explicit request: previously hardcoded to a bare
+    # 1200 inside orion.situational.context.hub_settings_to_runtime_namespace
+    # with no env override at all -- Hub is now env-configurable the same
+    # way cortex-exec's own ORION_SITUATION_PROMPT_MAX_CHARS already was.
+    # Raised from the old 1200 default to 7200 (6x) now that the harness
+    # runs a large-context model; the truncation/caution-survival logic in
+    # orion.situational.context._build_prompt_fragment is unchanged, only
+    # the ceiling moved.
+    ORION_SITUATION_PROMPT_MAX_CHARS: int = Field(
+        default=7200, alias="ORION_SITUATION_PROMPT_MAX_CHARS"
+    )
     ORION_SITUATION_TIMEZONE: str = Field(default="America/Denver", alias="ORION_SITUATION_TIMEZONE")
     ORION_SITUATION_WEATHER_PROVIDER: str = Field(default="stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
     # Added alongside ORION_SITUATION_WEATHER_PROVIDER above (that field

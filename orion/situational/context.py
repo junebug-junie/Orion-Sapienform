@@ -24,7 +24,7 @@ from .perception_reader import (
 )
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
-from orion.curiosity.worldview import Prior, WorldviewReader, read_snapshot
+from orion.curiosity.worldview import LIVE_PRIORS_LIMIT, Prior, WorldviewReader, read_snapshot
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
@@ -59,18 +59,42 @@ _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
 _CURIOSITY_CACHE: dict[str, tuple[datetime, CuriosityPriorContextV1]] = {}
 _REVERIE_CACHE: dict[str, tuple[datetime, ReverieContextV1]] = {}
 
+# 2026-08-30, Juniper's explicit request: raised from the original 1200 (6x)
+# now that the harness runs a large-context model -- the old cap was sized
+# for a much smaller context window and was already tight enough to drop a
+# caution line on a single long affect summary (see
+# test_situation_input_modality.py's own regression test). Still a real
+# ceiling, not a removal of the truncation logic below: this only widens the
+# room the existing "cautions survive whole, body gets truncated first"
+# algorithm has to work with. Single source of truth for both defaulting
+# paths below (settings_from_runtime's own getattr default and
+# hub_settings_to_runtime_namespace's fallback) so they cannot drift apart.
+# hub_settings_to_runtime_namespace previously hardcoded a bare `1200` with
+# no env override at all (unlike cortex-exec, which has always had
+# ORION_SITUATION_PROMPT_MAX_CHARS) -- this patch both raises the default
+# and gives Hub the same env-configurable key cortex-exec already had.
+_DEFAULT_PROMPT_MAX_CHARS = 7200
+
 # Internal caps -- not env keys. Both providers below are "color, not a
 # dump" by design (see the schema docstrings), so how many items survive
 # into the prompt is a fixed, small constant rather than another knob.
 #
 # `_CURIOSITY_PRIOR_POOL_SAMPLE` is the pool `read_snapshot` selects from
-# BEFORE this module re-ranks by confidence -- read_snapshot's own ordering
-# is most-uncertain-first (it exists to pick what to TEST next), the
-# opposite of what a "here's what Orion currently believes" prompt line
-# wants. A larger pool than the final cap gives the re-rank something real
-# to choose from; read_snapshot's own LIVE_PRIORS_LIMIT (2000) bounds the
-# underlying Cypher regardless.
-_CURIOSITY_PRIOR_POOL_SAMPLE = 20
+# BEFORE this module re-ranks by confidence. MUST be read_snapshot's own
+# `LIVE_PRIORS_LIMIT`, not a small number (review finding, 2026-08-30): the
+# Cypher query underneath `read_snapshot` already fetches every live prior
+# up to that limit regardless of what `sample` is, but `select_priors` then
+# SLICES that full set down to `sample` items sorted MOST-UNCERTAIN-FIRST
+# (it exists to pick what to TEST next) before this module ever sees it. A
+# `sample` smaller than the live pool silently excludes every genuinely
+# confident prior from the slice -- passing e.g. 20 here meant a graph with
+# more than 20 live priors could NEVER surface its most-confident ones,
+# because they never survive `select_priors`' own uncertainty-ascending cut
+# to reach this module's later confidence re-rank. Using the same limit the
+# underlying query already applies costs nothing extra (no new query, no
+# larger result set) and guarantees this module's re-rank sees the true full
+# live pool.
+_CURIOSITY_PRIOR_POOL_SAMPLE = LIVE_PRIORS_LIMIT
 _CURIOSITY_PRIOR_STALE_AFTER = 6
 _CURIOSITY_MAX_PRIORS = 2
 # Kept tight relative to worldview.py's own `_clip(text, limit=240)` (used
@@ -164,7 +188,9 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
     return SituationSettings(
         enabled=bool(getattr(settings, "orion_situation_enabled", True)),
         ttl_seconds=int(getattr(settings, "orion_situation_ttl_seconds", 300)),
-        prompt_max_chars=int(getattr(settings, "orion_situation_prompt_max_chars", 1200)),
+        prompt_max_chars=int(
+            getattr(settings, "orion_situation_prompt_max_chars", _DEFAULT_PROMPT_MAX_CHARS)
+        ),
         timezone=str(getattr(settings, "orion_situation_timezone", "America/Denver")),
         location_label=str(getattr(settings, "orion_situation_location_label", "Unknown")),
         locality=getattr(settings, "orion_situation_locality", None),
@@ -354,7 +380,12 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
         orion_situation_ttl_seconds=int(getattr(cfg, "ORION_SITUATION_TTL_SECONDS", 300)),
-        orion_situation_prompt_max_chars=1200,
+        # 2026-08-30: previously a bare hardcoded `1200` with no env override
+        # at all -- now reads Hub's own ORION_SITUATION_PROMPT_MAX_CHARS,
+        # same key cortex-exec has always had.
+        orion_situation_prompt_max_chars=int(
+            getattr(cfg, "ORION_SITUATION_PROMPT_MAX_CHARS", _DEFAULT_PROMPT_MAX_CHARS)
+        ),
         orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
         orion_situation_location_label="Unknown",
         orion_situation_locality=None,
@@ -1418,15 +1449,22 @@ def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
         return CuriosityPriorContextV1(
             available=False, source="unavailable", live_total=snapshot.live_total
         )
-    # Highest-confidence first -- read_snapshot's OWN ordering
-    # (most-uncertain-first) exists to pick what Orion should TEST next,
-    # the opposite of what "here's what Orion currently believes" wants
-    # here. None-confidence priors sort last, honestly: "no confidence
-    # recorded" is not the same claim as "very confident".
-    ranked = sorted(
-        snapshot.live_priors,
-        key=lambda p: (p.confidence is None, -(p.confidence or 0.0)),
-    )
+    # Most-CERTAIN first, by `Prior.uncertainty` -- NOT raw confidence
+    # descending (review finding, 2026-08-30: raw-value sorting ranked a
+    # prior Orion is 95% sure is FALSE, confidence=0.05, near the bottom,
+    # tied with priors that have no confidence recorded at all, while a
+    # near-coin-flip 0.55 outranked it). `Prior.uncertainty` is
+    # `abs(confidence - 0.5)`: 0.0 at an unrated or 50/50 prior, growing
+    # toward 0.5 the more decisively Orion leans either true OR false.
+    # Sorting by `-uncertainty` puts a 0.05 and a 0.95 prior at the SAME
+    # rank (both are things Orion currently holds with equal conviction,
+    # just opposite polarity) and pushes unrated/near-toss-up priors to the
+    # bottom, matching "here's what Orion currently believes" rather than
+    # "here's what Orion rates highest." read_snapshot's own ordering
+    # (ascending uncertainty, i.e. most-UNCERTAIN-first) exists for the
+    # opposite purpose -- picking what Orion should TEST next -- so it is
+    # not reused directly here.
+    ranked = sorted(snapshot.live_priors, key=lambda p: -p.uncertainty)
     summaries = [_summarize_prior(p) for p in ranked[:_CURIOSITY_MAX_PRIORS]]
     return CuriosityPriorContextV1(
         available=True,

@@ -68,6 +68,18 @@ def _get_engine():
     return _ENGINE
 
 
+def reset_reverie_reader_engine_for_tests() -> None:
+    """Mirrors `perception_reader.reset_perception_reader_engine_for_tests`
+    -- not currently called by any test in this repo (the situation-layer
+    tests monkeypatch `fetch_recent_reverie_snippets` at the `context`
+    module level instead), but kept for parity so a future test exercising
+    `_get_engine()`/DSN-switching directly has the same reset seam
+    `perception_reader.py` already offers."""
+    global _ENGINE, _ENGINE_URL
+    _ENGINE = None
+    _ENGINE_URL = None
+
+
 class ReverieRow(NamedTuple):
     text: str
     observed_at: datetime | None

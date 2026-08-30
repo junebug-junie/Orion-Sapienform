@@ -379,18 +379,23 @@ async def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
         situation, "urlopen", lambda url, timeout=None: _FakeUrlopenResponse(routes_payload)
     )
     ctx = {"session_id": "sid-runtime-up", "raw_user_text": "hello"}
-    # prompt_max_chars overridden to the real production default (1200, not
-    # the shared _settings() helper's tight 400) -- this test is about
-    # runtime-model plumbing reaching the prompt, not about truncation
-    # ordering, and the shared 400 budget is arbitrary/coincidental here,
-    # not a deliberate constraint of this test. 2026-08-25: the affect
-    # provider's own "no recent capture" line (~50 chars, always present
-    # once affect_enabled defaults True) pushed this specific assertion
-    # past 400's truncation boundary -- a real content-budget interaction,
-    # not a bug in either provider.
+    # prompt_max_chars overridden to the real production default (read from
+    # situation._DEFAULT_PROMPT_MAX_CHARS rather than a hardcoded literal --
+    # 7200 as of 2026-08-30, was 1200 -- so this can never silently drift
+    # from the real value), not the shared _settings() helper's tight 400 --
+    # this test is about runtime-model plumbing reaching the prompt, not
+    # about truncation ordering, and the shared 400 budget is
+    # arbitrary/coincidental here, not a deliberate constraint of this
+    # test. 2026-08-25: the affect provider's own "no recent capture" line
+    # (~50 chars, always present once affect_enabled defaults True) pushed
+    # this specific assertion past 400's truncation boundary -- a real
+    # content-budget interaction, not a bug in either provider.
     brief, fragment = await build_situation_for_ctx(
         ctx,
-        _settings(orion_situation_runtime_enabled=True, orion_situation_prompt_max_chars=1200),
+        _settings(
+            orion_situation_runtime_enabled=True,
+            orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+        ),
     )
     assert brief["runtime"]["available"] is True
     assert brief["runtime"]["model_id"] == "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"

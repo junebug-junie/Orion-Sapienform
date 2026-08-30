@@ -7,7 +7,15 @@ sections in this file which default off/opt-in). Mirrors
 more than the happy path are (1) both are ON by default, (2) every failure
 mode degrades to an honest "unavailable"/"do not infer" line rather than a
 guess or an exception, and (3) the rendered prompt still respects the
-existing 1200-char production budget alongside every other section.
+production budget (raised 2026-08-30 from 1200 to 7200 chars, Juniper's
+explicit request -- see `_DEFAULT_PROMPT_MAX_CHARS` in
+`orion/situational/context.py`) alongside every other section.
+
+Also covers a real bug caught in review the same day: `_fetch_curiosity_
+context`'s confidence re-rank operated on a pool that `read_snapshot`
+itself had already sliced down to its most-UNCERTAIN priors, so a live
+pool larger than that slice could never surface a genuinely confident one
+-- see `test_curiosity_confident_priors_survive_a_large_live_pool` below.
 """
 
 from __future__ import annotations
@@ -17,7 +25,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from orion.curiosity.worldview import Prior, WorldviewSnapshot
+from orion.curiosity.worldview import (
+    COUNTS_CYPHER,
+    CONCEPT_COUNT_CYPHER,
+    LIVE_PRIORS_CYPHER,
+    RECENT_RUNS_CYPHER,
+    RECENT_SETTLED_CYPHER,
+    Prior,
+    WorldviewSnapshot,
+)
 from orion.schemas.situation import (
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
@@ -35,6 +51,21 @@ from orion.situational.context import (
     settings_from_runtime,
 )
 from orion.situational.reverie_reader import ReverieRow
+
+
+class _FakeGraphReader:
+    """Stand-in for `WorldviewReader` that answers `read_snapshot`'s own
+    fixed set of Cypher queries by exact string match, so the REAL
+    `read_snapshot`/`select_priors` pipeline runs (unlike the other
+    curiosity tests in this file, which monkeypatch `read_snapshot` itself
+    and so cannot exercise the interaction between it and
+    `_fetch_curiosity_context`'s re-rank)."""
+
+    def __init__(self, rows_by_cypher: dict[str, list[dict]]) -> None:
+        self._rows_by_cypher = rows_by_cypher
+
+    def query(self, cypher: str) -> list[dict]:
+        return self._rows_by_cypher.get(cypher, [])
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +165,99 @@ async def test_curiosity_live_priors_ranked_by_confidence(monkeypatch) -> None:
     # does not survive the cap.
     claims = [s.claim for s in ctx.summaries]
     assert claims == ["high confidence claim", "low confidence claim"]
+
+
+@pytest.mark.asyncio
+async def test_curiosity_confidently_false_prior_ranks_with_confidently_true(monkeypatch) -> None:
+    """Ranking must be by CERTAINTY (`Prior.uncertainty`, distance from
+    0.5), not raw confidence descending. A prior Orion is 95% sure is
+    FALSE (confidence=0.05) is just as much a current, decisive belief as
+    one it is 95% sure is true -- raw-value sorting would bury it near the
+    bottom, tied with unrated priors."""
+    snapshot = WorldviewSnapshot(
+        live_priors=[
+            _prior(prior_id="toss-up", claim="near coin-flip claim", confidence=0.52),
+            _prior(prior_id="sure-false", claim="confidently false claim", confidence=0.05),
+            _prior(prior_id="sure-true", claim="confidently true claim", confidence=0.95),
+        ],
+        live_total=3,
+    )
+    monkeypatch.setattr(situation_mod, "read_snapshot", lambda *a, **k: snapshot)
+    ctx = await _build_curiosity_context(
+        _cfg(curiosity_enabled=True, curiosity_graph_host="127.0.0.1"), _diag()
+    )
+    claims = {s.claim for s in ctx.summaries}
+    assert claims == {"confidently false claim", "confidently true claim"}
+    assert "near coin-flip claim" not in claims
+
+
+@pytest.mark.asyncio
+async def test_curiosity_confident_priors_survive_a_large_live_pool(monkeypatch) -> None:
+    """Regression for a real bug caught in review (2026-08-30):
+    `read_snapshot`'s Cypher pulls every live prior up to
+    `LIVE_PRIORS_LIMIT`, but `select_priors` then SLICES that set down to
+    `sample`, sorted MOST-UNCERTAIN-first (it exists to pick what Orion
+    should test next). `_CURIOSITY_PRIOR_POOL_SAMPLE` used to be a small
+    constant (20), which meant a live pool larger than that could fill the
+    entire slice with near-coin-flip priors and permanently exclude every
+    genuinely confident one -- they never survived `select_priors`' own
+    cut to reach this module's confidence re-rank at all. Reproduced here
+    with the REAL `read_snapshot`/`select_priors` pipeline (a fake
+    `WorldviewReader.query()`, not a monkeypatched `read_snapshot`) so the
+    interaction between the two is actually exercised, unlike the other
+    tests in this file.
+    """
+    near_toss_up = [
+        {
+            "prior_id": f"toss-{i}",
+            "claim": f"toss up claim {i}",
+            "confidence": 0.50 + (i % 3) * 0.01,
+            "status": "open",
+            "times_tested": 0,
+            "formed_from": "",
+            "last_tested_at": "",
+        }
+        for i in range(25)
+    ]
+    confident = [
+        {
+            "prior_id": "sure-true",
+            "claim": "Juniper prefers terse status updates.",
+            "confidence": 0.97,
+            "status": "open",
+            "times_tested": 3,
+            "formed_from": "",
+            "last_tested_at": "",
+        },
+        {
+            "prior_id": "sure-false",
+            "claim": "Orion should announce every internal metric unprompted.",
+            "confidence": 0.03,
+            "status": "open",
+            "times_tested": 5,
+            "formed_from": "",
+            "last_tested_at": "",
+        },
+    ]
+    rows_by_cypher = {
+        LIVE_PRIORS_CYPHER: near_toss_up + confident,
+        COUNTS_CYPHER: [{"live_total": 27, "closed_total": 0}],
+        CONCEPT_COUNT_CYPHER: [{"n": 0}],
+        RECENT_SETTLED_CYPHER: [],
+        RECENT_RUNS_CYPHER: [],
+    }
+    monkeypatch.setattr(
+        situation_mod,
+        "WorldviewReader",
+        lambda **kwargs: _FakeGraphReader(rows_by_cypher),
+    )
+    ctx = await _build_curiosity_context(
+        _cfg(curiosity_enabled=True, curiosity_graph_host="127.0.0.1"), _diag()
+    )
+    assert ctx.available is True
+    claims = [s.claim for s in ctx.summaries]
+    assert "Juniper prefers terse status updates." in claims
+    assert "Orion should announce every internal metric unprompted." in claims
 
 
 @pytest.mark.asyncio
@@ -323,20 +447,15 @@ def test_unavailable_reverie_renders_no_line_at_all() -> None:
     assert "reverie" not in text.lower()
 
 
-def test_fragment_stays_within_production_budget_with_everything_present() -> None:
-    """All sections present at once, at the real 1200-char production cap --
-    the new lines must not blow the budget every other section already
-    shares.
-
-    Fixture sizes mirror what the real builder can actually produce
+def _everything_present_brief() -> SituationBriefV1:
+    """Fixture sizes mirror what the real builder can actually produce
     (`_CURIOSITY_MAX_PRIORS`=2 summaries capped at
     `_CURIOSITY_CLAIM_MAX_CHARS`=110 chars, `_REVERIE_MAX_SNIPPETS`=2
     snippets capped at `_REVERIE_SNIPPET_MAX_CHARS`=110 chars) -- this
-    renderer-level test constructs the schema directly, which has no cap of
-    its own, so an unrealistically larger fixture here would not describe a
-    reachable production state.
-    """
-    brief = _brief(
+    renderer-level fixture constructs the schema directly, which has no cap
+    of its own, so an unrealistically larger fixture here would not
+    describe a reachable production state."""
+    return _brief(
         CuriosityPriorContextV1(
             available=True,
             source="orion_worldview",
@@ -358,8 +477,27 @@ def test_fragment_stays_within_production_budget_with_everything_present() -> No
             ],
         ),
     )
-    fragment = _build_prompt_fragment(brief, 1200)
+
+
+def test_fragment_stays_within_the_old_tight_1200_budget_with_everything_present() -> None:
+    """All sections present at once, at the OLD 1200-char cap (pre-2026-08-30
+    default) -- defense in depth: the new lines must not blow even the
+    tighter historical budget every other section used to share, in case a
+    future operator dials `ORION_SITUATION_PROMPT_MAX_CHARS` back down."""
+    fragment = _build_prompt_fragment(_everything_present_brief(), 1200)
     assert len(fragment.compact_text) <= 1200
     # Cautions must survive truncation whole -- same non-negotiable this
     # file's affect/perception tests already assert.
     assert "not a requirement to mention" in fragment.compact_text
+
+
+def test_fragment_stays_within_the_new_7200_production_budget_with_everything_present() -> None:
+    """Same fixture, at the real 2026-08-30 production default
+    (`_DEFAULT_PROMPT_MAX_CHARS` in orion/situational/context.py) -- with
+    six times the room, both new sections plus every existing one and all
+    cautions should fit without any truncation at all."""
+    fragment = _build_prompt_fragment(_everything_present_brief(), situation_mod._DEFAULT_PROMPT_MAX_CHARS)
+    assert len(fragment.compact_text) <= situation_mod._DEFAULT_PROMPT_MAX_CHARS
+    assert "…" not in fragment.compact_text, "6x the old budget should not need any truncation here"
+    for caution in fragment.caution_lines:
+        assert caution in fragment.compact_text

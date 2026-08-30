@@ -169,7 +169,12 @@ class Settings(BaseSettings):
     orion_tz: str = Field("America/Denver", alias="ORION_TZ")
     orion_situation_enabled: bool = Field(True, alias="ORION_SITUATION_ENABLED")
     orion_situation_ttl_seconds: int = Field(300, alias="ORION_SITUATION_TTL_SECONDS")
-    orion_situation_prompt_max_chars: int = Field(1200, alias="ORION_SITUATION_PROMPT_MAX_CHARS")
+    # 2026-08-30, Juniper's explicit request: raised from 1200 to 7200 (6x)
+    # now that the harness runs a large-context model. The
+    # truncation/caution-survival logic in
+    # orion.situational.context._build_prompt_fragment is unchanged, only
+    # the ceiling moved.
+    orion_situation_prompt_max_chars: int = Field(7200, alias="ORION_SITUATION_PROMPT_MAX_CHARS")
     orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
     orion_situation_location_label: str = Field("Unknown", alias="ORION_SITUATION_LOCATION_LABEL")
     orion_situation_locality: str | None = Field(None, alias="ORION_SITUATION_LOCALITY")

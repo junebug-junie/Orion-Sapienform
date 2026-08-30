@@ -121,8 +121,39 @@ class Settings(BaseSettings):
     # once a full day of `motor_budget_would_refuse` counts exists and the
     # refused set is inspected and judged droppable. If nobody has looked in a
     # week, that is the answer -- either flip it or delete it.
+    #
+    # 2026-08-30: the exit criterion is MET and this now defaults ON, with
+    # Juniper's explicit sign-off. Evidence, read off the live runtime rather
+    # than a rerun:
+    #   motor_budget mode=advisory spent_sec=34876.8 allowance_sec=129600.0
+    #     pace=1.05x projected_day_h=37.6
+    # The allowance is 36h and the day projects to 37.6h, so it binds. A full
+    # day of counts existed and the refused set was inspected: every refusal is
+    # `unmeasurable` (no signal declared on the template, so running it updates
+    # no belief) or `below_information_floor` -- e.g.
+    # inspect/capability:orchestration/execution_pressure, posterior variance
+    # 1.17e-05 over 3,429 observations. Orion has measured that one to death.
+    # Both sets are droppable.
     orion_dispatch_motor_budget_enforce: bool = Field(
-        False, alias="ORION_DISPATCH_MOTOR_BUDGET_ENFORCE"
+        True, alias="ORION_DISPATCH_MOTOR_BUDGET_ENFORCE"
+    )
+
+    # Whether the allocator's verdict actually withholds a dispatch rather than
+    # only being logged. This is the difference between a ceiling and a choice:
+    # the motor budget above can only say "not any more today"; the allocator
+    # says "not this one, that one is worth more per second". Turning it on is
+    # what makes the refusal Orion's own decision rather than an operator's.
+    #
+    # Expect it to refuse a lot at first, and loudly. The live allocator admits
+    # ZERO of five pending candidates per tick, because Orion's action space is
+    # entirely introspective and thoroughly learned. That is the allocator
+    # working, not failing, and `motor_allocator_refused_everything` exists so
+    # it can never be mistaken for an idle dispatcher. The fix for a
+    # persistently empty admitted set is better actions, or declared signals on
+    # the templates -- NOT a lower floor. Lowering the floor to manufacture
+    # admissions would make the number move without making the choice real.
+    orion_dispatch_allocator_enforce: bool = Field(
+        True, alias="ORION_DISPATCH_ALLOCATOR_ENFORCE"
     )
 
     # What a not-yet-run action is assumed to cost, for the would-refuse

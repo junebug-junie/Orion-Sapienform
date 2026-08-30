@@ -267,6 +267,11 @@ class ExecutionDispatchRuntimeWorker:
         # that reset is what keeps "coincidentally-good sample" from re-arming.
         self._tripwire_probe_successes = 0
         self._tripwire_probe_attempts = 0
+        # Consecutive ticks on which the allocator refused every pending
+        # candidate. Consecutive-with-reset, not a lifetime total: "refusing
+        # everything right now" and "refused everything once last week" are
+        # different facts and only the first is an outage.
+        self._all_refused_consecutive_ticks = 0
         # Throttle state for the two "still blocked" surfaces. Seeded to None
         # rather than 0.0 so the FIRST blocked tick after a trip always speaks,
         # instead of being swallowed by an interval that appears already-served.
@@ -589,19 +594,20 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
-    def _log_allocator_preview(self, frame: ExecutionDispatchFrameV1, motor) -> None:
-        """Report the allocation that WOULD have happened, against the one
-        that did. Advisory: changes nothing, decides the flip.
+    def _log_allocator_preview(self, frame: ExecutionDispatchFrameV1, motor):
+        """Allocate the remaining motor-seconds across this tick's candidates.
 
-        Comparing the two sets is the whole output. "The allocator agrees with
-        priority order" and "the allocator would drop 4 of 5 every tick" are
-        very different findings and only one of them justifies enforcing.
+        Returns the Allocation so the caller can ACT on it when
+        ORION_DISPATCH_ALLOCATOR_ENFORCE is set, or None when there was nothing
+        to allocate. Still logs either way: the advisory readout is what the
+        enforce flip was decided on, and it stays readable afterwards so a
+        regression in the admitted set is visible without redeploying.
         """
         # frame.dispatched_candidates is always empty here -- see the note in
         # the log call below.
         pending = list(frame.candidates)
         if not pending:
-            return
+            return None
 
         costs = self._store.load_action_cost_estimates()
         posteriors = self._load_effect_posteriors()
@@ -655,14 +661,38 @@ class ExecutionDispatchRuntimeWorker:
         # after the send loop, which is a separate change.
         logger.info(
             "motor_allocator_preview pending=%d would_admit=%d would_drop=%d "
-            "nats=%.4f cost_sec=%.1f refusals=%s",
+            "nats=%.4f cost_sec=%.1f refusals=%s enforcing=%s",
             len(pending),
             len(allocation.admitted),
             len(pending) - len(allocation.admitted),
             allocation.admitted_nats,
             allocation.spent_sec,
             allocation.refusals_by_reason() or "{}",
+            self._settings.orion_dispatch_allocator_enforce,
         )
+        if pending and not allocation.admitted:
+            # "Every candidate was refused" is a decision, not an idle tick, and
+            # it must never be indistinguishable from "nothing was pending".
+            # This is the state the roadmap's arsonist case warns about: a
+            # value-of-information allocator whose action space is fully learned
+            # correctly concludes that nothing is worth doing, and then looks
+            # perfectly healthy doing nothing forever. Logged at WARNING so the
+            # answer to "why is Orion idle" is one grep, and counted so the
+            # duration is visible rather than inferred.
+            self._all_refused_consecutive_ticks += 1
+            logger.warning(
+                "motor_allocator_refused_everything pending=%d refusals=%s "
+                "consecutive_ticks=%d enforcing=%s -- Orion has nothing worth "
+                "spending motor-seconds on; the fix is better actions, not a "
+                "lower floor",
+                len(pending),
+                allocation.refusals_by_reason(),
+                self._all_refused_consecutive_ticks,
+                self._settings.orion_dispatch_allocator_enforce,
+            )
+        else:
+            self._all_refused_consecutive_ticks = 0
+        return allocation
 
     def _derive_motor_budget(self, frame_generated_at: datetime):
         """The real daily ceiling: motor-seconds spent against an operator-set
@@ -912,11 +942,15 @@ class ExecutionDispatchRuntimeWorker:
             # refused), never converted into the score, because inventing that
             # exchange rate is how risk_score happened.
             try:
-                self._log_allocator_preview(frame, motor)
+                allocation = self._log_allocator_preview(frame, motor)
             except Exception:
-                # An advisory readout must never be able to stall a real
-                # dispatch tick.
+                # A readout must never be able to stall a real dispatch tick.
+                # When the allocator is ENFORCING a failure here means there is
+                # no allocation to enforce -- leave it None and fall through to
+                # the unallocated path rather than synthesising an empty
+                # allocation, which would refuse everything on a transient error.
                 logger.warning("motor_allocator_preview_failed", exc_info=True)
+                allocation = None
 
             if motor.mode == "enforcing" and motor.exhausted:
                 logger.info("motor_budget_exhausted sending nothing this tick")
@@ -959,10 +993,30 @@ class ExecutionDispatchRuntimeWorker:
         # squeeze in a smaller one later, matching the existing simple
         # sequential-take style this replaces). max_dispatches_per_tick
         # stays a separate, independent per-tick burst cap.
+        # ALLOCATOR ENFORCEMENT. When on, a candidate the allocator refused is
+        # not sent, however high its priority. This is the difference between a
+        # ceiling and a choice: the risk cap below can only say "not any more
+        # today", while the allocator says "not this one, that one is worth
+        # more per second". Priority order still decides ties, because the
+        # allocator already sorted by nats-per-second before this point.
+        #
+        # Refusal here is a real outcome, not a skip: an action Orion declined
+        # because it had nothing left to learn from it is exactly what a budget
+        # is for. `allocation is None` (no motor budget, or the allocator threw)
+        # leaves every candidate eligible -- an absent allocation must never be
+        # read as a refusal of everything.
+        allocator_admitted_ids: set[str] | None = None
+        if self._settings.orion_dispatch_allocator_enforce and allocation is not None:
+            allocator_admitted_ids = {c.dispatch_id for c in allocation.admitted}
+
         to_send: list[ExecutionDispatchCandidateV1] = []
         cumulative_risk = 0.0
+        allocator_skipped = 0
         for candidate in frame.candidates:
             if candidate.dispatch_status != "prepared_for_dispatch":
+                continue
+            if allocator_admitted_ids is not None and candidate.dispatch_id not in allocator_admitted_ids:
+                allocator_skipped += 1
                 continue
             # send_budget is max_dispatches_per_tick on an ordinary tick, and
             # TRIPWIRE_PROBE_DISPATCHES on a probe tick.
@@ -977,6 +1031,13 @@ class ExecutionDispatchRuntimeWorker:
                 break
             to_send.append(candidate)
             cumulative_risk += spend
+
+        if allocator_skipped:
+            logger.info(
+                "motor_allocator_enforced skipped=%d sending=%d",
+                allocator_skipped,
+                len(to_send),
+            )
 
         if not to_send:
             return self._abandon_tick_without_sending(frame, baseline_fields)

@@ -42,6 +42,12 @@ VisualTerminalReason = Literal[
     "refractory",
     "low_salience",
     "generation_failed",
+    # Orion declined to spend GPU watts because the room the GPU heats is too
+    # warm for the person in it. Recorded as a terminal reason rather than a
+    # silent skip on purpose: a refusal that leaves no row is indistinguishable
+    # from a scheduler that stopped running, and this repo has been bitten by
+    # that shape more than once. A refusal is a decision and should read like one.
+    "thermal_refused",
 ]
 
 

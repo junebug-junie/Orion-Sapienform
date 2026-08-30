@@ -11,6 +11,11 @@ class DispatchModeConfigV1(BaseModel):
     default_dispatch_mode: str = "dry_run"
     allow_dispatch_read_only: bool = False
     allow_mutating_dispatch: bool = False
+    # Gates EXPRESS_SCOPE routes. Default False: an action whose product exists
+    # outside Orion and costs a physical resource does not become dispatchable
+    # by a config file appearing -- it takes a deliberate operator decision,
+    # same posture allow_mutating_dispatch has held since 2026-08-12.
+    allow_express_dispatch: bool = False
 
 
 # The single non-read-only route scope. Lives here, not in builder.py, because
@@ -18,6 +23,14 @@ class DispatchModeConfigV1(BaseModel):
 # putting it in builder makes that a cycle. (Learned the same day, from
 # orion/field/action_warrant.py's own circular import; see PR #1581.)
 MAINTENANCE_SCOPE = "maintenance_bounded"
+
+# 2026-08-30: the second non-read-only scope, for Orion's first OUTWARD action.
+# Its own scope and its own gate rather than borrowing maintenance_bounded's,
+# for two reasons. It is not maintenance -- overloading that name would make the
+# route table lie about what the action does. And it must be switchable
+# independently: turning off image generation should not also stop docker
+# pruning, and vice versa. A shared flag makes both an all-or-nothing choice.
+EXPRESS_SCOPE = "express_bounded"
 
 # Keys a route's static `skill_args` may never carry, because a real value
 # for them is derived from runtime safety state rather than chosen by an

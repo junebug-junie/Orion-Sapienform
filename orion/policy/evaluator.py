@@ -18,6 +18,8 @@ DecisionLiteral = Literal[
     "approved_read_only",
     # 2026-08-12 -- see orion/schemas/policy_decision_frame.py's note.
     "approved_maintenance",
+    # 2026-08-30: first outward kind -- see policy_decision_frame.py.
+    "approved_express",
     "requires_operator_review",
     "deferred",
     "rejected",

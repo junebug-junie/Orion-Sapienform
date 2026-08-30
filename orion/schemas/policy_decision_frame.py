@@ -33,6 +33,12 @@ class PolicyDecisionV1(BaseModel):
         # This literal DESCRIBES, it does not authorize. The real gate stays
         # orion/execution_dispatch/builder.py's scope check.
         "approved_maintenance",
+        # 2026-08-30: Orion's first OUTWARD kind. Its own decision rather than
+        # reusing approved_maintenance, for the same reason express_bounded is
+        # its own scope: making an image is not maintenance, and the two must be
+        # allowable independently. Like the note above, this literal DESCRIBES;
+        # the real gate is builder.py's scope check plus mode.allow_express_dispatch.
+        "approved_express",
         "requires_operator_review",
         "deferred",
         "rejected",
@@ -59,6 +65,20 @@ class PolicyDecisionV1(BaseModel):
         # narrower thing -- a reversible housekeeping action on a route whose
         # scope is checked by name in orion/execution_dispatch/builder.py.
         "maintenance_bounded",
+        # 2026-08-30: the tier an `express` candidate is evaluated at. Same
+        # reasoning as maintenance_bounded above -- narrower than the
+        # open-ended "execution_allowed" this substrate has never granted, and
+        # checked by name in orion/execution_dispatch/builder.py against
+        # mode.allow_express_dispatch.
+        #
+        # Added in the SAME changeset as the scope value below, and that is the
+        # point: the 2026-08-12 note under allowed_scope records this exact trap
+        # (one of the two present, the other missing, so every decision failed
+        # validation during CONSTRUCTION and the cursor stalled permanently).
+        # It happened again here on 2026-08-30 -- 19 express proposals produced,
+        # 0 reaching a policy frame -- because the config rule shipped before
+        # these two literals did.
+        "express_bounded",
     ] = "observe_only"
 
     risk_score: float = Field(ge=0.0, le=1.0)
@@ -72,6 +92,9 @@ class PolicyDecisionV1(BaseModel):
         "prepare_only",
         "low_risk_execution",
         "operator_review_required",
+        # 2026-08-30: see the max_autonomy_tier note above -- both halves must
+        # land together or decision construction raises and the pipeline stalls.
+        "express_bounded",
         # 2026-08-12: MISSING, and that made the whole maintenance chain dead
         # on arrival -- worse than dead. config/policy/substrate_policy.v1.yaml's
         # `maintain` rule sets allowed_scope AND max_autonomy_tier to

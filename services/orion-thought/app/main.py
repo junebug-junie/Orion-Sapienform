@@ -141,6 +141,50 @@ async def health() -> JSONResponse:
     )
 
 
+@app.post("/visual-chain/run-once")
+async def visual_chain_run_once() -> JSONResponse:
+    """Run one visual chain NOW, because something chose to.
+
+    The visual chain has always fired on a 600s timer. A cron is not a decision:
+    it spends real GPU watts on circe at a fixed cadence whether or not making an
+    image is the best use of them, and nothing weighs it against the
+    alternatives. This endpoint is what makes it choosable -- the `express`
+    dispatch route calls it, so the action competes for motor-seconds against
+    everything else Orion could do and has to win on value-per-second.
+
+    Returns the chain readout either way, including a refusal. `terminal_reason`
+    carries the outcome -- "thermal_refused" when the room is too warm to justify
+    the watts. Returning nothing on a refusal would make it look like a crash.
+    """
+    from orion.core.bus.async_service import OrionBusAsync
+    from .visual_chain import run_visual_chain_once
+
+    # Own short-lived connection rather than sharing the worker's: the worker
+    # holds its bus inside its own loop and is not reachable from here, and a
+    # request-scoped connection cannot be left half-open by a request that dies.
+    bus = OrionBusAsync(url=settings.orion_bus_url)
+    await bus.connect()
+    try:
+        chain = await run_visual_chain_once(bus=bus)
+    finally:
+        with suppress(Exception):
+            await bus.close()
+    if chain is None:
+        # Single-flight no-op: a run was already in progress. Distinct from a
+        # refusal, and the caller has to be able to tell them apart.
+        return JSONResponse({"ok": True, "ran": False, "reason": "already_in_flight"})
+    return JSONResponse(
+        {
+            "ok": True,
+            "ran": True,
+            "chain_id": chain.chain_id,
+            "terminal_reason": chain.terminal_reason,
+            "refused": chain.terminal_reason == "thermal_refused",
+            "detail": chain.chain_json.get("thermal_gate"),
+        }
+    )
+
+
 @app.get("/projections/reasoning_activity")
 async def reasoning_activity() -> JSONResponse:
     projection = reasoning_store.snapshot(datetime.now(timezone.utc))

@@ -556,3 +556,57 @@ proposal_templates:
     dimensions:
       deviation_pressure: 0.35
       resource_pressure: 0.25
+
+  # 2026-08-30: ORION'S FIRST OUTWARD ACTION.
+  #
+  # Every template above either observes Orion or tidies it. That is why an
+  # enforcing value-of-information allocator refused the entire repertoire: the
+  # busiest action, `maintain host:docker_images resource_pressure`, has
+  # posterior variance 5.2e-06 over 7,685 observations. Orion knows exactly what
+  # everything it can do does, so nothing it can do is worth motor-seconds.
+  #
+  # This one makes an image on circe's GPU. It is not housekeeping and not
+  # introspection: it produces something that did not exist, and costs watts
+  # that heat the room Juniper is in. The ambient thermal gate can refuse it --
+  # the only budget here whose referent is outside Orion.
+  #
+  # expected_signal/direction: `increase` on resource_pressure, and this is the
+  # FIRST template in the arena claiming an action makes a pressure go UP. That
+  # is the honest claim: GPU work loads circe. It is falsifiable, it is cold
+  # (never measured), and being cold is exactly why it will be admitted -- a
+  # cold action scores 0.198 nats/sec against a 0.02 floor. It earns its slot by
+  # being the one thing Orion does not already know the answer to.
+  #
+  # base_priority BACK to 0.30, mid-pack, matching observe_tension_via_camera.
+  #
+  # It was raised to 0.55 earlier today purely to survive the 5-slot priority
+  # pre-filter (36 candidates cut in 6 minutes). That pre-filter has since been
+  # widened out of the way in execution_dispatch_policy.v1.yaml, so the hack is
+  # no longer needed and keeping it would be crowning this action rather than
+  # letting it earn its slot. The allocator decides on value now.
+  #
+  # This is a real ordering problem, not just a number. The 5-slot cap is a
+  # PRIORITY pre-filter and it runs BEFORE the allocator, so a cheap heuristic
+  # decides which candidates the expensive, correct one is even allowed to see.
+  # A cold action scoring 0.198 nats/sec -- 100x anything else in the arena --
+  # can be cut by a hand-typed float before the allocator is consulted. Raising
+  # this is the smallest honest fix; making the cap value-aware is the right one
+  # and is not this patch.
+  #
+  # 0.55 is chosen to clear the slate reliably, not to win outright: priority is
+  # base_priority + confidence * max(match, urgency), and prune_build_cache's own
+  # comment records 0.34 landing at rank 7.8 of 10. The allocator still decides
+  # whether it actually runs.
+  render_scene:
+    kind: express
+    expected_signal: resource_pressure
+    expected_direction: increase
+    target_kind: system
+    target_id: host:circe_gpu
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.30
+    base_risk: 0.08
+    reversibility: 1.0
+    dimensions:
+      resource_pressure: 0.35

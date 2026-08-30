@@ -26,6 +26,15 @@ class ProposalCandidateV1(BaseModel):
         # anything happens. See orion/execution_dispatch/builder.py's scope
         # check and config/execution_dispatch/execution_dispatch_policy.v1.yaml.
         "maintain",
+        # 2026-08-30: the first OUTWARD kind. Every kind above either observes
+        # Orion (inspect/summarize/observe) or tidies it (maintain) -- the whole
+        # 17-template repertoire was introspection plus docker cleanup, which is
+        # why a value-of-information allocator correctly refused all of it:
+        # posterior variance 5.2e-06 over 7,685 observations on the busiest
+        # action. `express` is for an action whose product exists outside Orion
+        # and costs a physical resource to make. Closed Literal, same as
+        # `maintain`: a new kind is a deliberate schema change, not a config typo.
+        "express",
     ]
 
     title: str

@@ -52,6 +52,21 @@ proposal_kind_rules:
   # mode.allow_mutating_dispatch, the maintenance_bounded scope gate in
   # orion/execution_dispatch/builder.py, and the skill's own measured
   # disk/reclaimable check.
+  # 2026-08-30: Orion's first OUTWARD kind. Without a rule here the policy layer
+  # emits no decision for an express proposal, execution_dispatch's
+  # allowed_policy_decisions never matches, and the action dies silently between
+  # the two layers -- 19 proposals produced, 0 reaching a policy frame, which is
+  # exactly what happened before this rule existed.
+  #
+  # approved_express is its own decision, not approved_maintenance: making an
+  # image is not maintenance, and execution_dispatch has to be able to allow one
+  # without allowing the other.
+  express:
+    allowed_scope: express_bounded
+    default_decision: approved_express
+    max_autonomy_tier: express_bounded
+    mutating: true
+
   maintain:
     allowed_scope: maintenance_bounded
     default_decision: approved_maintenance

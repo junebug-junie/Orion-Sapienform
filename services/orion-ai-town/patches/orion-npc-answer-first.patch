@@ -2,7 +2,42 @@ diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
 index 0000000..1111111 100644
 --- a/convex/agent/conversation.ts
 +++ b/convex/agent/conversation.ts
-@@ -187,6 +187,7 @@
+@@ -65,6 +65,21 @@
+   return '';
+ }
+ 
++function usableTownContinuity(text: string): string {
++  const t = text.trim();
++  if (!t) {
++    return '';
++  }
++  // Producer templates in orion-social-memory synthesizer — topic bags, not facts.
++  if (t.startsWith('Recent room themes:')) {
++    return '';
++  }
++  if (t.includes('recent shared topics include')) {
++    return '';
++  }
++  return t;
++}
++
+ async function fetchTownContinuity(otherName: string): Promise<string> {
+   try {
+     const slug = townSlug(otherName);
+@@ -89,8 +104,10 @@
+       data && typeof data === 'object'
+         ? (data as { participant?: Record<string, unknown> }).participant || {}
+         : {};
+-    const roomSummary = String(room.recent_thread_summary || room.current_thread_summary || '').trim();
+-    const peerSummary = String(participant.safe_continuity_summary || '').trim();
++    const roomSummary = usableTownContinuity(
++      String(room.recent_thread_summary || room.current_thread_summary || ''),
++    );
++    const peerSummary = usableTownContinuity(String(participant.safe_continuity_summary || ''));
+     return [roomSummary, peerSummary].filter(Boolean).join(' ').slice(0, 400);
+   } catch {
+     return '';
+@@ -187,6 +204,7 @@
      `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,
      `You are in a small pixel-art town. Speak in first person as ${player.name}.`,
      `Give a short in-character greeting (1-2 sentences, under 220 characters).`,
@@ -10,13 +45,15 @@ index 0000000..1111111 100644
      `No scene description, narration, stage directions, or markdown.`,
    ];
    prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
-@@ -258,8 +259,10 @@
+@@ -258,8 +276,12 @@
      `Respond directly to what they just said. Speak in first person as ${player.name}.`,
      `Short in-character reply only: 1-3 sentences, under 220 characters.`,
      `No scene description, narration, stage directions, or markdown. Do NOT greet again.`,
 -    `Do not repeat a phrase, metaphor, or sentence structure that already appears earlier in this chat history -- yours or theirs. If the conversation is circling the same idea across multiple turns, say something concrete and new, change the subject, or bring the exchange to a natural close instead of restating it in different words.`,
 -    `Answer as your job. Name a person, object, or task from your role or from what they just said. If you have nothing new to add, end the conversation.`,
++    `Talk like a person who ran into them, not a quest giver.`,
 +    `Answer the last thing they said. If they asked a question, the first sentence is a plain answer.`,
++    `If they asked for something you mentioned, give it. Do not hide it as a secret, code, key, or later reveal.`,
 +    `Stay on their topic until they change it. Do not invent a new object, place, or quest.`,
 +    `Do not end with a dare or a "want to...?" hook.`,
 +    `If they are ending the conversation, one short goodbye and nothing else.`,

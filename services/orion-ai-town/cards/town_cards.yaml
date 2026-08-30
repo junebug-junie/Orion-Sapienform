@@ -383,6 +383,6 @@ sprites:
 # NPC goal lines (AI Town `plan`, second person), from each card's daily_loop[0].
 plans:
   mara_vale: "You update the town maps: who talks to whom, which paths and dependencies actually work."
-  nico_sable: "You collect diner gossip and turn it into tonight's event."
+  nico_sable: "You tell people a specific piece of diner gossip."
   sofia_bell: "You run the diner: coffee, pie, who sat where, who is lying."
   cam_lin: "You poke a device or a town system to see what is actually enforced."

@@ -1,9 +1,9 @@
-"""Gate: NPC continue replies answer the last line instead of hopping props.
+"""Gate: the first NPC reply after a human line is continue, not start.
 
-Live 2026-08-29 Juniper↔Nico: she asked what was in the pie crumbs, then
-said not to speak in riddles. continueConversationMessage told the model
-to name a new object and change subject if the topic repeated, so Nico
-invented breadbox → oven → elevator. This patch replaces that contract.
+Live 2026-08-29 Juniper↔Nico: after "hi" he opened a crumb-secret hook, then
+refused "spill the tea" with a lockbox. Human chats never call
+startConversationMessage. The continue contract plus Nico's tease-plan did it
+on turn one; the later hop-contract only made the next inventions.
 """
 
 from __future__ import annotations
@@ -45,6 +45,13 @@ def test_answer_first_replaces_prop_hop_contract():
     assert "+    `Answer the last thing they said." in patch
     assert "Do not invent a new object, place, or quest" in patch
     assert "one short goodbye and nothing else" in patch
+    # Continue is the human path. Start-only "quest giver" never ran for Juniper.
+    assert patch.count("not a quest giver") >= 2
+    assert "Do not hide it as a secret, code, key, or later reveal" in patch
+    # Empty-shell social-memory topic bags must not be injected as "memory".
+    assert "Recent room themes:" in patch
+    assert "recent shared topics include" in patch
+    assert "usableTownContinuity" in patch
 
 
 def test_answer_first_start_is_not_a_quest_hook():
@@ -62,3 +69,6 @@ def test_nico_identity_is_not_riddle_coded():
     assert "unreliable narrator" not in patch
     assert "slippery when challenged" not in patch
     assert "answers with a specific detail first" in patch
+    assert "You tell people a specific piece of diner gossip." in cards
+    assert "turn it into tonight's event" not in cards
+    assert "You tell people a specific piece of diner gossip." in patch

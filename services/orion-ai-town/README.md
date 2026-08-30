@@ -293,7 +293,7 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 ### NPC answer-first (`patches/orion-npc-answer-first.patch`)
 
-`continueConversationMessage` used to tell the model to name a new object and change subject when a topic repeated. Combined with Nico's "unreliable narrator / slippery" card, that produced quest-riddle hops (pie crumbs → oven key → elevator). The patch replaces that contract: answer the last line first, stay on their topic, no new prop or "want to...?" hook. If they are ending the conversation, one goodbye and nothing else.
+Human chats never call `startConversationMessage` — Juniper's first NPC line is `continue`. The old continue contract (`Name a person, object, or task`) plus Nico's tease-plan produced a secret-hook on "hi" and a lockbox on "spill the tea" before any topic had repeated. The patch puts the no-quest / answer-first / do-not-withhold contract on continue, drops empty-shell social-memory topic bags (`Recent room themes:`, `recent shared topics include`), and rewrites Nico's plan to tell a specific piece of gossip.
 
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 

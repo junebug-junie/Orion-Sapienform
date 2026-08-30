@@ -84,6 +84,25 @@ def test_compute_h1_ensemble_reports_every_trajectory_ratio() -> None:
     assert result.std_ratio == pytest.approx(statistics.pstdev(result.ratios))
 
 
+def test_compute_h1_ensemble_reports_bulk_penetration_depth() -> None:
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import bulk_penetration_depth, compute_h1_ensemble
+
+    ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=4), base_seed=300)
+    result = compute_h1_ensemble(ensemble)
+
+    profiles = [traj.entropy_profile() for traj in ensemble.trajectories]
+    n_cuts = len(profiles[0])
+    mean_profile = [
+        float(sum(p[i] for p in profiles) / len(profiles))
+        for i in range(n_cuts)
+    ]
+    assert result.bulk_penetration_depth == pytest.approx(
+        bulk_penetration_depth(mean_profile)
+    )
+    assert 0.0 <= result.bulk_penetration_depth <= 1.0
+
+
 def test_verdict_thresholds_helper_matches_live_classification() -> None:
     """The helper a read-only surface draws its bands from must be the same
     numbers compute_h1_ensemble actually classifies with -- the point of

@@ -176,5 +176,7 @@ class AttentionSelfModelV1(BaseModel):
     # additive-only, matching this field's own siblings' history of landing
     # before their consumer did.
     heartbeat_mean_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    heartbeat_std_ratio: float | None = Field(default=None, ge=0.0)
+    heartbeat_bulk_penetration_depth: float | None = Field(default=None, ge=0.0, le=1.0)
     heartbeat_verdict: Literal["redundant", "concentrated", "mixed"] | None = None
     heartbeat_basis: str = ""

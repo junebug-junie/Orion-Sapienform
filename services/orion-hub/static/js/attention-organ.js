@@ -832,6 +832,10 @@
 
     var rightCol = el("div");
     rightCol.appendChild(kvRow("heartbeat_mean_ratio", num(model.heartbeat_mean_ratio, 4)));
+    rightCol.appendChild(kvRow("heartbeat_std_ratio", num(model.heartbeat_std_ratio, 4)));
+    rightCol.appendChild(
+      kvRow("heartbeat_bulk_penetration_depth", num(model.heartbeat_bulk_penetration_depth, 4))
+    );
     rightCol.appendChild(
       kvRow(
         "heartbeat_verdict",

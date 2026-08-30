@@ -201,15 +201,17 @@ def _unconditional_prediction_error_confidence(
 _HEARTBEAT_VERDICTS = frozenset({"redundant", "concentrated", "mixed"})
 
 
-def _heartbeat_h1_fields(heartbeat_h1: dict | None) -> tuple[float | None, str | None, str]:
-    """Extract `(mean_ratio, verdict, basis)` from a caller-supplied
-    orion-heartbeat `/h1` payload. Fails open to `(None, None, "")` on
-    anything malformed -- missing keys, wrong types, an unrecognized verdict
-    string -- rather than raising or guessing, matching every other optional
-    input in this reducer.
+def _heartbeat_h1_fields(
+    heartbeat_h1: dict | None,
+) -> tuple[float | None, str | None, str, float | None, float | None]:
+    """Extract `(mean_ratio, verdict, basis, std_ratio, bulk_penetration_depth)`
+    from a caller-supplied orion-heartbeat `/h1` payload. Fails open to
+    `(None, None, "", None, None)` when mean_ratio/verdict are malformed.
+    `std_ratio` and `bulk_penetration_depth` are optional extras: when absent
+    or invalid they stay None while mean_ratio/verdict still populate.
     """
     if not isinstance(heartbeat_h1, dict):
-        return None, None, ""
+        return None, None, "", None, None
     mean_ratio = heartbeat_h1.get("mean_ratio")
     verdict = heartbeat_h1.get("verdict")
     if (
@@ -218,21 +220,33 @@ def _heartbeat_h1_fields(heartbeat_h1: dict | None) -> tuple[float | None, str |
         or not math.isfinite(mean_ratio)
         or verdict not in _HEARTBEAT_VERDICTS
     ):
-        return None, None, ""
-    # Symmetric clamp, same reasoning/precedent as _aggregate_prediction_error_confidence
-    # above: orion-heartbeat's real producer always emits mean_ratio in [0, 1]
-    # (services/orion-heartbeat/app/substrate/reconstruction.py clamps every
-    # trajectory ratio before averaging), but this is a general-purpose
-    # extractor over an arbitrary caller-supplied dict -- an out-of-range
-    # value must not silently violate AttentionSelfModelV1.heartbeat_mean_ratio's
-    # own declared [0,1] bound, which Pydantic v2 does not re-check on plain
-    # attribute assignment.
+        return None, None, "", None, None
     mean_ratio = max(0.0, min(1.0, float(mean_ratio)))
+
+    std_ratio: float | None = None
+    raw_std = heartbeat_h1.get("std_ratio")
+    if (
+        isinstance(raw_std, (int, float))
+        and not isinstance(raw_std, bool)
+        and math.isfinite(raw_std)
+        and raw_std >= 0.0
+    ):
+        std_ratio = float(raw_std)
+
+    bulk_depth: float | None = None
+    raw_bulk = heartbeat_h1.get("bulk_penetration_depth")
+    if (
+        isinstance(raw_bulk, (int, float))
+        and not isinstance(raw_bulk, bool)
+        and math.isfinite(raw_bulk)
+    ):
+        bulk_depth = max(0.0, min(1.0, float(raw_bulk)))
+
     basis = (
         f"orion-heartbeat /h1 ensemble mean_ratio (tick_count="
         f"{heartbeat_h1.get('tick_count', '?')})"
     )
-    return float(mean_ratio), verdict, basis
+    return float(mean_ratio), verdict, basis, std_ratio, bulk_depth
 
 
 def reduce_attention_self_model(
@@ -406,9 +420,13 @@ def reduce_attention_self_model(
             if domain in model.prediction_error_by_domain
         } or None if prediction_error_evidence_by_domain else None
 
-    hb_mean_ratio, hb_verdict, hb_basis = _heartbeat_h1_fields(heartbeat_h1)
+    hb_mean_ratio, hb_verdict, hb_basis, hb_std_ratio, hb_bulk_depth = _heartbeat_h1_fields(
+        heartbeat_h1
+    )
     if hb_verdict is not None:
         model.heartbeat_mean_ratio = _round_or_none(hb_mean_ratio)
+        model.heartbeat_std_ratio = _round_or_none(hb_std_ratio)
+        model.heartbeat_bulk_penetration_depth = _round_or_none(hb_bulk_depth)
         model.heartbeat_verdict = hb_verdict
         model.heartbeat_basis = hb_basis
 

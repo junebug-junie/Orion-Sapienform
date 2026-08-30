@@ -217,6 +217,10 @@ def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     else str(generated_at)
                 ),
                 "heartbeat_mean_ratio": payload.get("heartbeat_mean_ratio"),
+                "heartbeat_std_ratio": payload.get("heartbeat_std_ratio"),
+                "heartbeat_bulk_penetration_depth": payload.get(
+                    "heartbeat_bulk_penetration_depth"
+                ),
                 "heartbeat_verdict": verdict if isinstance(verdict, str) else None,
                 "prediction_error_confidence": payload.get("prediction_error_confidence"),
                 "predicted_shift_domain": domain,

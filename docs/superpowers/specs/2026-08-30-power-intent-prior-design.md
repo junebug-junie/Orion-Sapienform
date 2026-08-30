@@ -207,11 +207,37 @@ table was created:
 
 The error shrank 57% (11.20 -> 4.79W) after one self-correction.
 
-**Not concluded from two points:** both residuals are negative. That could be a
-systematic overestimate -- the median of past PEAKS may be a biased predictor
-of the next peak -- or it could be coincidence at n=2. If the sign persists
-across the next dozen settlements the estimator needs revisiting. Recorded as
-an open question, not as a converging trend.
+| 2026-08-30 01:42:57 | 246.19 | 252.92 | **+6.73** | 47.5 |
+
+The third row is the important one: it was declared by orion-thought's own
+visual-chain worker on its 600s schedule, not by a hand-triggered curl. Orion
+predicted its own power draw, unprompted, and was graded.
+
+**The bias question raised at n=2 is now unsupported.** Both of the first two
+residuals were negative and this doc recorded that as an open question -- a
+possible systematic overestimate from using the median of past PEAKS to
+predict the next peak. The third residual is positive. Mixed signs around zero
+is what an unbiased estimator looks like, so the evidence points against the
+concern that was raised.
+
+First look at the error distribution (n=3, NOT a conclusion):
+
+```text
+residuals        -11.20, -4.79, +6.73
+mean signed       -3.09 W        (0 would be unbiased)
+mean absolute      7.57 W
+theoretical floor  6.38 W = sd * sqrt(2/pi) for sd = 8.0
+```
+
+That floor is the mean absolute error a PERFECT predictor would still incur,
+because the process itself has sd 8.0W. Observed 7.57 against a floor of 6.38
+suggests most of the remaining error is the workload's own variance rather
+than the prior being wrong -- i.e. there may not be much headroom left for a
+cleverer estimator on this workload.
+
+Stated carefully: n=3 cannot establish any of that. It is the first look, and
+it is consistent with an unbiased prior operating near the process noise
+floor. Worth re-checking at n>=30 before anyone believes it.
 
 Against the acceptance checks:
 

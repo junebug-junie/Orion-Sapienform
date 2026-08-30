@@ -1364,12 +1364,23 @@ async def concept_atlas_network(
             # falkor backend, so a genuinely unlabeled "topic_<id>" cluster
             # rendered as if it were a real concept name -- the exact
             # dishonest-label case this field was added to prevent.
+            #
+            # `getattr(n, "label", None)`, NOT `n.label`. EvidenceNodeV1 has no
+            # `label` field at all, and this list contains evidence nodes --
+            # hydrated in a few lines above. It only ever worked because the
+            # OLD left-hand side (metadata["source"]) was False for every node
+            # post-hydration, so `and` short-circuited before ever touching
+            # `.label`. Widening the left side to provenance.producer made it
+            # true for evidence too -- every evidence node is written by
+            # topic_foundry_adapter -- and the whole route began returning 500
+            # `AttributeError: 'EvidenceNodeV1' object has no attribute 'label'`.
+            # The short-circuit was load-bearing and nothing said so.
             "synthetic_label": bool(
                 (
                     getattr(n.provenance, "producer", None) == _TOPIC_FOUNDRY_PRODUCER
                     or (isinstance(n.metadata, dict) and n.metadata.get("source") == "orion-topic-foundry")
                 )
-                and str(n.label or "").startswith("topic_")
+                and str(getattr(n, "label", None) or "").startswith("topic_")
             ),
         }
         for n in nodes

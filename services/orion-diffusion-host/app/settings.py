@@ -119,6 +119,23 @@ class Settings(BaseSettings):
     DIFFUSION_POWER_INTENT_DURATION_SEC: float = 60.0
     # Hard stop under which the settler closes the window regardless.
     DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC: float = 120.0
+
+    # Power-intent PRIOR (see docs/superpowers/specs/
+    # 2026-08-30-power-intent-prior-design.md). expected_watts is the median of
+    # the last WINDOW settled peaks for this workload, declared only once
+    # MIN_SAMPLES exist. Below that the intent honestly carries None.
+    #
+    # WINDOW is a memory length, not a threshold: at the visual chain's 600s
+    # cadence 20 samples is ~3h -- long enough that the median is stable against
+    # the measured sd of 8.0W, short enough that a model or GPU change ages out
+    # within a working session.
+    DIFFUSION_POWER_PRIOR_WINDOW: int = 20
+    # 3 is the point at which a median is meaningfully a median; at 1 or 2 a
+    # single anomalous reading is half or more of the estimate.
+    DIFFUSION_POWER_PRIOR_MIN_SAMPLES: int = 3
+    # The producer learns from its own settlements by subscribing here, rather
+    # than taking a Postgres dependency for a read the bus already carries.
+    POWER_INTENT_SETTLED_CHANNEL: str = "orion:power:intent:settled"
     DIFFUSION_DTYPE: str = "fp16"
     DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD: bool = True
     DIFFUSION_NUM_INFERENCE_STEPS: int = 4

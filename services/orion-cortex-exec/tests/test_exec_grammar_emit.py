@@ -138,6 +138,29 @@ def test_builds_valid_grammar_events_with_required_semantic_roles() -> None:
     assert events[0].turn_id == "turn-9"
 
 
+def test_all_atoms_emit_non_null_uncertainty() -> None:
+    collector = CortexExecGrammarCollector(
+        node_name=NODE,
+        correlation_id=CORR,
+        code_version="0.2.0",
+        observed_at=FIXED_OBS,
+    )
+    req = _minimal_plan(steps=1)
+    collector.record_request_received(req=req, mode="brain")
+    collector.record_plan_started(req=req, depth=None, step_count=1)
+    collector.record_step_started(
+        order=1, step_name="step_1", verb_name="chat_general", services=["LLMGatewayService"]
+    )
+    collector.record_step_failed(order=1, step_name="step_1", error_kind="timeout")
+    events = build_cortex_exec_grammar_events(collector)
+    atoms = [e.atom for e in events if e.atom is not None]
+    assert atoms
+    for atom in atoms:
+        assert atom.uncertainty is not None
+    failed = next(a for a in atoms if a.semantic_role == "exec_step_failed")
+    assert failed.uncertainty == pytest.approx(0.85)
+
+
 def test_step_failure_emits_exec_step_failed() -> None:
     collector = CortexExecGrammarCollector(
         node_name=NODE,

@@ -18,3 +18,16 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
 python3 "$REPO_ROOT/scripts/worktree_status.py" --summary 2>/dev/null || true
+
+# orion-git-safety-guard (post-merge-rebuild) BEGIN
+(
+  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+  MARKER="$REPO_ROOT/.orion/post-merge-rebuild-enabled"
+  if [ "$ORION_POST_MERGE_REBUILD" != "1" ] && [ ! -f "$MARKER" ]; then
+    exit 0
+  fi
+  REBUILD="$REPO_ROOT/scripts/rebuild_services_from_git_diff.sh"
+  [ -x "$REBUILD" ] || exit 0
+  "$REBUILD"
+) || true
+# orion-git-safety-guard (post-merge-rebuild) END

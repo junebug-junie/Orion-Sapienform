@@ -94,12 +94,23 @@ class CapabilityGapEpisode:
     node: str | None = None
     evidence_ids: list[str] = field(default_factory=list)
     # True when `ended_at` was inferred from a LATER alert rather than read from a
-    # recovery record. vision-host must clear `_alerting` before it can fire
-    # again, so a subsequent alert proves the earlier gap closed -- but not when.
-    # The duration is therefore an upper bound and is reported as one. Without
-    # this, every vision episode since 2026-08-21 stayed permanently "open"
-    # (`vision_recovered` has never once been emitted: 0 rows, ever) and a 24h
-    # window inherited all nine of them.
+    # recovery record.
+    #
+    # CORRECTED 2026-08-30. This originally claimed a later alert *proves* the
+    # earlier gap closed, on the reasoning that vision-host must clear
+    # `_alerting` before it can re-arm. Root-causing the missing
+    # `vision_recovered` records showed that is wrong: the watcher's arm state
+    # was in-memory, so a restart re-armed it without any recovery having
+    # happened. A later alert therefore proves only that the watcher STARTED
+    # OVER -- which may be a genuine recovery or may be a restart mid-outage.
+    #
+    # The bound is still the right behaviour (without it every vision episode
+    # since 2026-08-21 stayed permanently open -- `vision_recovered` has never
+    # once been emitted, 0 rows ever -- and a 24h window inherited all nine),
+    # but it is an upper bound on an *unknown* end, not a measured one. Hence
+    # `resolved: false` and `duration_upper_bound_minutes` rather than a hard
+    # duration. Once the vision-host arm state is durable, a re-arm becomes
+    # meaningful again and this stays correct either way.
     end_is_upper_bound: bool = False
 
     @property
@@ -267,9 +278,10 @@ def summarize_capability_gaps(
                     )
                 continue
             if open_ep is not None:
-                # A new alert while one is open. For a re-arming producer this
-                # proves the earlier gap closed at some point before now, so bound
-                # it here rather than leaving it open forever.
+                # A new alert while one is open means the producer's watcher
+                # started over -- genuine recovery, or a restart that wiped its
+                # arm state. Either way the earlier gap stops accruing here
+                # rather than staying open forever; see `end_is_upper_bound`.
                 episodes.append(
                     CapabilityGapEpisode(
                         reason=key,

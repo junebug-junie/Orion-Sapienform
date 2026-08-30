@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from orion.grammar.atom_signals import (
+    clamp01,
+    uncertainty_from_abs_zscore,
+    uncertainty_from_backpressure,
+    uncertainty_from_catalog_drift,
+    uncertainty_from_sample_mismatch,
+)
 from orion.schemas.grammar import (
     GrammarAtomV1,
     GrammarEdgeV1,
@@ -98,6 +105,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=1.0,
                 salience=0.5,
+                uncertainty=0.08,
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.tick:{self.sample_window_id}",
             ),
@@ -119,6 +127,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=1.0,
                 salience=0.5,
+                uncertainty=0.08,
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.tick_done:{self.sample_window_id}",
             ),
@@ -145,6 +154,7 @@ class BusTransportGrammarCollector:
                 summary=f"Bus observer tick failed error_kind={error_kind}",
                 confidence=0.9,
                 salience=0.9,
+                uncertainty=0.85,
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.tick_failed:{self.sample_window_id}",
             ),
@@ -167,6 +177,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=1.0,
                 salience=0.8,
+                uncertainty=0.15 if redis_ping_ok else 0.9,
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.health:{self.sample_window_id}",
             ),
@@ -197,6 +208,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=1.0,
                 salience=0.7,
+                uncertainty=clamp01(stream_length / max(stream_length + 1000, 1)),
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.depth:{stream_key}:{self.sample_window_id}",
             ),
@@ -234,6 +246,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=0.95,
                 salience=0.85,
+                uncertainty=uncertainty_from_backpressure(stream_length, threshold),
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.backpressure:{stream_key}:{self.sample_window_id}",
             ),
@@ -266,6 +279,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=0.9,
                 salience=0.8,
+                uncertainty=0.7,
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.uncataloged_stream:{stream_key}",
             ),
@@ -295,6 +309,9 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=0.9,
                 salience=0.6,
+                uncertainty=uncertainty_from_catalog_drift(
+                    undeclared_active_count, catalog_size
+                ),
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.census:{self.sample_window_id}",
             ),
@@ -314,6 +331,7 @@ class BusTransportGrammarCollector:
         """
         role = "bus_activity_zscore_computed"
         zscore_str = f"{zscore:.4f}" if zscore is not None else "null"
+        conf = 0.9 if zscore is not None else 0.5
         self._put_atom(
             role,
             GrammarAtomV1(
@@ -327,8 +345,9 @@ class BusTransportGrammarCollector:
                     f"Mesh-wide bus activity zscore computed total_rate={total_rate:.4f} "
                     f"ewma={ewma:.4f} zscore={zscore_str} sample_window_id={self.sample_window_id}"
                 ),
-                confidence=0.9 if zscore is not None else 0.5,
+                confidence=conf,
                 salience=0.6,
+                uncertainty=uncertainty_from_abs_zscore(zscore),
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.activity_zscore:{self.sample_window_id}",
             ),
@@ -363,6 +382,7 @@ class BusTransportGrammarCollector:
                 ),
                 confidence=0.9,
                 salience=0.85,
+                uncertainty=uncertainty_from_sample_mismatch(mismatch_count, sampled_count),
                 source_event_id=self.sample_window_id,
                 payload_ref=f"bus.transport.schema_mismatch:{stream_key}",
             ),

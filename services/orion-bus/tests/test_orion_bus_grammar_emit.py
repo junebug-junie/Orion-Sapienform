@@ -346,3 +346,21 @@ def test_trace_ended_falls_back_to_trace_start_with_zero_atoms(
     events = build_bus_transport_grammar_events(collector)
     trace_ended = next(e for e in events if e.event_kind == "trace_ended")
     assert trace_ended.observed_at == FIXED_OBS
+
+
+def test_all_atoms_emit_non_null_uncertainty() -> None:
+    collector = BusTransportGrammarCollector(
+        node_id=NODE,
+        sample_window_id=WINDOW,
+        observed_at=FIXED_OBS,
+    )
+    _record_full_tick(collector)
+    collector.record_bus_census_computed(undeclared_active_count=2, catalog_size=10)
+    collector.record_bus_activity_zscore_computed(total_rate=12.5, ewma=10.0, zscore=1.8)
+    events = build_bus_transport_grammar_events(collector)
+    atoms = [e.atom for e in events if e.atom is not None]
+    assert atoms
+    for atom in atoms:
+        assert atom.uncertainty is not None
+    zscore_atom = next(a for a in atoms if a.semantic_role == "bus_activity_zscore_computed")
+    assert zscore_atom.uncertainty == pytest.approx(min(1.0, 1.8 / 3.0))

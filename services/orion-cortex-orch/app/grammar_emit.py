@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from orion.grammar.atom_signals import uncertainty_from_route_arbitration
 from orion.schemas.grammar import (
     GrammarAtomV1,
     GrammarEventV1,
@@ -159,6 +160,7 @@ def build_route_arbitration_grammar_events(
         text_value=None,  # never store raw text -- these are categorical facts, not user content
         confidence=1.0,
         salience=1.0,
+        uncertainty=uncertainty_from_route_arbitration(route_metadata),
         source_event_id=correlation_id,
         payload_ref=f"orch.route:{correlation_id}",
     )

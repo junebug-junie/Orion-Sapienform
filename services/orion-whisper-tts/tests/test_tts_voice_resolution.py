@@ -139,6 +139,51 @@ def test_request_speaker_wav_beats_default_speaker_wav(tmp_path) -> None:
     assert plan.metadata["speaker_wav_basename"] == "orion_reference.wav"
 
 
+def test_request_speaker_beats_default_speaker_wav(tmp_path) -> None:
+    """An explicit options.speaker outranks the HOST DEFAULT reference wav.
+
+    Regression for a silent drop found live 2026-08-30: `speaker` was popped
+    from options and then discarded whenever TTS_DEFAULT_SPEAKER_WAV was set --
+    the live config on every host -- so a caller asking for a built-in XTTS
+    voice silently got the cloned one instead. There was no way to request a
+    built-in speaker over the bus at all, which blocked A/B-ing the clone
+    against the built-in voices through the normal path.
+    """
+    wav = tmp_path / "orion_reference_v2.wav"
+    wav.write_bytes(b"RIFF")
+    plan = resolve_synthesis_plan(
+        _settings(
+            tts_voice_profile_dir=str(tmp_path),
+            tts_default_speaker_wav="orion_reference_v2.wav",
+        ),
+        voice_id=None,
+        language="en",
+        options={"speaker": "Ana Florence"},
+    )
+    assert plan.kwargs.get("speaker") == "Ana Florence"
+    # The host default must not sneak back in as a second kwarg -- XTTS would
+    # otherwise prefer speaker_wav and the request would be ignored again.
+    assert "speaker_wav" not in plan.kwargs
+    assert plan.metadata["speaker_wav_used"] is False
+    assert plan.metadata["speaker_wav_basename"] is None
+
+
+def test_request_speaker_wav_still_beats_request_speaker(tmp_path) -> None:
+    """Ordering is options.speaker_wav > options.speaker, not merely
+    'anything explicit wins'. Both are per-request, so their relative rank has
+    to be pinned or the new branch above could invert it."""
+    wav = tmp_path / "custom.wav"
+    wav.write_bytes(b"RIFF")
+    plan = resolve_synthesis_plan(
+        _settings(tts_voice_profile_dir=str(tmp_path)),
+        voice_id=None,
+        language="en",
+        options={"speaker_wav": "custom.wav", "speaker": "Ana Florence"},
+    )
+    assert plan.kwargs["speaker_wav"] == str(wav.resolve())
+    assert "speaker" not in plan.kwargs
+
+
 def test_missing_speaker_wav_raises_loud(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="speaker_wav"):
         resolve_synthesis_plan(

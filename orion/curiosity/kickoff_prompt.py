@@ -197,13 +197,15 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "RECENTLY SETTLED, so you know where you have already been:",
             "",
         ]
-        lines += [
-            f"  - [{status}] {claim}" for claim, status in view.recently_settled
-        ]
+        for claim, status, prior_id in view.recently_settled:
+            lines.append(f"  - [{status}] {claim}")
+            if prior_id:
+                lines.append(f"      prior_id: {prior_id}")
         lines += [
             "",
-            "Nothing stops you reopening one. A settled prior is a claim you "
-            "stopped testing, not a fact.",
+            "Nothing stops you reopening one, and the id above is what to "
+            "reopen it BY. A settled prior is a claim you stopped testing, "
+            "not a fact.",
             "",
         ]
     return lines
@@ -613,10 +615,21 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "error, no edge. So use the ids exactly as you wrote them, and if you "
         "are unsure a node exists, MATCH it on its own first and look.",
         "",
-        "  ONE EXCEPTION, and it is the only one. A concept in the Atlas lives "
-        "in a graph you cannot write to, so there is no node there for an edge "
-        "to land on: keep its id as a property instead. Everything inside your "
-        "OWN graph gets a real edge.",
+        "  EVERY ID YOU ARE ASKED FOR IS PRINTED ON THE MENU, on its own "
+        "labelled line under the thing it names -- `prior_id:` under a claim, "
+        "`crystallization_id:` under a concept, `decision_id:` under a "
+        "relation. Use those, in full. Not the bracketed summary, not a "
+        "shortening of it, not a name you would give it, and not the "
+        "`\"<something unique>\"` placeholder in the templates above -- that "
+        "one is for ids you are CREATING. A MERGE binds by exact string or it "
+        "binds to nothing, silently.",
+        "",
+        "  TWO IDS ON THE MENU ARE NOT NODES, and an edge cannot land on "
+        "either. A concept in the Atlas lives in a graph you cannot write to. "
+        "A `crystallization_id` and a `decision_id` are Postgres rows and are "
+        "not in any graph at all. All three go in a PROPERTY -- formed_from, "
+        "evidence -- and never in a MATCH. Everything inside your OWN graph "
+        "gets a real edge.",
         "",
         "  Confidence is your own belief and nothing checks it. That cuts one "
         "way in particular: a number that only ever goes up is a sign of "

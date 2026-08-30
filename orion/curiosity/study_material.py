@@ -75,7 +75,14 @@ class CrystallizationCard:
     def preview(self) -> str:
         text = _clip(self.subject or self.summary)
         salience = f" salience={self.salience:.2f}" if self.salience is not None else ""
-        return f"[{self.kind}{salience}] {text}"
+        # THE SAME DEFECT AS `Prior.preview`, one surface over: the prompt asks
+        # for `formed_from: "<what produced it: a crystallization id, ...>"`
+        # and this card showed no id at all. Measured live 2026-08-29, all six
+        # priors in `orion_worldview`: `formed_from` held file names
+        # ("intake_pipeline.py + formation_policy.py trace"), invented labels
+        # ("rejection_analysis_<run_id>"), prose, and one empty string. Not one
+        # traced to a crystallization, because the id was never on offer.
+        return f"[{self.kind}{salience}] {text}\n      crystallization_id: {self.crystallization_id}"
 
 
 @dataclass(frozen=True)
@@ -93,7 +100,17 @@ class RelationCard:
         confidence = f" ({self.confidence:.2f})" if self.confidence is not None else ""
         left = _clip(self.candidate_text) or f"[{self.candidate_id} — not kept]"
         right = _clip(self.target_text) or "[no target recorded]"
-        return f"{left}\n      --{self.relation}{confidence}-->  {right}"
+        # `decision_id` for the same reason `CrystallizationCard` prints its
+        # own: relations are one of the two menus Orion picks from, the prompt
+        # asks for `evidence: "<ids, queries, rows you actually looked at>"`,
+        # and this card offered no id at all in the resolvable case --
+        # `candidate_id` appeared only in the "not kept" fallback. A run that
+        # picked a relation had nothing to cite and invented a label, which is
+        # what every live `formed_from` value turned out to be.
+        return (
+            f"{left}\n      --{self.relation}{confidence}-->  {right}"
+            f"\n      decision_id: {self.decision_id}"
+        )
 
 
 @dataclass

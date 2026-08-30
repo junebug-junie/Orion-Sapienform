@@ -36,6 +36,8 @@ async def heartbeat_loop(bus_instance: Any) -> None:
     while True:
         try:
             payload = SystemHealthV1(
+            # Matches this loop's own sleep(_settings.heartbeat_interval_sec) below.
+            heartbeat_interval_sec=_settings.heartbeat_interval_sec,
                 service=_settings.service_name,
                 version=_settings.service_version,
                 node=_settings.node_name,

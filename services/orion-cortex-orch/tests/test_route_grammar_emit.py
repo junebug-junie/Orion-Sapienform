@@ -139,6 +139,18 @@ def test_build_route_arbitration_grammar_events_session_turn_optional() -> None:
         assert event.turn_id is None
 
 
+def test_route_arbitration_atom_emits_non_null_uncertainty() -> None:
+    events = build_route_arbitration_grammar_events(
+        correlation_id="corr-123",
+        node_id="athena",
+        route_metadata=_SAMPLE_ROUTE_METADATA,
+    )
+    atom = events[1].atom
+    assert atom is not None
+    assert atom.uncertainty is not None
+    assert atom.uncertainty >= 0.35
+
+
 # --- 2. publish_orch_route_grammar_trace ------------------------------------
 
 

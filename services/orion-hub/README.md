@@ -1371,15 +1371,19 @@ When `HUB_AGENT_CLAUDE_MCP_ENABLED=true`, each agent-claude turn renders an ephe
 |-----|----------|---------|
 | `GITHUB_PAT` | yes | GitHub MCP (`ghcr.io/github/github-mcp-server` via Docker) |
 | `FIRECRAWL_API_KEY` | yes | Firecrawl MCP (`npx firecrawl-mcp`; Hub image includes Node 20) |
-| `AITOWN_CONVEX_URL` | when AI Town enabled | Self-hosted Convex base URL |
-| `AITOWN_ADMIN_KEY` | when AI Town enabled | Convex admin key |
-| `AITOWN_WORLD_ID` | when AI Town enabled | World id from `npx convex run init` |
+| `AITOWN_CONVEX_URL` | embodiment / MCP only (`~/.fcc/.env`) | Self-hosted Convex base URL for Orion's body |
+| `AITOWN_ADMIN_KEY` | embodiment / MCP only | Convex admin key |
+| `AITOWN_WORLD_ID` | embodiment / MCP only | World id from `npx convex run init` |
+| `HUB_AITOWN_CONVEX_URL` | when Hub AI Town tab enabled | Convex URL for status + `/aitown-convex` proxy |
+| `HUB_AITOWN_UI_URL` | when Hub AI Town tab enabled | Upstream Vite base (Hub appends `/ai-town/`) |
+| `HUB_AITOWN_ADMIN_KEY` | optional | Richer `/api/aitown/status` probes |
+| `HUB_AITOWN_WORLD_ID` | optional | Status display only |
 | `AITOWN_ORION_PLAYER_ID` | optional | Default player for embodied tools |
 | `AITOWN_ORION_AGENT_ID` | optional | Default agent for embodied tools |
 
 **Rollout order:** (1) set `HUB_AGENT_CLAUDE_MCP_ENABLED=true` with GitHub + Firecrawl secrets, (2) bootstrap `services/orion-ai-town/` on mesh, (3) set `HUB_AITOWN_ENABLED=true` and AI Town secrets, (4) open Hub **AI Town** tab (`#ai-town`) for proxied visualization.
 
-Hub settings: `HUB_AGENT_CLAUDE_MCP_ENABLED`, `HUB_AITOWN_ENABLED`, `HUB_AITOWN_UI_URL` (default `http://127.0.0.1:5173`). Routes: `GET /api/aitown/status`, `GET /aitown/` reverse proxy.
+Hub settings: `HUB_AGENT_CLAUDE_MCP_ENABLED`, `HUB_AITOWN_ENABLED`, `HUB_AITOWN_UI_URL`, `HUB_AITOWN_CONVEX_URL` (defaults in `.env_example`; not read from `~/.fcc/.env`). Routes: `GET /api/aitown/status`, `GET /aitown/` reverse proxy, `/aitown-convex/*` Convex proxy for embedded clients.
 
 Preflight errors surface as `fcc_mcp_*` codes before spawn (e.g. `fcc_mcp_github_missing`, `fcc_mcp_aitown_config`).
 

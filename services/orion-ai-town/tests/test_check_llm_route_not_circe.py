@@ -26,9 +26,10 @@ check_not_circe = _mod.check_not_circe
 
 _MODELS = [
     {"id": "chat", "served_by": "circe-worker-1"},
-    {"id": "agent", "served_by": "circe-worker-1"},
-    {"id": "metacog", "served_by": "atlas-worker-2"},
-    {"id": "quick", "served_by": "atlas-worker-fast-1"},
+    {"id": "agent", "served_by": "circe-worker-agent-1"},
+    {"id": "metacog", "served_by": "circe-worker-2"},
+    {"id": "quick", "served_by": "circe-worker-fast-1"},
+    {"id": "quick_background", "served_by": "circe-worker-fast-1"},
 ]
 
 
@@ -38,7 +39,7 @@ def test_script_exists_and_is_executable():
 
 
 def test_resolve_served_by_finds_matching_model():
-    assert resolve_served_by(_MODELS, "quick") == "atlas-worker-fast-1"
+    assert resolve_served_by(_MODELS, "quick_background") == "circe-worker-fast-1"
     assert resolve_served_by(_MODELS, "chat") == "circe-worker-1"
 
 
@@ -46,15 +47,14 @@ def test_resolve_served_by_returns_none_for_unknown_model():
     assert resolve_served_by(_MODELS, "not-a-real-route") is None
 
 
-def test_check_not_circe_passes_for_atlas_worker():
-    assert check_not_circe("atlas-worker-fast-1", model_id="quick", allow_circe=False) is None
+def test_check_not_circe_passes_for_fast_lane_on_circe():
+    assert check_not_circe("circe-worker-fast-1", model_id="quick_background", allow_circe=False) is None
 
 
 def test_check_not_circe_fails_for_circe_worker():
     error = check_not_circe("circe-worker-1", model_id="chat", allow_circe=False)
     assert error is not None
-    assert "circe" in error.lower()
-    assert "chat" in error
+    assert "chat" in error.lower()
 
 
 def test_check_not_circe_is_case_insensitive():
@@ -74,5 +74,5 @@ def test_check_not_circe_fails_when_model_missing_from_gateway():
 
 def test_check_not_circe_does_not_false_positive_on_similar_names():
     # A hypothetical "circe-adjacent" or "not-circe" label should not match --
-    # the policy is specifically about circe-hosted workers.
-    assert check_not_circe("atlas-circe-relay", model_id="quick", allow_circe=False) is None
+    # the policy is specifically about the chat worker lane.
+    assert check_not_circe("atlas-circe-relay", model_id="quick_background", allow_circe=False) is None

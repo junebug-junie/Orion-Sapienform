@@ -4,10 +4,10 @@ Mesh deployment wrapper for [a16z-infra/ai-town](https://github.com/a16z-infra/a
 
 **Upstream pin:** `AITOWN_UPSTREAM_REF=7b242334bfbfef02f7718bded120d431e8f307df` — the a16z SHA the tracked `patches/` were generated against. The patches carry exact context and will not apply to a moved `main`; re-pin (and regenerate patches) intentionally when bumping upstream.
 
-**Deployment host: UNKNOWN/DOWN as of 2026-08-21.** This doc previously claimed a live deployment on `atlas` (`100.121.214.30`, tailscale) as of 2026-07-29, relocated there from `athena` due to host-wide CPU contention (`orion-heartbeat`'s tensor-network substrate) -- see `docs/superpowers/specs/2026-07-29-aitown-atlas-migration-runbook.md` for that migration's history. Atlas was decommissioned 2026-08-21 (see `config/biometrics/node_catalog.yaml`). `100.121.214.30` was checked live 2026-08-21 (`ping`: 100% packet loss) and did not respond -- that is evidence the address is currently unreachable, not proof AI Town itself is down (it may have moved to a different address, or the check may need repeating). Whether AI Town's Convex backend was moved somewhere else, or has simply been down, is not established from the repo alone -- do not trust the path/host below without verifying live first. The Convex data directory (when this WAS running on Atlas) was a host bind mount under `${TELEMETRY_ROOT:-/mnt/telemetry}/orion-atlas/ai-town/convex-data` (not a Docker-managed named volume) — matches this repo's other `/mnt/telemetry`-backed services. Create the directory before first `docker compose up` (the `convex-backend` container runs as root, so root will otherwise auto-create it on `up`, but pre-creating it under the node's own user avoids depending on that):
+**Deployment host: Circe (`100.112.254.99`, tailscale) as of 2026-08-29.** Relocated from deprecated Atlas — see `docs/superpowers/specs/2026-07-29-aitown-atlas-migration-runbook.md` for the prior Athena→Atlas history and **Atlas → Circe evacuation** below for the 2026-08-29 cutover.
 
 ```bash
-mkdir -p ${TELEMETRY_ROOT:-/mnt/telemetry}/orion-atlas/ai-town/convex-data
+mkdir -p ${TELEMETRY_ROOT:-/mnt/telemetry}/orion-circe/ai-town/convex-data
 ```
 
 The daily compaction cron (`scripts/compact_convex_data.sh`, see "Maintenance" below) must run on whichever host actually holds these containers — move the crontab entry along with the deployment, don't leave it running against a stopped remote host.
@@ -98,26 +98,34 @@ Defaults:
 
 Override: `AITOWN_LLM_GATEWAY_URL`, `AITOWN_LLM_CHAT_ROUTE`, `AITOWN_EMBEDDING_DIMENSION`.
 
-> **`LLM_MODEL` must never resolve to a circe-hosted worker.** Circe is
+> **`LLM_MODEL` must never be `chat` (circe-worker-1).** That lane is
 > reserved for Juniper's direct deep/FCC turns (see
-> `services/orion-llm-gateway/README.md`'s mesh-LLM-wiring note); AI Town's
-> NPC dialogue competing for it is exactly what caused a silent, town-wide
-> 10+ hour dialogue outage on 2026-07-30 (this world's already-provisioned
-> `LLM_MODEL` had been left on `chat` -> circe since before the `quick`
-> default above even existed, and nothing checked the live value against
-> policy). `wire_llm_gateway.sh` now hard-fails if it would leave AI Town on
-> circe; run `python3 services/orion-ai-town/scripts/check_llm_route_not_circe.py`
-> any time to check the live state directly.
+> `services/orion-llm-gateway/README.md`'s mesh-LLM-wiring note). Post-Atlas
+> decommission, AI Town's NPC dialogue uses `quick_background` on
+> **circe-worker-fast-1** — same physical host, different lane, background
+> priority so town dialogue never blocks chat. A stale `LLM_MODEL=chat` caused
+> a silent, town-wide 10+ hour dialogue outage on 2026-07-30.
+> `wire_llm_gateway.sh` defaults to `quick_background`; run
+> `python3 services/orion-ai-town/scripts/check_llm_route_not_circe.py` any
+> time to verify the live value is not on the chat lane.
 >
 > **Why `quick_background`, not plain `quick` (2026-07-30):** `quick`
-> (`atlas-worker-fast-1`) is also the default route for `orion-mind`,
-> `orion-embodiment`'s hub-mode speech, and `orion-hub`'s memory-graph-suggest.
-> No second GPU was available to give AI Town its own dedicated model
-> (confirmed live: both V100s already host one model each). `quick_background`
-> shares the exact same upstream but waits for `/slots` slack before
-> dispatching, so AI Town's dialogue never makes those other, snappier
-> consumers wait behind it -- see
+> (`circe-worker-fast-1` post-Atlas; was `atlas-worker-fast-1`) is also the
+> default route for `orion-mind`, `orion-embodiment`'s hub-mode speech, and
+> `orion-hub`'s memory-graph-suggest. `quick_background` shares the exact same
+> upstream but waits for `/slots` slack before dispatching, so AI Town's
+> dialogue never makes those other, snappier consumers wait behind it -- see
 > `services/orion-llm-gateway/README.md`'s "Background-priority routes".
+
+## Atlas → Circe evacuation (2026-08-29)
+
+When moving off deprecated Atlas:
+
+1. **Copy data** — rsync `${TELEMETRY_ROOT}/orion-atlas/ai-town/convex-data/` → `${TELEMETRY_ROOT}/orion-circe/ai-town/convex-data/` on Circe (`/mnt/telemetry`, not `/mnt/scripts`).
+2. **Update compose bind mount** — `orion-circe/ai-town/convex-data` (this branch).
+3. **Compact** — `bash scripts/compact_convex_data.sh --force` once the backend is healthy (revision bloat is normal after downtime).
+4. **Hub cutover** — set `HUB_AITOWN_UI_URL=http://<circe-tailscale>:5173` and `HUB_AITOWN_CONVEX_URL=http://<circe-tailscale>:3210` in `services/orion-hub/.env`; recreate `hub-app` (`docker compose up -d`, not `restart`).
+5. **Embodiment** — `AITOWN_CONVEX_URL` stays in `~/.fcc/.env` only (Orion's body), not Hub.
 
 **Requires:** `LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED=true` and `ORION_VECTOR_HOST_URL` on orion-llm-gateway.
 

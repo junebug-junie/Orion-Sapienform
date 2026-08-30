@@ -8,11 +8,7 @@ from typing import Any, Dict
 
 
 def _convex_base_from_settings(settings: Any) -> str:
-    from scripts.fcc_env_catalog import expand_env_path, load_fcc_env
-
-    fcc_path = expand_env_path(getattr(settings, "HUB_FCC_ENV_PATH", ""))
-    env = load_fcc_env(fcc_path)
-    return str(env.get("AITOWN_CONVEX_URL") or "").strip()
+    return str(getattr(settings, "HUB_AITOWN_CONVEX_URL", "") or "").strip()
 
 
 def fetch_aitown_status(settings: Any) -> Dict[str, Any]:
@@ -62,15 +58,8 @@ def fetch_aitown_status(settings: Any) -> Dict[str, Any]:
         out["error"] = f"convex_unreachable: {exc}"
         return out
 
-    world_id = ""
-    try:
-        from scripts.fcc_env_catalog import expand_env_path, load_fcc_env
-
-        env = load_fcc_env(expand_env_path(getattr(settings, "HUB_FCC_ENV_PATH", "")))
-        world_id = str(env.get("AITOWN_WORLD_ID") or "").strip()
-        admin_key = str(env.get("AITOWN_ADMIN_KEY") or "").strip()
-    except Exception:
-        admin_key = ""
+    world_id = str(getattr(settings, "HUB_AITOWN_WORLD_ID", "") or "").strip()
+    admin_key = str(getattr(settings, "HUB_AITOWN_ADMIN_KEY", "") or "").strip()
 
     if admin_key:
         try:

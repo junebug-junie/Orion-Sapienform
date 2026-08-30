@@ -24,7 +24,7 @@ services:
       - "${SITE_PROXY_PORT:-3211}:3211"
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
-      - ${TELEMETRY_ROOT:-/mnt/telemetry}/orion-atlas/ai-town/convex-data:/convex/data
+      - ${TELEMETRY_ROOT:-/mnt/telemetry}/orion-circe/ai-town/convex-data:/convex/data
     environment:
       - INSTANCE_NAME=${INSTANCE_NAME:-orion-aitown}
       - INSTANCE_SECRET=${INSTANCE_SECRET:-}

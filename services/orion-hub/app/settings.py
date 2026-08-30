@@ -238,6 +238,21 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:5173",
         alias="HUB_AITOWN_UI_URL",
     )
+    HUB_AITOWN_CONVEX_URL: str = Field(
+        default="",
+        alias="HUB_AITOWN_CONVEX_URL",
+        description="Self-hosted Convex base URL for AI Town status + /aitown-convex proxy.",
+    )
+    HUB_AITOWN_ADMIN_KEY: str = Field(
+        default="",
+        alias="HUB_AITOWN_ADMIN_KEY",
+        description="Optional Convex admin key for richer /api/aitown/status probes.",
+    )
+    HUB_AITOWN_WORLD_ID: str = Field(
+        default="",
+        alias="HUB_AITOWN_WORLD_ID",
+        description="Optional AI Town world id (status display only; not a secret).",
+    )
     HUB_AGENT_CLAUDE_STREAM_READ_LIMIT: int = Field(
         default=8 * 1024 * 1024,
         alias="HUB_AGENT_CLAUDE_STREAM_READ_LIMIT",

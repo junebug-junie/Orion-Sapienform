@@ -28,7 +28,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `TTS_USE_GPU` | `true` | Pass GPU flag to Coqui. |
 | `TTS_DEFAULT_LANGUAGE` | `en` | Default language code. |
 | `TTS_DEFAULT_SPEAKER` | `Ana Florence` | Built-in XTTS speaker name -- used only when `TTS_DEFAULT_SPEAKER_WAV` is unset (see below). |
-| `TTS_DEFAULT_SPEAKER_WAV` | `/models/voices/orion_reference_v2.wav` | Reference `.wav` under `TTS_VOICE_PROFILE_DIR`. **Full resolve order (`app/tts.py:85-110`) is `options.speaker_wav` > `TTS_DEFAULT_SPEAKER_WAV` > `voice_id` > `TTS_DEFAULT_SPEAKER`** -- note this key outranks a per-request `voice_id`, not just `TTS_DEFAULT_SPEAKER`. Live default since 2026-08-29 (see "Changing the voice" below); the `.wav` itself is a host asset, not checked into git. |
+| `TTS_DEFAULT_SPEAKER_WAV` | `/models/voices/orion_reference_v2.wav` | Reference `.wav` under `TTS_VOICE_PROFILE_DIR`. **Full resolve order is `options.speaker_wav` > `options.speaker` > `TTS_DEFAULT_SPEAKER_WAV` > `voice_id` > `TTS_DEFAULT_SPEAKER`** -- note this key outranks a per-request `voice_id`, not just `TTS_DEFAULT_SPEAKER`. Live default since 2026-08-29 (see "Changing the voice" below); the `.wav` itself is a host asset, not checked into git. |
 | `TTS_SPLIT_SENTENCES` | `true` | XTTS sentence splitting. |
 | `TTS_VOICE_PROFILE_DIR` | `/models/voices` | Voice profile mount inside container. |
 | `CHANNEL_TTS_INTAKE` | `orion:tts:intake` | Input channel. |
@@ -162,6 +162,27 @@ engine. A typo'd or missing reference gives you a container that is Up,
 healthy, and fails hard on Orion's first real turn. Always run the
 round-trip check below.
 
+### Requesting a built-in speaker while a reference voice is configured
+
+`options.speaker` outranks `TTS_DEFAULT_SPEAKER_WAV`, so a caller can ask for a
+built-in XTTS voice even on a host configured for voice cloning:
+
+```json
+{
+  "text": "Comparison line.",
+  "language": "en",
+  "options": { "speaker": "Ana Florence" }
+}
+```
+
+`voice_id` does **not** do this — it still ranks below the host default, so
+`{"voice_id": "Ana Florence"}` on a cloning host synthesizes with the clone and
+merely echoes the requested id back in metadata. Use `options.speaker`.
+
+Until 2026-08-30 `options.speaker` was silently dropped in this situation,
+which meant there was no way at all to A/B a cloned voice against the built-in
+speakers over the bus.
+
 ### Verifying a voice change
 
 Config being set is not proof the voice moved. Two checks, both against the
@@ -270,12 +291,44 @@ rsync -av --info=progress2 /mnt/telemetry/models/coqui/tts/   circe@circe:/mnt/t
 rsync -av                  /mnt/telemetry/models/coqui/voices/ circe@circe:/mnt/telemetry/models/coqui/voices/
 ```
 
-Set `WHISPER_TTS_GPU_DEVICE_ID=4` in circe's own
-`services/orion-whisper-tts/.env`, then, **from a worktree on circe**:
+Build circe's own `services/orion-whisper-tts/.env` **from
+`.env_example`**, adding only what circe needs (`WHISPER_TTS_GPU_DEVICE_ID=4`).
+
+**Do not `cp` athena's service `.env` across.** It carries host-identity keys —
+notably `PROJECT=orion-athena` — and the service `.env` is the *last*
+`--env-file`, so it silently overrides the root `.env`. Doing exactly this on
+2026-08-29 brought the service up on circe as `orion-athena-whisper-tts`, with
+no error. Check before deploying:
 
 ```bash
-scripts/safe_docker_build.sh orion-whisper-tts up -d --build
+grep -nEi 'PROJECT=|athena|circe|localhost|127\.0\.0\.1' services/orion-whisper-tts/.env
+docker compose --env-file .env --env-file services/orion-whisper-tts/.env \
+  -f services/orion-whisper-tts/docker-compose.yml config \
+  | grep -E 'container_name|device_ids'
 ```
+
+The reverse also bites: circe's root `.env` lacks
+`ORION_BUS_VELOCITY_TRACKING_ENABLED`, which `.env_example` and athena both set
+to `true`, so it arrived blank (= false) with only a compose warning. A key
+*missing* on the new host is as real a divergence as one wrongly copied, and no
+env-parity gate catches it — both compare against `.env_example` on one host.
+
+Then bring it up **from the shared checkout on circe**, not a worktree:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+docker compose --env-file .env --env-file services/orion-whisper-tts/.env \
+  -f services/orion-whisper-tts/docker-compose.yml up -d
+```
+
+This deliberately contradicts AGENTS.md §8's "worktrees only" instruction for
+`scripts/safe_docker_build.sh`. That guard exists to stop one dev agent
+clobbering another's *uncommitted* work; it is not a statement about where
+production should run. A long-running service whose compose project points into
+a branch worktree breaks the moment that worktree is pruned — and
+`make prune-merged-worktrees` exists and will happily remove it, taking the
+compose context and the gitignored `.env` with it. Deploy persistent services
+from the shared checkout on clean, merged `main`.
 
 Cut over in this order, so the window where nobody is serving TTS is a few
 seconds and rollback is one command:

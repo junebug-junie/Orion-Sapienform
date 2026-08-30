@@ -233,7 +233,7 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 ## Orion embodiment
 
-`patches/orion-character.patch` is the tracked diff for AI Town's `Descriptions` array (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). **Live cards and `generate_descriptions.py` emit four NPCs** — Mara Vale, Nico Sable, Sofia Bell, and Cam Lin — but **the checked-in patch still seeds eight** until regenerated from a cloned `upstream/` (it still contains Dr. Elian Cross, Juno Park, Tessa Quinn, and Vale Moreno alongside the four live NPCs). Retired cards are archived at `cards/archived/2026-08-29-retired-cast.yaml`. Applying the stale patch and running wipe + init will reseed all eight; regenerate the patch after `generate_descriptions.py` before relying on a four-NPC seed. Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and her rich join description in `convex/world.ts`). A world wipe is still required after recasting (`testing:wipeAllTables` then `init`) — see Fresh game / reset below.
+`patches/orion-character.patch` is the tracked diff for AI Town's `Descriptions` array (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). **Live cards, `generate_descriptions.py`, and the checked-in patch seed four NPCs** — Mara Vale, Nico Sable, Sofia Bell, and Cam Lin. Retired cards (Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno) are archived at `cards/archived/2026-08-29-retired-cast.yaml`. Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and her rich join description in `convex/world.ts`). A world wipe is still required after recasting (`testing:wipeAllTables` then `init`) — see Fresh game / reset below.
 
 > Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast.
 
@@ -241,14 +241,14 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 Reseed the town from scratch (destructive — wipes all world/memory tables). Operator-run:
 
-Live cards and `generate_descriptions.py` emit **four** NPCs; the tracked `orion-character.patch` still seeds **eight** until regenerated from cloned `upstream/` (see Cast cards above). This recipe applies the tracked patch first, so `init` seeds whatever is currently in `Descriptions` after that step — eight today, four only after you regenerate and refresh the patch.
+Live cards, `generate_descriptions.py`, and the tracked `orion-character.patch` seed **four** NPCs (see Cast cards above). This recipe applies the tracked patch first, so `init` seeds the four live identities in `Descriptions`.
 
 ```bash
-cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh  # tracked patch still eight NPCs until regenerated
+cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh  # tracked patch seeds four NPCs
 cd upstream && npx convex dev --once            # redeploy Convex functions
 npx convex run testing:stop
 npx convex run testing:wipeAllTables            # internalMutation; wipes all world/memory tables
-npx convex run init                             # seeds whatever Descriptions contains after patches (eight until patch regen)
+npx convex run init                             # seeds the four live Descriptions after patches
 npx convex run testing:resume
 # re-bootstrap Orion's external body:
 cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write
@@ -295,7 +295,7 @@ Orion's external embodiment worker already walks on `walkingOver` via `approach_
 
 ### Town continuity ingest (`patches/orion-town-continuity-ingest.patch`)
 
-NPC-to-NPC openers fetch `aitown-town` continuity in `startConversationMessage` (`GET /summary` → `What you remember:` when non-empty). Human (Juniper) conversations do not run that start path — `orion-town-chat-turns.patch` skips synthetic openers when `otherPlayer.human`, so Juniper chats never GET `/summary` at open. NPC continue/leave still `POST /ingest-turn` when the other player is not Orion. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open and never block NPC speech. Slugs are the same six hardcoded names as `orion/town_cast.py`.
+NPC-to-NPC openers fetch `aitown-town` continuity in `startConversationMessage` (`GET /summary` → `What you remember:` when non-empty). Human (Juniper) conversations skip that start path — `orion-town-chat-turns.patch` waits for the human's first line — and GET `/summary` on the first continue instead (`priorMessages.length <= 1`). Later continues do not fetch again. NPC continue/leave still `POST /ingest-turn` (fire-and-forget, 3s abort) when the other player is not Orion. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open (3s `AbortSignal.timeout`) and never block the speech return path. Slugs are the same six hardcoded names as `orion/town_cast.py`.
 
 These are **Convex env vars** (operator `npx convex env set` from `upstream/`), not this service's Python `.env`:
 

@@ -146,6 +146,56 @@ def test_ingest_http_401_wrong_token() -> None:
         main_mod.settings.social_memory_ingest_token = original_token
 
 
+def test_ingest_http_200_valid_body_publishes_social_turn() -> None:
+    import app.main as main_mod
+
+    bus = _FakeBus()
+    svc = SocialMemoryService(settings=Settings(ORION_BUS_ENABLED=False), bus=bus)
+
+    async def _noop_start() -> None:
+        return None
+
+    original_service = main_mod.service
+    original_token = main_mod.settings.social_memory_ingest_token
+    original_start = svc.start
+    svc.start = _noop_start  # type: ignore[method-assign]
+    main_mod.service = svc
+    main_mod.settings.social_memory_ingest_token = "secret"
+    try:
+        with TestClient(main_mod.app) as client:
+            resp = _post_ingest(client, headers={"Authorization": "Bearer secret"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert len(bus.published) == 1
+        channel, envelope = bus.published[0]
+        assert channel == "orion:chat:social:turn"
+        assert envelope.kind == "social.turn.v1"
+    finally:
+        svc.start = original_start
+        main_mod.service = original_service
+        main_mod.settings.social_memory_ingest_token = original_token
+
+
+def test_ingest_http_422_invalid_body() -> None:
+    import app.main as main_mod
+
+    original_service = main_mod.service
+    original_token = main_mod.settings.social_memory_ingest_token
+    main_mod.service = _NoopService()
+    main_mod.settings.social_memory_ingest_token = "secret"
+    try:
+        with TestClient(main_mod.app) as client:
+            resp = client.post(
+                "/ingest-turn",
+                headers={"Authorization": "Bearer secret"},
+                json={"source": "orion-ai-town"},
+            )
+        assert resp.status_code == 422
+    finally:
+        main_mod.service = original_service
+        main_mod.settings.social_memory_ingest_token = original_token
+
+
 def test_social_turn_channel_lists_social_memory_as_producer() -> None:
     doc = yaml.safe_load((REPO_ROOT / "orion/bus/channels.yaml").read_text(encoding="utf-8")) or {}
     entry = next(item for item in doc.get("channels") or [] if item.get("name") == "orion:chat:social:turn")

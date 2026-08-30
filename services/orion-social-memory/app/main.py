@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from pydantic import ValidationError
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.social_chat import SocialRoomTurnV1
@@ -118,6 +119,9 @@ def _ingest_token_authorized(authorization: str | None) -> bool:
 async def ingest_turn(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     if not _ingest_token_authorized(request.headers.get("Authorization")):
         raise HTTPException(status_code=401, detail="unauthorized")
-    turn = SocialRoomTurnV1.model_validate(body)
+    try:
+        turn = SocialRoomTurnV1.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
     await service.ingest_turn(turn)
     return {"ok": True}

@@ -1,11 +1,12 @@
 """Gate tests for the AI Town NPC continuity ingest/summary patch.
 
 Companion to orion-concrete-grounding-prompt.patch: NPC-to-NPC openers fetch
-aitown-town continuity in startConversationMessage; human (Juniper) chats skip
-that start path (orion-town-chat-turns.patch) and do not GET /summary at open.
-Continue/leave still publish SocialRoomTurnV1 when the other is not Orion.
-Orion↔anyone stays embodiment-only. Fail-open: ingest and summary fetch never
-block speech. Slugs are hardcoded from orion/town_cast.py — never inferred.
+aitown-town continuity in startConversationMessage. Human (Juniper) chats skip
+that start path (orion-town-chat-turns.patch) and GET /summary on the first
+continue instead. Continue/leave still publish SocialRoomTurnV1 when the other
+is not Orion. Orion↔anyone stays embodiment-only. Fail-open: ingest and
+summary fetch time out in 3s and never block the speech return path. Slugs
+are hardcoded from orion/town_cast.py — never inferred.
 """
 
 from __future__ import annotations
@@ -57,3 +58,27 @@ def test_continuity_patch_ingests_on_continue_and_leave():
     assert "/ingest-turn" in patch
     assert "continueConversationMessage" in patch
     assert "leaveConversationMessage" in patch
+
+
+def test_continuity_patch_aborts_fetches_in_3s():
+    patch = _PATCH.read_text(encoding="utf-8")
+    assert "AbortSignal" in patch or "timeout(3000)" in patch
+
+
+def test_continuity_patch_does_not_await_ingest_on_speech_return():
+    patch = _PATCH.read_text(encoding="utf-8")
+    assert "await ingestTownTurn" not in patch
+    assert "ingestTownTurn(" in patch
+
+
+def test_continuity_patch_fetches_on_first_continue():
+    patch = _PATCH.read_text(encoding="utf-8")
+    assert "continueConversationMessage" in patch
+    assert "priorMessages.length <= 1" in patch or "previousMessages.length <= 1" in patch
+    assert "What you remember:" in patch
+
+
+def test_readme_says_juniper_gets_continuity_on_first_continue():
+    readme = (_SERVICE / "README.md").read_text(encoding="utf-8")
+    assert "first continue" in readme.lower()
+    assert "Juniper chats never GET" not in readme

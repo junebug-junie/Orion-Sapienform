@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import logging
 from datetime import datetime
 from typing import Optional, Tuple
@@ -32,20 +34,46 @@ def enrich_with_policy(payload: NotificationRequest, policy: Policy, now: dateti
     return payload.model_copy(update={"context": context})
 
 
+@dataclass(frozen=True)
+class EmailOutcome:
+    """What actually happened to the email for one notification.
+
+    `status` is one of:
+      "sent"    -- the SMTP transport accepted the message WITHOUT raising.
+                   This is not proof it reached an inbox; nothing downstream of
+                   SMTP reports back here. Do not read it as "Juniper saw it".
+      "failed"  -- the send raised.
+      "skipped" -- no email was attempted: no transport configured, or policy
+                   said not to send for this notification.
+    """
+
+    status: str
+    reason: str
+
+
 def maybe_send_email(
     transport: EmailTransport | None,
     payload: NotificationRequest,
     *,
     immediate_critical_only: bool = False,
-) -> None:
+) -> EmailOutcome:
+    """Attempt the email and RETURN what happened.
+
+    Previously returned None: the outcome was logged and discarded, and the
+    caller then wrote a hardcoded `status="pending"` onto the persisted record.
+    That is why all 10,900 rows in `notify_requests` -- every one since
+    2026-07-24, including emails Juniper confirmed receiving -- read "pending".
+    A column that always says pending is worse than no column: a reader gets a
+    wrong answer instead of no answer.
+    """
     if transport is None:
-        return
+        return EmailOutcome("skipped", "smtp_transport_unconfigured")
     severity = (payload.severity or "").lower()
     if immediate_critical_only and severity != "critical":
-        return
+        return EmailOutcome("skipped", f"immediate_critical_only_severity_{severity or 'unset'}")
     should, reason = should_send_email(payload)
     if not should:
-        return
+        return EmailOutcome("skipped", reason)
     try:
         transport.send(payload)
         logger.info(
@@ -54,6 +82,7 @@ def maybe_send_email(
             payload.event_kind,
             reason,
         )
+        return EmailOutcome("sent", reason)
     except Exception as exc:
         logger.error(
             "[NOTIFY] email_send_failed notification_id=%s event_kind=%s error_class=%s error=%s",
@@ -62,3 +91,4 @@ def maybe_send_email(
             exc.__class__.__name__,
             str(exc),
         )
+        return EmailOutcome("failed", f"{exc.__class__.__name__}: {exc}"[:500])

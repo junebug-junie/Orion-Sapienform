@@ -78,6 +78,7 @@ class VisionLivenessWatcher:
         clear_fail_rate: float = 0.2,
         sustain_sec: float = 180.0,
         cooldown_sec: float = 3600.0,
+        state_store: Any = None,
     ) -> None:
         if not 0.0 <= clear_fail_rate < arm_fail_rate <= 1.0:
             # A clear threshold at or above the arm threshold is not hysteresis,
@@ -100,6 +101,67 @@ class VisionLivenessWatcher:
         self._alerting: bool = False
         self._last_alert_at: Optional[float] = None
         self._alert_unconfirmed: bool = False
+
+        # Durable arm/clear state. Without it a restart between the alert and the
+        # clear loses the recovery forever -- live on 2026-08-29, eight
+        # `vision_blind` records since 08-21 and zero `vision_recovered`, ever.
+        # See app/liveness_state.py for the evidence and the design.
+        self._state_store = state_store
+        self._last_now: Optional[float] = None
+        self._restore_state()
+
+    def _restore_state(self) -> None:
+        """Load persisted state, translating wall clock back to monotonic.
+
+        `_failing_since` / `_last_alert_at` are `time.monotonic()` values, which
+        are process-relative: restoring them raw would seed this process's clock
+        from another process's epoch. They are stored as wall clock and shifted
+        back here by the current wall/monotonic offset.
+        """
+        if self._state_store is None:
+            return
+        try:
+            state = self._state_store.load()
+        except Exception:  # a store must never stop the service from seeing
+            return
+        if state is None or not getattr(state, "alerting", False):
+            return
+        now_wall = time.time()
+        now_mono = time.monotonic()
+
+        def _to_mono(wall: Optional[float]) -> Optional[float]:
+            if wall is None:
+                return None
+            # Ages in the future (clock step) clamp to "just now" rather than
+            # producing a deadline this process can never reach.
+            return now_mono - max(0.0, now_wall - float(wall))
+
+        self._alerting = True
+        self._failing_since = _to_mono(getattr(state, "failing_since_wall", None))
+        self._last_alert_at = _to_mono(getattr(state, "last_alert_at_wall", None))
+
+    def _persist_state(self) -> None:
+        """Write current arm state. Called only on transitions, not per sample."""
+        if self._state_store is None:
+            return
+        try:
+            from .liveness_state import PersistedLivenessState
+
+            now_wall = time.time()
+            now_mono = self._last_now if self._last_now is not None else time.monotonic()
+
+            def _to_wall(mono: Optional[float]) -> Optional[float]:
+                return None if mono is None else now_wall - (now_mono - float(mono))
+
+            self._state_store.save(
+                PersistedLivenessState(
+                    alerting=self._alerting,
+                    failing_since_wall=_to_wall(self._failing_since),
+                    last_alert_at_wall=_to_wall(self._last_alert_at),
+                )
+            )
+        except Exception:
+            return
 
     # -- introspection, for /health and tests -------------------------------
 
@@ -154,6 +216,12 @@ class VisionLivenessWatcher:
         now: Optional[float] = None,
     ) -> LivenessDecision:
         ts = float(now if now is not None else time.monotonic())
+        # Remembered so `_persist_state` converts monotonic->wall against the SAME
+        # clock `record` is using. Mixing an injected clock with real
+        # `time.monotonic()` produced wall timestamps days off -- harmless in
+        # production, which never injects, but it made the persisted value
+        # untestable and would silently rot.
+        self._last_now = ts
         self._samples.append((ts, bool(ok), error_code))
         self._evict(ts)
         rate, count, top = self._stats()
@@ -177,6 +245,7 @@ class VisionLivenessWatcher:
                 self._failing_since = None
                 if self._alerting:
                     self._alerting = False
+                    self._persist_state()
                     return LivenessDecision(
                         recovered=True,
                         reason="vision tasks succeeding again",
@@ -244,6 +313,7 @@ class VisionLivenessWatcher:
             self._failing_since = None
             if self._alerting:
                 self._alerting = False
+                self._persist_state()
                 return LivenessDecision(
                     recovered=True,
                     reason="vision tasks succeeding again",
@@ -278,6 +348,10 @@ class VisionLivenessWatcher:
         if not delivered:
             self._alerting = False
             self._last_alert_at = None
+        # Persist either way: a confirmed arm must survive a restart (that is the
+        # whole point), and a rollback must not leave a stale armed file behind
+        # that would resurrect an alert this process decided never happened.
+        self._persist_state()
 
 
 def build_watcher_or_default(cfg: Any) -> VisionLivenessWatcher:
@@ -300,8 +374,22 @@ def build_watcher_or_default(cfg: Any) -> VisionLivenessWatcher:
     without pulling in torch/PIL: the fix for a HIGH finding should not be
     covered only by a test that skips on the host venv.
     """
+    store = None
+    try:
+        path = str(getattr(cfg, "VISION_LIVENESS_STATE_PATH", "") or "").strip()
+        if path:
+            from .liveness_state import LivenessStateStore
+
+            store = LivenessStateStore(path)
+    except Exception as exc:
+        # Same policy as the config fallback below: no part of alerting may stop
+        # this service from seeing. Degrade to in-memory state, loudly.
+        print(f"[LIVENESS] state store unavailable ({exc}); arm state is in-memory only", flush=True)
+        store = None
+
     try:
         return VisionLivenessWatcher(
+            state_store=store,
             window_sec=cfg.VISION_LIVENESS_WINDOW_SEC,
             min_samples=cfg.VISION_LIVENESS_MIN_SAMPLES,
             arm_fail_rate=cfg.VISION_LIVENESS_ARM_FAIL_RATE,
@@ -318,7 +406,7 @@ def build_watcher_or_default(cfg: Any) -> VisionLivenessWatcher:
             f"services/orion-vision-host/.env.",
             flush=True,
         )
-        return VisionLivenessWatcher()
+        return VisionLivenessWatcher(state_store=store)
 
 
 def build_attention_request(

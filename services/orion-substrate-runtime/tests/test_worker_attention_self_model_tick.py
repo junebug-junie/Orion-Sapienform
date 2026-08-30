@@ -360,7 +360,13 @@ def test_self_model_tick_persists_with_heartbeat_fields_when_available(monkeypat
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "ok": True,
-        "h1": {"mean_ratio": 0.91, "verdict": "redundant", "tick_count": 10},
+        "h1": {
+            "mean_ratio": 0.91,
+            "std_ratio": 0.023,
+            "bulk_penetration_depth": 0.67,
+            "verdict": "redundant",
+            "tick_count": 10,
+        },
     }
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
@@ -370,6 +376,8 @@ def test_self_model_tick_persists_with_heartbeat_fields_when_available(monkeypat
 
     model = worker._store.save_attention_self_model.call_args.args[0]
     assert model.heartbeat_mean_ratio == pytest.approx(0.91, abs=1e-4)
+    assert model.heartbeat_std_ratio == pytest.approx(0.023, abs=1e-4)
+    assert model.heartbeat_bulk_penetration_depth == pytest.approx(0.67, abs=1e-4)
     assert model.heartbeat_verdict == "redundant"
 
 

@@ -73,6 +73,22 @@ _HIGH_RATIO = 0.6
 _LOW_RATIO = 0.2
 
 
+def _normalize_entropy_ratio(entropy: float) -> float:
+    return max(0.0, min(1.0, entropy / _MAX_POSSIBLE_ENTROPY))
+
+
+def bulk_penetration_depth(profile: list[float]) -> float:
+    """Mean normalized entropy at cuts strictly inside the bulk block (after
+    the boundary/bulk seam at BOUNDARY_BULK_CUT). Pure function over an
+    already-computed 9-cut profile -- see compute_h1_ensemble() for how the
+    ensemble mean profile is formed."""
+    bulk_entropies = profile[BOUNDARY_BULK_CUT:]
+    if not bulk_entropies:
+        return 0.0
+    ratios = [_normalize_entropy_ratio(e) for e in bulk_entropies]
+    return float(sum(ratios) / len(ratios))
+
+
 @dataclass(frozen=True)
 class H1ResultV1:
     generated_at: datetime
@@ -143,6 +159,14 @@ def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
     mean_ratio = float(sum(ratios) / len(ratios))
     std_ratio = float(statistics.pstdev(ratios)) if len(ratios) > 1 else 0.0
 
+    profiles = [traj.entropy_profile() for traj in ensemble.trajectories]
+    n_cuts = len(profiles[0])
+    mean_profile = [
+        float(sum(p[i] for p in profiles) / len(profiles))
+        for i in range(n_cuts)
+    ]
+    bulk_depth = bulk_penetration_depth(mean_profile)
+
     if mean_ratio >= _HIGH_RATIO:
         verdict = "redundant"
     elif mean_ratio <= _LOW_RATIO:
@@ -157,6 +181,7 @@ def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
         tick_count=ensemble.tick_count(),
         seeds=list(ensemble.seeds),
         ratios=[float(r) for r in ratios],
+        bulk_penetration_depth=bulk_depth,
     )
 
 

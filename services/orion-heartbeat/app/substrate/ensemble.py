@@ -86,6 +86,12 @@ class EnsembleH1ResultV1:
     # by compute_h1_ensemble (it already calls ensemble.ratios()), so this
     # carries zero extra compute; it was simply being discarded.
     ratios: list[float] = field(default_factory=list)
+    # Mean normalized entropy at bulk-internal cuts (cuts after the
+    # boundary/bulk seam) averaged across trajectories -- a distinct scalar
+    # from mean_ratio (which reads only the seam cut). Exposed so downstream
+    # reducers can discriminate states that share the same seam ratio but
+    # differ in how deeply entanglement has penetrated the bulk block.
+    bulk_penetration_depth: float = 0.0
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

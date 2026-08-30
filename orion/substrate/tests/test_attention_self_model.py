@@ -675,9 +675,17 @@ class TestHeartbeatH1:
             None,
             _field_frame(),
             now=NOW,
-            heartbeat_h1={"mean_ratio": 0.834, "verdict": "redundant", "tick_count": 42},
+            heartbeat_h1={
+                "mean_ratio": 0.834,
+                "std_ratio": 0.021,
+                "bulk_penetration_depth": 0.55,
+                "verdict": "redundant",
+                "tick_count": 42,
+            },
         )
         assert model.heartbeat_mean_ratio == pytest.approx(0.834, abs=1e-4)
+        assert model.heartbeat_std_ratio == pytest.approx(0.021, abs=1e-4)
+        assert model.heartbeat_bulk_penetration_depth == pytest.approx(0.55, abs=1e-4)
         assert model.heartbeat_verdict == "redundant"
         assert "orion-heartbeat" in model.heartbeat_basis
         assert "42" in model.heartbeat_basis
@@ -793,3 +801,30 @@ class TestHeartbeatH1:
         )
         assert model.prediction_error_confidence is not None
         assert model.heartbeat_mean_ratio == pytest.approx(0.9, abs=1e-4)
+
+    def test_optional_profile_observables_absent_still_populates_verdict(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": 0.82, "verdict": "redundant", "tick_count": 1},
+        )
+        assert model.heartbeat_verdict == "redundant"
+        assert model.heartbeat_std_ratio is None
+        assert model.heartbeat_bulk_penetration_depth is None
+
+    def test_invalid_optional_observables_do_not_block_verdict(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={
+                "mean_ratio": 0.82,
+                "std_ratio": "not-a-number",
+                "bulk_penetration_depth": float("nan"),
+                "verdict": "redundant",
+            },
+        )
+        assert model.heartbeat_verdict == "redundant"
+        assert model.heartbeat_std_ratio is None
+        assert model.heartbeat_bulk_penetration_depth is None

@@ -58,3 +58,9 @@ orion_import_packages:
 # Optional manual overrides for orion subpackages when import scanning misses a consumer.
 # Prefer keeping this empty — direct import + one orion hop should cover most cases.
 orion_package_extra_services: {}
+
+# Per-host positive allowlists live beside exclude_services.txt:
+#   mesh-utilities/common/include_services_<host>.txt
+# When present for the detected host (NODE_NAME / ORION_MESH_HOST / hostname),
+# only those services may rebuild. exclude_services.txt is ignored on that host.
+# Hosts without an include file (e.g. athena) use exclude_services.txt only.

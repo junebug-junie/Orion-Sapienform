@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -30,7 +32,6 @@ if _SCRIPT_DIR not in sys.path:
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MAPPING_PATH = Path(_SCRIPT_DIR) / "service_rebuild_paths.yaml"
-_EXCLUDE_FILE = _REPO_ROOT / "mesh-utilities" / "common" / "exclude_services.txt"
 _SERVICES_DIR = "services"
 _ORION_DIR = "orion"
 _IMPORT_RE = re.compile(
@@ -45,6 +46,9 @@ class ResolveResult:
     services: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     reasons: dict[str, str] = field(default_factory=dict)
+    mesh_host: str = ""
+    host_allowlist: list[str] = field(default_factory=list)
+    host_filtered_out: list[str] = field(default_factory=list)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -152,15 +156,73 @@ def build_import_index(repo_root: str) -> dict[str, set[str]]:
     return index
 
 
-def _load_excludes(repo_root: Path) -> set[str]:
-    excludes: set[str] = set()
-    if not _EXCLUDE_FILE.is_file():
-        return excludes
-    for line in _EXCLUDE_FILE.read_text(encoding="utf-8").splitlines():
+def _load_service_list_file(path: Path) -> set[str]:
+    names: set[str] = set()
+    if not path.is_file():
+        return names
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.split("#", 1)[0].strip()
         if stripped:
-            excludes.add(stripped)
-    return excludes
+            names.add(stripped)
+    return names
+
+
+def _normalize_mesh_host(name: str) -> str:
+    normalized = name.strip().lower()
+    if normalized.startswith("orion-"):
+        normalized = normalized[len("orion-") :]
+    return normalized.split(".", 1)[0]
+
+
+def detect_mesh_host(repo_root: Path, explicit: str | None = None) -> str:
+    if explicit:
+        return _normalize_mesh_host(explicit)
+
+    env_host = os.environ.get("ORION_MESH_HOST", "").strip()
+    if env_host:
+        return _normalize_mesh_host(env_host)
+
+    env_file = repo_root / ".env"
+    if env_file.is_file():
+        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key == "NODE_NAME" and value.strip():
+                return _normalize_mesh_host(value)
+            if key == "PROJECT" and value.strip().lower().startswith("orion-"):
+                return _normalize_mesh_host(value[len("orion-") :])
+
+    return _normalize_mesh_host(socket.gethostname())
+
+
+def _include_file_for_host(repo_root: Path, host: str) -> Path | None:
+    override = os.environ.get("ORION_INCLUDE_SERVICES_FILE", "").strip()
+    if override:
+        path = Path(override)
+        return path if path.is_file() else None
+
+    mesh_common = repo_root / "mesh-utilities" / "common"
+    for candidate in (
+        mesh_common / f"include_services_{host}.txt",
+        mesh_common / "include_services" / f"{host}.txt",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_host_allowlist(repo_root: Path, host: str) -> set[str] | None:
+    include_file = _include_file_for_host(repo_root, host)
+    if include_file is None:
+        return None
+    return _load_service_list_file(include_file)
+
+
+def _load_excludes(repo_root: Path) -> set[str]:
+    path = repo_root / "mesh-utilities" / "common" / "exclude_services.txt"
+    return _load_service_list_file(path)
 
 
 def _orion_package_from_path(path: str) -> str | None:
@@ -211,6 +273,7 @@ def _path_matches_prefix(path: str, prefix: str) -> bool:
 def resolve_affected_services(
     paths: list[str],
     repo_root: Path | None = None,
+    mesh_host: str | None = None,
 ) -> ResolveResult:
     root = (repo_root or _REPO_ROOT).resolve()
     mapping = _load_yaml(_MAPPING_PATH)
@@ -312,9 +375,47 @@ def resolve_affected_services(
         skipped.append(path)
         reasons[path] = "no mapping rule (rebuild manually if needed)"
 
+    host = detect_mesh_host(root, mesh_host)
+    allowlist = load_host_allowlist(root, host)
+    known_affected = {svc for svc in affected if svc in known_services}
+
+    if allowlist is not None:
+        host_filtered_out = sorted(svc for svc in known_affected if svc not in allowlist)
+        filtered = sorted(svc for svc in known_affected if svc in allowlist)
+        return ResolveResult(
+            services=filtered,
+            skipped=sorted(set(skipped)),
+            reasons=reasons,
+            mesh_host=host,
+            host_allowlist=sorted(allowlist),
+            host_filtered_out=host_filtered_out,
+        )
+
     excludes = _load_excludes(root)
-    filtered = sorted(svc for svc in affected if svc in known_services and svc not in excludes)
-    return ResolveResult(services=filtered, skipped=sorted(set(skipped)), reasons=reasons)
+    filtered = sorted(svc for svc in known_affected if svc not in excludes)
+    return ResolveResult(
+        services=filtered,
+        skipped=sorted(set(skipped)),
+        reasons=reasons,
+        mesh_host=host,
+    )
+
+
+def _emit_host_summary(result: ResolveResult) -> None:
+    if result.mesh_host:
+        print(f"rebuild_affected_services: mesh host: {result.mesh_host}", file=sys.stderr)
+    if result.host_allowlist:
+        print(
+            f"rebuild_affected_services: host allowlist active "
+            f"({len(result.host_allowlist)} services, exclude_services.txt ignored)",
+            file=sys.stderr,
+        )
+    if result.host_filtered_out:
+        print(
+            "rebuild_affected_services: affected on other hosts, skipped here: "
+            + ", ".join(result.host_filtered_out),
+            file=sys.stderr,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -328,6 +429,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list-only", action="store_true", help="Print affected service names, one per line")
     parser.add_argument("--json", action="store_true", help="Print JSON {services, skipped, reasons}")
     parser.add_argument("--repo-root", type=Path, default=_REPO_ROOT, help="Repo root (for tests)")
+    parser.add_argument(
+        "--host",
+        help="Mesh host name override (default: ORION_MESH_HOST, .env NODE_NAME, hostname)",
+    )
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
@@ -342,13 +447,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"rebuild_affected_services: ERROR: {exc}", file=sys.stderr)
         return 2
 
-    result = resolve_affected_services(paths, repo_root)
+    result = resolve_affected_services(paths, repo_root, mesh_host=args.host)
+    _emit_host_summary(result)
 
     if args.json:
         payload = {
             "services": result.services,
             "skipped": result.skipped,
             "reasons": result.reasons,
+            "mesh_host": result.mesh_host,
+            "host_allowlist": result.host_allowlist,
+            "host_filtered_out": result.host_filtered_out,
         }
         print(json.dumps(payload, indent=2))
     elif args.list_only:

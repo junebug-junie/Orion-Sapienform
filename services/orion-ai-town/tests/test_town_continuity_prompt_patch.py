@@ -1,8 +1,9 @@
 """Gate tests for the AI Town NPC continuity ingest/summary patch.
 
-Companion to orion-concrete-grounding-prompt.patch: NPC-to-NPC (and
-NPC-to-Juniper) speech should read aitown-town continuity once at conversation
-start and publish SocialRoomTurnV1 after a successful continue/leave line.
+Companion to orion-concrete-grounding-prompt.patch: NPC-to-NPC openers fetch
+aitown-town continuity in startConversationMessage; human (Juniper) chats skip
+that start path (orion-town-chat-turns.patch) and do not GET /summary at open.
+Continue/leave still publish SocialRoomTurnV1 when the other is not Orion.
 Orion↔anyone stays embodiment-only. Fail-open: ingest and summary fetch never
 block speech. Slugs are hardcoded from orion/town_cast.py — never inferred.
 """

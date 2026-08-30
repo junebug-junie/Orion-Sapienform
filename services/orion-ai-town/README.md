@@ -295,7 +295,7 @@ Orion's external embodiment worker already walks on `walkingOver` via `approach_
 
 ### Town continuity ingest (`patches/orion-town-continuity-ingest.patch`)
 
-NPC-to-NPC and NPC-to-Juniper speech reads `aitown-town` continuity once at conversation start and publishes a `SocialRoomTurnV1` after a successful continue/leave line. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open and never block NPC speech. Slugs are the same six hardcoded names as `orion/town_cast.py`.
+NPC-to-NPC openers fetch `aitown-town` continuity in `startConversationMessage` (`GET /summary` → `What you remember:` when non-empty). Human (Juniper) conversations do not run that start path — `orion-town-chat-turns.patch` skips synthetic openers when `otherPlayer.human`, so Juniper chats never GET `/summary` at open. NPC continue/leave still `POST /ingest-turn` when the other player is not Orion. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open and never block NPC speech. Slugs are the same six hardcoded names as `orion/town_cast.py`.
 
 These are **Convex env vars** (operator `npx convex env set` from `upstream/`), not this service's Python `.env`:
 

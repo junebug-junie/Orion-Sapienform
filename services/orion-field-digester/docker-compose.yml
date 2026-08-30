@@ -15,6 +15,12 @@ services:
       - SERVICE_NAME=${SERVICE_NAME:-orion-field-digester}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - POSTGRES_URI=${POSTGRES_URI}
+      # Shared substrate control plane. Reached transitively:
+      # app/worker.py -> orion.substrate.causal_geometry_producer ->
+      # orion.substrate.mutation_trials -> get_chat_reflective_lane_threshold().
+      # Unset means a silent per-process in-memory fallback serving the
+      # compiled-in default instead of the value hub adopted.
+      - SUBSTRATE_CONTROL_PLANE_POSTGRES_URL=${SUBSTRATE_CONTROL_PLANE_POSTGRES_URL:-postgresql://postgres:postgres@${PROJECT:-orion-athena}-sql-db:5432/conjourney}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}

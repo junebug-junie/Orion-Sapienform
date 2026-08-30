@@ -55,6 +55,16 @@ services:
       PUBLISH_CORTEX_ORCH_GRAMMAR: ${PUBLISH_CORTEX_ORCH_GRAMMAR:-true}
       GRAMMAR_EVENT_CHANNEL: ${GRAMMAR_EVENT_CHANNEL:-orion:grammar:event}
 
+      # Shared substrate control plane. decision_router.py reads
+      # routing.chat_reflective_lane_threshold from this store on every routing
+      # decision; orion-hub's mutation applier WRITES it. Without a DB here the
+      # two ends resolve to different stores -- hub persists to Postgres while
+      # cortex-orch falls back to a per-process in-memory dict that returns the
+      # hardcoded default and resets on restart, so an adopted change could never
+      # reach the decision it was adopted to change. Bridge network, so the
+      # Docker service hostname (not 127.0.0.1, which hub uses on host networking).
+      SUBSTRATE_CONTROL_PLANE_POSTGRES_URL: ${SUBSTRATE_CONTROL_PLANE_POSTGRES_URL:-postgresql://postgres:postgres@${PROJECT:-orion-athena}-sql-db:5432/conjourney}
+
       ORION_SUBSTRATE_TELEMETRY_BASE_URL: ${ORION_SUBSTRATE_TELEMETRY_BASE_URL:-}
       ORION_SUBSTRATE_TELEMETRY_TIMEOUT_SEC: ${ORION_SUBSTRATE_TELEMETRY_TIMEOUT_SEC:-2.0}
       ORION_SUBSTRATE_TELEMETRY_READ_TOKEN: ${ORION_SUBSTRATE_TELEMETRY_READ_TOKEN:-}

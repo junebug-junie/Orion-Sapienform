@@ -16,6 +16,17 @@ def _normalize_flag(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _connect_timeout_sec() -> int:
+    """Bounded so a database blip degrades the routing path in seconds, not
+    minutes. Clamped rather than trusted: this value sits on a hot path."""
+    raw = str(os.getenv("SUBSTRATE_CONTROL_SURFACE_CONNECT_TIMEOUT_SEC", "5")).strip()
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return 5
+    return max(1, min(30, value))
+
+
 def _resolve_postgres_url() -> str | None:
     control = str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip()
     policy = str(os.getenv("SUBSTRATE_POLICY_POSTGRES_URL", "")).strip()
@@ -35,11 +46,22 @@ class RuntimeControlSurfaceStore:
     sql_db_path: str | None = None
     _last_error: str | None = None
     _source_kind: str = "memory"
+    _engine_cache: Any = None
     _memory: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self._memory = {}
-        self.postgres_url = self.postgres_url or _resolve_postgres_url()
+        # An explicitly-passed sql_db_path is a deliberate isolation request and
+        # must win over an ambient env Postgres URL. It did not, and the result is
+        # visible in production: `substrate_runtime_control_surface` holds a row
+        # written by actor "scheduler_seed" -- a string that exists nowhere but a
+        # pytest fixture -- with 4,925 updates on it. Test runs that passed
+        # sql_db_path for isolation still resolved DATABASE_URL from the ambient
+        # environment and wrote Orion's live routing threshold instead.
+        # `and not self.postgres_url` would be dead here: the `or` below already
+        # short-circuits when postgres_url was passed explicitly.
+        if not self.sql_db_path:
+            self.postgres_url = self.postgres_url or _resolve_postgres_url()
         self.sql_db_path = self.sql_db_path or _resolve_sqlite_path()
         if self.postgres_url:
             try:
@@ -57,6 +79,26 @@ class RuntimeControlSurfaceStore:
                 self._last_error = str(exc)
         self._source_kind = "memory"
 
+    def _engine(self):
+        """One pooled engine for the life of the store, with a bounded connect.
+
+        `decision_router.py` calls get_chat_reflective_lane_threshold() on EVERY
+        routing decision, so a per-call create_engine() would build a fresh pool
+        and a fresh TCP connect + auth handshake on the chat hot path. Worse,
+        SQLAlchemy has no default connect timeout: against a host that is
+        unreachable-but-not-refusing (restarting, blackholed, partitioned) the
+        routing path would block on the OS TCP timeout, which can be minutes.
+        """
+        if self._engine_cache is None:
+            from sqlalchemy import create_engine
+
+            self._engine_cache = create_engine(
+                self.postgres_url,
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": _connect_timeout_sec()},
+            )
+        return self._engine_cache
+
     def source_kind(self) -> str:
         return self._source_kind
 
@@ -69,10 +111,9 @@ class RuntimeControlSurfaceStore:
     def get(self, key: str) -> dict[str, Any] | None:
         if self._source_kind == "postgres" and self.postgres_url:
             try:
-                from sqlalchemy import create_engine, text
+                from sqlalchemy import text
 
-                engine = create_engine(self.postgres_url)
-                with engine.begin() as conn:
+                with self._engine().begin() as conn:
                     row = conn.execute(
                         text("SELECT value_json::text FROM substrate_runtime_control_surface WHERE surface_key=:surface_key"),
                         {"surface_key": key},
@@ -103,10 +144,9 @@ class RuntimeControlSurfaceStore:
         value_payload.setdefault("updated_at", _utc_now().isoformat())
         if self._source_kind == "postgres" and self.postgres_url:
             try:
-                from sqlalchemy import create_engine, text
+                from sqlalchemy import text
 
-                engine = create_engine(self.postgres_url)
-                with engine.begin() as conn:
+                with self._engine().begin() as conn:
                     conn.execute(
                         text(
                             """
@@ -157,10 +197,9 @@ class RuntimeControlSurfaceStore:
     def _ensure_postgres_schema(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
-        with engine.begin() as conn:
+        with self._engine().begin() as conn:
             conn.execute(
                 text(
                     "CREATE TABLE IF NOT EXISTS substrate_runtime_control_surface (surface_key TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, value_json JSONB NOT NULL)"

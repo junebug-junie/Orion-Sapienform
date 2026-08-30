@@ -41,7 +41,11 @@ services:
       # Operator-curated turns kept out of the training corpus. Bind-mounted
       # rather than COPYed so editing the list does not need an image rebuild
       # -- a service restart is enough (the loader caches for process life).
-      - ../../config/corpus:/app/config/corpus:ro
+      # Rooted at ORION_HOST_REPO_ROOT, not a relative path: a relative host
+      # mount resolves against THIS FILE's directory, so deploying from a git
+      # worktree would pin that disposable worktree as production infrastructure.
+      # Same pattern as services/orion-biometrics' config mount.
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/corpus:/app/config/corpus:ro
     env_file:
       - .env
     ports:
@@ -79,7 +83,7 @@ services:
     volumes:
       - topic-foundry-data:/data/topic-foundry
       - pageindex-data:/data/pageindex
-      - ../../config/corpus:/app/config/corpus:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/corpus:/app/config/corpus:ro
 
 networks:
   app-net:

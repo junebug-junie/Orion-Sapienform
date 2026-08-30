@@ -1,0 +1,234 @@
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+index 5f83e57..c8a1f02 100644
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -25,6 +25,130 @@ function clampTownReply(text: string, maxChars: number = TOWN_REPLY_MAX_CHARS): string {
+   return `${cut.trim()}…`;
+ }
+ 
++const TOWN_PARTICIPANT_SLUGS: Record<string, string> = {
++  'Mara Vale': 'mara-vale',
++  'Nico Sable': 'nico-sable',
++  'Sofia Bell': 'sofia-bell',
++  'Cam Lin': 'cam-lin',
++  'Juniper Feld': 'juniper-feld',
++  'Orion': 'orion',
++};
++
++function townSlug(name: string): string | null {
++  return TOWN_PARTICIPANT_SLUGS[name] ?? null;
++}
++
++function townThreadId(a: string, b: string): string | null {
++  const left = townSlug(a);
++  const right = townSlug(b);
++  if (!left || !right) return null;
++  return [left, right].sort().join('--');
++}
++
++function isOrionName(name: string): boolean {
++  const configured = (process.env.AITOWN_ORION_NAME || 'Orion').trim();
++  return name.trim() === configured;
++}
++
++function townLastOtherPrompt(messages: LLMMessage[], otherName: string): string {
++  const marker = `${otherName} to `;
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const content = String(messages[i]?.content || '');
++    if (!content.startsWith(marker)) {
++      continue;
++    }
++    const sep = content.indexOf(': ');
++    if (sep >= 0) {
++      return content.slice(sep + 2).trim();
++    }
++  }
++  return '';
++}
++
++async function fetchTownContinuity(otherName: string): Promise<string> {
++  try {
++    const slug = townSlug(otherName);
++    const base = (process.env.SOCIAL_MEMORY_URL || '').trim().replace(/\/+$/, '');
++    if (!slug || !base) {
++      return '';
++    }
++    const params = new URLSearchParams({
++      platform: 'aitown',
++      room_id: 'aitown-town',
++      participant_id: slug,
++    });
++    const res = await fetch(`${base}/summary?${params.toString()}`);
++    if (!res.ok) {
++      return '';
++    }
++    const data = await res.json();
++    const room = data && typeof data === 'object' ? (data as { room?: Record<string, unknown> }).room || {} : {};
++    const participant =
++      data && typeof data === 'object'
++        ? (data as { participant?: Record<string, unknown> }).participant || {}
++        : {};
++    const roomSummary = String(room.recent_thread_summary || room.current_thread_summary || '').trim();
++    const peerSummary = String(participant.safe_continuity_summary || '').trim();
++    return [roomSummary, peerSummary].filter(Boolean).join(' ').slice(0, 400);
++  } catch {
++    return '';
++  }
++}
++
++async function ingestTownTurn(args: {
++  speaker: string;
++  other: string;
++  prompt: string;
++  response: string;
++  conversationId: string;
++}): Promise<void> {
++  try {
++    if (isOrionName(args.other)) {
++      return;
++    }
++    const speakerSlug = townSlug(args.speaker);
++    const otherSlug = townSlug(args.other);
++    if (!speakerSlug || !otherSlug) {
++      return;
++    }
++    const threadId = townThreadId(args.speaker, args.other);
++    const base = (process.env.SOCIAL_MEMORY_URL || '').trim().replace(/\/+$/, '');
++    const token = (process.env.SOCIAL_MEMORY_INGEST_TOKEN || '').trim();
++    if (!threadId || !base) {
++      return;
++    }
++    await fetch(`${base}/ingest-turn`, {
++      method: 'POST',
++      headers: {
++        'Content-Type': 'application/json',
++        Authorization: `Bearer ${token}`,
++      },
++      body: JSON.stringify({
++        source: 'orion-ai-town',
++        prompt: args.prompt,
++        response: args.response,
++        text: `${args.other}: ${args.prompt}\n${args.speaker}: ${args.response}`,
++        session_id: `aitown:${args.conversationId}`,
++        tags: ['aitown'],
++        client_meta: {
++          external_room: {
++            platform: 'aitown',
++            room_id: 'aitown-town',
++            thread_id: threadId,
++          },
++          external_participant: {
++            participant_id: speakerSlug,
++            participant_name: args.speaker,
++            participant_kind: 'npc',
++          },
++        },
++      }),
++    });
++  } catch {
++    // Fail-open: never block NPC speech.
++  }
++}
++
+ export async function startConversationMessage(
+   ctx: ActionCtx,
+   worldId: Id<'worlds'>,
+@@ -61,6 +186,10 @@ export async function startConversationMessage(
+   ];
+   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+   prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
++  const continuity = await fetchTownContinuity(otherPlayer.name);
++  if (continuity) {
++    prompt.push(`What you remember: ${continuity}`);
++  }
+   prompt.push(...relatedMemoriesPrompt(memories));
+   if (memoryWithOtherPlayer) {
+     prompt.push(
+@@ -136,18 +265,19 @@ export async function continueConversationMessage(
+     `Answer as your job. Name a person, object, or task from your role or from what they just said. If you have nothing new to add, end the conversation.`,
+   );
+ 
++  const priorMessages = await previousMessages(
++    ctx,
++    worldId,
++    player,
++    otherPlayer,
++    conversation.id as GameId<'conversations'>,
++  );
+   const llmMessages: LLMMessage[] = [
+     {
+       role: 'system',
+       content: prompt.join('\n'),
+     },
+-    ...(await previousMessages(
+-      ctx,
+-      worldId,
+-      player,
+-      otherPlayer,
+-      conversation.id as GameId<'conversations'>,
+-    )),
++    ...priorMessages,
+   ];
+   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
+   llmMessages.push({ role: 'user', content: lastPrompt });
+@@ -154,7 +288,15 @@ export async function continueConversationMessage(
+     max_tokens: 120,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+-  return clampTownReply(trimContentPrefx(content, lastPrompt));
++  const response = clampTownReply(trimContentPrefx(content, lastPrompt));
++  await ingestTownTurn({
++    speaker: player.name,
++    other: otherPlayer.name,
++    prompt: townLastOtherPrompt(priorMessages, otherPlayer.name),
++    response,
++    conversationId,
++  });
++  return response;
+ }
+ 
+ export async function leaveConversationMessage(
+@@ -183,18 +325,19 @@ export async function leaveConversationMessage(
+     `Below is the current chat history between you and ${otherPlayer.name}.`,
+     `One short goodbye line in first person, under 220 characters. No narration.`,
+   );
++  const priorMessages = await previousMessages(
++    ctx,
++    worldId,
++    player,
++    otherPlayer,
++    conversation.id as GameId<'conversations'>,
++  );
+   const llmMessages: LLMMessage[] = [
+     {
+       role: 'system',
+       content: prompt.join('\n'),
+     },
+-    ...(await previousMessages(
+-      ctx,
+-      worldId,
+-      player,
+-      otherPlayer,
+-      conversation.id as GameId<'conversations'>,
+-    )),
++    ...priorMessages,
+   ];
+   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
+   llmMessages.push({ role: 'user', content: lastPrompt });
+@@ -201,7 +348,15 @@ export async function leaveConversationMessage(
+     max_tokens: 80,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+-  return clampTownReply(trimContentPrefx(content, lastPrompt));
++  const response = clampTownReply(trimContentPrefx(content, lastPrompt));
++  await ingestTownTurn({
++    speaker: player.name,
++    other: otherPlayer.name,
++    prompt: townLastOtherPrompt(priorMessages, otherPlayer.name),
++    response,
++    conversationId,
++  });
++  return response;
+ }
+ 
+ function agentPrompts(

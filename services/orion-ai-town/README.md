@@ -293,6 +293,25 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 Orion's external embodiment worker already walks on `walkingOver` via `approach_player` intents in `services/orion-embodiment/app/worker.py`.
 
+### Town continuity ingest (`patches/orion-town-continuity-ingest.patch`)
+
+NPC-to-NPC and NPC-to-Juniper speech reads `aitown-town` continuity once at conversation start and publishes a `SocialRoomTurnV1` after a successful continue/leave line. Orion↔anyone stays embodiment-only. Ingest and summary fetch fail-open and never block NPC speech. Slugs are the same six hardcoded names as `orion/town_cast.py`.
+
+These are **Convex env vars** (operator `npx convex env set` from `upstream/`), not this service's Python `.env`:
+
+| Convex env | Example | Meaning |
+|------------|---------|---------|
+| `SOCIAL_MEMORY_URL` | `http://<mesh-ip>:8765` | `orion-social-memory` base URL (`GET /summary`, `POST /ingest-turn`) |
+| `SOCIAL_MEMORY_INGEST_TOKEN` | same token as social-memory | Bearer token for `POST /ingest-turn` |
+| `AITOWN_ORION_NAME` | `Orion` | Other-player name that skips Convex ingest (embodiment owns that dyad) |
+
+```bash
+cd services/orion-ai-town/upstream
+npx convex env set SOCIAL_MEMORY_URL http://<mesh-ip>:8765
+npx convex env set SOCIAL_MEMORY_INGEST_TOKEN "<token>"
+npx convex env set AITOWN_ORION_NAME Orion
+```
+
 ### NPC cooldown tuning (`patches/orion-npc-cooldown-tuning.patch`)
 
 Load-shedding, not a gameplay change. Every NPC conversation message is an `agentGenerateMessage` call routed through `orion-llm-gateway`; when that gateway's host is under load, throttling how often those calls happen is the direct lever. Raised from `convex/constants.ts` upstream defaults (2026-07-29):

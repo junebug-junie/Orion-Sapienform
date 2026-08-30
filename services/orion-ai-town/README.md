@@ -291,6 +291,10 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 - NPCs **do not auto-leave** human conversations (message cap / duration only applies NPC-NPC)
 - **3 minute grace** after an NPC speaks before it considers speaking again (`HUMAN_REPLY_GRACE_MS`)
 
+### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
+
+Upstream `player.tick()` deleted the human after `HUMAN_IDLE_TOO_LONG` (5 minutes). `lastInput` was only written at join, so that was a session fuse, not idle detection. The patch removes the kick. Juniper stays in the world until she actually leaves.
+
 Orion's external embodiment worker already walks on `walkingOver` via `approach_player` intents in `services/orion-embodiment/app/worker.py`.
 
 ### Town continuity ingest (`patches/orion-town-continuity-ingest.patch`)

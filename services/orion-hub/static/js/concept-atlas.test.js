@@ -492,3 +492,56 @@ test("an empty path says how far it looked, not that they are unconnected", () =
 test("path falls back to the node id when a hop has no label", () => {
   assert.equal(formatPath({ available: true, hops: [{ node_id: "sub-evidence-1" }] }), "sub-evidence-1");
 });
+
+// --- review fixes -----------------------------------------------------------
+
+test("candidate hint ignores an empty list rather than stopping on it", () => {
+  // `[] || x` does not fall through: an empty array is truthy. /path used to
+  // send candidates for BOTH endpoints, so a `||` chain rendered
+  // "did you mean: Orion" for the endpoint that had resolved cleanly and hid
+  // the three real alternatives for the ambiguous one.
+  const hint = candidateHint({
+    available: false,
+    reason: "endpoint_not_resolved",
+    from_candidates: [],
+    to_candidates: [{ label: "Hospital and family chaos" }, { label: "Hospital and medical concerns" }],
+  });
+  assert.match(hint, /Hospital and family chaos/);
+  assert.doesNotMatch(hint, /Orion/);
+});
+
+test("candidate hint reports not-found when every list is empty", () => {
+  // Both endpoints missing -> both lists []. Truthy-empty made cands.length 0
+  // and the reason branch below rendered "ambiguous name" for a not-found.
+  const hint = candidateHint({
+    available: false,
+    reason: "node_not_found",
+    from_candidates: [],
+    to_candidates: [],
+  });
+  assert.match(hint, /no node matches/);
+  assert.doesNotMatch(hint, /ambiguous/);
+});
+
+test("coverage reports the rendered counts, not the raw payload", () => {
+  // With evidence folded in, the status line beside this one reads the
+  // post-filter count. Two different counts of the same canvas would be
+  // exactly the dishonesty this line exists to remove.
+  const line = coverageLine(
+    { available: true, truncated: true, nodes: new Array(102), edges: new Array(600) },
+    { available: true, node_count: 671, edge_count: 1464 },
+    { nodes: 62, edges: 340 }
+  );
+  assert.match(line, /62 of 671 nodes/);
+  assert.match(line, /340 of 1464 edges/);
+  assert.doesNotMatch(line, /102/);
+});
+
+test("coverage falls back to payload counts when no rendered counts are given", () => {
+  const line = coverageLine(
+    { available: true, truncated: true, nodes: new Array(102), edges: new Array(600) },
+    { available: true, node_count: 671, edge_count: 1464 },
+    null
+  );
+  assert.match(line, /102 of 671 nodes/);
+});

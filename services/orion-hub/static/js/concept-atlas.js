@@ -228,10 +228,19 @@ function componentShapeLine(payload) {
 // carried `truncated: true` the whole time; nothing showed it. A view silently
 // displaying 15% of the graph is the same class of dishonesty as an unlabeled
 // node claiming to be a concept.
-function coverageLine(networkPayload, structurePayload) {
+function coverageLine(networkPayload, structurePayload, rendered) {
   if (!networkPayload || !networkPayload.available) return "";
-  const shownNodes = (networkPayload.nodes || []).length;
-  const shownEdges = (networkPayload.edges || []).length;
+  // The RENDERED counts, not the raw payload's. The canvas applies a
+  // promotion-state filter and folds evidence in, so the payload length and
+  // what is on screen differ -- with evidence folded the status line beside
+  // this one reads "62 node(s)" while the payload holds 102. Two different
+  // counts of the same canvas, in a line whose entire job is honest reporting.
+  const shownNodes = rendered && rendered.nodes !== undefined
+    ? rendered.nodes
+    : (networkPayload.nodes || []).length;
+  const shownEdges = rendered && rendered.edges !== undefined
+    ? rendered.edges
+    : (networkPayload.edges || []).length;
   // Whole-graph totals come from /structure, which is unfiltered by
   // construction. Without it we can still say the view was cut, just not by
   // how much -- which is better than implying the canvas is everything.
@@ -251,7 +260,14 @@ function coverageLine(networkPayload, structurePayload) {
 function candidateHint(payload) {
   if (!payload || payload.available) return "";
   const reason = payload.reason || "";
-  const cands = payload.candidates || payload.from_candidates || payload.to_candidates || [];
+  // `[] || x` does NOT fall through -- an empty array is truthy in JS -- so a
+  // `||` chain stops at the first DEFINED list even when it is empty. Combined
+  // with /path previously sending candidates for BOTH endpoints, that rendered
+  // "did you mean: Orion" for a from-endpoint that had resolved cleanly while
+  // hiding the three real alternatives for the ambiguous one. Pick by content.
+  const cands = [payload.candidates, payload.from_candidates, payload.to_candidates]
+    .filter((list) => Array.isArray(list) && list.length > 0)
+    .flat();
   if (reason === "node_not_found") return "no node matches that name";
   if (cands.length) {
     return `ambiguous — did you mean: ${cands.map((c) => c.label || c.node_id).join(" · ")}`;
@@ -342,6 +358,23 @@ if (typeof document !== "undefined") {
   // Last /network payload, so the evidence toggle re-renders instead of refetching.
   let lastNetworkPayload = null;
   let lastStructurePayload = null;
+  let lastRenderedCounts = null;
+  // Which path box the next canvas tap fills.
+  let pathTapTarget = "from";
+
+  // Coverage needs BOTH payloads: /network for what is drawn, /structure for
+  // the whole-graph totals. refreshAll fires them concurrently and /structure
+  // is much heavier (WCC + pageRank + betweenness + harmonic + label
+  // propagation, ~7 blocking round trips) so /network almost always lands
+  // first -- leaving lastStructurePayload null and the percentage silently
+  // absent until a second refresh. Rendering from a shared function that BOTH
+  // call means whichever arrives second completes the line.
+  function renderCoverage() {
+    if (!NETWORK_COVERAGE) return;
+    NETWORK_COVERAGE.textContent = lastNetworkPayload
+      ? coverageLine(lastNetworkPayload, lastStructurePayload, lastRenderedCounts)
+      : "";
+  }
   let lastPromotionState = "";
 
   // Deterministic hash -> hue so a given topic_id always renders the same
@@ -647,8 +680,22 @@ if (typeof document !== "undefined") {
       // supports -- either would resolve to the wrong node or to nothing.
       // The id is exact, and the route matches it first.
       if (NEIGHBOR_NODE) NEIGHBOR_NODE.value = data.id;
-      if (PATH_FROM && !PATH_FROM.value.trim()) PATH_FROM.value = data.id;
-      else if (PATH_TO) PATH_TO.value = data.id;
+      // Alternate from -> to -> from. The previous "fill from if empty, else
+      // fill to" meant that once `from` had any content no tap could ever
+      // change it again, so re-picking the start of a path required manually
+      // clearing the box. It also wrote into `to` when `from` was simply
+      // absent from the DOM, which was never the intended fallback.
+      if (PATH_FROM && PATH_TO) {
+        if (pathTapTarget === "from") {
+          PATH_FROM.value = data.id;
+          pathTapTarget = "to";
+        } else {
+          PATH_TO.value = data.id;
+          pathTapTarget = "from";
+        }
+      } else if (PATH_FROM) {
+        PATH_FROM.value = data.id;
+      }
     });
     try {
       cy.resize();
@@ -724,9 +771,8 @@ if (typeof document !== "undefined") {
         NETWORK_STATUS.textContent = payload.degraded ? `${base} — DEGRADED: ${payload.degraded_error || "stale data"}` : base;
         NETWORK_STATUS.classList.toggle("text-amber-400", !!payload.degraded);
       }
-      if (NETWORK_COVERAGE) {
-        NETWORK_COVERAGE.textContent = coverageLine(payload, lastStructurePayload);
-      }
+      lastRenderedCounts = { nodes: filtered.nodes.length, edges: filtered.edges.length };
+      renderCoverage();
   }
 
 
@@ -797,12 +843,27 @@ if (typeof document !== "undefined") {
       }
 
       lastStructurePayload = payload;
+      renderCoverage();
       if (STRUCTURE_COMMUNITIES) {
         STRUCTURE_COMMUNITIES.innerHTML = "";
-        const comms = payload.communities || [];
+        const all = payload.communities || [];
+        // SMALLEST FIRST. communities() returns ORDER BY size DESC, so slicing
+        // the head took the giant blobs -- the exact opposite of what this card
+        // is for. On the live graph the top entry is a 645-member component;
+        // the value is in the 2- and 3-member ones, which are near-duplicate
+        // concepts the induction pipeline minted separately. The blob is
+        // summarised in one line instead of occupying the list.
+        const blob = all.length ? all[0] : null;
+        const comms = all.slice(1).sort((a, b) => a.size - b.size);
         if (!comms.length) {
           STRUCTURE_COMMUNITIES.innerHTML = '<p class="text-gray-600">none</p>';
         } else {
+          if (blob) {
+            const head = document.createElement("div");
+            head.className = "text-gray-500 mb-1";
+            head.textContent = `main cluster: ${blob.size} nodes`;
+            STRUCTURE_COMMUNITIES.appendChild(head);
+          }
           comms.slice(0, 8).forEach((c) => {
             const row = document.createElement("div");
             row.className = "truncate " + (c.size <= 3 ? "text-amber-300/80" : "text-gray-300");
@@ -832,6 +893,13 @@ if (typeof document !== "undefined") {
 
   // --- Drill-down: engine-side, whole-graph ---------------------------------
 
+  // The rest of this module guards concurrent fetches with fetchGeneration;
+  // these did not. An operator types a name, corrects it, presses Enter again
+  // -- and if the first query is slower (depth-3 neighbourhood ~48ms, path at
+  // depth 4 ~384ms) its result lands last and the panel shows the node they
+  // abandoned, with nothing saying it is stale.
+  let drillGeneration = 0;
+
   function setDrillStatus(text, isErr) {
     if (!DRILL_STATUS) return;
     DRILL_STATUS.textContent = text || "";
@@ -848,9 +916,11 @@ if (typeof document !== "undefined") {
     const depth = (NEIGHBOR_DEPTH && NEIGHBOR_DEPTH.value) || "1";
     NEIGHBOR_RESULT.innerHTML = '<p class="text-gray-500">querying…</p>';
     setDrillStatus("");
+    const myGeneration = ++drillGeneration;
     try {
       const params = new URLSearchParams({ node, depth });
       const payload = await apiFetch(`/api/substrate/concepts/neighborhood?${params.toString()}`);
+      if (myGeneration !== drillGeneration) return; // superseded by a newer query
       if (!payload.available) {
         NEIGHBOR_RESULT.innerHTML = `<p class="text-amber-400">${escapeHtml(candidateHint(payload))}</p>`;
         return;
@@ -871,6 +941,7 @@ if (typeof document !== "undefined") {
         NEIGHBOR_RESULT.appendChild(row);
       });
     } catch (e) {
+      if (myGeneration !== drillGeneration) return;
       NEIGHBOR_RESULT.innerHTML = "";
       setDrillStatus(`error: ${e.message || e}`, true);
     }
@@ -886,9 +957,11 @@ if (typeof document !== "undefined") {
     }
     PATH_RESULT.innerHTML = '<p class="text-gray-500">searching…</p>';
     setDrillStatus("");
+    const myGeneration = ++drillGeneration;
     try {
       const params = new URLSearchParams({ from, to });
       const payload = await apiFetch(`/api/substrate/concepts/path?${params.toString()}`);
+      if (myGeneration !== drillGeneration) return; // superseded by a newer query
       if (!payload.available) {
         PATH_RESULT.innerHTML = `<p class="text-amber-400">${escapeHtml(candidateHint(payload))}</p>`;
         return;
@@ -896,6 +969,7 @@ if (typeof document !== "undefined") {
       const text = formatPath(payload);
       PATH_RESULT.innerHTML = `<p class="${payload.found ? "text-gray-200" : "text-amber-400"}">${escapeHtml(text)}</p>`;
     } catch (e) {
+      if (myGeneration !== drillGeneration) return;
       PATH_RESULT.innerHTML = "";
       setDrillStatus(`error: ${e.message || e}`, true);
     }

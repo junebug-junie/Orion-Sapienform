@@ -1236,11 +1236,20 @@ async def concept_atlas_network(
     # those filters by construction (it was never eligible for them), not
     # smuggled past them. Bounded by _NETWORK_HYDRATION_MAX_EXTRA_NODES.
     hydrated_count = 0
+    # Distinct from `hydrated_count == cap`: hydrating exactly the cap when the
+    # cap was also exactly how many candidates existed drops nothing, and a
+    # truncation warning that fires when nothing was cut erodes the trust this
+    # reporting exists to earn. Set only where the loop actually stops early.
+    hydration_stopped_early = False
     for e in edges:
         if hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+            hydration_stopped_early = True
             break
         for candidate_id in (e.source.node_id, e.target.node_id):
-            if candidate_id in node_ids or hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+            if candidate_id in node_ids:
+                continue
+            if hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+                hydration_stopped_early = True
                 continue
             try:
                 candidate_node = store.get_node_by_id(candidate_id)
@@ -1420,7 +1429,7 @@ async def concept_atlas_network(
         # nodes -- and this view renders none of them. A canvas silently
         # showing a shrinking fraction of the graph is the same class of
         # dishonesty as an unlabeled node claiming to be a concept.
-        "hydration_truncated": hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES,
+        "hydration_truncated": hydration_stopped_early,
         "hydrated_count": hydrated_count,
         "hydration_limit": _NETWORK_HYDRATION_MAX_EXTRA_NODES,
         "degraded": degraded,
@@ -1960,6 +1969,11 @@ async def concept_atlas_page() -> HTMLResponse:
 #   * pageRank and betweenness disagree: Orion and Juniper are pageRank #1/#2
 #     and absent from the betweenness top 8. `bridges` surfaces that.
 
+# Label propagation is run over this predicate only -- see the measurement in
+# the communities block below. A tuple so the module constant cannot be mutated
+# by a caller holding the list the route passes down.
+_COMMUNITY_REL_TYPES: tuple[str, ...] = ("associated_with",)
+
 _SUMMARY_TOP_N = 8
 # MUST equal the number of pageRank rows concept-atlas.js renders. They were 5
 # and 6: a node at pageRank rank 6 could then appear in the influence column
@@ -2079,6 +2093,20 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
         # ("AI Model Transparency", "AI Model Configuration") as their own
         # 2-3 member communities -- near-duplicate concepts the induction
         # pipeline minted separately.
+        #
+        # RESTRICTED, because that is the configuration the evidence was
+        # gathered under and the difference is not marginal. Re-measured live
+        # 2026-08-30 on the same 671-node graph:
+        #
+        #     unrestricted       3 communities, 1 of size <= 3
+        #     associated_with    8 communities, 6 of size <= 3
+        #
+        # and every duplicate pair named above -- ("Rest and support", "Rest
+        # and recovery"), ("AI Model Transparency", "AI Model Configuration"),
+        # ("Hospital and family chaos", "Hospital and medical concerns") --
+        # appears ONLY in the restricted run. Running unrestricted and citing
+        # the restricted result would be documenting a query this route does
+        # not make.
         try:
             communities = [
                 {
@@ -2086,7 +2114,7 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
                     "size": c.size,
                     "sample_labels": list(c.sample_labels),
                 }
-                for c in analytics.communities()
+                for c in analytics.communities(rel_types=list(_COMMUNITY_REL_TYPES))
             ]
         except Exception as exc:  # noqa: BLE001 - one dead procedure must not blank the card
             logger.warning("concept_atlas_structure_communities_failed error=%s", exc)
@@ -2187,6 +2215,10 @@ async def concept_atlas_structure(graph: Optional[str] = Query(None)) -> dict[st
 
 _NEIGHBORHOOD_DEFAULT_DEPTH = 1
 _NEIGHBORHOOD_DEFAULT_LIMIT = 200
+# depth is clamped by GraphAnalytics; limit was not clamped anywhere, so
+# ?limit=1000000 returned every reachable node in one payload -- on the live
+# graph that is all 671 of them, and it grows with the substrate.
+_NEIGHBORHOOD_MAX_LIMIT = 1000
 _PATH_DEFAULT_MAX_DEPTH = 3
 
 
@@ -2215,8 +2247,19 @@ def _resolved_or_candidates(analytics: Any, value: str) -> tuple[Optional[str], 
     if not matches:
         return None, []
     candidates = [{"node_id": m.node_id, "label": m.label} for m in matches]
-    # score 0/1 == exact id/label match; a single exact match wins outright even
-    # when prefix matches also exist.
+    # resolve_node ranks 0 = exact id, 1 = exact label, 2 = prefix, and it only
+    # runs the prefix query when the exact one returned nothing -- so rank 2
+    # rows never coexist with rank 0/1 rows. Treating 0 and 1 as one bucket
+    # therefore does not "prefer exact over prefix" (that cannot arise); it
+    # throws away the ONLY preference the rank column encodes.
+    #
+    # It matters because the atlas tap handler seeds the box with an exact
+    # node_id: if any other node happens to carry that same string as its
+    # LABEL, the exact query returns two rows and the route would answer
+    # `node_ambiguous` for a node the caller identified by primary key.
+    by_id = [m for m in matches if m.score == 0.0]
+    if len(by_id) == 1:
+        return by_id[0].node_id, candidates
     exact = [m for m in matches if m.score <= 1.0]
     if len(exact) == 1:
         return exact[0].node_id, candidates
@@ -2242,17 +2285,29 @@ async def concept_atlas_neighborhood(
     if not needle:
         return _unavailable("node_required", graph=graph_label, nodes=[])
 
+    effective_limit = max(1, min(int(limit), _NEIGHBORHOOD_MAX_LIMIT))
+
     def _collect() -> dict[str, Any]:
         node_id, candidates = _resolved_or_candidates(analytics, needle)
         if node_id is None:
-            return {"node_id": None, "candidates": candidates, "nodes": []}
+            return {"node_id": None, "candidates": candidates, "nodes": [], "truncated": False}
+        # Ask for one MORE than the caller wants. `len(nodes) >= limit` cannot
+        # tell "cut short" from "exactly this many exist", and a truncation
+        # warning that fires when nothing was dropped erodes the same trust
+        # this patch is trying to earn. One extra row answers it exactly.
         found = analytics.neighborhood(
             node_id,
             depth=depth,
             rel_types=_parse_rel_types(rel_types),
-            limit=limit,
+            limit=effective_limit + 1,
         )
-        return {"node_id": node_id, "candidates": candidates, "nodes": found}
+        truncated = len(found) > effective_limit
+        return {
+            "node_id": node_id,
+            "candidates": candidates,
+            "nodes": found[:effective_limit],
+            "truncated": truncated,
+        }
 
     try:
         collected = await asyncio.to_thread(_collect)
@@ -2280,11 +2335,13 @@ async def concept_atlas_neighborhood(
         "nodes": [
             {"node_id": n.node_id, "label": n.label, "hops": int(n.score)} for n in nodes
         ],
+        "limit": effective_limit,
         # A neighbourhood cut short at the limit is a different fact from a
         # small neighbourhood, and the caller cannot tell them apart from the
         # list alone -- the same silent-truncation trap /network's hydration
-        # cap already falls into.
-        "truncated": len(nodes) >= max(1, int(limit)),
+        # cap already falls into. Determined by over-fetching one row, so this
+        # is exact rather than a >= guess that fires on the boundary.
+        "truncated": bool(collected["truncated"]),
     }
 
 
@@ -2309,7 +2366,21 @@ async def concept_atlas_path(
         a_id, a_cands = _resolved_or_candidates(analytics, a_text)
         b_id, b_cands = _resolved_or_candidates(analytics, b_text)
         if a_id is None or b_id is None:
-            return {"hops": [], "unresolved": True, "from_candidates": a_cands, "to_candidates": b_cands}
+            # Candidates ONLY for the endpoint that failed. _resolved_or_candidates
+            # returns the full match list even on a clean resolve, so reporting
+            # both made a caller that reads "the first non-empty list" suggest
+            # alternatives for the endpoint that was already fine: from="Orion"
+            # (resolved) + to="Hospital" (3 matches) rendered
+            # "did you mean: Orion" and hid the three real ones.
+            return {
+                "hops": [],
+                "unresolved": True,
+                "from_candidates": [] if a_id is not None else a_cands,
+                "to_candidates": [] if b_id is not None else b_cands,
+                "unresolved_endpoints": [
+                    name for name, resolved in (("from", a_id), ("to", b_id)) if resolved is None
+                ],
+            }
         hops = analytics.path(
             a_id, b_id, max_depth=max_depth, rel_types=_parse_rel_types(rel_types)
         )
@@ -2330,6 +2401,7 @@ async def concept_atlas_path(
             hops=[],
             from_candidates=collected["from_candidates"],
             to_candidates=collected["to_candidates"],
+            unresolved_endpoints=collected["unresolved_endpoints"],
         )
 
     hops = collected["hops"]

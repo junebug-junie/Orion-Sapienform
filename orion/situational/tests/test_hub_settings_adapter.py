@@ -76,6 +76,10 @@ def test_adapter_turns_off_unwired_providers_explicitly() -> None:
     assert cfg.runtime_enabled is True
     assert cfg.affect_enabled is True
     assert cfg.affect_max_age_seconds == 300
+    # Curiosity/reverie (2026-08-30) ARE wired -- default ON, per Juniper's
+    # explicit request, unlike lab/perception above.
+    assert cfg.curiosity_enabled is True
+    assert cfg.reverie_enabled is True
 
 
 def test_adapter_reads_hub_affect_overrides() -> None:
@@ -111,6 +115,61 @@ def test_adapter_weather_disabled_when_hub_sets_it_off() -> None:
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
 
     assert cfg.weather_enabled is False
+
+
+def test_adapter_reads_hub_curiosity_config_and_reuses_existing_graph_keys() -> None:
+    """Reuses HUB_CURIOSITY_GRAPH_* (already asserted against
+    orion_worldview by curiosity_investigation.py) rather than a second,
+    parallel set of graph keys -- see hub_settings_to_runtime_namespace's
+    own docstring."""
+    hub_settings = SimpleNamespace(
+        ORION_SITUATION_CURIOSITY_ENABLED=True,
+        ORION_SITUATION_CURIOSITY_TTL_SECONDS=90,
+        HUB_CURIOSITY_GRAPH_HOST="127.0.0.1",
+        HUB_CURIOSITY_GRAPH_PORT=6380,
+        HUB_CURIOSITY_GRAPH_OWN="orion_worldview",
+    )
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.curiosity_enabled is True
+    assert cfg.curiosity_ttl_seconds == 90
+    assert cfg.curiosity_graph_host == "127.0.0.1"
+    assert cfg.curiosity_graph_port == 6380
+    assert cfg.curiosity_graph_name == "orion_worldview"
+
+
+def test_adapter_curiosity_disabled_when_hub_sets_it_off() -> None:
+    hub_settings = SimpleNamespace(ORION_SITUATION_CURIOSITY_ENABLED=False)
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.curiosity_enabled is False
+
+
+def test_adapter_curiosity_unconfigured_when_hub_has_no_graph_host() -> None:
+    """Real, distinct state -- a fresh hub deployment with the graph feature
+    never configured should not silently look like an error."""
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(SimpleNamespace()))
+
+    assert cfg.curiosity_enabled is True
+    assert cfg.curiosity_graph_host == ""
+
+
+def test_adapter_reads_hub_reverie_config() -> None:
+    hub_settings = SimpleNamespace(
+        ORION_SITUATION_REVERIE_ENABLED=True,
+        ORION_SITUATION_REVERIE_TTL_SECONDS=90,
+    )
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.reverie_enabled is True
+    assert cfg.reverie_ttl_seconds == 90
+
+
+def test_adapter_reverie_disabled_when_hub_sets_it_off() -> None:
+    hub_settings = SimpleNamespace(ORION_SITUATION_REVERIE_ENABLED=False)
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.reverie_enabled is False
 
 
 def test_adapter_falls_back_to_safe_defaults_when_hub_settings_missing_attrs() -> None:

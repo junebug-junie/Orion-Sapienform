@@ -1046,6 +1046,36 @@ class Settings(BaseSettings):
     ORION_SITUATION_AFFECT_MAX_AGE_SECONDS: int = Field(
         default=300, alias="ORION_SITUATION_AFFECT_MAX_AGE_SECONDS"
     )
+    # 2026-08-30: Orion's own open world-priors (`:Prior` nodes in
+    # `orion_worldview`), folded into the same unified-turn chat prompt via
+    # orion.situational.context.build_situation_for_ctx. Default ON, per
+    # Juniper's explicit request -- unlike perception/lab above, this carries
+    # no private-home content. Reuses the EXISTING HUB_CURIOSITY_GRAPH_HOST/
+    # PORT/OWN connection config below (already asserted against
+    # `orion_worldview` by curiosity_investigation.py) rather than a second,
+    # parallel set of graph keys -- see
+    # orion.situational.context.hub_settings_to_runtime_namespace().
+    ORION_SITUATION_CURIOSITY_ENABLED: bool = Field(
+        default=True, alias="ORION_SITUATION_CURIOSITY_ENABLED"
+    )
+    # 180s: priors change slowly (Orion tests one at a time, at most a few
+    # per day per curiosity_investigation.py's own cadence), so this is
+    # looser than affect/perception on purpose.
+    ORION_SITUATION_CURIOSITY_TTL_SECONDS: int = Field(
+        default=180, alias="ORION_SITUATION_CURIOSITY_TTL_SECONDS"
+    )
+    # 2026-08-30: Orion's most recent dream/reverie interpretations
+    # (`substrate_reverie_thought`, the same table Hub's own reverie cockpit
+    # already renders -- see services/orion-hub/scripts/reverie_routes.py and
+    # orion/situational/reverie_reader.py). SQL-only, not the
+    # orion:reverie:thought/chain bus channels (zero real subscribers today).
+    # Default ON, per Juniper's explicit request.
+    ORION_SITUATION_REVERIE_ENABLED: bool = Field(
+        default=True, alias="ORION_SITUATION_REVERIE_ENABLED"
+    )
+    ORION_SITUATION_REVERIE_TTL_SECONDS: int = Field(
+        default=180, alias="ORION_SITUATION_REVERIE_TTL_SECONDS"
+    )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")
     @classmethod

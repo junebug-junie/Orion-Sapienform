@@ -4623,6 +4623,125 @@ def _emit_substrate_autonomy_scheduler_log(*, payload: Dict[str, Any]) -> None:
     logger.info("substrate_mutation_scheduler %s", json.dumps(payload, sort_keys=True, default=str))
 
 
+# Last signal-intake report produced by the scheduled mutation cycle, plus a
+# consecutive-starved-cycle counter. Rebound wholesale (never mutated in place)
+# so the read endpoint always observes a self-consistent snapshot without a lock.
+SUBSTRATE_MUTATION_SIGNAL_INTAKE: Dict[str, Any] = {
+    "reason": "no_cycle_observed_yet",
+    "consecutive_starved_cycles": 0,
+}
+
+
+
+def _publish_non_cycle_signal_intake(*, reason: str, tick_id: str, at: datetime, detail: str | None = None) -> None:
+    """Publish a report for a cycle that returned before reaching signal intake.
+
+    Without this the endpoint keeps serving the last report a *completed* cycle
+    produced. Concretely: a healthy cycle publishes `reason: "healthy"`, Postgres
+    then degrades, `substrate_autonomy_runtime_supported()` returns false on every
+    subsequent tick, and the endpoint answers "healthy, not starved" indefinitely
+    while nothing has run for weeks.
+
+    Deliberately NOT called on the lock-not-acquired path: another cycle is
+    running right now and owns the report; overwriting it with "blocked" would
+    discard a live reading in favour of a contention artifact.
+    """
+    globals()["SUBSTRATE_MUTATION_SIGNAL_INTAKE"] = {
+        "reason": reason,
+        "starved": False,
+        "consecutive_starved_cycles": 0,
+        "tick_id": tick_id,
+        "observed_at": at.isoformat(),
+        "detail": detail,
+    }
+
+
+def _mutation_signal_intake_report(
+    *,
+    store_attrition: Dict[str, Any],
+    allowed_zones: set[str],
+    before_zone_filter: int,
+    after_zone_filter: int,
+    tick_id: str,
+    at: datetime,
+) -> Dict[str, Any]:
+    """Say WHY the cycle got the number of signals it got.
+
+    `signals_processed: 0` has three completely different causes and the log
+    could not tell them apart: an empty store, a surface filter that matches
+    nothing, and a zone filter that rejects everything the surface filter let
+    through. The substrate mutation pipeline sat in the third state from
+    2026-07-24 to 2026-08-30 -- 1,358 telemetry rows, 0 usable, 22 tables at 0
+    rows -- and every cycle reported it as an unremarkable zero.
+
+    `consecutive_starved_cycles` is deliberately consecutive-with-reset rather
+    than a lifetime total: a lifetime counter cannot distinguish "starved since
+    boot" from "starved once, months ago, fine now".
+    """
+    previous = SUBSTRATE_MUTATION_SIGNAL_INTAKE
+    total_records = int(store_attrition.get("total_records") or 0)
+    store_matched = int(store_attrition.get("matched") or 0)
+    matched_zone_histogram = dict(store_attrition.get("matched_zone_histogram") or {})
+    # Usable rows are those that cleared the store's own filters AND sit in a zone
+    # this cycle accepts -- counted before the limit slice.
+    usable_before_limit = sum(int(matched_zone_histogram.get(zone) or 0) for zone in allowed_zones)
+
+    if store_attrition.get("source") == "telemetry_override":
+        reason = "telemetry_override"
+    elif store_attrition.get("source") == "signals_disabled":
+        # Operator turned routing proposals off. Zero signals is the configured
+        # outcome, not a fault -- must never be reported as starvation.
+        reason = "signals_disabled"
+    elif after_zone_filter > 0:
+        reason = "healthy"
+    elif total_records == 0:
+        reason = "store_empty"
+    elif store_attrition.get("starved"):
+        # The store held rows and this query matched none of them.
+        reason = "surface_filter_rejected_all"
+    elif usable_before_limit > 0:
+        # Rows in an allowed zone DO exist and cleared every filter; they were cut
+        # by the limit slice, which takes the newest `limit` rows regardless of
+        # zone. Reporting this as a zone mismatch would send an operator to widen
+        # `allowed_zones`, which changes nothing -- the fix is to push target_zone
+        # into the query or raise SUBSTRATE_AUTONOMY_MAX_SIGNALS.
+        reason = "limit_truncated_usable_signals"
+    else:
+        reason = "zone_filter_rejected_all"
+
+    starved = reason in {
+        "surface_filter_rejected_all",
+        "zone_filter_rejected_all",
+        "limit_truncated_usable_signals",
+    }
+    consecutive = int(previous.get("consecutive_starved_cycles") or 0) + 1 if starved else 0
+
+    report: Dict[str, Any] = {
+        "reason": reason,
+        "starved": starved,
+        "consecutive_starved_cycles": consecutive,
+        # Without these the endpoint cannot tell a fresh report from one frozen
+        # weeks ago by a cycle that started bailing out before it built one.
+        "tick_id": tick_id,
+        "observed_at": at.isoformat(),
+        "required_invocation_surface": "operator_review",
+        "allowed_zones": sorted(allowed_zones),
+        "store_total_records": total_records,
+        "store_matched_surface": store_matched,
+        "before_zone_filter": before_zone_filter,
+        "after_zone_filter": after_zone_filter,
+        "usable_zone_rows_before_limit": usable_before_limit,
+        "surface_histogram": store_attrition.get("surface_histogram") or {},
+        "zone_histogram": store_attrition.get("zone_histogram") or {},
+        "matched_zone_histogram": matched_zone_histogram,
+    }
+    if reason != "telemetry_override":
+        # An injected-telemetry cycle says nothing about live intake; letting it
+        # publish would reset the starvation counter this report exists to keep.
+        globals()["SUBSTRATE_MUTATION_SIGNAL_INTAKE"] = report
+    return report
+
+
 def _self_revision_signals_from_latest_self_state(
     *, min_error: float, max_age_sec: float, now: datetime | None = None
 ) -> list["MutationSignalV1"]:
@@ -4664,6 +4783,7 @@ def execute_substrate_mutation_scheduled_cycle(
             "interval_sec": interval_sec,
             "at": tick_now.isoformat(),
         }
+        _publish_non_cycle_signal_intake(reason="autonomy_disabled", tick_id=tick_id, at=tick_now)
         _emit_substrate_autonomy_scheduler_log(payload=payload)
         return payload
     supported, reason = substrate_autonomy_runtime_supported()
@@ -4678,6 +4798,9 @@ def execute_substrate_mutation_scheduled_cycle(
             "store_kind": SUBSTRATE_MUTATION_STORE.source_kind(),
             "store_degraded": SUBSTRATE_MUTATION_STORE.degraded(),
         }
+        _publish_non_cycle_signal_intake(
+            reason="runtime_unsupported", tick_id=tick_id, at=tick_now, detail=reason
+        )
         _emit_substrate_autonomy_scheduler_log(payload=payload)
         return payload
 
@@ -4753,20 +4876,39 @@ def execute_substrate_mutation_scheduled_cycle(
             trace_logger=traces.append,
         )
 
+        # Narrow ramp scope: scheduler-driven mutation autonomy is routing-class only.
+        allowed_zones = {"autonomy_graph"}
+        if cognitive_proposals_enabled:
+            allowed_zones.add("self_relationship_graph")
+
         if telemetry_override is not None:
             telemetry = [GraphReviewTelemetryRecordV1.model_validate(item or {}) for item in telemetry_override]
+            store_attrition: Dict[str, Any] = {"source": "telemetry_override"}
+        elif worker.budget.max_signals <= 0:
+            # The budget sets max_signals=0 when routing proposals are disabled,
+            # but GraphReviewTelemetryQueryV1.limit is ge=1 -- building the query
+            # at all would raise ValidationError and take the whole cycle down
+            # inside the lock. Consuming zero signals is what a zero budget means,
+            # so honour it directly instead of asking the store for zero rows.
+            telemetry = []
+            store_attrition = {"source": "signals_disabled"}
         else:
-            telemetry = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(
+            telemetry, store_attrition = SUBSTRATE_REVIEW_TELEMETRY_STORE.query_with_attrition(
                 GraphReviewTelemetryQueryV1(
                     limit=worker.budget.max_signals,
                     invocation_surface="operator_review",
                 )
             )
-        # Narrow ramp scope: scheduler-driven mutation autonomy is routing-class only.
-        allowed_zones = {"autonomy_graph"}
-        if cognitive_proposals_enabled:
-            allowed_zones.add("self_relationship_graph")
+        before_zone_filter = len(telemetry)
         telemetry = [item for item in telemetry if item.target_zone in allowed_zones]
+        signal_intake = _mutation_signal_intake_report(
+            store_attrition=store_attrition,
+            allowed_zones=allowed_zones,
+            before_zone_filter=before_zone_filter,
+            after_zone_filter=len(telemetry),
+            tick_id=tick_id,
+            at=tick_now,
+        )
 
         _emit_substrate_autonomy_scheduler_log(
             payload={
@@ -4814,6 +4956,7 @@ def execute_substrate_mutation_scheduled_cycle(
             "status": "completed",
             "notes": list(result.get("notes") or []),
             "signals_processed": int(result.get("signals", 0)),
+            "signal_intake": signal_intake,
             "proposals_created": int(result.get("proposals", 0)),
             "trials_executed": int(result.get("trials", 0)),
             "adoptions_completed": int(result.get("adoptions", 0)),
@@ -6120,6 +6263,25 @@ def api_substrate_mutation_runtime_execute_once(
     _require_mutation_operator_guard(x_orion_operator_token)
     req = request or SubstrateMutationExecuteRequest()
     return _execute_substrate_mutation_cycle(request=req)
+
+
+@router.get("/api/substrate/mutation-runtime/signal-intake")
+def api_substrate_mutation_runtime_signal_intake() -> Dict[str, Any]:
+    """Why the last scheduled mutation cycle got the signal count it got.
+
+    Read-only; no operator token, because it exposes only counts and the
+    surface/zone histograms already visible in the scheduler log.
+    """
+    report = dict(SUBSTRATE_MUTATION_SIGNAL_INTAKE)
+    return {
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
+        "data": report,
+    }
 
 
 @router.get("/api/substrate/mutation-runtime/lineage")

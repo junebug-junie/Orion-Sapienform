@@ -241,3 +241,23 @@ def test_circe_node_availability_reflects_expected_offline(catalog: NodeCatalog)
         if e.atom and e.atom.semantic_role == "node_availability"
     )
     assert "expected offline" in avail.summary.lower()
+
+
+def test_all_atoms_emit_non_null_uncertainty(catalog: NodeCatalog) -> None:
+    sample, summary, induction = _fixtures("atlas", strain=0.42)
+    summary.telemetry_error_rate = 0.11
+    induction.metrics["cpu"] = BiometricsInductionMetricV1(volatility=0.33)
+    profile = catalog.resolve("atlas")
+    events = build_biometrics_node_grammar_events(
+        sample=sample,
+        summary=summary,
+        induction=induction,
+        node_profile=profile,
+        source_channel="orion:biometrics:induction",
+    )
+    atoms = [e.atom for e in events if e.atom is not None]
+    assert atoms
+    for atom in atoms:
+        assert atom.uncertainty is not None
+    body = next(a for a in atoms if a.semantic_role == "body_state")
+    assert body.uncertainty >= 0.11

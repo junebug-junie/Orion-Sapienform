@@ -16,6 +16,7 @@ PATCHES=(
   "orion-town-continuity-ingest.patch"
   "orion-input-counter-contention.patch"
   "orion-no-human-idle-kick.patch"
+  "orion-npc-answer-first.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then

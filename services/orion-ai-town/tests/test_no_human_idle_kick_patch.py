@@ -15,7 +15,7 @@ _PATCH = _SERVICE / "patches" / "orion-no-human-idle-kick.patch"
 _APPLY = _SERVICE / "scripts" / "apply_upstream_patches.sh"
 
 
-def test_idle_kick_patch_registered_last():
+def test_idle_kick_patch_registered_after_input_counter():
     text = _APPLY.read_text(encoding="utf-8")
     order = [
         line.strip().strip('",')
@@ -23,7 +23,9 @@ def test_idle_kick_patch_registered_last():
         if line.strip().startswith('"orion-')
     ]
     assert "orion-no-human-idle-kick.patch" in order
-    assert order[-1] == "orion-no-human-idle-kick.patch"
+    assert order.index("orion-input-counter-contention.patch") < order.index(
+        "orion-no-human-idle-kick.patch"
+    )
 
 
 def test_idle_kick_patch_removes_human_leave_on_last_input():

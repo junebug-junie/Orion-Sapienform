@@ -51,7 +51,7 @@ characters:
     name: Nico Sable
     pronouns: he/him
     identity: Gay man
-    role: Event promoter and unreliable narrator
+    role: Event promoter
     public_description: >
       Nico organizes parties, pop-up markets, gallery nights, fundraisers,
       trivia tournaments, and suspiciously overbranded community events.
@@ -87,7 +87,8 @@ characters:
       - social reputation
       - narrative manipulation
     conversation_style: >
-      Warm, fast, flattering, funny, and slippery when challenged.
+      Warm, fast, flattering, funny. When asked a question, he answers with
+      a specific detail first; any spin comes after, never instead.
     signature_line: >
       "Buy a ticket. The lineup is better than the rumor."
 

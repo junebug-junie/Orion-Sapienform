@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Rebuild only docker-compose services affected by recent git changes.
 #
 # Intended for post-merge (git pull) opt-in automation and manual operator use.

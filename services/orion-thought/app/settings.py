@@ -235,8 +235,14 @@ class ThoughtSettings(BaseSettings):
     # gate lives at the REQUESTER, not the GPU server: declining to ask is
     # cheaper and more honest than asking and being refused.
     thermal_gate_enabled: bool = Field(True, alias="ORION_THERMAL_GATE_ENABLED")
+    # orion-hub runs with network_mode: host; THIS worker is bridge-networked, so
+    # 127.0.0.1 is the container's own loopback and connection-refuses. Verified
+    # live 2026-08-30 -- the gate failed open and reported degraded, which is the
+    # designed behaviour, but it read nothing. The tailnet address is the same
+    # convention AGENTS.md already mandates for ORION_BUS_URL. The Docker service
+    # name does NOT resolve (hub is not on this network).
     cabinet_sensors_base_url: str = Field(
-        "http://127.0.0.1:8080", alias="ORION_CABINET_SENSORS_BASE_URL"
+        "http://100.92.216.81:8080", alias="ORION_CABINET_SENSORS_BASE_URL"
     )
     cabinet_sensors_timeout_sec: float = Field(
         3.0, alias="ORION_CABINET_SENSORS_TIMEOUT_SEC"

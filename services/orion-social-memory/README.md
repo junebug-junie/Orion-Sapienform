@@ -23,11 +23,22 @@ Use the same DSN as `DATABASE_URL` in this service's `.env` (default database: `
 Requires `Authorization: Bearer $SOCIAL_MEMORY_INGEST_TOKEN`. An empty
 `SOCIAL_MEMORY_INGEST_TOKEN` is fail-closed (401).
 
+## Town continuity
+
+`GET /town-continuity` reads raw `social_room_turns` rows and returns speaker-grounded
+pair + town utterances (`TownContinuityReadV1`). Required query params: `platform`,
+`room_id`, `thread_id`, `speaker_id`. Blank `thread_id` or `speaker_id` is 400
+`thread_id_and_speaker_id_required`. Blank platform/room is 400
+`platform_and_room_id_required`. Missing `social_room_turns` returns empty lists.
+
+Embodiment `GET /summary` is unchanged.
+
 ## Smoke checks
 
 ```bash
 curl -fsS 'http://localhost:8765/health'
 curl -fsS 'http://localhost:8765/summary?platform=hub&room_id=hub-direct&participant_id=juniper'
+curl -fsS 'http://localhost:8765/town-continuity?platform=aitown&room_id=aitown-town&thread_id=juniper-feld--nico-sable&speaker_id=nico-sable'
 curl -fsS 'http://localhost:8765/inspection?platform=hub&room_id=hub-direct&participant_id=juniper'
 curl -fsS -X POST 'http://localhost:8765/ingest-turn' \
   -H "Authorization: Bearer $SOCIAL_MEMORY_INGEST_TOKEN" \

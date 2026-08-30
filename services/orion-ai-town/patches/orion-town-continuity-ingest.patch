@@ -2,7 +2,7 @@ diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
 index 5f83e57..c8a1f02 100644
 --- a/convex/agent/conversation.ts
 +++ b/convex/agent/conversation.ts
-@@ -25,6 +25,133 @@ function clampTownReply(text: string, maxChars: number = TOWN_REPLY_MAX_CHARS): string {
+@@ -25,6 +25,154 @@ function clampTownReply(text: string, maxChars: number = TOWN_REPLY_MAX_CHARS): string {
    return `${cut.trim()}…`;
  }
  
@@ -46,36 +46,57 @@ index 5f83e57..c8a1f02 100644
 +  return '';
 +}
 +
-+async function fetchTownContinuity(otherName: string): Promise<string> {
++async function fetchTownContinuity(speakerName: string, otherName: string): Promise<string> {
 +  try {
-+    const slug = townSlug(otherName);
++    const speakerId = townSlug(speakerName);
++    const threadId = townThreadId(speakerName, otherName);
 +    const base = (process.env.SOCIAL_MEMORY_URL || '').trim().replace(/\/+$/, '');
-+    if (!slug || !base) {
++    if (!speakerId || !threadId || !base) {
 +      return '';
 +    }
 +    const params = new URLSearchParams({
 +      platform: 'aitown',
 +      room_id: 'aitown-town',
-+      participant_id: slug,
++      thread_id: threadId,
++      speaker_id: speakerId,
 +    });
-+    const res = await fetch(`${base}/summary?${params.toString()}`, {
++    const res = await fetch(`${base}/town-continuity?${params.toString()}`, {
 +      signal: AbortSignal.timeout(3000),
 +    });
 +    if (!res.ok) {
 +      return '';
 +    }
 +    const data = await res.json();
-+    const room = data && typeof data === 'object' ? (data as { room?: Record<string, unknown> }).room || {} : {};
-+    const participant =
-+      data && typeof data === 'object'
-+        ? (data as { participant?: Record<string, unknown> }).participant || {}
-+        : {};
-+    const roomSummary = String(room.recent_thread_summary || room.current_thread_summary || '').trim();
-+    const peerSummary = String(participant.safe_continuity_summary || '').trim();
-+    return [roomSummary, peerSummary].filter(Boolean).join(' ').slice(0, 400);
++    return formatTownContinuity(data);
 +  } catch {
 +    return '';
 +  }
++}
++
++function formatTownContinuity(data: unknown): string {
++  const body = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
++  const pair = Array.isArray(body.pair_turns) ? body.pair_turns : [];
++  const town = Array.isArray(body.town_turns) ? body.town_turns : [];
++  const lines: string[] = [];
++  const render = (rows: unknown[]) => {
++    const out: string[] = [];
++    for (const row of rows) {
++      if (!row || typeof row !== 'object') continue;
++      const speaker = String((row as { speaker?: unknown }).speaker || '').trim();
++      const text = String((row as { text?: unknown }).text || '').trim();
++      if (speaker && text) out.push(`${speaker}: ${text}`);
++    }
++    return out;
++  };
++  const pairLines = render(pair);
++  const townLines = render(town);
++  if (pairLines.length) {
++    lines.push('Earlier with them:', ...pairLines);
++  }
++  if (townLines.length) {
++    lines.push('From your other conversations:', ...townLines);
++  }
++  return lines.join('\n');
 +}
 +
 +async function ingestTownTurn(args: {
@@ -136,18 +157,18 @@ index 5f83e57..c8a1f02 100644
  export async function startConversationMessage(
    ctx: ActionCtx,
    worldId: Id<'worlds'>,
-@@ -61,6 +189,10 @@ export async function startConversationMessage(
+@@ -61,6 +210,10 @@ export async function startConversationMessage(
    ];
    prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
    prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
-+  const continuity = await fetchTownContinuity(otherPlayer.name);
++  const continuity = await fetchTownContinuity(player.name, otherPlayer.name);
 +  if (continuity) {
-+    prompt.push(`What you remember: ${continuity}`);
++    prompt.push(continuity);
 +  }
    prompt.push(...relatedMemoriesPrompt(memories));
    if (memoryWithOtherPlayer) {
      prompt.push(
-@@ -136,18 +268,25 @@ export async function continueConversationMessage(
+@@ -136,18 +289,25 @@ export async function continueConversationMessage(
      `Answer as your job. Name a person, object, or task from your role or from what they just said. If you have nothing new to add, end the conversation.`,
    );
  
@@ -159,9 +180,9 @@ index 5f83e57..c8a1f02 100644
 +    conversation.id as GameId<'conversations'>,
 +  );
 +  if (priorMessages.length <= 1) {
-+    const continuity = await fetchTownContinuity(otherPlayer.name);
++    const continuity = await fetchTownContinuity(player.name, otherPlayer.name);
 +    if (continuity) {
-+      prompt.push(`What you remember: ${continuity}`);
++      prompt.push(continuity);
 +    }
 +  }
    const llmMessages: LLMMessage[] = [
@@ -180,7 +201,7 @@ index 5f83e57..c8a1f02 100644
    ];
    const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
    llmMessages.push({ role: 'user', content: lastPrompt });
-@@ -154,7 +300,15 @@ export async function continueConversationMessage(
+@@ -154,7 +321,15 @@ export async function continueConversationMessage(
      max_tokens: 120,
      stop: stopWords(otherPlayer.name, player.name),
    });
@@ -197,7 +218,7 @@ index 5f83e57..c8a1f02 100644
  }
  
  export async function leaveConversationMessage(
-@@ -183,18 +325,19 @@ export async function leaveConversationMessage(
+@@ -183,18 +346,19 @@ export async function leaveConversationMessage(
      `Below is the current chat history between you and ${otherPlayer.name}.`,
      `One short goodbye line in first person, under 220 characters. No narration.`,
    );
@@ -224,7 +245,7 @@ index 5f83e57..c8a1f02 100644
    ];
    const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
    llmMessages.push({ role: 'user', content: lastPrompt });
-@@ -201,7 +348,15 @@ export async function leaveConversationMessage(
+@@ -201,7 +369,15 @@ export async function leaveConversationMessage(
      max_tokens: 80,
      stop: stopWords(otherPlayer.name, player.name),
    });

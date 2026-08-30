@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 import sqlite3
+from typing import Any
 
 from orion.core.schemas.substrate_review_telemetry import (
     GraphReviewCalibrationRecommendationV1,
@@ -13,6 +14,11 @@ from orion.core.schemas.substrate_review_telemetry import (
     GraphReviewTelemetryRecordV1,
     GraphReviewTelemetrySummaryV1,
 )
+
+# Attrition histograms are diagnostic, not a data feed: bound them so a store with
+# unexpectedly high-cardinality surfaces/zones cannot grow the scheduler log payload
+# without limit.
+_ATTRITION_HISTOGRAM_MAX_KEYS = 20
 
 
 @dataclass
@@ -71,6 +77,25 @@ class GraphReviewTelemetryRecorder:
             self._trim_sql()
 
     def query(self, query: GraphReviewTelemetryQueryV1) -> list[GraphReviewTelemetryRecordV1]:
+        records, _ = self.query_with_attrition(query)
+        return records
+
+    def query_with_attrition(
+        self, query: GraphReviewTelemetryQueryV1
+    ) -> tuple[list[GraphReviewTelemetryRecordV1], dict[str, Any]]:
+        """query(), plus a stage-by-stage account of what each filter dropped.
+
+        A consumer that fetches zero rows cannot otherwise tell "the store is
+        empty" from "my filter can never match anything in it". The substrate
+        mutation scheduler sat in the second state for five weeks while
+        reporting the first: 1,358 rows in the store, every one of them failing
+        exactly one of its two filter conditions, logged forever as
+        `signals_processed: 0`. See
+        docs/superpowers/specs/2026-08-30-mutation-signal-starvation-finding.md.
+
+        Costs one store load, the same as query() -- the histograms are computed
+        from the rows already in hand, not a second round trip.
+        """
         records = self._records
         if self.postgres_url:
             try:
@@ -83,20 +108,49 @@ class GraphReviewTelemetryRecorder:
         elif self.sql_db_path:
             records = self._load_from_sql()
 
+        total_records = len(records)
+        surface_histogram = Counter(str(r.invocation_surface or "unknown") for r in records)
+        zone_histogram = Counter(str(r.target_zone or "unknown") for r in records)
+        dropped_by: dict[str, int] = {}
+
+        def _apply(field: str, predicate) -> None:
+            nonlocal records
+            before = len(records)
+            records = [r for r in records if predicate(r)]
+            dropped = before - len(records)
+            if dropped:
+                dropped_by[field] = dropped
+
         if query.since is not None:
-            records = [r for r in records if r.selected_at >= query.since]
+            _apply("since", lambda r: r.selected_at >= query.since)
         if query.invocation_surface is not None:
-            records = [r for r in records if r.invocation_surface == query.invocation_surface]
+            _apply("invocation_surface", lambda r: r.invocation_surface == query.invocation_surface)
         if query.target_zone is not None:
-            records = [r for r in records if r.target_zone == query.target_zone]
+            _apply("target_zone", lambda r: r.target_zone == query.target_zone)
         if query.subject_ref is not None:
-            records = [r for r in records if r.subject_ref == query.subject_ref]
+            _apply("subject_ref", lambda r: r.subject_ref == query.subject_ref)
         if query.outcome is not None:
-            records = [r for r in records if r.execution_outcome == query.outcome]
+            _apply("outcome", lambda r: r.execution_outcome == query.outcome)
         if query.frontier_followup_invoked is not None:
-            records = [r for r in records if r.frontier_followup_invoked == query.frontier_followup_invoked]
+            _apply(
+                "frontier_followup_invoked",
+                lambda r: r.frontier_followup_invoked == query.frontier_followup_invoked,
+            )
         records = sorted(records, key=lambda r: r.selected_at, reverse=True)
-        return records[: query.limit]
+        matched = len(records)
+        returned = records[: query.limit]
+        attrition = {
+            "total_records": total_records,
+            "matched": matched,
+            "returned": len(returned),
+            "limit": query.limit,
+            "dropped_by": dropped_by,
+            "surface_histogram": dict(surface_histogram.most_common(_ATTRITION_HISTOGRAM_MAX_KEYS)),
+            "zone_histogram": dict(zone_histogram.most_common(_ATTRITION_HISTOGRAM_MAX_KEYS)),
+            # Distinguishes the three ways a consumer legitimately sees zero.
+            "starved": bool(total_records > 0 and matched == 0),
+        }
+        return returned, attrition
 
     def summary(self, query: GraphReviewTelemetryQueryV1) -> GraphReviewTelemetrySummaryV1:
         records = self.query(query)

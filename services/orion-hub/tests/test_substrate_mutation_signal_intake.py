@@ -1,0 +1,197 @@
+"""The scheduled mutation cycle must say WHY it got zero signals.
+
+Live finding 2026-08-30: the cycle logged `signals_processed: 0` every 30
+seconds for five weeks while 1,358 telemetry rows sat in the store, because its
+required (invocation_surface, target_zone) pair was never jointly produced. All
+20 `substrate_mutation_*` tables are at 0 rows as a direct result. An
+unexplained zero is indistinguishable from a healthy idle cycle; these tests pin
+the explanation.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
+os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
+os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
+os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
+os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
+
+HUB_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
+for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
+hub_scripts_pkg = HUB_ROOT / "scripts" / "__init__.py"
+if (
+    "scripts" not in sys.modules
+    or not str(getattr(sys.modules.get("scripts"), "__file__", "")).startswith(str(HUB_ROOT))
+):
+    spec = importlib.util.spec_from_file_location(
+        "scripts",
+        str(hub_scripts_pkg),
+        submodule_search_locations=[str(HUB_ROOT / "scripts")],
+    )
+    if spec is not None and spec.loader is not None:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["scripts"] = module
+        spec.loader.exec_module(module)
+
+from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
+from orion.substrate.mutation_queue import SubstrateMutationStore
+from orion.substrate.review_telemetry import GraphReviewTelemetryRecorder
+from scripts import api_routes
+
+
+def _record(*, surface: str, zone: str, at: datetime) -> GraphReviewTelemetryRecordV1:
+    return GraphReviewTelemetryRecordV1(
+        invocation_surface=surface,  # type: ignore[arg-type]
+        target_zone=zone,  # type: ignore[arg-type]
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        selection_reason="signal-intake-test",
+        selected_priority=50,
+        execution_outcome="executed",
+        runtime_duration_ms=1,
+        selected_at=at,
+    )
+
+
+@pytest.fixture
+def scheduler_env(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ENABLED", "true")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", "true")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", "true")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "false")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "false")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "false")
+    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", SubstrateMutationStore())
+    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_SURFACES", {"routing": {"chat_reflective_lane_threshold": 0.5}})
+    monkeypatch.setattr(api_routes, "substrate_autonomy_runtime_supported", lambda: (True, "supported"))
+    monkeypatch.setattr(
+        api_routes,
+        "SUBSTRATE_MUTATION_SIGNAL_INTAKE",
+        {"reason": "no_cycle_observed_yet", "consecutive_starved_cycles": 0},
+    )
+
+    def _install(store: GraphReviewTelemetryRecorder) -> None:
+        monkeypatch.setattr(api_routes, "SUBSTRATE_REVIEW_TELEMETRY_STORE", store)
+
+    return _install
+
+
+def _live_shaped_store() -> GraphReviewTelemetryRecorder:
+    """The live histogram in miniature. 6 operator_review/concept_graph rows and
+    2 chat_reflective_lane/autonomy_graph rows: the intersection the scheduler
+    needs is empty, exactly as in production."""
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store = GraphReviewTelemetryRecorder()
+    for i in range(6):
+        store.record(_record(surface="operator_review", zone="concept_graph", at=base + timedelta(minutes=i)))
+    for i in range(2):
+        store.record(_record(surface="chat_reflective_lane", zone="autonomy_graph", at=base + timedelta(minutes=10 + i)))
+    return store
+
+
+def test_live_starvation_is_named_zone_filter_rejected_all(scheduler_env) -> None:
+    scheduler_env(_live_shaped_store())
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
+    assert intake["reason"] == "zone_filter_rejected_all"
+    assert intake["starved"] is True
+    # 8 rows exist, 6 clear the surface filter, 0 clear the zone filter.
+    assert intake["store_total_records"] == 8
+    assert intake["store_matched_surface"] == 6
+    assert intake["before_zone_filter"] == 6
+    assert intake["after_zone_filter"] == 0
+    assert intake["allowed_zones"] == ["autonomy_graph"]
+    # The report names the values that DO exist, so the mismatch is readable
+    # without a database session.
+    assert intake["zone_histogram"] == {"concept_graph": 6, "autonomy_graph": 2}
+    assert intake["surface_histogram"] == {"operator_review": 6, "chat_reflective_lane": 2}
+
+
+def test_an_empty_store_is_reported_as_empty_not_starved(scheduler_env) -> None:
+    scheduler_env(GraphReviewTelemetryRecorder())
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
+    assert intake["reason"] == "store_empty"
+    assert intake["starved"] is False
+    assert intake["consecutive_starved_cycles"] == 0
+
+
+def test_wrong_surface_only_is_distinguished_from_wrong_zone(scheduler_env) -> None:
+    """Rows in the right zone but the wrong surface must not be blamed on the
+    zone filter -- widening allowed_zones would not recover them."""
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store = GraphReviewTelemetryRecorder()
+    for i in range(3):
+        store.record(_record(surface="chat_reflective_lane", zone="autonomy_graph", at=base + timedelta(minutes=i)))
+    scheduler_env(store)
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
+    assert intake["reason"] == "surface_filter_rejected_all"
+    assert intake["starved"] is True
+    assert intake["store_total_records"] == 3
+    assert intake["store_matched_surface"] == 0
+    assert intake["before_zone_filter"] == 0
+
+
+def test_a_satisfying_row_reports_healthy(scheduler_env) -> None:
+    """The combination no live producer emits. If this ever passes against real
+    data, the pipeline has stopped being starved."""
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store = _live_shaped_store()
+    store.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=20)))
+    scheduler_env(store)
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
+    assert intake["reason"] == "healthy"
+    assert intake["starved"] is False
+    assert intake["after_zone_filter"] == 1
+
+
+def test_consecutive_starved_cycles_accumulates_then_resets(scheduler_env) -> None:
+    """A lifetime counter cannot tell "starved since boot" from "starved once,
+    months ago". The counter must climb while starved and reset on recovery."""
+    starved_store = _live_shaped_store()
+    scheduler_env(starved_store)
+
+    first = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+    second = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+    assert first["consecutive_starved_cycles"] == 1
+    assert second["consecutive_starved_cycles"] == 2
+
+    starved_store.record(
+        _record(
+            surface="operator_review",
+            zone="autonomy_graph",
+            at=datetime(2026, 8, 30, 12, 30, tzinfo=timezone.utc),
+        )
+    )
+    recovered = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+    assert recovered["reason"] == "healthy"
+    assert recovered["consecutive_starved_cycles"] == 0
+
+
+def test_signal_intake_endpoint_serves_the_last_cycles_report(scheduler_env) -> None:
+    scheduler_env(_live_shaped_store())
+    api_routes.execute_substrate_mutation_scheduled_cycle()
+
+    payload = api_routes.api_substrate_mutation_runtime_signal_intake()
+
+    assert payload["data"]["reason"] == "zone_filter_rejected_all"
+    assert payload["data"]["starved"] is True
+    assert "source" in payload

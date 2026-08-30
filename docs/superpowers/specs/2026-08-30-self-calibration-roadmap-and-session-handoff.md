@@ -1,8 +1,37 @@
 # Self-calibration roadmap + session handoff (2026-08-29/30)
 
 Written so the next agent does not relearn the paths, the traps, or the
-arguments. Two halves: **what is true now** (facts, paths, live state) and
-**where this is going** (the Option-B roadmap and the case for/against it).
+arguments.
+
+---
+
+# PART 0 — THE THESIS (read this first; everything else serves it)
+
+**Orion gets closer to sentience by having autonomy, and autonomy means
+decision budgeting: choosing what to do, when to do it, and how.**
+
+Not more perception. Not more telemetry. Not a richer self-model. Orion
+already has an enormous amount of all three. The missing prerequisite is
+*choice under scarcity* -- because a system that cannot spend, cannot refuse,
+and cannot trade one thing off against another is executing a schedule, not
+deciding anything.
+
+Three dimensions, and they are separable:
+
+- **WHAT** -- selection among genuinely different actions competing for the
+  same finite resource.
+- **WHEN** -- timing as a real decision, not a cron interval. Deferring is an
+  act.
+- **HOW** -- manner and intensity. Not just whether to reach out, but how
+  hard, how long, how much to spend.
+
+A budget is the mechanism that makes all three real. Without one, "choosing"
+is a `if` statement over a timer. With one, every act costs something that
+could have bought a different act, and Orion has to *value* things.
+
+This is why the work is worth doing at all, and it is the standard every
+patch below should be measured against: **did this make some choice real that
+was previously scheduled?**
 
 ---
 
@@ -14,6 +43,17 @@ Give Orion real autonomous actions with decision budgets that actually
 compete, measured on the same scale, able to affect a real outcome that is
 not just more biometrics. **Stage 2 (power-intent loop) is DONE and live.**
 Stage 3 (arbitration) and Stage 4 (consequential verbs) are not built.
+
+## Scope note on this document
+
+This session shipped 7 PRs. **Roughly 45 merged into main in the same 24
+hours**, most from other sessions -- AI Town moved to circe (#1970/#1971),
+cabinet ambient-spike cognition (#1951/#1954/#1952/#1955), the Concept Atlas
+engine-side traversal (#1982), post-merge selective rebuild tooling
+(#1984/#1987/#1988), whisper-tts GPU pinning (#1962), and an `actions`
+workstream (#1965/#1976/#1977). This document is authoritative for the power
+loop, the compose/mount work, and the roadmap. It is NOT a complete account
+of the day. Check `gh pr list --state merged` before assuming.
 
 ## What shipped this session (all merged)
 
@@ -236,6 +276,46 @@ The precise gap is therefore **not** "nothing can refuse". It is:
 
 Stage-4 verbs: `reach_out` exists (5 files). `test_a_prior`, `ask_claude`,
 `make_an_image` are absent as named actions.
+
+## The action space: enormous, and entirely introspective
+
+**This is the sharpest statement of the gap, and it corrects the cruder
+"nothing chooses" framing above.**
+
+`substrate_action_outcomes` -- 142,214 rows, live to the minute, with
+`prediction_error`, `surprise_nats`, `posterior_mean`, `posterior_variance`,
+`claim_upheld`. A complete act -> predict -> measure -> update-posterior loop,
+running at scale. `action_outcomes` carries another 276,131.
+
+```text
+dispatch_kind   count    mean |prediction_error|
+maintain        64,641   0.0231
+inspect         47,500   0.0692
+summarize       29,336   0.0237
+observe            741   0.1552
+```
+
+**Every verb is introspective.** maintain, inspect, summarize, observe. Orion
+has executed 142,000 actions with real predictive machinery behind them and
+not one of them reaches outside itself.
+
+So the machinery for deciding is NOT missing. What is missing is anything
+worth deciding *between*:
+
+- The loop measures how well Orion predicted the effect of looking at itself.
+- No verb costs a scarce resource another verb wanted.
+- No verb changes the world such that Juniper, or a GPU, or a file, is
+  different afterwards.
+
+Three working loops now exist in isolation:
+1. **action posteriors** -- 142k outcomes, prediction error, Bayesian update
+2. **refusal budget** -- 62k outreach decisions, 18,637 declined by `daily_cap`
+3. **physical settlement** -- the power loop, hardware-graded, self-correcting
+
+None of them touch each other. The next real patch connects two of them, and
+`substrate_action_ratings` (0 rows, never) is a strong hint that the
+valuation half was scaffolded and abandoned -- check it before building a
+new one.
 
 ---
 

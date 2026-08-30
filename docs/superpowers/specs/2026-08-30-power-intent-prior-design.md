@@ -171,3 +171,51 @@ This is deliberately a zero-schema-change patch.
 
 A second claimant. Power does not become a contested budget until something
 other than the visual chain wants the same watts.
+
+---
+
+## Live verification (2026-08-30, circe)
+
+All five acceptance checks passed against the real deployment.
+
+Warm-up trace, straight from the diffusion-host log:
+
+```text
+01:34:22  power_intent_declared  expected_watts=None        (cold start)
+01:35:22  power_prior_observed   peak=238.08  n=1
+01:35:48  power_intent_declared  expected_watts=None        (n=1 < min_samples)
+01:36:48  power_prior_observed   peak=261.87  n=2
+01:37:04  power_intent_declared  expected_watts=None        (n=2 < min_samples)
+01:38:05  power_prior_observed   peak=256.58  n=3
+01:38:16  power_intent_declared  expected_watts=256.58      <-- first prediction
+01:39:16  power_prior_observed   peak=245.38  n=4
+01:39:27  power_intent_declared  expected_watts=250.98      <-- revised
+```
+
+Estimator arithmetic verified by hand at both points:
+
+- `median(238.08, 261.87, 256.58)` = **256.58**
+- `median(238.08, 245.38, 256.58, 261.87)` = (245.38 + 256.58) / 2 = **250.98**
+
+First graded row -- `residual_watts` non-NULL for the first time since the
+table was created:
+
+| settled | predicted | actual | residual | baseline |
+|---|---|---|---|---|
+| 2026-08-30 01:39:16 | 256.58 | 245.38 | **-11.20** | 47.6 |
+
+Against the acceptance checks:
+
+1. `expected_watts` non-NULL after 3 settlements -- **yes**, at 01:38:16.
+2. `residual_watts` non-NULL and equal to `actual - expected` --
+   245.38 - 256.58 = -11.20. **Exact.**
+3. `|residual|` within roughly +/-20W given the live sd of 8.0 -- **11.20W.**
+   This was committed to in writing before the run, not fitted afterwards.
+4. Cold start declared None, not a fabricated constant -- **yes**, three times.
+5. A `no_samples` settlement never contributes -- covered by test; no such
+   settlement occurred during this window, so this one is test-verified only,
+   not live-verified. Stated rather than claimed.
+
+The self-correction in the last two lines is the point of the whole patch:
+Orion predicted 256.58, drew 245.38, was 11.2W high, and its next declaration
+moved down to 250.98 without anyone touching it.

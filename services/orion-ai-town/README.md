@@ -291,6 +291,10 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 - NPCs **do not auto-leave** human conversations (message cap / duration only applies NPC-NPC)
 - **3 minute grace** after an NPC speaks before it considers speaking again (`HUMAN_REPLY_GRACE_MS`)
 
+### NPC answer-first (`patches/orion-npc-answer-first.patch`)
+
+Human chats never call `startConversationMessage` — Juniper's first NPC line is `continue`. The old continue contract (`Name a person, object, or task`) plus Nico's tease-plan produced a secret-hook on "hi" and a lockbox on "spill the tea" before any topic had repeated. The patch puts the no-quest / answer-first / do-not-withhold contract on continue, drops empty-shell social-memory topic bags (`Recent room themes:`, `recent shared topics include`), and rewrites Nico's plan to tell a specific piece of gossip.
+
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 
 Upstream `player.tick()` deleted the human after `HUMAN_IDLE_TOO_LONG` (5 minutes). `lastInput` was only written at join, so that was a session fuse, not idle detection. The patch removes the kick. Juniper stays in the world until she actually leaves.

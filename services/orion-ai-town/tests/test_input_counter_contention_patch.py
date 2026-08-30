@@ -14,14 +14,16 @@ def test_patch_registered_in_apply_script():
     assert "orion-input-counter-contention.patch" in text
 
 
-def test_patch_registered_last():
+def test_patch_registered_after_continuity():
     text = _APPLY.read_text(encoding="utf-8")
     order = [
         line.strip().strip('",')
         for line in text.splitlines()
         if line.strip().startswith('"orion-')
     ]
-    assert order[-1] == "orion-input-counter-contention.patch"
+    assert order.index("orion-town-continuity-ingest.patch") < order.index(
+        "orion-input-counter-contention.patch"
+    )
 
 
 def test_patch_touches_exactly_the_expected_files():

@@ -22,17 +22,23 @@ from .perception_reader import (
     presence_fragment,
     presence_row_age_seconds,
 )
+from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
+from orion.curiosity.worldview import LIVE_PRIORS_LIMIT, Prior, WorldviewReader, read_snapshot
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
     ConversationPhaseContextV1,
+    CuriosityPriorContextV1,
+    CuriosityPriorSummaryV1,
     EnvironmentContextV1,
     LabContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceContextV1,
     RequestorContextV1,
+    ReverieContextV1,
+    ReverieSnippetV1,
     RuntimeContextV1,
     SituationAffordanceV1,
     SituationBriefV1,
@@ -50,6 +56,55 @@ _LOCK = threading.Lock()
 _SITUATION_CACHE: dict[str, tuple[datetime, SituationBriefV1, SituationPromptFragmentV1]] = {}
 _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
 _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
+_CURIOSITY_CACHE: dict[str, tuple[datetime, CuriosityPriorContextV1]] = {}
+_REVERIE_CACHE: dict[str, tuple[datetime, ReverieContextV1]] = {}
+
+# 2026-08-30, Juniper's explicit request: raised from the original 1200 (6x)
+# now that the harness runs a large-context model -- the old cap was sized
+# for a much smaller context window and was already tight enough to drop a
+# caution line on a single long affect summary (see
+# test_situation_input_modality.py's own regression test). Still a real
+# ceiling, not a removal of the truncation logic below: this only widens the
+# room the existing "cautions survive whole, body gets truncated first"
+# algorithm has to work with. Single source of truth for both defaulting
+# paths below (settings_from_runtime's own getattr default and
+# hub_settings_to_runtime_namespace's fallback) so they cannot drift apart.
+# hub_settings_to_runtime_namespace previously hardcoded a bare `1200` with
+# no env override at all (unlike cortex-exec, which has always had
+# ORION_SITUATION_PROMPT_MAX_CHARS) -- this patch both raises the default
+# and gives Hub the same env-configurable key cortex-exec already had.
+_DEFAULT_PROMPT_MAX_CHARS = 7200
+
+# Internal caps -- not env keys. Both providers below are "color, not a
+# dump" by design (see the schema docstrings), so how many items survive
+# into the prompt is a fixed, small constant rather than another knob.
+#
+# `_CURIOSITY_PRIOR_POOL_SAMPLE` is the pool `read_snapshot` selects from
+# BEFORE this module re-ranks by confidence. MUST be read_snapshot's own
+# `LIVE_PRIORS_LIMIT`, not a small number (review finding, 2026-08-30): the
+# Cypher query underneath `read_snapshot` already fetches every live prior
+# up to that limit regardless of what `sample` is, but `select_priors` then
+# SLICES that full set down to `sample` items sorted MOST-UNCERTAIN-FIRST
+# (it exists to pick what to TEST next) before this module ever sees it. A
+# `sample` smaller than the live pool silently excludes every genuinely
+# confident prior from the slice -- passing e.g. 20 here meant a graph with
+# more than 20 live priors could NEVER surface its most-confident ones,
+# because they never survive `select_priors`' own uncertainty-ascending cut
+# to reach this module's later confidence re-rank. Using the same limit the
+# underlying query already applies costs nothing extra (no new query, no
+# larger result set) and guarantees this module's re-rank sees the true full
+# live pool.
+_CURIOSITY_PRIOR_POOL_SAMPLE = LIVE_PRIORS_LIMIT
+_CURIOSITY_PRIOR_STALE_AFTER = 6
+_CURIOSITY_MAX_PRIORS = 2
+# Kept tight relative to worldview.py's own `_clip(text, limit=240)` (used
+# for Orion's SELF-STUDY prompt, a much larger budget than this 1200-char
+# shared fragment): 2 priors at this cap plus wrapper text and the reverie
+# section below should stay a modest fraction of the total budget, not crowd
+# out the cautions the way a single maximal-length section could.
+_CURIOSITY_CLAIM_MAX_CHARS = 110
+_REVERIE_MAX_SNIPPETS = 2
+_REVERIE_SNIPPET_MAX_CHARS = 110
 # NOTE: session turn-timestamp state (_SESSION_LAST_USER_TURN /
 # _SESSION_LAST_ORION_TURN, formerly in-process dicts here) now lives in
 # Redis via session_turn_phase.py -- see that module's docstring for why.
@@ -93,6 +148,13 @@ class SituationSettings:
     identity_ask_max_presence_age_seconds: int
     affect_enabled: bool
     affect_max_age_seconds: int
+    curiosity_enabled: bool
+    curiosity_ttl_seconds: int
+    curiosity_graph_host: str
+    curiosity_graph_port: int
+    curiosity_graph_name: str
+    reverie_enabled: bool
+    reverie_ttl_seconds: int
     runtime_enabled: bool
     runtime_route: str
     runtime_ttl_seconds: int
@@ -126,7 +188,9 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
     return SituationSettings(
         enabled=bool(getattr(settings, "orion_situation_enabled", True)),
         ttl_seconds=int(getattr(settings, "orion_situation_ttl_seconds", 300)),
-        prompt_max_chars=int(getattr(settings, "orion_situation_prompt_max_chars", 1200)),
+        prompt_max_chars=int(
+            getattr(settings, "orion_situation_prompt_max_chars", _DEFAULT_PROMPT_MAX_CHARS)
+        ),
         timezone=str(getattr(settings, "orion_situation_timezone", "America/Denver")),
         location_label=str(getattr(settings, "orion_situation_location_label", "Unknown")),
         locality=getattr(settings, "orion_situation_locality", None),
@@ -218,6 +282,38 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         affect_max_age_seconds=int(
             getattr(settings, "orion_situation_affect_max_age_seconds", 300)
         ),
+        # Default ON (Juniper's explicit call, 2026-08-30) -- unlike
+        # perception, this carries no private-home content: Orion's own
+        # world-priors, read read-only from Orion's own graph. Degrades to
+        # unconfigured, not an error, when no graph host is set (see
+        # `_build_curiosity_context`) -- e.g. cortex-exec has no established
+        # connection to `orion_worldview` today, only Hub does.
+        curiosity_enabled=bool(
+            getattr(settings, "orion_situation_curiosity_enabled", True)
+        ),
+        # 180s: priors change slowly (Orion tests one at a time, at most a
+        # few per day per curiosity_investigation.py's own cadence), so this
+        # is looser than affect/perception on purpose.
+        curiosity_ttl_seconds=int(
+            getattr(settings, "orion_situation_curiosity_ttl_seconds", 180)
+        ),
+        # Reuses HUB_CURIOSITY_GRAPH_* wiring rather than a new dedicated
+        # key set -- see hub_settings_to_runtime_namespace()'s mapping.
+        curiosity_graph_host=str(
+            getattr(settings, "orion_situation_curiosity_graph_host", "") or ""
+        ),
+        curiosity_graph_port=int(
+            getattr(settings, "orion_situation_curiosity_graph_port", 0) or 0
+        ),
+        curiosity_graph_name=str(
+            getattr(settings, "orion_situation_curiosity_graph_name", "orion_worldview")
+        ),
+        # Default ON (Juniper's explicit call, 2026-08-30). SQL-only (no bus
+        # consumer) -- see ReverieContextV1's docstring.
+        reverie_enabled=bool(getattr(settings, "orion_situation_reverie_enabled", True)),
+        reverie_ttl_seconds=int(
+            getattr(settings, "orion_situation_reverie_ttl_seconds", 180)
+        ),
         lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
@@ -272,11 +368,24 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     startup in `services/orion-hub/scripts/main.py`). No new DSN/HTTP
     egress is needed -- `juniper_affect_state.py`'s read side is a plain
     Redis GET on the bus connection this process already owns.
+
+    Curiosity priors and reverie (2026-08-30) ARE enabled here, same
+    "no private-home content, no new dependency" reasoning as affect: Hub
+    already owns the `HUB_CURIOSITY_GRAPH_*` connection to Orion's own
+    `orion_worldview` graph (curiosity_investigation.py) and already reads
+    Postgres for the reverie cockpit's own routes. Both are ON by default
+    per Juniper's explicit request, unlike every other section in this
+    adapter.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
         orion_situation_ttl_seconds=int(getattr(cfg, "ORION_SITUATION_TTL_SECONDS", 300)),
-        orion_situation_prompt_max_chars=1200,
+        # 2026-08-30: previously a bare hardcoded `1200` with no env override
+        # at all -- now reads Hub's own ORION_SITUATION_PROMPT_MAX_CHARS,
+        # same key cortex-exec has always had.
+        orion_situation_prompt_max_chars=int(
+            getattr(cfg, "ORION_SITUATION_PROMPT_MAX_CHARS", _DEFAULT_PROMPT_MAX_CHARS)
+        ),
         orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
         orion_situation_location_label="Unknown",
         orion_situation_locality=None,
@@ -305,6 +414,35 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
             getattr(cfg, "ORION_SITUATION_AFFECT_MAX_AGE_SECONDS", 300)
+        ),
+        # 2026-08-30, Juniper's explicit call: default ON, unlike perception/
+        # lab above -- carries no private-home content. Reuses Hub's
+        # EXISTING HUB_CURIOSITY_GRAPH_* connection config (already asserted
+        # against `orion_worldview` by curiosity_investigation.py) rather
+        # than a second, parallel set of graph keys.
+        orion_situation_curiosity_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_CURIOSITY_ENABLED", True)
+        ),
+        orion_situation_curiosity_ttl_seconds=int(
+            getattr(cfg, "ORION_SITUATION_CURIOSITY_TTL_SECONDS", 180)
+        ),
+        orion_situation_curiosity_graph_host=str(
+            getattr(cfg, "HUB_CURIOSITY_GRAPH_HOST", "") or ""
+        ),
+        orion_situation_curiosity_graph_port=int(
+            getattr(cfg, "HUB_CURIOSITY_GRAPH_PORT", 6380) or 6380
+        ),
+        orion_situation_curiosity_graph_name=str(
+            getattr(cfg, "HUB_CURIOSITY_GRAPH_OWN", "orion_worldview")
+        ),
+        # 2026-08-30, Juniper's explicit call: default ON. Hub already reads
+        # Postgres (POSTGRES_URI) for the reverie cockpit's own routes -- see
+        # reverie_reader.py's DSN resolution.
+        orion_situation_reverie_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_REVERIE_ENABLED", True)
+        ),
+        orion_situation_reverie_ttl_seconds=int(
+            getattr(cfg, "ORION_SITUATION_REVERIE_TTL_SECONDS", 180)
         ),
         orion_situation_runtime_enabled=True,
         orion_situation_runtime_route="chat",
@@ -412,6 +550,8 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     lab_ctx = _build_lab_context(cfg)
     perception_ctx = await _build_perception_context(cfg, diagnostics)
     affect_ctx = await _build_affect_context(cfg, diagnostics)
+    curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
+    reverie_ctx = await _build_reverie_context(cfg, diagnostics)
     runtime_ctx = await _build_runtime_context(cfg, diagnostics)
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
@@ -427,6 +567,8 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
             "surface": surface_ctx.surface,
             "perception": perception_ctx.source,
             "affect": affect_ctx.source,
+            "curiosity": curiosity_ctx.source,
+            "reverie": reverie_ctx.source,
             "runtime": runtime_ctx.source,
         },
         requestor=presence.requestor,
@@ -439,6 +581,8 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
         lab=lab_ctx,
         perception=perception_ctx,
         affect=affect_ctx,
+        curiosity=curiosity_ctx,
+        reverie=reverie_ctx,
         runtime=runtime_ctx,
         surface=surface_ctx,
         affordances=affordances,
@@ -1268,6 +1412,150 @@ async def _build_affect_context(
     )
 
 
+def _summarize_prior(prior: "Prior") -> CuriosityPriorSummaryV1:
+    claim = prior.claim.strip()
+    if len(claim) > _CURIOSITY_CLAIM_MAX_CHARS:
+        claim = claim[:_CURIOSITY_CLAIM_MAX_CHARS].rstrip() + "…"
+    return CuriosityPriorSummaryV1(
+        claim=claim,
+        confidence=prior.confidence,
+        status=prior.status or "open",
+        times_tested=int(prior.times_tested or 0),
+    )
+
+
+def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
+    """Sync read of Orion's own world-priors. Called via `asyncio.to_thread`
+    below -- `WorldviewReader`'s `redis-py` client is a plain blocking
+    connection, same reasoning as `_fetch_runtime_context`/`_fetch_weather`.
+
+    `read_snapshot` itself never raises (fail-open by its own contract,
+    reporting `unavailable_reason` instead) -- this function still cannot
+    raise in any path this module controls.
+    """
+    reader = WorldviewReader(
+        host=cfg.curiosity_graph_host,
+        port=cfg.curiosity_graph_port,
+        graph_name=cfg.curiosity_graph_name,
+    )
+    snapshot = read_snapshot(
+        reader,
+        sample=_CURIOSITY_PRIOR_POOL_SAMPLE,
+        stale_after=_CURIOSITY_PRIOR_STALE_AFTER,
+    )
+    if snapshot.is_unavailable:
+        return CuriosityPriorContextV1(available=False, source="error")
+    if not snapshot.live_priors:
+        return CuriosityPriorContextV1(
+            available=False, source="unavailable", live_total=snapshot.live_total
+        )
+    # Most-CERTAIN first, by `Prior.uncertainty` -- NOT raw confidence
+    # descending (review finding, 2026-08-30: raw-value sorting ranked a
+    # prior Orion is 95% sure is FALSE, confidence=0.05, near the bottom,
+    # tied with priors that have no confidence recorded at all, while a
+    # near-coin-flip 0.55 outranked it). `Prior.uncertainty` is
+    # `abs(confidence - 0.5)`: 0.0 at an unrated or 50/50 prior, growing
+    # toward 0.5 the more decisively Orion leans either true OR false.
+    # Sorting by `-uncertainty` puts a 0.05 and a 0.95 prior at the SAME
+    # rank (both are things Orion currently holds with equal conviction,
+    # just opposite polarity) and pushes unrated/near-toss-up priors to the
+    # bottom, matching "here's what Orion currently believes" rather than
+    # "here's what Orion rates highest." read_snapshot's own ordering
+    # (ascending uncertainty, i.e. most-UNCERTAIN-first) exists for the
+    # opposite purpose -- picking what Orion should TEST next -- so it is
+    # not reused directly here.
+    ranked = sorted(snapshot.live_priors, key=lambda p: -p.uncertainty)
+    summaries = [_summarize_prior(p) for p in ranked[:_CURIOSITY_MAX_PRIORS]]
+    return CuriosityPriorContextV1(
+        available=True,
+        summaries=summaries,
+        live_total=snapshot.live_total,
+        source="orion_worldview",
+    )
+
+
+async def _build_curiosity_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> CuriosityPriorContextV1:
+    """Orion's own open world-priors, gated the same "fail-open, real state,
+    never a guess" way every other provider in this file is.
+
+    Unlike perception/affect there is no staleness gate here -- a prior is
+    graph state Orion itself maintains, not a decaying sensor read, so
+    "current" just means "read within the TTL window" (the cache below),
+    not "observed recently".
+    """
+    if not cfg.curiosity_enabled:
+        diagnostics.provider_status["curiosity"] = "disabled"
+        return CuriosityPriorContextV1(available=False, source="disabled")
+    if not cfg.curiosity_graph_host:
+        # A real, distinct state: e.g. cortex-exec has no established
+        # connection to `orion_worldview` today, only Hub does (see
+        # hub_settings_to_runtime_namespace). Not an error -- nothing has
+        # gone wrong, this process simply cannot reach the graph.
+        diagnostics.provider_status["curiosity"] = "unconfigured"
+        return CuriosityPriorContextV1(available=False, source="unconfigured")
+
+    cache_key = f"{cfg.curiosity_graph_host}:{cfg.curiosity_graph_port}:{cfg.curiosity_graph_name}"
+    with _LOCK:
+        cached = _CURIOSITY_CACHE.get(cache_key)
+        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.curiosity_ttl_seconds:
+            return cached[1]
+    try:
+        ctx = await asyncio.to_thread(_fetch_curiosity_context, cfg)
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["curiosity"] = "error"
+        diagnostics.provider_errors["curiosity"] = str(exc)
+        return CuriosityPriorContextV1(available=False, source="error")
+    with _LOCK:
+        _CURIOSITY_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
+    diagnostics.provider_status["curiosity"] = "ok" if ctx.available else "unavailable"
+    return ctx
+
+
+def _fetch_reverie_context(cfg: SituationSettings) -> ReverieContextV1:
+    rows = fetch_recent_reverie_snippets(_REVERIE_MAX_SNIPPETS)
+    if not rows:
+        return ReverieContextV1(available=False, source="unavailable")
+    snippets: list[ReverieSnippetV1] = []
+    for row in rows:
+        snippet_text = row.text
+        if len(snippet_text) > _REVERIE_SNIPPET_MAX_CHARS:
+            snippet_text = snippet_text[:_REVERIE_SNIPPET_MAX_CHARS].rstrip() + "…"
+        snippets.append(
+            ReverieSnippetV1(text=snippet_text, observed_at=row.observed_at, salience=row.salience)
+        )
+    return ReverieContextV1(available=True, snippets=snippets, source="reverie_sql")
+
+
+async def _build_reverie_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> ReverieContextV1:
+    """Orion's most recent dream/reverie interpretations. SQL-only (see
+    `ReverieContextV1`'s docstring for why the bus channels are not used),
+    fail-open like every other provider here.
+    """
+    if not cfg.reverie_enabled:
+        diagnostics.provider_status["reverie"] = "disabled"
+        return ReverieContextV1(available=False, source="disabled")
+
+    cache_key = "reverie"
+    with _LOCK:
+        cached = _REVERIE_CACHE.get(cache_key)
+        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.reverie_ttl_seconds:
+            return cached[1]
+    try:
+        ctx = await asyncio.to_thread(_fetch_reverie_context, cfg)
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["reverie"] = "error"
+        diagnostics.provider_errors["reverie"] = str(exc)
+        return ReverieContextV1(available=False, source="error")
+    with _LOCK:
+        _REVERIE_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
+    diagnostics.provider_status["reverie"] = "ok" if ctx.available else "unavailable"
+    return ctx
+
+
 def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> SituationPromptFragmentV1:
     lines = [
         f"Local context: {brief.time.time_of_day_label.replace('_', ' ')} {brief.time.weekday}, {brief.time.timezone}.",
@@ -1348,6 +1636,32 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(f"You are currently running on model: {brief.runtime.model_id} (route={brief.runtime.route}).")
     else:
         lines.append("Current model: unavailable; do not infer or guess a name.")
+    # Curiosity/reverie are deliberately OMITTED rather than rendered as an
+    # "unavailable; do not infer" placeholder when there is nothing to show
+    # (unlike weather/lab/perception/affect/runtime above, which always emit
+    # a line). Two reasons: (1) both are genuinely optional color, not a
+    # standing claim about the world Orion needs reminding it lacks every
+    # single turn -- unlike "I cannot see you", "I don't have an open prior
+    # to share" carries no operational weight. (2) an always-on placeholder
+    # here is pure budget overhead on the common no-graph-host/no-rows-yet
+    # path, and this fragment already has one real regression on record
+    # (2026-08-26, see test_situation_input_modality.py's own
+    # `test_nothing_is_truncated_at_the_live_cap_even_with_a_max_affect_
+    # summary`) from exactly this kind of unconditional line eating into the
+    # cautions' reserved room at the live 1200-char cap.
+    if brief.curiosity.available and brief.curiosity.summaries:
+        parts = []
+        for s in brief.curiosity.summaries:
+            conf = f"{s.confidence:.2f}" if s.confidence is not None else "unrated"
+            parts.append(f"\"{s.claim}\" (confidence={conf}, {s.status})")
+        lines.append(
+            "Your own open world-priors (from your own graph, treat as tentative): "
+            + "; ".join(parts)
+            + "."
+        )
+    if brief.reverie.available and brief.reverie.snippets:
+        seeds = "; ".join(f"\"{s.text}\"" for s in brief.reverie.snippets)
+        lines.append(f"Recent reverie/dream threads (background color, not memory to assert): {seeds}")
     relevance = [f"{a.kind}: {a.suggestion}" for a in brief.affordances if a.trigger_relevance == "active"]
     # Ordered most-important-first: whatever the budget cannot fit is
     # dropped from the END (see the append loop below). The affect guard

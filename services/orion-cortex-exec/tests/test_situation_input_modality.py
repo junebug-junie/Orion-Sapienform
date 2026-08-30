@@ -10,10 +10,11 @@ finally supplies the value on the unified-turn path is covered by
 `services/orion-hub/tests/test_unified_turn_surface_context.py`.
 
 The truncation case below is the one that actually matters. The live cap is
-`orion_situation_prompt_max_chars=1200`, and a line that gets silently sliced
-off the end by that cap is a feature that does not exist -- exactly the
-interaction PR #1865 hit when its affect line pushed a fixture past its own
-boundary.
+`orion_situation_prompt_max_chars` (raised 2026-08-30 from 1200 to 7200,
+Juniper's explicit request -- see `_DEFAULT_PROMPT_MAX_CHARS` in
+orion/situational/context.py), and a line that gets silently sliced off the
+end by that cap is a feature that does not exist -- exactly the interaction
+PR #1865 hit when its affect line pushed a fixture past its own boundary.
 """
 
 from __future__ import annotations
@@ -32,11 +33,15 @@ from orion.schemas.situation import SituationBriefV1, SurfaceContextV1
 
 NOW = datetime.now(timezone.utc)
 
-# The real production default (orion/situational/context.py's
-# settings_from_runtime fallback), not a roomy test-only number -- the whole
-# point of test_spoken_line_survives_the_live_prompt_cap is to exercise the
-# cap Hub actually applies.
-LIVE_MAX_CHARS = 1200
+# The real production default -- read directly from
+# orion/situational/context.py's own _DEFAULT_PROMPT_MAX_CHARS rather than a
+# hardcoded literal, so this can never silently drift from the real value
+# the way the pre-2026-08-30 code did (a bare `1200` duplicated in three
+# places, only one of which was ever updated when the default changed). Not
+# a roomy test-only number -- the whole point of
+# test_spoken_line_survives_the_live_prompt_cap is to exercise the cap Hub
+# actually applies.
+LIVE_MAX_CHARS = situation_mod._DEFAULT_PROMPT_MAX_CHARS
 
 
 def _cfg(**overrides) -> SituationSettings:

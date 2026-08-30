@@ -169,7 +169,12 @@ class Settings(BaseSettings):
     orion_tz: str = Field("America/Denver", alias="ORION_TZ")
     orion_situation_enabled: bool = Field(True, alias="ORION_SITUATION_ENABLED")
     orion_situation_ttl_seconds: int = Field(300, alias="ORION_SITUATION_TTL_SECONDS")
-    orion_situation_prompt_max_chars: int = Field(1200, alias="ORION_SITUATION_PROMPT_MAX_CHARS")
+    # 2026-08-30, Juniper's explicit request: raised from 1200 to 7200 (6x)
+    # now that the harness runs a large-context model. The
+    # truncation/caution-survival logic in
+    # orion.situational.context._build_prompt_fragment is unchanged, only
+    # the ceiling moved.
+    orion_situation_prompt_max_chars: int = Field(7200, alias="ORION_SITUATION_PROMPT_MAX_CHARS")
     orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
     orion_situation_location_label: str = Field("Unknown", alias="ORION_SITUATION_LOCATION_LABEL")
     orion_situation_locality: str | None = Field(None, alias="ORION_SITUATION_LOCALITY")
@@ -247,6 +252,31 @@ class Settings(BaseSettings):
     # mislead a reply than a stale room description.
     orion_situation_affect_max_age_seconds: int = Field(
         300, alias="ORION_SITUATION_AFFECT_MAX_AGE_SECONDS"
+    )
+    # 2026-08-30: Orion's own open world-priors, folded into the situation
+    # brief. Default ON -- no private-home content. NOTE: cortex-exec has no
+    # established connection to Orion's `orion_worldview` FalkorDB graph
+    # today (only orion-hub does, via HUB_CURIOSITY_GRAPH_*) -- there is
+    # deliberately no `orion_situation_curiosity_graph_host` field here, so
+    # this flag stays enabled but the provider degrades to "unconfigured"
+    # for this process (see settings_from_runtime's own default of "" for
+    # that field). Adding the graph connection to cortex-exec too is a
+    # follow-up, not a gap in this patch's parity.
+    orion_situation_curiosity_enabled: bool = Field(
+        True, alias="ORION_SITUATION_CURIOSITY_ENABLED"
+    )
+    orion_situation_curiosity_ttl_seconds: int = Field(
+        180, alias="ORION_SITUATION_CURIOSITY_TTL_SECONDS"
+    )
+    # 2026-08-30: Orion's most recent dream/reverie interpretations. Default
+    # ON -- reuses the POSTGRES_URI this process already reads for
+    # orion/situational/perception_reader.py, via
+    # orion/situational/reverie_reader.py's identical DSN resolution.
+    orion_situation_reverie_enabled: bool = Field(
+        True, alias="ORION_SITUATION_REVERIE_ENABLED"
+    )
+    orion_situation_reverie_ttl_seconds: int = Field(
+        180, alias="ORION_SITUATION_REVERIE_TTL_SECONDS"
     )
     orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
     # 2026-08-14: "does Orion know what model it's running on" (Juniper).

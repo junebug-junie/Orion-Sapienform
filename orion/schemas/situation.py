@@ -463,6 +463,111 @@ class AffectContextV1(BaseModel):
     privacy_mode: Literal["session_only", "persist_allowed"] = "session_only"
 
 
+class CuriosityPriorSummaryV1(BaseModel):
+    """One `:Prior` node from Orion's own `orion_worldview` graph, hedged for
+    the prompt. See `CuriosityPriorContextV1`'s docstring for the exposed-
+    field contract this deliberately stays inside."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: str
+    confidence: Optional[float] = None
+    status: str = "open"
+    times_tested: int = 0
+
+
+class CuriosityPriorContextV1(BaseModel):
+    """Orion's own open world-priors, from Orion's `orion_worldview` FalkorDB
+    graph (`:Prior` nodes), for the situation brief.
+
+    Read via `orion.curiosity.worldview.WorldviewReader.read_snapshot()` --
+    the exact same producer `services/orion-hub/scripts/
+    curiosity_investigation.py`'s self-study loop already uses to decide
+    what to test next. This is a SEPARATE consumer of that same read: the
+    loop reads it to pick a prior to investigate; this reads it so a live
+    chat turn can carry a short, already-hedged flavor of what Orion
+    currently believes and how sure it is -- the same "grounding, not
+    gospel" role `AffectContextV1`/`PerceptionContextV1` play for camera
+    and mood.
+
+    Deliberately narrow: `summaries` carries only `claim`/`confidence`/
+    `status`/`times_tested` -- never `formed_from` (may reference private
+    material) or `prior_id` (an internal graph handle with no prompt use).
+    Capped small (a handful of priors, ranked by confidence -- see
+    `orion/situational/context.py`'s `_fetch_curiosity_context`) to respect
+    the prompt budget; this is color, not a dump of Orion's whole
+    worldview.
+
+    Not the endogenous-curiosity/Postgres candidate system
+    (`orion/substrate/endogenous_curiosity.py`) or `curiosity_hint.py` --
+    those are a different producer with a different consumer. This is
+    Orion's own graph-backed world-priors, read read-only via
+    `GRAPH.RO_QUERY`.
+
+    `available=False` is a real state (disabled / graph not configured /
+    empty live pool / read failure) -- same honesty contract as
+    `PerceptionContextV1.available`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["curiosity.prior_context.v1"] = "curiosity.prior_context.v1"
+    available: bool = False
+    summaries: list[CuriosityPriorSummaryV1] = Field(default_factory=list)
+    live_total: Optional[int] = None
+    # "orion_worldview" (live) | "disabled" | "unconfigured" | "unavailable" | "error"
+    source: str = "unavailable"
+
+
+class ReverieSnippetV1(BaseModel):
+    """One short reverie/dream interpretation. See `ReverieContextV1`'s
+    docstring for the exposed-field contract this deliberately stays
+    inside."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    observed_at: Optional[datetime] = None
+    salience: Optional[float] = None
+
+
+class ReverieContextV1(BaseModel):
+    """Orion's most recent dream/reverie interpretations, for the situation
+    brief.
+
+    Source: a plain SQL read of `substrate_reverie_thought` (Postgres) via
+    `orion/situational/reverie_reader.py` -- the same table Hub's reverie
+    cockpit (`services/orion-hub/scripts/reverie_routes.py`'s
+    `/api/reverie/text/recent` route) already renders for Juniper. This is a
+    second, narrower reader of that same table rather than an import of the
+    route handler's own fetch function -- `orion/` is shared code services
+    import FROM, so a route script in `services/orion-hub/` must not be
+    imported the other way round.
+
+    Deliberately NOT wired to the `orion:reverie:thought`/`orion:reverie:
+    chain` bus channels: those have zero real subscribers today, and a plain
+    SQL read of a table an established UI already trusts is a much thinner
+    seam than standing up a new bus consumer for one small feature.
+
+    Only the model's own short interpretation text, its age, and its
+    salience score cross into the prompt -- never raw generated image bytes/
+    paths, chain linkage, or diffusion-prompt internals
+    `reverie_visual_chain` carries.
+
+    `available=False` is a real state (disabled / no DSN configured / no
+    rows yet / read failure), not an error swallowed into silence -- same
+    honesty contract as `PerceptionContextV1.available`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reverie.context.v1"] = "reverie.context.v1"
+    available: bool = False
+    snippets: list[ReverieSnippetV1] = Field(default_factory=list)
+    # "reverie_sql" (live) | "disabled" | "unavailable" | "error"
+    source: str = "unavailable"
+
+
 class SituationDiagnosticsV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -499,6 +604,14 @@ class SituationBriefV1(BaseModel):
     # producer/disabled flag/probe failure yields "do not infer" rather than
     # a missing field or a stale guess.
     runtime: RuntimeContextV1 = Field(default_factory=RuntimeContextV1)
+    # Additive (2026-08-30): defaults to available=False, so an unpatched
+    # producer/disabled flag/unconfigured graph/empty pool yields "do not
+    # infer" rather than a missing field. ON by default (Juniper's explicit
+    # call) -- unlike perception, this carries no private-home content.
+    curiosity: CuriosityPriorContextV1 = Field(default_factory=CuriosityPriorContextV1)
+    # Additive (2026-08-30): same defaulting contract as curiosity above. ON
+    # by default (Juniper's explicit call).
+    reverie: ReverieContextV1 = Field(default_factory=ReverieContextV1)
     surface: SurfaceContextV1 = Field(default_factory=SurfaceContextV1)
     affordances: list[SituationAffordanceV1] = Field(default_factory=list)
     policy: SituationPolicyV1 = Field(default_factory=SituationPolicyV1)

@@ -1,0 +1,49 @@
+# Deterministic path → service mapping for scripts/rebuild_affected_services.py
+#
+# Direct rules (always applied, not listed here):
+#   services/<name>/...     → <name>
+#   orion/<subpackage>/...  → services importing orion.<subpackage> (transitive via orion/)
+#   orion/bus/...           → all services whose Dockerfile COPY orion (contract broadcast)
+#   orion/schemas/...       → same as orion/bus/
+#
+# Paths listed here extend or override the generic rules.
+
+# Contract / shared roots that affect every service baking orion into its image.
+contract_paths:
+  - orion/bus/
+  - orion/schemas/
+
+# Root-level or repo-wide paths: never trigger docker rebuild (log skip reason).
+skip_prefixes:
+  - docs/
+  - graphify-out/
+  - tests/
+  - .github/
+  - .cursor/
+  - .claude/
+  - mesh-utilities/
+
+# Single files at repo root with no runtime docker effect.
+skip_exact:
+  - AGENTS.md
+  - CLAUDE.md
+  - README.md
+  - Makefile
+  - .gitignore
+  - .env_example
+
+# scripts/<path> → services (when the script change implies redeploying those stacks).
+# Unlisted scripts/ changes are skipped with a message — rebuild manually if needed.
+script_services:
+  scripts/safe_docker_build.sh: []
+  scripts/sync_local_env_from_example.py: []
+  scripts/smoke_llm_gateway_routes.py:
+    - orion-llm-gateway
+    - orion-hub
+  scripts/smoke_harness_finalize_lane.py:
+    - orion-harness-governor
+    - orion-cortex-exec
+
+# Optional manual overrides for orion subpackages when import scanning misses a consumer.
+# Prefer keeping this empty — direct import + one orion hop should cover most cases.
+orion_package_extra_services: {}

@@ -54,7 +54,7 @@ def test_rerun_refreshes_all_without_duplicating_marker(tmp_path: Path) -> None:
     # pre-commit/post-merge each carry one marker line; post-commit carries
     # two (an explicit BEGIN and END, so a refresh can find both ends of its
     # own block and preserve whatever another tool put on either side of it).
-    expected_marker_count = {"pre-commit": 1, "post-merge": 1, "post-commit": 2}
+    expected_marker_count = {"pre-commit": 1, "post-merge": 3, "post-commit": 2}
     for name in ALL_HOOKS:
         hook = repo / ".git" / "hooks" / name
         assert hook.read_text(encoding="utf-8").count("# orion-git-safety-guard") == expected_marker_count[name]

@@ -68,11 +68,25 @@ class TestProbeExemption:
     self-sealing defect of the 2026-08-23 outage, by a new route."""
 
     def test_a_probe_in_flight_clears_the_admitted_filter(self) -> None:
-        source = ast.unparse(_send_function())
-        assert "self._tripwire_probe_in_flight" in source, "probe exemption is missing entirely"
+        """Asserted on the guard's own condition, via the AST.
 
-        marker = "if allocator_admitted_ids is not None and self._tripwire_probe_in_flight"
-        assert marker in source.replace("\n", " ") or "_tripwire_probe_in_flight:" in source
+        A substring check for the probe flag is too weak: the flag is also read
+        where the probe slot is claimed, so gutting the exemption to `if False:`
+        left the name present elsewhere and the test green. Verified by mutation.
+        """
+        func = _send_function()
+        clears = [
+            node
+            for node in ast.walk(func)
+            if isinstance(node, ast.If)
+            and "allocator_admitted_ids = None" in ast.unparse(node)
+            and "_tripwire_probe_in_flight" in ast.unparse(node.test)
+        ]
+        assert clears, (
+            "no `if ...tripwire_probe_in_flight...: allocator_admitted_ids = None` "
+            "guard -- the allocator can refuse a probe, which prevents the "
+            "tripwire from ever re-arming"
+        )
 
     def test_the_exemption_comes_after_the_filter_is_built(self) -> None:
         """Exempting before the set is built would be a no-op the next

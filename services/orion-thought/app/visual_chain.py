@@ -241,6 +241,9 @@ _visual_chain_lock = asyncio.Lock()
 # re-deciding from scratch every 600s. Module-level for the same reason the
 # single-flight lock is: one worker, one process.
 _thermal_state: str = "normal"
+# Guards the read-modify-write of _thermal_state. Needed once the sensor
+# read became a real await -- see evaluate_thermal_gate.
+_thermal_state_lock = asyncio.Lock()
 
 
 def read_cabinet_temp_c() -> tuple[float | None, float | None]:
@@ -267,10 +270,30 @@ def read_cabinet_temp_c() -> tuple[float | None, float | None]:
         return None, None
 
 
-def evaluate_thermal_gate() -> ThermalVerdict:
-    """Should Orion spend GPU watts right now, given the room?"""
+async def evaluate_thermal_gate() -> ThermalVerdict:
+    """Should Orion spend GPU watts right now, given the room?
+
+    `read_cabinet_temp_c` does BLOCKING HTTP, so it runs in a thread: main.py
+    puts six concurrent tasks on this loop alongside the FastAPI /health app,
+    and a 3s socket timeout on the loop stalls every one of them. The Postgres
+    insert twenty lines down already gets this treatment; the network call is
+    the one that needed it more.
+
+    That thread hop is why the state update below needs the lock. Before it, the
+    read-modify-write of `_thermal_state` was atomic only ACCIDENTALLY -- there
+    was no await between the read and the write, so the event loop could not
+    interleave. Making the I/O properly async removes that accident, so the
+    mutual exclusion has to become explicit rather than inherited from a bug.
+    """
     global _thermal_state
-    temp_c, age_sec = read_cabinet_temp_c()
+    temp_c, age_sec = await asyncio.to_thread(read_cabinet_temp_c)
+    async with _thermal_state_lock:
+        return _apply_thermal_reading(temp_c, age_sec)
+
+
+def _apply_thermal_reading(temp_c: float | None, age_sec: float | None) -> ThermalVerdict:
+    """Classify and fold into the held state. Caller holds the lock."""
+    global _thermal_state
     verdict = thermal_state(
         temp_c=temp_c,
         age_sec=age_sec,
@@ -687,7 +710,7 @@ async def run_visual_chain_once(
     # the room is hot" is a row someone can find -- an absence would be
     # indistinguishable from the worker having died.
     if settings.thermal_gate_enabled:
-        verdict = evaluate_thermal_gate()
+        verdict = await evaluate_thermal_gate()
         if verdict.degraded:
             logger.warning(
                 "thermal gate degraded (%s): allowing GPU work on no reading",

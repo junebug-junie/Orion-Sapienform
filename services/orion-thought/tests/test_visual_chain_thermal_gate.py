@@ -116,7 +116,7 @@ class TestDegradedAndDisabled:
         disappears with no error anywhere."""
         monkeypatch.setattr(visual_chain, "read_cabinet_temp_c", lambda: (None, None))
 
-        verdict = visual_chain.evaluate_thermal_gate()
+        verdict = asyncio.run(visual_chain.evaluate_thermal_gate())
 
         assert verdict.allows_gpu_work is True
         assert verdict.degraded is True, "an allow on no reading must announce itself"
@@ -125,7 +125,7 @@ class TestDegradedAndDisabled:
     def test_a_stale_reading_does_not_latch_the_gate_shut(self, monkeypatch) -> None:
         monkeypatch.setattr(visual_chain, "read_cabinet_temp_c", lambda: (40.0, 6000.0))
 
-        verdict = visual_chain.evaluate_thermal_gate()
+        verdict = asyncio.run(visual_chain.evaluate_thermal_gate())
 
         assert verdict.allows_gpu_work is True
         assert verdict.degraded is True
@@ -135,13 +135,13 @@ class TestDegradedAndDisabled:
         monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
         monkeypatch.setattr(visual_chain, "read_cabinet_temp_c", lambda: (40.0, 1.0))
         called: list[bool] = []
-        monkeypatch.setattr(
-            visual_chain,
-            "evaluate_thermal_gate",
-            lambda: called.append(True) or visual_chain.ThermalVerdict(
+        async def _stub():
+            called.append(True)
+            return visual_chain.ThermalVerdict(
                 state="hot", temp_c=40.0, age_sec=1.0, allows_gpu_work=False, reason="x"
-            ),
-        )
+            )
+
+        monkeypatch.setattr(visual_chain, "evaluate_thermal_gate", _stub)
         _no_gpu_allowed(monkeypatch)
         persisted = _persist_spy(monkeypatch)
 
@@ -194,3 +194,36 @@ class TestSensorReader:
 
         monkeypatch.setattr(visual_chain.urllib.request, "urlopen", _boom)
         assert visual_chain.read_cabinet_temp_c() == (None, None)
+
+
+def test_the_gate_reopens_once_the_room_actually_cools(monkeypatch) -> None:
+    """The hysteresis tests only ever prove the gate STAYS SHUT. Without this,
+    mutating the state write-back to `if verdict.state == "hot"` -- which latches
+    the gate closed forever after one hot reading -- passes every other test in
+    this file. That write-back is wiring, so the pure-function tests cannot
+    reach it.
+    """
+    monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", True)
+    monkeypatch.setattr(visual_chain, "read_cabinet_temp_c", lambda: (34.0, 1.0))
+    _no_gpu_allowed(monkeypatch)
+    _persist_spy(monkeypatch)
+    asyncio.run(visual_chain.run_visual_chain_once(bus=None))
+    assert visual_chain._thermal_state == "hot"
+
+    # 28.9 is below the 30.5 hot re-arm, so the gate OPENS. It lands in
+    # `elevated` rather than `normal` because the elevated band has its own
+    # hysteresis and 28.9 is still above the 28.0 elevated re-arm -- both bands
+    # re-arm cooler than they trip, which is the whole design.
+    monkeypatch.setattr(visual_chain, "read_cabinet_temp_c", lambda: (28.9, 1.0))
+    verdict = asyncio.run(visual_chain.evaluate_thermal_gate())
+
+    assert verdict.allows_gpu_work is True, "the gate must reopen, not latch"
+    assert verdict.state == "elevated"
+    assert visual_chain._thermal_state == "elevated"
+
+    # Under the elevated re-arm too: fully back to normal.
+    monkeypatch.setattr(visual_chain, "read_cabinet_temp_c", lambda: (27.9, 1.0))
+    verdict = asyncio.run(visual_chain.evaluate_thermal_gate())
+
+    assert verdict.state == "normal"
+    assert visual_chain._thermal_state == "normal"

@@ -156,6 +156,23 @@ class Settings(BaseSettings):
         True, alias="ORION_DISPATCH_ALLOCATOR_ENFORCE"
     )
 
+    # Consecutive all-refused ticks before the allocator escalates to a
+    # notification (then hourly until it clears). 0 disables.
+    #
+    # This exists because the theater tripwire is STRUCTURALLY BLIND to a
+    # total-refusal outage: it is fed only from send paths, so with zero sends
+    # its window never fills and it returns early forever. Without this, the
+    # entire alerting surface for "Orion has dispatched nothing for hours" is a
+    # WARNING log line nobody is watching -- which is exactly the shape of the
+    # 2026-08-23 outage that ran 45 hours on a single fire-once warning.
+    #
+    # 20 ticks at the ~2s poll is roughly a minute of genuine silence: long
+    # enough not to fire on a single unlucky frame, short enough that a real
+    # stop is noticed while someone is still awake.
+    orion_dispatch_all_refused_alert_ticks: int = Field(
+        20, alias="ORION_DISPATCH_ALL_REFUSED_ALERT_TICKS"
+    )
+
     # What a not-yet-run action is assumed to cost, for the would-refuse
     # projection only. 5.0s is the live p50 measured 2026-08-21 (p95 6.5s).
     # A real allocator will use the action's OWN measured history instead --

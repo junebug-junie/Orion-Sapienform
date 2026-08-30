@@ -994,3 +994,160 @@ def test_a_non_topic_foundry_node_is_not_claimed_by_the_producer_check(
     monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: _build_store())
     body = client.get("/api/substrate/concepts/network").json()
     assert {n["origin"] for n in body["nodes"]} == {"concept"}
+
+
+# --- the network route must survive a node kind with no `label` field --------
+#
+# Live 500 on 2026-08-30: `AttributeError: 'EvidenceNodeV1' object has no
+# attribute 'label'`. The whole atlas went down.
+#
+# `synthetic_label` reads `.label`, and EvidenceNodeV1 has none. That only ever
+# worked because the gate's LEFT side (metadata["source"]) was False for every
+# node after hydration, so `and` short-circuited before touching `.label`.
+# Widening the left side to provenance.producer -- correct in itself, and the
+# fix for a different bug -- made it true for evidence nodes too, since every
+# evidence node is written by topic_foundry_adapter. The short-circuit was
+# load-bearing and nothing in the code or the tests said so.
+#
+# Every previous evidence test called `_display_labels` directly, so no test
+# ever put an evidence node through the route. These do.
+
+
+def _evidence_node(node_id, *, producer="topic_foundry_adapter"):
+    from orion.core.schemas.cognitive_substrate import (
+        EvidenceNodeV1,
+        SubstrateActivationV1,
+        SubstrateProvenanceV1,
+        SubstrateSignalBundleV1,
+    )
+
+    return EvidenceNodeV1(
+        node_id=node_id,
+        evidence_type="chat_turn",
+        content_ref="ref-1",
+        anchor_scope="world",
+        temporal=_temporal(),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="topic_foundry.run_topic",
+            source_channel="test",
+            producer=producer,
+        ),
+        signals=SubstrateSignalBundleV1(
+            confidence=0.7, salience=0.5, activation=SubstrateActivationV1(activation=0.4)
+        ),
+        metadata={},
+    )
+
+
+def test_network_route_does_not_500_on_a_node_without_a_label_field(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(
+        identity_key="c:1", node=_hydrated_topic_foundry_node("c-1", "Code Review Process")
+    )
+    store.upsert_node(identity_key="e:1", node=_evidence_node("e-1"))
+    store.upsert_edge(
+        identity_key="edge:e1-c1",
+        edge=_edge("edge-e1-c1", "e-1", "c-1", predicate="supports"),
+    )
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200, r.text
+
+    by_id = {n["id"]: n for n in r.json()["nodes"]}
+    evidence = by_id["e-1"]
+    assert evidence["synthetic_label"] is False, "a node with no label is not a synthetic label"
+    assert evidence["label"] == "Evidence for Code Review Process"
+    assert evidence["origin"] == "topic_foundry"
+
+
+def test_synthetic_label_still_flags_a_bare_topic_id_concept(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The label-less guard must not disarm the check it protects."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="c:2", node=_hydrated_topic_foundry_node("c-2", "topic_17"))
+    store.upsert_node(identity_key="e:2", node=_evidence_node("e-2"))
+    # The route only hydrates a non-concept node that an edge reaches, so the
+    # evidence node needs its supports edge to appear in the payload at all.
+    store.upsert_edge(
+        identity_key="edge:e2-c2",
+        edge=_edge("edge-e2-c2", "e-2", "c-2", predicate="supports"),
+    )
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    by_id = {n["id"]: n for n in client.get("/api/substrate/concepts/network").json()["nodes"]}
+    assert by_id["c-2"]["synthetic_label"] is True
+    assert by_id["e-2"]["synthetic_label"] is False
+
+
+def test_every_payload_field_is_readable_for_every_durable_node_kind(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A structural guard rather than one more example: build one node of each
+    durable kind and assert the route renders them all. The 500 was a field
+    access valid for one kind and absent on another, and only an all-kinds
+    sweep catches the next one of those."""
+    from orion.core.schemas.cognitive_substrate import (
+        EntityNodeV1,
+        SubstrateActivationV1,
+        SubstrateProvenanceV1,
+        SubstrateSignalBundleV1,
+    )
+    from orion.graph.analytics import GraphAnalytics  # noqa: F401  (import guard only)
+    from orion.substrate.falkor_codec import DURABLE_NODE_KINDS
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    prov = SubstrateProvenanceV1(
+        authority="local_inferred",
+        source_kind="topic_foundry.run_topic",
+        source_channel="test",
+        producer="topic_foundry_adapter",
+    )
+    sig = SubstrateSignalBundleV1(
+        confidence=0.7, salience=0.5, activation=SubstrateActivationV1(activation=0.4)
+    )
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="c:x", node=_hydrated_topic_foundry_node("c-x", "Alpha"))
+    store.upsert_node(identity_key="e:x", node=_evidence_node("e-x"))
+    store.upsert_node(
+        identity_key="n:x",
+        node=EntityNodeV1(
+            node_id="n-x",
+            label="athena",
+            entity_type="host",
+            anchor_scope="world",
+            temporal=_temporal(),
+            provenance=prov,
+            signals=sig,
+        ),
+    )
+    # every kind the store can persist must be represented above
+    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity"}
+    store.upsert_edge(
+        identity_key="edge:ex-cx", edge=_edge("edge-ex-cx", "e-x", "c-x", predicate="supports")
+    )
+    store.upsert_edge(
+        identity_key="edge:cx-nx",
+        edge=_edge("edge-cx-nx", "c-x", "n-x", predicate="associated_with"),
+    )
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200, r.text
+    nodes = r.json()["nodes"]
+    assert {n["node_kind"] for n in nodes} == {"concept", "evidence", "entity"}
+    for node in nodes:
+        assert node["label"], f"every node needs a readable label: {node}"
+        assert node["origin"] in ("topic_foundry", "concept")
+        assert isinstance(node["synthetic_label"], bool)

@@ -76,3 +76,22 @@ class SocialRoomTurnStoredV1(SocialRoomTurnV1):
 
     stored_at: str = Field(default_factory=_utcnow_iso)
 
+
+class TownContinuityTurnV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    speaker: str
+    other: str
+    text: str
+    thread_id: str
+    created_at: str
+
+
+class TownContinuityReadV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    thread_id: str
+    speaker_id: str
+    pair_turns: List[TownContinuityTurnV1] = Field(default_factory=list)
+    town_turns: List[TownContinuityTurnV1] = Field(default_factory=list)
+

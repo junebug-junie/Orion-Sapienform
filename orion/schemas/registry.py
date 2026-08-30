@@ -162,6 +162,8 @@ from orion.schemas.social_chat import (
     SocialRedactionScoreV1,
     SocialRoomTurnStoredV1,
     SocialRoomTurnV1,
+    TownContinuityReadV1,
+    TownContinuityTurnV1,
 )
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
@@ -938,6 +940,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SocialRedactionScoreV1": SocialRedactionScoreV1,
     "SocialRoomTurnV1": SocialRoomTurnV1,
     "SocialRoomTurnStoredV1": SocialRoomTurnStoredV1,
+    "TownContinuityTurnV1": TownContinuityTurnV1,
+    "TownContinuityReadV1": TownContinuityReadV1,
     "RoomClaudeRequestV1": RoomClaudeRequestV1,
     "RoomClaudeUtteranceV1": RoomClaudeUtteranceV1,
     "RoomTranscriptEntryV1": RoomTranscriptEntryV1,

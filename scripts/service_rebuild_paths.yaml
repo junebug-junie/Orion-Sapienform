@@ -8,20 +8,25 @@
 #
 # Paths listed here extend or override the generic rules.
 
-# Contract / shared roots that affect every service baking orion into its image.
-contract_paths:
-  - orion/bus/
-  - orion/schemas/
+# Contract / shared roots: intentionally NOT mass-rebuilding every COPY-orion
+# service (60+) on channels.yaml or schema edits — that duplicates
+# up_all_services_batched.sh blast radius. Rebuild named consumers manually or
+# add a narrow script_services / orion_package_extra_services entry instead.
+contract_paths: []
 
 # Root-level or repo-wide paths: never trigger docker rebuild (log skip reason).
 skip_prefixes:
   - docs/
   - graphify-out/
   - tests/
+  - orion/tests/
+  - orion/bus/
+  - orion/schemas/
   - .github/
   - .cursor/
   - .claude/
   - mesh-utilities/
+  - config/
 
 # Single files at repo root with no runtime docker effect.
 skip_exact:
@@ -43,6 +48,12 @@ script_services:
   scripts/smoke_harness_finalize_lane.py:
     - orion-harness-governor
     - orion-cortex-exec
+
+# When set (including empty list), only these orion/ subpackages fan out via
+# import index. Omit the key entirely to fan out for every orion subpackage.
+# Empty list = rebuild only services/<name>/ paths touched in the pull.
+orion_import_packages:
+  - curiosity
 
 # Optional manual overrides for orion subpackages when import scanning misses a consumer.
 # Prefer keeping this empty — direct import + one orion hop should cover most cases.

@@ -293,7 +293,7 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 ### NPC answer-first (`patches/orion-npc-answer-first.patch`)
 
-`continueConversationMessage` used to tell the model to name a new object and change subject when a topic repeated. Combined with Nico's "unreliable narrator / slippery" card, that produced quest-riddle hops (pie crumbs → oven key → elevator). The patch replaces that contract: answer the last line first, stay on their topic, no new prop or "want to...?" hook. Short farewells (`bye`) go through `leaveConversationMessage` instead of another continue.
+`continueConversationMessage` used to tell the model to name a new object and change subject when a topic repeated. Combined with Nico's "unreliable narrator / slippery" card, that produced quest-riddle hops (pie crumbs → oven key → elevator). The patch replaces that contract: answer the last line first, stay on their topic, no new prop or "want to...?" hook. If they are ending the conversation, one goodbye and nothing else.
 
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 

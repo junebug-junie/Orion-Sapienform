@@ -44,7 +44,7 @@ def test_answer_first_replaces_prop_hop_contract():
     # New contract: answer first, stay on their topic, no quest hook.
     assert "+    `Answer the last thing they said." in patch
     assert "Do not invent a new object, place, or quest" in patch
-    assert "isTownFarewell" in patch
+    assert "one short goodbye and nothing else" in patch
 
 
 def test_answer_first_start_is_not_a_quest_hook():

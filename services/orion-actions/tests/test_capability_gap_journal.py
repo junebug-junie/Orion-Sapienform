@@ -443,11 +443,16 @@ def test_producer_message_is_truncated_before_it_reaches_the_prompt() -> None:
 
 
 def test_a_later_alert_bounds_an_earlier_gap_instead_of_leaving_it_open() -> None:
-    """vision-host clears `_alerting` before it can re-arm, so alert N+1 proves
-    gap N ended -- but not when. Live consequence of NOT doing this: because
-    `vision_recovered` has never once been emitted (0 rows ever), all nine
-    vision_blind episodes since 2026-08-21 stayed permanently open and a 24h
-    window inherited every one of them.
+    """A later alert means the producer's watcher started over, so the earlier
+    gap stops accruing -- as an UPPER bound on an unknown end, not a measured one.
+
+    Corrected 2026-08-30: this test originally justified the bound by claiming
+    vision-host must clear `_alerting` before re-arming, so alert N+1 proved gap
+    N ended. Root-causing the missing `vision_recovered` records showed the arm
+    state was in-memory, so a restart re-armed it with no recovery at all. The
+    behaviour is unchanged and still right -- without it all nine vision_blind
+    episodes since 2026-08-21 stayed permanently open (`vision_recovered`: 0
+    rows, ever) and a 24h window inherited every one -- but the reason was wrong.
     """
     items = [
         _item("vision_blind", "2026-08-29T20:25:00", "blind", att_id="v1"),

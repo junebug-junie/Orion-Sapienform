@@ -128,11 +128,26 @@ lying; nothing was being asked either.
 `GraphReviewTelemetryRecorder` returns, for one store load and no extra database
 round trip, a stage-by-stage account of what each filter dropped plus the
 surface/zone histograms over the whole store. The scheduler now emits a
-`signal_intake` block naming the cause — `store_empty`, `surface_filter_rejected_all`,
-`limit_sliced_all`, `zone_filter_rejected_all`, or `healthy` — with a
-consecutive-starved-cycle counter, and `GET /api/substrate/mutation-runtime/signal-intake`
-serves the last report. The mismatch is now readable off one endpoint instead of a
-database session.
+`signal_intake` block naming the cause, with a consecutive-starved-cycle counter,
+and `GET /api/substrate/mutation-runtime/signal-intake` serves the last report.
+The mismatch is now readable off one endpoint instead of a database session.
+
+The nine reasons, each produced by a real cycle in test:
+
+| reason | meaning | starved |
+|---|---|---|
+| `healthy` | signals reached the worker | no |
+| `store_empty` | no telemetry at all | no |
+| `surface_filter_rejected_all` | rows exist, none on the required surface | yes |
+| `zone_filter_rejected_all` | rows cleared the surface filter, none in an allowed zone | yes |
+| `limit_truncated_usable_signals` | usable rows exist but the limit slice cut them | yes |
+| `signals_disabled` | routing proposals off; zero is configured | no |
+| `autonomy_disabled` | `SUBSTRATE_AUTONOMY_ENABLED=false` | no |
+| `runtime_unsupported` | store degraded/unsupported; cycle never ran | no |
+| `telemetry_override` | injected telemetry; says nothing about live intake | no |
+
+A test asserts that set is exactly producible, so the report cannot itself grow a
+branch that never fires — the failure this whole document is about.
 
 `consecutive_starved_cycles` resets on recovery rather than accumulating for the
 process lifetime: a lifetime total cannot distinguish "starved since boot" from
@@ -197,6 +212,98 @@ green, self-consistent, and producing nothing. Phase 1's falsifiability test
 ("does moving a knob observably change what Orion does?") has to be *measured on
 live data and re-measured later*, not established once at build time. A knob
 surface can go silently disjoint from its consumer exactly the way this did.
+
+## A second, unrelated defect found while instrumenting this
+
+`AdaptationCycleBudget` sets `max_signals=0` when
+`SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED=false`, and the cycle passed that
+straight into `GraphReviewTelemetryQueryV1(limit=...)` — whose `limit` field is
+`ge=1`. Turning routing proposals off would therefore raise `ValidationError`
+inside the cycle lock rather than quietly consuming no signals. Verified by
+construction, not by reading: `GraphReviewTelemetryQueryV1(limit=0)` raises.
+
+It has never fired in production only because the flag has always been `true`.
+Fixed here, in the code this patch already touches: a zero budget now short-circuits
+to "consume no signals" and reports `reason: "signals_disabled"`, which is
+explicitly not counted as starvation — a configured zero is not a fault.
+
+## Live verification
+
+Production `orion-athena-hub`, after deploying this patch:
+
+```json
+GET /api/substrate/mutation-runtime/signal-intake
+{"reason": "zone_filter_rejected_all", "starved": true,
+ "consecutive_starved_cycles": 2,
+ "tick_id": "mutation-scheduler-7939d18f-dd2d-44c6-87b0-0b2574f6f2cc",
+ "observed_at": "2026-08-30T04:55:51.613054+00:00",
+ "required_invocation_surface": "operator_review",
+ "allowed_zones": ["autonomy_graph", "self_relationship_graph"],
+ "store_total_records": 1562, "store_matched_surface": 1560,
+ "before_zone_filter": 32, "after_zone_filter": 0,
+ "usable_zone_rows_before_limit": 0,
+ "surface_histogram": {"operator_review": 1560, "chat_reflective_lane": 2},
+ "zone_histogram": {"concept_graph": 1560, "autonomy_graph": 2},
+ "matched_zone_histogram": {"concept_graph": 1560}}
+```
+
+The running system now states the diagnosis itself, arrived at independently of the
+SQL that found it.
+
+Two things in that payload are worth reading closely.
+
+**The two histograms disagree, and that disagreement is the point.** The whole-store
+`zone_histogram` reports `autonomy_graph: 2` — rows in the allowed zone, which looks
+like usable signal sitting right there. The pre-slice `matched_zone_histogram`
+reports none, because both of those rows failed the surface filter first.
+`usable_zone_rows_before_limit: 0` is what separates a genuine zone mismatch from
+limit truncation, and it is why the classification is `zone_filter_rejected_all`
+rather than `limit_truncated_usable_signals`. Had the review not caught this, the
+report would have been correct here by luck and wrong the moment a real
+`operator_review`/`autonomy_graph` row appeared behind newer traffic.
+
+**The starvation is not historical.** `store_total_records` was 1,358 when this
+investigation began and 1,562 roughly two hours later. Two hundred more rows the
+scheduler cannot use arrived while the patch was being written.
+
+## Review findings fixed
+
+A subagent review of the first commit found three material problems, all real:
+
+1. **The report could send an operator to the wrong fix.** With `limit=32` and 40
+   usable `autonomy_graph` rows sitting behind 40 newer `concept_graph` rows, the
+   cycle consumes zero and the first version blamed the zone filter — while its own
+   histogram showed 40 rows in the allowed zone. Widening `allowed_zones` would
+   change nothing. This is the same "one number, three causes" failure the patch
+   exists to remove, reproduced one layer up. Fixed with a post-filter, pre-slice
+   zone histogram (`matched_zone_histogram`) and a distinct
+   `limit_truncated_usable_signals` reason. The whole-store histogram cannot serve
+   this: on live data it counts `autonomy_graph` rows that failed the surface
+   filter and can never be used.
+2. **The test claiming to prove behaviour preservation was a tautology.**
+   `assert store.query(q) == records` compares `query_with_attrition(q)[0]` with
+   itself, because `query()` now delegates to it. The reviewer mutation-tested the
+   suite and found slice-before-sort, ascending sort, and swapped filter order all
+   passed unnoticed — a slice-before-sort would have silently fed the scheduler the
+   *oldest* rows. Replaced with assertions on record identity and order. The
+   filter-order fixture also needed rows failing *both* filters: with disjoint
+   failures the two orders produce the same `dropped_by` dict and the assertion
+   proves nothing.
+3. **A frozen report was served stamped with the current time.** Three early
+   returns bail before the report is built, so a healthy cycle followed by a
+   Postgres degradation would answer "healthy, not starved" forever while
+   `last_refreshed` ticked forward. The `disabled` and `runtime_unsupported` paths
+   now publish their own report, and every report carries the `tick_id` and
+   `observed_at` of the cycle that produced it. The lock-contention path
+   deliberately does not publish: another cycle is running and owns the report.
+
+Also fixed: an override cycle no longer publishes (it would reset the starvation
+counter), and the histogram key cap was deleted rather than kept — both keys come
+from closed pydantic Literals, so it could never bind, and its test asserted
+`len(...) <= 20` against a one-key dict.
+
+**Mutation testing:** 12 mutations attempted across both commits, 12 caught,
+including all three the reviewer found uncaught.
 
 ## Open, not addressed here
 

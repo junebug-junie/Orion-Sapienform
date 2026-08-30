@@ -195,3 +195,149 @@ def test_signal_intake_endpoint_serves_the_last_cycles_report(scheduler_env) -> 
     assert payload["data"]["reason"] == "zone_filter_rejected_all"
     assert payload["data"]["starved"] is True
     assert "source" in payload
+
+
+def test_disabled_routing_proposals_is_not_reported_as_starvation(scheduler_env, monkeypatch) -> None:
+    """max_signals drops to 0 when routing proposals are off. Building the store
+    query with limit=0 raises ValidationError (the field is ge=1) and would take
+    the cycle down inside the lock, so the zero budget is honoured directly --
+    and a configured zero must never be labelled starvation."""
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", "false")
+    scheduler_env(_live_shaped_store())
+
+    summary = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]
+    intake = summary["signal_intake"]
+
+    assert summary["status"] == "completed"
+    assert intake["reason"] == "signals_disabled"
+    assert intake["starved"] is False
+    assert intake["consecutive_starved_cycles"] == 0
+
+
+def test_no_reason_is_unreachable(scheduler_env, monkeypatch) -> None:
+    """Every reason the report can emit must be producible by some real cycle.
+    A branch nothing can reach is exactly the dead scaffolding this patch exists
+    to expose."""
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    seen = set()
+
+    scheduler_env(GraphReviewTelemetryRecorder())
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+
+    wrong_surface = GraphReviewTelemetryRecorder()
+    wrong_surface.record(_record(surface="chat_reflective_lane", zone="autonomy_graph", at=base))
+    scheduler_env(wrong_surface)
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+
+    scheduler_env(_live_shaped_store())
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+
+    healthy = _live_shaped_store()
+    healthy.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=20)))
+    scheduler_env(healthy)
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", "false")
+    scheduler_env(_live_shaped_store())
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", "true")
+
+    seen.add(
+        api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])["summary"][
+            "signal_intake"
+        ]["reason"]
+    )
+
+    truncating = GraphReviewTelemetryRecorder()
+    for i in range(4):
+        truncating.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=i)))
+    for i in range(40):
+        truncating.record(_record(surface="operator_review", zone="concept_graph", at=base + timedelta(minutes=10 + i)))
+    scheduler_env(truncating)
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ENABLED", "false")
+    api_routes.execute_substrate_mutation_scheduled_cycle()
+    seen.add(api_routes.SUBSTRATE_MUTATION_SIGNAL_INTAKE["reason"])
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ENABLED", "true")
+
+    monkeypatch.setattr(api_routes, "substrate_autonomy_runtime_supported", lambda: (False, "mutation_store_degraded"))
+    api_routes.execute_substrate_mutation_scheduled_cycle()
+    seen.add(api_routes.SUBSTRATE_MUTATION_SIGNAL_INTAKE["reason"])
+
+    assert seen == {
+        "store_empty",
+        "surface_filter_rejected_all",
+        "zone_filter_rejected_all",
+        "limit_truncated_usable_signals",
+        "healthy",
+        "signals_disabled",
+        "telemetry_override",
+        "autonomy_disabled",
+        "runtime_unsupported",
+    }
+
+
+def test_limit_truncation_is_not_blamed_on_the_zone_filter(scheduler_env) -> None:
+    """40 usable signals sitting in the store while the cycle consumes zero, because
+    the newest `limit` rows all landed in a zone this cycle rejects. Calling that a
+    zone mismatch sends an operator to widen `allowed_zones`, which changes nothing.
+    """
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store = GraphReviewTelemetryRecorder()
+    for i in range(40):  # usable, older
+        store.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=i)))
+    for i in range(40):  # newer, wrong zone -- these win the 32-row slice
+        store.record(_record(surface="operator_review", zone="concept_graph", at=base + timedelta(minutes=100 + i)))
+    scheduler_env(store)
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
+    assert intake["reason"] == "limit_truncated_usable_signals"
+    assert intake["starved"] is True
+    assert intake["after_zone_filter"] == 0
+    assert intake["usable_zone_rows_before_limit"] == 40
+
+
+def test_a_bailing_cycle_does_not_leave_a_stale_healthy_report(scheduler_env, monkeypatch) -> None:
+    """A healthy report must not outlive the cycle that produced it. Postgres
+    degrading turns every later tick into a no-op that never reaches signal
+    intake; the endpoint answering "healthy, not starved" for weeks after is the
+    same silent-zero failure this patch exists to remove."""
+    healthy = _live_shaped_store()
+    healthy.record(
+        _record(surface="operator_review", zone="autonomy_graph", at=datetime(2026, 8, 30, 12, 30, tzinfo=timezone.utc))
+    )
+    scheduler_env(healthy)
+    assert api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"] == "healthy"
+
+    monkeypatch.setattr(api_routes, "substrate_autonomy_runtime_supported", lambda: (False, "mutation_store_degraded"))
+    api_routes.execute_substrate_mutation_scheduled_cycle()
+
+    published = api_routes.api_substrate_mutation_runtime_signal_intake()["data"]
+    assert published["reason"] == "runtime_unsupported"
+    assert published["detail"] == "mutation_store_degraded"
+    assert published["starved"] is False
+
+
+def test_an_override_cycle_does_not_clobber_the_live_report(scheduler_env) -> None:
+    """Injected telemetry says nothing about live intake. Letting it publish would
+    reset the starvation counter the report exists to maintain."""
+    scheduler_env(_live_shaped_store())
+    api_routes.execute_substrate_mutation_scheduled_cycle()
+    api_routes.execute_substrate_mutation_scheduled_cycle()
+    assert api_routes.SUBSTRATE_MUTATION_SIGNAL_INTAKE["consecutive_starved_cycles"] == 2
+
+    api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])
+
+    live = api_routes.SUBSTRATE_MUTATION_SIGNAL_INTAKE
+    assert live["reason"] == "zone_filter_rejected_all"
+    assert live["consecutive_starved_cycles"] == 2
+
+
+def test_the_report_is_stamped_with_the_tick_that_produced_it(scheduler_env) -> None:
+    scheduler_env(_live_shaped_store())
+    result = api_routes.execute_substrate_mutation_scheduled_cycle()
+    intake = result["summary"]["signal_intake"]
+    assert intake["tick_id"] == result["tick_id"]
+    assert intake["observed_at"]

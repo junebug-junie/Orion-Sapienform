@@ -15,11 +15,6 @@ from orion.core.schemas.substrate_review_telemetry import (
     GraphReviewTelemetrySummaryV1,
 )
 
-# Attrition histograms are diagnostic, not a data feed: bound them so a store with
-# unexpectedly high-cardinality surfaces/zones cannot grow the scheduler log payload
-# without limit.
-_ATTRITION_HISTOGRAM_MAX_KEYS = 20
-
 
 @dataclass
 class GraphReviewTelemetryRecorder:
@@ -109,6 +104,10 @@ class GraphReviewTelemetryRecorder:
             records = self._load_from_sql()
 
         total_records = len(records)
+        # Unbounded on purpose: invocation_surface and target_zone are closed
+        # Literals enforced by pydantic on every write and read path, so these
+        # histograms are structurally capped at 2 and 5 keys. A cap here would be
+        # ceremony that can never fire.
         surface_histogram = Counter(str(r.invocation_surface or "unknown") for r in records)
         zone_histogram = Counter(str(r.target_zone or "unknown") for r in records)
         dropped_by: dict[str, int] = {}
@@ -138,6 +137,7 @@ class GraphReviewTelemetryRecorder:
             )
         records = sorted(records, key=lambda r: r.selected_at, reverse=True)
         matched = len(records)
+        matched_zone_histogram = Counter(str(r.target_zone or "unknown") for r in records)
         returned = records[: query.limit]
         attrition = {
             "total_records": total_records,
@@ -145,8 +145,15 @@ class GraphReviewTelemetryRecorder:
             "returned": len(returned),
             "limit": query.limit,
             "dropped_by": dropped_by,
-            "surface_histogram": dict(surface_histogram.most_common(_ATTRITION_HISTOGRAM_MAX_KEYS)),
-            "zone_histogram": dict(zone_histogram.most_common(_ATTRITION_HISTOGRAM_MAX_KEYS)),
+            "surface_histogram": dict(surface_histogram),
+            "zone_histogram": dict(zone_histogram),
+            # Zones among the rows that PASSED the other filters but before the
+            # limit slice. A caller whose own downstream zone filter drops
+            # everything needs this to tell "no usable rows exist" from "usable
+            # rows exist but the limit sliced them off the end" -- the whole-store
+            # histogram above cannot, because it also counts rows this query
+            # already rejected.
+            "matched_zone_histogram": dict(matched_zone_histogram),
             # Distinguishes the three ways a consumer legitimately sees zero.
             "starved": bool(total_records > 0 and matched == 0),
         }

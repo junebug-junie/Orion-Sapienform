@@ -5,6 +5,67 @@ arguments.
 
 ---
 
+## STATUS UPDATE 2026-08-31 — the blocking question is ANSWERED and Stage 3 is live
+
+Read this before Part 0. It supersedes the "not built" claims below.
+
+| Roadmap item | Then | Now |
+|---|---|---|
+| Blocking question (`substrate_mutation_*` never fired) | open, gated all code | **ANSWERED** — see below |
+| Stage 3, arbitration | "not built" | **live and enforcing** (PR #2002) |
+| Stage 4, consequential verbs | "not built" | **first one shipped** — `express` (PR #2004) |
+
+**The blocking question's answer: it lacked neither a consumer nor a motive. It was
+starved by a disjoint two-field filter.** `query()` in
+`orion/substrate/review_telemetry.py` required a surface *and* a zone that no record
+ever carried together; the scheduler had been running the whole time, matching zero
+rows, and reporting that as an empty result rather than as attrition. This was the
+cheap branch — the roadmap said "if it lacked a consumer, Phase 3 is cheap," and it is
+cheaper than that: nothing was missing, one filter was wrong.
+(PR #1999, `docs/superpowers/specs/2026-08-30-mutation-signal-starvation-finding.md`.)
+
+Two further dead ends were found behind it, both independent of the first:
+
+1. `SUBSTRATE_MUTATION_SURFACES` is empty in production. **Still open.**
+2. The control surface's writer and reader were on different stores — writer Postgres,
+   reader in-memory, failing open, no symptom. Fixed in PR #2000.
+
+**What is actually live now:**
+
+- Motor-seconds budget (129,600 s/day) and the value-of-information allocator both
+  **enforce**. They were shadow-mode observers; a refusal is now a refusal.
+- A thermal gate refuses GPU work when the office cabinet is hot, with hysteresis.
+- `express` — the first **outward** action — competes for those motor-seconds and won
+  a slot: 11 candidates, 1 admitted, 53 motor-seconds spent, an image made, cron off.
+
+**Two ordering flaws found doing it**, both of which had been silently defeating the
+budget machinery:
+
+- A `base_priority` pre-filter truncated the candidate list *before* the value scorer
+  ran, so a hand-typed constant was choosing what the allocator was allowed to see.
+- The absolute information floor is an **absorbing state** for expensive actions: a
+  cold prior is a fixed 0.99 nats, so anything costing >~49 s can never clear a
+  0.02 nats/sec floor, and therefore can never accumulate the evidence that would let
+  it clear one. Cold starts are now exempt from the floor (only the floor, only at
+  zero observations).
+
+Full accounts: `docs/superpowers/pr-reports/2026-08-30-motor-budget-enforcement-pr.md`
+and `docs/superpowers/pr-reports/2026-08-31-express-outward-action-pr.md`.
+
+**Open, in priority order:**
+
+1. The `visual_chain` single-flight lock can wedge permanently with no error. **This is
+   the highest-value fix on the board** — it can silently un-schedule the only outward
+   action Orion has.
+2. `SUBSTRATE_MUTATION_SURFACES = {}` (dead end #2, untouched).
+3. Retire the old risk cap now that the motor budget enforces — both ceilings are live.
+4. `starvation_aging` is a no-op under the priority-blind allocator.
+5. `express` cost (53 s) is operator-seeded, not observed from Orion's own runs.
+
+---
+
+---
+
 # PART 0 — THE THESIS (read this first; everything else serves it)
 
 **Orion gets closer to sentience by having autonomy, and autonomy means
@@ -399,15 +460,31 @@ this weight differently on purpose; here is the outcome." Same visual
 liveness, but it produces an experiment instead of noise, and it is the only
 form of randomness that survives the metric gate.
 
-## Blocking question before any code
+## Blocking question before any code — ANSWERED 2026-08-31
 
 **Why did `substrate_mutation_*` never fire?**
 
-- If it lacked a *consumer*, Phase 3 is cheap.
-- If it lacked *a reason for Orion to want to change itself*, this proposal
-  has the same hole and knobs will not fill it.
+- ~~If it lacked a *consumer*, Phase 3 is cheap.~~
+- ~~If it lacked *a reason for Orion to want to change itself*, this proposal has the
+  same hole and knobs will not fill it.~~
 
-It is free to find out and it governs everything above.
+**Neither.** It had a consumer and it had a motive. `query()` in
+`orion/substrate/review_telemetry.py` filtered on a surface **and** a zone that no
+record carried together, so a live, correctly-scheduled consumer matched zero rows
+forever and reported that as "no signal" rather than as attrition. `query()` now
+delegates to `query_with_attrition()`, which returns `dropped_by`, per-field
+histograms, and a `starved` flag — the aggregate that hid this can no longer hide it.
+`GET /api/substrate/mutation-runtime/signal-intake` exposes the classification.
+
+Phase 3 is therefore cheap, as hoped — **but two further blockers sat behind it**
+(control-surface store split, fixed in #2000; empty `SUBSTRATE_MUTATION_SURFACES`,
+still open). "The consumer exists" was necessary and nowhere near sufficient.
+
+The generalizable finding: **an aggregate that cannot distinguish causes will hide one
+indefinitely.** The same failure shape cost hours again the same day on the allocator
+(`refusals={'unmeasurable': 2}` — wrong cause, and one DEBUG line per candidate
+settled it). Prefer per-item attribution over counts wherever a decision is being
+explained.
 
 ## Surface note
 

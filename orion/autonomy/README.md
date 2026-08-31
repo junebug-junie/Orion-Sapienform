@@ -1,3 +1,58 @@
+## Program status (2026-08-31): the budget ENFORCES, and Orion made a choice
+
+`orion/autonomy/allocator.py` and the motor-seconds budget stopped being observers.
+Until 2026-08-30 both ran in shadow mode -- `motor_allocator_preview` logged what
+*would* have been refused and the dispatcher then sent everything anyway. As of
+PR #2002 they enforce, and as of PR #2004 there is something outward for them to
+choose between.
+
+**The first real choice, live:** 11 candidates in one tick, 1 admitted, 10 refused,
+53 motor-seconds spent on making an image -- with the visual chain's 600 s cron
+switched **off**. The action ran because it won on value-per-motor-second, not
+because a timer fired.
+
+### Two ordering flaws that had been defeating this machinery
+
+Both are worth remembering, because both made the allocator look like it was working
+while it was being bypassed:
+
+1. **A priority pre-filter ran before the value scorer.** `max_dispatch_candidates: 5`
+   truncated the candidate list by hand-authored `base_priority` *before* `allocate()`
+   saw it -- so a constant was choosing what the value machinery was allowed to
+   consider. Raised to 50 (above the 11/frame observed live). The real send caps
+   (`max_dispatches_per_tick`, the budget, the allocator) are untouched.
+
+2. **The information floor is an absorbing state for expensive actions.** A cold
+   posterior yields a fixed `0.5*ln(1+sigma^2/tau^2)` ~ 0.99 nats. Divided by cost,
+   **anything costing more than ~49 s can never clear a 0.02 nats/sec floor** -- and so
+   can never accumulate the observations that would let it clear one. The floor was
+   refusing an action that was 71x better per second than the best alternative
+   (`0.018517` vs `0.000259`) and reporting "nothing worth doing".
+
+   `Candidate.cold_start` now exempts **zero-observation** candidates from the
+   information floor, and only from that floor: the harm gate, the cost requirement,
+   the ordering, and the daily allowance all still apply, and the exemption ends at the
+   first observation. **The floor was not lowered** -- its job is retiring things we
+   have *learned* are uninformative, which it cannot do to something never measured.
+
+### Diagnostic lesson (cost hours, twice in one day)
+
+`refusals={'unmeasurable': 2}` -- an aggregate that says *how many* but never *which* --
+led to a confidently wrong diagnosis. One DEBUG line per candidate settled it in
+seconds. The same shape had just cost hours on `substrate_mutation_*` starvation
+(PR #1999). **An aggregate that cannot distinguish causes will hide one indefinitely.**
+
+### Known defect, unfixed
+
+`services/orion-thought/app/visual_chain.py`'s single-flight lock can wedge: observed
+returning `already_in_flight` while circe was idle, cleared only by a container restart.
+A severed HTTP request appears to leave it held, which silently makes the only outward
+action permanently unschedulable, with no error. Highest-value open fix here.
+
+Full accounts: `docs/superpowers/pr-reports/2026-08-30-motor-budget-enforcement-pr.md`,
+`docs/superpowers/pr-reports/2026-08-31-express-outward-action-pr.md`, and the roadmap
+at `docs/superpowers/specs/2026-08-30-self-calibration-roadmap-and-session-handoff.md`.
+
 ## Program status (2026-07-30 update): drives-system DELETED, not just halted
 
 The 2026-07-18 halt described below has been followed through: `orion.spark.concept_induction.

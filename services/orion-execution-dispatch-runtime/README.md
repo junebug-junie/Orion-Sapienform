@@ -2,6 +2,33 @@
 
 Layer 9 of the Orion cognition substrate: converts `PolicyDecisionFrameV1` + `ProposalFrameV1` into `ExecutionDispatchFrameV1` envelopes. `field_tick_id` is carried straight off `PolicyDecisionFrameV1.source_field_tick_id` -- 2026-07-22 (SelfStateV1 burn), no separate `SelfStateV1` dependency.
 
+## Budget enforcement status (2026-08-31): ENFORCING, not preview
+
+`ORION_DISPATCH_MOTOR_BUDGET_ENFORCE` and `ORION_DISPATCH_ALLOCATOR_ENFORCE` are both
+**true** in production as of PR #2002. Before that they were false and this service
+logged `motor_allocator_preview` and then dispatched the full candidate list anyway --
+if you are reading an incident from before 2026-08-30, the refusals in those logs never
+happened.
+
+What that means operationally:
+
+- A tick can now legitimately send **zero** dispatches. That is a decision, not a fault.
+  `motor_allocator_refused_everything` warns only after
+  `ORION_DISPATCH_ALL_REFUSED_ALERT_TICKS` (20) consecutive all-refused ticks, so a
+  genuinely quiet system does not page and a stuck one does.
+- Every refusal is stamped with `ALLOCATOR_BLOCK_REASON` on the frame. Prefer that
+  per-candidate reason over the aggregate refusal histogram when diagnosing -- the
+  histogram gives counts, not causes, and has produced a confidently wrong diagnosis
+  (see `orion/autonomy/README.md`, 2026-08-31).
+- The dispatch **tripwire probe is exempt** from the budget, deliberately: an exhausted
+  budget must not look identical to a dead dispatcher.
+- `max_dispatch_candidates` is 50, not 5. It is a guard against unbounded frames, **not**
+  a selection mechanism -- selection is the allocator's job. Lowering it back toward the
+  number of candidates per frame silently re-imposes `base_priority` ordering on top of
+  the value scorer. The real send cap is `max_dispatches_per_tick`.
+- `starvation_aging` is currently a **no-op**: the allocator is priority-blind, so aging
+  a priority changes nothing downstream. Open item.
+
 ## Safety
 
 - Policy default mode: `mode.default_dispatch_mode: dry_run`. A deployment that never sets

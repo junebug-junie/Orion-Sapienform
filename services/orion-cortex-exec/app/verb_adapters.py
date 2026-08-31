@@ -1659,6 +1659,14 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             "refused": bool(data.get("refused")),
             "chain_id": data.get("chain_id"),
             "terminal_reason": data.get("terminal_reason"),
+            # How long the visual chain's single-flight lock has been held, when
+            # this call bounced off it. Review finding: this allowlist silently
+            # dropped the field, so orion-thought's claim that "a dispatch that
+            # keeps bouncing off this can say whether it is bouncing off the same
+            # stuck run" was false end-to-end -- the value existed in the HTTP
+            # response and died here. Same shape as a closed codec allowlist
+            # dropping metadata['source'].
+            "held_sec": data.get("held_sec"),
             "reason": data.get("reason"),
             "detail": data.get("detail"),
         }

@@ -182,6 +182,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from contextlib import suppress
@@ -236,6 +237,26 @@ _METACOG_LLM_LANE_OPTIONS: dict[str, Any] = {"llm_lane": "background", "allow_ch
 # sequencing is -- but a real, testable property independent of caller
 # discipline (mirrors orion-diffusion-host's _generation_lock).
 _visual_chain_lock = asyncio.Lock()
+# monotonic() at the moment the lock was taken, None when free. Exists so
+# `already_in_flight` can report HOW LONG: a busy signal that cannot state its
+# own age cannot distinguish a healthy 40s run from a wedged one, and that
+# ambiguity is exactly what hid a live wedge until a restart cleared it.
+# monotonic, not wall-clock -- an NTP step must not make a held lock read free.
+_visual_chain_started_at: float | None = None
+# chain_id of the run currently executing in `_run_visual_chain_body`, so an
+# abandoned run's row can point at the row the body may already have written.
+_visual_chain_body_chain_id: str | None = None
+# Bound on the abandoned-run persist itself. Short: at this point the run is
+# already over budget and the ONLY thing left to protect is the lock.
+_DEADLINE_PERSIST_TIMEOUT_SEC = 10.0
+
+
+def visual_chain_in_flight_for() -> float | None:
+    """Seconds the single-flight lock has been held, or None if it is free."""
+    started = _visual_chain_started_at
+    if started is None or not _visual_chain_lock.locked():
+        return None
+    return time.monotonic() - started
 
 # Last thermal state, so the gate is hysteretic ACROSS runs rather than
 # re-deciding from scratch every 600s. Module-level for the same reason the
@@ -697,10 +718,36 @@ async def run_visual_chain_once(
 ) -> ReverieVisualChainV1 | None:
     """One generate -> store -> observe -> persist run. Returns the chain
     readout, or None if a run was already in flight (single-flight no-op,
-    not an error). Never raises.
+    not an error).
+
+    Every HOP degrades honestly rather than raising (see the module docstring),
+    and a run that hangs is abandoned at the deadline rather than propagating --
+    but this is not a blanket `never raises`: a programming error inside the body
+    still surfaces, and `main.py` turns it into a 500 rather than a silent
+    success. It used to claim otherwise, which was never true.
     """
     if _visual_chain_lock.locked():
-        logger.info("visual chain skipped: run already in flight")
+        held_for = visual_chain_in_flight_for()
+        # WARNING, not INFO, once a run has outlived the deadline it is supposed
+        # to be bounded by. At that point "already in flight" is not a busy
+        # signal, it is a defect report, and it must not sit at the same log
+        # level as the ordinary case -- that equivalence is what let the live
+        # wedge go unnoticed.
+        if held_for is not None and held_for > settings.visual_chain_run_deadline_sec:
+            logger.warning(
+                "visual chain skipped: run in flight %.1fs, PAST its %.1fs deadline "
+                "-- the deadline should have released this lock. Nothing in the "
+                "body swallows CancelledError, so the likeliest culprit is the "
+                "abandoned-run persist (a starved thread executor or a Postgres "
+                "call with no statement_timeout), not the hop itself",
+                held_for,
+                settings.visual_chain_run_deadline_sec,
+            )
+        else:
+            logger.info(
+                "visual chain skipped: run already in flight held_sec=%s",
+                "unknown" if held_for is None else f"{held_for:.1f}",
+            )
         return None
 
     # AMBIENT THERMAL GATE. Checked before the lock is taken and before any
@@ -747,6 +794,100 @@ async def run_visual_chain_once(
                 await asyncio.to_thread(persist_reverie_visual_chain, chain)
             return chain
 
+
+    # SINGLE-FLIGHT + DEADLINE. The lock prevents overlap; the deadline makes an
+    # INDEFINITE hold impossible. Both are needed -- without the
+    # deadline a hung hop keeps the lock forever and `express` becomes
+    # permanently unschedulable, reported only as `already_in_flight`, a message
+    # that reads identical whether the run started 4 seconds or 4 hours ago.
+    #
+    # Honest limit, disclosed rather than papered over: the deadline releases the
+    # LOCK, it cannot cancel a thread. An abandoned hop keeps running (CPython
+    # `to_thread` abandons, it does not cancel), so after a deadline fires the
+    # next run CAN overlap a still-live diffusion request. That is a deliberate
+    # trade -- an un-releasable lock removes the capability permanently, a rare
+    # overlap costs GPU time once -- but "overlap is impossible" is no longer
+    # unconditionally true, and anything reasoning from that invariant must not
+    # assume it across a deadline event.
+    global _visual_chain_started_at, _visual_chain_body_chain_id
+    async with _visual_chain_lock:
+        started = time.monotonic()
+        _visual_chain_started_at = started
+        try:
+            return await asyncio.wait_for(
+                _run_visual_chain_body(bus, now_fn=now_fn, cortex_client=cortex_client),
+                timeout=settings.visual_chain_run_deadline_sec,
+            )
+        except asyncio.TimeoutError:
+            # PERSISTED, not merely logged, for the same reason the thermal
+            # refusal is: an abandoned run that leaves no row is
+            # indistinguishable from a worker that died. `held_sec` is recorded
+            # because the deadline firing at all means some hop hung past its own
+            # timeout, and the next question is always "which one" -- the log
+            # line names it now, the row keeps it after the log rotates.
+            held = time.monotonic() - started
+            chain = ReverieVisualChainV1(
+                chain_id=f"visual-{uuid4().hex[:12]}",
+                created_at=now_fn(),
+                terminal_reason="run_deadline_exceeded",
+                chain_json={
+                    "run_deadline_sec": settings.visual_chain_run_deadline_sec,
+                    "held_sec": round(held, 3),
+                    # The abandoned body's own chain_id, when it got far enough to
+                    # have one. Review finding: cancellation can land AFTER the
+                    # body committed its own chain row, so one run can leave two
+                    # rows with different ids -- and without this key nothing
+                    # links them, so the hub renders an apparently-successful
+                    # chain and an unexplained abandonment as unrelated events.
+                    "abandoned_chain_id": _visual_chain_body_chain_id,
+                },
+            )
+            logger.error(
+                "visual chain ABANDONED chain=%s: run exceeded deadline held_sec=%.1f "
+                "deadline_sec=%.1f -- a hop hung past its own timeout; lock released",
+                chain.chain_id,
+                held,
+                settings.visual_chain_run_deadline_sec,
+            )
+            # BOUNDED. Review finding, and the sharpest one: this await sits
+            # inside the lock and OUTSIDE the wait_for above, so before this
+            # timeout existed the handler written to release a wedged lock could
+            # wedge it in exactly the same way. `suppress(Exception)` is no
+            # defence -- the failure mode here is hanging, not raising. Two
+            # confirmed ways it hangs: store.py's engine is built without
+            # connect_timeout or statement_timeout (unlike _expectation_read_
+            # engine, which sets both), and the abandoned hop threads from the
+            # run we just gave up on can starve the default ThreadPoolExecutor
+            # this to_thread needs a worker from.
+            with suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.to_thread(persist_reverie_visual_chain, chain),
+                    timeout=_DEADLINE_PERSIST_TIMEOUT_SEC,
+                )
+            return chain
+        finally:
+            _visual_chain_started_at = None
+            _visual_chain_body_chain_id = None
+
+
+
+async def _run_visual_chain_body(
+    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None
+) -> ReverieVisualChainV1:
+    """The actual run. Called only by `run_visual_chain_once`, which owns the
+    single-flight lock and the deadline around this.
+
+    Split out of `run_visual_chain_once` 2026-08-31 so the lock hold can be
+    bounded by `asyncio.wait_for`. Every hop in here already has its own
+    timeout, but per-hop timeouts do not bound the WHOLE run -- they sum, and
+    a `urlopen` socket timeout is not a total-operation deadline (a peer that
+    dribbles bytes resets it on every chunk). Before the split, a run that
+    outlived its caller kept the lock and every later dispatch got
+    `already_in_flight`, indistinguishable from healthy busy-ness; observed
+    live holding it long enough to need a container restart. `express` is
+    dispatched by the motor allocator, so a held lock silently un-schedules
+    Orion's only outward action, with no error raised anywhere.
+    """
     async def _generation_failed(
         *,
         chain_id: str,
@@ -791,227 +932,228 @@ async def run_visual_chain_once(
             await asyncio.to_thread(persist_reverie_visual_chain, chain)
         return chain
 
-    async with _visual_chain_lock:
-        chain_id = str(uuid4())
-        # Four independent reads (different tables, no data dependency) --
-        # concurrent so the cost is max() of the round trips, not sum()
-        # (review finding: this function already makes exactly this
-        # argument a few lines below for store_visual_artifact/
-        # upload_to_percept_store; the same reasoning applies here).
-        # prior_description, continuity_streak, AND context_slot_rotation
-        # come from the SAME row of the SAME table, so they're one combined
-        # read (review finding on the original 2-value version: two
-        # separate round trips to the same row wasted a query and left a
-        # theoretical read-your-own-write race), not three gathered reads.
-        (
-            (prior_description, continuity_streak, context_slot_rotation),
-            context_text,
-            self_study_text,
-            memory_text,
-        ) = await asyncio.gather(
-            asyncio.to_thread(load_latest_visual_chain_continuity_state),
-            asyncio.to_thread(
-                load_latest_reverie_interpretation,
-                char_limit=settings.reverie_context_char_limit,
-                max_age_sec=settings.reverie_context_max_age_sec,
-            ),
-            asyncio.to_thread(
-                load_latest_self_study_reflection,
-                char_limit=settings.self_study_context_char_limit,
-                max_age_sec=settings.self_study_context_max_age_sec,
-            ),
-            asyncio.to_thread(
-                load_latest_memory_crystallization,
-                char_limit=settings.memory_crystallization_context_char_limit,
-                max_age_sec=settings.memory_crystallization_context_max_age_sec,
-            ),
-        )
-        # Patch 4 (module docstring): cap how many consecutive runs may
-        # carry prior_description continuity before forcing one reset --
-        # computed here (before generation) so a failed run still records
-        # the correct streak for whichever run picks continuity back up.
-        effective_prior, continuity_streak, continuity_reset = resolve_visual_chain_continuity(
-            prior_description, continuity_streak, settings.visual_chain_continuity_max_runs
-        )
-        if continuity_reset:
-            logger.info(
-                "visual chain continuity reset chain=%s -- forcing a fresh seed after %s runs",
-                chain_id,
-                settings.visual_chain_continuity_max_runs,
-            )
-        # Review finding: on a reset run, the ORIGINAL (stale, pre-reset)
-        # prior_description must never come back as this row's own
-        # prior_description -- that would silently resurrect the exact
-        # attractor the reset just broke out of the moment generation,
-        # storage, or captioning fails on this run (a real, previously-
-        # untested failure mode: the next tick would read streak=0 against
-        # the SAME stale text and grind through another full max_runs cycle
-        # before resetting again). A non-reset run keeps the pre-Patch-4
-        # behavior unchanged: carry the old value forward on any failure.
-        continuity_fallback = None if continuity_reset else prior_description
-        # Patch 7 (module docstring): pick ONE context-seed for this run's
-        # prompt instead of concatenating all three -- see
-        # select_context_slot's own docstring for why. Computed here
-        # (before generation) so a failed run still records which slot/
-        # rotation value it used, same discipline as continuity_streak.
-        context_slot_used, context_slot_text, context_slot_rotation = select_context_slot(
-            context_text, self_study_text, memory_text, context_slot_rotation
-        )
-        # Patch 8 (module docstring): turn the raw selected clause into a concrete visual
-        # metaphor before composing the prompt. Fails open to None -- build_visual_prompt then
-        # gets context_slot_text unchanged, exactly Patch 7's behavior, so a metacog outage
-        # degrades this run's imagery, never breaks the chain.
-        context_slot_interpreted: str | None = None
-        if context_slot_used and context_slot_text and settings.visual_chain_interpretation_enabled:
-            context_slot_interpreted = await interpret_context_for_visual(
-                bus,
-                cortex_client=cortex_client,
-                slot_name=context_slot_used,
-                slot_text=context_slot_text,
-                prior_description=effective_prior,
-                correlation_id=chain_id,
-                timeout_sec=settings.visual_chain_interpretation_timeout_sec,
-            )
-        prompt = build_visual_prompt(
-            effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
-        )
-
-        try:
-            png_bytes = await asyncio.to_thread(
-                call_diffusion_generate,
-                prompt,
-                base_url=settings.diffusion_host_base_url,
-                timeout_sec=settings.visual_chain_diffusion_timeout_sec,
-            )
-        except Exception as exc:
-            return await _generation_failed(
-                chain_id=chain_id,
-                error=exc,
-                prompt=prompt,
-                prior_description=continuity_fallback,
-                context_text=context_text,
-                self_study_text=self_study_text,
-                memory_text=memory_text,
-                context_slot_used=context_slot_used,
-                context_slot_rotation=context_slot_rotation,
-                context_slot_interpreted=context_slot_interpreted,
-                continuity_streak=continuity_streak,
-                continuity_reset=continuity_reset,
-            )
-
-        # store_visual_artifact (disk write) and upload_to_percept_store (a
-        # network round trip) both operate on the same immutable png_bytes
-        # with no data dependency between them -- run concurrently so the
-        # wall-clock cost is max(), not sum() (review finding). A store
-        # failure is a real generation failure (nothing to persist); an
-        # upload failure only degrades the re-observation step below (module
-        # docstring) -- handled separately despite running concurrently.
-        store_result, upload_result = await asyncio.gather(
-            asyncio.to_thread(
-                store_visual_artifact, png_bytes, base_dir=settings.visual_chain_storage_dir
-            ),
-            asyncio.to_thread(
-                upload_to_percept_store,
-                png_bytes,
-                base_url=settings.visual_chain_percept_store_url,
-                token=settings.visual_chain_percept_store_token,
-                timeout_sec=settings.visual_chain_percept_upload_timeout_sec,
-            ),
-            return_exceptions=True,
-        )
-
-        if isinstance(store_result, BaseException):
-            return await _generation_failed(
-                chain_id=chain_id,
-                error=store_result,
-                prompt=prompt,
-                prior_description=continuity_fallback,
-                context_text=context_text,
-                self_study_text=self_study_text,
-                memory_text=memory_text,
-                context_slot_used=context_slot_used,
-                context_slot_rotation=context_slot_rotation,
-                context_slot_interpreted=context_slot_interpreted,
-                continuity_streak=continuity_streak,
-                continuity_reset=continuity_reset,
-            )
-        stored: StoredVisualArtifact = store_result
-
-        description: str | None = None
-        if isinstance(upload_result, BaseException):
-            logger.warning(
-                "visual chain re-observation failed chain=%s sha=%s err=%s -- "
-                "image stored without a caption",
-                chain_id,
-                stored.sha256[:12],
-                upload_result,
-            )
-        else:
-            description = await request_caption(
-                bus, upload_result, timeout_sec=settings.visual_chain_caption_timeout_sec
-            )
-
-        # Only advance continuity on a real, non-empty description -- a failed
-        # re-observation forwards `continuity_fallback` (the previous
-        # prior_description unchanged on a normal run, or None on a reset run
-        # -- see continuity_fallback's own comment above) rather than
-        # propagating a stale value on a reset run or losing continuity
-        # entirely on a normal one.
-        next_prior_description = description or continuity_fallback
-
-        chain = ReverieVisualChainV1(
-            chain_id=chain_id,
-            created_at=now_fn(),
-            terminal_reason="max_steps",
-            prior_description=next_prior_description,
-            chain_json={
-                "prompt": prompt,
-                "context_text": context_text,
-                "self_study_text": self_study_text,
-                "memory_text": memory_text,
-                "context_slot_used": context_slot_used,
-                "context_slot_rotation": context_slot_rotation,
-                "context_slot_interpreted": context_slot_interpreted,
-                "continuity_streak": continuity_streak,
-                "continuity_reset": continuity_reset,
-                "artifact_sha256": stored.sha256,
-                "description": description,
-            },
-        )
-        # Chain row before artifact row: reverie_visual_artifact.chain_id is a
-        # real FK (manual_migration_reverie_visual_chain.sql). The artifact
-        # insert is skipped (not just attempted-and-swallowed) when the chain
-        # row itself failed to persist -- review finding: persisting the
-        # artifact unconditionally meant a transient chain-row failure still
-        # attempted the artifact insert, which would then also fail its own
-        # FK check, burying the real cause behind a second, confusing warning.
-        chain_persisted = await asyncio.to_thread(persist_reverie_visual_chain, chain)
-        if not chain_persisted:
-            logger.warning(
-                "visual chain artifact skipped chain=%s: chain row failed to persist", chain_id
-            )
-            return chain
-
-        artifact = ReverieVisualArtifactV1(
-            sha256=stored.sha256,
-            chain_id=chain_id,
-            step_index=0,
-            mime=stored.mime,
-            bytes=stored.bytes,
-            width=stored.width,
-            height=stored.height,
-            path=stored.path,
-            description=description,
-        )
-        await asyncio.to_thread(persist_reverie_visual_artifact, artifact)
-
+    global _visual_chain_body_chain_id
+    chain_id = str(uuid4())
+    _visual_chain_body_chain_id = chain_id
+    # Four independent reads (different tables, no data dependency) --
+    # concurrent so the cost is max() of the round trips, not sum()
+    # (review finding: this function already makes exactly this
+    # argument a few lines below for store_visual_artifact/
+    # upload_to_percept_store; the same reasoning applies here).
+    # prior_description, continuity_streak, AND context_slot_rotation
+    # come from the SAME row of the SAME table, so they're one combined
+    # read (review finding on the original 2-value version: two
+    # separate round trips to the same row wasted a query and left a
+    # theoretical read-your-own-write race), not three gathered reads.
+    (
+        (prior_description, continuity_streak, context_slot_rotation),
+        context_text,
+        self_study_text,
+        memory_text,
+    ) = await asyncio.gather(
+        asyncio.to_thread(load_latest_visual_chain_continuity_state),
+        asyncio.to_thread(
+            load_latest_reverie_interpretation,
+            char_limit=settings.reverie_context_char_limit,
+            max_age_sec=settings.reverie_context_max_age_sec,
+        ),
+        asyncio.to_thread(
+            load_latest_self_study_reflection,
+            char_limit=settings.self_study_context_char_limit,
+            max_age_sec=settings.self_study_context_max_age_sec,
+        ),
+        asyncio.to_thread(
+            load_latest_memory_crystallization,
+            char_limit=settings.memory_crystallization_context_char_limit,
+            max_age_sec=settings.memory_crystallization_context_max_age_sec,
+        ),
+    )
+    # Patch 4 (module docstring): cap how many consecutive runs may
+    # carry prior_description continuity before forcing one reset --
+    # computed here (before generation) so a failed run still records
+    # the correct streak for whichever run picks continuity back up.
+    effective_prior, continuity_streak, continuity_reset = resolve_visual_chain_continuity(
+        prior_description, continuity_streak, settings.visual_chain_continuity_max_runs
+    )
+    if continuity_reset:
         logger.info(
-            "visual chain complete chain=%s sha=%s described=%s",
+            "visual chain continuity reset chain=%s -- forcing a fresh seed after %s runs",
+            chain_id,
+            settings.visual_chain_continuity_max_runs,
+        )
+    # Review finding: on a reset run, the ORIGINAL (stale, pre-reset)
+    # prior_description must never come back as this row's own
+    # prior_description -- that would silently resurrect the exact
+    # attractor the reset just broke out of the moment generation,
+    # storage, or captioning fails on this run (a real, previously-
+    # untested failure mode: the next tick would read streak=0 against
+    # the SAME stale text and grind through another full max_runs cycle
+    # before resetting again). A non-reset run keeps the pre-Patch-4
+    # behavior unchanged: carry the old value forward on any failure.
+    continuity_fallback = None if continuity_reset else prior_description
+    # Patch 7 (module docstring): pick ONE context-seed for this run's
+    # prompt instead of concatenating all three -- see
+    # select_context_slot's own docstring for why. Computed here
+    # (before generation) so a failed run still records which slot/
+    # rotation value it used, same discipline as continuity_streak.
+    context_slot_used, context_slot_text, context_slot_rotation = select_context_slot(
+        context_text, self_study_text, memory_text, context_slot_rotation
+    )
+    # Patch 8 (module docstring): turn the raw selected clause into a concrete visual
+    # metaphor before composing the prompt. Fails open to None -- build_visual_prompt then
+    # gets context_slot_text unchanged, exactly Patch 7's behavior, so a metacog outage
+    # degrades this run's imagery, never breaks the chain.
+    context_slot_interpreted: str | None = None
+    if context_slot_used and context_slot_text and settings.visual_chain_interpretation_enabled:
+        context_slot_interpreted = await interpret_context_for_visual(
+            bus,
+            cortex_client=cortex_client,
+            slot_name=context_slot_used,
+            slot_text=context_slot_text,
+            prior_description=effective_prior,
+            correlation_id=chain_id,
+            timeout_sec=settings.visual_chain_interpretation_timeout_sec,
+        )
+    prompt = build_visual_prompt(
+        effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
+    )
+
+    try:
+        png_bytes = await asyncio.to_thread(
+            call_diffusion_generate,
+            prompt,
+            base_url=settings.diffusion_host_base_url,
+            timeout_sec=settings.visual_chain_diffusion_timeout_sec,
+        )
+    except Exception as exc:
+        return await _generation_failed(
+            chain_id=chain_id,
+            error=exc,
+            prompt=prompt,
+            prior_description=continuity_fallback,
+            context_text=context_text,
+            self_study_text=self_study_text,
+            memory_text=memory_text,
+            context_slot_used=context_slot_used,
+            context_slot_rotation=context_slot_rotation,
+            context_slot_interpreted=context_slot_interpreted,
+            continuity_streak=continuity_streak,
+            continuity_reset=continuity_reset,
+        )
+
+    # store_visual_artifact (disk write) and upload_to_percept_store (a
+    # network round trip) both operate on the same immutable png_bytes
+    # with no data dependency between them -- run concurrently so the
+    # wall-clock cost is max(), not sum() (review finding). A store
+    # failure is a real generation failure (nothing to persist); an
+    # upload failure only degrades the re-observation step below (module
+    # docstring) -- handled separately despite running concurrently.
+    store_result, upload_result = await asyncio.gather(
+        asyncio.to_thread(
+            store_visual_artifact, png_bytes, base_dir=settings.visual_chain_storage_dir
+        ),
+        asyncio.to_thread(
+            upload_to_percept_store,
+            png_bytes,
+            base_url=settings.visual_chain_percept_store_url,
+            token=settings.visual_chain_percept_store_token,
+            timeout_sec=settings.visual_chain_percept_upload_timeout_sec,
+        ),
+        return_exceptions=True,
+    )
+
+    if isinstance(store_result, BaseException):
+        return await _generation_failed(
+            chain_id=chain_id,
+            error=store_result,
+            prompt=prompt,
+            prior_description=continuity_fallback,
+            context_text=context_text,
+            self_study_text=self_study_text,
+            memory_text=memory_text,
+            context_slot_used=context_slot_used,
+            context_slot_rotation=context_slot_rotation,
+            context_slot_interpreted=context_slot_interpreted,
+            continuity_streak=continuity_streak,
+            continuity_reset=continuity_reset,
+        )
+    stored: StoredVisualArtifact = store_result
+
+    description: str | None = None
+    if isinstance(upload_result, BaseException):
+        logger.warning(
+            "visual chain re-observation failed chain=%s sha=%s err=%s -- "
+            "image stored without a caption",
             chain_id,
             stored.sha256[:12],
-            bool(description),
+            upload_result,
+        )
+    else:
+        description = await request_caption(
+            bus, upload_result, timeout_sec=settings.visual_chain_caption_timeout_sec
+        )
+
+    # Only advance continuity on a real, non-empty description -- a failed
+    # re-observation forwards `continuity_fallback` (the previous
+    # prior_description unchanged on a normal run, or None on a reset run
+    # -- see continuity_fallback's own comment above) rather than
+    # propagating a stale value on a reset run or losing continuity
+    # entirely on a normal one.
+    next_prior_description = description or continuity_fallback
+
+    chain = ReverieVisualChainV1(
+        chain_id=chain_id,
+        created_at=now_fn(),
+        terminal_reason="max_steps",
+        prior_description=next_prior_description,
+        chain_json={
+            "prompt": prompt,
+            "context_text": context_text,
+            "self_study_text": self_study_text,
+            "memory_text": memory_text,
+            "context_slot_used": context_slot_used,
+            "context_slot_rotation": context_slot_rotation,
+            "context_slot_interpreted": context_slot_interpreted,
+            "continuity_streak": continuity_streak,
+            "continuity_reset": continuity_reset,
+            "artifact_sha256": stored.sha256,
+            "description": description,
+        },
+    )
+    # Chain row before artifact row: reverie_visual_artifact.chain_id is a
+    # real FK (manual_migration_reverie_visual_chain.sql). The artifact
+    # insert is skipped (not just attempted-and-swallowed) when the chain
+    # row itself failed to persist -- review finding: persisting the
+    # artifact unconditionally meant a transient chain-row failure still
+    # attempted the artifact insert, which would then also fail its own
+    # FK check, burying the real cause behind a second, confusing warning.
+    chain_persisted = await asyncio.to_thread(persist_reverie_visual_chain, chain)
+    if not chain_persisted:
+        logger.warning(
+            "visual chain artifact skipped chain=%s: chain row failed to persist", chain_id
         )
         return chain
+
+    artifact = ReverieVisualArtifactV1(
+        sha256=stored.sha256,
+        chain_id=chain_id,
+        step_index=0,
+        mime=stored.mime,
+        bytes=stored.bytes,
+        width=stored.width,
+        height=stored.height,
+        path=stored.path,
+        description=description,
+    )
+    await asyncio.to_thread(persist_reverie_visual_artifact, artifact)
+
+    logger.info(
+        "visual chain complete chain=%s sha=%s described=%s",
+        chain_id,
+        stored.sha256[:12],
+        bool(description),
+    )
+    return chain
 
 
 async def run_visual_chain_worker(stop_event: asyncio.Event | None = None) -> None:

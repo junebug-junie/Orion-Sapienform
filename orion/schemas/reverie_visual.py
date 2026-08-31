@@ -42,6 +42,16 @@ VisualTerminalReason = Literal[
     "refractory",
     "low_salience",
     "generation_failed",
+    # Added 2026-08-31. The whole run exceeded ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC
+    # and was abandoned so the single-flight lock could be released. Distinct from
+    # "generation_failed" (a hop returned an error) -- here a hop never returned at
+    # all. Safe to add: the column is plain `text` with no CHECK constraint
+    # (manual_migration_reverie_visual_chain.sql), and every cross-service reader
+    # (orion-hub reverie_routes.py / reverie-tab.js, orion-cortex-exec
+    # verb_adapters.py) passes the string through without validating it -- unlike
+    # the closed vocabularies in policy_decision_frame.py, where a stale consumer
+    # rejects the WHOLE frame (that failure was hit live 2026-08-30, PR #2004).
+    "run_deadline_exceeded",
     # Orion declined to spend GPU watts because the room the GPU heats is too
     # warm for the person in it. Recorded as a terminal reason rather than a
     # silent skip on purpose: a refusal that leaves no row is indistinguishable

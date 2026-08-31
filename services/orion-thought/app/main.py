@@ -157,7 +157,7 @@ async def visual_chain_run_once() -> JSONResponse:
     the watts. Returning nothing on a refusal would make it look like a crash.
     """
     from orion.core.bus.async_service import OrionBusAsync
-    from .visual_chain import run_visual_chain_once
+    from .visual_chain import run_visual_chain_once, visual_chain_in_flight_for
 
     # Own short-lived connection rather than sharing the worker's: the worker
     # holds its bus inside its own loop and is not reachable from here, and a
@@ -172,7 +172,21 @@ async def visual_chain_run_once() -> JSONResponse:
     if chain is None:
         # Single-flight no-op: a run was already in progress. Distinct from a
         # refusal, and the caller has to be able to tell them apart.
-        return JSONResponse({"ok": True, "ran": False, "reason": "already_in_flight"})
+        #
+        # `held_sec` is reported because "already in flight" alone is ambiguous
+        # between a healthy ~53s run and a wedged lock -- and that ambiguity is
+        # exactly what hid a live wedge (2026-08-31) until a restart cleared it.
+        # A caller now gets the age, so a dispatch that keeps bouncing off this
+        # can say whether it is bouncing off the same stuck run.
+        held_sec = visual_chain_in_flight_for()
+        return JSONResponse(
+            {
+                "ok": True,
+                "ran": False,
+                "reason": "already_in_flight",
+                "held_sec": None if held_sec is None else round(held_sec, 1),
+            }
+        )
     return JSONResponse(
         {
             "ok": True,

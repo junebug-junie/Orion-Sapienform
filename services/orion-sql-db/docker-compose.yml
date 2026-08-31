@@ -32,6 +32,26 @@ services:
       # small per-execution bookkeeping overhead. Defaults kept (max=5000, track=top).
       - -c
       - shared_preload_libraries=pg_stat_statements
+      # Connection ceiling. Declared here because the postgres:15 DEFAULT of 100 is
+      # what we were silently running on, and 25 distinct clients had grown into it:
+      # measured 97/100 in use on 2026-08-31, with psql refused three times by
+      # `FATAL: sorry, too many clients already` while investigating. Note the
+      # effective ceiling for services is max_connections MINUS
+      # superuser_reserved_connections (3), i.e. 97 -- which is exactly where we sat.
+      # This is not a leak: only 8 of 94 idle connections were idle >2h; the rest are
+      # live pool connections cycling normally (last query COMMIT/ROLLBACK). ~25 clients
+      # each holding a SQLAlchemy pool (default pool_size=5 + max_overflow=10) can
+      # legitimately want ~375, and orion-sql-writer alone is configured to burst to 38
+      # (SQL_WRITER_DB_POOL_SIZE=10 + MAX_OVERFLOW=20, plus grammar 4+4).
+      # Cost: ~5-10MB of backend memory per connection, so 300 is ~1.5-3GB against the
+      # 16g mem_limit above -- affordable, especially with shared_buffers still at the
+      # 128MB default.
+      # Deliberately NOT paired with idle_session_timeout: pool_pre_ping is set at only
+      # 38 of the create_engine sites in this repo, so reaping idle sessions would turn a
+      # capacity problem into scattered checkout errors in every pool that lacks it.
+      # Watch headroom with: python3 scripts/check_postgres_connection_headroom.py
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-300}
       - -c
       - autovacuum_work_mem=256MB
       - -c

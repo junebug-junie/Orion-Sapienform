@@ -19,10 +19,19 @@ properties that matter are (1) ON by default in orion-hub, the only process
 with the `/run/orion-sensors` bind mount, (2) every failure mode (disabled /
 unconfigured / missing file / stale frame / empty measurements / read
 exception) degrades to an honest "unavailable" state rather than a guess or
-an exception, and (3) the rendered prompt line only calls out an
-`*_activity` pressure as "notable" when it clears
-`_CABINET_ACTIVITY_NOTABLE_THRESHOLD`, not on every non-zero volatility
-reading.
+an exception, and (3) the rendered prompt line states raw measurements only
+-- the `*_activity` (0-1 EWMA volatility) fields stay on the schema but are
+deliberately NOT narrated as "elevated"/"notable" (see
+`test_activity_pressures_are_not_narrated` below for why: no live-calibrated
+threshold exists yet for any of the 5 domains, CLAUDE.md 0A step 3/4).
+
+2026-08-31 review pass fixed three more real defects found live while
+writing this feature, each with its own regression test below: a data race
+on the shared `_CABINET_TRACKER` EWMA state across concurrent
+`asyncio.to_thread` calls, a malformed empty prompt line when `available`
+is `True` but no rendered field is populated, and `x or DEFAULT` silently
+discarding an explicit `0`/`""` override for `cabinet_stale_after_sec` and
+`CABINET_SENSORS_PATH`.
 """
 
 from __future__ import annotations
@@ -227,6 +236,59 @@ def test_fetch_live_snapshot_populates_measurements_and_pressures(tmp_path: Path
     assert ctx.proximity_activity is not None
 
 
+def test_tracker_mutation_holds_the_dedicated_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for a real race (review finding, 2026-08-31): two chat
+    turns landing on a cache-miss at the same time can both call
+    `compute_cabinet_pressures` concurrently on different `asyncio.to_thread`
+    pool threads, corrupting `_CABINET_TRACKER`'s shared EWMA state via a
+    non-atomic read-modify-write. Asserts the call is actually made while
+    `_CABINET_TRACKER_LOCK` is held, rather than trying (and risking
+    flakiness) to reproduce the race itself."""
+    path = tmp_path / "latest.json"
+    _write_snapshot(path)
+    cfg = _cfg(cabinet_enabled=True, cabinet_sensors_path=str(path))
+    real_compute = situation_mod.compute_cabinet_pressures
+    seen = {}
+
+    def _spy(measurements, tracker):
+        seen["locked"] = situation_mod._CABINET_TRACKER_LOCK.locked()
+        return real_compute(measurements, tracker)
+
+    monkeypatch.setattr(situation_mod, "compute_cabinet_pressures", _spy)
+    ctx = situation_mod._fetch_cabinet_context(cfg)
+    assert ctx.available is True
+    assert seen.get("locked") is True
+
+
+def test_cabinet_stale_after_sec_zero_is_not_silently_replaced() -> None:
+    """`x or DEFAULT` (review finding, 2026-08-31) would silently discard an
+    explicit 0.0 (a deliberate zero-tolerance staleness window) and
+    substitute 10.0 instead."""
+    cfg = settings_from_runtime(
+        SimpleNamespace(orion_situation_cabinet_stale_after_sec=0.0)
+    )
+    assert cfg.cabinet_stale_after_sec == 0.0
+
+
+def test_hub_adapter_cabinet_stale_after_sec_zero_is_not_silently_replaced() -> None:
+    hub_settings = SimpleNamespace(CABINET_SENSORS_STALE_AFTER_SEC=0.0)
+    cfg = settings_from_runtime(situation_mod.hub_settings_to_runtime_namespace(hub_settings))
+    assert cfg.cabinet_stale_after_sec == 0.0
+
+
+def test_hub_adapter_cabinet_sensors_path_empty_string_is_not_silently_replaced() -> None:
+    """Same `x or DEFAULT` class of bug for the sensor path: an operator
+    setting `CABINET_SENSORS_PATH=` to deliberately disable the read (same
+    meaning `_fetch_cabinet_context`'s own "unconfigured" state already
+    gives an empty path) must not be silently reverted to the default
+    path."""
+    hub_settings = SimpleNamespace(CABINET_SENSORS_PATH="")
+    cfg = settings_from_runtime(situation_mod.hub_settings_to_runtime_namespace(hub_settings))
+    assert cfg.cabinet_sensors_path == ""
+
+
 @pytest.mark.asyncio
 async def test_build_cabinet_context_fail_open_on_read_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     diag = _diag()
@@ -313,30 +375,96 @@ def test_unavailable_cabinet_renders_no_line_at_all() -> None:
     assert "cabinet" not in text.lower()
 
 
-def test_notable_activity_is_called_out() -> None:
+def test_activity_pressures_are_not_narrated() -> None:
+    """Deliberately NOT rendered as interpretive text (review finding,
+    2026-08-31, CLAUDE.md 0A step 3/4): the `*_activity` fields stay on the
+    schema for debug/future use, but this file has no live-calibrated
+    threshold for any of the 5 domains, so nothing here should assert
+    "elevated"/"notable" from a raw activity number -- even a saturated
+    1.0 reading."""
     brief = _brief(
         CabinetContextV1(
             available=True,
             source="cabinet_sensors",
             temp_c=24.6,
             vibration_g=0.05,
-            vibration_activity=0.95,
+            vibration_activity=1.0,
+            proximity_activity=1.0,
+            em_activity=1.0,
+            climate_activity=1.0,
+            particulate_activity=1.0,
+            uv_activity=1.0,
         )
     )
     text = _build_prompt_fragment(brief, 4000).compact_text
-    assert "Notably: elevated vibration" in text
+    assert "Notably" not in text
+    assert "elevated" not in text.lower()
 
 
-def test_sub_threshold_activity_is_not_called_out() -> None:
-    """Continuous EWMA volatility reads a little above zero constantly --
-    only a genuinely elevated reading should earn a sentence."""
+def test_widened_measurement_fields_render() -> None:
+    """pressure_hpa/uv_raw/pm25_ug_m3 (review finding, 2026-08-31: absent
+    from the original `parts` list, which only covered 6 of the schema's
+    measurement fields) now render alongside the original set."""
     brief = _brief(
         CabinetContextV1(
             available=True,
             source="cabinet_sensors",
-            temp_c=24.6,
-            vibration_activity=0.1,
+            pressure_hpa=950.0,
+            uv_raw=17.0,
+            pm25_ug_m3=4.0,
         )
     )
     text = _build_prompt_fragment(brief, 4000).compact_text
-    assert "Notably:" not in text
+    assert "pressure=950hPa" in text
+    assert "uv=17" in text
+    assert "pm2.5=4.0ug/m3" in text
+
+
+def test_available_with_no_renderable_field_omits_line_not_malformed() -> None:
+    """Reproduced live (review finding, 2026-08-31): available=True with
+    none of the rendered fields populated used to produce the literal
+    malformed line "Your cabinet sensors (read just now): .". A real frame
+    reporting only unrendered channels (e.g. PM1/PM10 without PM2.5, or IMU
+    orientation alone) must omit the line instead."""
+    brief = _brief(
+        CabinetContextV1(
+            available=True,
+            source="cabinet_sensors",
+            pm1_ug_m3=2.0,
+            pm10_ug_m3=5.0,
+            imu_yaw_deg=1.0,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "cabinet" not in text.lower()
+    assert ": ." not in text
+
+
+def _maximal_cabinet() -> CabinetContextV1:
+    return CabinetContextV1(
+        available=True,
+        source="cabinet_sensors",
+        age_seconds=5.0,
+        device="athena-nano-a + athena-nano-b",
+        temp_c=24.6,
+        humidity_pct=45.0,
+        pressure_hpa=950.0,
+        gas_resistance_ohm=12000.0,
+        uv_raw=17.0,
+        magnetic_ut=53.0,
+        pm25_ug_m3=4.0,
+        vibration_g=0.012,
+        lidar_mm=438.0,
+    )
+
+
+def test_cabinet_line_fits_easily_within_the_tight_1200_budget_alongside_cautions() -> None:
+    """Defense in depth (review finding, 2026-08-31): a maximal cabinet
+    reading must not, by itself, be able to push the tight historical
+    1200-char budget (test_situation_curiosity_reverie_context.py's own
+    fixture at this same cap) into dropping cautions -- mirrors that file's
+    test_fragment_stays_within_the_old_tight_1200_budget_with_everything_
+    present, scoped to just this section's own contribution."""
+    fragment = _build_prompt_fragment(_brief(_maximal_cabinet()), 1200)
+    assert len(fragment.compact_text) <= 1200
+    assert "not a requirement to mention" in fragment.compact_text

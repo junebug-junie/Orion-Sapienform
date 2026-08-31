@@ -31,7 +31,10 @@ from orion.telemetry.cabinet_sensors import (
     compute_cabinet_pressures,
     extract_cabinet_measurements,
 )
-from orion.telemetry.cabinet_snapshot_merge import load_merged_cabinet_sensors
+from orion.telemetry.cabinet_snapshot_merge import (
+    device_label_from_sources,
+    load_merged_cabinet_sensors,
+)
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
@@ -76,6 +79,16 @@ _CABINET_CACHE: dict[str, tuple[datetime, CabinetContextV1]] = {}
 # would mean one consumer's read cadence silently perturbs another's
 # baseline.
 _CABINET_TRACKER = CabinetSensorTracker(CabinetPressureConfig())
+# `_fetch_cabinet_context` runs inside `asyncio.to_thread` (review finding,
+# 2026-08-31): two chat turns landing within the same TTL window right as
+# the cache expires can both miss the cache and both call
+# `compute_cabinet_pressures` concurrently on different pool threads, doing
+# a non-atomic read-modify-write on `_CABINET_TRACKER`'s shared
+# `EwmaBand`/`InductionTracker` state. A separate lock from `_LOCK` above --
+# that one already guards every OTHER provider's cache dict, and reusing it
+# here would serialize this tracker's mutation with all of those for no
+# reason.
+_CABINET_TRACKER_LOCK = threading.Lock()
 
 # 2026-08-30, Juniper's explicit request: raised from the original 1200 (6x)
 # now that the harness runs a large-context model -- the old cap was sized
@@ -123,14 +136,6 @@ _CURIOSITY_MAX_PRIORS = 2
 _CURIOSITY_CLAIM_MAX_CHARS = 110
 _REVERIE_MAX_SNIPPETS = 2
 _REVERIE_SNIPPET_MAX_CHARS = 110
-# Cutoff for calling a cabinet `*_activity` pressure "notable" in the prompt
-# line below, rather than every non-zero volatility reading (these are
-# continuous EWMA volatility signals, not events -- a raw >0 reading is
-# routine noise, not something worth a sentence). Reuses the same 0.6 split
-# `_build_prompt_fragment` already uses for affect confidence ("low
-# confidence -- hold loosely" below 0.6), for one consistent "notable"
-# vocabulary in this file rather than a second unrelated constant.
-_CABINET_ACTIVITY_NOTABLE_THRESHOLD = 0.6
 # NOTE: session turn-timestamp state (_SESSION_LAST_USER_TURN /
 # _SESSION_LAST_ORION_TURN, formerly in-process dicts here) now lives in
 # Redis via session_turn_phase.py -- see that module's docstring for why.
@@ -362,8 +367,13 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         cabinet_sensors_b_path=str(
             getattr(settings, "orion_situation_cabinet_sensors_b_path", "") or ""
         ),
+        # Plain getattr default, no `or` fallback (review finding,
+        # 2026-08-31: `x or DEFAULT` silently discards an explicitly
+        # configured 0.0 -- see feedback_or_default_silently_eats_a_
+        # configured_zero.md). Matches every sibling ttl/max-age field in
+        # this function.
         cabinet_stale_after_sec=float(
-            getattr(settings, "orion_situation_cabinet_stale_after_sec", 10.0) or 10.0
+            getattr(settings, "orion_situation_cabinet_stale_after_sec", 10.0)
         ),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
@@ -479,13 +489,18 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_cabinet_ttl_seconds=int(
             getattr(cfg, "ORION_SITUATION_CABINET_TTL_SECONDS", 30)
         ),
+        # Plain getattr defaults, no `or` fallback (review finding,
+        # 2026-08-31: `x or DEFAULT` silently discards an explicit "" (an
+        # operator's deliberate way to disable the sensor-file read, same
+        # meaning `_fetch_cabinet_context`'s own "unconfigured" state
+        # already gives an empty path) or 0.0 -- see
+        # feedback_or_default_silently_eats_a_configured_zero.md).
         orion_situation_cabinet_sensors_path=str(
             getattr(cfg, "CABINET_SENSORS_PATH", "/run/orion-sensors/latest.json")
-            or "/run/orion-sensors/latest.json"
         ),
-        orion_situation_cabinet_sensors_b_path=str(getattr(cfg, "CABINET_SENSORS_B_PATH", "") or ""),
+        orion_situation_cabinet_sensors_b_path=str(getattr(cfg, "CABINET_SENSORS_B_PATH", "")),
         orion_situation_cabinet_stale_after_sec=float(
-            getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0) or 10.0
+            getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
         ),
         orion_situation_perception_enabled=False,
         orion_situation_perception_max_age_seconds=900,
@@ -1094,21 +1109,14 @@ def _fetch_cabinet_context(cfg: SituationSettings) -> CabinetContextV1:
 
     # `_CABINET_TRACKER` is process-persistent by design (module-level
     # singleton) -- the EWMA baseline it maintains is only meaningful if fed
-    # every real sample this process reads, not reset per call.
-    pressures = compute_cabinet_pressures(measurements, _CABINET_TRACKER)
+    # every real sample this process reads, not reset per call. Locked
+    # (review finding, 2026-08-31): this function runs inside
+    # `asyncio.to_thread`, and the tracker's own read-modify-write is not
+    # atomic -- see `_CABINET_TRACKER_LOCK`'s own comment.
+    with _CABINET_TRACKER_LOCK:
+        pressures = compute_cabinet_pressures(measurements, _CABINET_TRACKER)
 
-    device: Optional[str] = None
-    sources_meta = merged.get("sources")
-    if isinstance(sources_meta, dict):
-        devices = [
-            meta.get("device")
-            for meta in sources_meta.values()
-            if isinstance(meta, dict) and meta.get("device")
-        ]
-        if len(devices) == 1:
-            device = devices[0]
-        elif devices:
-            device = " + ".join(str(d) for d in devices)
+    device = device_label_from_sources(merged.get("sources"))
 
     return CabinetContextV1(
         available=True,
@@ -1780,6 +1788,17 @@ async def _build_reverie_context(
     return ctx
 
 
+def _recency_phrase(age_seconds: Optional[float]) -> str:
+    """"just now" / "N min ago" -- shared by every section below that reads
+    an observation's age (perception/affect/cabinet). Extracted (review
+    finding, 2026-08-31) after this exact one-liner turned up duplicated a
+    third time verbatim: a future change to the phrasing (e.g. an "hours
+    ago" tier, or the <1-minute boundary) previously had to be hunted down
+    and applied identically in three places."""
+    age_min = round((age_seconds or 0) / 60)
+    return "just now" if age_min < 1 else f"{age_min} min ago"
+
+
 def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> SituationPromptFragmentV1:
     lines = [
         f"Local context: {brief.time.time_of_day_label.replace('_', ' ')} {brief.time.weekday}, {brief.time.timezone}.",
@@ -1828,53 +1847,55 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     # missing.
     if brief.cabinet.available:
         cab = brief.cabinet
-        age_min = round((cab.age_seconds or 0) / 60)
-        seen = "just now" if age_min < 1 else f"{age_min} min ago"
         parts = []
         if cab.temp_c is not None:
             parts.append(f"temp={cab.temp_c:.1f}C")
         if cab.humidity_pct is not None:
             parts.append(f"humidity={cab.humidity_pct:.0f}%")
+        if cab.pressure_hpa is not None:
+            parts.append(f"pressure={cab.pressure_hpa:.0f}hPa")
         if cab.gas_resistance_ohm is not None:
             parts.append(f"air_quality_gas={cab.gas_resistance_ohm:.0f}ohm")
+        if cab.uv_raw is not None:
+            parts.append(f"uv={cab.uv_raw:.0f}")
         if cab.magnetic_ut is not None:
             parts.append(f"magnetic_field={cab.magnetic_ut:.1f}uT")
+        if cab.pm25_ug_m3 is not None:
+            parts.append(f"pm2.5={cab.pm25_ug_m3:.1f}ug/m3")
         if cab.vibration_g is not None:
             parts.append(f"vibration={cab.vibration_g:.3f}g")
         if cab.lidar_mm is not None:
             parts.append(f"nearest_object={cab.lidar_mm:.0f}mm")
-        # Activity pressures are continuous EWMA volatility, not events -- a
-        # small non-zero reading is routine noise. Only surface the ones
-        # clearly above baseline (see _CABINET_ACTIVITY_NOTABLE_THRESHOLD's
-        # own comment for why 0.6) so this line says something Orion should
-        # actually notice, not restate five numbers that are always moving
-        # a little.
-        notable = []
-        if (cab.vibration_activity or 0) > _CABINET_ACTIVITY_NOTABLE_THRESHOLD:
-            notable.append("elevated vibration")
-        if (cab.proximity_activity or 0) > _CABINET_ACTIVITY_NOTABLE_THRESHOLD:
-            notable.append("something near the cabinet")
-        if (cab.em_activity or 0) > _CABINET_ACTIVITY_NOTABLE_THRESHOLD:
-            notable.append("magnetic field shift")
-        if (cab.climate_activity or 0) > _CABINET_ACTIVITY_NOTABLE_THRESHOLD:
-            notable.append("climate shift")
-        if (cab.particulate_activity or 0) > _CABINET_ACTIVITY_NOTABLE_THRESHOLD:
-            notable.append("air particulate shift")
-        line = f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + "."
-        if notable:
-            line += " Notably: " + ", ".join(notable) + "."
-        lines.append(line)
+        # Deliberately NOT narrating the `*_activity` (0-1 baseline-relative
+        # EWMA volatility) fields as "elevated"/"notable" here (review
+        # finding, 2026-08-31, CLAUDE.md 0A step 3/4): an earlier version of
+        # this block called out any activity pressure above a borrowed 0.6
+        # cutoff (copied from an unrelated affect-confidence split) with no
+        # live cabinet-sensor history checked against any of the 5 domains
+        # to confirm 0.6 is not degenerate for THAT specific channel. The
+        # raw activity numbers stay on `CabinetContextV1` for debug/future
+        # use; interpretive narration is deferred until a real threshold is
+        # calibrated per-domain against real data, not shipped as a guess.
+        #
+        # `if parts` guard (review finding, 2026-08-31): a real frame can
+        # report only channels not listed above (e.g. only PM1/PM10 without
+        # PM2.5, or only IMU orientation) -- reproduced live, an earlier
+        # version rendered the malformed "Your cabinet sensors (read just
+        # now): ." in that case. Omit the whole line rather than emit an
+        # empty claim; same "no assertion when there is nothing to assert"
+        # rule the unavailable case above already follows.
+        if parts:
+            seen = _recency_phrase(cab.age_seconds)
+            lines.append(f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + ".")
     if brief.perception.available and brief.perception.scene_summary:
-        age_min = round((brief.perception.observation_age_seconds or 0) / 60)
-        seen = "just now" if age_min < 1 else f"{age_min} min ago"
+        seen = _recency_phrase(brief.perception.observation_age_seconds)
         lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")
     else:
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
     if brief.affect.available and brief.affect.summary:
-        age_min = round((brief.affect.observation_age_seconds or 0) / 60)
-        seen = "just now" if age_min < 1 else f"{age_min} min ago"
+        seen = _recency_phrase(brief.affect.observation_age_seconds)
         if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":
             # The vision backend is handed NO audio at all. Saying "no speech
             # detected" here would claim we listened and heard silence, which

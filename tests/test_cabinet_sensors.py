@@ -102,6 +102,22 @@ def test_missing_subpayload_omits_its_keys_not_zero():
     assert m["cabinet_temp_c"] == 24.6
 
 
+def test_imu_orientation_measurements_present_when_imu_block_present():
+    m = extract_cabinet_measurements(_sensors())
+    assert m["cabinet_imu_yaw_deg"] == 0.0
+    assert m["cabinet_imu_pitch_deg"] == 0.0
+    assert m["cabinet_imu_roll_deg"] == 0.0
+    assert m["cabinet_vibration_g"] == 0.0
+
+
+def test_imu_orientation_absent_when_imu_block_missing():
+    frame = _frame()
+    del frame["imu"]
+    m = extract_cabinet_measurements({"frame": frame, "stale": False})
+    assert "cabinet_imu_yaw_deg" not in m
+    assert "cabinet_vibration_g" not in m
+
+
 def test_vibration_g_at_rest_is_zero():
     m = extract_cabinet_measurements(_sensors())
     assert m["cabinet_vibration_g"] == 0.0

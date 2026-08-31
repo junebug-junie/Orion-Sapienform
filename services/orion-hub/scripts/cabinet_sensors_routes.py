@@ -39,10 +39,20 @@ _GRAIN_SEC = 30
 _SENSOR_HISTORY_SERIES: tuple[tuple[str, str], ...] = (
     ("temp_c", "cabinet_temp_c"),
     ("humidity_pct", "cabinet_humidity_pct"),
+    ("pressure_hpa", "cabinet_pressure_hpa"),
+    ("gas_resistance_ohm", "cabinet_gas_resistance_ohm"),
     ("lidar_mm", "cabinet_lidar_mm"),
     ("als_raw", "cabinet_als_raw"),
+    ("uv_raw", "cabinet_uv_raw"),
+    ("magnetic_ut", "cabinet_magnetic_ut"),
+    ("vibration_g", "cabinet_vibration_g"),
+    ("imu_yaw_deg", "cabinet_imu_yaw_deg"),
+    ("imu_pitch_deg", "cabinet_imu_pitch_deg"),
+    ("imu_roll_deg", "cabinet_imu_roll_deg"),
     ("climate_activity", "cabinet_climate_activity"),
     ("proximity_activity", "cabinet_proximity_activity"),
+    ("em_activity", "cabinet_em_activity"),
+    ("vibration_activity", "cabinet_vibration_activity"),
     ("uv_activity", "cabinet_uv_activity"),
 )
 
@@ -255,10 +265,20 @@ async def query_sensor_history_rows(*, node: str, hours: int) -> Sequence[Mappin
               timestamp AS t,
               (measurements->>'cabinet_temp_c')::double precision AS temp_c,
               (measurements->>'cabinet_humidity_pct')::double precision AS humidity_pct,
+              (measurements->>'cabinet_pressure_hpa')::double precision AS pressure_hpa,
+              (measurements->>'cabinet_gas_resistance_ohm')::double precision AS gas_resistance_ohm,
               (measurements->>'cabinet_lidar_mm')::double precision AS lidar_mm,
               (measurements->>'cabinet_als_raw')::double precision AS als_raw,
+              (measurements->>'cabinet_uv_raw')::double precision AS uv_raw,
+              (measurements->>'cabinet_magnetic_ut')::double precision AS magnetic_ut,
+              (measurements->>'cabinet_vibration_g')::double precision AS vibration_g,
+              (measurements->>'cabinet_imu_yaw_deg')::double precision AS imu_yaw_deg,
+              (measurements->>'cabinet_imu_pitch_deg')::double precision AS imu_pitch_deg,
+              (measurements->>'cabinet_imu_roll_deg')::double precision AS imu_roll_deg,
               (pressures->>'cabinet_climate_activity')::double precision AS climate_activity,
               (pressures->>'cabinet_proximity_activity')::double precision AS proximity_activity,
+              (pressures->>'cabinet_em_activity')::double precision AS em_activity,
+              (pressures->>'cabinet_vibration_activity')::double precision AS vibration_activity,
               (pressures->>'cabinet_uv_activity')::double precision AS uv_activity
             FROM orion_biometrics_summary
             WHERE node = $1

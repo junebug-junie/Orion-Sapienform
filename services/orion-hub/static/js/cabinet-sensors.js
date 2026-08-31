@@ -97,64 +97,23 @@
   ];
 
   var SENSOR_HISTORY_CHARTS = [
-    {
-      key: "temp_c",
-      hostId: "cabinetSensorChartTempC",
-      label: "Temperature",
-      digits: 2,
-      color: "#fb923c",
-    },
-    {
-      key: "humidity_pct",
-      hostId: "cabinetSensorChartHumidity",
-      label: "Humidity",
-      digits: 1,
-      color: "#38bdf8",
-    },
-    {
-      key: "lidar_mm",
-      hostId: "cabinetSensorChartLidar",
-      label: "Lidar distance",
-      digits: 0,
-      color: "#a78bfa",
-    },
-    {
-      key: "als_raw",
-      hostId: "cabinetSensorChartAls",
-      label: "ALS raw",
-      digits: 0,
-      color: "#facc15",
-    },
-    {
-      key: "climate_activity",
-      hostId: "cabinetSensorChartClimateActivity",
-      label: "Climate activity",
-      digits: 3,
-      min: 0,
-      max: 1,
-      fixedScale: true,
-      color: "#34d399",
-    },
-    {
-      key: "proximity_activity",
-      hostId: "cabinetSensorChartProximityActivity",
-      label: "Proximity activity",
-      digits: 3,
-      min: 0,
-      max: 1,
-      fixedScale: true,
-      color: "#fb7185",
-    },
-    {
-      key: "uv_activity",
-      hostId: "cabinetSensorChartUvActivity",
-      label: "UV activity",
-      digits: 3,
-      min: 0,
-      max: 1,
-      fixedScale: true,
-      color: "#22d3ee",
-    },
+    { key: "temp_c", hostId: "cabinetSensorChartTempC", title: "Temperature (°C)", label: "Temperature", digits: 2, color: "#fb923c" },
+    { key: "humidity_pct", hostId: "cabinetSensorChartHumidity", title: "Humidity (%)", label: "Humidity", digits: 1, color: "#38bdf8" },
+    { key: "pressure_hpa", hostId: "cabinetSensorChartPressure", title: "Pressure (hPa)", label: "Pressure", digits: 1, color: "#60a5fa" },
+    { key: "gas_resistance_ohm", hostId: "cabinetSensorChartGas", title: "Gas resistance (Ω)", label: "Gas resistance", digits: 0, color: "#c084fc" },
+    { key: "lidar_mm", hostId: "cabinetSensorChartLidar", title: "Lidar distance (mm)", label: "Lidar distance", digits: 0, color: "#a78bfa" },
+    { key: "als_raw", hostId: "cabinetSensorChartAls", title: "ALS raw (LTR390)", label: "ALS raw", digits: 0, color: "#facc15" },
+    { key: "uv_raw", hostId: "cabinetSensorChartUvRaw", title: "UV raw (LTR390)", label: "UV raw", digits: 0, color: "#fde047" },
+    { key: "magnetic_ut", hostId: "cabinetSensorChartMagnetic", title: "Magnetic (µT)", label: "Magnetic", digits: 2, color: "#f472b6" },
+    { key: "vibration_g", hostId: "cabinetSensorChartVibration", title: "Vibration |g−1|", label: "Vibration", digits: 4, color: "#e879f9" },
+    { key: "imu_yaw_deg", hostId: "cabinetSensorChartYaw", title: "IMU yaw (°)", label: "IMU yaw", digits: 1, color: "#818cf8" },
+    { key: "imu_pitch_deg", hostId: "cabinetSensorChartPitch", title: "IMU pitch (°)", label: "IMU pitch", digits: 1, color: "#6366f1" },
+    { key: "imu_roll_deg", hostId: "cabinetSensorChartRoll", title: "IMU roll (°)", label: "IMU roll", digits: 1, color: "#4f46e5" },
+    { key: "climate_activity", hostId: "cabinetSensorChartClimateActivity", title: "climate activity (0–1)", label: "Climate activity", digits: 3, min: 0, max: 1, fixedScale: true, color: "#34d399" },
+    { key: "proximity_activity", hostId: "cabinetSensorChartProximityActivity", title: "proximity activity (0–1)", label: "Proximity activity", digits: 3, min: 0, max: 1, fixedScale: true, color: "#fb7185" },
+    { key: "em_activity", hostId: "cabinetSensorChartEmActivity", title: "EM activity (0–1)", label: "EM activity", digits: 3, min: 0, max: 1, fixedScale: true, color: "#f97316" },
+    { key: "vibration_activity", hostId: "cabinetSensorChartVibrationActivity", title: "vibration activity (0–1)", label: "Vibration activity", digits: 3, min: 0, max: 1, fixedScale: true, color: "#a855f7" },
+    { key: "uv_activity", hostId: "cabinetSensorChartUvActivity", title: "UV activity (0–1)", label: "UV activity", digits: 3, min: 0, max: 1, fixedScale: true, color: "#22d3ee" },
   ];
 
   var state = {
@@ -201,14 +160,33 @@
       ? els.panel.querySelectorAll("[data-cabinet-ambient-window]")
       : [];
     els.sensorHistoryStatus = $("cabinetSensorHistoryStatus");
+    els.sensorHistoryGrid = $("cabinetSensorHistoryGrid");
     els.sensorWindowButtons = els.panel
       ? els.panel.querySelectorAll("[data-cabinet-sensor-window]")
       : [];
+    mountSensorHistoryCharts();
     els.sensorChartHosts = {};
     SENSOR_HISTORY_CHARTS.forEach(function (chart) {
       els.sensorChartHosts[chart.key] = $(chart.hostId);
     });
     return !!els.panel;
+  }
+
+  function mountSensorHistoryCharts() {
+    var grid = els.sensorHistoryGrid || $("cabinetSensorHistoryGrid");
+    if (!grid || grid.childElementCount > 0) {
+      return;
+    }
+    SENSOR_HISTORY_CHARTS.forEach(function (chart) {
+      var card = el("div", "rounded-lg border border-gray-800 bg-gray-950/60 p-3");
+      card.appendChild(
+        el("div", "text-xs font-semibold text-gray-300 mb-2", chart.title || chart.label)
+      );
+      var host = el("div", "min-h-[8rem]");
+      host.id = chart.hostId;
+      card.appendChild(host);
+      grid.appendChild(card);
+    });
   }
 
   // ---------------------------------------------------------------- helpers

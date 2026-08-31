@@ -193,3 +193,7 @@ Before restarting, check no backup or long migration holds a lock — a prior in
 ## Status
 
 DONE_WITH_CONCERNS — code and instrument complete and verified; the ceiling is not live until orion-sql-db is restarted, and the superuser-role hazard is surfaced but not fixed.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2010

@@ -80,6 +80,11 @@ def test_adapter_turns_off_unwired_providers_explicitly() -> None:
     # explicit request, unlike lab/perception above.
     assert cfg.curiosity_enabled is True
     assert cfg.reverie_enabled is True
+    # Cabinet sensors (2026-08-31) ARE wired -- default ON, same "no
+    # private-home content" reasoning, reusing Hub's existing
+    # CABINET_SENSORS_PATH default rather than a new sensor-path key.
+    assert cfg.cabinet_enabled is True
+    assert cfg.cabinet_sensors_path == "/run/orion-sensors/latest.json"
 
 
 def test_adapter_reads_hub_affect_overrides() -> None:

@@ -1,4 +1,4 @@
-.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers
+.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom
 
 SERVICE ?=
 ARGS ?=
@@ -400,3 +400,12 @@ check-sql-migrations-applied:
 
 check-sql-migrations-applied-quiet:
 	python3 scripts/check_sql_migrations_applied.py --quiet
+
+# Postgres connection headroom. Needs a reachable Postgres AND psycopg2, so like
+# check-sql-migrations-applied this is an operator/agent command, not a CI gate.
+# Exit 1 = alarm (saturated or below threshold); exit 2 = could not check.
+# Must use the repo venv -- system python3 has no psycopg2.
+# Cron it as:
+#   */10 * * * * make postgres-headroom
+postgres-headroom:
+	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose

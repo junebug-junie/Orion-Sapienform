@@ -33,25 +33,41 @@ services:
       - -c
       - shared_preload_libraries=pg_stat_statements
       # Connection ceiling. Declared here because the postgres:15 DEFAULT of 100 is
-      # what we were silently running on, and 25 distinct clients had grown into it:
-      # measured 97/100 in use on 2026-08-31, with psql refused three times by
-      # `FATAL: sorry, too many clients already` while investigating. Note the
-      # effective ceiling for services is max_connections MINUS
-      # superuser_reserved_connections (3), i.e. 97 -- which is exactly where we sat.
-      # This is not a leak: only 8 of 94 idle connections were idle >2h; the rest are
-      # live pool connections cycling normally (last query COMMIT/ROLLBACK). ~25 clients
-      # each holding a SQLAlchemy pool (default pool_size=5 + max_overflow=10) can
-      # legitimately want ~375, and orion-sql-writer alone is configured to burst to 38
-      # (SQL_WRITER_DB_POOL_SIZE=10 + MAX_OVERFLOW=20, plus grammar 4+4).
-      # Cost: ~5-10MB of backend memory per connection, so 300 is ~1.5-3GB against the
-      # 16g mem_limit above -- affordable, especially with shared_buffers still at the
-      # 128MB default.
-      # Deliberately NOT paired with idle_session_timeout: 18 of the 80 create_engine /
-      # create_async_engine calls in orion/ and services/ do NOT set pool_pre_ping
-      # (AST-counted, non-test), including live paths in orion/substrate/mutation_queue.py
-      # and orion/substrate/policy_profiles.py. Reaping idle sessions would turn a
-      # capacity problem into scattered checkout errors in exactly those pools.
-      # Watch headroom with: python3 scripts/check_postgres_connection_headroom.py
+      # what we were silently running on, and 25 distinct clients had grown into it.
+      # This is an ongoing condition, not a one-off: the server log holds 217
+      # `FATAL: sorry, too many clients already` over five days (2026-08-26..08-31),
+      # and psql was refused three times while diagnosing an unrelated problem.
+      #
+      # The wall is max_connections, NOT max_connections minus
+      # superuser_reserved_connections: every client backend connects as `postgres`,
+      # a superuser, and the reserve does not hold slots back from superusers. The
+      # log proves it -- all 217 refusals are the "too many clients" form and ZERO
+      # are "remaining connection slots are reserved ...", which is what an ordinary
+      # role gets at the lower ceiling.
+      #
+      # HAZARD, not yet fixed here: because services ARE the superuser, the 3
+      # reserved slots guarantee an operator nothing. When this fills there is no
+      # emergency door. Moving services to a non-superuser role is the real fix;
+      # raising the ceiling only buys room. The check below warns when it sees this.
+      #
+      # Why 300 and not the ~375 a fully-saturated pool census implies: 78 of the 80
+      # non-test create_engine sites use SQLAlchemy's default sizing (5+10), so a
+      # simultaneous max-out across ~25 clients would want ~375. That has never
+      # happened -- observed peak is ~100. 300 is ~3x observed peak, and the gate
+      # below is what turns an approach to the new ceiling into a warning instead of
+      # another silent outage. Sizing for a worst case that has never occurred would
+      # cost page cache (see next paragraph) to buy slots nothing has asked for.
+      #
+      # Memory: backend anon RSS is ~2.6MB here, so 300 backends is ~780MB. There is
+      # no OOM risk (oom_kill=0). But note the cgroup is ALREADY at 97.6% of its 16g
+      # limit (memory.current 16.77GB) -- almost entirely reclaimable page cache,
+      # which with shared_buffers at the 128MB default IS this database's cache. New
+      # backend memory comes out of that cache. The cost here is cache pressure on a
+      # 40GB database, not an availability risk.
+      #
+      # Watch headroom (must pass --gate, and must use the repo venv for psycopg2):
+      #   .venv/bin/python scripts/check_postgres_connection_headroom.py --gate
+      # or `make postgres-headroom`. Exit 1 = alarm, 2 = could not check.
       - -c
       - max_connections=${POSTGRES_MAX_CONNECTIONS:-300}
       - -c

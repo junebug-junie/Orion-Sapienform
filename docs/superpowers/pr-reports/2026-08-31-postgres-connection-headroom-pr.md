@@ -2,132 +2,170 @@
 
 ## Summary
 
-- Postgres was running on the **postgres:15 default `max_connections=100`**, never declared anywhere in the repo. 25 distinct clients had grown into it.
-- Live reading on 2026-08-31: **94 client backends against a service-visible ceiling of 97**. `psql` was refused three times with `FATAL: sorry, too many clients already` during an unrelated investigation.
+- Postgres was running on the **postgres:15 default `max_connections=100`**, never declared anywhere in the repo. The server log holds **217 `FATAL: sorry, too many clients already` over five days** (2026-08-26 → 08-31). This is an ongoing condition, not a one-off.
 - Declared the ceiling as `POSTGRES_MAX_CONNECTIONS` (default 300) in the sql-db compose and `.env_example`.
-- Added `scripts/check_postgres_connection_headroom.py`, a gate that measures against the ceiling services actually hit, and treats *its own refusal by saturation* as the alarm rather than as a crash.
-- Deliberately did **not** add `idle_session_timeout`. Rationale below.
+- Added `scripts/check_postgres_connection_headroom.py` + `make postgres-headroom`: reports headroom, exits 1 on alarm and 2 when it cannot check, and treats *its own refusal by saturation* as the alarm rather than a crash.
+- **Surfaced a hazard the patch does not fix:** every client backend connects as `postgres`, a superuser, so `superuser_reserved_connections` holds nothing back. When the database fills there is no emergency door for an operator. The check now warns about this explicitly.
+- Deliberately did **not** add `idle_session_timeout`.
 
 ## Outcome moved
 
-A silent capacity ceiling became a declared one with a check behind it. Before: nothing measured connection headroom, and exhaustion was found by accident while investigating something else. After: `check_postgres_connection_headroom.py --gate` fails at <15% free, and reports rather than dies when the database is already full.
+A silent, recurring capacity ceiling became a declared one with an instrument behind it. Before: nothing measured connection headroom; 217 refusals accumulated unnoticed and the condition was found by accident. After: `make postgres-headroom` reports and alarms, and names the missing emergency door.
 
-Note the ceiling change itself is **not live** — `max_connections` is postmaster-only and needs a full DB restart (see Restart required).
+The ceiling change is **not live** — `max_connections` is postmaster-only and needs a full DB restart.
 
 ## Current architecture
 
-`services/orion-sql-db/docker-compose.yml` runs `postgres:15` with a `command:` list that already declares `shared_preload_libraries`, `autovacuum_work_mem`, `maintenance_work_mem`, `max_parallel_maintenance_workers` and `vacuum_cost_delay`. `max_connections` was absent from that list, from `.env_example`, and from every other config surface in the repo — so it silently took the image default of 100.
-
-No script, gate, or health check read connection counts.
+`services/orion-sql-db/docker-compose.yml` runs `postgres:15` with a `command:` list already declaring `shared_preload_libraries`, `autovacuum_work_mem`, `maintenance_work_mem`, `max_parallel_maintenance_workers`, `vacuum_cost_delay`. `max_connections` was absent from that list, from `.env_example`, and from every other config surface. No script or health check read connection counts.
 
 ## Architecture touched
 
-- `services/orion-sql-db` compose `command:` list and `.env_example`.
-- `scripts/` gains one read-only diagnostic. No service code, no bus channel, no schema.
+`services/orion-sql-db` compose `command:` and `.env_example`; one read-only script in `scripts/` with a Makefile target. No service code, bus channel, or schema.
 
 ## Files changed
 
-- `services/orion-sql-db/docker-compose.yml`: declare `-c max_connections=${POSTGRES_MAX_CONNECTIONS:-300}`, with the measurement and the sizing rationale in a comment matching the file's existing style.
-- `services/orion-sql-db/.env_example`: add `POSTGRES_MAX_CONNECTIONS=300` and note it needs a full restart.
-- `scripts/check_postgres_connection_headroom.py`: new. Reports `used/service_ceiling`, an idle-vs-stale split, and top clients.
-- `tests/test_check_postgres_connection_headroom.py`: new, 22 tests.
+- `services/orion-sql-db/docker-compose.yml`: declare `-c max_connections=${POSTGRES_MAX_CONNECTIONS:-300}`, with the log evidence, the superuser-ceiling correction, the sizing reconciliation and the memory analysis in a comment.
+- `services/orion-sql-db/.env_example`: add `POSTGRES_MAX_CONNECTIONS=300`.
+- `scripts/check_postgres_connection_headroom.py`: new.
+- `tests/test_check_postgres_connection_headroom.py`: new, 29 tests (2 live, skipped without a database).
+- `Makefile`: `postgres-headroom` target.
 
 ## Schema / bus / API changes
 
-None. No channel, schema, or payload touched.
+None.
 
 ## Env/config changes
 
 - Added keys: `POSTGRES_MAX_CONNECTIONS` (`services/orion-sql-db/.env_example`, default `300`)
-- Removed keys: none
-- Renamed keys: none
+- Removed / renamed: none
 - `.env_example` updated: yes
-- local `.env` synced: **`scripts/sync_local_env_from_example.py` could not do it.** It reads `.env_example` from the *primary* checkout, so a key added in a worktree is invisible to it. The key was written into the live `services/orion-sql-db/.env` by hand and verified still gitignored (`git check-ignore` → ignored).
+- local `.env` synced: **`scripts/sync_local_env_from_example.py` cannot do it** — it reads `.env_example` from the *primary* checkout, so a key added in a worktree is invisible to it. Written into the live `services/orion-sql-db/.env` by hand; `git check-ignore` confirms it is still ignored.
 - skipped keys requiring operator action: none
 
-## The measurement
+## Which ceiling actually applies
 
-Two things made the raw number misleading, and both are now handled:
+The naive reading is `max_connections - superuser_reserved_connections` = 97. **That is wrong for this deployment**, and the log proves it rather than inferring it:
 
-**1. Services never get all of `max_connections`.** `superuser_reserved_connections` (3) is held back, so the ceiling a normal service hits is 97, not 100. At the time of the incident the service-visible pool was entirely gone while `max_connections` still read "100".
+```text
+sorry, too many clients already .................................. 217
+remaining connection slots are reserved for non-... superuser ...... 0
+```
 
-**2. `pg_stat_activity` counts things that hold no connection slot.** The first version of this script reported `102/97 used` — impossible. The live server had 91 client backends plus a checkpointer, walwriter, background writer, autovacuum launcher and logical replication launcher. Those five are budgeted by `max_worker_processes` and friends, not `max_connections`. All three `pg_stat_activity` reads now filter `backend_type = 'client backend'`. This was caught by looking at real output, not by review.
+The second message is what an *ordinary* role receives at the lower ceiling. Zero occurrences across 217 real refusals. Confirmed directly:
+
+```text
+SELECT a.usename, u.usesuper, count(*) ... WHERE backend_type='client backend'
+postgres | t | 70
+```
+
+Every client backend is the `postgres` superuser. The wall is 100.
+
+**The hazard this exposes:** `superuser_reserved_connections` exists so an operator can always get in during an incident. Services connecting *as* the superuser spend that reserve like any other slot — which is exactly why `psql` was refused three times while diagnosing the original problem. Raising the ceiling buys room; moving services to a non-superuser role is the real fix, and is not attempted here.
 
 ## Why this is not a leak, and why there is no idle_session_timeout
 
-Of 93 idle connections, **only 8 had been idle longer than two hours**. The rest were live pool connections cycling normally — last statement `COMMIT` or `ROLLBACK`, `state_change` seconds old. ~25 services each holding a SQLAlchemy pool (default `pool_size=5` + `max_overflow=10`) can legitimately want ~375; `orion-sql-writer` alone is configured to burst to 38.
+Of 93 idle connections, **only 8 had been idle longer than two hours**. The rest were live pool connections cycling normally. ~25 services each holding a SQLAlchemy pool can legitimately want ~375.
 
-Reaping idle sessions was considered and rejected: **18 of the 80** `create_engine`/`create_async_engine` calls in `orion/` and `services/` do not set `pool_pre_ping` (AST-counted, tests excluded), including live paths in `orion/substrate/mutation_queue.py` and `orion/substrate/policy_profiles.py`. Killing idle sessions would convert a capacity problem into scattered pool-checkout errors in exactly those pools — trading a visible ceiling for an intermittent one.
+Reaping idle sessions was rejected: **18 of the 80** `create_engine`/`create_async_engine` calls in `orion/` and `services/` do not set `pool_pre_ping` (AST-counted, tests excluded), including live paths in `orion/substrate/mutation_queue.py` and `orion/substrate/policy_profiles.py`. Killing idle sessions would convert a capacity problem into scattered pool-checkout errors in exactly those pools.
 
-> **Correction.** Commit `2c7cfd916` and an earlier draft of this report said `pool_pre_ping` was set at "only 38" sites. That came from a line-based grep, which misses multi-line calls and made coverage look far worse than it is: the real split is 62 with, 18 without (78% covered). The decision does not change — 18 unprotected pools on live paths is reason enough not to reap idle sessions — but the number backing it was wrong.
+## Why 300 and not 375
+
+78 of the 80 non-test `create_engine` sites use SQLAlchemy's default sizing (5 + 10) and none set `poolclass`, so a simultaneous max-out across ~25 clients implies ~375. That has never happened — observed peak is ~100, and load fluctuates widely (55/100 during final verification, 94–100 earlier the same hour). 300 is ~3× observed peak. Sizing for a worst case that has never occurred would cost page cache to buy slots nothing has requested; the gate is what turns an approach to 300 into a warning rather than another silent outage.
+
+## Memory
+
+Backend anon RSS is ~2.6MB, so 300 backends ≈ 780MB. `oom_kill = 0`. **No availability risk.**
+
+But the cgroup is already at **16.77 GB of its 17.18 GB limit (97.6%)** — `memory.current`, not `docker stats`, which subtracts `inactive_file`. That is almost entirely reclaimable page cache, and with `shared_buffers` at the 128MB default that page cache *is* this database's cache for a 40GB database. New backend memory comes out of it. The cost is cache pressure, not an OOM.
 
 ## Tests run
 
 ```text
-pytest tests/test_check_postgres_connection_headroom.py -q
-22 passed in 0.15s
+ORION_TEST_POSTGRES_URI=... pytest tests/test_check_postgres_connection_headroom.py -q
+29 passed in 0.19s        (27 unit + 2 live; the 2 skip cleanly without a database)
 ```
 
-Mutation-tested against the real file, each mutation asserted to actually apply before running (a replacement that silently fails to match reads as a false green):
+Mutation-tested against the real file, each mutation asserted to actually apply first:
 
 ```text
-RED | drop reserved subtraction              | 6 failed, 14 passed
-RED | saturation matcher always true         | 3 failed, 17 passed
-RED | drop message fallback (sqlstate only)  | 2 failed, 18 passed
-RED | re-raise instead of reporting saturation| 1 failed, 19 passed
-RED | drop the free-slot clamp               | 1 failed, 19 passed
-RED | headroom counts all backends           | 2 failed, 20 passed
-RED | idle split counts all backends         | 1 failed, 21 passed
-RED | top_clients counts all backends        | 1 failed, 21 passed
+RED | client-backend filter neutered (OR 1=1)  | 2 failed, 27 passed
+RED | free measured against the reserve        | 3 failed, 26 passed
+RED | ordinary-role message dropped            | 1 failed, 28 passed
+RED | unrelated error becomes an alarm         | 1 failed, 28 passed
+RED | reserve warning never fires              | 2 failed, 27 passed
+RED | superuser count read as zero             | 1 failed, 28 passed
+RED | session no longer read-only              | 1 failed, 28 passed
+RED | host default becomes docker-internal     | 1 failed, 28 passed
 ```
 
-All ten static gates named in `.github/workflows/orion-static-gates.yml` (list derived from CI, not from memory):
-
-```text
-OK check_compose_no_relative_mounts.py    (83 compose files, 0 relative host mounts)
-OK check_control_surface_store_parity.py
-OK check_daily_schedule_collisions.py
-OK check_definition_drift.py --gate
-OK check_inner_state_registry.py
-OK check_journal_dispatch_registry.py
-OK check_metric_lineage.py --gate
-OK check_scripts_dir_no_stdlib_shadow.py
-OK check_service_hostname_refs.py
-OK check_system_health_producers.py
-```
+All ten static gates named in `.github/workflows/orion-static-gates.yml` pass (list derived from CI, not memory).
 
 ## Evals run
 
-No eval harness exists for `services/orion-sql-db` (the directory holds compose, env, and migration SQL only — no `tests/` or `evals/`). This change adds a repo-root script and its tests rather than service code, so no eval harness was created. Not claiming eval coverage.
+No eval harness exists for `services/orion-sql-db` (compose, env and hand-applied migration SQL only). This adds a repo-root script and its tests rather than service code. Not claiming eval coverage.
 
 ## Docker/build/smoke checks
-
-Compose renders the new setting from the live env files:
 
 ```text
 docker compose --env-file .env --env-file services/orion-sql-db/.env \
   -f services/orion-sql-db/docker-compose.yml config
-  25:      - shared_preload_libraries=pg_stat_statements
   27:      - max_connections=300
-  42:    mem_limit: "17179869184"
 ```
 
-Live run of the gate against the running database, before any restart:
+Zero-configuration live run from the host:
 
 ```text
-postgres connections: 94/97 used (3 free, 3%) [max_connections=100, reserved=3]
-  idle: 93 total, 8 idle >2h (a leak looks like a large second number)
-  172.18.0.1           22
-  172.18.0.69          14   (orion-athena-sql-writer)
-  172.18.0.2            7   (orion-athena-thought)
-  172.18.0.18           7   (orion-athena-substrate-runtime)
+postgres connections: 55/100 used (45 free, 45%) [reserved=3, superuser clients=55]
+  WARNING: all 55 client backends are superusers, so the 3 reserved slots hold
+  nothing back -- there is no emergency door for an operator when this fills.
+  idle: 54 total, 5 idle >2h
 ```
 
-Exit code 1 under `--gate`, as intended.
+## Review findings fixed
+
+- **Finding: the 97 ceiling is wrong — services are superusers, so the wall is 100.**
+  - Fix: `Headroom.free` now measures against `max_connections`; `nonsuperuser_ceiling` is reported separately.
+  - Evidence: 217 `too many clients` vs 0 `remaining connection slots are reserved` in the server log; `pg_stat_activity` join on `pg_roles` shows 70/70 client backends are `postgres` with `usesuper = t`. Reproduced independently before acting.
+
+- **Finding: `is_saturation_error` could not recognise the refusal an ordinary role receives.** Latent today; fires the moment anyone moves a service off the superuser — i.e. during the fix for the finding above.
+  - Fix: added `remaining connection slots are reserved` to the message patterns.
+  - Evidence: `test_the_ordinary_role_refusal_message_is_also_detected`; mutation "ordinary-role message dropped" → RED.
+
+- **Finding: the SQL-text assertions were vacuous — `... OR 1=1` left the suite 22/22 green.**
+  - Fix: replaced with a live test comparing `read_headroom().used` against `count(*) − count(background)` on a real server, skipped without a database.
+  - Evidence: mutation "client-backend filter neutered (OR 1=1)" → RED (2 failed). It was GREEN before.
+
+- **Finding: exit-code collision — alarm, missing DSN, bad password and missing driver all exited 1.**
+  - Fix: `EXIT_ALARM=1` / `EXIT_CANNOT_CHECK=2`, matching `scripts/check_sql_migrations_applied.py`.
+  - Evidence: `test_an_unrelated_connection_failure_is_not_laundered_into_an_alarm`; mutation "unrelated error becomes an alarm" → RED.
+
+- **Finding: the advertised invocation could not alarm, twice over** — system `python3` has no psycopg2, and without `--gate` a saturated reading exits 0.
+  - Fix: compose comment and Makefile both use `.venv/bin/python … --gate`.
+  - Evidence: `python3 -c "import psycopg2"` → `ModuleNotFoundError`, venv import succeeds.
+
+- **Finding: DSN resolution was a trap** — the root `.env` `POSTGRES_URI` is a docker-internal hostname that does not resolve from the host.
+  - Fix: `connection_params()` adopts the sibling gate's `ORION_PG_*` convention defaulting to `localhost:55432`, so a bare invocation works.
+  - Evidence: the zero-configuration run above; mutation "host default becomes docker-internal" → RED.
+
+- **Finding: the comment's own demand estimate (~375) exceeded the ceiling it chose (297).**
+  - Fix: reconciled explicitly in the compose comment and in "Why 300 and not 375" above.
+
+- **Finding: the memory framing was backwards** — "affordable, especially with `shared_buffers` at the 128MB default". Low `shared_buffers` means page cache *is* the cache.
+  - Fix: rewritten with `memory.current` (16.77/17.18 GB, 97.6%) and the ~2.6MB/backend measurement; reclassified from availability risk to cache pressure.
+
+- **Finding (my own, added then removed): the semaphore pre-flight was vacuous.** It claimed PG allocates SysV semaphores proportional to `max_connections` and checked `SEMMNI`.
+  - Fix: section deleted.
+  - Evidence: `ipcs -s` inside the container returns **zero** semaphore arrays with 96 backends attached — PG on Linux uses unnamed POSIX semaphores. The check could not have failed regardless of host limits.
+
+- **Finding: a `pool_pre_ping` count cited from a line-based grep was wrong** ("only 38").
+  - Fix: AST-counted — 62 with, 18 without. Corrected in commit `d04d6acd6`, the compose comment and this report. The decision is unchanged; the evidence for it was wrong.
+
+- **Finding: cron'ing the gate before the restart would arrive permanently red.**
+  - Not fixed in code by design: the Makefile target exists but nothing schedules it yet. Scheduling should follow the restart. Called out under Restart required.
 
 ## Restart required
 
-`max_connections` is postmaster-only. This does **not** take effect until orion-sql-db is fully restarted, and that restarts the database every Orion service depends on.
+`max_connections` is postmaster-only. This does **not** take effect until orion-sql-db is fully restarted, and that restarts the database every Orion service depends on. Not run here — production, and Juniper's call.
 
 ```bash
 cd /mnt/scripts/Orion-Sapienform
@@ -135,23 +173,23 @@ docker compose --env-file .env --env-file services/orion-sql-db/.env \
   -f services/orion-sql-db/docker-compose.yml up -d --force-recreate orion-sql-db
 ```
 
-Then confirm the ceiling actually moved:
+Then confirm the ceiling moved, and only then schedule the gate:
 
 ```bash
-POSTGRES_URI="postgresql://postgres:<pw>@localhost:55432/postgres" \
-  python3 scripts/check_postgres_connection_headroom.py --verbose
-# expect: ... [max_connections=300, reserved=3]
+make postgres-headroom            # expect [reserved=3 ...] against 300
+# */10 * * * * make postgres-headroom
 ```
 
 Before restarting, check no backup or long migration holds a lock — a prior incident had boot sit 35 minutes at "Waiting for application startup" behind a backup.
 
 ## Risks / concerns
 
-- **Severity: medium.** Restarting Postgres takes every dependent service's connections down. Services with `pool_pre_ping` recover; the ones without it may need their own restart. Worth doing during a quiet window.
-- **Severity: low.** 300 backends cost roughly 1–3GB of backend memory against the container's 16g `mem_limit`, with `shared_buffers` still at the 128MB default. Comfortable, but it is a real increase.
-- **Severity: low.** Raising the ceiling relieves the symptom and does not reduce demand. If usage keeps climbing, 300 buys time rather than solving pool sizing. The gate is what turns the next approach into a warning instead of an outage.
-- **Observed, not fixed:** `shared_buffers` is at the postgres default of 128MB on a 16GB container. That is almost certainly too small, but changing it is a separate performance decision needing its own evidence, not a rider on this patch.
+- **Severity: medium.** Restarting Postgres drops every dependent service's connections. The 62 pools with `pool_pre_ping` recover; the 18 without may need their own restart.
+- **Severity: medium (not fixed here).** Services run as the `postgres` superuser, so there is no reserved slot for an operator during an incident. Raising the ceiling reduces how often that matters without addressing it. Follow-up: move services to a non-superuser role — at which point the ordinary-role refusal path (already handled) starts firing.
+- **Severity: low.** 300 relieves the symptom, not the demand. If usage keeps climbing, the gate is what makes the next approach visible.
+- **Observed, not fixed:** `shared_buffers` is at the 128MB default on a 16GB container holding a 40GB database, with 209,020 reclaim events and 78M workingset refaults. Almost certainly too small, but it is a separate performance decision needing its own evidence.
+- **Disclosure:** some fraction of the 71 refusals logged in the 04:59/05:01 bursts came from this investigation's own connections (roughly a dozen `psql` calls plus a containerised smoke) against a database that had 3 slots free. `log_connections=off`, so they cannot be disentangled from real service refusals. 146 of the 217 are independent of any of this work — 28 predate the investigation entirely. The operational point stands on its own: diagnosing this database costs slots, which is an argument for fixing it before probing it further.
 
 ## Status
 
-DONE_WITH_CONCERNS — the code and the gate are complete and verified, but the ceiling is not live until Juniper restarts orion-sql-db.
+DONE_WITH_CONCERNS — code and instrument complete and verified; the ceiling is not live until orion-sql-db is restarted, and the superuser-role hazard is surfaced but not fixed.

@@ -269,6 +269,23 @@ class ThoughtSettings(BaseSettings):
     visual_chain_diffusion_timeout_sec: float = Field(
         120.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
     )
+    # Total deadline for ONE whole visual-chain run, enforced around the
+    # single-flight lock (visual_chain.py::run_visual_chain_once). NOT redundant
+    # with the per-hop timeouts above: those sum rather than bound, and a
+    # urllib socket timeout is reset by every received chunk, so no combination
+    # of them caps how long the lock can be held. Sized above that sum --
+    # interpretation 30 + diffusion 120 + percept upload 10 + caption 60 = 220s
+    # of hop budget, plus the DB round trips -- so it only ever fires on a
+    # genuine hang, never on a slow-but-working run.
+    #
+    # Deliberately LONGER than the caller's timeout (orion-cortex-exec's
+    # thought_http_timeout_sec, 150s). A caller giving up must not abandon a run
+    # mid-generation: the run finishes, persists its chain row and stores its
+    # artifact, and only the dispatch reports a timeout. Losing a real image to
+    # save a caller 70s of waiting is the wrong trade.
+    visual_chain_run_deadline_sec: float = Field(
+        300.0, alias="ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC"
+    )
     # Patch 8 (visual_chain.py module docstring, design doc §22): the LLM interpretation step
     # between the selected context-seed and the diffusion prompt. Default ON -- this is the
     # actual fix for "how does this translate into fluffy cloud??", not an experiment to

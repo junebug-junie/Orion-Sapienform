@@ -1087,6 +1087,27 @@ class Settings(BaseSettings):
     ORION_SITUATION_REVERIE_TTL_SECONDS: int = Field(
         default=180, alias="ORION_SITUATION_REVERIE_TTL_SECONDS"
     )
+    # 2026-08-31: Orion's own physical cabinet sensors (Athena Nano ESP32
+    # node -- BME680 climate, LTR390 UV, magnetometer, PMSA003I particulate,
+    # VL53L1X lidar, BNO085 IMU/vibration), folded into the same unified-turn
+    # chat prompt via orion.situational.context.build_situation_for_ctx. The
+    # real thing LabContextV1's thermal/power framing above was always a
+    # stub stand-in for. Default ON, same "no private-home content" call as
+    # curiosity/reverie above. Reuses the EXISTING CABINET_SENSORS_PATH/
+    # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC config further
+    # up this file (already wired for cabinet_sensors_routes.py's own
+    # /api/cabinet/sensors/* routes) rather than a second, parallel set of
+    # sensor-path keys -- see
+    # orion.situational.context.hub_settings_to_runtime_namespace().
+    ORION_SITUATION_CABINET_ENABLED: bool = Field(
+        default=True, alias="ORION_SITUATION_CABINET_ENABLED"
+    )
+    # 30s: local file read, cheap to poll often, but throttled well below
+    # the Nano's own write cadence so this doesn't over-drive the situation
+    # module's private EWMA baseline (_CABINET_TRACKER) on every chat turn.
+    ORION_SITUATION_CABINET_TTL_SECONDS: int = Field(
+        default=30, alias="ORION_SITUATION_CABINET_TTL_SECONDS"
+    )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")
     @classmethod

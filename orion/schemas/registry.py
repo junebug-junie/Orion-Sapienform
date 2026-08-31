@@ -607,6 +607,7 @@ from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
+    CabinetContextV1,
     ConversationPhaseContextV1,
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
@@ -917,6 +918,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "EnvironmentContextV1": EnvironmentContextV1,
     "AgendaContextV1": AgendaContextV1,
     "LabContextV1": LabContextV1,
+    "CabinetContextV1": CabinetContextV1,
     "SurfaceContextV1": SurfaceContextV1,
     "SituationAffordanceV1": SituationAffordanceV1,
     "SituationPolicyV1": SituationPolicyV1,

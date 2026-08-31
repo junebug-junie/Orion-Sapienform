@@ -216,6 +216,69 @@ class LabContextV1(BaseModel):
     diagnostics: dict[str, str] = Field(default_factory=dict)
 
 
+class CabinetContextV1(BaseModel):
+    """Live read of Orion's own physical cabinet sensors (Athena Nano ESP32
+    node: BME680 climate, LTR390 UV/ALS, magnetometer, PMSA003I particulate,
+    VL53L1X lidar, BNO085 IMU/vibration -- see
+    `orion.telemetry.cabinet_sensors`'s module docstring for the sensor
+    inventory and `services/orion-biometrics/README.md`'s "Cabinet sensor
+    node" section for the full host-reader -> biometrics pipeline).
+
+    This is the real thing `LabContextV1` was a stand-in for -- Orion's own
+    housing, not a hand-waved compute-cluster risk summary. `LabContextV1`
+    stays untouched as a distinct, still-unwired concept (GPU-cluster
+    thermal/power risk); this does not replace or extend it.
+
+    Producer: `orion/situational/context.py`'s `_fetch_cabinet_context`,
+    reusing the same shared `orion.telemetry.cabinet_sensors` /
+    `cabinet_snapshot_merge` helpers `services/orion-hub/scripts/
+    cabinet_sensors_routes.py`'s `/api/cabinet/sensors/latest` route already
+    uses -- not an import of that route module itself (`orion/` is shared
+    code services import FROM, never the reverse).
+
+    Raw measurements are native units, present only when actually measured
+    (absent, never a fabricated 0.0 -- same invariant
+    `extract_cabinet_measurements` documents). The `*_activity` fields are
+    baseline-relative 0-1 signals (EWMA band + volatility, HAND-VERIFIED to
+    rest at exactly 0.0 for constant input -- see
+    `orion.telemetry.cabinet_sensors`'s module docstring), not absolute
+    comfort/AQI thresholds.
+
+    `available=False` is a real state (disabled / no sensor-file mount
+    configured / stale frame / empty measurement set / read failure) --
+    same honesty contract as `PerceptionContextV1.available`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["cabinet.context.v1"] = "cabinet.context.v1"
+    available: bool = False
+    source: str = "none"
+    age_seconds: Optional[float] = None
+    device: Optional[str] = None
+    temp_c: Optional[float] = None
+    humidity_pct: Optional[float] = None
+    pressure_hpa: Optional[float] = None
+    gas_resistance_ohm: Optional[float] = None
+    uv_raw: Optional[float] = None
+    als_raw: Optional[float] = None
+    magnetic_ut: Optional[float] = None
+    pm1_ug_m3: Optional[float] = None
+    pm25_ug_m3: Optional[float] = None
+    pm10_ug_m3: Optional[float] = None
+    lidar_mm: Optional[float] = None
+    vibration_g: Optional[float] = None
+    imu_yaw_deg: Optional[float] = None
+    imu_pitch_deg: Optional[float] = None
+    imu_roll_deg: Optional[float] = None
+    climate_activity: Optional[float] = None
+    particulate_activity: Optional[float] = None
+    em_activity: Optional[float] = None
+    uv_activity: Optional[float] = None
+    vibration_activity: Optional[float] = None
+    proximity_activity: Optional[float] = None
+
+
 class RuntimeContextV1(BaseModel):
     """Which LLM is actually generating this reply, for the situation brief.
 
@@ -592,6 +655,14 @@ class SituationBriefV1(BaseModel):
     environment: EnvironmentContextV1 = Field(default_factory=EnvironmentContextV1)
     agenda: AgendaContextV1 = Field(default_factory=AgendaContextV1)
     lab: LabContextV1 = Field(default_factory=LabContextV1)
+    # Additive (2026-08-31): defaults to available=False. Rendered like
+    # curiosity/reverie (omitted from the prompt entirely when unavailable,
+    # not an always-on placeholder line) rather than like weather/lab/
+    # perception -- see `_build_prompt_fragment`'s own comment for why. ON
+    # by default in orion-hub (the only process with the `/run/orion-
+    # sensors` bind mount) -- carries no private-home content, same
+    # reasoning as curiosity/reverie above.
+    cabinet: CabinetContextV1 = Field(default_factory=CabinetContextV1)
     # Additive: defaults to available=False, so an unpatched producer or a
     # disabled flag yields "haven't seen anything recently" rather than a
     # missing field.

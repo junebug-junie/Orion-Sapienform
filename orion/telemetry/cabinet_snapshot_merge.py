@@ -289,3 +289,30 @@ def load_merged_cabinet_sensors(
         }
 
     return merge_cabinet_sensors_payload(sources)
+
+
+def device_label_from_sources(sources: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Human-readable device label from the `sources` debug dict
+    `load_merged_cabinet_sensors`/`merge_cabinet_sensors_payload` return --
+    the reader device id(s) that actually contributed, joined with " + "
+    when more than one did. `None` when nothing reports a device id.
+
+    Extracted (review finding, 2026-08-31) from a copy duplicated verbatim
+    in `orion/situational/context.py`'s `_fetch_cabinet_context` and
+    `services/orion-hub/scripts/cabinet_sensors_routes.py`'s own
+    `/api/cabinet/sensors/latest` route -- both already import this module,
+    so this is a shared function both call rather than two independent
+    copies of the same filter+join.
+    """
+    if not isinstance(sources, dict):
+        return None
+    devices = [
+        meta.get("device")
+        for meta in sources.values()
+        if isinstance(meta, dict) and meta.get("device")
+    ]
+    if not devices:
+        return None
+    if len(devices) == 1:
+        return str(devices[0])
+    return " + ".join(str(d) for d in devices)

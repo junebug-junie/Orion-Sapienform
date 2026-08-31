@@ -25,9 +25,20 @@ from .perception_reader import (
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.curiosity.worldview import LIVE_PRIORS_LIMIT, Prior, WorldviewReader, read_snapshot
+from orion.telemetry.cabinet_sensors import (
+    CabinetPressureConfig,
+    CabinetSensorTracker,
+    compute_cabinet_pressures,
+    extract_cabinet_measurements,
+)
+from orion.telemetry.cabinet_snapshot_merge import (
+    device_label_from_sources,
+    load_merged_cabinet_sensors,
+)
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
+    CabinetContextV1,
     ConversationPhaseContextV1,
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
@@ -58,6 +69,26 @@ _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
 _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
 _CURIOSITY_CACHE: dict[str, tuple[datetime, CuriosityPriorContextV1]] = {}
 _REVERIE_CACHE: dict[str, tuple[datetime, ReverieContextV1]] = {}
+_CABINET_CACHE: dict[str, tuple[datetime, CabinetContextV1]] = {}
+# Private, module-local EWMA baseline for the cabinet `*_activity` pressures
+# below -- same "operator-debug approximation, not shared with biometrics'
+# own baseline" caveat cabinet_sensors_routes.py's own `_TRACKER` singleton
+# carries (see that module's docstring). Deliberately a THIRD independent
+# tracker (biometrics' ingest pipeline has one, Hub's own /api/cabinet/
+# sensors/* routes have another) -- sharing state across processes/purposes
+# would mean one consumer's read cadence silently perturbs another's
+# baseline.
+_CABINET_TRACKER = CabinetSensorTracker(CabinetPressureConfig())
+# `_fetch_cabinet_context` runs inside `asyncio.to_thread` (review finding,
+# 2026-08-31): two chat turns landing within the same TTL window right as
+# the cache expires can both miss the cache and both call
+# `compute_cabinet_pressures` concurrently on different pool threads, doing
+# a non-atomic read-modify-write on `_CABINET_TRACKER`'s shared
+# `EwmaBand`/`InductionTracker` state. A separate lock from `_LOCK` above --
+# that one already guards every OTHER provider's cache dict, and reusing it
+# here would serialize this tracker's mutation with all of those for no
+# reason.
+_CABINET_TRACKER_LOCK = threading.Lock()
 
 # 2026-08-30, Juniper's explicit request: raised from the original 1200 (6x)
 # now that the harness runs a large-context model -- the old cap was sized
@@ -136,6 +167,11 @@ class SituationSettings:
     agenda_enabled: bool
     lab_enabled: bool
     lab_provider: str
+    cabinet_enabled: bool
+    cabinet_ttl_seconds: int
+    cabinet_sensors_path: str
+    cabinet_sensors_b_path: str
+    cabinet_stale_after_sec: float
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
@@ -315,6 +351,30 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_reverie_ttl_seconds", 180)
         ),
         lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
+        # Conservative generic default (False), same as lab/perception above
+        # -- the file-based read below only works where `cabinet_sensors_
+        # path` is actually mounted (orion-hub's `network_mode: host` +
+        # `/run/orion-sensors:ro` bind), which
+        # `hub_settings_to_runtime_namespace` flips ON explicitly. Any other
+        # caller (e.g. cortex-exec, with no such mount) stays off with an
+        # empty path either way.
+        cabinet_enabled=bool(getattr(settings, "orion_situation_cabinet_enabled", False)),
+        # 30s: local file read, cheap to poll often, but throttled well
+        # below the ~few-seconds-per-tick Nano write cadence so this doesn't
+        # over-drive `_CABINET_TRACKER`'s EWMA baseline on every chat turn.
+        cabinet_ttl_seconds=int(getattr(settings, "orion_situation_cabinet_ttl_seconds", 30)),
+        cabinet_sensors_path=str(getattr(settings, "orion_situation_cabinet_sensors_path", "") or ""),
+        cabinet_sensors_b_path=str(
+            getattr(settings, "orion_situation_cabinet_sensors_b_path", "") or ""
+        ),
+        # Plain getattr default, no `or` fallback (review finding,
+        # 2026-08-31: `x or DEFAULT` silently discards an explicitly
+        # configured 0.0 -- see feedback_or_default_silently_eats_a_
+        # configured_zero.md). Matches every sibling ttl/max-age field in
+        # this function.
+        cabinet_stale_after_sec=float(
+            getattr(settings, "orion_situation_cabinet_stale_after_sec", 10.0)
+        ),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
         runtime_ttl_seconds=int(getattr(settings, "orion_situation_runtime_ttl_seconds", 120)),
@@ -376,6 +436,17 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     Postgres for the reverie cockpit's own routes. Both are ON by default
     per Juniper's explicit request, unlike every other section in this
     adapter.
+
+    Cabinet sensors (2026-08-31) ARE enabled here too, same reasoning again:
+    Hub is the one process with the `/run/orion-sensors:ro` host bind mount
+    (`network_mode: host`) that `services/orion-hub/scripts/
+    cabinet_sensors_routes.py`'s own `/api/cabinet/sensors/*` routes already
+    read from, and this reuses that SAME `CABINET_SENSORS_PATH`/
+    `CABINET_SENSORS_B_PATH`/`CABINET_SENSORS_STALE_AFTER_SEC` env config --
+    no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
+    TTL pair. This is Orion's own physical housing, not private-home
+    content, same "no new dependency, no privacy concern" shape as affect/
+    curiosity/reverie above -- unlike lab/perception, which stay off.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -407,6 +478,30 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_agenda_enabled=False,
         orion_situation_lab_context_enabled=False,
         orion_situation_lab_provider="stub",
+        # 2026-08-31, same "no private-home content" call as curiosity/
+        # reverie: default ON. Reuses Hub's EXISTING CABINET_SENSORS_PATH/
+        # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC (already
+        # wired for cabinet_sensors_routes.py's own /api/cabinet/sensors/*
+        # routes) rather than a second, parallel set of sensor-path keys.
+        orion_situation_cabinet_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_CABINET_ENABLED", True)
+        ),
+        orion_situation_cabinet_ttl_seconds=int(
+            getattr(cfg, "ORION_SITUATION_CABINET_TTL_SECONDS", 30)
+        ),
+        # Plain getattr defaults, no `or` fallback (review finding,
+        # 2026-08-31: `x or DEFAULT` silently discards an explicit "" (an
+        # operator's deliberate way to disable the sensor-file read, same
+        # meaning `_fetch_cabinet_context`'s own "unconfigured" state
+        # already gives an empty path) or 0.0 -- see
+        # feedback_or_default_silently_eats_a_configured_zero.md).
+        orion_situation_cabinet_sensors_path=str(
+            getattr(cfg, "CABINET_SENSORS_PATH", "/run/orion-sensors/latest.json")
+        ),
+        orion_situation_cabinet_sensors_b_path=str(getattr(cfg, "CABINET_SENSORS_B_PATH", "")),
+        orion_situation_cabinet_stale_after_sec=float(
+            getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
+        ),
         orion_situation_perception_enabled=False,
         orion_situation_perception_max_age_seconds=900,
         orion_situation_perception_stream_id="cam0",
@@ -548,6 +643,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
+    cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
     perception_ctx = await _build_perception_context(cfg, diagnostics)
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
@@ -570,6 +666,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
             "curiosity": curiosity_ctx.source,
             "reverie": reverie_ctx.source,
             "runtime": runtime_ctx.source,
+            "cabinet": cabinet_ctx.source,
         },
         requestor=presence.requestor,
         presence=presence,
@@ -579,6 +676,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
         environment=env_ctx,
         agenda=agenda_ctx,
         lab=lab_ctx,
+        cabinet=cabinet_ctx,
         perception=perception_ctx,
         affect=affect_ctx,
         curiosity=curiosity_ctx,
@@ -945,6 +1043,140 @@ def _build_lab_context(cfg: SituationSettings) -> LabContextV1:
     if not cfg.lab_enabled:
         return LabContextV1(available=False, source="disabled")
     return LabContextV1(available=False, source=cfg.lab_provider, thermal_risk="unknown", power_risk="unknown")
+
+
+def _parse_cabinet_received_at(value: str) -> Optional[datetime]:
+    """Same one-line ISO parse `cabinet_sensors_routes.py`'s own
+    `_parse_received_at` and `cabinet_snapshot_merge.py`'s own
+    `_parse_received_at` already duplicate -- a third small private copy
+    here rather than importing either (one is services/-owned, the other is
+    a private helper of a module this file already imports the public API
+    of)."""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _fetch_cabinet_context(cfg: SituationSettings) -> CabinetContextV1:
+    """Sync read of Orion's own physical cabinet sensors -- called via
+    `asyncio.to_thread` below, same reasoning as `_fetch_runtime_context`/
+    `_fetch_weather` (blocking file I/O must not run on this module's
+    shared event loop).
+
+    Reuses the exact same shared `orion.telemetry.cabinet_sensors` /
+    `cabinet_snapshot_merge` helpers `services/orion-hub/scripts/
+    cabinet_sensors_routes.py`'s `build_cabinet_sensors_latest` already uses
+    for Hub's own `/api/cabinet/sensors/latest` route -- not an import of
+    that route module itself (`orion/` is shared code services import FROM,
+    never the reverse -- same rule `ReverieContextV1`'s docstring
+    documents).
+    """
+    if not cfg.cabinet_sensors_path:
+        # A real, distinct state, same as curiosity's "unconfigured" -- no
+        # sensor-file mount known to this process (e.g. cortex-exec has no
+        # `/run/orion-sensors` bind today, only Hub does).
+        return CabinetContextV1(available=False, source="unconfigured")
+
+    merged = load_merged_cabinet_sensors(
+        cfg.cabinet_sensors_path,
+        secondary_path=cfg.cabinet_sensors_b_path or None,
+        stale_after_sec=cfg.cabinet_stale_after_sec,
+    )
+    if merged is None:
+        return CabinetContextV1(available=False, source="unavailable")
+
+    frame = merged.get("frame")
+    received_at = merged.get("received_at")
+    stale = bool(merged.get("stale"))
+    age_seconds: Optional[float] = None
+    if isinstance(received_at, str) and received_at.strip():
+        received_dt = _parse_cabinet_received_at(received_at)
+        if received_dt is not None:
+            age_seconds = float(percept_age_seconds(received_dt))
+
+    if stale or not isinstance(frame, dict):
+        return CabinetContextV1(available=False, source="stale", age_seconds=age_seconds)
+
+    measurements = extract_cabinet_measurements(
+        {"frame": frame, "received_at": received_at, "stale": stale}
+    )
+    if not measurements:
+        return CabinetContextV1(available=False, source="empty", age_seconds=age_seconds)
+
+    # `_CABINET_TRACKER` is process-persistent by design (module-level
+    # singleton) -- the EWMA baseline it maintains is only meaningful if fed
+    # every real sample this process reads, not reset per call. Locked
+    # (review finding, 2026-08-31): this function runs inside
+    # `asyncio.to_thread`, and the tracker's own read-modify-write is not
+    # atomic -- see `_CABINET_TRACKER_LOCK`'s own comment.
+    with _CABINET_TRACKER_LOCK:
+        pressures = compute_cabinet_pressures(measurements, _CABINET_TRACKER)
+
+    device = device_label_from_sources(merged.get("sources"))
+
+    return CabinetContextV1(
+        available=True,
+        source="cabinet_sensors",
+        age_seconds=age_seconds,
+        device=device,
+        temp_c=measurements.get("cabinet_temp_c"),
+        humidity_pct=measurements.get("cabinet_humidity_pct"),
+        pressure_hpa=measurements.get("cabinet_pressure_hpa"),
+        gas_resistance_ohm=measurements.get("cabinet_gas_resistance_ohm"),
+        uv_raw=measurements.get("cabinet_uv_raw"),
+        als_raw=measurements.get("cabinet_als_raw"),
+        magnetic_ut=measurements.get("cabinet_magnetic_ut"),
+        pm1_ug_m3=measurements.get("cabinet_pm1_ug_m3"),
+        pm25_ug_m3=measurements.get("cabinet_pm25_ug_m3"),
+        pm10_ug_m3=measurements.get("cabinet_pm10_ug_m3"),
+        lidar_mm=measurements.get("cabinet_lidar_mm"),
+        vibration_g=measurements.get("cabinet_vibration_g"),
+        imu_yaw_deg=measurements.get("cabinet_imu_yaw_deg"),
+        imu_pitch_deg=measurements.get("cabinet_imu_pitch_deg"),
+        imu_roll_deg=measurements.get("cabinet_imu_roll_deg"),
+        climate_activity=pressures.get("cabinet_climate_activity"),
+        particulate_activity=pressures.get("cabinet_particulate_activity"),
+        em_activity=pressures.get("cabinet_em_activity"),
+        uv_activity=pressures.get("cabinet_uv_activity"),
+        vibration_activity=pressures.get("cabinet_vibration_activity"),
+        proximity_activity=pressures.get("cabinet_proximity_activity"),
+    )
+
+
+async def _build_cabinet_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> CabinetContextV1:
+    """Orion's own physical cabinet sensors -- the real read `LabContextV1`
+    was always a stub stand-in for. `LabContextV1` itself is untouched
+    (still its own distinct, still-unwired GPU-cluster concept).
+
+    Fail-open like every other provider here -- a missing/unreadable
+    snapshot file, a stale frame, or an empty measurement set all yield
+    `available=False`, never a guessed reading.
+    """
+    if not cfg.cabinet_enabled:
+        diagnostics.provider_status["cabinet"] = "disabled"
+        return CabinetContextV1(available=False, source="disabled")
+
+    cache_key = f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}"
+    with _LOCK:
+        cached = _CABINET_CACHE.get(cache_key)
+        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.cabinet_ttl_seconds:
+            return cached[1]
+    try:
+        ctx = await asyncio.to_thread(_fetch_cabinet_context, cfg)
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["cabinet"] = "error"
+        diagnostics.provider_errors["cabinet"] = str(exc)
+        return CabinetContextV1(available=False, source="error")
+    with _LOCK:
+        _CABINET_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
+    diagnostics.provider_status["cabinet"] = "ok" if ctx.available else ctx.source
+    return ctx
 
 
 def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
@@ -1556,6 +1788,17 @@ async def _build_reverie_context(
     return ctx
 
 
+def _recency_phrase(age_seconds: Optional[float]) -> str:
+    """"just now" / "N min ago" -- shared by every section below that reads
+    an observation's age (perception/affect/cabinet). Extracted (review
+    finding, 2026-08-31) after this exact one-liner turned up duplicated a
+    third time verbatim: a future change to the phrasing (e.g. an "hours
+    ago" tier, or the <1-minute boundary) previously had to be hunted down
+    and applied identically in three places."""
+    age_min = round((age_seconds or 0) / 60)
+    return "just now" if age_min < 1 else f"{age_min} min ago"
+
+
 def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> SituationPromptFragmentV1:
     lines = [
         f"Local context: {brief.time.time_of_day_label.replace('_', ' ')} {brief.time.weekday}, {brief.time.timezone}.",
@@ -1592,17 +1835,67 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(f"Lab risk: thermal={brief.lab.thermal_risk}, power={brief.lab.power_risk}.")
     else:
         lines.append("Lab: unavailable/stub; do not infer.")
+    # Cabinet sensors are deliberately OMITTED rather than rendered as an
+    # "unavailable; do not infer" placeholder when there is nothing to show
+    # -- same reasoning curiosity/reverie below already document, and the
+    # same regression class this file has already hit once (2026-08-26, see
+    # test_situation_input_modality.py): unlike perception/affect, an
+    # absent cabinet read carries no confabulation risk (nobody is asking
+    # "can you see me" of a temperature sensor), so an always-on placeholder
+    # here is pure budget overhead on the common disabled/unconfigured path
+    # (every non-Hub process, by default) with nothing at stake if it's just
+    # missing.
+    if brief.cabinet.available:
+        cab = brief.cabinet
+        parts = []
+        if cab.temp_c is not None:
+            parts.append(f"temp={cab.temp_c:.1f}C")
+        if cab.humidity_pct is not None:
+            parts.append(f"humidity={cab.humidity_pct:.0f}%")
+        if cab.pressure_hpa is not None:
+            parts.append(f"pressure={cab.pressure_hpa:.0f}hPa")
+        if cab.gas_resistance_ohm is not None:
+            parts.append(f"air_quality_gas={cab.gas_resistance_ohm:.0f}ohm")
+        if cab.uv_raw is not None:
+            parts.append(f"uv={cab.uv_raw:.0f}")
+        if cab.magnetic_ut is not None:
+            parts.append(f"magnetic_field={cab.magnetic_ut:.1f}uT")
+        if cab.pm25_ug_m3 is not None:
+            parts.append(f"pm2.5={cab.pm25_ug_m3:.1f}ug/m3")
+        if cab.vibration_g is not None:
+            parts.append(f"vibration={cab.vibration_g:.3f}g")
+        if cab.lidar_mm is not None:
+            parts.append(f"nearest_object={cab.lidar_mm:.0f}mm")
+        # Deliberately NOT narrating the `*_activity` (0-1 baseline-relative
+        # EWMA volatility) fields as "elevated"/"notable" here (review
+        # finding, 2026-08-31, CLAUDE.md 0A step 3/4): an earlier version of
+        # this block called out any activity pressure above a borrowed 0.6
+        # cutoff (copied from an unrelated affect-confidence split) with no
+        # live cabinet-sensor history checked against any of the 5 domains
+        # to confirm 0.6 is not degenerate for THAT specific channel. The
+        # raw activity numbers stay on `CabinetContextV1` for debug/future
+        # use; interpretive narration is deferred until a real threshold is
+        # calibrated per-domain against real data, not shipped as a guess.
+        #
+        # `if parts` guard (review finding, 2026-08-31): a real frame can
+        # report only channels not listed above (e.g. only PM1/PM10 without
+        # PM2.5, or only IMU orientation) -- reproduced live, an earlier
+        # version rendered the malformed "Your cabinet sensors (read just
+        # now): ." in that case. Omit the whole line rather than emit an
+        # empty claim; same "no assertion when there is nothing to assert"
+        # rule the unavailable case above already follows.
+        if parts:
+            seen = _recency_phrase(cab.age_seconds)
+            lines.append(f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + ".")
     if brief.perception.available and brief.perception.scene_summary:
-        age_min = round((brief.perception.observation_age_seconds or 0) / 60)
-        seen = "just now" if age_min < 1 else f"{age_min} min ago"
+        seen = _recency_phrase(brief.perception.observation_age_seconds)
         lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")
     else:
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
     if brief.affect.available and brief.affect.summary:
-        age_min = round((brief.affect.observation_age_seconds or 0) / 60)
-        seen = "just now" if age_min < 1 else f"{age_min} min ago"
+        seen = _recency_phrase(brief.affect.observation_age_seconds)
         if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":
             # The vision backend is handed NO audio at all. Saying "no speech
             # detected" here would claim we listened and heard silence, which

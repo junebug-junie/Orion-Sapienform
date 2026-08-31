@@ -12,6 +12,7 @@ services:
     environment:
       - PROJECT=${PROJECT}
       - ORION_ACTION_SETTLE_SEC=${ORION_ACTION_SETTLE_SEC:-15.0}
+      - ORION_ACTION_SETTLE_MAX_SEC=${ORION_ACTION_SETTLE_MAX_SEC:-180.0}
       - NODE_NAME=${NODE_NAME:-athena}
       - SERVICE_NAME=${SERVICE_NAME:-orion-feedback-runtime}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}

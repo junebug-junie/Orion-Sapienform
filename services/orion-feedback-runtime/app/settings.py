@@ -31,7 +31,31 @@ class Settings(BaseSettings):
     # Before this existed the window was [t-205s, t+1.1s]: the action had not
     # returned when the "after" snapshot was taken. See
     # store.load_action_scoring_window.
+    # MARGIN ON TOP OF THE ACTION'S OWN MEASURED LATENCY -- no longer the whole
+    # settle. It was a single constant covering send offset + latency + the
+    # digester's fold, sized against 1.2-5.4s actions; `express` runs ~50s and
+    # its "after" sample landed 35s before it finished (three live outcomes
+    # with baseline == observed_after to 4dp, 2026-08-31). worker.py::
+    # _scoring_settle_sec now adds the frame's worst measured latency to this.
     action_settle_sec: float = Field(15.0, alias="ORION_ACTION_SETTLE_SEC", ge=0.0)
+    # Ceiling on the computed settle, and a real trade-off rather than a
+    # generous margin. The feedback FIFO is oldest-first and its head is
+    # deferred until the window closes; live utilization is ~95% (one dispatch
+    # frame per 2.096s against a 2.0s poll), so a long defer eats the queue's
+    # remaining headroom directly.
+    #
+    # 180s does NOT cover every configured action. execution_dispatch_policy.
+    # v1.yaml gives `builder_prune` and `prune_dangling_images` rpc_timeout_sec:
+    # 720, and live max success latency over 24h is 107.5s (not the ~50s p50).
+    # So the clamp CAN bind -- and when it does, the window provably does not
+    # contain the action, which is the exact null-by-construction measurement
+    # this whole patch exists to stop. worker.py::_scoring_settle_sec therefore
+    # reports the clamp, and _tick REFUSES TO SCORE rather than folding a belief
+    # it already knows is unmeasurable. Silently mis-scoring would be worse than
+    # not scoring: it produces a confident wrong posterior instead of a gap.
+    action_settle_max_sec: float = Field(
+        180.0, alias="ORION_ACTION_SETTLE_MAX_SEC", ge=0.0
+    )
     # ROADMAP D2. How often to re-queue rows whose `*_pending` marker was cleared without the
     # downstream frame actually existing. The marker is cleared transactionally so this should
     # find nothing -- but the failure it guards is SILENT WORK LOSS, and it can only add work

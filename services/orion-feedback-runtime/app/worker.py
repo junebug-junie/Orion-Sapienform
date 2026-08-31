@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -99,6 +100,66 @@ class FeedbackRuntimeWorker:
 
         policy_frame = self._store.load_policy_frame(dispatch.source_policy_frame_id)
         proposal_frame = self._store.load_proposal_frame(dispatch.source_proposal_frame_id)
+        # Loaded BEFORE the window is chosen, because the window depends on how
+        # long these actions actually took. Previously loaded after the frame
+        # was built; moving it up is the whole reason the settle can be
+        # measured rather than assumed.
+        cortex_results = self._store.load_cortex_result_evidence(dispatch)
+
+        # THE WINDOW HAS TO CONTAIN THE ACTION, AND ACTIONS NO LONGER SHARE ONE
+        # DURATION. `action_settle_sec` was a single 15s constant sized against
+        # a population of 1.2-5.4s actions (see store.load_action_scoring_
+        # window). `express` runs ~50s, so its "after" sample was taken 35s
+        # BEFORE the action finished: measured live 2026-08-31, three
+        # consecutive outcomes with baseline == observed_after to 4dp
+        # (0.3525/0.3525, 0.3525/0.3525, 0.3519/0.3519) and latency ~50,000ms.
+        # That is not "no effect", it is the same defect that docstring was
+        # written to fix, re-created for a slower action by a constant that
+        # could not follow it. The action was then retired below the
+        # information floor on evidence that was null by construction.
+        settle_sec, settle_clamped = self._scoring_settle_sec(cortex_results)
+        age_sec = (datetime.now(timezone.utc) - dispatch.generated_at).total_seconds()
+        # `0.0 <=` is the retirement path, not a tidiness guard. The defer
+        # clears itself only because wall-clock age grows; a NEGATIVE age never
+        # reaches the settle, so a future-dated generated_at (a backwards NTP
+        # step, a restore, a manual insert, a naive datetime -- the field is a
+        # bare `datetime` in the schema, so naive is legal) would park the FIFO
+        # head forever, one INFO line per 2s poll with no way out. That is
+        # structurally the 2026-07-22 stuck-head incident that
+        # store._retire_incompatible_dispatch_frame exists to prevent for the
+        # schema case. action_settle_max_sec does NOT bound this: it clamps the
+        # settle, not the age.
+        if 0.0 <= age_sec < settle_sec:
+            # DEFER, do not consume. Scoring now would find no field tick at
+            # the closing edge, and `resolve_action_outcomes` would skip every
+            # candidate as `missing_field_window` -- while `save_feedback_frame`
+            # still clears `feedback_pending`, so the dispatch is never rescored.
+            # Silent, permanent loss of the measurement. Real lag measured over
+            # 10,261 frames (6h, 2026-08-31): p50 94.5s, p95 172.5s, but
+            # min 0.1s -- so the fast tail already loses measurements today at
+            # settle=15, and widening the window without this would turn that
+            # tail into the common case.
+            #
+            # Head-of-line blocking here is BOUNDED, not free -- an earlier
+            # draft of this comment claimed the latter and was wrong. The lookup
+            # is oldest-first (store._PENDING_SQL, ORDER BY generated_at ASC), so
+            # the head is the oldest pending frame; when settle was one constant
+            # everything behind it was equally unscoreable and deferring really
+            # did cost nothing. Per-frame settle breaks that: a younger frame
+            # with a SMALLER settle can be scoreable and does get blocked.
+            # Measured over 24h: 170 of 857 dispatching frames defer, worst
+            # head-block 14.8s, 1,702s total (2.0% of wall time). It stays that
+            # small because execution-dispatch-runtime inserts the frame row
+            # AFTER its sends, so a frame's age at first visibility already
+            # covers its own latency and the wait is ~base, not ~settle.
+            logger.info(
+                "feedback_frame_deferred dispatch_frame_id=%s age_sec=%.1f settle_sec=%.1f "
+                "-- scoring window does not close yet; retrying",
+                dispatch.frame_id,
+                age_sec,
+                settle_sec,
+            )
+            return None
         # 2026-07-22 (SelfStateV1 burn): field_before is the exact field
         # tick dispatch was built against; field_after is the next real
         # field tick observed within the policy's window, same "did the
@@ -108,8 +169,6 @@ class FeedbackRuntimeWorker:
             dispatch.generated_at,
             window_sec=self._policy.windows.field_after_window_sec,
         )
-        cortex_results = self._store.load_cortex_result_evidence(dispatch)
-
         frame = build_feedback_frame(
             dispatch_frame=dispatch,
             policy_frame=policy_frame,
@@ -130,10 +189,22 @@ class FeedbackRuntimeWorker:
             # closing edge -- see store.load_action_scoring_window for the
             # measurements and why that made every contrast an unbiased
             # estimate of a null quantity.
-            score_before, score_after = self._store.load_action_scoring_window(
-                dispatch.generated_at,
-                settle_sec=self._settings.action_settle_sec,
-            )
+            if settle_clamped:
+                # A window we already know is too short yields a confident wrong
+                # posterior, which is strictly worse than a gap. Refuse.
+                logger.warning(
+                    "feedback_scoring_window_clamped dispatch_frame_id=%s settle_sec=%.1f "
+                    "-- action outlasts the ceiling; NOT scoring (a short window would "
+                    "fold a belief that is null by construction)",
+                    dispatch.frame_id,
+                    settle_sec,
+                )
+                score_before, score_after = None, None
+            else:
+                score_before, score_after = self._store.load_action_scoring_window(
+                    dispatch.generated_at,
+                    settle_sec=settle_sec,
+                )
             resolution = resolve_action_outcomes(
                 dispatch_frame=dispatch,
                 feedback_frame_id=frame.frame_id,
@@ -180,6 +251,51 @@ class FeedbackRuntimeWorker:
                 sorted(counts.items()),
             )
         return frame
+
+
+    def _scoring_settle_sec(
+        self, cortex_results: list[dict[str, object]] | None
+    ) -> tuple[float, bool]:
+        """How long to wait before sampling the field, for THIS frame.
+
+        `action_settle_sec` stops being "send offset + action latency + the
+        digester's fold" baked into one constant, and becomes only the margin
+        on top of a latency that is now MEASURED. Latency was unpopulated on
+        every row until 2026-08-21, which is why it was a constant in the first
+        place; it is real data now, so the window can follow the action instead
+        of assuming its duration.
+
+        Returns (settle_sec, clamped). `clamped` true means the ceiling bound
+        and the window is KNOWN to be shorter than the action -- the caller must
+        not score that frame.
+
+        Frame-wide max, not per candidate: the field delta is frame-wide (see
+        the co-attribution bookkeeping in resolve_action_outcomes), so a window
+        that contains only the fastest action in the frame would attribute a
+        shared delta from a sample taken while the others were still running.
+        Measured cost of that choice over 24h: of 870 dispatching frames, 809
+        held a single action; the 60 mixed frames (inspect/maintain/summarize,
+        in-frame latency spread 5.4-18.4s) widen from 15s to ~33s, not to 65s.
+
+        Falls back to the bare constant when no latency was reported -- absent
+        stays absent, never coerced to 0.0, which would read as "this action
+        was free" and silently reproduce the too-narrow window this exists to
+        fix. Clamped at `action_settle_max_sec` so one pathological latency
+        cannot park the FIFO head for hours.
+        """
+        base = float(self._settings.action_settle_sec)
+        latencies = _latencies(cortex_results)
+        if not latencies:
+            return base, False
+        worst_sec = max(latencies.values()) / 1000.0
+        wanted = base + worst_sec
+        ceiling = float(self._settings.action_settle_max_sec)
+        if wanted > ceiling:
+            # Clamped: the window provably does NOT contain the action. Reported
+            # so the caller can refuse to score rather than fold a belief it
+            # already knows is null by construction.
+            return ceiling, True
+        return wanted, False
 
 
 def _latencies(cortex_results: list[dict[str, object]] | None) -> dict[str, float]:

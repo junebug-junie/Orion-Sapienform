@@ -358,9 +358,22 @@ class FeedbackRuntimeStore:
           after  = the first tick at least `settle_sec` after the dispatch
 
         `settle_sec` must cover send offset + action latency + the digester's
-        own fold. Waiting costs nothing: the feedback runtime processes a
-        dispatch frame minutes after it is written, so the later tick already
-        exists by the time this runs.
+        own fold. It is no longer a constant: worker.py::_scoring_settle_sec
+        adds the frame's worst MEASURED latency to `action_settle_sec`, because
+        a fixed 15s was sized against the 1.2-5.4s action population above and
+        could not follow a ~50s `express` run -- whose "after" sample therefore
+        landed 35s before the action finished, reproducing this exact defect
+        (three live outcomes 2026-08-31 with baseline == observed_after to 4dp).
+
+        The original note here said "waiting costs nothing: the feedback runtime
+        processes a dispatch frame minutes after it is written, so the later
+        tick already exists". Measured over 10,261 frames (6h, 2026-08-31) that
+        is true at p50 (94.5s) and p95 (172.5s) but FALSE at the minimum
+        (0.1s) -- some frames are scored almost immediately, and for those this
+        returns (None, None) while the caller still clears `feedback_pending`,
+        losing the measurement permanently. worker.py::_tick now DEFERS a frame
+        whose window has not closed instead of consuming it, which is what
+        makes the claim true rather than merely usually-true.
 
         Returns (None, None) rather than a partial window -- a half-window is
         not a weaker measurement, it is a different one.

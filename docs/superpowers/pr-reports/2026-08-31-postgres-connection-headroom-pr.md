@@ -57,7 +57,9 @@ Two things made the raw number misleading, and both are now handled:
 
 Of 93 idle connections, **only 8 had been idle longer than two hours**. The rest were live pool connections cycling normally — last statement `COMMIT` or `ROLLBACK`, `state_change` seconds old. ~25 services each holding a SQLAlchemy pool (default `pool_size=5` + `max_overflow=10`) can legitimately want ~375; `orion-sql-writer` alone is configured to burst to 38.
 
-Reaping idle sessions was considered and rejected: `pool_pre_ping` is set at only 38 of this repo's `create_engine` sites. Killing idle sessions would convert a capacity problem into scattered pool-checkout errors in every pool that lacks it — trading a visible ceiling for an intermittent one.
+Reaping idle sessions was considered and rejected: **18 of the 80** `create_engine`/`create_async_engine` calls in `orion/` and `services/` do not set `pool_pre_ping` (AST-counted, tests excluded), including live paths in `orion/substrate/mutation_queue.py` and `orion/substrate/policy_profiles.py`. Killing idle sessions would convert a capacity problem into scattered pool-checkout errors in exactly those pools — trading a visible ceiling for an intermittent one.
+
+> **Correction.** Commit `2c7cfd916` and an earlier draft of this report said `pool_pre_ping` was set at "only 38" sites. That came from a line-based grep, which misses multi-line calls and made coverage look far worse than it is: the real split is 62 with, 18 without (78% covered). The decision does not change — 18 unprotected pools on live paths is reason enough not to reap idle sessions — but the number backing it was wrong.
 
 ## Tests run
 

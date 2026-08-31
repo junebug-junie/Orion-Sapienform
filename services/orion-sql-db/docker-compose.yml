@@ -46,9 +46,11 @@ services:
       # Cost: ~5-10MB of backend memory per connection, so 300 is ~1.5-3GB against the
       # 16g mem_limit above -- affordable, especially with shared_buffers still at the
       # 128MB default.
-      # Deliberately NOT paired with idle_session_timeout: pool_pre_ping is set at only
-      # 38 of the create_engine sites in this repo, so reaping idle sessions would turn a
-      # capacity problem into scattered checkout errors in every pool that lacks it.
+      # Deliberately NOT paired with idle_session_timeout: 18 of the 80 create_engine /
+      # create_async_engine calls in orion/ and services/ do NOT set pool_pre_ping
+      # (AST-counted, non-test), including live paths in orion/substrate/mutation_queue.py
+      # and orion/substrate/policy_profiles.py. Reaping idle sessions would turn a
+      # capacity problem into scattered checkout errors in exactly those pools.
       # Watch headroom with: python3 scripts/check_postgres_connection_headroom.py
       - -c
       - max_connections=${POSTGRES_MAX_CONNECTIONS:-300}

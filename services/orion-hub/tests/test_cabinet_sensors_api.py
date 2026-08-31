@@ -260,8 +260,16 @@ def test_rows_to_sensor_series_skips_nulls_and_zero_fills_nothing():
             "humidity_pct": 45.0,
             "lidar_mm": 18.0,
             "als_raw": None,
+            "uv_raw": 0.0,
+            "magnetic_ut": 55.0,
+            "vibration_g": 0.02,
+            "imu_yaw_deg": -42.0,
+            "imu_pitch_deg": 0.1,
+            "imu_roll_deg": -0.2,
             "climate_activity": 0.1,
             "proximity_activity": None,
+            "em_activity": 0.3,
+            "vibration_activity": 0.15,
             "uv_activity": 0.05,
         },
         {
@@ -270,8 +278,14 @@ def test_rows_to_sensor_series_skips_nulls_and_zero_fills_nothing():
             "humidity_pct": None,
             "lidar_mm": 17.0,
             "als_raw": 120.0,
+            "uv_raw": 1.0,
+            "magnetic_ut": 52.0,
+            "vibration_g": 0.04,
+            "imu_yaw_deg": -41.5,
             "climate_activity": 0.2,
             "proximity_activity": 0.4,
+            "em_activity": 0.25,
+            "vibration_activity": 0.12,
             "uv_activity": None,
         },
     ]
@@ -283,6 +297,8 @@ def test_rows_to_sensor_series_skips_nulls_and_zero_fills_nothing():
     assert len(series["als_raw"]) == 1
     assert series["als_raw"][0]["v"] == pytest.approx(120.0)
     assert len(series["proximity_activity"]) == 1
+    assert len(series["magnetic_ut"]) == 2
+    assert series["imu_yaw_deg"][0]["v"] == pytest.approx(-42.0)
 
 
 def test_history_defaults_to_24h_and_returns_empty_series(client, monkeypatch):

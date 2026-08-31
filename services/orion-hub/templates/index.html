@@ -1165,7 +1165,7 @@
             <div>
               <h3 class="text-sm font-semibold text-gray-100">Nano sensor history</h3>
               <p class="text-[11px] text-gray-500">
-                Postgres biometrics-summary trends at ~30s grain (temp, humidity, lidar, ALS, activity).
+                Postgres biometrics-summary trends at ~30s grain — all five Nano channels (env, UV/ALS, lidar, mag, IMU) plus derived activity.
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-1" aria-label="Sensor history window">
@@ -1175,40 +1175,10 @@
             </div>
           </div>
           <div id="cabinetSensorHistoryStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this tab to load sensor history.</div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">Temperature (°C)</div>
-              <div id="cabinetSensorChartTempC" class="min-h-[8rem]"></div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">Humidity (%)</div>
-              <div id="cabinetSensorChartHumidity" class="min-h-[8rem]"></div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">Lidar distance (mm)</div>
-              <div id="cabinetSensorChartLidar" class="min-h-[8rem]"></div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">ALS raw</div>
-              <div id="cabinetSensorChartAls" class="min-h-[8rem]"></div>
-            </div>
-          </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">climate activity (0–1)</div>
-              <div id="cabinetSensorChartClimateActivity" class="min-h-[8rem]"></div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">proximity activity (0–1)</div>
-              <div id="cabinetSensorChartProximityActivity" class="min-h-[8rem]"></div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">UV activity (0–1)</div>
-              <div id="cabinetSensorChartUvActivity" class="min-h-[8rem]"></div>
-            </div>
-          </div>
+          <div id="cabinetSensorHistoryGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
           <p class="text-[10px] text-gray-500">
             Charts use biometrics summary at ~30s grain; live tiles above poll the host reader at ~1 Hz.
+            UV <em>activity</em> tracks volatility of <code class="text-gray-500">uv_raw</code> only — use ALS raw for ambient light; mag/IMU history appears after biometrics ingests merged dual-Nano snapshots.
           </p>
         </div>
         <div id="cabinetPressureStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>

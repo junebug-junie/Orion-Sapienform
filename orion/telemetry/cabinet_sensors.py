@@ -135,6 +135,9 @@ def extract_cabinet_measurements(sensors: Optional[Dict[str, Any]]) -> Dict[str,
     if ax is not None and ay is not None and az is not None:
         accel_g = sqrt(ax * ax + ay * ay + az * az) / GRAVITY_MPS2
         out["cabinet_vibration_g"] = abs(accel_g - 1.0)
+    put("cabinet_imu_yaw_deg", _as_float(imu.get("yaw_deg")))
+    put("cabinet_imu_pitch_deg", _as_float(imu.get("pitch_deg")))
+    put("cabinet_imu_roll_deg", _as_float(imu.get("roll_deg")))
 
     return out
 

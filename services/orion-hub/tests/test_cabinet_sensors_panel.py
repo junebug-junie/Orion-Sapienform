@@ -52,13 +52,7 @@ def test_template_declares_nav_button_panel_and_script_tag() -> None:
         "cabinetAmbientRmsChart",
         "cabinetAmbientActivityChart",
         "cabinetSensorHistoryStatus",
-        "cabinetSensorChartTempC",
-        "cabinetSensorChartHumidity",
-        "cabinetSensorChartLidar",
-        "cabinetSensorChartAls",
-        "cabinetSensorChartClimateActivity",
-        "cabinetSensorChartProximityActivity",
-        "cabinetSensorChartUvActivity",
+        "cabinetSensorHistoryGrid",
     ):
         assert f'id="{mount_id}"' in INDEX_HTML, mount_id
 
@@ -71,8 +65,9 @@ def test_template_declares_sensor_history_windows_and_biometrics_grain_caption()
     for window in ("24h", "3d", "7d"):
         assert f'data-cabinet-sensor-window="{window}"' in section_html
     assert "Nano sensor history" in section_html
-    assert "Temperature" in section_html
-    assert "Lidar distance" in section_html
+    assert 'id="cabinetSensorHistoryGrid"' in section_html
+    assert "five Nano channels" in section_html
+    assert "uv_raw" in section_html
     assert "~30s" in section_html
     assert "biometrics" in section_html.lower()
 
@@ -162,8 +157,12 @@ def test_cabinet_sensors_js_wires_ambient_latest_and_history_contracts() -> None
     assert 'querySelectorAll("[data-cabinet-ambient-window]")' in CABINET_SENSORS_JS
 
 
-def test_cabinet_sensors_js_wires_sensor_history_contracts() -> None:
-    assert '"/api/cabinet/sensors/history?window="' in CABINET_SENSORS_JS
+def test_cabinet_sensors_js_mounts_history_charts_dynamically() -> None:
+    assert "mountSensorHistoryCharts" in CABINET_SENSORS_JS
+    assert "cabinetSensorHistoryGrid" in CABINET_SENSORS_JS
+    assert '"magnetic_ut"' in CABINET_SENSORS_JS
+    assert '"uv_raw"' in CABINET_SENSORS_JS
+    assert '"imu_yaw_deg"' in CABINET_SENSORS_JS
     assert "function fetchSensorHistory(" in CABINET_SENSORS_JS
     assert "function renderSensorHistory(" in CABINET_SENSORS_JS
     assert 'querySelectorAll("[data-cabinet-sensor-window]")' in CABINET_SENSORS_JS

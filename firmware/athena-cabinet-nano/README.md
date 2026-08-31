@@ -57,7 +57,8 @@ Notes:
 |--------|-----|------|
 | BME680 | I2C | `environment` |
 | LTR390 | I2C | `uv` (raw UV + ALS counts) |
-| LIS3MDL | I2C | `magnetic` (µT + magnitude) |
+| LIS3MDL | I2C | `magnetic` (µT + magnitude) — legacy breakout |
+| MMC5603 | I2C | `magnetic` (µT + magnitude) — dual-Nano mag board |
 | PMSA003I | I2C | `particulate` (µg/m³) |
 | VL53L1X | I2C | `lidar` (mm + range status) |
 | BNO085 | **I2C default** (0x4A/0x4B); UART-RVC fallback | `imu` (accel m/s², yaw/pitch/roll °) |
@@ -105,6 +106,7 @@ All I2C sensors share this bus. Typical 7-bit addresses:
 | BME680 | 0x76 or 0x77 |
 | LTR390 | 0x53 |
 | LIS3MDL | 0x1C or 0x1E |
+| MMC5603 | 0x30 |
 | PMSA003I | 0x12 |
 | VL53L1X | 0x29 |
 
@@ -138,6 +140,7 @@ Install via Library Manager or `arduino-cli lib install`:
 - Adafruit BME680 Library
 - Adafruit LTR390 Library
 - Adafruit LIS3MDL
+- Adafruit MMC5603 (Adafruit_MMC56x3 library)
 - Adafruit VL53L1X
 - Adafruit BNO08x
 - Adafruit BNO08x RVC (UART-RVC fallback)

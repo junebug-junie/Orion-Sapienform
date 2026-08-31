@@ -91,7 +91,7 @@ def print_live(label: str, path: Path) -> None:
         return
     print(f"status={latest.get('status')} device={latest.get('device')}")
     frame = latest.get("frame") or {}
-    for block in SENSOR_TO_FRAME.values():
+    for block in sorted(set(SENSOR_TO_FRAME.values())):
         present = block in frame and frame.get(block) is not None
         print(f"  {block}: {'present' if present else 'absent'}")
 

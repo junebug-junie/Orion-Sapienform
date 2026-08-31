@@ -186,6 +186,7 @@
   function bindElements() {
     els.panel = $("cabinet");
     els.status = $("cabinetStatus");
+    els.sources = $("cabinetSources");
     els.grid = $("cabinetSensorGrid");
     els.pressures = $("cabinetPressureStrip");
     els.refreshBtn = $("cabinetRefreshBtn");
@@ -335,6 +336,56 @@
     }
 
     host.appendChild(row);
+  }
+
+  function bootOkSensors(boot) {
+    var sensors = boot && boot.sensors && typeof boot.sensors === "object" ? boot.sensors : null;
+    if (!sensors) return [];
+    return Object.keys(sensors).filter(function (name) {
+      var meta = sensors[name];
+      return meta && typeof meta === "object" && meta.ok === true;
+    });
+  }
+
+  function renderSources(host, payload) {
+    if (!host) return;
+    host.textContent = "";
+    var sources = payload && payload.sources && typeof payload.sources === "object" ? payload.sources : null;
+    if (!sources) return;
+
+    var labels = { a: "Nano A (env / UV / lidar)", b: "Nano B (Hub B — mag + IMU)" };
+    var wrap = el("div", "flex flex-col gap-2");
+    Object.keys(sources).sort().forEach(function (key) {
+      var entry = sources[key];
+      if (!entry || typeof entry !== "object") return;
+      var snap = entry.snapshot;
+      var boot = entry.boot;
+      var row = el("div", "rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2");
+      var title = el("div", "text-[11px] font-semibold text-gray-300", labels[key] || ("Nano " + key.toUpperCase()));
+      row.appendChild(title);
+      var meta = el("div", "mt-1 flex flex-wrap items-center gap-2 text-[11px] font-mono text-gray-400");
+      var statusText = snap ? String(snap.status || "unknown") : "missing";
+      meta.appendChild(
+        badge(
+          statusText,
+          statusText === "ok"
+            ? "border-emerald-800 bg-emerald-950/40 text-emerald-200"
+            : "border-amber-800 bg-amber-950/40 text-amber-200",
+          "reader status"
+        )
+      );
+      var addrs =
+        boot && boot.i2c && Array.isArray(boot.i2c.addresses) ? boot.i2c.addresses.join(", ") : "—";
+      meta.appendChild(el("span", "", "i2c " + addrs));
+      var okNames = bootOkSensors(boot);
+      if (okNames.length) {
+        meta.appendChild(el("span", "text-gray-500", "·"));
+        meta.appendChild(el("span", "text-emerald-300/90", okNames.join(", ")));
+      }
+      row.appendChild(meta);
+      wrap.appendChild(row);
+    });
+    host.appendChild(wrap);
   }
 
   function renderTile(tile, frame) {
@@ -676,6 +727,7 @@
 
   function renderPayload(payload) {
     if (els.status) renderStatus(els.status, payload);
+    if (els.sources) renderSources(els.sources, payload);
     if (els.grid) renderSensorGrid(els.grid, payload);
     if (els.pressures) renderPressureStrip(els.pressures, payload);
   }

@@ -5,7 +5,7 @@
  * orion.sensor_frame.v1 at ~1 Hz. Failed sensors omit their sub-object.
  *
  * I2C: probes common Nano pin pairs at boot. Primary bus (Wire) hosts
- * BME680 / VL53 / BNO. If LTR390 / LIS3MDL / PMSA003I ACKs on another
+ * BME680 / VL53 / BNO. If LTR390 / LIS3MDL / MMC5603 / PMSA003I ACKs on another
  * pair, they run on Wire1.
  */
 
@@ -17,6 +17,7 @@
 #include <Adafruit_BME680.h>
 #include <Adafruit_LTR390.h>
 #include <Adafruit_LIS3MDL.h>
+#include <Adafruit_MMC56x3.h>
 #include <Adafruit_VL53L1X.h>
 #include <Adafruit_PM25AQI.h>
 #include <Adafruit_BNO08x.h>
@@ -32,6 +33,7 @@ static constexpr uint32_t PMSA003I_BOOT_MS = 3000;
 
 static constexpr uint32_t FRAME_INTERVAL_MS = 1000;
 static constexpr uint32_t USB_BAUD = 115200;
+static constexpr uint32_t I2C_TIMEOUT_MS = 50;
 static constexpr uint8_t I2C_SCAN_MAX = 24;
 static constexpr uint8_t I2C_PROBE_MAX = 8;
 
@@ -49,12 +51,13 @@ static const PinPair kPinPairs[] = {
 };
 static constexpr size_t kPinPairCount = sizeof(kPinPairs) / sizeof(kPinPairs[0]);
 
-static constexpr uint8_t kPrimaryTargets[] = {0x29, 0x4A, 0x4B, 0x76, 0x77};
+static constexpr uint8_t kPrimaryTargets[] = {0x29, 0x30, 0x4A, 0x4B, 0x76, 0x77};
 static constexpr uint8_t kMissingTargets[] = {0x12, 0x1C, 0x1E, 0x53};
 
 Adafruit_BME680 bme680;
 Adafruit_LTR390 ltr390;
 Adafruit_LIS3MDL lis3mdl;
+Adafruit_MMC5603 mmc5603;
 Adafruit_VL53L1X vl53l1x;
 Adafruit_PM25AQI pm25;
 Adafruit_BNO08x bno08x_i2c(-1);
@@ -63,6 +66,7 @@ Adafruit_BNO08x_RVC bno08x_rvc;
 bool have_bme680 = false;
 bool have_ltr390 = false;
 bool have_lis3mdl = false;
+bool have_mmc5603 = false;
 bool have_pmsa003i = false;
 bool have_vl53l1x = false;
 bool have_bno085_i2c = false;
@@ -71,6 +75,7 @@ bool have_wire1 = false;
 
 uint8_t bme680_addr = 0;
 uint8_t lis3mdl_addr = 0;
+uint8_t mmc5603_addr = 0;
 uint8_t bno085_addr = 0;
 const char *bno085_mode = "none";
 const char *primary_label = "A4/A5";
@@ -96,6 +101,7 @@ uint8_t probe_hit_count = 0;
 
 TwoWire *bus_ltr = &Wire;
 TwoWire *bus_lis = &Wire;
+TwoWire *bus_mmc = &Wire;
 TwoWire *bus_pms = &Wire;
 
 uint32_t frame_seq = 0;
@@ -131,7 +137,12 @@ static uint8_t count_targets(const uint8_t *found, uint8_t nfound,
   return score;
 }
 
+static void i2c_apply_timeout(TwoWire *bus) {
+  bus->setTimeOut(I2C_TIMEOUT_MS);
+}
+
 static void scan_on(TwoWire *bus, uint8_t *out, uint8_t *out_count) {
+  i2c_apply_timeout(bus);
   *out_count = 0;
   for (uint8_t addr = 1; addr < 127; addr++) {
     bus->beginTransmission(addr);
@@ -182,6 +193,7 @@ static void probe_pin_matrix() {
     delay(5);
     Wire.begin(p.sda, p.scl);
     Wire.setClock(50000);
+    i2c_apply_timeout(&Wire);
     delay(20);
 
     uint8_t found[I2C_SCAN_MAX];
@@ -235,9 +247,11 @@ static void init_i2c_buses() {
   // Two STEMMA hubs + long daisy = high capacitance; keep the bus slow.
   Wire.begin(i2c_sda, i2c_scl);
   Wire.setClock(25000);
+  i2c_apply_timeout(&Wire);
   if (have_wire1) {
     Wire1.begin(i2c2_sda, i2c2_scl);
     Wire1.setClock(25000);
+    i2c_apply_timeout(&Wire1);
   }
 }
 
@@ -246,6 +260,7 @@ static void reinit_primary_i2c() {
   delay(10);
   Wire.begin(i2c_sda, i2c_scl);
   Wire.setClock(25000);
+  i2c_apply_timeout(&Wire);
 }
 
 static void quaternion_to_euler(float qr, float qi, float qj, float qk,
@@ -260,6 +275,9 @@ static void quaternion_to_euler(float qr, float qi, float qj, float qk,
 }
 
 static void init_bme680() {
+  if (!i2c_has_addr(0x76) && !i2c_has_addr(0x77)) {
+    return;
+  }
   if (bme680.begin(0x76, &Wire)) {
     have_bme680 = true;
     bme680_addr = 0x76;
@@ -278,6 +296,9 @@ static void init_bme680() {
 }
 
 static void init_ltr390() {
+  if (!i2c_has_addr(0x53)) {
+    return;
+  }
   bus_ltr = bus_for_addr(0x53);
   have_ltr390 = ltr390.begin(bus_ltr);
   if (bus_ltr == &Wire) {
@@ -286,6 +307,9 @@ static void init_ltr390() {
 }
 
 static void init_lis3mdl() {
+  if (!i2c_has_addr(0x1C) && !i2c_has_addr(0x1E)) {
+    return;
+  }
   TwoWire *candidates[2] = {&Wire, have_wire1 ? &Wire1 : nullptr};
   for (uint8_t c = 0; c < 2; c++) {
     TwoWire *bus = candidates[c];
@@ -313,7 +337,25 @@ static void init_lis3mdl() {
   lis3mdl.setDataRate(LIS3MDL_DATARATE_155_HZ);
 }
 
+static void init_mmc5603() {
+  if (!i2c_has_addr(0x30)) {
+    return;
+  }
+  TwoWire *bus = bus_for_addr(0x30);
+  if (!mmc5603.begin(0x30, bus)) {
+    return;
+  }
+  have_mmc5603 = true;
+  mmc5603_addr = 0x30;
+  bus_mmc = bus;
+  mmc5603.setDataRate(100);
+  mmc5603.setContinuousMode(true);
+}
+
 static void init_pmsa003i() {
+  if (!i2c_has_addr(0x12)) {
+    return;
+  }
   TwoWire *candidates[2] = {&Wire, have_wire1 ? &Wire1 : nullptr};
   for (uint8_t c = 0; c < 2; c++) {
     TwoWire *bus = candidates[c];
@@ -329,6 +371,9 @@ static void init_pmsa003i() {
 }
 
 static void init_vl53l1x() {
+  if (!i2c_has_addr(0x29)) {
+    return;
+  }
   if (!vl53l1x.begin(0x29, &Wire)) {
     return;
   }
@@ -347,6 +392,9 @@ static bool bno_enable_reports() {
 }
 
 static void init_bno085_i2c() {
+  if (!i2c_has_addr(0x4A) && !i2c_has_addr(0x4B)) {
+    return;
+  }
   if (bno08x_i2c.begin_I2C(0x4A, &Wire)) {
     have_bno085_i2c = true;
     bno085_addr = 0x4A;
@@ -447,6 +495,10 @@ static void emit_boot_diagnostic() {
                            : (i2c_has_addr(0x1C) || i2c_has_addr(0x1E) ? "begin_failed"
                                                                       : "not_on_bus"),
               lis3mdl_addr);
+  sensor_json(sensors.createNestedObject("mmc5603"), have_mmc5603,
+              have_mmc5603 ? nullptr
+                           : (i2c_has_addr(0x30) ? "begin_failed" : "not_on_bus"),
+              mmc5603_addr);
   sensor_json(sensors.createNestedObject("pmsa003i"), have_pmsa003i,
               have_pmsa003i ? nullptr
                             : (i2c_has_addr(0x12) ? "begin_failed" : "not_on_bus"));
@@ -500,6 +552,21 @@ static bool read_uv(JsonObject out) {
 }
 
 static bool read_magnetic(JsonObject out) {
+  if (have_mmc5603) {
+    sensors_event_t event;
+    if (!mmc5603.getEvent(&event)) {
+      return false;
+    }
+    const float x_ut = event.magnetic.x;
+    const float y_ut = event.magnetic.y;
+    const float z_ut = event.magnetic.z;
+    const float magnitude_ut = sqrtf(x_ut * x_ut + y_ut * y_ut + z_ut * z_ut);
+    out["x_ut"] = roundf(x_ut * 100.0f) / 100.0f;
+    out["y_ut"] = roundf(y_ut * 100.0f) / 100.0f;
+    out["z_ut"] = roundf(z_ut * 100.0f) / 100.0f;
+    out["magnitude_ut"] = roundf(magnitude_ut * 100.0f) / 100.0f;
+    return true;
+  }
   if (!have_lis3mdl) {
     return false;
   }
@@ -659,6 +726,7 @@ void setup() {
   init_bme680();
   init_ltr390();
   init_lis3mdl();
+  init_mmc5603();
   init_pmsa003i();
   init_vl53l1x();
   init_bno085();

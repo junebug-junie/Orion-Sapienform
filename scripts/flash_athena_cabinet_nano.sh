@@ -77,6 +77,7 @@ Then install the board core and libraries:
   arduino-cli lib install "Adafruit BME680 Library"
   arduino-cli lib install "Adafruit LTR390 Library"
   arduino-cli lib install "Adafruit LIS3MDL"
+  arduino-cli lib install "Adafruit MMC5603"
   arduino-cli lib install "Adafruit VL53L1X"
   arduino-cli lib install "Adafruit BNO08x"
   arduino-cli lib install "Adafruit BNO08x RVC"

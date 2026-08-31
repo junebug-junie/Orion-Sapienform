@@ -40,6 +40,7 @@ def test_template_declares_nav_button_panel_and_script_tag() -> None:
     assert "/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" in INDEX_HTML
     for mount_id in (
         "cabinetStatus",
+        "cabinetSources",
         "cabinetSensorGrid",
         "cabinetPressureStrip",
         "cabinetRefreshBtn",
@@ -243,6 +244,7 @@ def test_cabinet_sensors_js_exposes_an_accessible_chart_summary() -> None:
 def test_cabinet_sensors_js_renders_status_grid_and_pressure_strip() -> None:
     for renderer in (
         "renderStatus",
+        "renderSources",
         "renderSensorGrid",
         "renderPressureStrip",
         "renderPayload",

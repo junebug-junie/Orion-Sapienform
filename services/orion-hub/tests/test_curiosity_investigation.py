@@ -1806,3 +1806,61 @@ def test_a_malformed_duration_cannot_destroy_the_writeup():
         )
     )
     assert bus.published == []
+
+
+# --- the FCC leg, distinguished from the whole turn (2026-09-01) ------------
+
+
+def test_the_footprint_separates_the_harness_leg_from_the_whole_turn():
+    """The difference between the two IS the stance+finalize overhead.
+
+    Reporting only the whole turn made a 1600s-pinned FCC leg indistinguishable
+    from a fast one wrapped in a slow finalize.
+    """
+    entry = build_investigation_journal_entry(
+        material=_material(),
+        body_text="x",
+        correlation_id="c",
+        run_id="r1",
+        harness_step_count=104,
+        harness_grounding_status="fcc_timeout",
+        harness_elapsed_sec=2087.0,
+        harness_fcc_elapsed_sec=1598.0,
+        created_at=NOW,
+    )
+    assert "whole turn 2087s (stance + harness + finalize)" in entry.body
+    assert "of which harness 1598s" in entry.body
+
+
+def test_an_unknown_harness_leg_is_omitted_not_guessed():
+    """An older governor sends no such field. Absent must not render as 0s, and
+    must not be silently backfilled from the whole-turn number."""
+    entry = build_investigation_journal_entry(
+        material=_material(),
+        body_text="x",
+        correlation_id="c",
+        run_id="r1",
+        harness_step_count=104,
+        harness_elapsed_sec=2087.0,
+        harness_fcc_elapsed_sec=None,
+        created_at=NOW,
+    )
+    assert "whole turn 2087s" in entry.body
+    assert "harness 0s" not in entry.body
+    assert "of which" not in entry.body
+
+
+def test_the_leg_is_read_off_the_frame_the_governor_sends():
+    """Producer/consumer contract: the field name must match end to end."""
+    frames = [
+        {
+            "type": "final",
+            "llm_response": "found it",
+            "harness_step_count": 76,
+            "harness_grounding_status": "fcc_timeout",
+            "harness_fcc_elapsed_sec": 1598.4,
+        }
+    ]
+    (text, debug), _ = _drive_real_generate(frames)
+    assert text == "found it"
+    assert debug["fcc_elapsed_sec"] == 1598.4

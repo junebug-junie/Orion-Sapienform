@@ -284,3 +284,13 @@ class HarnessRunV1(BaseModel):
     # ~/.fcc/.env route alias requested (e.g. "MODEL_SONNET"), which cannot
     # distinguish backends sharing one route. None when discovery never fired.
     fcc_served_model: str | None = None
+    # Wall time for the FCC motor leg alone, seconds. The quantity
+    # HARNESS_FCC_TIMEOUT_SEC (1600s) compares against, and therefore the one
+    # that decides `grounding_status == "fcc_timeout"`. Optional because the
+    # refusal/validation paths never run the motor -- absent there means "no
+    # motor leg happened", NOT "it took no time".
+    #
+    # Hub previously had no way to see this: it could only time the whole
+    # unified turn, which also spans the stance leg (<=400s) and the finalize
+    # chain (<=485s). See services/orion-hub/scripts/curiosity_investigation.py.
+    fcc_elapsed_sec: float | None = None

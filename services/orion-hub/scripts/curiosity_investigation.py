@@ -381,6 +381,7 @@ def build_investigation_journal_entry(
     harness_step_count: Optional[int] = None,
     harness_grounding_status: Optional[str] = None,
     harness_elapsed_sec: Optional[float] = None,
+    harness_fcc_elapsed_sec: Optional[float] = None,
     graph_footprint: Optional[dict[str, int]] = None,
     hop_notes: Optional[list[tuple[int, str]]] = None,
     created_at: Optional[datetime] = None,
@@ -463,6 +464,18 @@ def build_investigation_journal_entry(
                 f", whole turn {harness_elapsed_sec:.0f}s "
                 "(stance + harness + finalize)"
                 if harness_elapsed_sec is not None
+                else ""
+            )
+            + (
+                # THE LEG THE TIMEOUT ACTUALLY GOVERNS. `whole turn` above
+                # bounds it; this is it. Reported second and only when known,
+                # so the difference between the two IS the stance+finalize
+                # overhead and nobody has to infer it. A `grounded` run's
+                # distance from HARNESS_FCC_TIMEOUT_SEC (1600s) is the real
+                # headroom figure -- the thing that decides whether the budget
+                # is genuinely too small or the turn simply never converged.
+                f", of which harness {harness_fcc_elapsed_sec:.0f}s"
+                if harness_fcc_elapsed_sec is not None
                 else ""
             )
         )
@@ -1251,6 +1264,7 @@ class CuriosityInvestigation:
             harness_step_count=debug.get("harness_step_count"),
             harness_grounding_status=debug.get("harness_grounding_status"),
             harness_elapsed_sec=debug.get("elapsed_sec"),
+            harness_fcc_elapsed_sec=debug.get("fcc_elapsed_sec"),
             graph_footprint=footprint,
             hop_notes=hops,
         )
@@ -1384,6 +1398,7 @@ class CuriosityInvestigation:
         # Did it actually look? See MIN_HARNESS_STEPS.
         steps = final.get("harness_step_count")
         grounding = final.get("harness_grounding_status")
+        fcc_elapsed = final.get("harness_fcc_elapsed_sec")
         try:
             step_count = int(steps) if steps is not None else 0
         except (TypeError, ValueError):
@@ -1405,6 +1420,7 @@ class CuriosityInvestigation:
             }
         return text, {
             "elapsed_sec": elapsed,
+            "fcc_elapsed_sec": fcc_elapsed,
             "harness_step_count": step_count,
             "harness_grounding_status": grounding,
             "fcc_model_label": final.get("fcc_model_label"),
@@ -1487,6 +1503,7 @@ class CuriosityInvestigation:
         harness_step_count: Optional[int] = None,
         harness_grounding_status: Optional[str] = None,
         harness_elapsed_sec: Optional[float] = None,
+        harness_fcc_elapsed_sec: Optional[float] = None,
         graph_footprint: Optional[dict[str, int]] = None,
         hop_notes: Optional[list[tuple[int, str]]] = None,
     ) -> None:
@@ -1506,6 +1523,7 @@ class CuriosityInvestigation:
                 harness_step_count=harness_step_count,
                 harness_grounding_status=harness_grounding_status,
                 harness_elapsed_sec=harness_elapsed_sec,
+                harness_fcc_elapsed_sec=harness_fcc_elapsed_sec,
                 graph_footprint=graph_footprint,
                 hop_notes=hop_notes,
             )

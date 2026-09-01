@@ -275,6 +275,10 @@ def _success_frames(
         "finalize_changed": run.finalize_changed,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
+        # The FCC leg's own duration. Distinct from any wall time Hub can
+        # measure itself, which necessarily includes the stance and finalize
+        # legs on either side of this one.
+        "harness_fcc_elapsed_sec": run.fcc_elapsed_sec,
     }
     if fcc_model_label:
         # The identity that actually produced this response -- previously not

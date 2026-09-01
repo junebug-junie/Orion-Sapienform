@@ -751,3 +751,79 @@ async def test_harness_runner_omits_prior_tool_fetch_line_when_none_found() -> N
         await runner.run(request)
 
     assert "Last turn you fetched content via tool" not in captured["prompt"]
+
+
+# --- the FCC leg's own duration (2026-09-01) --------------------------------
+#
+# `HARNESS_FCC_TIMEOUT_SEC` (1600s) governs THIS leg and decides
+# `grounding_status == "fcc_timeout"`. Nothing measured it: Hub could only time
+# the whole unified turn, which also spans the stance leg (<=400s) and the
+# finalize chain (<=485s), so up to ~885s of what it saw was not the motor.
+
+
+@pytest.mark.asyncio
+async def test_the_motor_reports_its_own_wall_time() -> None:
+    request = HarnessRunRequestV1(
+        correlation_id="c-elapsed",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    runner = HarnessRunner(AsyncMock(), fcc_runner=_mock_fcc_runner)
+    result = await runner.run(request)
+
+    assert isinstance(result.fcc_elapsed_sec, float)
+    assert result.fcc_elapsed_sec >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_motor_still_reports_its_wall_time() -> None:
+    """The case the number exists for. A run that produced no draft still
+    consumed the budget, and that is precisely what needs recording."""
+
+    async def _error_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "error",
+            "error": "fcc turn timed out after 120.0s",
+            "error_code": "fcc_timeout",
+        }
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-timeout-elapsed",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    runner = HarnessRunner(AsyncMock(), fcc_runner=_error_runner)
+    result = await runner.run(request)
+
+    assert result.draft_text == ""
+    assert isinstance(result.fcc_elapsed_sec, float)
+
+
+def test_the_run_schema_carries_the_leg_and_defaults_to_absent() -> None:
+    """Absent means "no motor leg ran" (refusal paths), NOT "it took no time".
+
+    Resolved through the registry rather than imported directly -- the registry
+    is what consumers bind to, and a field can exist on the class while the
+    registered model is a different one.
+    """
+    from orion.schemas.registry import resolve
+
+    model = resolve("HarnessRunV1")
+    assert "fcc_elapsed_sec" in model.model_fields
+
+    ran = model(
+        correlation_id="c", final_text="t", finalize_ran=True, step_count=3,
+        compliance_verdict="completed", grounding_status="grounded",
+        fcc_elapsed_sec=1598.4,
+    )
+    assert model.model_validate(ran.model_dump(mode="json")).fcc_elapsed_sec == 1598.4
+
+    refused = model(
+        correlation_id="c", final_text=None, finalize_ran=False, step_count=0,
+        compliance_verdict="refused", grounding_status="invalid_request",
+    )
+    assert refused.fcc_elapsed_sec is None

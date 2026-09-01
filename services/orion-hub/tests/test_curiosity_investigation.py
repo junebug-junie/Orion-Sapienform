@@ -1647,3 +1647,94 @@ def test_a_loop_with_no_reader_returns_four_empties_not_three() -> None:
     loop = _loop(_FakeBus())
     loop._reader = None
     assert asyncio.run(loop._read_turn_result("abc123")) == (None, None, [], None)
+
+
+# ---------------------------------------------------------------------------
+# Wall time in the footprint (2026-09-01)
+#
+# The loop's dominant failure is `fcc_timeout` -- 9 of the 16 runs to
+# 2026-09-01. `elapsed_sec` was computed on every run and discarded, so the
+# only durable record of a killed turn was its step count, and steps do not
+# stand in for time: a 127-step run finished inside the budget while a 76-step
+# run was killed by it.
+
+
+def test_the_footprint_records_how_long_the_turn_took():
+    entry = build_investigation_journal_entry(
+        material=_material(),
+        body_text="x",
+        correlation_id="c",
+        run_id="r1",
+        harness_step_count=104,
+        harness_grounding_status="fcc_timeout",
+        harness_elapsed_sec=2699.6,
+        created_at=NOW,
+    )
+    assert "Investigated over 104 harness steps in 2700s" in entry.body
+    assert "grounding: fcc_timeout" in entry.body
+
+
+def test_a_turn_with_no_recorded_time_says_nothing_about_time():
+    """Absent is not zero. A missing elapsed must not render as `in 0s`."""
+    entry = build_investigation_journal_entry(
+        material=_material(),
+        body_text="x",
+        correlation_id="c",
+        run_id="r1",
+        harness_step_count=104,
+        harness_elapsed_sec=None,
+        created_at=NOW,
+    )
+    assert "Investigated over 104 harness steps" in entry.body
+    assert " in " not in entry.body.split("Investigated over")[1].split(",")[0]
+    assert "0s" not in entry.body
+
+
+def test_elapsed_is_reported_even_when_the_run_wrote_nothing():
+    """A killed turn is exactly the case the number is for."""
+    entry = build_investigation_journal_entry(
+        material=_material(),
+        body_text="x",
+        correlation_id="c",
+        run_id="r1",
+        harness_step_count=76,
+        harness_grounding_status="fcc_timeout",
+        harness_elapsed_sec=2700.0,
+        graph_footprint={},
+        created_at=NOW,
+    )
+    assert "in 2700s" in entry.body
+    assert "Wrote nothing to its own graph this run" in entry.body
+
+
+def test_a_tick_carries_the_turn_duration_all_the_way_into_the_journal():
+    """End to end. The composer taking the argument proves nothing on its own.
+
+    `elapsed_sec` already existed in `_generate`'s debug dict and was dropped
+    at the call site for months, which is exactly the failure this pins.
+    """
+    bus = _FakeBus()
+    assert asyncio.run(_loop(bus).tick()) is None
+    assert "14 harness steps in 1s" in bus.published[0][1].payload["body"]
+
+
+def test_the_real_generate_always_reports_elapsed_on_the_path_that_journals():
+    """The invariant the footprint depends on.
+
+    A journal is only written when `_generate` returns non-empty text, and the
+    single path that does also sets `elapsed_sec`. So every journaled run
+    carries a duration -- including an `fcc_timeout` run, which is the case the
+    number exists for.
+    """
+    frames = [
+        {
+            "type": "final",
+            "llm_response": "found it",
+            "harness_step_count": 76,
+            "harness_grounding_status": "fcc_timeout",
+        }
+    ]
+    (text, debug), _ = _drive_real_generate(frames)
+    assert text == "found it"
+    assert debug["harness_grounding_status"] == "fcc_timeout"
+    assert isinstance(debug["elapsed_sec"], float)

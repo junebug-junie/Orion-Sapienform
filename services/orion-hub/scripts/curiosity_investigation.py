@@ -380,6 +380,7 @@ def build_investigation_journal_entry(
     run_id: str,
     harness_step_count: Optional[int] = None,
     harness_grounding_status: Optional[str] = None,
+    harness_elapsed_sec: Optional[float] = None,
     graph_footprint: Optional[dict[str, int]] = None,
     hop_notes: Optional[list[tuple[int, str]]] = None,
     created_at: Optional[datetime] = None,
@@ -424,6 +425,25 @@ def build_investigation_journal_entry(
         # the artifact so the claim stays checkable after the fact.
         lines[-1] += (
             f" Investigated over {harness_step_count} harness steps"
+            + (
+                # WALL TIME, next to the step count, because neither number
+                # means much alone. The turn is killed by a wall-clock
+                # deadline, so elapsed is the quantity that deadline actually
+                # compares against -- and it was being computed every run and
+                # thrown away, leaving the loop's dominant failure mode with no
+                # durable record of what it consumed.
+                #
+                # Steps do NOT stand in for it. Measured over the 16 runs to
+                # 2026-09-01: runs that hit `fcc_timeout` averaged 99 steps and
+                # runs that finished averaged 78, but the ranges overlap --
+                # a 127-step run finished inside the budget while a 76-step run
+                # was killed by it. Without elapsed there is no way to tell
+                # "the budget is genuinely too small" from "this turn never
+                # converged", and those have opposite fixes.
+                f" in {harness_elapsed_sec:.0f}s"
+                if harness_elapsed_sec is not None
+                else ""
+            )
             + (f", grounding: {harness_grounding_status}" if harness_grounding_status else "")
         )
     if graph_footprint is not None:
@@ -1210,6 +1230,7 @@ class CuriosityInvestigation:
             run_id=run_id,
             harness_step_count=debug.get("harness_step_count"),
             harness_grounding_status=debug.get("harness_grounding_status"),
+            harness_elapsed_sec=debug.get("elapsed_sec"),
             graph_footprint=footprint,
             hop_notes=hops,
         )
@@ -1432,6 +1453,7 @@ class CuriosityInvestigation:
         run_id: str,
         harness_step_count: Optional[int] = None,
         harness_grounding_status: Optional[str] = None,
+        harness_elapsed_sec: Optional[float] = None,
         graph_footprint: Optional[dict[str, int]] = None,
         hop_notes: Optional[list[tuple[int, str]]] = None,
     ) -> None:
@@ -1442,6 +1464,7 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             harness_step_count=harness_step_count,
             harness_grounding_status=harness_grounding_status,
+            harness_elapsed_sec=harness_elapsed_sec,
             graph_footprint=graph_footprint,
             hop_notes=hop_notes,
         )

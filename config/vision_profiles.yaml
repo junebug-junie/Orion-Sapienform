@@ -164,7 +164,11 @@ profiles:
       (GroundingDINO/OWL-ViT/YOLO-World/etc).
     model_id: "REPLACE_ME/open_vocab_detector"
     device: auto
-    dtype: fp32                       # GroundingDINO matmul fails fp16 on P100; fp32 required
+    dtype: fp32                       # GroundingDINO matmul fails fp16 on P100; fp32 required.
+                                       # FOLLOW-UP (2026-09-01): circe's P100 at nvidia-smi index 4
+                                       # is being swapped for a T10 16GB on 2026-09-04. T10 is Turing,
+                                       # not Pascal -- this fp32 forcing was never verified against it.
+                                       # Re-test fp16 on the T10 before assuming this line still applies.
     cost:
       vram_estimate_mb: 2800
       latency_class: medium            # low|medium|high

@@ -380,6 +380,7 @@ def build_investigation_journal_entry(
     run_id: str,
     harness_step_count: Optional[int] = None,
     harness_grounding_status: Optional[str] = None,
+    harness_elapsed_sec: Optional[float] = None,
     graph_footprint: Optional[dict[str, int]] = None,
     hop_notes: Optional[list[tuple[int, str]]] = None,
     created_at: Optional[datetime] = None,
@@ -425,6 +426,45 @@ def build_investigation_journal_entry(
         lines[-1] += (
             f" Investigated over {harness_step_count} harness steps"
             + (f", grounding: {harness_grounding_status}" if harness_grounding_status else "")
+            + (
+                # WHOLE-TURN WALL TIME, HUB SIDE, AND IT IS NOT THE BUDGET THE
+                # `fcc_timeout` LABEL REFERS TO. Three nested deadlines are in
+                # play and only the innermost one ever kills a run that gets
+                # this far (all three confirmed against the live containers,
+                # 2026-09-01):
+                #
+                #   HARNESS_FCC_TIMEOUT_SEC          1600s  governor process
+                #   HUB_HARNESS_GOVERNOR_RPC_TIMEOUT 2160s  hub
+                #   HUB_CURIOSITY_INVESTIGATION_...  2700s  hub, this clock
+                #
+                # `fcc_timeout` is emitted by the GOVERNOR at 1600s
+                # (`orion/harness/fcc_motor.py`), which then yields its partial
+                # draft as an ordinary final frame -- which is the only reason
+                # a timed-out run has a journal at all. The 2700s budget
+                # structurally cannot kill a journaled run: if it fires,
+                # `_generate` returns no text and `_investigate` bails at
+                # `empty_generation` before anything is written. So every entry
+                # carrying this number came from a turn where 2700s was slack.
+                #
+                # It is therefore NOT the investigation's duration. It spans
+                # all four legs -- stance (<=400s), governor queue, the FCC
+                # turn, and the finalize chain (<=485s) -- so up to ~885s of it
+                # is provably not investigation, and the legs are not measured
+                # separately anywhere. Named in the text rather than left to
+                # position, because `in 2699s` sitting after "harness steps"
+                # reads as the harness leg and is not.
+                #
+                # What it is good for: a `grounded` run's distance from the
+                # 1600s FCC ceiling is real headroom, and until now the number
+                # survived only for runs that FAILED to journal (logged in the
+                # debug dict at `curiosity_investigation_no_text`) and was lost
+                # for every run that succeeded. Read it as an upper bound on
+                # the FCC leg, never as the leg itself.
+                f", whole turn {harness_elapsed_sec:.0f}s "
+                "(stance + harness + finalize)"
+                if harness_elapsed_sec is not None
+                else ""
+            )
         )
     if graph_footprint is not None:
         # `{}` and `None` are DIFFERENT here, and the distinction lands in the
@@ -1210,6 +1250,7 @@ class CuriosityInvestigation:
             run_id=run_id,
             harness_step_count=debug.get("harness_step_count"),
             harness_grounding_status=debug.get("harness_grounding_status"),
+            harness_elapsed_sec=debug.get("elapsed_sec"),
             graph_footprint=footprint,
             hop_notes=hops,
         )
@@ -1302,7 +1343,20 @@ class CuriosityInvestigation:
                 timeout=self.timeout_sec,
             )
         except (TimeoutError, asyncio.TimeoutError):
-            return "", {"error": "timeout", "timeout_sec": self.timeout_sec}
+            # `elapsed_sec` here too, though this path cannot journal today:
+            # it returns no text, so `_investigate` bails at `empty_generation`
+            # first. That is the load-bearing half of the footprint's
+            # invariant and it is NOT enforced by anything -- a later change
+            # that salvages a partial draft here (exactly what `fcc_motor`
+            # already does with `accumulated`) would make `debug.get(
+            # "elapsed_sec")` return None for precisely the runs the number
+            # exists for, and the footprint would drop it with no error and no
+            # failing test. Cheaper to be right now than to notice then.
+            return "", {
+                "error": "timeout",
+                "timeout_sec": self.timeout_sec,
+                "elapsed_sec": round(time.monotonic() - started, 3),
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_generate_failed corr=%s err=%s", correlation_id, exc)
             return "", {"error": type(exc).__name__, "detail": str(exc)[:240]}
@@ -1432,20 +1486,29 @@ class CuriosityInvestigation:
         run_id: str,
         harness_step_count: Optional[int] = None,
         harness_grounding_status: Optional[str] = None,
+        harness_elapsed_sec: Optional[float] = None,
         graph_footprint: Optional[dict[str, int]] = None,
         hop_notes: Optional[list[tuple[int, str]]] = None,
     ) -> None:
-        entry = build_investigation_journal_entry(
-            material=material,
-            run_id=run_id,
-            body_text=text,
-            correlation_id=correlation_id,
-            harness_step_count=harness_step_count,
-            harness_grounding_status=harness_grounding_status,
-            graph_footprint=graph_footprint,
-            hop_notes=hop_notes,
-        )
+        # BUILD INSIDE THE TRY. The journal is the only place this turn is
+        # persisted -- the unified turn runs with `no_write`, so a raise here
+        # destroys an investigation that cost up to 1600s of FCC budget, with
+        # nothing to recover from. It sat outside until 2026-09-01, which was
+        # survivable only because every value rendered with a bare `{}` that
+        # cannot raise; `harness_elapsed_sec` is the first that formats with
+        # `:.0f`, and this builder is public with hint-only types.
         try:
+            entry = build_investigation_journal_entry(
+                material=material,
+                run_id=run_id,
+                body_text=text,
+                correlation_id=correlation_id,
+                harness_step_count=harness_step_count,
+                harness_grounding_status=harness_grounding_status,
+                harness_elapsed_sec=harness_elapsed_sec,
+                graph_footprint=graph_footprint,
+                hop_notes=hop_notes,
+            )
             await self._bus.publish(
                 JOURNAL_WRITE_CHANNEL,
                 BaseEnvelope(

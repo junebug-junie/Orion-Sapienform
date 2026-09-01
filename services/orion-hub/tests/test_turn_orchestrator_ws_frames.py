@@ -1142,3 +1142,42 @@ async def test_turn_orchestrator_publishes_timeout_grammar_when_governor_rpc_nev
         and call.args[1][0].atom.semantic_role == "exec_turn_timeout"
     ]
     assert len(timeout_calls) == 1
+
+
+# --- the FCC leg reaches Hub on the frame (2026-09-01) ----------------------
+
+
+def test_the_final_frame_carries_the_harness_leg_duration() -> None:
+    """The governor/Hub seam for the one number the 1600s budget governs.
+
+    Hub can time the whole unified turn itself, but that spans the stance leg
+    and the finalize chain too. Only the governor knows how long the motor ran,
+    so if it does not ride this frame, nothing downstream can ever see it.
+    """
+    run = HarnessRunV1(
+        correlation_id="c-1",
+        final_text="answer",
+        finalize_ran=True,
+        step_count=76,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+        fcc_elapsed_sec=1598.4,
+    )
+    frames = _success_frames(run, correlation_id="c-1")
+    final = next(f for f in frames if f.get("type") == "final")
+    assert final["harness_fcc_elapsed_sec"] == 1598.4
+
+
+def test_the_final_frame_passes_an_unknown_leg_through_as_unknown() -> None:
+    """An older governor sends no value; Hub must not invent one."""
+    run = HarnessRunV1(
+        correlation_id="c-2",
+        final_text="answer",
+        finalize_ran=True,
+        step_count=76,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    frames = _success_frames(run, correlation_id="c-2")
+    final = next(f for f in frames if f.get("type") == "final")
+    assert final["harness_fcc_elapsed_sec"] is None

@@ -186,6 +186,80 @@ async def test_harness_run_carries_fcc_served_model_from_motor() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_run_carries_the_fcc_leg_duration_from_the_motor() -> None:
+    """`HarnessRunV1.fcc_elapsed_sec` must come from the motor, not be re-timed.
+
+    Only the motor knows how long the FCC leg ran, and that is the quantity
+    HARNESS_FCC_TIMEOUT_SEC (1600s) compares against. The governor re-timing it
+    around its own saga would fold in the finalize chain; Hub timing it would
+    fold in the stance leg as well. So this is a pure pass-through, and the
+    only thing that can break it is the governor dropping the field.
+    """
+    from app import bus_listener
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-fcc-elapsed",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    appraisal = make_appraisal()
+    reflection = make_reflection()
+    motor = _motor_result(thought)
+    motor.fcc_elapsed_sec = 1598.4
+
+    async def _fake_finalize_chain(**_: object) -> HarnessFinalizeChainResult:
+        from orion.harness.finalize import emit_turn_outcome_molecule, emit_verdict_molecule
+
+        verdict = await emit_verdict_molecule(
+            correlation_id="c-fcc-elapsed",
+            reflection=reflection,
+            publish_fn=AsyncMock(),
+        )
+        outcome = await emit_turn_outcome_molecule(
+            correlation_id="c-fcc-elapsed",
+            thought=thought,
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict,
+            draft_text="internal draft",
+            final_text="final for juniper",
+            finalize_changed=False,
+            publish_fn=AsyncMock(),
+        )
+        return HarnessFinalizeChainResult(
+            final_text="final for juniper",
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict,
+            outcome_molecule=outcome,
+            finalize_changed=False,
+            quick_lane_skipped_5b=True,
+            verdict_molecule_id="verdict-1",
+        )
+
+    bus = AsyncMock()
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain), patch.object(
+        bus_listener,
+        "emit_post_turn_closure",
+        AsyncMock(return_value=AsyncMock()),
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            bus,
+            req,
+            reply_to="orion:harness:run:result:c-fcc-elapsed",
+        )
+
+    assert run.fcc_elapsed_sec == 1598.4
+
+
+@pytest.mark.asyncio
 async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finalize() -> None:
     from app import bus_listener
     from orion.harness.finalize import (
@@ -667,3 +741,51 @@ async def test_harness_run_carries_recall_on_motor_fail() -> None:
     assert run.memory_digest == (capsule.memory_digest or capsule.continuity_digest)
     assert run.recall_debug is not None
     assert run.recall_debug["source"] == "pcr_phase3"
+
+
+@pytest.mark.asyncio
+async def test_a_motor_that_produced_no_draft_still_reports_its_leg_duration() -> None:
+    """The case the number matters MOST, and a different code path.
+
+    When the motor returns no draft the governor early-returns before the
+    finalize chain, so this does not share a line with the success path tested
+    above. A turn that burned the whole 1600s budget and salvaged nothing is
+    precisely the one an operator needs the duration for -- and it is the one
+    whose journal entry never gets written, leaving the run artifact as the
+    only record.
+    """
+    from app import bus_listener
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-no-draft",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    motor = HarnessMotorResult(
+        draft_text="",
+        step_count=76,
+        exit_code=None,
+        compliance_verdict="failed",
+        grounding_status="fcc_timeout",
+        draft_molecule=None,
+        fcc_elapsed_sec=1600.2,
+    )
+
+    bus = AsyncMock()
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            bus,
+            req,
+            reply_to="orion:harness:run:result:c-no-draft",
+        )
+
+    assert run.final_text is None
+    assert run.grounding_status == "fcc_timeout"
+    assert run.fcc_elapsed_sec == 1600.2

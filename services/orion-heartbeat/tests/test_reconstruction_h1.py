@@ -105,20 +105,37 @@ def test_compute_h1_ensemble_reports_bulk_penetration_depth() -> None:
 
 def test_verdict_thresholds_helper_matches_live_classification() -> None:
     """The helper a read-only surface draws its bands from must be the same
-    numbers compute_h1_ensemble actually classifies with -- the point of
-    exposing them is precisely so they cannot drift apart when retuned
-    (design doc "Recommended next patch" step 4 anticipates retuning)."""
+    numbers classify_ensemble_verdict actually uses."""
+    from app.substrate.reconstruction import (
+        classify_ensemble_verdict,
+        compute_h1_ensemble,
+        verdict_thresholds,
+    )
     from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
-    from app.substrate.reconstruction import compute_h1_ensemble, verdict_thresholds
 
     bands = verdict_thresholds()
     assert bands["low_ratio"] < bands["high_ratio"]
+    assert bands["std_mixed"] > bands["std_redundant_max"]
 
     ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=3), base_seed=200)
     result = compute_h1_ensemble(ensemble)
-    if result.mean_ratio >= bands["high_ratio"]:
-        assert result.verdict == "redundant"
-    elif result.mean_ratio <= bands["low_ratio"]:
-        assert result.verdict == "concentrated"
-    else:
-        assert result.verdict == "mixed"
+    assert result.verdict == classify_ensemble_verdict(
+        mean_ratio=result.mean_ratio,
+        std_ratio=result.std_ratio,
+        bulk_penetration_depth=result.bulk_penetration_depth,
+    )
+
+
+def test_classify_ensemble_verdict_priority_cases() -> None:
+    from app.substrate.reconstruction import classify_ensemble_verdict
+
+    # Silence floor (mean-only path still reachable under total quiet)
+    assert classify_ensemble_verdict(mean_ratio=0.1, std_ratio=0.0, bulk_penetration_depth=0.0) == "concentrated"
+    # High disagreement -> mixed even when mean is high
+    assert classify_ensemble_verdict(mean_ratio=0.9, std_ratio=0.05, bulk_penetration_depth=0.88) == "mixed"
+    # Shallow bulk -> concentrated
+    assert classify_ensemble_verdict(mean_ratio=0.85, std_ratio=0.02, bulk_penetration_depth=0.80) == "concentrated"
+    # Settled busy agreement -> redundant
+    assert classify_ensemble_verdict(mean_ratio=0.88, std_ratio=0.02, bulk_penetration_depth=0.89) == "redundant"
+    # Middle band -> mixed
+    assert classify_ensemble_verdict(mean_ratio=0.85, std_ratio=0.035, bulk_penetration_depth=0.86) == "mixed"

@@ -63,18 +63,59 @@ from .ensemble import EnsembleH1ResultV1, EnsembleSubstrate
 # therefore log2(BOND_DIM) exactly (Schmidt rank <= bond dimension).
 _MAX_POSSIBLE_ENTROPY = math.log2(BOND_DIM)
 
-# Provisional, NOT calibrated against any real baseline -- unlike the
-# charter's own H1 thresholds (F>=0.85 success / F<0.7 falsified), which were
-# grounded in the active phi encoder's real precedent, v0 has no equivalent
-# prior run to calibrate against yet. These are placeholder bands for a first
-# reading, not a pre-registered gate; revisit once real ticks have
-# accumulated.
+# Cut-5 mean_ratio bands (legacy single-signal; still exported for Hub band
+# gauges on the seam scalar). Ensemble verdict classification no longer uses
+# mean_ratio alone -- see classify_ensemble_verdict().
 _HIGH_RATIO = 0.6
 _LOW_RATIO = 0.2
+
+# Multi-signal ensemble verdict bands. Calibrated from 48h live AST/HOT after
+# #1985 (2026-09-01, n=5574 rows with std_ratio+bulk_penetration_depth):
+#   std p25/p50/p75/p90 = 0.026 / 0.034 / 0.043 / 0.054
+#   bulk p25/p50/p75     = 0.847 / 0.875 / 0.888
+# Re-run scripts/analysis/measure_heartbeat_ensemble_calibration.py grammar
+# replay before retuning; synthetic quiet phase should still land concentrated.
+_STD_MIXED = 0.043  # live p75 -- trajectory disagreement
+_STD_REDUNDANT_MAX = 0.030  # below live p50 -- trajectories agree
+_BULK_LOW = 0.840  # live ~p25 -- shallow bulk penetration
+_BULK_REDUNDANT_MIN = 0.875  # live ~p50 -- settled busy bulk profile
 
 
 def _normalize_entropy_ratio(entropy: float) -> float:
     return max(0.0, min(1.0, entropy / _MAX_POSSIBLE_ENTROPY))
+
+
+def classify_ensemble_verdict(
+    *,
+    mean_ratio: float,
+    std_ratio: float,
+    bulk_penetration_depth: float,
+) -> str:
+    """Classify ensemble H1 into redundant / concentrated / mixed.
+
+    Priority (first match wins):
+      1. concentrated -- true silence / product-state floor (mean at charter low band)
+      2. mixed -- cross-trajectory disagreement (std at or above live p75)
+      3. concentrated -- shallow bulk penetration (bulk at or below live p25)
+      4. redundant -- high mean + low std + high bulk (settled busy agreement)
+      5. mixed -- everything else (middle band; mean alone cannot discriminate)
+
+    mean_ratio at cut-5 is capacity-saturated under real traffic (~0.73-0.95);
+    std_ratio and bulk_penetration_depth carry the discriminating structure.
+    """
+    if mean_ratio <= _LOW_RATIO:
+        return "concentrated"
+    if std_ratio >= _STD_MIXED:
+        return "mixed"
+    if bulk_penetration_depth <= _BULK_LOW:
+        return "concentrated"
+    if (
+        mean_ratio >= _HIGH_RATIO
+        and std_ratio <= _STD_REDUNDANT_MAX
+        and bulk_penetration_depth >= _BULK_REDUNDANT_MIN
+    ):
+        return "redundant"
+    return "mixed"
 
 
 def bulk_penetration_depth(profile: list[float]) -> float:
@@ -132,23 +173,14 @@ def compute_h1(substrate: HeartbeatSubstrate) -> H1ResultV1:
 
 
 def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
-    """Ensemble-level counterpart to compute_h1() -- mean ratio across all N
-    trajectories, classified with the SAME _HIGH_RATIO/_LOW_RATIO thresholds
-    as the single-trajectory version.
+    """Ensemble-level H1 reading: mean/std at the boundary/bulk cut, bulk
+    penetration depth, and a multi-signal verdict.
 
-    **_HIGH_RATIO/_LOW_RATIO have NOT been re-validated against live ensemble
-    behavior yet** (design doc Acceptance Check 1 / Recommended next patch
-    step 4) -- they were tuned offline (scripts/analysis/measure_heartbeat_
-    ensemble_calibration.py, synthetic + real-grammar-replay modes) and
-    transferred here as a starting point, not re-derived from this live
-    service's own traffic. Confirmed in that offline calibration: real
-    busy-state traffic reads mean_ratio~0.81-0.82 (comfortably >= _HIGH_RATIO,
-    "redundant" as expected for genuinely coupled organ activity); genuine
-    multi-organ silence is rare in this system's current real operation (60h
-    audit found 4 of 5 organs continuously active regardless of chat
-    activity), so live confirmation of the "concentrated" band specifically
-    still needs real observed quiet stretches, not just the offline
-    synthetic/replay evidence.
+    Verdict uses classify_ensemble_verdict() -- mean_ratio alone is
+    capacity-saturated under real traffic; std_ratio (trajectory disagreement)
+    and bulk_penetration_depth (profile shape) discriminate when cut-5 cannot.
+    Bands calibrated from 48h live AST/HOT (2026-09-01, n=5574); re-validate
+    via scripts/analysis/measure_heartbeat_ensemble_calibration.py before retuning.
     """
     # Single ratios() call, not ratios() + std_ratio() (std_ratio() would
     # recompute ratios() -- and hence every trajectory's entropy_profile() --
@@ -167,12 +199,11 @@ def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
     ]
     bulk_depth = bulk_penetration_depth(mean_profile)
 
-    if mean_ratio >= _HIGH_RATIO:
-        verdict = "redundant"
-    elif mean_ratio <= _LOW_RATIO:
-        verdict = "concentrated"
-    else:
-        verdict = "mixed"
+    verdict = classify_ensemble_verdict(
+        mean_ratio=mean_ratio,
+        std_ratio=std_ratio,
+        bulk_penetration_depth=bulk_depth,
+    )
 
     return EnsembleH1ResultV1(
         mean_ratio=mean_ratio,
@@ -195,4 +226,11 @@ def verdict_thresholds() -> dict[str, float]:
     next time these are retuned -- design doc "Recommended next patch" step 4
     explicitly anticipates retuning them against live data.
     """
-    return {"high_ratio": _HIGH_RATIO, "low_ratio": _LOW_RATIO}
+    return {
+        "high_ratio": _HIGH_RATIO,
+        "low_ratio": _LOW_RATIO,
+        "std_mixed": _STD_MIXED,
+        "std_redundant_max": _STD_REDUNDANT_MAX,
+        "bulk_low": _BULK_LOW,
+        "bulk_redundant_min": _BULK_REDUNDANT_MIN,
+    }

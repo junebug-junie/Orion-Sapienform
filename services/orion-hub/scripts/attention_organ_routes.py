@@ -29,11 +29,14 @@ its signal is reaching AST/HOT, which is precisely what the design doc's
 Acceptance Checks 1 and 3 ask for and which had no human-visible surface.
 
 **Deliberately not computed here**: nothing is re-derived from a mirrored
-copy of a constant that lives in another service. The verdict band edges
-(``high_ratio``/``low_ratio``) and the reheat inputs
-(``raw_mean_abs_gap_zscore`` -> ``signal`` -> ``reheat_prob``) are read from
-``orion-heartbeat``'s own ``/health`` payload, which reports the values that
-service actually used. A number this tab shows is a number some real
+copy of a constant that lives in another service. Ensemble verdict edges
+(``low_ratio`` silence floor, ``high_ratio`` redundant conjunct,
+``std_mixed`` / ``std_redundant_max``, ``bulk_low`` / ``bulk_redundant_min``)
+and the reheat inputs (``raw_mean_abs_gap_zscore`` -> ``signal`` ->
+``reheat_prob``) are read from ``orion-heartbeat``'s own ``/health`` payload,
+which reports the values that service actually used. Mean-ratio color bands
+are not the classifier — ``classify_ensemble_verdict()`` keys on std and
+bulk after the silence floor. A number this tab shows is a number some real
 producer actually produced.
 """
 

@@ -425,6 +425,83 @@ def test_attention_organ_js_bounds_its_rolling_client_side_trace() -> None:
     assert "state.liveTrace.splice" in ORGAN_JS
 
 
+def test_attention_organ_js_does_not_paint_verdict_from_mean_ratio_bands() -> None:
+    """Live 2026-09-01: classify_ensemble_verdict returned mixed while the
+    Hub gauge colored mean_ratio>=0.6 as redundant. Mean at cut-5 is
+    capacity-saturated; std_ratio and bulk_penetration_depth discriminate.
+    Painting concentrated/mixed/redundant on the mean bar is a lie."""
+    gauge = ORGAN_JS[
+        ORGAN_JS.index("function renderBandGauge") : ORGAN_JS.index(
+            "function ensembleVerdictWhy"
+        )
+    ]
+    assert 'el("span", "", "concentrated")' not in gauge
+    assert 'el("span", "", "mixed")' not in gauge
+    assert 'el("span", "", "redundant")' not in gauge
+    assert "band(low, high" not in gauge
+    assert "band(high, 1" not in gauge
+    assert "silence floor" in gauge.lower()
+
+
+def test_attention_organ_js_draws_std_and_bulk_classifier_thresholds() -> None:
+    """verdict_thresholds() already exports std_mixed/bulk_low/etc on
+    /health.config. The organ tab must draw those, not only low_ratio/high_ratio."""
+    gauge = ORGAN_JS[
+        ORGAN_JS.index("function renderBandGauge") : ORGAN_JS.index(
+            "function ensembleVerdictWhy"
+        )
+    ]
+    ensemble = ORGAN_JS[
+        ORGAN_JS.index("function renderEnsemble") : ORGAN_JS.index(
+            "function renderDiscrimination"
+        )
+    ]
+    assert gauge.count("drawLinearGauge(host,") == 3
+    assert "h1.bulk_penetration_depth" in gauge
+    assert "h1.bulk_penetration_depth" in ensemble
+    assert "thresholds.std_mixed" in gauge
+    assert "thresholds.std_redundant_max" in gauge
+    assert "thresholds.bulk_low" in gauge
+    assert "thresholds.bulk_redundant_min" in gauge
+    assert "domainMin: bulkMin" in gauge
+    assert "renderBandGauge(host, h1, config)" in ensemble
+
+
+def test_attention_organ_js_fallback_why_names_failing_conjuncts() -> None:
+    """Fallback mixed must not always blame bulk — live std can sit between
+    std_redundant_max and std_mixed while bulk already clears bulk_redundant_min."""
+    why = ORGAN_JS[
+        ORGAN_JS.index("function ensembleVerdictWhy") : ORGAN_JS.index(
+            "function renderTrajectories"
+        )
+    ]
+    assert "settled-agreement conjuncts missed" in why
+    assert "std " in why and "redundant-max" in why
+    assert "vs redundant min" not in why
+
+
+def test_attention_organ_js_config_row_lists_ensemble_verdict_edges() -> None:
+    """The dissipation panel's 'verdict bands' row still advertised the
+    retired mean-only 0.2/0.6 split after #2015."""
+    dissipation = ORGAN_JS[
+        ORGAN_JS.index("function renderDissipation") : ORGAN_JS.index(
+            "function setStatus"
+        )
+    ]
+    assert '["verdict bands", "≤" + num(config.low_ratio, 2) + " / ≥" + num(config.high_ratio, 2)]' not in dissipation
+    assert "config.std_mixed" in dissipation
+    assert "config.bulk_low" in dissipation
+    assert "config.bulk_redundant_min" in dissipation
+
+
+def test_attention_organ_routes_doc_does_not_call_mean_ratio_the_verdict_axis() -> None:
+    routes_src = (
+        Path(__file__).resolve().parents[1] / "scripts" / "attention_organ_routes.py"
+    ).read_text(encoding="utf-8")
+    assert "std_mixed" in routes_src
+    assert "bulk_low" in routes_src
+
+
 # --------------------------------------------------------------------------
 # Endpoint behavior (real handler execution, backends stubbed)
 #

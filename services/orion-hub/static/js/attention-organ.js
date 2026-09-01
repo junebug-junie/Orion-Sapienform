@@ -189,72 +189,220 @@
 
   // ------------------------------------------------------------- renderers
 
-  // Horizontal 0..1 band gauge with the live verdict thresholds drawn where
-  // orion-heartbeat actually classifies them (read from /health's config, not
-  // hardcoded here — see attention_organ_routes.py's "deliberately not
-  // computed here" note).
-  function renderBandGauge(host, meanRatio, stdRatio, thresholds) {
-    var low = thresholds && isFinite(thresholds.low_ratio) ? thresholds.low_ratio : null;
-    var high = thresholds && isFinite(thresholds.high_ratio) ? thresholds.high_ratio : null;
+  // Linear gauge. Threshold ticks come from orion-heartbeat /health config
+  // (verdict_thresholds()), never hardcoded — see attention_organ_routes.py.
+  function drawLinearGauge(host, opts) {
+    var domainMax = opts.domainMax > 0 ? opts.domainMax : 1;
+    var domainMin = opts.domainMin || 0;
+    if (domainMin >= domainMax) domainMin = 0;
+    var span = domainMax - domainMin;
+    function xOf(v) {
+      return Math.max(0, Math.min(1, (Number(v) - domainMin) / span)) * 100;
+    }
+    var ticks = opts.ticks || [];
     var chart = svg("0 0 100 22", "", "h-14");
-
-    function band(x0, x1, fill) {
+    chart.appendChild(
+      svgEl("rect", { x: 0, y: 2, width: 100, height: 8, fill: "rgba(75,85,99,0.35)" })
+    );
+    ticks.forEach(function (tick) {
+      if (tick.at === null || tick.at === undefined || !isFinite(tick.at)) return;
+      if (tick.label === null || tick.label === undefined) return;
+      var x = xOf(tick.at);
       chart.appendChild(
-        svgEl("rect", { x: x0 * 100, y: 2, width: Math.max(0, (x1 - x0) * 100), height: 8, fill: fill })
+        svgEl("rect", {
+          x: Math.max(0, x - 0.4),
+          y: 1,
+          width: 0.8,
+          height: 10,
+          fill: tick.color || "rgba(56,189,248,0.85)",
+        })
       );
-    }
-    if (low !== null && high !== null) {
-      band(0, low, "rgba(16,185,129,0.30)");
-      band(low, high, "rgba(56,189,248,0.30)");
-      band(high, 1, "rgba(245,158,11,0.30)");
-    } else {
-      band(0, 1, "rgba(75,85,99,0.35)");
-    }
-
-    if (meanRatio !== null && meanRatio !== undefined && isFinite(meanRatio)) {
-      var cx = Math.max(0, Math.min(1, Number(meanRatio))) * 100;
-      if (stdRatio !== null && stdRatio !== undefined && isFinite(stdRatio)) {
-        var lo = Math.max(0, Math.min(1, Number(meanRatio) - Number(stdRatio))) * 100;
-        var hi = Math.max(0, Math.min(1, Number(meanRatio) + Number(stdRatio))) * 100;
+      var label = svgEl("text", {
+        x: Math.max(2, Math.min(96, x)),
+        y: 19,
+        fill: "#6b7280",
+        "font-size": "5",
+        "text-anchor": tick.anchor || "middle",
+      });
+      label.textContent = tick.label;
+      chart.appendChild(label);
+    });
+    if (opts.value !== null && opts.value !== undefined && isFinite(opts.value)) {
+      if (opts.whiskerLo !== undefined && opts.whiskerHi !== undefined) {
+        var lo = xOf(opts.whiskerLo);
+        var hi = xOf(opts.whiskerHi);
         chart.appendChild(
           svgEl("rect", {
-            x: lo,
+            x: Math.min(lo, hi),
             y: 4.5,
-            width: Math.max(0.4, hi - lo),
+            width: Math.max(0.4, Math.abs(hi - lo)),
             height: 3,
             fill: "rgba(255,255,255,0.45)",
           })
         );
       }
+      var cx = xOf(opts.value);
       chart.appendChild(
         svgEl("rect", { x: Math.max(0, cx - 0.5), y: 0.5, width: 1, height: 11, fill: "#f8fafc" })
       );
     }
-
-    [
-      [0, "0"],
-      [low, low === null ? null : String(low)],
-      [high, high === null ? null : String(high)],
-      [1, "1"],
-    ].forEach(function (pair) {
-      if (pair[0] === null || pair[1] === null) return;
-      var tick = svgEl("text", {
-        x: Math.max(2, Math.min(96, pair[0] * 100)),
-        y: 19,
-        fill: "#6b7280",
-        "font-size": "5",
-        "text-anchor": "middle",
-      });
-      tick.textContent = pair[1];
-      chart.appendChild(tick);
-    });
     host.appendChild(chart);
+    if (opts.caption) {
+      host.appendChild(el("div", "text-[9px] text-gray-500 -mt-1 mb-2", opts.caption));
+    }
+  }
 
-    var legend = el("div", "flex items-center justify-between text-[9px] text-gray-500 -mt-1");
-    legend.appendChild(el("span", "", "concentrated"));
-    legend.appendChild(el("span", "", "mixed"));
-    legend.appendChild(el("span", "", "redundant"));
-    host.appendChild(legend);
+  // Three classifier axes. Mean at cut-5 is a capacity scalar (silence floor
+  // still lives here); verdict itself is std_ratio + bulk_penetration_depth.
+  // Confirmed live 2026-09-01: mean 0.94 sat in the old "redundant" color
+  // band while classify_ensemble_verdict returned mixed.
+  function renderBandGauge(host, h1, thresholds) {
+    var meanRatio = h1 && h1.mean_ratio;
+    var stdRatio = h1 && h1.std_ratio;
+    var bulk = h1 && h1.bulk_penetration_depth;
+    var low = thresholds && isFinite(thresholds.low_ratio) ? thresholds.low_ratio : null;
+    var high = thresholds && isFinite(thresholds.high_ratio) ? thresholds.high_ratio : null;
+    var stdMixed = thresholds && isFinite(thresholds.std_mixed) ? thresholds.std_mixed : null;
+    var stdRedMax =
+      thresholds && isFinite(thresholds.std_redundant_max) ? thresholds.std_redundant_max : null;
+    var bulkLow = thresholds && isFinite(thresholds.bulk_low) ? thresholds.bulk_low : null;
+    var bulkRedMin =
+      thresholds && isFinite(thresholds.bulk_redundant_min)
+        ? thresholds.bulk_redundant_min
+        : null;
+
+    drawLinearGauge(host, {
+      value: meanRatio,
+      domainMax: 1,
+      ticks: [
+        { at: 0, label: "0" },
+        { at: low, label: low === null ? null : String(low), color: "rgba(16,185,129,0.95)" },
+        {
+          at: high,
+          label: high === null ? null : String(high),
+          color: "rgba(245,158,11,0.95)",
+        },
+        { at: 1, label: "1" },
+      ],
+      caption:
+        "cut-5 entropy ratio (capacity; silence floor at " +
+        (low === null ? "—" : num(low, 2)) +
+        ", redundant conjunct ≥ " +
+        (high === null ? "—" : num(high, 2)) +
+        ") — not a verdict axis",
+    });
+
+    var stdDomain = 0.08;
+    [stdRatio, stdMixed, stdRedMax].forEach(function (v) {
+      if (v !== null && v !== undefined && isFinite(v)) {
+        stdDomain = Math.max(stdDomain, Number(v) * 1.5);
+      }
+    });
+    drawLinearGauge(host, {
+      value: stdRatio,
+      domainMax: stdDomain,
+      ticks: [
+        { at: 0, label: "0" },
+        {
+          at: stdRedMax,
+          label: stdRedMax === null ? null : "≤" + num(stdRedMax, 3),
+          color: "rgba(245,158,11,0.95)",
+        },
+        {
+          at: stdMixed,
+          label: stdMixed === null ? null : "≥" + num(stdMixed, 3),
+          color: "rgba(56,189,248,0.95)",
+        },
+      ],
+      caption:
+        "trajectory spread — mixed if std ≥ " +
+        (stdMixed === null ? "—" : num(stdMixed, 3)),
+    });
+
+    var bulkMin = 0.7;
+    [bulk, bulkLow, bulkRedMin].forEach(function (v) {
+      if (v !== null && v !== undefined && isFinite(v)) {
+        bulkMin = Math.min(bulkMin, Number(v) - 0.05);
+      }
+    });
+    bulkMin = Math.max(0, bulkMin);
+    drawLinearGauge(host, {
+      value: bulk,
+      domainMin: bulkMin,
+      domainMax: 1,
+      ticks: [
+        { at: bulkMin, label: num(bulkMin, 2), anchor: "start" },
+        {
+          at: bulkLow,
+          label: bulkLow === null ? null : num(bulkLow, 3),
+          color: "rgba(16,185,129,0.95)",
+          anchor: "end",
+        },
+        {
+          at: bulkRedMin,
+          label: bulkRedMin === null ? null : num(bulkRedMin, 3),
+          color: "rgba(245,158,11,0.95)",
+          anchor: "start",
+        },
+        { at: 1, label: "1", anchor: "end" },
+      ],
+      caption:
+        "bulk penetration — concentrated if bulk ≤ " +
+        (bulkLow === null ? "—" : num(bulkLow, 3)) +
+        ", redundant conjunct ≥ " +
+        (bulkRedMin === null ? "—" : num(bulkRedMin, 3)),
+    });
+  }
+
+  // Mirrors classify_ensemble_verdict() priority. Numbers come from the live
+  // /health config + /h1 sample, not a second copy of the constants.
+  function ensembleVerdictWhy(h1, config) {
+    if (!h1 || !config) return "";
+    var mean = Number(h1.mean_ratio);
+    var std = Number(h1.std_ratio);
+    var bulk = Number(h1.bulk_penetration_depth);
+    var low = Number(config.low_ratio);
+    var high = Number(config.high_ratio);
+    var stdMixed = Number(config.std_mixed);
+    var stdRedMax = Number(config.std_redundant_max);
+    var bulkLow = Number(config.bulk_low);
+    var bulkRedMin = Number(config.bulk_redundant_min);
+    if (isFinite(mean) && isFinite(low) && mean <= low) {
+      return "why: silence floor (mean ≤ " + num(low, 2) + ")";
+    }
+    if (isFinite(std) && isFinite(stdMixed) && std >= stdMixed) {
+      return "why: trajectory disagreement (std ≥ " + num(stdMixed, 3) + ")";
+    }
+    if (isFinite(bulk) && isFinite(bulkLow) && bulk <= bulkLow) {
+      return "why: shallow bulk (bulk ≤ " + num(bulkLow, 3) + ")";
+    }
+    if (
+      isFinite(mean) &&
+      isFinite(high) &&
+      mean >= high &&
+      isFinite(std) &&
+      isFinite(stdRedMax) &&
+      std <= stdRedMax &&
+      isFinite(bulk) &&
+      isFinite(bulkRedMin) &&
+      bulk >= bulkRedMin
+    ) {
+      return "why: settled busy agreement (high mean, low std, deep bulk)";
+    }
+    var missed = [];
+    if (isFinite(mean) && isFinite(high) && mean < high) {
+      missed.push("mean " + num(mean, 3) + " < high " + num(high, 2));
+    }
+    if (isFinite(std) && isFinite(stdRedMax) && std > stdRedMax) {
+      missed.push("std " + num(std, 3) + " > redundant-max " + num(stdRedMax, 3));
+    }
+    if (isFinite(bulk) && isFinite(bulkRedMin) && bulk < bulkRedMin) {
+      missed.push("bulk " + num(bulk, 4) + " < redundant-min " + num(bulkRedMin, 3));
+    }
+    return (
+      "why: fallback mixed — settled-agreement conjuncts missed: " +
+      (missed.length ? missed.join("; ") : "middle band")
+    );
   }
 
   // The N individual trajectories behind the mean. At small N the mean+std
@@ -487,20 +635,24 @@
     headline.appendChild(right);
     host.appendChild(headline);
 
-    renderBandGauge(host, h1.mean_ratio, h1.std_ratio, config);
+    renderBandGauge(host, h1, config);
+    if (config) {
+      note(host, ensembleVerdictWhy(h1, config));
+    }
     renderTrajectories(host, h1.ratios, h1.seeds, h1.mean_ratio);
 
     var grid = el("div", "grid grid-cols-2 gap-2 mt-3");
     grid.appendChild(statTile("Absorbed ticks", int(h1.tick_count)));
     grid.appendChild(statTile("Trajectories", int(h1.seeds ? h1.seeds.length : (config ? config.n_trajectories : null))));
+    grid.appendChild(statTile("Bulk depth", num(h1.bulk_penetration_depth, 4)));
     grid.appendChild(statTile("Max bond", int(hb.health ? hb.health.max_bond : null)));
-    grid.appendChild(statTile("Norm", num(hb.health ? hb.health.norm : null, 4)));
     host.appendChild(grid);
 
     note(
       host,
       "Spread is agreement between independently-seeded trajectories absorbing the same real event stream — " +
-        "wide spread means the self-model's state is genuinely undetermined, not noisy measurement."
+        "wide spread means the self-model's state is genuinely undetermined, not noisy measurement. " +
+        "Mean at cut-5 saturates under real traffic; std and bulk are the discriminating axes."
     );
   }
 
@@ -1128,7 +1280,12 @@
         ["reheat_prob_scale", num(config.reheat_prob_scale, 3)],
         ["decay/reheat interval", num(config.decay_reheat_interval_sec, 1) + "s"],
         ["h1 interval", num(config.h1_interval_sec, 1) + "s"],
-        ["verdict bands", "≤" + num(config.low_ratio, 2) + " / ≥" + num(config.high_ratio, 2)],
+        ["silence floor (mean)", "≤" + num(config.low_ratio, 2)],
+        ["mean high (redundant conjunct)", "≥" + num(config.high_ratio, 2)],
+        ["std mixed", "≥" + num(config.std_mixed, 3)],
+        ["std redundant max", "≤" + num(config.std_redundant_max, 3)],
+        ["bulk concentrated", "≤" + num(config.bulk_low, 3)],
+        ["bulk redundant min", "≥" + num(config.bulk_redundant_min, 3)],
       ].forEach(function (pair) {
         cfg.appendChild(kvRow(pair[0], pair[1]));
       });

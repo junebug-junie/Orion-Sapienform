@@ -57,6 +57,10 @@ def test_health_endpoint_exposes_live_tuning_and_band_edges() -> None:
         assert key in config, key
     assert config["high_ratio"] == verdict_thresholds()["high_ratio"]
     assert config["low_ratio"] == verdict_thresholds()["low_ratio"]
+    assert config["std_mixed"] == verdict_thresholds()["std_mixed"]
+    assert config["std_redundant_max"] == verdict_thresholds()["std_redundant_max"]
+    assert config["bulk_low"] == verdict_thresholds()["bulk_low"]
+    assert config["bulk_redundant_min"] == verdict_thresholds()["bulk_redundant_min"]
     assert body["absorb_queue_maxsize"] >= 1
     assert set(body["organ_site_map"]) == set(body["allowlisted_organs"])
 

@@ -440,10 +440,16 @@ LIVE_PRIORS_CYPHER = (
     f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
 )
 
+# DISTINCT prior_id, not nodes. These two numbers are rendered to Orion as
+# "N live priors, M closed", so they must count CLAIMS. A forked prior is one
+# claim stored twice and counting it twice tells Orion it holds a belief it
+# does not hold. Measured live 2026-09-01: 5 closed nodes, 4 closed claims.
 COUNTS_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) "
-    f"RETURN sum(CASE WHEN {_LIVE_WHERE} THEN 1 ELSE 0 END) AS live_total, "
-    f"sum(CASE WHEN {_CLOSED_WHERE} THEN 1 ELSE 0 END) AS closed_total"
+    f"RETURN count(DISTINCT CASE WHEN {_LIVE_WHERE} THEN p.prior_id END) "
+    "AS live_total, "
+    f"count(DISTINCT CASE WHEN {_CLOSED_WHERE} THEN p.prior_id END) "
+    "AS closed_total"
 )
 
 CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
@@ -651,6 +657,127 @@ def _rotation_key(prior_id: str, seed: str) -> str:
     return hashlib.sha256(f"{seed}:{prior_id}".encode()).hexdigest()
 
 
+def prior_id_forks(*row_groups: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """Every `prior_id` appearing more than once ACROSS ALL the reads, with its count.
+
+    Across, not within, and that is the whole reason this exists. The live and
+    the closed halves of the pool arrive from two different queries filtered on
+    disjoint status sets (`_LIVE_WHERE` / `_CLOSED_WHERE`), so a fork whose
+    copies disagree on `status` puts exactly one copy in each list and is
+    invisible to any per-list check. That is not a hypothetical: it is the
+    state a run leaves behind the moment it refutes one copy of a fork, and it
+    is the state that renders the same `prior_id` under "what you are still
+    unsure of" AND "recently settled" in one prompt.
+
+    The live fork found on 2026-09-01 was the other blind spot -- BOTH copies
+    of `concept_induction_overload_rate` were `refuted`, so it sat entirely
+    inside the closed read and a census over the live pool alone counted
+    nothing.
+    """
+    seen: dict[str, int] = {}
+    for rows in row_groups:
+        for row in rows:
+            prior_id = str(row.get("prior_id") or "").strip()
+            if prior_id:
+                seen[prior_id] = seen.get(prior_id, 0) + 1
+    return {pid: n for pid, n in seen.items() if n > 1}
+
+
+def dedupe_settled_rows(
+    rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One row per `prior_id`, keeping the first -- the query already ordered them.
+
+    `RECENT_SETTLED_CYPHER` sorts by `last_tested_at DESC` and takes 8, so the
+    first row for an id is the freshest the server was willing to return, and
+    the list is what the prompt invites Orion to REOPEN by id. A fork therefore
+    costs two of eight slots to show one claim twice, under one heading, with
+    the same id printed under each -- which reads as two settled claims that
+    happen to be identical rather than as one claim stored twice.
+
+    Rows with no `prior_id` pass through untouched rather than collapsing into
+    a single anonymous entry: they are separate claims that failed to record an
+    id, and merging them would invent a relationship between them.
+    """
+    seen: set[str] = set()
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        prior_id = str(row.get("prior_id") or "").strip()
+        if prior_id:
+            if prior_id in seen:
+                continue
+            seen.add(prior_id)
+        kept.append(row)
+    return kept
+
+
+def collapse_duplicate_priors(
+    priors: Sequence[Prior],
+) -> tuple[list[Prior], dict[str, int]]:
+    """One node per `prior_id`, plus a count of every id that had more.
+
+    A `prior_id` is an identity, not a label: the prompt tells Orion to test a
+    claim with `MATCH (p:Prior {prior_id: "..."}) SET p.times_tested =
+    p.times_tested + 1`, which binds to EVERY node carrying that id and
+    increments each from its own base. So a duplicate does not merely show a
+    claim twice -- it forks the claim's history, permanently and silently.
+    Confirmed live 2026-09-01: `concept_induction_overload_rate` existed as two
+    nodes reading `tested 1x` and `tested 6x`, created when run `ed05344f8a39`
+    emitted a `CREATE` for a claim it already held. The prompt template is now
+    a `MERGE` on `prior_id` alone so a repeat binds instead of forking; this is
+    the containment for the copies already in the graph, and for a future run
+    that hand-writes a CREATE anyway.
+
+    MOST-TESTED COPY WINS, then FRESHEST. `times_tested` first because it is
+    what `stale_after` reads to retire a claim, so keeping the LOWEST count
+    would let a forked prior sit below the retirement threshold forever while
+    looking freshly untested every run. `last_tested_at` second because the
+    copies tie constantly: the prompt template writes `times_tested = 0`, so a
+    fork noticed before either copy is tested ties on the first key by
+    construction. `claim` LAST, purely so the winner cannot depend on ROW
+    ORDER: there is no `prior_id` tiebreak available -- the copies share that
+    id by definition, which is what makes them duplicates -- and
+    `MATCH (p:Prior)` carries no ORDER BY, so FalkorDB's row order is
+    unspecified and is not a cross-run guarantee. Without a content-based final
+    key, which copy Orion is shown could change between runs with no code
+    change and nothing to explain it. All three keys are values Orion writes by
+    hand, so this is deterministic, not authoritative -- which is the point.
+
+    WHAT THIS DOES NOT FIX, stated plainly because the rule reads stronger than
+    it is: the winner is picked whole, and the copies can disagree on `claim`,
+    `confidence` and `status` as well as on the two sort keys. A fork whose
+    NEWER copy holds Orion's revised belief at `times_tested = 0` loses to an
+    older copy at 6, and Orion is then shown a stale claim string and a stale
+    confidence as its current live belief. Merging field-by-field would trade
+    that for a claim no run ever actually wrote, which is worse. The real
+    remedy is that forks stop being created (the prompt now MERGEs) and that
+    the ones already in the graph get repaired.
+
+    This does NOT repair the graph. Hub never writes to `orion_worldview` (see
+    this module's header), so the duplicate survives until Orion or an operator
+    merges it. `read_snapshot` runs the census and logs, NOT this function and
+    not `select_priors`: a fork can sit entirely in the CLOSED half of the
+    graph, where neither ever sees it -- which is exactly where the live one
+    was found.
+    """
+    best: dict[str, Prior] = {}
+    seen: dict[str, int] = {}
+    for prior in priors:
+        seen[prior.prior_id] = seen.get(prior.prior_id, 0) + 1
+        incumbent = best.get(prior.prior_id)
+        if incumbent is None or (
+            prior.times_tested,
+            prior.last_tested_at,
+            prior.claim,
+        ) > (incumbent.times_tested, incumbent.last_tested_at, incumbent.claim):
+            best[prior.prior_id] = prior
+    # Insertion order, so a graph with no duplicates is returned untouched and
+    # the downstream sort sees exactly what it saw before this function existed.
+    collapsed = [best[pid] for pid in seen]
+    duplicates = {pid: n for pid, n in seen.items() if n > 1}
+    return collapsed, duplicates
+
+
 def select_priors(
     rows: Sequence[dict[str, Any]],
     *,
@@ -683,6 +810,10 @@ def select_priors(
             dropped += 1
             continue
         priors.append(prior)
+
+    # Collapsed but NOT logged here. A fork is only fully visible across the
+    # live AND closed reads together -- `read_snapshot` owns the census.
+    priors, _ = collapse_duplicate_priors(priors)
 
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
@@ -775,6 +906,21 @@ def read_snapshot(
             "cannot accumulate times_tested or be retired",
             LIVE_PRIORS_LIMIT,
         )
+    forks = prior_id_forks(prior_rows, settled_rows)
+    for prior_id, copies in sorted(forks.items()):
+        logger.warning(
+            "curiosity_worldview_duplicate_prior prior_id=%s copies=%s -- one "
+            "claim is stored as %s separate nodes, so `MATCH (p:Prior "
+            "{prior_id: ...}) SET p.times_tested = p.times_tested + 1` binds to "
+            "every copy and increments each from its own base; the claim's "
+            "history and its evidence edges have both split. Orion is shown one "
+            "of them. The graph still holds all of them and this needs a manual "
+            "repair -- Hub never writes to this graph",
+            prior_id,
+            copies,
+            copies,
+        )
+    settled_rows = dedupe_settled_rows(settled_rows)
     offered, stale, dropped = select_priors(
         prior_rows,
         sample=sample,

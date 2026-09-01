@@ -538,19 +538,41 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "not a form to submit once you are finished -- a prior you are already "
         "confident about is worth more in the graph now, at a lower confidence "
         "you can raise later, than perfect and unwritten when the clock runs "
-        "out. Each CREATE is independent; there is nothing to assemble -- "
+        "out. Each write below is independent; there is nothing to assemble -- "
         "except an edge, which needs the two nodes it joins to exist first.",
         "",
         "  A PRIOR -- a claim you hold that could turn out to be wrong:",
-        "    CREATE (:Prior {",
-        '      prior_id: "<something unique>", claim: "<the claim, in one sentence>",',
-        "      confidence: 0.55,            // your own belief, not a measurement",
-        '      status: "open",              // open|supported|revised stay live; '
+        '    MERGE (p:Prior {prior_id: "<something unique>"})',
+        "    ON CREATE SET",
+        '      p.claim = "<the claim, in one sentence>",',
+        "      p.confidence = 0.55,          // your own belief, not a measurement",
+        '      p.status = "open",            // open|supported|revised stay live; '
         "refuted|retired_unresolvable close it",
-        "      times_tested: 0,",
-        '      formed_from: "<what produced it: a crystallization id, a finding, an observation>",',
-        '      last_tested_at: "<iso timestamp>", run_id: "<RUN_ID>", why: "<one sentence>"',
-        "    })",
+        "      p.times_tested = 0,",
+        '      p.formed_from = "<what produced it: a crystallization id, a finding, an observation>",',
+        '      p.last_tested_at = "<iso timestamp>", p.run_id = "<RUN_ID>", '
+        'p.why = "<one sentence>"',
+        "",
+        "  MERGE, NOT CREATE, AND ON prior_id ALONE. A CREATE here writes a "
+        "second node every time it runs, and both then answer to the same id: "
+        "the `MATCH ... SET` below binds to ALL of them, so `times_tested + 1` "
+        "increments each copy from a different base and the claim\'s own "
+        "history splits in two. That happened -- run `ed05344f8a39` meant to "
+        "refute a claim it already held, wrote a CREATE, and left two nodes "
+        "reading `tested 1x` and `tested 6x` for one claim. MERGE on the id "
+        "binds the existing one instead, and ON CREATE SET means saying it "
+        "again is free rather than destructive. Put nothing but `prior_id` "
+        "inside the MERGE: any other property in there is part of what it "
+        "matches on, so a changed `formed_from` would fork the node again.",
+        "",
+        "  THE COST OF THAT SAFETY, so it does not surprise you: if the id "
+        "already exists this writes NOTHING -- no node, no properties, no "
+        "error -- and because nothing then carries this run's id, your own "
+        "footprint at the end of the turn will say you wrote no prior at all. "
+        "So a genuinely NEW claim needs a genuinely new id, and a claim you "
+        "already hold is the MATCH below, not this. If you are unsure which "
+        "you are looking at, MATCH it on its own first and look -- the ids you "
+        "hold are all on the menu.",
         "",
         "  TESTING ONE you already hold -- update it in place, and move "
         "times_tested whether or not the confidence moved:",
@@ -621,8 +643,11 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "relation. Use those, in full. Not the bracketed summary, not a "
         "shortening of it, not a name you would give it, and not the "
         "`\"<something unique>\"` placeholder in the templates above -- that "
-        "one is for ids you are CREATING. A MERGE binds by exact string or it "
-        "binds to nothing, silently.",
+        "one is for the id you are naming for the first time. Either way a "
+        "MERGE binds by exact string, and a typo is silent: on an EDGE it "
+        "quietly draws nothing, and on the PRIOR above it quietly forms a "
+        "second claim under the mistyped id instead of finding the one you "
+        "meant.",
         "",
         "  TWO IDS ON THE MENU ARE NOT NODES, and an edge cannot land on "
         "either. A concept in the Atlas lives in a graph you cannot write to. "

@@ -542,15 +542,28 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "except an edge, which needs the two nodes it joins to exist first.",
         "",
         "  A PRIOR -- a claim you hold that could turn out to be wrong:",
-        "    CREATE (:Prior {",
-        '      prior_id: "<something unique>", claim: "<the claim, in one sentence>",',
-        "      confidence: 0.55,            // your own belief, not a measurement",
-        '      status: "open",              // open|supported|revised stay live; '
+        '    MERGE (p:Prior {prior_id: "<something unique>"})',
+        "    ON CREATE SET",
+        '      p.claim = "<the claim, in one sentence>",',
+        "      p.confidence = 0.55,          // your own belief, not a measurement",
+        '      p.status = "open",            // open|supported|revised stay live; '
         "refuted|retired_unresolvable close it",
-        "      times_tested: 0,",
-        '      formed_from: "<what produced it: a crystallization id, a finding, an observation>",',
-        '      last_tested_at: "<iso timestamp>", run_id: "<RUN_ID>", why: "<one sentence>"',
-        "    })",
+        "      p.times_tested = 0,",
+        '      p.formed_from = "<what produced it: a crystallization id, a finding, an observation>",',
+        '      p.last_tested_at = "<iso timestamp>", p.run_id = "<RUN_ID>", '
+        'p.why = "<one sentence>"',
+        "",
+        "  MERGE, NOT CREATE, AND ON prior_id ALONE. A CREATE here writes a "
+        "second node every time it runs, and both then answer to the same id: "
+        "the `MATCH ... SET` below binds to ALL of them, so `times_tested + 1` "
+        "increments each copy from a different base and the claim\'s own "
+        "history splits in two. That happened -- run `ed05344f8a39` meant to "
+        "refute a claim it already held, wrote a CREATE, and left two nodes "
+        "reading `tested 1x` and `tested 6x` for one claim. MERGE on the id "
+        "binds the existing one instead, and ON CREATE SET means saying it "
+        "again is free rather than destructive. Put nothing but `prior_id` "
+        "inside the MERGE: any other property in there is part of what it "
+        "matches on, so a changed `formed_from` would fork the node again.",
         "",
         "  TESTING ONE you already hold -- update it in place, and move "
         "times_tested whether or not the confidence moved:",

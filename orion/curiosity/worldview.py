@@ -651,6 +651,48 @@ def _rotation_key(prior_id: str, seed: str) -> str:
     return hashlib.sha256(f"{seed}:{prior_id}".encode()).hexdigest()
 
 
+def collapse_duplicate_priors(
+    priors: Sequence[Prior],
+) -> tuple[list[Prior], dict[str, int]]:
+    """One node per `prior_id`, plus a count of every id that had more.
+
+    A `prior_id` is an identity, not a label: the prompt tells Orion to test a
+    claim with `MATCH (p:Prior {prior_id: "..."}) SET p.times_tested =
+    p.times_tested + 1`, which binds to EVERY node carrying that id and
+    increments each from its own base. So a duplicate does not merely show a
+    claim twice -- it forks the claim's history, permanently and silently.
+    Confirmed live 2026-09-01: `concept_induction_overload_rate` existed as two
+    nodes reading `tested 1x` and `tested 6x`, created when run `ed05344f8a39`
+    emitted a `CREATE` for a claim it already held. The prompt template is now
+    a `MERGE` on `prior_id` alone so a repeat binds instead of forking; this is
+    the containment for the copies already in the graph, and for a future run
+    that hand-writes a CREATE anyway.
+
+    MOST-TESTED COPY WINS, and the choice is load-bearing rather than
+    arbitrary. Any collapse is lossy -- the copies disagree, which is the whole
+    problem -- but `times_tested` is what `stale_after` reads to retire a
+    claim, so keeping the LOWEST count would let a forked prior sit below the
+    retirement threshold forever while looking freshly untested every run.
+    Ties break on `prior_id` identity order to stay deterministic across runs.
+
+    This does NOT repair the graph. Hub never writes to `orion_worldview` (see
+    this module's header), so the duplicate survives until Orion or an operator
+    merges it; the caller logs each one loudly for exactly that reason.
+    """
+    best: dict[str, Prior] = {}
+    seen: dict[str, int] = {}
+    for prior in priors:
+        seen[prior.prior_id] = seen.get(prior.prior_id, 0) + 1
+        incumbent = best.get(prior.prior_id)
+        if incumbent is None or prior.times_tested > incumbent.times_tested:
+            best[prior.prior_id] = prior
+    # Insertion order, so a graph with no duplicates is returned untouched and
+    # the downstream sort sees exactly what it saw before this function existed.
+    collapsed = [best[pid] for pid in seen]
+    duplicates = {pid: n for pid, n in seen.items() if n > 1}
+    return collapsed, duplicates
+
+
 def select_priors(
     rows: Sequence[dict[str, Any]],
     *,
@@ -683,6 +725,20 @@ def select_priors(
             dropped += 1
             continue
         priors.append(prior)
+
+    priors, duplicates = collapse_duplicate_priors(priors)
+    for prior_id, copies in sorted(duplicates.items()):
+        logger.warning(
+            "curiosity_worldview_duplicate_prior prior_id=%s copies=%s -- one "
+            "claim is stored as %s separate nodes, so `MATCH (p:Prior "
+            "{prior_id: ...}) SET p.times_tested = p.times_tested + 1` "
+            "increments every copy from its own base and the claim's history "
+            "has split; the menu shows the most-tested copy only. The graph "
+            "still holds all of them and this needs a manual repair",
+            prior_id,
+            copies,
+            copies,
+        )
 
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}

@@ -33,8 +33,10 @@ from orion.curiosity.worldview import (
     rows_from_reply,
     run_edge_footprint_cypher,
     run_footprint_cypher,
+    collapse_duplicate_priors,
     select_priors,
 )
+from orion.curiosity.kickoff_prompt import _write_section
 
 
 class _FakeReader(WorldviewReader):
@@ -1244,3 +1246,112 @@ def test_the_ids_that_are_not_nodes_are_named_as_such() -> None:
     text = _prompt()
     assert "crystallization_id` and a `decision_id` are Postgres rows" in text
     assert "never in a MATCH" in text
+
+
+# --- Duplicate prior_id collapse (2026-09-01) --------------------------------
+#
+# Live defect: `concept_induction_overload_rate` existed as two Prior nodes
+# reading `tested 1x` and `tested 6x`. Run `ed05344f8a39` emitted a CREATE for
+# a claim it already held, and the later `MATCH ... SET times_tested + 1` bound
+# to both copies, incrementing each from its own base.
+
+
+def _dup_prior(prior_id: str, *, times_tested: int = 0, claim: str = "c", confidence=0.5):
+    return Prior(
+        prior_id=prior_id,
+        claim=claim,
+        confidence=confidence,
+        status="open",
+        times_tested=times_tested,
+    )
+
+
+def test_collapse_duplicate_priors_keeps_one_node_per_id():
+    collapsed, duplicates = collapse_duplicate_priors(
+        [_prior("a", times_tested=1), _dup_prior("a", times_tested=6), _dup_prior("b")]
+    )
+    assert [p.prior_id for p in collapsed] == ["a", "b"]
+    assert duplicates == {"a": 2}
+
+
+def test_collapse_duplicate_priors_keeps_the_most_tested_copy():
+    """The lowest count would sit under `stale_after` forever and never retire."""
+    collapsed, _ = collapse_duplicate_priors(
+        [_prior("a", times_tested=1), _dup_prior("a", times_tested=6)]
+    )
+    assert [p.times_tested for p in collapsed] == [6]
+
+
+def test_collapse_duplicate_priors_is_order_independent():
+    for rows in (
+        [_prior("a", times_tested=1), _dup_prior("a", times_tested=6)],
+        [_prior("a", times_tested=6), _dup_prior("a", times_tested=1)],
+    ):
+        collapsed, _ = collapse_duplicate_priors(rows)
+        assert [p.times_tested for p in collapsed] == [6]
+
+
+def test_collapse_duplicate_priors_leaves_a_clean_pool_untouched():
+    """No duplicates must mean no reordering -- the sort downstream depends on it."""
+    rows = [_prior("a"), _dup_prior("b"), _dup_prior("c")]
+    collapsed, duplicates = collapse_duplicate_priors(rows)
+    assert collapsed == rows
+    assert duplicates == {}
+
+
+def test_select_priors_offers_a_forked_claim_once():
+    """The behavioural pin: a duplicate must not occupy two menu slots."""
+    rows = [
+        {"prior_id": "a", "claim": "one", "confidence": 0.5, "times_tested": 1},
+        {"prior_id": "a", "claim": "one", "confidence": 0.5, "times_tested": 6},
+        {"prior_id": "b", "claim": "two", "confidence": 0.5, "times_tested": 0},
+    ]
+    offered, stale, dropped = select_priors(rows, sample=10, stale_after=0)
+    assert dropped == 0
+    # Order is the existing least-tested-first sort, not this test's business;
+    # the pin is that "a" occupies ONE slot and it is the most-tested copy.
+    assert sorted(p.prior_id for p in offered) == ["a", "b"]
+    assert [p.times_tested for p in offered if p.prior_id == "a"] == [6]
+
+
+def test_select_priors_retires_a_forked_claim_on_the_higher_count():
+    """`stale_after` must read the real test count, not the lower fork."""
+    rows = [
+        {"prior_id": "a", "claim": "one", "confidence": 0.5, "times_tested": 1},
+        {"prior_id": "a", "claim": "one", "confidence": 0.5, "times_tested": 6},
+    ]
+    offered, stale, _ = select_priors(rows, sample=10, stale_after=5)
+    assert [p.prior_id for p in stale] == ["a"]
+    assert offered == []
+
+
+def test_select_priors_logs_each_forked_claim(caplog):
+    rows = [
+        {"prior_id": "a", "claim": "one", "confidence": 0.5, "times_tested": 1},
+        {"prior_id": "a", "claim": "one", "confidence": 0.5, "times_tested": 6},
+    ]
+    with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
+        select_priors(rows, sample=10, stale_after=0)
+    assert "curiosity_worldview_duplicate_prior" in caplog.text
+    assert "prior_id=a" in caplog.text
+    assert "copies=2" in caplog.text
+
+
+def test_prompt_forms_a_prior_with_merge_not_create():
+    """A CREATE here forks the node on every repeat; MERGE binds the existing one."""
+    text = "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
+    assert 'MERGE (p:Prior {prior_id: "<something unique>"})' in text
+    # `CREATE (:Prior {` exactly -- `CREATE (:PriorRevision {` is correct and
+    # must stay: a revision is an append-only record of a claim MOVING, so a
+    # second one is a second real event, not a fork of an identity.
+    assert "CREATE (:Prior {" not in text
+    assert "CREATE (:PriorRevision {" in text
+
+
+def test_prompt_merges_a_prior_on_the_id_alone():
+    """Any other property inside the MERGE pattern makes it a fork key again."""
+    text = "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
+    merge_line = next(l for l in text.splitlines() if "MERGE (p:Prior" in l)
+    assert "claim" not in merge_line
+    assert "formed_from" not in merge_line
+    assert "run_id" not in merge_line

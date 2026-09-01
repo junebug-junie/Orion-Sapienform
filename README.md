@@ -74,11 +74,11 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 | Node | Role | GPUs | Status |
 |---|---|---|---|
 | **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | — | Live |
-| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 3× V100 32GB, 2× V100 16GB, 1× P100 16GB | Live |
+| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 4× V100 32GB, 2× V100 16GB, 1× T10 16GB | Live |
 | **Prometheus** | Development / utility node; SSH/Tailscale-enabled support node | — | Bring-up |
 | **Edge Pis** | RTMP, GPIO, cameras, LED control, embodiment experiments | — | Experimental |
 
-Atlas (DL380 Gen10, 2× V100 16GB) was decommissioned 2026-08-21: its disks were pulled and replaced with Athena's, so Athena now runs from that chassis (and inherited its iLO/PDU position — see `services/orion-biometrics/README.md`); its GPUs, plus Athena's old P100, moved into Circe.
+Atlas (DL380 Gen10, 2× V100 16GB) was decommissioned 2026-08-21: its disks were pulled and replaced with Athena's, so Athena now runs from that chassis (and inherited its iLO/PDU position — see `services/orion-biometrics/README.md`); its GPUs, plus Athena's old P100, moved into Circe. That P100 16GB was itself swapped out for a T10 16GB on 2026-09-04; a 4th V100 32GB has also joined Circe since the Atlas move (see `services/orion-world-model/README.md`), for 7 cards on the node total.
 
 **Operator observability (OpenTelemetry):** the `services/orion-signal-gateway` Docker Compose file can run Grafana Tempo, Grafana, and the OpenTelemetry Collector (pinned images) and export gateway spans to Tempo. Orion Hub can generate Grafana Explore links for a 32-character hex `otel_trace_id` when `HUB_OTEL_GRAFANA_BASE_URL` (and optionally `HUB_OTEL_GRAFANA_ORG_ID`) is set. See `services/orion-signal-gateway/README.md`, `services/orion-signal-gateway/scripts/smoke_otel_phase1.sh` (stack health), and `services/orion-signal-gateway/scripts/e2e_otel_phase1.py` (OTLP → Tempo check). For tiered organ-signal mesh bring-up (bus + gateway + organ producers), see `services/orion-signals/README.md`.
 
@@ -789,7 +789,8 @@ Service placement can move. The current mesh shape and specs:
 ```text
 Athena — Core Services / Orchestration
   HP ProLiant DL380 Gen10, dual Intel Xeon Platinum-class CPUs, large ECC memory.
-  No GPU (its old P100 16GB moved to Circe -- see below).
+  No GPU (its old P100 16GB moved to Circe, then was itself swapped for a
+  T10 16GB on 2026-09-04 -- see below).
   Role: Hub, Cortex, memory, FalkorDB, scheduler, durable service spine.
   Note (2026-08-21): this is physically the chassis that used to be Atlas.
   Athena's disks were moved into it when Atlas was decommissioned, so it
@@ -798,8 +799,9 @@ Athena — Core Services / Orchestration
 
 Circe — High-Density GPU Expansion Server
   Gigabyte G481-HA0 4U GPU server. 24 DDR4 RDIMM/LRDIMM slots, six-channel memory.
-  3× NVIDIA V100 32GB, plus 2× NVIDIA V100 16GB and 1× NVIDIA P100 16GB
-  absorbed from Atlas/Athena on 2026-08-21.
+  4× NVIDIA V100 32GB (3 absorbed from Atlas/Athena on 2026-08-21, plus a 4th
+  since), 2× NVIDIA V100 16GB, and 1× NVIDIA T10 16GB -- swapped in 2026-09-04
+  for the P100 16GB that had been absorbed from Athena. 7 GPUs total.
   2× 10GbE (Intel X550-AT2), 2× 1GbE (Intel I350-AM2).
   Role: heavy inference workhorse plus training experiments. Status: live.
 

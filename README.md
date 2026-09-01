@@ -45,7 +45,7 @@ Core ideas:
 - **Metacognition as an organ.** Orion maintains an internal surface of state: self-observation, scoring, narrative stitching, pressure signals, and policy nudges.
 - **Graph-native memory.** Postgres holds concrete events, FalkorDB holds relationships and temporal graph structure, Chroma holds semantic similarity — three substrates, one recall layer.
 - **A layered cognition substrate.** The Sentience Striving Program runs a real active-inference pipeline (`orion-substrate-runtime`) — attention, proposal, policy, execution-dispatch, feedback, consolidation — that superseded an earlier six-drive taxonomy after that mechanism was measured to have never fired.
-- **Embodied mesh.** Vision, audio, LEDs, mobile embodiments, and wearable/edge nodes ground Orion in physical space.
+- **Embodied mesh.** Vision, audio, LEDs, mobile embodiments, and wearable/edge nodes ground Orion in physical space — and as of late August 2026, so does a genuinely instrumented cabinet (temperature, humidity, gas, UV/light, lidar distance, magnetic field, IMU orientation, ambient noise) and a vision-based read of Juniper's affect.
 - **Social room / AI playdates.** Orion can meet other agents or humans in bounded external rooms, with consent, local continuity, conservative policy gating, and post-turn memory synthesis.
 - **Bounded autonomy.** Orion may propose, evaluate, and eventually adopt low-risk changes only through auditable policy gates, trials, operator review, rollback, and post-adoption monitoring.
 
@@ -296,6 +296,7 @@ current turn
   + journal residue
   + social continuity
   + current state/equilibrium
+  + situational context (time, weather, presence, cabinet, affect)
   + task mode
   → ChatStanceBrief
   → FCC motor / final speech
@@ -313,6 +314,7 @@ current turn
 | **Journal residue** | Compressed autobiographical continuity from prior periods. |
 | **Social memory** | Relationship state, room state, peer style, active claims, commitments, repair context. |
 | **Equilibrium/state** | Distress, stability, system condition, recent health changes. |
+| **Situational context** | Live time-of-day, weather, physical presence, cabinet/environmental readings, and Juniper's read affect — assembled each turn into `SituationBriefV1`, not narrated interpretation. |
 | **Task mode** | Whether Orion should comfort, debug, plan, refuse, repair, reflect, play, or act. |
 
 A useful stance brief looks like:
@@ -520,6 +522,8 @@ event → typed envelope → writer → durable substrate → recall profile →
 
 Recall is not truth. Recall is context admission. The goal isn't "find similar chunks" — it's bring the right past into the current moment with enough provenance that Orion and the operator can inspect why. If recall is shallow, Orion's presence gets shallow too. See [Recall Philosophy](#recall-philosophy) below for the concrete quality bar.
 
+FalkorDB ships real graph algorithms — PageRank, weakly-connected-components, betweenness, label propagation — that sat entirely unused repo-wide while the Concept Atlas hand-rolled union-find in Python over an already-filtered slice of the graph. `orion/graph/analytics.py` plus new Hub routes (`/structure`, `/neighborhood`, `/path`) now expose those algorithms against the whole graph instead of a fetched window, and the Atlas canvas reports honest coverage (e.g. "showing 102 of 671 nodes, 15%") rather than implying it's already complete.
+
 ---
 
 ## 8. State: A Bounded Now
@@ -619,7 +623,10 @@ Orion runs on real machines in a real room, and increasingly, a persistent virtu
 | `orion-vision-council` | LLM scene interpretation with evidence grounding. |
 | `orion-vision-scribe` | Records vision events. |
 | `orion-whisper-tts` | Hearing and speech path. |
-| `orion-biometrics` | Body-state / biometric telemetry. |
+| `orion-biometrics` | Body-state / biometric telemetry, including the merged cabinet-sensor snapshot below. |
+| `orion-juniper-affective-state` | Reads Juniper's affect from a short webcam clip via the LLM gateway's vision-language route; outputs valence/arousal/cues, not a fixed emotion label. |
+| `orion-affectgpt-worker` | The original affect-reading backend (a LoRA-tuned Qwen2.5-7B VLM); kept only as a manual, human-selected rollback. |
+| `orion-diffusion-host` | Local FLUX.1-schnell image generation — backs Orion's `express` action and the reverie visual chain's dream-image step. |
 | `orion-embodiment` | Mind-to-sprite bridge: gives Orion a persistent AI Town body driven by its own state; sole Convex actuator/perceiver, arbitrating deliberate vs involuntary intents. |
 | `orion-ai-town` | Mesh deployment wrapper for a self-hosted AI Town (Convex) — the environment `orion-embodiment` actuates in. |
 | `orion-power-guard` | Power safety and guardrails. |
@@ -629,10 +636,16 @@ Orion runs on real machines in a real room, and increasingly, a persistent virtu
 
 The vision mesh runs a self-contained host pipe (`frames → router → host → window → council`). Host GroundingDINO detections gate VLM caption work; window evidence tiers and Council grounding produce `person_presence` without caption hallucinations. Edge YOLO/motion stays on separate channels for edge-local consumers. See [`docs/vision_services.md`](docs/vision_services.md) and service READMEs under `services/orion-vision-*`. Vision should not be treated as omniscience — it should be noisy, bounded, consent-aware evidence. False positives, lighting shifts, dust, and movement artifacts are expected engineering problems, not failures of the concept.
 
+**Cabinet sensing.** Since late August 2026, Athena's own cabinet is instrumented, not just the room around it: two Arduino Nano ESP32 boards (`firmware/athena-cabinet-nano/`) — Nano A carrying a BME680 (temperature/humidity/pressure/gas resistance), an LTR390 (UV + ambient light), and a VL53L1X (lidar distance); Nano B carrying an MMC5603 magnetometer and a BNO085 IMU (accel + yaw/pitch/roll) — plus a USB mic on the host for ambient noise (RMS/peak). Both Nanos' readings merge (`orion/telemetry/cabinet_snapshot_merge.py`) into `BiometricsSampleV1`, become baseline-relative activity pressures (climate, particulate, EM, UV, vibration, proximity, ambient-audio) on the field lattice's `node:athena` — the same footing as CPU/GPU/thermal pressure — and, as of PR #2008, fold into every chat turn's situation brief (`CabinetContextV1`), replacing a `LabContextV1` stub that had returned `available=False` since it was written. Sustained ambient-audio spikes get their own bus channel and grammar trace (`orion:cabinet:ambient:spike`). A Hub `#cabinet` tab shows live per-channel readings, history, and spike markers; the `*_activity` numbers are computed but deliberately not yet narrated into prose, pending calibration.
+
+**Reading Juniper's affect.** Orion also reads Juniper's affect from vision. The original backend, AffectGPT (a LoRA-tuned Qwen2.5-7B VLM + CLIP + HuBERT), was found live to hallucinate confident affect readings from dead or near-silent audio and to call Juniper "the man" in every committed description — it ignored a 100%-detected face and answered from an empty-subtitle branch instead. The live default (`AFFECT_BACKEND=vision`) instead samples a few webcam frames, uploads them via `orion-percept-store`, and asks `orion-llm-gateway`'s vision-language route for a structured `AffectReadV1`: valence, arousal, a free-text `primary_affect` (never a fixed emotion enum, by explicit design), the specific visual `cues` it claims to have used, and a confidence. AffectGPT is kept only as a manual, human-selected rollback (`AFFECT_BACKEND=affectgpt`). A confidence/detection-rate gate keeps low-quality reads out of the mirror Orion's situation brief reads from. The audio transcript is never persisted, but the model's own free-text `raw_response` and the structured read both land durably in `orion-sql-writer`'s `juniper_multimodal_affect_log`.
+
+**AI Town stays out of Orion's own mind.** `orion-ai-town` now runs on Circe (moved off the decommissioned Atlas node 2026-08-29) and grows its own, fully separate interpretability-only concept graph (`orion_substrate_aitown`); AI Town chat has its own table (`aitown_chat_history_log`) and never reaches Orion's real `chat_history_log`, Orion's own concept graph, or the human crystallization-review queue — a boundary added after AI Town content was found polluting all three.
+
 Flow:
 
 ```text
-sensor / health / hardware event → normalized event → equilibrium / state → Spark / metacog / Hub → memory if salient
+sensor / health / hardware event → normalized event → equilibrium / state → Spark / metacog / Hub / situation brief → memory if salient
 ```
 
 Power, thermals, GPU pressure, service health, security events, and biometrics are not ops trivia. They are part of Orion's lived conditions.
@@ -674,6 +687,8 @@ Layer 11 orion-consolidation-runtime      Layers 5–10 history over a window �
 ```
 
 `reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 5 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat, route, bus-synaptic) feed this pipeline. A sixth domain, transport, was retired 2026-07-26 in favor of the mesh-wide `bus_synaptic_prediction_error()` successor — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers). These predict/observe/surprise signals operate at multiple real timescales — micro (per-tick prediction error), meso (windowed consolidation in Layer 11), and macro (drift across the drive/policy history) — rather than one fixed cadence.
+
+**The action economy went from logging to enforcing.** Layer 9 (`orion-execution-dispatch-runtime`) used to log candidate actions without acting on the numbers; it now enforces a real motor budget, and a starvation-resistant slot reservation keeps a stream of introspective actions from crowding out mutating ones. Every candidate carries a real per-action cost and a control-arm-corrected outcome ledger, so dispatch scores value-per-second instead of firing on vibes. On 2026-08-31, `express` shipped as the first action kind whose effect leaves the machine at all — every action kind before it (maintain, inspect, summarize, observe, and more — roughly 17 families) stayed introspective. Live-verified: Orion spent 53 motor-seconds generating an image through `orion-diffusion-host` and declined ten other candidates on value-per-second, unprompted, with no cron job or operator in the loop. A separately-shipped power-intent loop (declare expected draw, measure it on real hardware, settle the difference) went from wired-but-silent to its first live-verified settlement the same week (Circe, 2026-08-29: 102W above baseline, measured not estimated).
 
 Autonomy still draws pressure from Spark drift, metacog warnings, recall failures, topic repetition, social repair signals, workflow failures, equilibrium distress, operator corrections, and service health — but it must never bypass policy, trace, review, rollback, or audit. No silent substrate mutation. No hidden permission expansion. No social autonomy escalation without policy. No high-risk code edits without operator review.
 
@@ -729,7 +744,7 @@ No second cognitive spine.
 
 ## 14. Current Service Inventory
 
-There are 77 services under `services/` as of this writing — too many to hand-maintain as a flat, always-accurate list here without it going stale again. This groups the major subsystems; treat `ls services/` or each service's own README as the current source of truth.
+There are 85 services under `services/` as of this writing — too many to hand-maintain as a flat, always-accurate list here without it going stale again. This groups the major subsystems; treat `ls services/` or each service's own README as the current source of truth.
 
 ```text
 Interface / ingress:
@@ -754,20 +769,24 @@ Sentience Striving Program / substrate runtime:
   orion-substrate-runtime, orion-substrate-organs, orion-substrate-telemetry,
   orion-attention-runtime, orion-proposal-runtime, orion-policy-runtime,
   orion-execution-dispatch-runtime, orion-feedback-runtime,
-  orion-consolidation-runtime, orion-field-digester
+  orion-consolidation-runtime, orion-field-digester, orion-cocreation-signals,
+  orion-world-model
 
 Reflection / state / sensemaking:
   orion-spark-concept-induction, orion-dream, orion-collapse-mirror,
   orion-state-service, orion-state-journaler, orion-equilibrium-service,
-  orion-meta-tags, orion-topic-foundry, orion-world-pulse
+  orion-meta-tags, orion-topic-foundry, orion-world-pulse,
+  orion-self-study-enrichment
 
 Embodiment / perception:
   orion-vision-host, orion-vision-edge, orion-vision-frame-router,
   orion-vision-window, orion-vision-council, orion-vision-retina,
-  orion-vision-scribe, orion-embodiment, orion-ai-town, orion-biometrics
+  orion-vision-scribe, orion-embodiment, orion-ai-town, orion-biometrics,
+  orion-percept-store, orion-juniper-affective-state, orion-affectgpt-worker,
+  orion-diffusion-host
 
 Social:
-  orion-social-room-bridge, orion-social-memory
+  orion-social-room-bridge, orion-social-memory, orion-room-companion
 
 Notifications / attention:
   orion-notify, orion-notify-digest
@@ -1016,6 +1035,9 @@ Recall should answer: "why this memory, from where, and under what confidence?"
 - Stabilize Hub inspect surfaces and thought trace display.
 - Improve recall relevance with graph/page/section-aware retrieval.
 - Harden social room bridge policy and social memory synthesis.
+- Extend the `express` action-economy beyond image generation to further outward-facing action kinds.
+- Apply the Postgres `max_connections=300` headroom change (needs a live DB restart) and add a non-superuser emergency connection reserve.
+- Calibrate cabinet `*_activity` narration now that live sensor readings reach chat-turn context.
 
 ### Mid-Term
 

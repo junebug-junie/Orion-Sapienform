@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 import tempfile
 import time
 import wave
@@ -50,7 +51,62 @@ def _is_xtts_model(model_name: str) -> bool:
     return "xtts" in model_name.lower()
 
 
-def _resolve_speaker_wav_path(candidate: str, profile_dir: str) -> Path:
+def _speaker_wav_refs_exist(speaker_wav: Any) -> bool:
+    """Do all configured reference files exist? Safe for a list or a string.
+
+    `speaker_wav` is a list under multi-reference, and `Path(str(<list>))` is
+    never a real path -- the previous expression therefore logged
+    speaker_wav_exists=False on every multi-reference synthesis, an absent
+    reading asserting a cause, and the first thing an operator reads during an
+    outage. Above ~85 references it was worse than wrong: the stringified list
+    exceeds NAME_MAX and `is_file()` RAISES ENAMETOOLONG, which is not in
+    pathlib's ignored errnos. At the failure-logging site that would replace
+    the real synthesis error with a bogus one.
+    """
+    refs = (
+        speaker_wav
+        if isinstance(speaker_wav, list)
+        else ([speaker_wav] if speaker_wav else [])
+    )
+    return bool(refs) and all(Path(p).is_file() for p in refs)
+
+
+def _natural_key(path: Path) -> tuple:
+    """Sort key that orders chunk_2 before chunk_10.
+
+    Plain `sorted()` is lexicographic, so `chunk_1, chunk_10, chunk_11, chunk_2`
+    -- and order is load-bearing here, because `gpt_cond_len` caps the
+    concatenation at ~30s and the earliest files are the ones that reach the
+    prosody latent. A recording chunked past nine pieces would otherwise be
+    reordered silently, with nothing to notice but a changed voice.
+    """
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part)
+        for part in re.split(r"(\d+)", path.name)
+        if part != ""
+    )
+
+
+def _resolve_speaker_wav_refs(candidate: str, profile_dir: str) -> list[Path]:
+    """Resolve a speaker reference to one or more wav files.
+
+    A DIRECTORY means multi-reference. XTTS's `get_conditioning_latents` accepts
+    a list and does two different things with it: it MEANS the per-file speaker
+    embeddings, and concatenates the audio for the GPT latent. The mean is the
+    part that matters -- averaging several clips of the same person cancels the
+    per-clip codec and room artifacts that a single clip bakes into the clone.
+
+    This is also the only way to use more than one clip's worth of a recording,
+    because each reference is independently truncated to `max_ref_len` (30s in
+    the shipped checkpoint). A single 100s file is silently cut to its first
+    30s; seven ~14s files are not.
+
+    Order is sorted and therefore stable, which matters: `gpt_cond_len` (30s)
+    caps the concatenation, so the earliest files decide the prosody latent
+    while every file contributes equally to the speaker embedding.
+
+    A single file behaves exactly as before -- one path, in a one-element list.
+    """
     root = Path(profile_dir).resolve()
     raw = Path(candidate)
     resolved = (raw if raw.is_absolute() else root / raw).resolve()
@@ -60,11 +116,48 @@ def _resolve_speaker_wav_path(candidate: str, profile_dir: str) -> Path:
         raise ValueError(
             f"TTS speaker_wav must be under {root}, got {candidate!r}"
         ) from exc
+    if resolved.is_dir():
+        # The profile root itself must not resolve to "every voice on the host,
+        # blended". `relative_to` succeeds when resolved == root, and a bus
+        # request carrying options.speaker_wav="." is reachable from any
+        # producer on the intake channel -- that would silently average every
+        # reference in the directory into one composite speaker embedding.
+        if resolved == root:
+            raise ValueError(
+                f"TTS speaker_wav must name a specific reference or "
+                f"subdirectory, not the profile root itself: {root}"
+            )
+        refs: list[Path] = []
+        for p in sorted(resolved.glob("*.wav"), key=_natural_key):
+            if not p.is_file():
+                continue  # e.g. a directory literally named something.wav
+            # glob does NOT resolve symlinks and is_file() follows them, so a
+            # symlink planted inside the directory would otherwise hand an
+            # out-of-root file straight to the audio decoder. The containment
+            # check above covers the candidate, not its children.
+            try:
+                p.resolve().relative_to(root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"TTS speaker_wav reference escapes {root}: {p}"
+                ) from exc
+            refs.append(p)
+        if not refs:
+            raise FileNotFoundError(
+                f"TTS speaker_wav directory holds no .wav files: {resolved} "
+                f"(profile_dir={root})"
+            )
+        return refs
     if not resolved.is_file():
         raise FileNotFoundError(
             f"TTS speaker_wav not found: {resolved} (profile_dir={root})"
         )
-    return resolved
+    return [resolved]
+
+
+def _resolve_speaker_wav_path(candidate: str, profile_dir: str) -> Path:
+    """Single-file view of the above, for callers that only need existence."""
+    return _resolve_speaker_wav_refs(candidate, profile_dir)[0]
 
 
 def resolve_synthesis_plan(
@@ -81,10 +174,17 @@ def resolve_synthesis_plan(
     speaker_wav: Optional[str] = opts.pop("speaker_wav", None)
     speaker: Optional[str] = opts.pop("speaker", None)
     speaker_wav_used = False
+    # Populated whenever a reference resolves. A directory yields several paths
+    # (multi-reference); a plain file yields exactly one, as before.
+    speaker_wav_refs: list[Path] = []
+    speaker_wav_source: Optional[str] = None
 
     if speaker_wav:
-        resolved = _resolve_speaker_wav_path(speaker_wav, cfg.tts_voice_profile_dir)
-        speaker_wav = str(resolved)
+        speaker_wav_refs = _resolve_speaker_wav_refs(
+            speaker_wav, cfg.tts_voice_profile_dir
+        )
+        speaker_wav_source = speaker_wav
+        speaker_wav = str(speaker_wav_refs[0])
         speaker_wav_used = True
     elif speaker:
         # An explicit per-request `options.speaker` outranks the HOST DEFAULT
@@ -107,11 +207,12 @@ def resolve_synthesis_plan(
         # un-break dead behaviour.
         pass
     elif cfg.tts_default_speaker_wav:
-        resolved = _resolve_speaker_wav_path(
+        speaker_wav_refs = _resolve_speaker_wav_refs(
             cfg.tts_default_speaker_wav,
             cfg.tts_voice_profile_dir,
         )
-        speaker_wav = str(resolved)
+        speaker_wav_source = cfg.tts_default_speaker_wav
+        speaker_wav = str(speaker_wav_refs[0])
         speaker_wav_used = True
     elif voice_id:
         looks_like_file = (
@@ -121,8 +222,11 @@ def resolve_synthesis_plan(
         )
         profile_candidate = Path(cfg.tts_voice_profile_dir) / voice_id
         if looks_like_file or profile_candidate.exists():
-            resolved = _resolve_speaker_wav_path(voice_id, cfg.tts_voice_profile_dir)
-            speaker_wav = str(resolved)
+            speaker_wav_refs = _resolve_speaker_wav_refs(
+                voice_id, cfg.tts_voice_profile_dir
+            )
+            speaker_wav_source = voice_id
+            speaker_wav = str(speaker_wav_refs[0])
             speaker_wav_used = True
         else:
             speaker = voice_id
@@ -135,8 +239,20 @@ def resolve_synthesis_plan(
         "language": lang,
         "voice_id": voice_id,
         "speaker": speaker,
-        "speaker_wav_basename": Path(speaker_wav).name if speaker_wav else None,
+        # Under multi-reference, name the DIRECTORY. Reporting the first chunk
+        # would make a 7-file voice read as an ordinary single-file one to any
+        # consumer or human skimming the reply metadata.
+        "speaker_wav_basename": (
+            Path(speaker_wav).parent.name
+            if len(speaker_wav_refs) > 1
+            else (Path(speaker_wav).name if speaker_wav else None)
+        ),
         "speaker_wav_used": speaker_wav_used,
+        "speaker_wav_count": len(speaker_wav_refs),
+        "speaker_wav_basenames": (
+            [p.name for p in speaker_wav_refs] if len(speaker_wav_refs) > 1 else None
+        ),
+        "speaker_wav_source": speaker_wav_source,
         "split_sentences": split,
     }
 
@@ -145,7 +261,14 @@ def resolve_synthesis_plan(
         kwargs["language"] = lang
         kwargs["split_sentences"] = split
         if speaker_wav:
-            kwargs["speaker_wav"] = speaker_wav
+            # Pass a bare string for the single-reference case so nothing about
+            # the existing path changes, and a list only when there really are
+            # several references. XTTS accepts either.
+            kwargs["speaker_wav"] = (
+                [str(p) for p in speaker_wav_refs]
+                if len(speaker_wav_refs) > 1
+                else speaker_wav
+            )
         elif speaker:
             kwargs["speaker"] = speaker
         else:
@@ -157,6 +280,8 @@ def resolve_synthesis_plan(
         if speaker:
             kwargs["speaker"] = speaker
         if speaker_wav:
+            # Non-XTTS backends are not known to accept a list here, so keep
+            # them on the single-path form they have always been given.
             kwargs["speaker_wav"] = speaker_wav
 
     for key in opts:
@@ -221,13 +346,14 @@ class CoquiBackend:
         started = time.perf_counter()
 
         speaker_wav_path = plan.kwargs.get("speaker_wav")
+        speaker_wav_exists = _speaker_wav_refs_exist(speaker_wav_path)
         logger.info(
             "[TTS] tts_to_file language=%s speaker_set=%s speaker_wav_set=%s "
             "speaker_wav_exists=%s split_sentences=%s",
             plan.kwargs.get("language"),
             bool(plan.kwargs.get("speaker")),
             bool(speaker_wav_path),
-            bool(speaker_wav_path and Path(str(speaker_wav_path)).is_file()),
+            speaker_wav_exists,
             plan.kwargs.get("split_sentences"),
         )
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
@@ -242,7 +368,7 @@ class CoquiBackend:
                     plan.kwargs.get("language"),
                     plan.kwargs.get("speaker"),
                     speaker_wav_path,
-                    bool(speaker_wav_path and Path(str(speaker_wav_path)).is_file()),
+                    speaker_wav_exists,
                     exc,
                     exc_info=True,
                 )

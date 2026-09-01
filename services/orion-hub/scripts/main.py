@@ -751,6 +751,7 @@ async def startup_event():
     if settings.SUBSTRATE_REVIEW_SCHEDULER_ENABLED:
         review_interval_sec = max(1.0, float(settings.SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC))
         review_bootstrap_limit = max(1, int(settings.SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT))
+        review_prune_after_sec = max(0.0, float(settings.SUBSTRATE_REVIEW_SCHEDULER_PRUNE_AFTER_SEC))
 
         async def _run_substrate_review_scheduler() -> None:
             # Offloaded to a thread for the same reason as the concept seed and
@@ -763,6 +764,7 @@ async def startup_event():
                     await asyncio.to_thread(
                         api_routes_runtime.execute_substrate_review_scheduled_cycle,
                         bootstrap_limit=review_bootstrap_limit,
+                        prune_after_sec=review_prune_after_sec,
                     )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_review_scheduler_error error=%s", exc)
@@ -1099,6 +1101,7 @@ async def shutdown_event() -> None:
             await substrate_decay_task
         except asyncio.CancelledError:
             pass
+        substrate_decay_task = None
     if substrate_review_task is not None:
         substrate_review_task.cancel()
         try:
@@ -1106,7 +1109,6 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_review_task = None
-        substrate_decay_task = None
     if substrate_topic_foundry_scheduler_task is not None:
         substrate_topic_foundry_scheduler_task.cancel()
         try:

@@ -6,6 +6,7 @@ import logging
 import os
 import ipaddress
 import threading
+from contextlib import contextmanager
 import asyncio
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -477,6 +478,7 @@ SUBSTRATE_MUTATION_STORE = SubstrateMutationStore(
 )
 SUBSTRATE_MUTATION_SURFACES: Dict[str, Dict[str, Any]] = {}
 SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK = threading.Lock()
+SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK = threading.Lock()
 
 
 class _UnavailableCausalGeometryProposalStore:
@@ -5717,9 +5719,10 @@ def _emit_substrate_review_scheduler_log(*, payload: Dict[str, Any]) -> None:
 def execute_substrate_review_scheduled_cycle(
     *,
     bootstrap_limit: int = 12,
+    prune_after_sec: float = 21600.0,
     now: datetime | None = None,
 ) -> Dict[str, Any]:
-    """One unattended tick of the graph-review loop: seed the queue if empty, then drain one item.
+    """One unattended tick of the graph-review loop: prune, seed if starved, drain one item.
 
     Until 2026-09-01 both halves of this loop were reachable ONLY from HTTP
     endpoints (``/api/substrate/review-runtime/bootstrap`` and
@@ -5729,66 +5732,167 @@ def execute_substrate_review_scheduled_cycle(
     while the *downstream* mutation scheduler, which DOES run autonomously every
     ``SUBSTRATE_AUTONOMY_INTERVAL_SEC``, had starved for 4620 consecutive cycles.
     The 1562 rows in ``substrate_review_telemetry`` it was reading were 1560
-    ``selection_reason="test"`` seeds (written by test files straight into live
-    Postgres) plus 2 chat-feedback events from 2026-08-14. The surface/zone
-    filters at the consumer were never structurally disjoint -- the bootstrapper
-    seeds ``hotspot_region -> autonomy_graph`` under
+    ``selection_reason="test"`` seeds (written by the hub test suite straight
+    into live Postgres) plus 2 chat-feedback events from 2026-08-14. The
+    surface/zone filters at the consumer were never structurally disjoint -- the
+    bootstrapper seeds ``hotspot_region -> autonomy_graph`` under
     ``invocation_surface="operator_review"``, satisfying both -- they were simply
     never fed.
 
-    Bootstrap only fires when the queue is *completely* empty, not merely when
-    nothing is due: reseeding around pending future-dated items would grow the
-    queue without bound on every tick.
+    Reseeding is gated on there being no *usable* item, not on an empty queue.
+    Gating on emptiness is an absorbing state: nothing prunes a suppressed item,
+    and ``GraphReviewQueue.upsert`` copies ``suppression_state`` forward on a
+    region-key match, so once every seeded item suppresses (6 executed cycles at
+    the schema's ``suppress_after_low_value_cycles=2``) the queue is non-empty
+    and permanently un-drainable. ``prune_finished`` ages those out first so the
+    bootstrapper can mint genuinely fresh items.
 
-    ``execute_frontier_followup_allowed`` stays False here, matching
-    ``/execute-once``. That is what keeps this loop out of the
-    ``self_relationship_graph`` zone: the bootstrapper's own seed specs cover
-    only concept_graph/autonomy_graph/world_ontology, and the frontier follow-up
-    (``frontier_curiosity.py``) is the sole path that can raise a
-    self_relationship_graph signal. The zone gate in
-    ``review_runtime._select_item`` keys on ``invocation_surface`` alone and
-    honours no override on the non-explicit path, so an unattended cycle running
-    under ``operator_review`` would otherwise be free to consolidate Orion's
-    self-relationship model. Leaving follow-up to the operator endpoint keeps
-    that zone unreachable by construction rather than by flag.
+    This tick does NOT keep itself out of the ``self_relationship_graph`` zone.
+    An earlier version of this docstring claimed ``allow_followup=False`` was the
+    containment; that was wrong on three counts, found in review:
+    ``frontier_followup_executor`` is never wired on this deployment (only the
+    ``None`` default at ``review_runtime.py:28`` and its guard), so the flag is
+    inert; ``frontier_curiosity.py:239`` unconditionally returns
+    ``outcome="operator_only"`` for that zone anyway; and
+    ``consolidation.py:279`` echoes the request's own zone, so an autonomy_graph
+    item cannot mint a self_relationship_graph follow-up. The real guard is
+    ``review_schedule.py:84``, which returns ``queue_item=None`` for that zone --
+    and ``review_schedule.py:65`` is the only ``queue.upsert`` caller in the
+    repo, so such an item can never enter the queue at all. That matters because
+    this tick runs under ``invocation_surface="operator_review"``, which
+    *satisfies* the zone gate at ``review_runtime.py:226`` (surface alone, no
+    override honoured on the non-explicit path): if such an item ever did reach
+    the queue by some future route, this loop would select it.
+    ``allow_followup=False`` is kept because frontier follow-up is operator work
+    with its own endpoint, not because it contains anything.
     """
     tick_now = now or datetime.now(timezone.utc)
     tick_id = f"review-scheduler-{uuid4()}"
 
-    SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
-    queue_before = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+    def _emit(payload: Dict[str, Any]) -> Dict[str, Any]:
+        _emit_substrate_review_scheduler_log(payload=payload)
+        return payload
 
-    bootstrap: Dict[str, Any] | None = None
-    if queue_before == 0:
-        bootstrap = _bootstrap_substrate_review_frontier(limit=bootstrap_limit)
+    # The operator endpoints run in FastAPI's threadpool, genuinely parallel with
+    # this loop's asyncio.to_thread. GraphReviewQueue persists by full-table swap
+    # (DELETE then re-INSERT every item), so an interleaved write drops the other
+    # writer's entire item set -- reproduced in review. Same non-blocking posture
+    # as SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK: a skipped tick costs one interval.
+    if not SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK.acquire(blocking=False):
+        return _emit(
+            {
+                "event": "review_scheduler_tick",
+                "tick_id": tick_id,
+                "status": "blocked",
+                "reason": "local_cycle_lock_not_acquired",
+                "at": tick_now.isoformat(),
+            }
+        )
+    try:
+        SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
+        store_kind = SUBSTRATE_REVIEW_QUEUE_STORE.source_kind()
+        store_degraded = SUBSTRATE_REVIEW_QUEUE_STORE.degraded()
 
-    due_now = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=datetime.now(timezone.utc), limit=200))
+        # An in-memory queue dies with the process, so seeding it and logging
+        # items_enqueued=12 every interval is empty-shell cognition: the loop
+        # would report progress forever and persist nothing. The sibling
+        # autonomy loop gates on substrate_autonomy_runtime_supported() for the
+        # same reason.
+        if store_degraded or store_kind not in {"postgres", "sqlite"}:
+            return _emit(
+                {
+                    "event": "review_scheduler_tick",
+                    "tick_id": tick_id,
+                    "status": "blocked",
+                    "reason": "queue_store_not_durable",
+                    "at": tick_now.isoformat(),
+                    "store_kind": store_kind,
+                    "store_degraded": store_degraded,
+                    "store_last_error": SUBSTRATE_REVIEW_QUEUE_STORE.last_error(),
+                }
+            )
 
-    cycle: Dict[str, Any] | None = None
-    if due_now > 0:
-        cycle = _execute_substrate_review_cycle(allow_followup=False)
-        status = "executed"
-    elif bootstrap is not None:
-        status = "seeded_none_due"
-    else:
-        status = "idle_none_due"
+        pruned = SUBSTRATE_REVIEW_QUEUE_STORE.prune_finished(older_than_sec=prune_after_sec)
+        queue_total = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+        usable_before = len(SUBSTRATE_REVIEW_QUEUE_STORE.usable_items(limit=200))
 
-    payload: Dict[str, Any] = {
-        "event": "review_scheduler_tick",
-        "tick_id": tick_id,
-        "status": status,
-        "at": tick_now.isoformat(),
-        "queue_before": queue_before,
-        "due_now": due_now,
-        "bootstrapped": bootstrap is not None,
-        "items_enqueued": (bootstrap or {}).get("items_enqueued"),
-        "bootstrap_notes": (bootstrap or {}).get("notes"),
-        "execution_outcome": ((cycle or {}).get("result") or {}).get("outcome"),
-        "selected_queue_item_id": ((cycle or {}).get("result") or {}).get("selected_queue_item_id"),
-        "queue_after": ((cycle or {}).get("queue_after") or {}).get("count"),
-    }
-    _emit_substrate_review_scheduler_log(payload=payload)
-    return payload
+        bootstrap: Dict[str, Any] | None = None
+        if usable_before == 0:
+            bootstrap = _bootstrap_substrate_review_frontier(limit=bootstrap_limit)
+
+        due_now = len(
+            SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=datetime.now(timezone.utc), limit=200)
+        )
+
+        cycle: Dict[str, Any] | None = None
+        if due_now > 0:
+            cycle = _execute_substrate_review_cycle(allow_followup=False)
+            status = "executed"
+        elif bootstrap is not None:
+            status = "seeded_none_due"
+        else:
+            status = "idle_none_due"
+
+        return _emit(
+            {
+                "event": "review_scheduler_tick",
+                "tick_id": tick_id,
+                "status": status,
+                "at": tick_now.isoformat(),
+                "store_kind": store_kind,
+                "store_degraded": store_degraded,
+                "pruned": pruned,
+                "queue_total": queue_total,
+                "usable_before": usable_before,
+                "due_now": due_now,
+                "bootstrapped": bootstrap is not None,
+                "items_enqueued": (bootstrap or {}).get("items_enqueued"),
+                "bootstrap_notes": (bootstrap or {}).get("notes"),
+                "execution_outcome": ((cycle or {}).get("result") or {}).get("outcome"),
+                "selected_queue_item_id": ((cycle or {}).get("result") or {}).get(
+                    "selected_queue_item_id"
+                ),
+                "queue_after": ((cycle or {}).get("queue_after") or {}).get("count"),
+            }
+        )
+    except Exception as exc:
+        # main.py's loop handler logs a bare warning with no tick_id and no
+        # counts, so a tick that dies mid-bootstrap would otherwise be invisible
+        # in the same log stream as every successful tick.
+        _emit(
+            {
+                "event": "review_scheduler_tick",
+                "tick_id": tick_id,
+                "status": "error",
+                "at": tick_now.isoformat(),
+                "error": str(exc),
+            }
+        )
+        raise
+    finally:
+        SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK.release()
+
+
+@contextmanager
+def _review_cycle_lock_or_conflict():
+    """Serialise every writer of the review queue against the scheduled tick.
+
+    GraphReviewQueue._persist is a full-table swap (DELETE, then re-INSERT every
+    item), and refresh_from_storage replaces the in-process dict wholesale, so an
+    operator request interleaving with a scheduled tick silently drops one
+    writer's entire item set -- reproduced in review with two real queues over
+    shared storage. These handlers are plain `def`, so FastAPI runs them in its
+    threadpool, genuinely parallel with the loop's asyncio.to_thread.
+    """
+    if not SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="review runtime cycle already in flight (scheduled tick or another request)",
+        )
+    try:
+        yield
+    finally:
+        SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK.release()
 
 
 def _bootstrap_substrate_review_frontier(*, limit: int = 12) -> Dict[str, Any]:
@@ -6216,25 +6320,28 @@ def api_substrate_review_runtime_status(
 @router.post("/api/substrate/review-runtime/execute-once")
 def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
-    return _execute_substrate_review_cycle(
-        allow_followup=False,
-        explicit_queue_item_id=req.explicit_queue_item_id,
-    )
+    with _review_cycle_lock_or_conflict():
+        return _execute_substrate_review_cycle(
+            allow_followup=False,
+            explicit_queue_item_id=req.explicit_queue_item_id,
+        )
 
 
 @router.post("/api/substrate/review-runtime/execute-once-followup")
 def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
-    return _execute_substrate_review_cycle(
-        allow_followup=True,
-        explicit_queue_item_id=req.explicit_queue_item_id,
-    )
+    with _review_cycle_lock_or_conflict():
+        return _execute_substrate_review_cycle(
+            allow_followup=True,
+            explicit_queue_item_id=req.explicit_queue_item_id,
+        )
 
 
 @router.post("/api/substrate/review-runtime/bootstrap")
 def api_substrate_review_runtime_bootstrap(request: SubstrateReviewBootstrapRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewBootstrapRequest()
-    return _bootstrap_substrate_review_frontier(limit=req.limit)
+    with _review_cycle_lock_or_conflict():
+        return _bootstrap_substrate_review_frontier(limit=req.limit)
 
 
 @router.post("/api/substrate/review-runtime/debug-run")

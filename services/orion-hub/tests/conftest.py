@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -53,8 +54,23 @@ _CONTROL_PLANE_POSTGRES_ENV_KEYS = (
 
 
 def _detach_control_plane_from_live_postgres() -> None:
+    # pop, not `= ""`. A present-but-empty key still satisfies os.environ.setdefault,
+    # which test_grammar_atlas_api.py:39 relies on to install its own DSN -- setting
+    # these to "" made that setdefault a no-op and 503'd 3 tests, and also silently
+    # turned that file's monkeypatch.delenv("DATABASE_URL") into a no-op, so the test
+    # could no longer tell "config removed" from "config never existed".
     for key in _CONTROL_PLANE_POSTGRES_ENV_KEYS:
-        os.environ[key] = ""
+        os.environ.pop(key, None)
+    # SubstratePolicyProfileStore falls back to a HARDCODED shared path
+    # (/tmp/orion_substrate_policy.sqlite3, policy_profiles.py) when both its URL
+    # and sqlite path are unset, so merely detaching Postgres relocates the test
+    # writes rather than isolating them -- that file accumulates across every run,
+    # session and process on the box, cross-contaminating
+    # pair_mode="previous_vs_current" comparisons.
+    os.environ.setdefault(
+        "SUBSTRATE_POLICY_SQL_DB_PATH",
+        str(Path(tempfile.mkdtemp(prefix="orion-hub-tests-policy-")) / "policy.sqlite3"),
+    )
 
 
 def pytest_configure() -> None:
@@ -64,5 +80,11 @@ def pytest_configure() -> None:
 
 @pytest.fixture(autouse=True)
 def _hub_service_isolation() -> None:
+    # Deliberately does NOT re-pop the control-plane keys. pytest_configure runs
+    # before any test module is imported, which is early enough for the
+    # module-level store binding in api_routes -- and a test module is then free
+    # to os.environ.setdefault its own DSN at collection time.
+    # test_grammar_atlas_api.py:39 does exactly that for a DIFFERENT store, and
+    # popping again per-test would undo it and 503 that suite.
     _ensure_hub_paths()
     yield

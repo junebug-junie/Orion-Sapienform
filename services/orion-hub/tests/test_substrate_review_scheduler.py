@@ -44,23 +44,57 @@ from scripts import api_routes  # noqa: E402
 
 
 class _FakeQueueStore:
-    """Only the three surfaces the scheduled tick touches."""
+    """Only the surfaces the scheduled tick touches.
 
-    def __init__(self, *, total: int = 0, due: int = 0) -> None:
+    ``total`` and ``usable`` are modelled separately on purpose: their divergence
+    IS the failure mode (a queue full of suppressed items is non-empty and
+    permanently un-drainable). A fake that conflated them would hide it. The
+    real coupling is covered against the real GraphReviewQueue in
+    test_substrate_review_queue_pruning.py.
+    """
+
+    def __init__(self, *, total: int = 0, usable: int = 0, due: int = 0) -> None:
         self.total = total
+        self.usable = usable
         self.due = due
         self.refreshed = 0
+        self.pruned_with: list[float] = []
+        self.calls: list[str] = []
+        self._kind = "postgres"
+        self._degraded = False
 
     def refresh_from_storage(self) -> None:
         self.refreshed += 1
+        self.calls.append("refresh")
+
+    def source_kind(self) -> str:
+        return self._kind
+
+    def degraded(self) -> bool:
+        return self._degraded
+
+    def last_error(self) -> str | None:
+        return None
+
+    def prune_finished(self, *, older_than_sec: float, now=None) -> int:
+        self.pruned_with.append(older_than_sec)
+        self.calls.append("prune")
+        return 0
+
+    def usable_items(self, *, limit: int = 200):
+        self.calls.append("usable")
+        return [object()] * self.usable
 
     def snapshot(self, *, limit: int = 200):
+        self.calls.append("snapshot")
+
         class _Snap:
             queue_items = [object()] * self.total
 
         return _Snap()
 
     def list_eligible(self, *, now, limit: int = 200):
+        self.calls.append("eligible")
         return [object()] * self.due
 
 
@@ -73,6 +107,7 @@ def wired(monkeypatch):
     def _fake_bootstrap(*, limit: int = 12):
         calls["bootstrap"].append({"limit": limit})
         store.total = 3
+        store.usable = 3
         store.due = 3
         return {"items_enqueued": 3, "notes": ["bootstrap_seeded"]}
 
@@ -93,7 +128,7 @@ def wired(monkeypatch):
 
 def test_empty_queue_bootstraps_then_executes(wired) -> None:
     store, calls = wired
-    store.total, store.due = 0, 0
+    store.total, store.usable, store.due = 0, 0, 0
 
     payload = api_routes.execute_substrate_review_scheduled_cycle()
 
@@ -105,10 +140,10 @@ def test_empty_queue_bootstraps_then_executes(wired) -> None:
     assert payload["selected_queue_item_id"] == "q-1"
 
 
-def test_non_empty_queue_never_reseeds(wired) -> None:
-    """Reseeding around pending future-dated items would grow the queue every tick."""
+def test_pending_future_dated_items_are_not_reseeded(wired) -> None:
+    """Items that can still become due must not trigger a reseed every tick."""
     store, calls = wired
-    store.total, store.due = 5, 0
+    store.total, store.usable, store.due = 5, 5, 0
 
     payload = api_routes.execute_substrate_review_scheduled_cycle()
 
@@ -118,29 +153,54 @@ def test_non_empty_queue_never_reseeds(wired) -> None:
     assert calls["cycle"] == []
 
 
+def test_queue_full_of_unusable_items_still_reseeds(wired) -> None:
+    """The absorbing state: a non-empty queue whose every item is spent.
+
+    An earlier version of this file asserted that total=5/due=0 must report
+    idle_none_due unconditionally -- which enshrined exactly the bug that killed
+    the loop, because nothing distinguishes "not due yet" from "never due
+    again". Gating the reseed on emptiness meant the first generation of items
+    suppressing (6 executed cycles at the schema's
+    suppress_after_low_value_cycles=2) left the queue permanently un-drainable.
+    """
+    store, calls = wired
+    store.total, store.usable, store.due = 5, 0, 0
+
+    payload = api_routes.execute_substrate_review_scheduled_cycle()
+
+    assert len(calls["bootstrap"]) == 1
+    assert payload["bootstrapped"] is True
+    assert payload["queue_total"] == 5
+    assert payload["usable_before"] == 0
+
+
 def test_non_empty_queue_with_due_items_executes_without_seeding(wired) -> None:
     store, calls = wired
-    store.total, store.due = 5, 2
+    store.total, store.usable, store.due = 5, 5, 2
 
     payload = api_routes.execute_substrate_review_scheduled_cycle()
 
     assert calls["bootstrap"] == []
     assert len(calls["cycle"]) == 1
     assert payload["status"] == "executed"
-    assert payload["queue_before"] == 5
+    assert payload["queue_total"] == 5
+    assert payload["usable_before"] == 5
     assert payload["due_now"] == 2
 
 
 def test_scheduled_cycle_never_allows_frontier_followup(wired) -> None:
-    """The containment claim: follow-up is the only path to a self_relationship_graph item.
+    """Frontier follow-up is operator work with its own endpoint.
 
-    ``review_runtime._select_item`` gates that zone on ``invocation_surface``
-    alone and honours no override on the non-explicit path, so an unattended
-    cycle running under ``operator_review`` would be free to consolidate Orion's
-    self-relationship model if follow-up were ever enabled here.
+    This is NOT what keeps the loop out of the self_relationship_graph zone --
+    an earlier version of this docstring claimed it was, and review disproved it
+    three ways (the follow-up executor is unwired on this deployment,
+    frontier_curiosity.py:239 refuses that zone unconditionally, and
+    consolidation.py:279 echoes the request's own zone). The real guard is
+    review_schedule.py:84, covered by
+    test_substrate_review_queue_pruning.py::test_self_relationship_zone_never_enters_the_queue.
     """
     store, calls = wired
-    store.total, store.due = 1, 1
+    store.total, store.usable, store.due = 1, 1, 1
 
     api_routes.execute_substrate_review_scheduled_cycle()
 
@@ -152,11 +212,12 @@ def test_scheduled_cycle_never_allows_frontier_followup(wired) -> None:
 def test_seeded_but_nothing_due_reports_distinctly_and_skips_cycle(wired, monkeypatch) -> None:
     """A bootstrap that schedules everything into the future must not be reported as executed."""
     store, calls = wired
-    store.total, store.due = 0, 0
+    store.total, store.usable, store.due = 0, 0, 0
 
     def _seed_future_only(*, limit: int = 12):
         calls["bootstrap"].append({"limit": limit})
         store.total = 3
+        store.usable = 3
         store.due = 0  # every seeded item dated forward
         return {"items_enqueued": 3, "notes": ["bootstrap_seeded"]}
 
@@ -172,28 +233,34 @@ def test_seeded_but_nothing_due_reports_distinctly_and_skips_cycle(wired, monkey
 
 def test_bootstrap_limit_is_forwarded(wired) -> None:
     store, calls = wired
-    store.total, store.due = 0, 0
+    store.total, store.usable, store.due = 0, 0, 0
 
     api_routes.execute_substrate_review_scheduled_cycle(bootstrap_limit=4)
 
     assert calls["bootstrap"][0]["limit"] == 4
 
 
-def test_tick_refreshes_queue_from_storage_before_deciding(wired) -> None:
-    """Hub holds an in-process queue store; a stale view would reseed a queue that has rows."""
+def test_tick_refreshes_and_prunes_before_reading_the_queue(wired) -> None:
+    """Order matters, not just occurrence.
+
+    ``assert store.refreshed >= 1`` passed even with the refresh moved *after*
+    the read it exists to make correct, so it proved nothing the method name
+    claimed. Assert the actual sequence instead: refresh, then prune, then read.
+    """
     store, _calls = wired
-    store.total, store.due = 0, 0
+    store.total, store.usable, store.due = 0, 0, 0
 
     api_routes.execute_substrate_review_scheduled_cycle()
 
-    assert store.refreshed >= 1
+    assert store.calls.index("refresh") < store.calls.index("prune")
+    assert store.calls.index("prune") < store.calls.index("usable")
 
 
 def test_payload_shape_is_loggable_and_carries_tick_id(wired) -> None:
     import json
 
     store, _calls = wired
-    store.total, store.due = 0, 0
+    store.total, store.usable, store.due = 0, 0, 0
     now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 
     payload = api_routes.execute_substrate_review_scheduled_cycle(now=now)
@@ -201,4 +268,6 @@ def test_payload_shape_is_loggable_and_carries_tick_id(wired) -> None:
     assert payload["event"] == "review_scheduler_tick"
     assert payload["tick_id"].startswith("review-scheduler-")
     assert payload["at"] == now.isoformat()
-    json.dumps(payload, sort_keys=True, default=str)
+    # default=str would make this total and therefore unfalsifiable -- the log
+    # emitter uses default=str, but the payload should be plain JSON on its own.
+    json.dumps(payload, sort_keys=True)

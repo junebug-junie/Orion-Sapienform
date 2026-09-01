@@ -1256,6 +1256,13 @@ class Settings(BaseSettings):
     SUBSTRATE_REVIEW_SCHEDULER_ENABLED: bool = Field(default=False, alias="SUBSTRATE_REVIEW_SCHEDULER_ENABLED")
     SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC: float = Field(default=420.0, alias="SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC")
     SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT: int = Field(default=12, alias="SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT")
+    # How long a suppressed/terminated queue item rests before prune_finished
+    # drops it and the bootstrapper may reconsider that region. Nothing else
+    # removes an item, and upsert() copies suppression forward on a region-key
+    # match, so without pruning the queue reaches a permanently un-drainable
+    # state after ~6 executed cycles. Default matches the policy's own
+    # slow_revisit_seconds (6h) -- the slowest rest the schema already defines.
+    SUBSTRATE_REVIEW_SCHEDULER_PRUNE_AFTER_SEC: float = Field(default=21600.0, alias="SUBSTRATE_REVIEW_SCHEDULER_PRUNE_AFTER_SEC")
     # Autonomous topic-foundry training + concept ingestion (Gap 5 of the
     # concept-graph-pipeline design). Each tick: (1) ensure a well-known
     # dataset+model exist on topic-foundry (idempotent get-or-create by name,

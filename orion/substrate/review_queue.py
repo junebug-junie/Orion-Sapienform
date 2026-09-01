@@ -117,6 +117,64 @@ class GraphReviewQueue:
         self._persist()
         return updated
 
+    def prune_finished(self, *, older_than_sec: float, now: datetime | None = None) -> int:
+        """Drop suppressed/terminated items that have sat finished past the cutoff.
+
+        Nothing else in this class ever removes an item: the only deletion is the
+        ``max_items`` eviction inside :meth:`upsert`. Without this, a queue whose
+        items have all reached suppression stays permanently non-empty while
+        :meth:`list_eligible` returns nothing -- and :meth:`upsert` copies
+        ``suppression_state``/``termination_state`` forward on a region-key
+        match, so re-seeding the same region *resurrects* the dead item instead
+        of replacing it. That pair is an absorbing state: a scheduled review tick
+        that reseeds only on an empty queue goes idle forever, and not even the
+        operator bootstrap endpoint recovers it -- only a manual DELETE does.
+        Measured on the real class: with ``suppress_after_low_value_cycles=2``
+        (the schema default) a 3-item bootstrap reaches ``{'suppressed': 3}``
+        after 6 executed cycles.
+
+        The cutoff is what stops pruning from becoming a churn loop. Removing a
+        suppressed item the instant it suppresses would let the bootstrapper
+        reseed the same region on the very next tick, so the queue would cycle
+        seed -> review -> suppress -> reseed forever and suppression would mean
+        nothing. Ageing it out instead gives the region the genuine rest that
+        suppression was supposed to express.
+
+        Ages against ``last_review_at``, falling back to ``created_at`` for an
+        item that was suppressed without ever being reviewed.
+        """
+        self.refresh_from_storage()
+        t = now or datetime.now(timezone.utc)
+        removed = 0
+        for item_id, item in list(self._items.items()):
+            if not (item.suppression_state or item.termination_state):
+                continue
+            finished_at = item.last_review_at or item.created_at
+            if (t - finished_at).total_seconds() < older_than_sec:
+                continue
+            del self._items[item_id]
+            removed += 1
+        if removed:
+            self._persist()
+        return removed
+
+    def usable_items(self, *, limit: int = 200) -> list[GraphReviewQueueItemV1]:
+        """Items that could still become due -- active, and with budget left.
+
+        Distinct from :meth:`list_eligible`, which additionally requires
+        ``next_review_at <= now``. A caller deciding whether the queue needs
+        reseeding must not confuse "nothing is due yet" (wait) with "nothing can
+        ever be due again" (reseed).
+        """
+        snapshot = self.snapshot(limit=limit)
+        return [
+            item
+            for item in snapshot.queue_items
+            if not item.termination_state
+            and not item.suppression_state
+            and item.cycle_budget.remaining_cycles > 0
+        ]
+
     def list_eligible(self, *, now: datetime | None = None, limit: int = 10) -> list[GraphReviewQueueItemV1]:
         self.refresh_from_storage()
         t = now or datetime.now(timezone.utc)

@@ -200,12 +200,80 @@ bash scripts/compact_convex_data.sh
 bash scripts/compact_convex_data.sh --force
 ```
 
-Env overrides: `AITOWN_COMPACT_THRESHOLD_BYTES` (default `5368709120` = 5GiB),
-`AITOWN_COMPACT_HEALTH_TIMEOUT_SEC` (default `180`).
+Env overrides — these are read from the **environment**, not from
+`services/orion-ai-town/.env`; this is a host script and never sources that file,
+so export them in the crontab entry or the invoking shell:
 
-Each run writes a job dir under `/tmp/aitown-compact-<timestamp>/` containing
-the pre-compact export, a raw `db.sqlite3` backup, and a `report.md` with
-before/after sizes — keep these until you've confirmed the town looks right.
+| var | default | purpose |
+| --- | --- | --- |
+| `AITOWN_COMPACT_THRESHOLD_BYTES` | `5368709120` (5GiB) | skip below this size |
+| `AITOWN_COMPACT_HEALTH_TIMEOUT_SEC` | `180` | step 5 health wait |
+| `AITOWN_COMPACT_JOB_DIR_BASE` | `/tmp` | where the job dir (and step 3's full db copy) lands |
+| `AITOWN_COMPACT_SKIP_RAW_BACKUP` | `0` | skip step 3's raw copy and relax the preflight |
+| `AITOWN_COMPACT_ALLOW_UNKNOWN_HOME_FREE` | `0` | proceed when `$HOME` free space is unreadable |
+
+The step 0 preflight sums the step 3 backup and the step 5b npm-cache
+requirements **when the job dir and `$HOME` are on the same filesystem** — which
+is the common case (`/tmp`, `$HOME` and `/` are one device on circe). Checking
+them independently is not enough: each can pass while their sum does not fit.
+
+If the database has grown past roughly half its filesystem, a full-copy-sized
+gate would refuse every run — including the one that shrinks it. Set
+`AITOWN_COMPACT_SKIP_RAW_BACKUP=1` in that case: recovery then rests on
+`export.zip` plus step 4's in-volume rename, which is two artifacts, not zero.
+
+Each run writes a job dir under `<AITOWN_COMPACT_JOB_DIR_BASE>/aitown-compact-<timestamp>/`
+containing the pre-compact export, a raw `db.sqlite3` backup, and a `report.md`
+with before/after sizes — keep these until you've confirmed the town looks right.
+
+### If a compaction fails: DO NOT re-run it
+
+Step 4 renames the live database aside and step 5 starts the backend on a fresh
+empty one. Past that point a second run of `compact_convex_data.sh` would export
+that **empty** database over the good `export.zip` and reimport it — turning a
+recoverable outage into permanent data loss. Use the resume script instead:
+
+```bash
+bash scripts/resume_compact_convex_data.sh /tmp/aitown-compact-<timestamp>
+```
+
+It replays steps 5b–7 (redeploy functions → restore env vars → reimport →
+heartbeat the world) against the original job dir. `compact_convex_data.sh`
+prints this instruction itself on **any** failure past step 4 — including
+Ctrl-C, a dropped SSH session, and a cron timeout — so you should not have to
+remember it.
+
+The resume script refuses to run, and names the override, when:
+
+- `export.zip` holds fewer than 1000 documents — it looks like an export *of* an
+  already-emptied database, and importing it would make the loss permanent
+- `export.zip` is more than 6h old — a stale export rolls the world back that
+  far just as destructively (`AITOWN_RESUME_CONFIRM=1`)
+- the deployment already answers `world:defaultWorldStatus` — functions and data
+  are present, so this is not the broken state it repairs, and running anyway
+  would `--replace-all` a healthy town (`AITOWN_RESUME_CONFIRM=1`)
+- free space under `$HOME` or the job dir is below 15GiB
+  (`AITOWN_RESUME_MIN_FREE_BYTES`)
+
+**A "healthy" backend is not evidence the town is up.** The Convex healthcheck
+proves the process answers HTTP, not that it has functions or data. Verify with
+`world:defaultWorldStatus` (it only answers when both are back) and confirm the
+engine is actually ticking — it rewrites `world`/`engines` every tick, so the
+file grows:
+
+```bash
+watch -n5 'docker compose exec -T backend stat -c%s /convex/data/db.sqlite3'
+```
+
+**Incident, 2026-08-31.** A run wrote its 11GB `db.sqlite3` backup into `/tmp` on
+a filesystem without 11GB free, filled the root disk to 100%, and died at step 5b
+with `npm error nospc` — after the reset. AI Town served an empty 128KB database
+for 33 hours while its container reported `healthy`, and nothing in the script
+had looked at `df`. There is now a step 0 disk preflight that checks both the
+job-dir filesystem and `$HOME` (where step 5b's npm cache lives) before step 1
+touches anything. Recovery took `resume_compact_convex_data.sh`, which restored
+all 117,679 documents from the original export; the compaction's own goal was
+met in the process (10.2GB → 314MB).
 
 A host crontab entry runs this daily (threshold-gated, so it's a no-op most
 days — see `crontab -l` for the exact line, installed 2026-07-29). There is

@@ -232,6 +232,24 @@ def _looks_like_docker_service_hostname(postgres_url: str) -> bool:
 
 
 def _resolve_control_plane_postgres_url() -> Optional[str]:
+    # An explicit, un-spoofable detach. Clearing the three URL keys is NOT
+    # sufficient on its own: any module may re-install one with
+    # os.environ.setdefault -- and precisely that happens during a full hub test
+    # run, where test_grammar_atlas_api.py:39 setdefaults the live conjourney DSN
+    # into DATABASE_URL at collection time for a DIFFERENT store. Because
+    # pytest_configure had just popped the key, the setdefault SUCCEEDS, and
+    # every api_routes import collected after it (alphabetically,
+    # test_substrate_standalone_page.py) re-binds the control-plane stores to
+    # production. Measured 2026-09-01: three full-suite runs added 12 rows each
+    # to substrate_review_telemetry while an env-only fix was believed to be
+    # holding -- it had only ever been proven on a subset whose collection order
+    # happened to put the polluting module first.
+    #
+    # Nothing else in the repo reads this key, so no setdefault can satisfy it by
+    # accident. Also usable operationally to run Hub with the control plane
+    # deliberately detached.
+    if str(os.getenv("SUBSTRATE_CONTROL_PLANE_DETACHED", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return None
     control_plane_url = str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip()
     policy_url = str(os.getenv("SUBSTRATE_POLICY_POSTGRES_URL", "")).strip()
     database_url = str(os.getenv("DATABASE_URL", "")).strip()

@@ -59,6 +59,13 @@ def _detach_control_plane_from_live_postgres() -> None:
     # these to "" made that setdefault a no-op and 503'd 3 tests, and also silently
     # turned that file's monkeypatch.delenv("DATABASE_URL") into a no-op, so the test
     # could no longer tell "config removed" from "config never existed".
+    # The detach flag is the load-bearing half. Popping the URL keys alone was
+    # measured insufficient: test_grammar_atlas_api.py:39 setdefaults the live
+    # DSN back into DATABASE_URL at collection time (its setdefault only
+    # succeeds BECAUSE we popped), and every api_routes import collected after
+    # it re-binds to production. Nothing else reads SUBSTRATE_CONTROL_PLANE_DETACHED,
+    # so no module-level setdefault can undo it.
+    os.environ["SUBSTRATE_CONTROL_PLANE_DETACHED"] = "1"
     for key in _CONTROL_PLANE_POSTGRES_ENV_KEYS:
         os.environ.pop(key, None)
     # SubstratePolicyProfileStore falls back to a HARDCODED shared path

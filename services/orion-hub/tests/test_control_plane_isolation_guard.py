@@ -46,11 +46,22 @@ if (
 from scripts import api_routes  # noqa: E402
 
 
-def test_control_plane_env_keys_are_absent_not_blank() -> None:
-    """Absent, not "". A present-but-empty key defeats os.environ.setdefault,
-    which test_grammar_atlas_api.py relies on to install its own DSN."""
+def test_control_plane_is_explicitly_detached() -> None:
+    """The detach flag, not the URL keys.
+
+    Asserting the URL keys are absent FAILS in a full-suite run and correctly so:
+    test_grammar_atlas_api.py:39 setdefaults the live DSN back into DATABASE_URL
+    at collection time, for a different store that legitimately wants it. The
+    invariant is that the control plane refuses regardless.
+    """
+    assert os.environ.get("SUBSTRATE_CONTROL_PLANE_DETACHED") == "1"
+    assert api_routes._resolve_control_plane_postgres_url() is None
+
+
+def test_control_plane_env_keys_are_popped_not_blanked() -> None:
+    """Blank is not absent: a present-but-empty key defeats os.environ.setdefault."""
     for key in ("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "SUBSTRATE_POLICY_POSTGRES_URL", "DATABASE_URL"):
-        assert key not in os.environ, f"{key} is set during tests: {os.environ.get(key)!r}"
+        assert os.environ.get(key) != "", f"{key} is blank rather than popped"
 
 
 def test_control_plane_stores_are_not_postgres_backed() -> None:

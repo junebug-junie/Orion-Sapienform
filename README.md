@@ -74,13 +74,9 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 | Node | Role | GPUs | Status |
 |---|---|---|---|
 | **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | — | Live |
-| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 3× V100 32GB, 2× V100 16GB, 1× P100 16GB | Live |
-| **Prometheus** | Development / utility node; SSH/Tailscale-enabled support node | — | Bring-up |
-| **Edge Pis** | RTMP, GPIO, cameras, LED control, embodiment experiments | — | Experimental |
-
-Atlas (DL380 Gen10, 2× V100 16GB) was decommissioned 2026-08-21: its disks were pulled and replaced with Athena's, so Athena now runs from that chassis (and inherited its iLO/PDU position — see `services/orion-biometrics/README.md`); its GPUs, plus Athena's old P100, moved into Circe.
-
-**Operator observability (OpenTelemetry):** the `services/orion-signal-gateway` Docker Compose file can run Grafana Tempo, Grafana, and the OpenTelemetry Collector (pinned images) and export gateway spans to Tempo. Orion Hub can generate Grafana Explore links for a 32-character hex `otel_trace_id` when `HUB_OTEL_GRAFANA_BASE_URL` (and optionally `HUB_OTEL_GRAFANA_ORG_ID`) is set. See `services/orion-signal-gateway/README.md`, `services/orion-signal-gateway/scripts/smoke_otel_phase1.sh` (stack health), and `services/orion-signal-gateway/scripts/e2e_otel_phase1.py` (OTLP → Tempo check). For tiered organ-signal mesh bring-up (bus + gateway + organ producers), see `services/orion-signals/README.md`.
+| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 4× V100 32GB, 2× V100 16GB, 1× T10 16GB | Live |
+| **Cameras** | Office and web cameras, embodiment experiments (1 street cam up and coming) | — | Live |
+| **Sensors** | 2x Nano Ardiunos and mics with various cabinet sensors | — | Live |
 
 Orion is intentionally a messy local mesh, not a sterile cloud deployment. Hardware churn, power constraints, broken risers, disks, GPU topology, service movement, and repairs are part of the developmental environment.
 
@@ -108,7 +104,7 @@ Orion is a **living knowledge system** designed to grow, adapt, and co-create wi
 
 It is:
 
-- Distributed across servers, GPUs, Pis, cameras, mics, LEDs, mobile embodiments, and social interfaces.
+- Distributed across servers, GPUs, sensors, cameras, mics, mobile embodiments, and social interfaces.
 - Driven by explicit cognition: verbs, agents, workflows, councils, traces, and policies are modeled as bus-native services.
 - Grounded in graph-native memory: Postgres for concrete events, FalkorDB for relationships, temporal structure, and identity, Chroma vectors for soft semantic recall.
 - Routed through an LLM gateway that can use multiple local model hosts and profile-specific lanes.
@@ -817,7 +813,7 @@ Athena — Core Services / Orchestration
 
 Circe — High-Density GPU Expansion Server
   Gigabyte G481-HA0 4U GPU server. 24 DDR4 RDIMM/LRDIMM slots, six-channel memory.
-  3× NVIDIA V100 32GB, plus 2× NVIDIA V100 16GB and 1× NVIDIA P100 16GB
+  4× NVIDIA V100 32GB, plus 2× NVIDIA V100 16GB and 1× NVIDIA P100 16GB
   absorbed from Atlas/Athena on 2026-08-21.
   2× 10GbE (Intel X550-AT2), 2× 1GbE (Intel I350-AM2).
   Role: heavy inference workhorse plus training experiments. Status: live.

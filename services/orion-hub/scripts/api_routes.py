@@ -5710,6 +5710,87 @@ def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item
     }
 
 
+def _emit_substrate_review_scheduler_log(*, payload: Dict[str, Any]) -> None:
+    logger.info("substrate_review_scheduler %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def execute_substrate_review_scheduled_cycle(
+    *,
+    bootstrap_limit: int = 12,
+    now: datetime | None = None,
+) -> Dict[str, Any]:
+    """One unattended tick of the graph-review loop: seed the queue if empty, then drain one item.
+
+    Until 2026-09-01 both halves of this loop were reachable ONLY from HTTP
+    endpoints (``/api/substrate/review-runtime/bootstrap`` and
+    ``.../execute-once``), so nothing ever ran them unattended. Verified live
+    that day: ``substrate_review_queue_item`` held zero rows and had never held
+    any, so the review runtime selected nothing and emitted no telemetry --
+    while the *downstream* mutation scheduler, which DOES run autonomously every
+    ``SUBSTRATE_AUTONOMY_INTERVAL_SEC``, had starved for 4620 consecutive cycles.
+    The 1562 rows in ``substrate_review_telemetry`` it was reading were 1560
+    ``selection_reason="test"`` seeds (written by test files straight into live
+    Postgres) plus 2 chat-feedback events from 2026-08-14. The surface/zone
+    filters at the consumer were never structurally disjoint -- the bootstrapper
+    seeds ``hotspot_region -> autonomy_graph`` under
+    ``invocation_surface="operator_review"``, satisfying both -- they were simply
+    never fed.
+
+    Bootstrap only fires when the queue is *completely* empty, not merely when
+    nothing is due: reseeding around pending future-dated items would grow the
+    queue without bound on every tick.
+
+    ``execute_frontier_followup_allowed`` stays False here, matching
+    ``/execute-once``. That is what keeps this loop out of the
+    ``self_relationship_graph`` zone: the bootstrapper's own seed specs cover
+    only concept_graph/autonomy_graph/world_ontology, and the frontier follow-up
+    (``frontier_curiosity.py``) is the sole path that can raise a
+    self_relationship_graph signal. The zone gate in
+    ``review_runtime._select_item`` keys on ``invocation_surface`` alone and
+    honours no override on the non-explicit path, so an unattended cycle running
+    under ``operator_review`` would otherwise be free to consolidate Orion's
+    self-relationship model. Leaving follow-up to the operator endpoint keeps
+    that zone unreachable by construction rather than by flag.
+    """
+    tick_now = now or datetime.now(timezone.utc)
+    tick_id = f"review-scheduler-{uuid4()}"
+
+    SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
+    queue_before = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+
+    bootstrap: Dict[str, Any] | None = None
+    if queue_before == 0:
+        bootstrap = _bootstrap_substrate_review_frontier(limit=bootstrap_limit)
+
+    due_now = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=datetime.now(timezone.utc), limit=200))
+
+    cycle: Dict[str, Any] | None = None
+    if due_now > 0:
+        cycle = _execute_substrate_review_cycle(allow_followup=False)
+        status = "executed"
+    elif bootstrap is not None:
+        status = "seeded_none_due"
+    else:
+        status = "idle_none_due"
+
+    payload: Dict[str, Any] = {
+        "event": "review_scheduler_tick",
+        "tick_id": tick_id,
+        "status": status,
+        "at": tick_now.isoformat(),
+        "queue_before": queue_before,
+        "due_now": due_now,
+        "bootstrapped": bootstrap is not None,
+        "items_enqueued": (bootstrap or {}).get("items_enqueued"),
+        "bootstrap_notes": (bootstrap or {}).get("notes"),
+        "execution_outcome": ((cycle or {}).get("result") or {}).get("outcome"),
+        "selected_queue_item_id": ((cycle or {}).get("result") or {}).get("selected_queue_item_id"),
+        "queue_after": ((cycle or {}).get("queue_after") or {}).get("count"),
+    }
+    _emit_substrate_review_scheduler_log(payload=payload)
+    return payload
+
+
 def _bootstrap_substrate_review_frontier(*, limit: int = 12) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()

@@ -538,7 +538,7 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "not a form to submit once you are finished -- a prior you are already "
         "confident about is worth more in the graph now, at a lower confidence "
         "you can raise later, than perfect and unwritten when the clock runs "
-        "out. Each CREATE is independent; there is nothing to assemble -- "
+        "out. Each write below is independent; there is nothing to assemble -- "
         "except an edge, which needs the two nodes it joins to exist first.",
         "",
         "  A PRIOR -- a claim you hold that could turn out to be wrong:",
@@ -564,6 +564,15 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "again is free rather than destructive. Put nothing but `prior_id` "
         "inside the MERGE: any other property in there is part of what it "
         "matches on, so a changed `formed_from` would fork the node again.",
+        "",
+        "  THE COST OF THAT SAFETY, so it does not surprise you: if the id "
+        "already exists this writes NOTHING -- no node, no properties, no "
+        "error -- and because nothing then carries this run's id, your own "
+        "footprint at the end of the turn will say you wrote no prior at all. "
+        "So a genuinely NEW claim needs a genuinely new id, and a claim you "
+        "already hold is the MATCH below, not this. If you are unsure which "
+        "you are looking at, MATCH it on its own first and look -- the ids you "
+        "hold are all on the menu.",
         "",
         "  TESTING ONE you already hold -- update it in place, and move "
         "times_tested whether or not the confidence moved:",
@@ -634,8 +643,11 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "relation. Use those, in full. Not the bracketed summary, not a "
         "shortening of it, not a name you would give it, and not the "
         "`\"<something unique>\"` placeholder in the templates above -- that "
-        "one is for ids you are CREATING. A MERGE binds by exact string or it "
-        "binds to nothing, silently.",
+        "one is for the id you are naming for the first time. Either way a "
+        "MERGE binds by exact string, and a typo is silent: on an EDGE it "
+        "quietly draws nothing, and on the PRIOR above it quietly forms a "
+        "second claim under the mistyped id instead of finding the one you "
+        "meant.",
         "",
         "  TWO IDS ON THE MENU ARE NOT NODES, and an edge cannot land on "
         "either. A concept in the Atlas lives in a graph you cannot write to. "

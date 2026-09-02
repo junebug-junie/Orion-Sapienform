@@ -216,5 +216,4 @@ restart of anything existing.
 
 ## PR link
 
-Not yet pushed/opened — will push `feat/circe-gpu1-lane-flex` and open the
-PR once Juniper confirms this Phase 1 checkpoint before I continue to Phase 2.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2038

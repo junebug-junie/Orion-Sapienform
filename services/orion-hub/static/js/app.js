@@ -78,6 +78,15 @@ let analyser;
 let animationFrameId;
 let audioQueue = [];
 let isPlayingAudio = false;
+// Releases `isPlayingAudio` if a clip never fires `onended`. Without this the
+// flag is a one-way latch: it is set before playAudio() and cleared ONLY in
+// src.onended, so any playback that starts but never ends -- suspended
+// AudioContext, a tab backgrounded mid-clip, a decoded buffer the device
+// never actually renders -- wedges the queue permanently. Every later clip
+// then sits in audioQueue forever behind `if (isPlayingAudio) return;`, which
+// presents as "the text is there but Orion never speaks", with no error
+// anywhere. Confirmed as the shape of a live report, 2026-09-02.
+let audioWatchdogId = null;
 let orionState = 'idle';
 // True from the moment a WS chat message is sent until the server's closing
 // {"state": "idle"} arrives for that turn. orionState alone isn't a reliable signal
@@ -9521,6 +9530,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // also stops burning GPU on speech nobody will hear).
     interruptButton.addEventListener('click', () => {
       if (currentAudioSource) currentAudioSource.stop();
+      clearAudioWatchdog();
       audioQueue = [];
       isPlayingAudio = false;
       updateStatusBasedOnState();
@@ -11798,6 +11808,30 @@ document.addEventListener("DOMContentLoaded", () => {
     if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
   }
 
+  function clearAudioWatchdog() {
+    if (audioWatchdogId !== null) {
+      clearTimeout(audioWatchdogId);
+      audioWatchdogId = null;
+    }
+  }
+
+  function armAudioWatchdog(src, durationSec) {
+    clearAudioWatchdog();
+    const graceMs = Math.max(2000, (Number(durationSec) || 0) * 1000 * 0.5);
+    const waitMs = (Number(durationSec) || 0) * 1000 + graceMs;
+    audioWatchdogId = setTimeout(() => {
+      audioWatchdogId = null;
+      if (!isPlayingAudio) return;
+      console.warn('[tts] playback watchdog fired; releasing queue', {
+        expected_duration_sec: durationSec,
+        queued_behind: audioQueue.length,
+      });
+      try { if (src) src.stop(); } catch (_) { /* already stopped */ }
+      isPlayingAudio = false;
+      processAudioQueue();
+    }, waitMs);
+  }
+
   function processAudioQueue() {
     if (isPlayingAudio || !audioQueue.length) return;
     isPlayingAudio = true;
@@ -11842,16 +11876,30 @@ document.addEventListener("DOMContentLoaded", () => {
         drawVisualizer();
 
         src.start(0);
-        console.info('[tts] playback started');
+        console.info('[tts] playback started', { contextState: audioContext.state });
+        if (audioContext.state !== 'running') {
+          // start(0) on a non-running context is silent and fires no onended.
+          // Say so loudly -- this is the one failure mode that otherwise looks
+          // identical to "working fine" from both the browser and the server.
+          console.warn('[tts] AudioContext is not running; this clip will be silent', {
+            state: audioContext.state,
+          });
+        }
         currentAudioSource = src;
+        // Grace over the clip's own length: if onended has not fired by then,
+        // playback is not going to complete and holding the latch only costs
+        // us every subsequent clip.
+        armAudioWatchdog(src, buf.duration);
         src.onended = () => {
           console.info('[tts] playback ended');
+          clearAudioWatchdog();
           isPlayingAudio = false;
           cancelAnimationFrame(animationFrameId);
           if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
           processAudioQueue();
         };
     } catch (e) {
+        clearAudioWatchdog();
         console.error('[tts] playback failed', e);
         appendMessage('System', `TTS playback failed: ${e.message || e}`, 'text-yellow-400');
         updateStatus('TTS playback failed.');

@@ -107,13 +107,68 @@ than silently uncovered.
 ## Changing the voice
 
 **XTTS-v2 is zero-shot. There is no fine-tuning step and no checkpoint to
-retrain.** The voice is entirely determined by the single reference `.wav`
-that `TTS_DEFAULT_SPEAKER_WAV` points at, so "retraining Orion's voice"
-means building a new reference and repointing that key. Coqui conditions on
-at most ~30s of it (`gpt_cond_len` / `max_ref_len`, both 30 in the shipped
-`xtts_v2` checkpoint's own `config.json` -- **not** the installed library's
-class defaults, which are 12 and 10), and truncation is from the START of
-the file, so a longer file buys nothing and a bad first 30s ruins it.
+retrain.** The voice is entirely determined by the reference audio that
+`TTS_DEFAULT_SPEAKER_WAV` points at, so "retraining Orion's voice" means
+building a new reference and repointing that key. Coqui conditions on at most
+~30s of it (`gpt_cond_len` / `max_ref_len`, both 30 in the shipped `xtts_v2`
+checkpoint's own `config.json` -- **not** the installed library's class
+defaults, which are 12 and 10), and truncation is from the START of the file,
+so a longer *single* file buys nothing and a bad first 30s ruins it.
+
+### Multi-reference (a directory instead of a file)
+
+`TTS_DEFAULT_SPEAKER_WAV` -- and `options.speaker_wav`, and `voice_id` -- may
+point at a **directory**, in which case every `*.wav` directly inside it is
+passed to XTTS together. That is not cosmetic: `get_conditioning_latents` does
+two different things with a list.
+
+- It **means the per-file speaker embeddings.** Several clips of the same
+  person average out the per-clip codec and room artifacts that one clip bakes
+  into the clone. This is the lever that matters for a source recording that
+  is not studio-clean.
+- It **concatenates the audio for the GPT (prosody) latent**, still capped at
+  `gpt_cond_len` = 30s.
+
+It is also the only way to use more than 30s of a recording at all, because
+`max_ref_len` truncates **each reference independently**. One 100s file is
+silently cut to its first 30s. Seven ~14s files are not: all 100s reach the
+speaker embedding, and the first ~30s reach the prosody latent.
+
+Files are used in **natural sort order**, so `chunk_2.wav` comes before
+`chunk_10.wav` (a plain lexicographic sort would not, and since order decides
+which files reach the prosody latent, that would silently change the voice the
+first time a recording was cut into ten or more pieces).
+
+A single file still behaves exactly as before -- a bare path, not a
+one-element list. Three things are refused rather than silently accepted,
+because each would change Orion's voice with nothing in the logs to say why:
+
+- an **empty directory** (would fall through to a built-in speaker),
+- the **profile root itself** (`options.speaker_wav: "."` would blend every
+  voice on the host into one composite embedding, and that is reachable from
+  any producer on the intake channel),
+- a **symlink inside the directory pointing outside** the profile dir
+  (`glob` does not resolve symlinks and `is_file()` follows them, so the
+  containment check on the directory does not cover its children).
+
+Building a chunk set from one long recording, in addition to the single-file
+steps below:
+
+1. **Map the speakers across the whole recording**, not just your intended
+   window. Embed each transcript segment with XTTS's own
+   `get_speaker_embedding` and cosine it against a known-clean reference; a
+   second speaker scores far lower (measured on the real source: +0.06/+0.12
+   for the interviewer vs +0.45…+0.85 for the subject).
+2. **Cut at the silence gaps**, one chunk per gap-free run, each ≤30s. The
+   "no gap > 0.6s" constraint that limits a single window does not apply
+   across chunks -- that constraint is why the previous reference used 27.8s
+   of a 100.8s clean take.
+3. **Loudness-match every chunk individually** to the same integrated LUFS.
+   `sound_norm_refs` is `false` in the shipped checkpoint, so absolute level
+   reaches the speaker encoder; a quieter chunk contributes a
+   quieter-sounding embedding to the mean.
+4. Drop them in a directory under `TTS_VOICE_PROFILE_HOST_DIR` and point
+   `TTS_DEFAULT_SPEAKER_WAV` at the directory.
 
 Build a new reference from a source recording:
 

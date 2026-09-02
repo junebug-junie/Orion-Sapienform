@@ -173,6 +173,8 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     """
     # Clear any backend orphaned by a prior run's timeout before starting a new
     # dump -- see _terminate_stale_pg_dump_backends for why this can happen.
+    if not shutil.which("gzip"):
+        raise RuntimeError("gzip binary not found on PATH")
     _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
     dest_dir.mkdir(parents=True)
     dest_file = dest_dir / "pg_dumpall.sql.gz"
@@ -196,11 +198,13 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
                     dump.stdout.close()
                 _, gz_err = gz.communicate(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
                 dump.wait(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            # The local docker-exec client just got killed by the timeout above --
-            # the server-side backend it started did not. Clear it now rather than
-            # leaving it to hold locks for however long the dump would otherwise
-            # have taken to finish on its own (observed: 1hr+ and still running).
+        except BaseException:
+            # Not just TimeoutExpired: if starting gzip raises (FileNotFoundError,
+            # or OSError on fork), pg_dumpall is already running and would be left
+            # behind entirely. Killing the local docker-exec client is not enough
+            # on its own -- see _terminate_stale_pg_dump_backends for why the
+            # server-side backend survives it and holds locks on every table,
+            # which is the documented 2026-08-16/17/18 lock storm.
             for proc in (gz, dump):
                 if proc is not None:
                     proc.kill()
@@ -396,6 +400,9 @@ def run_target_backup(
         )
     except Exception as exc:  # noqa: BLE001 - must not mask the capture error
         retention_actions = []
+        # Still a failed target: retention breaking is how the disk fills up,
+        # and `status` is what drives the run's notification and exit code.
+        status = "failure"
         if error_summary is None:
             error_summary = f"retention failed: {exc}"
     log_path = root / "logs" / f"{run_id}.log"

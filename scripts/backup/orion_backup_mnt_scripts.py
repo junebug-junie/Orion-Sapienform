@@ -149,21 +149,32 @@ def prune_successful_snapshots(
         raise ValueError("max_age_days must be at least 1")
     if not snapshots_dir.exists():
         return []
-    candidates = sorted(
-        path
-        for path in snapshots_dir.iterdir()
-        if path.is_dir() and not path.name.startswith(".incomplete-")
-    )
+    # A directory whose name cannot be dated is not a snapshot this tool wrote,
+    # so it is dropped from consideration here rather than deleted by whichever
+    # cap reaches it first. This single filter has to cover both caps: deleting
+    # a backup because its name didn't match a pattern is the wrong failure
+    # direction, and an undateable name sorting ahead of the real snapshots
+    # would otherwise sit at the head of the list and silently block age
+    # pruning of everything behind it -- reintroducing exactly the
+    # disk-fills-up mode this exists to prevent.
+    dated: list[tuple[dt.datetime, Path]] = []
+    for path in snapshots_dir.iterdir():
+        if not path.is_dir() or path.name.startswith(".incomplete-"):
+            continue
+        captured_at = parse_snapshot_age_utc(path.name)
+        if captured_at is None:
+            continue
+        dated.append((captured_at, path))
+    dated.sort()
     # Count cap first, then the age window over whatever survived it.
-    to_remove = candidates[:-keep]
-    survivors = candidates[len(to_remove):]
+    cut = max(0, len(dated) - keep)
+    to_remove = [path for _, path in dated[:cut]]
+    survivors = dated[cut:]
     if max_age_days is not None:
         cutoff = (now or dt.datetime.now(dt.timezone.utc)) - dt.timedelta(days=max_age_days)
-        while len(survivors) > min_keep:
-            captured_at = parse_snapshot_age_utc(survivors[0].name)
-            if captured_at is None or captured_at >= cutoff:
-                break
-            to_remove.append(survivors.pop(0))
+        # Oldest-first, so the first in-window snapshot ends the scan.
+        while len(survivors) > min_keep and survivors[0][0] < cutoff:
+            to_remove.append(survivors.pop(0)[1])
     removed: list[str] = []
     for path in to_remove:
         shutil.rmtree(path)
@@ -397,6 +408,9 @@ def run_backup(
             )
         except Exception as exc:  # noqa: BLE001 - must not mask the real error
             retention_actions = []
+            # Still a failed run: retention breaking is how the disk fills up,
+            # and `status` is what drives both the notification and exit code.
+            status = "failure"
             if error_summary is None:
                 error_summary = f"retention failed: {exc}"
         outcome = RunOutcome(
@@ -437,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--storage-warm", type=Path, default=DEFAULT_STORAGE_WARM)
     parser.add_argument("--node-name", default=socket.gethostname())
     parser.add_argument("--keep-successful", type=int, default=DEFAULT_KEEP_SUCCESSFUL)
+    # 0 disables the age window (count-only retention); the library takes None.
     parser.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS)
     parser.add_argument("--min-keep", type=int, default=DEFAULT_MIN_KEEP)
     parser.add_argument("--notify-url", default=os.environ.get("ORION_BACKUP_NOTIFY_URL"))
@@ -444,12 +459,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-require-mounts", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    # Validate up front rather than letting prune_successful_snapshots raise
+    # after a full backup has already run.
+    if args.min_keep < 1:
+        parser.error("--min-keep must be at least 1")
+    if args.max_age_days < 0:
+        parser.error("--max-age-days must be 0 (disabled) or a positive number of days")
     cfg = BackupConfig(
         source_path=args.source,
         storage_warm_path=args.storage_warm,
         node_name=args.node_name,
         keep_successful=args.keep_successful,
-        max_age_days=args.max_age_days,
+        max_age_days=args.max_age_days if args.max_age_days else None,
         min_keep=args.min_keep,
         notify_url=args.notify_url,
         notify_token=args.notify_token,

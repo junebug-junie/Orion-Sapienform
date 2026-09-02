@@ -188,8 +188,11 @@ file copy:
 
 | Target | Capture method | Why |
 |--------|-----------------|-----|
-| Postgres | `docker exec ... pg_dumpall`, streamed straight to the destination file | Logical dump, always consistent regardless of concurrent writes; streamed rather than buffered in memory since a full cluster dump has been observed at 1.2GB+ live and only grows |
+| Postgres | `docker exec ... pg_dumpall`, piped through `gzip` to the destination file | Logical dump, always consistent regardless of concurrent writes; streamed rather than buffered in memory since a full cluster dump has been observed at 1.2GB+ live and only grows |
 | FalkorDB | `redis-cli BGSAVE`, poll `INFO persistence` for `rdb_bgsave_in_progress`/`rdb_last_bgsave_status`, then copy the resulting `dump.rdb` | Atomic point-in-time RDB snapshot; polling the explicit status fields (not just watching `LASTSAVE` change) avoids both false-negatives from `LASTSAVE`'s 1-second resolution and false-failures on a save that legitimately takes longer than a short fixed timeout |
+| Chroma | `docker stop`, plain copy of the host bind-mount path, `docker start` | Chroma's per-collection index segments mutate on write with no CLI-accessible checkpoint API available here; an earlier version of this tool tried a live `sqlite3 .backup` for the metadata file only and left the segment files raw-copied, which doesn't actually solve the consistency problem for those files (and can leave a stale `-wal`/`-shm` sidecar next to a `.backup` output, corrupting restore) -- stopping for the copy window is simple and actually consistent |
+| Convex | Same stop/copy/start treatment, against the resolved Docker volume mountpoint (`docker volume inspect ... --format '{{.Mountpoint}}'`) | Same reason -- confirmed live that a raw copy of Convex's `db.sqlite3` tears mid-write ("file changed as we read it"), and its data directory also mixes in live RocksDB-style segment files that have no safe online-backup API exposed to this tool either |
+
 ### Restoring a Postgres dump
 
 The cluster dump is gzipped on the way to disk (`pg_dumpall.sql.gz`):
@@ -204,9 +207,6 @@ those straight from `cat` instead. Both exit codes in the dump pipeline are
 checked separately, because `gzip` exits 0 after faithfully compressing a
 *truncated* stream; trusting only the tail of the pipe would store a partial
 dump as a healthy snapshot.
-
-| Chroma | `docker stop`, plain copy of the host bind-mount path, `docker start` | Chroma's per-collection index segments mutate on write with no CLI-accessible checkpoint API available here; an earlier version of this tool tried a live `sqlite3 .backup` for the metadata file only and left the segment files raw-copied, which doesn't actually solve the consistency problem for those files (and can leave a stale `-wal`/`-shm` sidecar next to a `.backup` output, corrupting restore) -- stopping for the copy window is simple and actually consistent |
-| Convex | Same stop/copy/start treatment, against the resolved Docker volume mountpoint (`docker volume inspect ... --format '{{.Mountpoint}}'`) | Same reason -- confirmed live that a raw copy of Convex's `db.sqlite3` tears mid-write ("file changed as we read it"), and its data directory also mixes in live RocksDB-style segment files that have no safe online-backup API exposed to this tool either |
 
 **Postgres orphan cleanup:** before every dump attempt, and again if the dump
 times out, the script runs `SELECT pg_terminate_backend(pid) FROM

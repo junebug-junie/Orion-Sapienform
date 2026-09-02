@@ -275,16 +275,20 @@ def test_run_target_backup_failure_cleans_incomplete_dir(tmp_path: Path) -> None
 
 
 def test_run_target_backup_prunes_old_snapshots_beyond_keep(tmp_path: Path) -> None:
-    for i in range(3):
+    # Real run_id shape (`snapshot_timestamp()-<pid>`), not "run-0": retention
+    # deliberately ignores directories whose name it cannot date, so a
+    # synthetic id would now be exempt from the count cap and never pruned.
+    run_ids = [f"2026-09-0{i + 1}T03-45-01Z-1234{i}" for i in range(3)]
+    for run_id in run_ids:
         run_target_backup(
-            Target("widget", _ok_capture, keep_successful=2),
+            Target("widget", _ok_capture, keep_successful=2, max_age_days=None),
             storage_warm=tmp_path,
             node_name="node-a",
-            run_id=f"run-{i}",
+            run_id=run_id,
         )
     snapshots_dir = tmp_path / "backups" / "node-a" / "db" / "widget" / "snapshots"
     remaining = sorted(p.name for p in snapshots_dir.iterdir())
-    assert remaining == ["run-1", "run-2"]
+    assert remaining == run_ids[1:]
 
 
 def test_validate_environment_requires_existing_mount(tmp_path: Path) -> None:
@@ -556,3 +560,92 @@ def test_retention_failure_does_not_mask_the_capture_error(
     assert "boom" in outcome.error_summary
     assert "read-only filesystem" not in outcome.error_summary
     assert outcome.retention_actions == []
+
+
+def test_retention_failure_on_a_successful_capture_still_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Review finding: moving retention off the success path meant a prune
+    # exception no longer flipped the run to "failure". Since run_backup
+    # derives overall status from per-target status, and the notifier only
+    # reports failing targets, a broken retention would have paged nobody and
+    # exited 0 -- silently losing the exact alert this PR exists to raise.
+    storage_warm = tmp_path / "storage-warm"
+    (storage_warm / "backups" / "node-a" / "db" / "widget" / "snapshots").mkdir(parents=True)
+
+    import scripts.backup.orion_backup_databases as mod
+
+    def _explode(*args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(mod, "prune_successful_snapshots", _explode)
+
+    outcome, _ = run_target_backup(
+        Target("widget", _ok_capture),
+        storage_warm=storage_warm,
+        node_name="node-a",
+        run_id="2026-09-02T03-45-01Z-99999",
+    )
+
+    assert outcome.status == "failure"
+    assert "retention failed" in outcome.error_summary
+    assert "read-only filesystem" in outcome.error_summary
+    # The snapshot really was written, so its path is still reported.
+    assert outcome.snapshot_path is not None
+
+
+def test_capture_postgres_kills_the_dump_when_gzip_cannot_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Review finding: only TimeoutExpired was handled. If starting gzip raised,
+    # pg_dumpall was already running and would be left behind -- and killing
+    # the local docker-exec client does not kill the server-side backend, which
+    # then holds locks on every table until the next night's pre-flight sweep.
+    procs: dict[str, _FakeProc] = {}
+    calls: list[list[str]] = []
+
+    def _fake_popen(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd and cmd[0] == "gzip":
+            raise OSError("Cannot allocate memory")
+        proc = _FakeProc(cmd, stderr=kwargs.get("stderr"))
+        procs["dump"] = proc
+        return proc
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    dest = tmp_path / "postgres_snapshot"
+    with pytest.raises(OSError, match="Cannot allocate memory"):
+        capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    assert procs["dump"].killed
+    terminate_calls = [c for c in calls if "pg_terminate_backend" in " ".join(c)]
+    assert len(terminate_calls) == 2  # pre-flight + post-failure cleanup
+    assert not (dest / "pg_dumpall.sql.gz").exists()
+
+
+def test_capture_postgres_fails_fast_when_gzip_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The dump is only useful if it can actually be compressed. Checking the
+    # binary up front means the run fails before pg_dumpall is started, rather
+    # than after it has already opened a cluster-wide read.
+    import scripts.backup.orion_backup_databases as mod
+
+    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("no subprocess should start when gzip is missing")
+
+    monkeypatch.setattr(subprocess, "Popen", _must_not_run)
+    monkeypatch.setattr(subprocess, "run", _must_not_run)
+
+    with pytest.raises(RuntimeError, match="gzip binary not found"):
+        capture_postgres(
+            tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[]
+        )

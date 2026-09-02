@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import scripts.backup.orion_backup_mnt_scripts as mnt_scripts_module
 from scripts.backup.orion_backup_mnt_scripts import (
     BackupConfig,
     RunOutcome,
@@ -18,6 +19,7 @@ from scripts.backup.orion_backup_mnt_scripts import (
     find_previous_snapshot,
     parse_snapshot_age_utc,
     prune_successful_snapshots,
+    main as mnt_scripts_main,
     run_backup,
     send_failure_notification,
     snapshot_timestamp,
@@ -485,7 +487,10 @@ def test_prune_never_ages_out_an_unparseable_name(tmp_path: Path) -> None:
         snapshots, keep=14, max_age_days=14, min_keep=1, now=now
     )
 
-    assert removed == []
+    # The undateable dir is never deleted -- but it also must not stop the
+    # real, months-old snapshots behind it from being pruned. min_keep=1
+    # leaves exactly one of the two dated snapshots.
+    assert [Path(r).name[:10] for r in removed] == ["2026-01-01"]
     assert (snapshots / "0000-hand-copied-restore-point").exists()
 
 
@@ -506,3 +511,94 @@ def test_parse_snapshot_age_handles_both_dir_name_shapes() -> None:
     assert bare == dt.datetime(2026, 9, 2, 3, 45, 1, tzinfo=dt.timezone.utc)
     assert with_pid == bare
     assert parse_snapshot_age_utc("latest") is None
+
+
+def test_prune_count_cap_also_spares_an_unparseable_name(tmp_path: Path) -> None:
+    # Review finding: the age window spared undateable names but the count cap
+    # did not, so the guarantee held only while the snapshot count stayed
+    # under `keep`. An operator parking a manual restore point in snapshots/
+    # would have lost it on the 15th night.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-05-{d:02d}" for d in range(1, 17)])
+    (snapshots / "0000-hand-copied-restore-point").mkdir()
+
+    removed = prune_successful_snapshots(snapshots, keep=14)
+
+    assert (snapshots / "0000-hand-copied-restore-point").exists()
+    assert all("0000-" not in r for r in removed)
+    # The 16 real snapshots are still trimmed to 14; the extra dir is not
+    # counted as one of them.
+    assert len(removed) == 2
+
+
+def test_prune_unparseable_name_does_not_block_the_age_window(tmp_path: Path) -> None:
+    # Review finding: an undateable name sorting ahead of the real snapshots
+    # sat at the head of the list and stopped the age scan dead, silently
+    # disabling retention forever -- the exact disk-fills-up mode this exists
+    # to prevent.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-01-{d:02d}" for d in range(1, 11)])
+    (snapshots / "0000-hand-copied-restore-point").mkdir()
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=1, now=now
+    )
+
+    # All ten are months past the window and must go; the undateable dir stays.
+    assert len(removed) == 9
+    assert (snapshots / "0000-hand-copied-restore-point").exists()
+
+
+def test_cli_rejects_a_retention_floor_below_one(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit):
+        mnt_scripts_main(["--min-keep", "0"])
+    assert "--min-keep must be at least 1" in capsys.readouterr().err
+
+
+def test_cli_can_disable_the_age_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `type=int` cannot express the None the library accepts for count-only
+    # retention, so 0 is the documented way to reach it.
+    seen: dict = {}
+
+    def _fake_run_backup(cfg, **kwargs):
+        seen["max_age_days"] = cfg.max_age_days
+        raise SystemExit(0)
+
+    monkeypatch.setattr(mnt_scripts_module, "run_backup", _fake_run_backup)
+    with pytest.raises(SystemExit):
+        mnt_scripts_main(["--max-age-days", "0"])
+    assert seen["max_age_days"] is None
+
+
+def test_retention_failure_on_a_successful_rsync_still_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same review finding as the db lane: retention moved off the success path,
+    # so a prune exception stopped flipping the run to "failure". The notifier
+    # is gated on that status, so a broken retention would page nobody and
+    # exit 0 -- silently losing the alert.
+    source = tmp_path / "scripts"
+    target = tmp_path / "storage-warm"
+    source.mkdir()
+    target.mkdir()
+    cfg = BackupConfig(
+        source_path=source, storage_warm_path=target, node_name="node-a", require_mounts=False
+    )
+
+    def fake_run(cmd: list[str], log_path: Path) -> int:
+        destination = Path(cmd[-1].rstrip("/"))
+        destination.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("fake rsync ok\n")
+        return 0
+
+    def _explode(*args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(mnt_scripts_module, "prune_successful_snapshots", _explode)
+
+    outcome = run_backup(cfg, now="2026-05-09T22:00:00+00:00", process_runner=fake_run)
+
+    assert outcome.status == "failure"
+    assert "retention failed" in outcome.error_summary
+    assert "read-only filesystem" in outcome.error_summary

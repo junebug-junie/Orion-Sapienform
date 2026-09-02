@@ -718,6 +718,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const curiosityAtlasPanel = document.getElementById("curiosity-atlas");
   const curiosityAtlasPanelFrame = document.getElementById("curiosityAtlasPanelFrame");
   const curiosityAtlasPanelRefresh = document.getElementById("curiosityAtlasPanelRefresh");
+  const sentienceProgramTabButton = document.getElementById("sentienceProgramTabButton");
+  const sentienceProgramPanel = document.getElementById("sentience-program");
+  const sentienceProgramPanelFrame = document.getElementById("sentienceProgramPanelFrame");
+  const sentienceProgramPanelRefresh = document.getElementById("sentienceProgramPanelRefresh");
   const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
   const pressurePanel = document.getElementById("pressure");
   const collapseMirrorTabButton = document.getElementById("collapseMirrorTabButton");
@@ -1021,6 +1025,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "curiosity-atlas" && !curiosityAtlasPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "sentience-program" && !sentienceProgramPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
       effectiveTab = "hub";
     }
@@ -1053,6 +1060,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isCausalGeometry = effectiveTab === "causal-geometry";
     const isConceptAtlas = effectiveTab === "concept-atlas";
     const isCuriosityAtlas = effectiveTab === "curiosity-atlas";
+    const isSentienceProgram = effectiveTab === "sentience-program";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
@@ -1123,6 +1131,25 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch {
           /* iframe not ready */
         }
+      }
+    }
+    if (sentienceProgramPanel) {
+      sentienceProgramPanel.classList.toggle("hidden", !isSentienceProgram);
+      // Refresh on show so a panel returned to after an hour is not showing an
+      // hour-old read of claims whose whole purpose is to be current. Only on
+      // activate -- this page runs no timer, so there is no deactivate half.
+      if (isSentienceProgram && sentienceProgramPanelFrame) {
+        setTimeout(() => {
+          try {
+            const win = sentienceProgramPanelFrame.contentWindow;
+            if (win && win.OrionSentienceProgram
+                && typeof win.OrionSentienceProgram.activate === "function") {
+              win.OrionSentienceProgram.activate();
+            }
+          } catch {
+            /* iframe not ready */
+          }
+        }, 150);
       }
     }
     if (curiosityAtlasPanel) {
@@ -1261,6 +1288,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (causalGeometryTabButton) {
       styleTabButton(causalGeometryTabButton, isCausalGeometry);
+    }
+    if (sentienceProgramTabButton) {
+      styleTabButton(sentienceProgramTabButton, isSentienceProgram);
     }
     if (curiosityAtlasTabButton) {
       styleTabButton(curiosityAtlasTabButton, isCuriosityAtlas);
@@ -1872,6 +1902,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("concept-atlas");
     } else if (h === "#curiosity-atlas" && curiosityAtlasPanel && curiosityAtlasTabButton) {
       setActiveTab("curiosity-atlas");
+    } else if (h === "#sentience-program" && sentienceProgramPanel && sentienceProgramTabButton) {
+      setActiveTab("sentience-program");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
     } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
@@ -1907,6 +1939,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#substrate-atlas"
         || h === "#concept-atlas"
         || h === "#curiosity-atlas"
+        || h === "#sentience-program"
         || h === "#collapse-mirror"
         || h === "#ai-town"
         || h === "#attention-organ"
@@ -12589,6 +12622,13 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#concept-atlas");
       });
     }
+    if (sentienceProgramTabButton && sentienceProgramPanel) {
+      sentienceProgramTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("sentience-program");
+        history.replaceState(null, "", "#sentience-program");
+      });
+    }
     if (curiosityAtlasTabButton && curiosityAtlasPanel) {
       curiosityAtlasTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -12719,6 +12759,23 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       } catch {
         /* ignore */
+      }
+    });
+  }
+
+  if (sentienceProgramPanelRefresh && sentienceProgramPanelFrame) {
+    sentienceProgramPanelRefresh.addEventListener("click", () => {
+      try {
+        const win = sentienceProgramPanelFrame.contentWindow;
+        if (win && win.OrionSentienceProgram
+            && typeof win.OrionSentienceProgram.refresh === "function") {
+          win.OrionSentienceProgram.refresh();
+        } else {
+          win?.location.reload();
+        }
+      } catch {
+        /* iframe not ready -- a reload is the honest fallback */
+        sentienceProgramPanelFrame.contentWindow?.location.reload();
       }
     });
   }

@@ -1,0 +1,47 @@
+services:
+  gpu-lane-controller:
+    build:
+      context: ../..
+      dockerfile: services/orion-gpu-lane-controller/Dockerfile
+    container_name: ${PROJECT}-gpu-lane-controller
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - NODE_NAME=${NODE_NAME:-circe}
+
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - GPU_LANE_CONTROLLER_TOKEN=${GPU_LANE_CONTROLLER_TOKEN}
+      - GPU_LANE_REPO_ROOT=/repo
+
+    volumes:
+      # Docker-outside-of-docker: this container's `docker` CLI talks to the
+      # HOST's daemon over this socket -- it never runs its own nested
+      # daemon, and every container it starts/stops is a normal top-level
+      # container on circe, siblings of this one, not children of it.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only: this service only ever reads services/*/docker-compose.yml
+      # and .env files to build `docker compose` invocations against the
+      # HOST's docker socket above -- it never needs to write into the repo
+      # checkout itself. GPU_LANE_HOST_REPO_ROOT is circe's own checkout
+      # path on the HOST filesystem (not inside this container) -- confirmed
+      # live at /mnt/scripts/Orion-Sapienform (same path used to SSH in and
+      # operate circe elsewhere in this repo's docs), overridable per host.
+      - ${GPU_LANE_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
+
+    ports:
+      - "${GPU_LANE_CONTROLLER_HOST_PORT:-8090}:8090"
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

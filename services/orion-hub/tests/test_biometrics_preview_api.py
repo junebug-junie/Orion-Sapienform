@@ -126,6 +126,51 @@ def test_snapshot_node_unreachable_degrades_not_raises(client, monkeypatch):
     assert body["error"] == "node_unreachable"
 
 
+def test_snapshot_forwards_cluster_measurements_by_node(client, monkeypatch):
+    """Athena's own /snapshot carries circe's proxied wattage in cluster.measurements_by_node
+    (per-node, pre-aggregation) -- the route must pass it through under
+    cluster_measurements_by_node so the frontend can read circe's watts without a fleet sum
+    losing which machine drew how much."""
+
+    async def fake_snapshot(node):
+        return {
+            "nodes": {"athena": {"status": "ok", "summary": {"composites": {"strain": 0.1}}}},
+            "cluster": {
+                "composite": {"strain": 0.1},
+                "trend": {},
+                "measurements_by_node": {
+                    "athena": {"chassis_watts": 390.0},
+                    "circe": {"chassis_watts": 512.0, "pdu_watts": 512.0},
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        biometrics_preview_routes.biometrics_node_client, "fetch_snapshot", fake_snapshot
+    )
+    r = client.get("/api/biometrics/preview/snapshot?node=athena")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cluster_measurements_by_node"]["athena"]["chassis_watts"] == pytest.approx(390.0)
+    assert body["cluster_measurements_by_node"]["circe"]["chassis_watts"] == pytest.approx(512.0)
+
+
+def test_snapshot_cluster_measurements_by_node_absent_is_none_not_zero(client, monkeypatch):
+    """Circe's own /snapshot has no cluster aggregation (its PDU-proxy poller is empty) --
+    absence must read as None, never as an empty dict that could be mistaken for 'measured
+    nothing'."""
+
+    async def fake_snapshot(node):
+        return {"nodes": {"circe": {"status": "ok", "summary": {}}}}
+
+    monkeypatch.setattr(
+        biometrics_preview_routes.biometrics_node_client, "fetch_snapshot", fake_snapshot
+    )
+    r = client.get("/api/biometrics/preview/snapshot?node=circe")
+    assert r.status_code == 200
+    assert r.json()["cluster_measurements_by_node"] is None
+
+
 # --- /history ------------------------------------------------------------
 
 
@@ -160,6 +205,24 @@ def test_history_happy_path(client, monkeypatch):
     assert body["n_raw"] == 2
     assert len(body["series"]) == 2
     assert body["series"][0]["v"] == pytest.approx(0.1)
+
+
+def test_history_chassis_watts_reads_from_measurements_column(client, monkeypatch):
+    """chassis_watts is a raw-units channel living in the `measurements` JSONB column, not
+    `pressures`/`composites` like every other known channel."""
+    from datetime import datetime, timezone
+
+    async def rows(*, node, channel, column, hours):
+        assert channel == "chassis_watts"
+        assert column == "measurements"
+        return [{"t": datetime(2026, 9, 2, 0, 0, 0, tzinfo=timezone.utc), "v": 390.0}]
+
+    monkeypatch.setattr(biometrics_preview_routes, "_history_query", rows)
+    r = client.get("/api/biometrics/preview/history?node=athena&channel=chassis_watts")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["series"][0]["v"] == pytest.approx(390.0)
 
 
 def test_history_db_failure_returns_ok_false(client, monkeypatch):

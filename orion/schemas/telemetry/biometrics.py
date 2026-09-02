@@ -283,3 +283,13 @@ class BiometricsClusterV1(BaseModel):
     # A proxied value NEVER overwrites a node's own reading; it only fills a gap. So a key
     # listed here for a node means "nobody else measured this", not "we preferred ours".
     measurements_proxied: Optional[Dict[str, List[str]]] = None
+
+    # The SAME raw measurements that get summed into `measurements` above, kept per-node instead
+    # of collapsed into a fleet total -- this is what `measurements`/`aggregate_fleet_measurements`
+    # necessarily throws away (extensive quantities are summed on purpose: a fleet total cannot
+    # say which machine drew how much). This is the post-proxy-fill `per_node` dict already built
+    # in `publish_cluster()` before aggregation, so it carries the same self-report-wins,
+    # proxy-fills-gap provenance as `measurements_proxied` above: a node absent from its own key
+    # here (e.g. circe missing `chassis_watts`) means nobody -- self or proxy -- measured it, not
+    # zero. A UI wanting "circe's own wattage right now" reads this, not `measurements`.
+    measurements_by_node: Optional[Dict[str, Dict[str, float]]] = None

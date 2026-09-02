@@ -45,3 +45,28 @@ def test_fit_fields_within_budget_handles_empty_value() -> None:
     fitted, trimmed = fit_fields_within_budget({"journal_title": ("", 10)})
     assert trimmed == []
     assert fitted["journal_title"] == ""
+
+
+def test_fit_fields_within_budget_treats_none_as_empty() -> None:
+    # The `value or ""` guard: both live callers already coerce, but len(None)
+    # would raise here rather than degrade.
+    fitted, trimmed = fit_fields_within_budget({"journal_title": (None, 10)})
+    assert trimmed == []
+    assert fitted["journal_title"] == ""
+
+
+def test_fit_fields_within_budget_holds_the_cap_below_ellipsis_width() -> None:
+    # A cap of 0 or 1 leaves no room to spend a character on the ellipsis, so the
+    # result is a hard slice. Live caps are 800/120/4000, but the guarantee is
+    # stated unconditionally and must actually hold unconditionally.
+    for limit, expected in ((0, ""), (1, "h"), (2, "h…")):
+        fitted, trimmed = fit_fields_within_budget({"a": ("hello world", limit)})
+        assert fitted["a"] == expected
+        assert len(fitted["a"]) <= limit
+        assert trimmed == ["a"]
+
+
+def test_fit_fields_within_budget_handles_whitespace_dominant_input() -> None:
+    fitted, trimmed = fit_fields_within_budget({"a": (" " * 100, 5)})
+    assert trimmed == ["a"]
+    assert len(fitted["a"]) <= 5

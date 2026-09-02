@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.main import _publish_workflow_attention_signal, _schedule_attention_notify_request, workflow_schedule_metrics
@@ -211,7 +211,9 @@ def test_set_notify_on_updates_the_copy_a_dispatch_actually_reads(tmp_path) -> N
 
 def test_attention_notify_integration_dedupe_payload_and_no_spam(tmp_path) -> None:
     metrics = WorkflowScheduleMetrics()
-    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"), metrics=metrics)
+    # Attention pages when the retry budget is spent, not on the first failure;
+    # a 1-attempt budget makes a single failure reach that condition.
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"), metrics=metrics, max_dispatch_attempts=1)
     created = store.upsert_from_dispatch(_dispatch_request(request_id="req-integration", kind="recurring"), now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
     assert created is not None
     claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
@@ -298,3 +300,255 @@ def test_actions_info_surface_exposes_runtime_identity() -> None:
     assert payload["service"]
     assert payload["version"]
     assert payload["process_started_at"]
+
+
+def test_hung_dispatch_is_reaped_and_still_pages(tmp_path) -> None:
+    """A dispatch that never terminates must not silence the attention signal.
+
+    `_claim_ttl` was accepted by the constructor and never read, so nothing reaped
+    a hung dispatch: the live store still holds an orphaned `dispatched` row from
+    2026-08-20T16:24:52Z. That orphan is the newest run for its schedule, which is
+    exactly the shape that makes a "did the newest run fail?" attention condition
+    go quiet on a schedule that is genuinely stuck.
+    """
+    store = WorkflowScheduleStore(
+        str(tmp_path / "wf-schedules.json"),
+        claim_ttl_seconds=300,
+        max_dispatch_attempts=1,
+    )
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-hang", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+    assert len(claimed) == 1
+    # Neither mark_dispatch_succeeded nor mark_dispatch_failed is ever called.
+    assert store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 7, 2, tzinfo=timezone.utc)) == []
+
+    # Inside the TTL the claim is still legitimately in flight and is left alone.
+    store.claim_due(now_utc=datetime(2026, 3, 25, 7, 4, tzinfo=timezone.utc))
+    run = [r for r in store._runs if r.run_id == claimed[0].run.run_id][0]
+    assert run.status == "dispatched"
+
+    # Past the TTL it is reaped through the normal failure path.
+    store.claim_due(now_utc=datetime(2026, 3, 25, 7, 6, tzinfo=timezone.utc))
+    run = [r for r in store._runs if r.run_id == claimed[0].run.run_id][0]
+    assert run.status == "failed"
+    assert run.error == "claim_expired_after_300s"
+    assert run.completed_at is not None
+
+    signals = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 7, 7, tzinfo=timezone.utc))
+    assert [s.kind for s in signals] == ["degraded"]
+
+
+def test_retry_budget_survives_run_history_truncation(tmp_path) -> None:
+    """A restart must not hand back a retry budget that was already spent.
+
+    The persisted run list is truncated to `history_limit` on every save while the
+    in-memory list is not, so a count derived from history answers differently
+    before and after a restart -- always in the "grant more retries" direction. The
+    live store is already sitting exactly at its 200-run cap, so this is reachable,
+    and it is the same shape as the restart-resets-the-daily-cap incident.
+    """
+    path = str(tmp_path / "wf-schedules.json")
+    store = WorkflowScheduleStore(path, history_limit=20, max_dispatch_attempts=3, retry_backoff_seconds=60)
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-trunc", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    at = datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc)
+    for _ in range(3):
+        claimed = store.claim_due(now_utc=at)
+        assert len(claimed) == 1
+        store.mark_dispatch_failed(
+            run_id=claimed[0].run.run_id,
+            schedule_id=claimed[0].schedule.schedule_id,
+            error="boom",
+            now_utc=at,
+        )
+        at = store.list_schedules(include_inactive=True)[0].next_run_at
+
+    # Push the failures out of the persisted window with unrelated runs.
+    for i in range(25):
+        store.upsert_from_dispatch(
+            _dispatch_request(request_id=f"noise-{i}", kind="recurring"),
+            now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+        )
+        store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+
+    reloaded = WorkflowScheduleStore(path, history_limit=20, max_dispatch_attempts=3, retry_backoff_seconds=60)
+    row = [s for s in reloaded.list_schedules(include_inactive=True) if s.request_id == "req-trunc"][0]
+    assert reloaded._consecutive_failures(row) == 3
+    # Budget still spent: the slot is not re-armed for another backoff retry.
+    claimed = reloaded.claim_due(now_utc=datetime(2026, 3, 26, 7, 0, tzinfo=timezone.utc))
+    mine = [c for c in claimed if c.schedule.request_id == "req-trunc"]
+    assert len(mine) == 1
+    reloaded.mark_dispatch_failed(
+        run_id=mine[0].run.run_id,
+        schedule_id=mine[0].schedule.schedule_id,
+        error="boom",
+        now_utc=datetime(2026, 3, 26, 7, 0, tzinfo=timezone.utc),
+    )
+    row = [s for s in reloaded.list_schedules(include_inactive=True) if s.request_id == "req-trunc"][0]
+    assert row.next_run_at > datetime(2026, 3, 26, 8, 0, tzinfo=timezone.utc)
+
+
+def test_a_success_clears_the_retry_budget(tmp_path) -> None:
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"), max_dispatch_attempts=3, retry_backoff_seconds=60)
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-reset", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    at = datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc)
+    claimed = store.claim_due(now_utc=at)
+    store.mark_dispatch_failed(
+        run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, error="boom", now_utc=at
+    )
+    row = store.list_schedules(include_inactive=True)[0]
+    assert store._consecutive_failures(row) == 1
+
+    claimed = store.claim_due(now_utc=row.next_run_at)
+    store.mark_dispatch_succeeded(
+        run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, now_utc=row.next_run_at
+    )
+    row = store.list_schedules(include_inactive=True)[0]
+    assert store._consecutive_failures(row) == 0
+    assert "consecutive_failures" not in (row.metadata or {})
+
+
+def test_a_failed_dispatch_does_not_revive_a_cancelled_schedule(tmp_path) -> None:
+    """Cancel while a dispatch is in flight; the dispatch then fails.
+
+    The failure must not undo the cancel -- least of all arm the schedule to run
+    again one backoff from now.
+    """
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    created = store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-cancel", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    assert created is not None
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+    assert len(claimed) == 1
+    resp = store.apply_management(
+        WorkflowScheduleManageRequestV1.model_validate(
+            {"operation": "cancel", "request_id": "m-cancel", "schedule_id": created.schedule_id}
+        )
+    )
+    assert resp.ok is True
+
+    store.mark_dispatch_failed(
+        run_id=claimed[0].run.run_id,
+        schedule_id=created.schedule_id,
+        error="boom",
+        now_utc=datetime(2026, 3, 25, 7, 1, tzinfo=timezone.utc),
+    )
+
+    row = [s for s in store.list_schedules(include_inactive=True) if s.schedule_id == created.schedule_id][0]
+    assert row.state == "cancelled"
+    assert store.claim_due(now_utc=datetime(2026, 3, 25, 8, 0, tzinfo=timezone.utc)) == []
+
+
+def test_management_update_of_notify_on_reaches_the_authoritative_copy(tmp_path) -> None:
+    """The operator-facing path must write the copy a dispatch actually reads.
+
+    It previously wrote only the record field and execution_policy, leaving the
+    embedded copy stale -- so an operator changing notify_on saw no change in what
+    notified them, and the bootstrap reconcile would then overwrite their setting.
+    """
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    request = _dispatch_request(request_id="req-mgmt-notify", kind="recurring")
+    request.workflow_request["execution_policy"] = request.execution_policy.model_dump(mode="json")
+    created = store.upsert_from_dispatch(request, now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
+    assert created is not None
+
+    resp = store.apply_management(
+        WorkflowScheduleManageRequestV1.model_validate(
+            {
+                "operation": "update",
+                "request_id": "m-update",
+                "schedule_id": created.schedule_id,
+                "patch": {"notify_on": "none"},
+            }
+        )
+    )
+    assert resp.ok is True
+
+    row = [s for s in store.list_schedules(include_inactive=True) if s.schedule_id == created.schedule_id][0]
+    assert row.notify_on == "none"
+    assert row.execution_policy.notify_on == "none"
+    assert row.workflow_request["execution_policy"]["notify_on"] == "none"
+
+
+def test_a_blip_that_the_retry_fixes_never_pages(tmp_path) -> None:
+    """A failure the store recovers from on its own is not Juniper's problem.
+
+    Paging on the first failure would send four messages for a transient blip:
+    one workflow-failed notify, the attention "entered" signal (published twice,
+    generic + pending-attention), then a "recovered" async message. Attention is
+    reserved for the retry budget actually running out.
+    """
+    store = WorkflowScheduleStore(
+        str(tmp_path / "wf-schedules.json"),
+        max_dispatch_attempts=3,
+        retry_backoff_seconds=60,
+    )
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-blip", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    at = datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc)
+    claimed = store.claim_due(now_utc=at)
+    store.mark_dispatch_failed(
+        run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, error="blip", now_utc=at
+    )
+    # Budget is not spent (1 of 3), so nothing pages while the retry is pending.
+    assert store.evaluate_attention_signals(now_utc=at + timedelta(seconds=1)) == []
+
+    retry_at = store.list_schedules(include_inactive=True)[0].next_run_at
+    assert retry_at == at + timedelta(seconds=60)
+    claimed = store.claim_due(now_utc=retry_at)
+    assert len(claimed) == 1
+    store.mark_dispatch_succeeded(
+        run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, now_utc=retry_at
+    )
+    # ...and nothing pages after it recovers either: no "entered", so no
+    # "recovered" to clear, so zero messages for the whole episode.
+    assert store.evaluate_attention_signals(now_utc=retry_at + timedelta(seconds=60)) == []
+
+
+def test_repeated_failures_still_page_once_the_budget_is_spent(tmp_path) -> None:
+    """The other half of the blip rule: a genuinely stuck schedule must still page.
+
+    Seeded with one success so the schedule sits on the `degraded` branch this rule
+    governs. A schedule with *no* success in the window takes the separate `failing`
+    branch at two failures, which is untouched here and correct as it stands --
+    "two failures and nothing has ever worked" needs no retry budget to be alarming.
+    """
+    store = WorkflowScheduleStore(
+        str(tmp_path / "wf-schedules.json"),
+        max_dispatch_attempts=3,
+        retry_backoff_seconds=60,
+    )
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-stuck", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    seed_at = datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc)
+    seeded = store.claim_due(now_utc=seed_at)
+    store.mark_dispatch_succeeded(
+        run_id=seeded[0].run.run_id, schedule_id=seeded[0].schedule.schedule_id, now_utc=seed_at
+    )
+    at = store.list_schedules(include_inactive=True)[0].next_run_at
+    for attempt in (1, 2, 3):
+        claimed = store.claim_due(now_utc=at)
+        assert len(claimed) == 1
+        store.mark_dispatch_failed(
+            run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, error="boom", now_utc=at
+        )
+        signals = store.evaluate_attention_signals(now_utc=at + timedelta(seconds=1))
+        if attempt < 3:
+            assert signals == [], f"paged too early on attempt {attempt}"
+        else:
+            assert [s.kind for s in signals] == ["degraded"]
+        at = store.list_schedules(include_inactive=True)[0].next_run_at

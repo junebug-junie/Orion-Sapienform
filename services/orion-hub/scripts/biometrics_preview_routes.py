@@ -213,6 +213,108 @@ async def api_biometrics_preview_history(
     return {"ok": True, **base, "series": series, "n_raw": len(points)}
 
 
+async def query_multi_channel_history_rows(
+    *, node: str, columns_by_channel: dict[str, str], hours: int
+) -> Sequence[Mapping[str, Any]]:
+    """One connection, one query, N channels -- the multi-channel sibling of
+    query_channel_history_rows. Added because the modal's Trended section
+    originally called /history once per channel (up to 14 concurrent
+    asyncpg.connect() calls per node-detail open, no pooling); this repo has
+    live incident history with Postgres connection exhaustion (PR #2010), so
+    N short-lived connections opening at once -- exactly when an operator is
+    trying to diagnose a problem -- is a real risk, not a theoretical one.
+    """
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    import asyncpg
+
+    cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
+    # Channel names are validated against the fixed _CHANNEL_COLUMN whitelist
+    # before reaching here (never raw user input as a SQL identifier);
+    # aliased positionally (c0, c1, ...) rather than by channel name so the
+    # channel string itself never has to be interpolated as an identifier.
+    aliases = list(columns_by_channel.items())
+    select_cols = ",\n              ".join(
+        f"({column}->>'{channel}')::double precision AS c{i}"
+        for i, (channel, column) in enumerate(aliases)
+    )
+    connection = await asyncpg.connect(dsn=database_url)
+    try:
+        rows = await connection.fetch(
+            f"""
+            SELECT
+              timestamp AS t,
+              {select_cols}
+            FROM orion_biometrics_summary
+            WHERE node = $1
+              AND timestamp::timestamptz >= $2::timestamptz
+            ORDER BY timestamp::timestamptz ASC
+            """,
+            node,
+            cutoff,
+        )
+    finally:
+        await connection.close()
+    # Translate positional c0..cN back to channel names for the caller.
+    channel_by_alias = {f"c{i}": channel for i, (channel, _column) in enumerate(aliases)}
+    return [
+        {"t": row["t"], **{channel_by_alias[alias]: row[alias] for alias in channel_by_alias}}
+        for row in rows
+    ]
+
+
+_history_multi_query: Callable[..., Awaitable[Sequence[Mapping[str, Any]]]] | None = None
+
+
+@router.get("/history_multi")
+async def api_biometrics_preview_history_multi(
+    node: str = Query(...),
+    channels: str = Query(...),
+    window: str = Query("24h"),
+) -> Dict[str, Any]:
+    """Same data as N calls to /history, in one request/one Postgres
+    connection -- see query_multi_channel_history_rows for why this exists.
+    """
+    nid = _validate_node(node)
+    requested = [c.strip() for c in channels.split(",") if c.strip()]
+    unknown = [c for c in requested if c not in _CHANNEL_COLUMN]
+    if unknown or not requested:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "unknown_channel", "channels": unknown or requested, "known_channels": sorted(_CHANNEL_COLUMN)},
+        )
+    try:
+        hours = parse_window(window)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    max_points = int(settings.CABINET_AMBIENT_HISTORY_MAX_POINTS)
+    base = {"node": nid, "channels": requested, "window": window}
+    columns_by_channel = {c: _CHANNEL_COLUMN[c] for c in requested}
+    query = _history_multi_query or query_multi_channel_history_rows
+    try:
+        rows = await query(node=nid, columns_by_channel=columns_by_channel, hours=hours)
+        series: dict[str, list[dict[str, Any]]] = {c: [] for c in requested}
+        raw_counts: dict[str, int] = {c: 0 for c in requested}
+        for channel in requested:
+            points = [
+                {"t": _iso_utc(row["t"]), "v": float(row[channel])}
+                for row in rows
+                if row.get("t") is not None and row.get(channel) is not None
+            ]
+            raw_counts[channel] = len(points)
+            wrapped = [{"t": p["t"], "rms": p["v"]} for p in points]
+            sampled = downsample_points(wrapped, max_points)
+            series[channel] = [{"t": p["t"], "v": p["rms"]} for p in sampled if p.get("rms") is not None]
+    except Exception as exc:
+        logger.warning("Biometrics preview multi-history unavailable for %s/%s: %s", nid, requested, exc)
+        return {"ok": False, **base, "series": {c: [] for c in requested}, "error": "history_unavailable"}
+
+    return {"ok": True, **base, "series": series, "n_raw": raw_counts}
+
+
 def _induction_engine():
     if _induction_engine_factory is not None:
         return _induction_engine_factory()
@@ -238,7 +340,7 @@ async def api_biometrics_preview_induction(node: str = Query(...)) -> Dict[str, 
 
 
 @router.get("/gpu")
-async def api_biometrics_preview_gpu(node: str = Query(...), limit: int = Query(5, ge=1, le=60)) -> Dict[str, Any]:
+async def api_biometrics_preview_gpu(node: str = Query(...), limit: int = Query(40, ge=1, le=60)) -> Dict[str, Any]:
     nid = _validate_node(node)
     lane_map = _parse_lane_map(nid)
     try:

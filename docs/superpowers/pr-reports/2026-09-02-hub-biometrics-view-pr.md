@@ -1,5 +1,29 @@
 # Hub Biometrics view: Cognitive EKG toggle + deep-inspection modal + Cabinet fold-in
 
+## Addendum (same day, post-deploy feedback)
+
+Juniper deployed and reported: "hard to read the cards, can't tell what's
+good, bad, changing, important. Also, few trends??" Follow-up commit fixes:
+
+- **Readability**: every tile now colors by value (good/warning/critical,
+  reusing this repo's own emerald/amber/red dark-surface convention from
+  `cabinet-sensors.js`'s `badge()`, not a new palette) and shows a trend
+  arrow sourced from the already-computed EWMA `trend` field. Snapshot
+  tiles sort worst-first. A color legend is on every panel.
+- **More trends**: Trended history expanded from 4 hand-picked channels to
+  all 14 the backend can chart; the GPU sparkline was reading a **5-sample**
+  buffer (looked flat) -- bumped to 40.
+- **Review findings from this follow-up, fixed**: (1) an unreachable node's
+  status tile rendered gray/"neutral", identical to "no data yet" and the
+  *only* visible tile once every value tile got filtered out -- now renders
+  critical/red via a new `toneForNodeStatus()`. (2) expanding to 14 channels
+  meant 14 concurrent, unpooled Postgres connections per modal open (real
+  risk given this repo's connection-exhaustion incident history, PR #2010)
+  -- consolidated into one `/history_multi` endpoint, one connection, one
+  request from the client.
+- 16 new/updated tests (77 total in the biometrics test set, all passing).
+- Same open PR (#2027), pushed as a second commit -- not a new PR.
+
 ## Summary
 
 - Cognitive EKG card (Hub landing tab) gets a toggle that swaps the `/spark/ui`

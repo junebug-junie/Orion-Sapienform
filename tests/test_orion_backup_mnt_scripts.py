@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import datetime as dt
+
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import scripts.backup.orion_backup_mnt_scripts as mnt_scripts_module
 from scripts.backup.orion_backup_mnt_scripts import (
     BackupConfig,
     RunOutcome,
@@ -14,7 +17,9 @@ from scripts.backup.orion_backup_mnt_scripts import (
     build_rsync_command,
     cleanup_incomplete_snapshots,
     find_previous_snapshot,
+    parse_snapshot_age_utc,
     prune_successful_snapshots,
+    main as mnt_scripts_main,
     run_backup,
     send_failure_notification,
     snapshot_timestamp,
@@ -421,3 +426,179 @@ def test_send_failure_notification_message_includes_run_context(
     assert target_root in message
     assert "2026-05-09T22-00-00Z-12345" in message
     assert "rsync exited with 23" in message
+
+
+def _make_snapshots(root: Path, days: list[str]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for day in days:
+        (root / f"{day}T22-00-00Z-12345").mkdir()
+
+
+def test_prune_age_window_trims_the_span_a_count_alone_leaves_behind(tmp_path: Path) -> None:
+    # This fixture is the real live postgres set as of 2026-09-02: exactly 14
+    # snapshots (so the count cap removes nothing) spanning 17 days, with the
+    # 4-day hole left by the 2026-08-16/17/18 failures. A pure count policy
+    # calls this "14 days retained"; it is not.
+    snapshots = tmp_path / "snapshots"
+    days = ["2026-08-13", "2026-08-14", "2026-08-15"] + [
+        f"2026-08-{d:02d}" for d in range(19, 30)
+    ]
+    assert len(days) == 14
+    _make_snapshots(snapshots, days)
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=7, now=now
+    )
+
+    # cutoff is 2026-08-19T04:00Z; 08-13/14/15 fall outside it, 08-19T22:00Z
+    # is inside it by 18 hours and must survive.
+    assert [Path(r).name[:10] for r in removed] == ["2026-08-13", "2026-08-14", "2026-08-15"]
+    surviving = sorted(p.name[:10] for p in snapshots.iterdir())
+    assert surviving[0] == "2026-08-19"
+    assert len(surviving) == 11
+
+
+def test_prune_floor_outranks_the_age_window(tmp_path: Path) -> None:
+    # Every snapshot here is months past the window. Without the floor this
+    # deletes all ten -- which is precisely what must never happen during a
+    # failure streak, when no replacement can be written.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-01-{d:02d}" for d in range(1, 11)])
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=7, now=now
+    )
+
+    assert len(removed) == 3
+    assert len(list(snapshots.iterdir())) == 7
+
+
+def test_prune_never_ages_out_an_unparseable_name(tmp_path: Path) -> None:
+    # Deleting a backup because its directory name did not match a pattern is
+    # the wrong failure direction; the walk must stop instead.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, ["2026-01-01", "2026-01-02"])
+    (snapshots / "0000-hand-copied-restore-point").mkdir()
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=1, now=now
+    )
+
+    # The undateable dir is never deleted -- but it also must not stop the
+    # real, months-old snapshots behind it from being pruned. min_keep=1
+    # leaves exactly one of the two dated snapshots.
+    assert [Path(r).name[:10] for r in removed] == ["2026-01-01"]
+    assert (snapshots / "0000-hand-copied-restore-point").exists()
+
+
+def test_prune_without_max_age_is_count_only(tmp_path: Path) -> None:
+    # Default stays the pre-existing behaviour so the age window is opt-in.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-01-{d:02d}" for d in range(1, 11)])
+
+    removed = prune_successful_snapshots(snapshots, keep=14)
+
+    assert removed == []
+    assert len(list(snapshots.iterdir())) == 10
+
+
+def test_parse_snapshot_age_handles_both_dir_name_shapes() -> None:
+    bare = parse_snapshot_age_utc("2026-09-02T03-45-01Z")
+    with_pid = parse_snapshot_age_utc("2026-09-02T03-45-01Z-412548")
+    assert bare == dt.datetime(2026, 9, 2, 3, 45, 1, tzinfo=dt.timezone.utc)
+    assert with_pid == bare
+    assert parse_snapshot_age_utc("latest") is None
+
+
+def test_prune_count_cap_also_spares_an_unparseable_name(tmp_path: Path) -> None:
+    # Review finding: the age window spared undateable names but the count cap
+    # did not, so the guarantee held only while the snapshot count stayed
+    # under `keep`. An operator parking a manual restore point in snapshots/
+    # would have lost it on the 15th night.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-05-{d:02d}" for d in range(1, 17)])
+    (snapshots / "0000-hand-copied-restore-point").mkdir()
+
+    removed = prune_successful_snapshots(snapshots, keep=14)
+
+    assert (snapshots / "0000-hand-copied-restore-point").exists()
+    assert all("0000-" not in r for r in removed)
+    # The 16 real snapshots are still trimmed to 14; the extra dir is not
+    # counted as one of them.
+    assert len(removed) == 2
+
+
+def test_prune_unparseable_name_does_not_block_the_age_window(tmp_path: Path) -> None:
+    # Review finding: an undateable name sorting ahead of the real snapshots
+    # sat at the head of the list and stopped the age scan dead, silently
+    # disabling retention forever -- the exact disk-fills-up mode this exists
+    # to prevent.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-01-{d:02d}" for d in range(1, 11)])
+    (snapshots / "0000-hand-copied-restore-point").mkdir()
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=1, now=now
+    )
+
+    # All ten are months past the window and must go; the undateable dir stays.
+    assert len(removed) == 9
+    assert (snapshots / "0000-hand-copied-restore-point").exists()
+
+
+def test_cli_rejects_a_retention_floor_below_one(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit):
+        mnt_scripts_main(["--min-keep", "0"])
+    assert "--min-keep must be at least 1" in capsys.readouterr().err
+
+
+def test_cli_can_disable_the_age_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `type=int` cannot express the None the library accepts for count-only
+    # retention, so 0 is the documented way to reach it.
+    seen: dict = {}
+
+    def _fake_run_backup(cfg, **kwargs):
+        seen["max_age_days"] = cfg.max_age_days
+        raise SystemExit(0)
+
+    monkeypatch.setattr(mnt_scripts_module, "run_backup", _fake_run_backup)
+    with pytest.raises(SystemExit):
+        mnt_scripts_main(["--max-age-days", "0"])
+    assert seen["max_age_days"] is None
+
+
+def test_retention_failure_on_a_successful_rsync_still_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same review finding as the db lane: retention moved off the success path,
+    # so a prune exception stopped flipping the run to "failure". The notifier
+    # is gated on that status, so a broken retention would page nobody and
+    # exit 0 -- silently losing the alert.
+    source = tmp_path / "scripts"
+    target = tmp_path / "storage-warm"
+    source.mkdir()
+    target.mkdir()
+    cfg = BackupConfig(
+        source_path=source, storage_warm_path=target, node_name="node-a", require_mounts=False
+    )
+
+    def fake_run(cmd: list[str], log_path: Path) -> int:
+        destination = Path(cmd[-1].rstrip("/"))
+        destination.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("fake rsync ok\n")
+        return 0
+
+    def _explode(*args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(mnt_scripts_module, "prune_successful_snapshots", _explode)
+
+    outcome = run_backup(cfg, now="2026-05-09T22:00:00+00:00", process_runner=fake_run)
+
+    assert outcome.status == "failure"
+    assert "retention failed" in outcome.error_summary
+    assert "read-only filesystem" in outcome.error_summary

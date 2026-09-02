@@ -41,6 +41,14 @@ unauthorized source IP gets silently dropped by this device, indistinguishable f
 itself being down -- it answered ICMP and HTTPS the whole time. Fixed by adding athena's
 current address to the Manager list in the PDU's own admin panel.
 
+UN-CABLED 2026-09-02. Juniper physically pulled athena off this Panduit PDU. Outlets 34,35 no
+longer carry athena's draw -- athena's local .env has PDU_OUTLETS cleared back to empty, the
+same shape it had before the 2026-08-21 re-cabling, so `chassis_watts` for athena is once again
+exclusively from its iLO (settings.py's PDU_OUTLETS comment has the current per-node state).
+circe's proxy path (PDU_PROXY_OUTLETS, below) is untouched by this -- athena still reaches this
+PDU's SNMP interface over LAN to poll circe's outlets on its behalf; that reachability has
+nothing to do with which outlets, if any, athena itself draws power from.
+
 CONTAINMENT
 -----------
 For a node that has BOTH an iLO and PDU outlets (atlas), these are two independent meters on

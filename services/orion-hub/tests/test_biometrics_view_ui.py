@@ -170,7 +170,7 @@ def test_biometrics_view_js_loads_node_detail_fetches_concurrently() -> None:
     first_await = body.index("await ")
     setup = body[:first_await]
     assert "snapshotPromise = fetchJson(" in setup
-    assert "historiesPromise = Promise.all(" in setup
+    assert "historiesPromise = fetchJson(" in setup
     assert "inductionPromise = fetchJson(" in setup
 
 
@@ -184,3 +184,114 @@ def test_biometrics_view_js_calls_only_the_preview_api_prefix() -> None:
 def test_biometrics_view_js_only_polls_gpu_subview_while_open() -> None:
     assert "gpuPollTimer" in BIOMETRICS_VIEW_JS
     assert "clearInterval(gpuPollTimer)" in BIOMETRICS_VIEW_JS
+
+
+# --------------------------------------------------------------------------
+# Readability: status color, trend arrows, legend, channel coverage
+# --------------------------------------------------------------------------
+#
+# Follow-up to the initial ship: cards had no good/bad/changing/important
+# encoding (every tile looked the same neutral gray) and only 4 of ~14
+# available channels were charted, plus the GPU trend sparkline read from a
+# 5-sample buffer and looked nearly flat. Fixed by reusing this file's own
+# established status-tone convention (cabinet-sensors.js's badge()) rather
+# than inventing a second palette.
+
+
+def test_biometrics_view_js_defines_a_reserved_status_tone_scale() -> None:
+    assert "var TONE = {" in BIOMETRICS_VIEW_JS
+    assert "good:" in BIOMETRICS_VIEW_JS
+    assert "warning:" in BIOMETRICS_VIEW_JS
+    assert "critical:" in BIOMETRICS_VIEW_JS
+    assert "neutral:" in BIOMETRICS_VIEW_JS
+    # emerald/amber/red on a dark surface -- this repo's own convention
+    # (cabinet-sensors.js badge()), not a separately invented palette.
+    assert "emerald" in BIOMETRICS_VIEW_JS
+    assert "amber" in BIOMETRICS_VIEW_JS
+    assert "text-red-200" in BIOMETRICS_VIEW_JS
+
+
+def test_biometrics_view_js_status_never_ships_as_color_alone() -> None:
+    """Every status tone in TONE carries an icon + label, per the dataviz
+    status-color rule -- color never carries meaning unaided."""
+    tone_block_start = BIOMETRICS_VIEW_JS.index("var TONE = {")
+    tone_block_end = BIOMETRICS_VIEW_JS.index("};", tone_block_start)
+    tone_block = BIOMETRICS_VIEW_JS[tone_block_start:tone_block_end]
+    assert tone_block.count("icon:") >= 4
+    assert tone_block.count("label:") >= 4
+
+
+def test_biometrics_view_js_computes_tone_from_value_not_hardcoded() -> None:
+    assert "function toneForPressure(" in BIOMETRICS_VIEW_JS
+    assert "invert" in BIOMETRICS_VIEW_JS
+
+
+def test_biometrics_view_js_shows_trend_arrows_from_induction_data() -> None:
+    assert "function trendArrow(" in BIOMETRICS_VIEW_JS
+    assert '"↑"' in BIOMETRICS_VIEW_JS or "'↑'" in BIOMETRICS_VIEW_JS
+    assert '"↓"' in BIOMETRICS_VIEW_JS or "'↓'" in BIOMETRICS_VIEW_JS
+
+
+def test_biometrics_view_js_sorts_snapshot_tiles_worst_first() -> None:
+    assert "TONE_RANK" in BIOMETRICS_VIEW_JS
+    assert "rows.sort(" in BIOMETRICS_VIEW_JS
+
+
+def test_template_declares_a_color_legend_in_every_biometrics_panel() -> None:
+    """A legend is mandatory once color carries meaning (dataviz rule) --
+    one per surface: card preview, Athena, Circe, GPU."""
+    assert INDEX_HTML.count("text-emerald-200\">● good</span>") >= 4
+
+
+def test_biometrics_view_js_charts_more_than_the_original_four_channels() -> None:
+    """Regression test: the original ship only charted strain/gpu_util/
+    thermal/power. Channels absent from that original set must now be
+    covered too, or this is the same sparse-trends complaint again."""
+    assert "var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS);" in BIOMETRICS_VIEW_JS
+    for channel in ("homeostasis", "stability", "cpu", "gpu_mem", "mem", "disk", "net", "fan"):
+        assert f'"{channel}"' in BIOMETRICS_VIEW_JS, channel
+
+
+def test_biometrics_view_js_requests_a_denser_gpu_trend_than_the_original_five() -> None:
+    """Regression test: the original GPU sparkline read the endpoint's
+    default limit=5, which looked nearly flat/empty."""
+    assert "&limit=40" in BIOMETRICS_VIEW_JS
+
+
+def test_gpu_endpoint_default_limit_is_not_the_original_sparse_five() -> None:
+    source = (HUB_ROOT / "scripts" / "biometrics_preview_routes.py").read_text(encoding="utf-8")
+    assert "limit: int = Query(5," not in source
+    assert "limit: int = Query(40," in source
+
+
+def test_unreachable_node_renders_critical_not_neutral() -> None:
+    """Regression test (code review finding): an unreachable node's status
+    tile originally rendered "neutral" (gray, identical to "no data yet"),
+    which was the ONLY tile left visible once every value tile got filtered
+    out for lack of summary data -- exactly invisible to an operator
+    scanning for red tiles. Must be a distinguishable critical tone."""
+    assert "function toneForNodeStatus(" in BIOMETRICS_VIEW_JS
+    fn_start = BIOMETRICS_VIEW_JS.index("function toneForNodeStatus(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  }", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    assert 'return "critical"' in body
+    assert "toneForNodeStatus(payload)" in BIOMETRICS_VIEW_JS
+    assert "toneForNodeStatus(snapshot)" in BIOMETRICS_VIEW_JS
+    # the old bug's exact literal must be gone, not just supplemented
+    assert 'tone: payload.ok ? toneForPressure(strain) : "neutral"' not in BIOMETRICS_VIEW_JS
+    assert 'tone: snapshot.ok ? "good" : "neutral"' not in BIOMETRICS_VIEW_JS
+
+
+def test_history_uses_one_multi_channel_request_not_one_per_channel() -> None:
+    """Regression test (code review finding): loadNodeDetail() originally
+    fired one /history request PER channel (up to 14 concurrent, unpooled
+    asyncpg connections per modal open -- this repo has live incident
+    history with connection exhaustion, PR #2010). Must be a single request
+    covering every channel."""
+    assert "/api/biometrics/preview/history_multi" in BIOMETRICS_VIEW_JS
+    fn_start = BIOMETRICS_VIEW_JS.index("async function loadNodeDetail(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  function cap(", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    # exactly one call site building the history request in this function
+    assert body.count("/api/biometrics/preview/history") == 1
+    assert "channels=" in body

@@ -48,6 +48,7 @@ def client(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost/test")
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     monkeypatch.setattr(biometrics_preview_routes, "_history_query", None)
+    monkeypatch.setattr(biometrics_preview_routes, "_history_multi_query", None)
     monkeypatch.setattr(biometrics_preview_routes, "_induction_engine_factory", None)
     app = FastAPI()
     app.include_router(biometrics_preview_routes.router)
@@ -171,6 +172,73 @@ def test_history_db_failure_returns_ok_false(client, monkeypatch):
     body = r.json()
     assert body["ok"] is False
     assert body["series"] == []
+    assert body["error"] == "history_unavailable"
+
+
+# --- /history_multi ---------------------------------------------------------
+#
+# Added because the modal's "Trended" section originally called /history
+# once per channel (up to 14 concurrent asyncpg connections per node-detail
+# open, no pooling -- review finding, PR #2010 connection-ceiling history).
+# One request, one connection, every channel back in one response.
+
+
+def test_history_multi_unknown_channel_returns_400(client):
+    r = client.get("/api/biometrics/preview/history_multi?node=athena&channels=strain,not_a_channel")
+    assert r.status_code == 400
+    assert "not_a_channel" in r.json()["detail"]["channels"]
+
+
+def test_history_multi_empty_channels_returns_400(client):
+    r = client.get("/api/biometrics/preview/history_multi?node=athena&channels=")
+    assert r.status_code == 400
+
+
+def test_history_multi_invalid_window_returns_400(client):
+    r = client.get("/api/biometrics/preview/history_multi?node=athena&channels=strain&window=1h")
+    assert r.status_code == 400
+
+
+def test_history_multi_happy_path_one_connection_many_channels(client, monkeypatch):
+    from datetime import datetime, timezone
+
+    call_count = {"n": 0}
+
+    async def rows(*, node, columns_by_channel, hours):
+        call_count["n"] += 1
+        assert node == "athena"
+        assert columns_by_channel == {"strain": "composites", "gpu_util": "pressures"}
+        assert hours == 24
+        return [
+            {"t": datetime(2026, 9, 2, 0, 0, 0, tzinfo=timezone.utc), "strain": 0.1, "gpu_util": None},
+            {"t": datetime(2026, 9, 2, 0, 5, 0, tzinfo=timezone.utc), "strain": 0.2, "gpu_util": 0.9},
+        ]
+
+    monkeypatch.setattr(biometrics_preview_routes, "_history_multi_query", rows)
+    r = client.get("/api/biometrics/preview/history_multi?node=athena&channels=strain,gpu_util")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    # exactly one query call regardless of channel count -- the whole point
+    assert call_count["n"] == 1
+    assert len(body["series"]["strain"]) == 2
+    # gpu_util's first point was None -- absent, not zero-filled
+    assert len(body["series"]["gpu_util"]) == 1
+    assert body["series"]["gpu_util"][0]["v"] == pytest.approx(0.9)
+    assert body["n_raw"]["strain"] == 2
+    assert body["n_raw"]["gpu_util"] == 1
+
+
+def test_history_multi_db_failure_returns_ok_false_for_every_channel(client, monkeypatch):
+    async def failing(*, node, columns_by_channel, hours):
+        raise OSError("db unavailable")
+
+    monkeypatch.setattr(biometrics_preview_routes, "_history_multi_query", failing)
+    r = client.get("/api/biometrics/preview/history_multi?node=athena&channels=strain,gpu_util")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["series"] == {"strain": [], "gpu_util": []}
     assert body["error"] == "history_unavailable"
 
 

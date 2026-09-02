@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -40,6 +41,29 @@ def _resolve_sqlite_path() -> str | None:
     return explicit or mutation or None
 
 
+def _decode_json(raw: Any) -> Any:
+    if raw is None:
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _history_row(surface_key: str, row: Any) -> dict[str, Any]:
+    changed_at = row[1]
+    return {
+        "history_id": row[0],
+        "surface_key": surface_key,
+        "changed_at": changed_at.isoformat() if hasattr(changed_at, "isoformat") else changed_at,
+        "actor": row[2],
+        "previous_value": _decode_json(row[3]),
+        "new_value": _decode_json(row[4]),
+    }
+
+
 @dataclass
 class RuntimeControlSurfaceStore:
     postgres_url: str | None = None
@@ -48,9 +72,11 @@ class RuntimeControlSurfaceStore:
     _source_kind: str = "memory"
     _engine_cache: Any = None
     _memory: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
+    _memory_history: list[dict[str, Any]] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self._memory = {}
+        self._memory_history = []
         # An explicitly-passed sql_db_path is a deliberate isolation request and
         # must win over an ambient env Postgres URL. It did not, and the result is
         # visible in production: `substrate_runtime_control_surface` holds a row
@@ -140,8 +166,33 @@ class RuntimeControlSurfaceStore:
         return self._memory.get(key)
 
     def upsert(self, *, key: str, value: dict[str, Any]) -> None:
+        """Write a control value, recording what it replaced.
+
+        The current-value table keeps one row per surface, so before this every
+        write destroyed the only evidence of what the setting had been. That is
+        not a theoretical loss: Orion's first self-modification on 2026-09-02
+        moved the routing threshold, and afterwards nothing in the system could
+        say what it had moved *from* -- the answer had to be inferred from a
+        pytest fixture that had been leaking writes onto the live row.
+
+        The history row is written in the **same transaction** as the value, so
+        a surface cannot change without leaving a record. A history failure
+        therefore fails the whole write and falls through to the next backend,
+        which is deliberate: an unrecorded write is the thing this exists to
+        prevent, and silently keeping it would defeat the point.
+        """
         value_payload = dict(value)
         value_payload.setdefault("updated_at", _utc_now().isoformat())
+        previous = self.get(key)
+        history_row = {
+            "history_id": f"control-surface-history-{uuid.uuid4()}",
+            "surface_key": key,
+            "actor": value_payload.get("actor"),
+            "previous_value_json": (
+                json.dumps(previous, ensure_ascii=False, sort_keys=True) if previous is not None else None
+            ),
+            "new_value_json": json.dumps(value_payload, ensure_ascii=False, sort_keys=True),
+        }
         if self._source_kind == "postgres" and self.postgres_url:
             try:
                 from sqlalchemy import text
@@ -160,8 +211,23 @@ class RuntimeControlSurfaceStore:
                         {
                             "surface_key": key,
                             "updated_at": _utc_now(),
-                            "value_json": json.dumps(value_payload, ensure_ascii=False, sort_keys=True),
+                            "value_json": history_row["new_value_json"],
                         },
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO substrate_runtime_control_surface_history(
+                                history_id, surface_key, changed_at, actor,
+                                previous_value_json, new_value_json
+                            )
+                            VALUES (
+                                :history_id, :surface_key, :changed_at, :actor,
+                                CAST(:previous_value_json AS JSONB), CAST(:new_value_json AS JSONB)
+                            )
+                            """
+                        ),
+                        {**history_row, "changed_at": _utc_now()},
                     )
                 return
             except Exception as exc:
@@ -177,13 +243,85 @@ class RuntimeControlSurfaceStore:
                             updated_at=excluded.updated_at,
                             value_json=excluded.value_json
                         """,
-                        (key, _utc_now().isoformat(), json.dumps(value_payload, ensure_ascii=False, sort_keys=True)),
+                        (key, _utc_now().isoformat(), history_row["new_value_json"]),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO substrate_runtime_control_surface_history(
+                            history_id, surface_key, changed_at, actor,
+                            previous_value_json, new_value_json
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            history_row["history_id"],
+                            key,
+                            _utc_now().isoformat(),
+                            history_row["actor"],
+                            history_row["previous_value_json"],
+                            history_row["new_value_json"],
+                        ),
                     )
                     conn.commit()
                 return
             except Exception as exc:
                 self._last_error = str(exc)
+        self._memory_history.append(
+            {
+                "history_id": history_row["history_id"],
+                "surface_key": key,
+                "changed_at": _utc_now().isoformat(),
+                "actor": history_row["actor"],
+                "previous_value": previous,
+                "new_value": value_payload,
+            }
+        )
         self._memory[key] = value_payload
+
+    def history(self, key: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Most recent changes to one surface, newest first."""
+        bounded = max(1, min(500, int(limit)))
+        if self._source_kind == "postgres" and self.postgres_url:
+            try:
+                from sqlalchemy import text
+
+                with self._engine().begin() as conn:
+                    rows = conn.execute(
+                        text(
+                            """
+                            SELECT history_id, changed_at, actor,
+                                   previous_value_json::text, new_value_json::text
+                            FROM substrate_runtime_control_surface_history
+                            WHERE surface_key=:surface_key
+                            ORDER BY changed_at DESC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"surface_key": key, "limit": bounded},
+                    ).fetchall()
+                return [_history_row(key, row) for row in rows]
+            except Exception as exc:
+                self._last_error = str(exc)
+                return []
+        if self._source_kind == "sqlite" and self.sql_db_path:
+            try:
+                with sqlite3.connect(self.sql_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT history_id, changed_at, actor, previous_value_json, new_value_json
+                        FROM substrate_runtime_control_surface_history
+                        WHERE surface_key=?
+                        ORDER BY changed_at DESC
+                        LIMIT ?
+                        """,
+                        (key, bounded),
+                    ).fetchall()
+                return [_history_row(key, row) for row in rows]
+            except Exception as exc:
+                self._last_error = str(exc)
+                return []
+        entries = [e for e in self._memory_history if e.get("surface_key") == key]
+        return list(reversed(entries))[:bounded]
 
     def _ensure_sqlite_schema(self) -> None:
         if not self.sql_db_path:
@@ -191,6 +329,15 @@ class RuntimeControlSurfaceStore:
         with sqlite3.connect(self.sql_db_path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS substrate_runtime_control_surface (surface_key TEXT PRIMARY KEY, updated_at TEXT NOT NULL, value_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_runtime_control_surface_history ("
+                "history_id TEXT PRIMARY KEY, surface_key TEXT NOT NULL, changed_at TEXT NOT NULL, "
+                "actor TEXT, previous_value_json TEXT, new_value_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS substrate_runtime_control_surface_history_key_time "
+                "ON substrate_runtime_control_surface_history (surface_key, changed_at DESC)"
             )
             conn.commit()
 
@@ -203,6 +350,19 @@ class RuntimeControlSurfaceStore:
             conn.execute(
                 text(
                     "CREATE TABLE IF NOT EXISTS substrate_runtime_control_surface (surface_key TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, value_json JSONB NOT NULL)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS substrate_runtime_control_surface_history ("
+                    "history_id TEXT PRIMARY KEY, surface_key TEXT NOT NULL, changed_at TIMESTAMPTZ NOT NULL, "
+                    "actor TEXT, previous_value_json JSONB, new_value_json JSONB NOT NULL)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS substrate_runtime_control_surface_history_key_time "
+                    "ON substrate_runtime_control_surface_history (surface_key, changed_at DESC)"
                 )
             )
 
@@ -252,6 +412,15 @@ def set_chat_reflective_lane_threshold(
             "updated_at": _utc_now().isoformat(),
         },
     )
+
+
+def chat_reflective_lane_threshold_history(*, limit: int = 50) -> list[dict[str, Any]]:
+    """Every recorded change to the routing threshold, newest first.
+
+    Empty until the first write after this shipped -- the history is built
+    going forward, not reconstructed. Changes made before it existed are gone.
+    """
+    return control_surface_store().history(_ROUTING_THRESHOLD_KEY, limit=limit)
 
 
 def inspect_chat_reflective_lane_threshold(default: float = 0.75) -> dict[str, Any]:

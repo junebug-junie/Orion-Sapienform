@@ -552,3 +552,82 @@ def test_repeated_failures_still_page_once_the_budget_is_spent(tmp_path) -> None
         else:
             assert [s.kind for s in signals] == ["degraded"]
         at = store.list_schedules(include_inactive=True)[0].next_run_at
+
+
+def test_reaping_a_stale_orphan_does_not_run_the_workflow_off_schedule(tmp_path) -> None:
+    """A superseded claim's failure updates the run, not the schedule.
+
+    Observed on the live deploy 2026-09-02: reaping the 2026-08-20 orphan armed a
+    backoff retry, and the scheduler dispatched a real compactor run at 05:40 UTC
+    -- 6.5 hours off its 12:10 slot, for a due-slot the daily job had already
+    passed 12 times.
+
+    Reproducing that needs an orphan that outlived several successful runs, which
+    can only happen when it accumulated *before* reaping existed -- once the
+    reaper is live it fires on the first tick past the TTL, long before anything
+    supersedes it. So the backlog is seeded through a store whose TTL never
+    expires, then the file is reopened with the production TTL: that reopen is
+    the first boot of the new build, exactly as it happened live.
+    """
+    path = str(tmp_path / "wf-schedules.json")
+    seed = WorkflowScheduleStore(path, claim_ttl_seconds=10**6)
+    created = seed.upsert_from_dispatch(
+        _dispatch_request(request_id="req-orphan", kind="recurring"),
+        now_utc=datetime(2026, 3, 20, 7, 0, tzinfo=timezone.utc),
+    )
+    assert created is not None
+    # Day 1 hangs: claimed, never marked either way, and never reaped.
+    orphan = seed.claim_due(now_utc=datetime(2026, 3, 21, 7, 0, tzinfo=timezone.utc))[0]
+    # Days 2 and 3 run normally, superseding it.
+    for day in (22, 23):
+        at = datetime(2026, 3, day, 7, 0, tzinfo=timezone.utc)
+        claimed = seed.claim_due(now_utc=at)
+        assert len(claimed) == 1
+        seed.mark_dispatch_succeeded(
+            run_id=claimed[0].run.run_id, schedule_id=created.schedule_id, now_utc=at
+        )
+    assert [r for r in seed._runs if r.run_id == orphan.run.run_id][0].status == "dispatched"
+
+    # First boot of the build that reaps.
+    store = WorkflowScheduleStore(path, claim_ttl_seconds=300, max_dispatch_attempts=3, retry_backoff_seconds=300)
+    before = store.list_schedules(include_inactive=True)[0]
+    assert before.last_result_status == "completed"
+    natural_next = before.next_run_at
+
+    # A tick that reaps the orphan without also claiming a due occurrence, so any
+    # movement in next_run_at would be the retry and nothing else.
+    store.claim_due(now_utc=datetime(2026, 3, 23, 7, 10, tzinfo=timezone.utc))
+    reaped = [r for r in store._runs if r.run_id == orphan.run.run_id][0]
+    assert reaped.status == "failed"
+    assert reaped.error == "claim_expired_after_300s"
+    assert reaped.completed_at is not None
+
+    after = store.list_schedules(include_inactive=True)[0]
+    # No off-schedule retry, no budget spent, and a healthy schedule still reads healthy.
+    assert after.next_run_at == natural_next
+    assert store._consecutive_failures(after) == 0
+    assert after.last_result_status == "completed"
+    assert store.evaluate_attention_signals(now_utc=datetime(2026, 3, 23, 7, 11, tzinfo=timezone.utc)) == []
+
+
+def test_reaping_a_current_hung_claim_still_retries(tmp_path) -> None:
+    """The other half: a hang on the newest claim is exactly what retry is for."""
+    store = WorkflowScheduleStore(
+        str(tmp_path / "wf-schedules.json"),
+        claim_ttl_seconds=300,
+        max_dispatch_attempts=3,
+        retry_backoff_seconds=300,
+    )
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-hang-now", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    hung = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))[0]
+    reap_at = datetime(2026, 3, 25, 7, 6, tzinfo=timezone.utc)
+    store.claim_due(now_utc=reap_at)
+
+    run = [r for r in store._runs if r.run_id == hung.run.run_id][0]
+    assert run.status == "failed"
+    row = store.list_schedules(include_inactive=True)[0]
+    assert store._consecutive_failures(row) == 1
+    assert row.next_run_at == reap_at + timedelta(seconds=300)

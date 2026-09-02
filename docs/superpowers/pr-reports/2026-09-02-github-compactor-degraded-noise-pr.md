@@ -167,7 +167,45 @@ github_compactor_pass        consecutive_failures = 0  last_result = completed
 orphaned dispatched rows: 1   (2026-08-20T16:24:52Z, 13 days stale)
 ```
 
-No service was rebuilt or restarted. This is **not deployed**.
+### Deployed 2026-09-02 05:34 UTC — verified live
+
+Both services restarted. Confirmed from the running container:
+
+```text
+MAX=3 BACKOFF=300                                  # new env keys reached the container
+
+chat_history_compactor_pass  notify_on=failure  policy=failure  embedded=failure
+github_compactor_pass        notify_on=failure  policy=failure  embedded=failure
+
+REAPED: 2026-08-20T16:24:52Z -> failed  claim_expired_after_300s
+        (13 days stale, reaped on the first tick)
+
+attention (both schedules): condition=ok  state=clear
+```
+
+Notification traffic since the deploy — exactly one message, as predicted:
+
+```text
+05:34:45  workflow.schedule.attention.v1  Workflow schedule recovered: GitHub Compactor
+05:34:45  orion.chat.message              Workflow schedule recovered: GitHub Compactor
+```
+
+Then silence. The 8/day nag is gone.
+
+**One unpredicted live consequence, since fixed.** Reaping the 13-day-old orphan
+routed it through the normal failure path, which armed a backoff retry — and the
+scheduler dispatched a real compactor run at 05:40 UTC, 6.5 hours off its 12:10
+slot, for a due-slot the daily job had already passed 12 times. That run
+completed successfully and cleared the failure budget, so the live cost was one
+extra LLM run and nothing broken. The third commit stops a *superseded* claim
+from touching schedule-level state at all: its run record is closed out and an
+event is emitted, but no retry is armed, no budget is spent, and
+`last_result_status` is left to the newer runs that already reported.
+
+This is deploy-shaped rather than steady-state: once the reaper is live it fires
+on the first tick past the TTL, so an orphan can no longer survive long enough to
+be superseded. It only arises for a backlog that accumulated before reaping
+existed — which is exactly what was sitting in the live store.
 
 ## Review findings fixed
 
@@ -240,7 +278,7 @@ Expected on the first `orion-actions` boot:
 
 ## Risks / concerns
 
-- **Severity: low.** Concern: the reaper's first run marks the 13-day-old orphan as failed, which sets `consecutive_failures = 1` on `github_compactor_pass`. Mitigation: the budget is 3 and the next successful run clears it; it cannot page on its own.
+- ~~**Severity: low.** Concern: the reaper's first run marks the 13-day-old orphan as failed, which sets `consecutive_failures = 1`.~~ **This under-called it.** The reap also armed a retry and ran the workflow 6.5h off-schedule. Fixed in the third commit and covered by `test_reaping_a_stale_orphan_does_not_run_the_workflow_off_schedule`, whose first version passed for the wrong reason — the orphan was reaped before anything superseded it, so the guard never ran; mutating the guard to `and False` stayed green until the test was rebuilt to seed the backlog through a non-expiring TTL first.
 - **Severity: low.** Concern: attention now waits for 3 consecutive failures on the `degraded` branch, so a schedule failing exactly once per day takes 3 days to page. Mitigation: the `failing` branch (2+ failures, zero successes) is untouched and still escalates immediately; and each failed daily run still sends its own `orion.workflow.failed` notification.
 - **Severity: medium.** Concern: the underlying digest-verb failures are unfixed. On a bad LLM day the compactor still produces no digest — now failing quietly (3 runs) instead of loudly (343). Quiet failure is the point, but it does make a persistent breakage less visible than it was. Mitigation: the `schedule_retry_budget_exhausted` event and the attention signal both fire on exactly that case. Follow-up: give the GitHub lane the chat lane's `["chat", "quick"]` route fallback, and investigate `structured_output_rejected` at the gateway.
 - **Severity: low.** Concern: `graphify-out/graph.json` was not regenerated. Regenerating the 43 MB artifact into a scheduler fix would dwarf the diff and risks the known destructive-update bug for no benefit here.

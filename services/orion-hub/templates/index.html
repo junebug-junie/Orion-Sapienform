@@ -199,13 +199,13 @@
         <div id="biometricsPreviewContainer" class="hidden w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner p-3 cursor-pointer" title="Click to open the full Biometrics view">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs text-gray-400">Athena + Circe host telemetry — click to inspect</span>
-            <span id="biometricsPreviewStatus" class="text-[10px] text-gray-500 italic">Loading…</span>
+            <span id="biometricsPreviewStatus" class="text-[11px] text-gray-400 italic">Loading…</span>
           </div>
-          <div class="flex flex-wrap items-center gap-3 text-[10px] mb-2">
-            <span class="inline-flex items-center gap-1 text-emerald-200">● good</span>
-            <span class="inline-flex items-center gap-1 text-amber-200">▲ warning</span>
-            <span class="inline-flex items-center gap-1 text-red-200">■ critical</span>
-            <span class="text-gray-500">↑/↓ changing · → flat</span>
+          <div class="flex flex-wrap items-center gap-3 text-[11px] mb-2">
+            <span class="inline-flex items-center gap-1 text-emerald-200 font-semibold">● good</span>
+            <span class="inline-flex items-center gap-1 text-amber-200 font-semibold">▲ warning</span>
+            <span class="inline-flex items-center gap-1 text-red-200 font-semibold">■ critical</span>
+            <span class="text-gray-400">↑/↓ changing · → flat</span>
           </div>
           <div id="biometricsPreviewGrid" class="grid grid-cols-2 gap-3 text-xs"></div>
         </div>
@@ -2888,31 +2888,49 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div id="biometricsSubviewAthena" class="flex flex-col gap-4">
-          <h3 class="text-sm font-semibold text-gray-100">Athena — current snapshot</h3>
-          <div class="flex flex-wrap items-center gap-3 text-[10px]">
-            <span class="inline-flex items-center gap-1 text-emerald-200">● good</span>
-            <span class="inline-flex items-center gap-1 text-amber-200">▲ warning</span>
-            <span class="inline-flex items-center gap-1 text-red-200">■ critical</span>
-            <span class="text-gray-500">sorted worst-first · ↑/↓ changing (EWMA trend) · → flat</span>
+          <h3 class="text-base font-bold text-white">Athena — current snapshot</h3>
+          <div class="flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="inline-flex items-center gap-1 text-emerald-200 font-semibold">● good</span>
+            <span class="inline-flex items-center gap-1 text-amber-200 font-semibold">▲ warning</span>
+            <span class="inline-flex items-center gap-1 text-red-200 font-semibold">■ critical</span>
+            <span class="text-gray-400">sorted worst-first · ↑/↓ changing (EWMA trend) · → flat</span>
           </div>
           <div id="biometricsAthenaSnapshot" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
-          <h3 class="text-sm font-semibold text-gray-100">Trended</h3>
+          <h3 class="text-base font-bold text-white">Trended (24h)</h3>
           <div id="biometricsAthenaHistory" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
-          <h3 class="text-sm font-semibold text-gray-100">EWMA / induction</h3>
+          <div>
+            <h3 class="text-base font-bold text-white">Trend detail (EWMA)</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5 max-w-2xl">
+              How fast and how erratically each channel is moving, from Orion's own EWMA trend
+              tracker — <span class="text-gray-300">level</span> is the smoothed current value,
+              <span class="text-gray-300">volatility</span> is how much it's bouncing around, and
+              <span class="text-gray-300">spikes</span> counts sudden jumps per tick. Same
+              good/warning/critical coloring as the snapshot above.
+            </p>
+          </div>
           <div id="biometricsAthenaInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
         </div>
         <div id="biometricsSubviewCirce" class="hidden flex-col gap-4">
-          <h3 class="text-sm font-semibold text-gray-100">Circe — current snapshot</h3>
-          <div class="flex flex-wrap items-center gap-3 text-[10px]">
-            <span class="inline-flex items-center gap-1 text-emerald-200">● good</span>
-            <span class="inline-flex items-center gap-1 text-amber-200">▲ warning</span>
-            <span class="inline-flex items-center gap-1 text-red-200">■ critical</span>
-            <span class="text-gray-500">sorted worst-first · ↑/↓ changing (EWMA trend) · → flat</span>
+          <h3 class="text-base font-bold text-white">Circe — current snapshot</h3>
+          <div class="flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="inline-flex items-center gap-1 text-emerald-200 font-semibold">● good</span>
+            <span class="inline-flex items-center gap-1 text-amber-200 font-semibold">▲ warning</span>
+            <span class="inline-flex items-center gap-1 text-red-200 font-semibold">■ critical</span>
+            <span class="text-gray-400">sorted worst-first · ↑/↓ changing (EWMA trend) · → flat</span>
           </div>
           <div id="biometricsCirceSnapshot" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
-          <h3 class="text-sm font-semibold text-gray-100">Trended</h3>
+          <h3 class="text-base font-bold text-white">Trended (24h)</h3>
           <div id="biometricsCirceHistory" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
-          <h3 class="text-sm font-semibold text-gray-100">EWMA / induction</h3>
+          <div>
+            <h3 class="text-base font-bold text-white">Trend detail (EWMA)</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5 max-w-2xl">
+              How fast and how erratically each channel is moving, from Orion's own EWMA trend
+              tracker — <span class="text-gray-300">level</span> is the smoothed current value,
+              <span class="text-gray-300">volatility</span> is how much it's bouncing around, and
+              <span class="text-gray-300">spikes</span> counts sudden jumps per tick. Same
+              good/warning/critical coloring as the snapshot above.
+            </p>
+          </div>
           <div id="biometricsCirceInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
         </div>
         <div id="biometricsSubviewGpu" class="hidden flex-col gap-4">
@@ -2921,13 +2939,13 @@
             <button type="button" data-biometrics-gpu-node="athena" class="px-2 py-1 rounded border border-indigo-500 bg-indigo-950/60 text-[11px] font-mono text-indigo-200">athena</button>
             <button type="button" data-biometrics-gpu-node="circe" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">circe</button>
           </div>
-          <div class="flex flex-wrap items-center gap-3 text-[10px]">
-            <span class="inline-flex items-center gap-1 text-emerald-200">● good</span>
-            <span class="inline-flex items-center gap-1 text-amber-200">▲ warning</span>
-            <span class="inline-flex items-center gap-1 text-red-200">■ critical</span>
-            <span class="text-gray-500">util/mem thresholds</span>
+          <div class="flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="inline-flex items-center gap-1 text-emerald-200 font-semibold">● good</span>
+            <span class="inline-flex items-center gap-1 text-amber-200 font-semibold">▲ warning</span>
+            <span class="inline-flex items-center gap-1 text-red-200 font-semibold">■ critical</span>
+            <span class="text-gray-400">util/mem thresholds</span>
           </div>
-          <div id="biometricsGpuStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load GPU data.</div>
+          <div id="biometricsGpuStatus" class="text-[11px] text-gray-400 min-h-[1rem]">Open this subview to load GPU data.</div>
           <div id="biometricsGpuGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
         </div>
         <!-- Cabinet's subview panel IS #cabinet itself (no extra wrapper div) --

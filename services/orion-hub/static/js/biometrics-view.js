@@ -112,7 +112,7 @@
     var head = document.createElement("div");
     head.className = "flex items-center justify-between gap-2";
     var l = document.createElement("div");
-    l.className = "text-[10px] uppercase tracking-wide text-gray-500 truncate";
+    l.className = "text-[11px] uppercase tracking-wide text-gray-400 truncate";
     l.textContent = label;
     head.appendChild(l);
     if (opts.tone && opts.tone !== "neutral") {
@@ -140,7 +140,7 @@
 
     if (sub) {
       var s = document.createElement("div");
-      s.className = "text-[10px] text-gray-500 mt-0.5";
+      s.className = "text-[11px] text-gray-400 mt-0.5";
       s.textContent = sub;
       wrap.appendChild(s);
     }
@@ -149,6 +149,15 @@
 
   var SVG_NS = "http://www.w3.org/2000/svg";
 
+  // Dataviz mark spec: 2px line, round join/cap, a light area wash, an
+  // end-dot with a surface-color ring. The original version set
+  // stroke-width in viewBox units (100 wide) with no non-scaling-stroke,
+  // so on a real ~300-400px-wide card it rendered as a visually THICK,
+  // jagged line -- "chunky" (review feedback) is exactly what that looks
+  // like. vector-effect="non-scaling-stroke" keeps the stroke a constant
+  // 2 real pixels regardless of the viewBox-to-CSS-width scale factor.
+  // min/max/current labels give the shape a scale to read against --
+  // a bare squiggle with no numbers is not actually interpretable.
   function sparkline(points) {
     var wrap = document.createElement("div");
     wrap.className = "rounded-lg border border-gray-800 bg-gray-950/60 p-2";
@@ -161,7 +170,7 @@
       });
     if (!values.length) {
       var empty = document.createElement("div");
-      empty.className = "text-[10px] text-gray-500";
+      empty.className = "text-[11px] text-gray-500";
       empty.textContent = "no data yet";
       wrap.appendChild(empty);
       return wrap;
@@ -169,24 +178,72 @@
     var min = Math.min.apply(null, values);
     var max = Math.max.apply(null, values);
     var range = max - min || 1;
-    var svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", "0 0 100 30");
-    svg.setAttribute("preserveAspectRatio", "none");
-    svg.setAttribute("class", "w-full h-8");
-    var path = values
-      .map(function (v, i) {
-        var x = values.length > 1 ? (i / (values.length - 1)) * 100 : 0;
-        var y = 30 - ((v - min) / range) * 28 - 1;
-        return (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1);
+    var H = 40;
+    var pad = 4;
+    var points2d = values.map(function (v, i) {
+      var x = values.length > 1 ? (i / (values.length - 1)) * 100 : 0;
+      var y = H - pad - ((v - min) / range) * (H - 2 * pad);
+      return [x, y];
+    });
+    var linePath = points2d
+      .map(function (p, i) {
+        return (i === 0 ? "M" : "L") + p[0].toFixed(1) + "," + p[1].toFixed(1);
       })
       .join(" ");
-    var polyline = document.createElementNS(SVG_NS, "path");
-    polyline.setAttribute("d", path);
-    polyline.setAttribute("fill", "none");
-    polyline.setAttribute("stroke", "#818cf8");
-    polyline.setAttribute("stroke-width", "1.5");
-    svg.appendChild(polyline);
+    var areaPath =
+      linePath + " L" + points2d[points2d.length - 1][0].toFixed(1) + "," + H + " L0," + H + " Z";
+
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 100 " + H);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("class", "w-full h-12");
+
+    var area = document.createElementNS(SVG_NS, "path");
+    area.setAttribute("d", areaPath);
+    area.setAttribute("fill", "#818cf8");
+    area.setAttribute("fill-opacity", "0.10");
+    area.setAttribute("stroke", "none");
+    svg.appendChild(area);
+
+    var line = document.createElementNS(SVG_NS, "path");
+    line.setAttribute("d", linePath);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", "#818cf8");
+    line.setAttribute("stroke-width", "2");
+    line.setAttribute("stroke-linecap", "round");
+    line.setAttribute("stroke-linejoin", "round");
+    line.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(line);
+
+    var last = points2d[points2d.length - 1];
+    var ring = document.createElementNS(SVG_NS, "circle");
+    ring.setAttribute("cx", last[0]);
+    ring.setAttribute("cy", last[1]);
+    ring.setAttribute("r", "4");
+    ring.setAttribute("fill", "#030712"); // surface-color ring so the dot reads over the line/area
+    ring.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(ring);
+    var dot = document.createElementNS(SVG_NS, "circle");
+    dot.setAttribute("cx", last[0]);
+    dot.setAttribute("cy", last[1]);
+    dot.setAttribute("r", "2.5");
+    dot.setAttribute("fill", "#818cf8");
+    dot.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(dot);
+
     wrap.appendChild(svg);
+
+    var meta = document.createElement("div");
+    meta.className = "flex items-center justify-between text-[11px] text-gray-400 mt-0.5";
+    var range2 = document.createElement("span");
+    range2.textContent = fmt(min, 2) + "–" + fmt(max, 2);
+    var current = document.createElement("span");
+    current.className = "font-mono text-gray-300";
+    current.textContent = "now " + fmt(values[values.length - 1], 2);
+    meta.appendChild(range2);
+    meta.appendChild(current);
+    wrap.appendChild(meta);
+
     return wrap;
   }
 
@@ -344,7 +401,7 @@
       ALL_CHANNELS.forEach(function (ch) {
         var box = document.createElement("div");
         var label = document.createElement("div");
-        label.className = "text-[10px] uppercase tracking-wide text-gray-500 mb-1";
+        label.className = "text-[11px] uppercase tracking-wide text-gray-300 mb-1 font-semibold";
         label.textContent = ch + " (24h)";
         box.appendChild(label);
         box.appendChild(sparkline(seriesByChannel[ch] || []));
@@ -360,12 +417,28 @@
         none.textContent = "no induction row within freshness window";
         indEl.appendChild(none);
       }
-      keys.forEach(function (key) {
-        var m = metrics[key] || {};
+      var indRows = keys
+        .map(function (key) {
+          var m = metrics[key] || {};
+          var invert = !!INVERTED_CHANNELS[key];
+          return { key: key, m: m, tone: toneForPressure(m.level, invert) };
+        })
+        .sort(function (a, b) {
+          return TONE_RANK[a.tone] - TONE_RANK[b.tone];
+        });
+      indRows.forEach(function (row) {
+        var m = row.m;
+        // Plain words, not "L"/"vol"/"spike" abbreviations -- level is the
+        // EWMA-smoothed current value (should track the raw value above
+        // once it's had time to settle); volatility and spike rate say
+        // HOW erratically it's moving, which the raw snapshot tile can't.
         indEl.appendChild(
-          tile(key, "L " + fmt(m.level, 2), "vol " + fmt(m.volatility, 2) + " · spike " + fmt(m.spike_rate, 2), {
-            trend: trendArrow(m.trend),
-          })
+          tile(
+            row.key,
+            "level " + fmt(m.level, 2),
+            "volatility " + fmt(m.volatility, 2) + " · spikes " + fmt(m.spike_rate, 2) + "/tick",
+            { tone: row.tone, trend: trendArrow(m.trend) }
+          )
         );
       });
     }
@@ -388,7 +461,7 @@
     title.textContent = "#" + gpu.index + " " + (gpu.name || "?");
     var lane = document.createElement("span");
     lane.className =
-      "text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border " +
+      "text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full border " +
       (gpu.lane === "unassigned"
         ? "border-gray-700 bg-gray-900 text-gray-500"
         : "border-indigo-700 bg-indigo-950/60 text-indigo-200");
@@ -419,7 +492,7 @@
     box.appendChild(sparkline(gpu.trend || []));
 
     var procHeader = document.createElement("div");
-    procHeader.className = "text-[10px] uppercase tracking-wide text-gray-500 mt-1";
+    procHeader.className = "text-[11px] uppercase tracking-wide text-gray-400 mt-1";
     procHeader.textContent = "processes";
     box.appendChild(procHeader);
     var procs = gpu.processes || [];

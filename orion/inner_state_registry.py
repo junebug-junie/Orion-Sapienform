@@ -539,7 +539,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     InnerStateSignal(
         signal_id="mood_arc_encoder.v1",
         schema=MoodArcEncoderManifestV1,
-        producer_service="orion-spark-introspector",
+        producer_service="orion/mood_arc/fit_encoder.py (manually-invoked CLI, not a service; "
+        "producer_service corrected 2026-09-02 -- previously read orion-spark-introspector, "
+        "which never produced this artifact and was deleted 2026-07-28)",
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.REHEARSAL,
         cognition_consumers=(),
@@ -548,10 +550,15 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "roadmap-spec.md -- the windowed felt-state-trajectory "
             "autoencoder trained by orion/mood_arc/fit_encoder.py. A dark, "
             "disk-only training artifact (manifest.json/weights.npz/"
-            "probes.json under --out): no bus publish, no service wiring, "
-            "no cognition consumer by design -- same REHEARSAL precedent as "
-            "mood_arc_corpus.v1/field_channel_corpus.v1 and l7_l11_ladder, "
-            "not a gap to close. This entry is the exact follow-up the "
+            "probes.json under --out): no bus publish, no service wiring "
+            "of its own. REHEARSAL here is scoped to this class's own "
+            "documented meaning -- relative to SelfStateV1, the schema "
+            "every cognition-facing prompt-builder reads from -- not "
+            "'reached by nothing at all'; see the corrected note appended "
+            "at the end of this entry (2026-09-02). Same REHEARSAL "
+            "precedent as mood_arc_corpus.v1/field_channel_corpus.v1 and "
+            "l7_l11_ladder for the SelfStateV1-composition question "
+            "specifically. This entry is the exact follow-up the "
             "sibling schema PR (feat/mood-arc-encoder-manifest-schema, "
             "MoodArcEncoderManifestV1 registered in orion/schemas/"
             "registry.py) flagged and correctly declined to add itself, "
@@ -592,7 +599,33 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "valence channel and its replacement probe target is an open, "
             "undecided question -- so probes.json is empty for manifests "
             "trained from this point forward until that question is "
-            "resolved."
+            "resolved. "
+            "Corrected 2026-09-02: this entry's producer_service and prior "
+            "notes text claimed 'no cognition consumer by design', full "
+            "stop. That was wrong. orion.mood_arc.fit_encoder is imported "
+            "directly, in-process, by "
+            "services/orion-field-digester/app/anomaly_scorer.py, which "
+            "publishes FieldChannelAnomalyScoreV1 on bus channel "
+            "orion:field_channel:anomaly_score -- consumed by "
+            "orion-substrate-runtime's brain_frame_producer.py into "
+            "substrate_brain_frame_log, read by the Hub's "
+            "GET /api/self-brain/frames/tail, and rendered as the 'Field "
+            "Anomaly' region of the main-page Cognitive EKG / Substrate "
+            "Brain State viz. That is a real cognition consumer -- just "
+            "not one that composes into SelfStateV1, which is the "
+            "narrower thing this entry's composition_status actually "
+            "tracks (see the class docstring). Two live caveats: (1) that "
+            "whole path is gated by FIELD_CHANNEL_ANOMALY_ENABLED, "
+            "defaulting false in both .env_example and docker-compose.yml; "
+            "(2) anomaly_scorer.py reads its own separately-tracked model "
+            "directory (/mnt/telemetry/models/field_channel_anomaly/, only "
+            "v1-v3 as of this writing), not the directory this module's "
+            "own promote() subcommand writes to "
+            "(/mnt/telemetry/models/mood_arc/, which now has v4) -- "
+            "promoting a new version through this module's own bookkeeping "
+            "does not, by itself, move that live consumer onto it. Full "
+            "detail in orion/mood_arc/README.md's corrected 'Status' note "
+            "and its v4 section."
         ),
     ),
     InnerStateSignal(

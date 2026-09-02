@@ -25,7 +25,7 @@ For the default merged gateway route layout, Circe should run **3 always-on `ori
 | `agent` (logical) | routes to `chat` backend by default | `atlas-worker-1` | `8011` | same as chat | same as chat |
 | `metacog` | `atlas-metacog` | `atlas-worker-2` | `8012` | `ATLAS_METACOG_PROFILE_NAME` | `ATLAS_METACOG_CUDA_VISIBLE_DEVICES` |
 | `quick` (Hub-visible) | `atlas-fast` | `atlas-worker-fast-1` | `8013` | `ATLAS_FAST_PROFILE_NAME` | `ATLAS_FAST_CUDA_VISIBLE_DEVICES` |
-| `agent` (optional split mode) | `atlas-agent` | `atlas-worker-agent-1` | `8014` | `ATLAS_AGENT_PROFILE_NAME` | `ATLAS_AGENT_CUDA_VISIBLE_DEVICES` |
+| `agent` (optional split mode) | `atlas-agent` | `atlas-worker-agent-1` | `8015` | `ATLAS_AGENT_PROFILE_NAME` | `ATLAS_AGENT_CUDA_VISIBLE_DEVICES` |
 
 `quick` is a distinct **logical gateway route** that uses the dedicated FAST physical lane (`atlas-fast`).
 
@@ -80,7 +80,9 @@ ATLAS_FAST_HOST_PORT=8013
 ATLAS_AGENT_SERVICE_NAME=atlas-worker-agent-1
 ATLAS_AGENT_PROFILE_NAME=
 ATLAS_AGENT_CUDA_VISIBLE_DEVICES=
-ATLAS_AGENT_HOST_PORT=8014
+# 8015, not 8014 -- 8014 collides with orion-circe-diffusion-host's own
+# port mapping on circe (confirmed live 2026-09-02).
+ATLAS_AGENT_HOST_PORT=8015
 ```
 
 Notes:
@@ -118,12 +120,17 @@ Optional split agent worker:
 
 ```bash
 docker compose \
-  --env-file services/orion-llamacpp-host/.env.atlas \
+  --env-file services/orion-llamacpp-host/.env \
   --profile agent-split \
   -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
   up -d --build atlas-agent
 curl http://localhost:${ATLAS_AGENT_HOST_PORT}/health
 ```
+
+Note: despite this quickstart's own step 1 naming `.env.atlas`, circe's real
+deployed env file is plain `.env` (confirmed live 2026-09-02 -- `.env.atlas`
+does not exist there at all). The command above uses the file that's
+actually live.
 
 ### 7. Then validate through the gateway
 
@@ -317,7 +324,7 @@ Typical host-facing URL:
 http://<host-ip>:<host-port>
 ```
 
-For Atlas multi-worker bring-up, the relevant host ports are normally `8011`, `8012`, and `8014`.
+For Atlas multi-worker bring-up, the relevant host ports are normally `8011`, `8012`, and `8015`.
 
 ---
 

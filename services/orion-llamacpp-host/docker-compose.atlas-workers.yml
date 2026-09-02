@@ -146,7 +146,9 @@ services:
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
-      - "${ATLAS_AGENT_HOST_PORT:-8014}:8080"
+      # Default 8015, not 8014 -- see .env_example's ATLAS_AGENT_HOST_PORT
+      # comment (collides with orion-circe-diffusion-host's port mapping).
+      - "${ATLAS_AGENT_HOST_PORT:-8015}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s

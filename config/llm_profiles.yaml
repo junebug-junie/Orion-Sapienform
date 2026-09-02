@@ -1245,3 +1245,133 @@ profiles:
       - Wire: ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision,
         LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe's agent worker .env — confirm it
         doesn't silently affect Circe's already-running chat worker if they share one env)
+
+  qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex:
+    display_name: "Qwen3.8 27B – UD-Q4_K_XL (llama.cpp, 1x V100 32GB, Circe Agent-Flex lane)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.8-27b-ud-q4_k_xl"
+
+    supports_tools: true
+    supports_embeddings: false
+    # Not confirmed vision-capable -- Unsloth's own Qwen3.8 deployment docs
+    # (fetched 2026-09-02) describe this model's llama.cpp/llama-server
+    # deployment in text-only terms, unlike muse-glimmer-30b-udq4kxl above
+    # (which explicitly ships an mmproj + image token knobs). Leave false
+    # rather than assume; flip once actually confirmed.
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      # Doc-only fallback -- the real pin comes from
+      # CUDA_VISIBLE_DEVICES_OVERRIDE (services/orion-llamacpp-host/app/
+      # main.py:17-18 always prefers that env var over this field when
+      # both are present), which orion-gpu-lane-controller forces to "1"
+      # at invocation time regardless of whatever's in the env file. Set
+      # to 1 here anyway so this profile's own documentation isn't
+      # actively wrong about which physical card it's meant for.
+      device_ids: [1]
+      max_model_len: 32768
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.8-27B-GGUF"
+      hf_filename: "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      # Unsloth's own recommended sweet spot for this model: 4-bit
+      # (16-19GB weights) vs. 6-bit (23-26GB) or 8-bit (31GB, effectively
+      # no headroom left on a 32GB card once KV cache is counted). Matches
+      # what the user actually asked for ("Q16" isn't a real GGUF quant
+      # level; confirmed with Juniper 2026-09-02 this was the intended one).
+      ctx_size: 32768
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      # Same combination already live-proven for this model family on this
+      # exact hardware class (qwen3-30b-a3b-q4km-atlas-agent-64k-think,
+      # above): reasoning/reasoning_format enable+structure llama-server's
+      # own <think> parsing, independent of the model's chat template.
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      # Qwen3.8's OWN toggle mechanism per Unsloth's docs (fetched
+      # 2026-09-02) is chat_template_kwargs.reasoning_effort — NOT the
+      # older Qwen3 enable_thinking boolean. xhigh is the model's own
+      # documented default; medium/low/none are the other valid values if
+      # a shallower budget is ever wanted for this lane specifically.
+      # UNVERIFIED: whether the LLAMACPP_IMAGE_TAG already pinned for the
+      # agent worker (server-cuda-b10398+, required for muse-glimmer above)
+      # is recent enough to have the GGUF's own Jinja template actually
+      # honor this kwarg — check the first-boot log for a
+      # "chat_template_kwargs but --chat-template-kwargs was not emitted"
+      # warning (services/orion-llamacpp-host/app/main.py's own guard) the
+      # same way muse-glimmer's boot was checked before trusting this.
+      chat_template_kwargs:
+        reasoning_effort: "xhigh"
+
+      no_context_shift: true
+      # V100 is Volta -- same reasoning as muse-glimmer-30b-udq4kxl above
+      # (that profile's own bench found flash_attn on collapses TG ~20x on
+      # Volta). Off by default here for the same hardware reason, not
+      # re-benched separately for this specific model.
+      flash_attn: "off"
+
+      # Unsloth's Thinking-Mode defaults (fetched 2026-09-02) -- reasoning_
+      # effort defaults to xhigh above, so this lane runs in thinking mode
+      # by default. Their separately-documented Non-Thinking/Instruct
+      # sampling (temp 0.7, top_p 0.80, presence_penalty 1.5) is the right
+      # set to switch to if chat_template_kwargs.reasoning_effort is ever
+      # changed to "none" -- do not mix the two sampling sets with the
+      # wrong reasoning_effort value, they were tuned as pairs.
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+      # Unsloth also recommends repetition_penalty: 1.0 (both modes) --
+      # this repo's LlamaCppConfig has no repeat_penalty/repetition_penalty
+      # field to carry it (services/orion-llamacpp-host/app/profiles.py),
+      # only presence_penalty. Not adding one for a single profile's sake;
+      # 1.0 is llama.cpp's own no-op value for that knob, so the gap is
+      # low-stakes. Flag if a future profile needs a real (non-1.0) value.
+
+      n_predict: 16384
+
+    notes: |
+      Circe Agent-Flex lane: default resident for orion-gpu-lane-controller's
+      "agent" target (services/orion-gpu-lane-controller/) once GPU1 (Tesla
+      V100-SXM2-32GB, physically the same card orion-affectgpt-worker uses
+      when the lane is flipped to "affect") is free. Single V100-32GB, no
+      vision, no speculative decoding -- the plainest possible profile for
+      this lane, matching what was actually asked for rather than adding
+      capability this lane doesn't need yet.
+      - REQUIRES LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later) for the
+        chat_template_kwargs.reasoning_effort mechanism above to have any
+        chance of being honored -- inherited requirement from the same
+        constraint muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision already
+        documents for this worker; not independently re-verified for this
+        specific model's template.
+      - NOT YET LIVE-VERIFIED. Sourced from Unsloth's own Qwen3.8 deployment
+        docs (fetched 2026-09-02) plus this repo's existing
+        qwen3-30b-a3b-q4km-atlas-agent-64k-think /
+        muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision profiles as the
+        closest same-hardware-class templates -- not yet booted on real
+        hardware. First boot should confirm: (1) weights actually fit in
+        ~19GB + 32768 ctx KV cache within the 90%-of-32GB budget, (2) the
+        chat_template_kwargs.reasoning_effort kwarg is actually honored (see
+        above), (3) real completion quality/tokens-per-sec, none of which
+        boot success alone proves.
+      - If OOM: lower ctx_size to 24576 then 16384 before falling back to a
+        lower quant (e.g. UD-Q3_K_XL) from the same repo, same escalation
+        order as muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision above.
+      - Wire: ATLAS_AGENT_PROFILE_NAME=qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex,
+        LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe's agent worker .env --
+        confirm this doesn't silently affect the chat worker if they share
+        one env; same caveat as muse-glimmer above).

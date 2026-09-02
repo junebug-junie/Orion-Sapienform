@@ -10,11 +10,13 @@ nodes:
     # DECOMMISSIONED 2026-08-21. The physical chassis is gone as a distinct node: its disks
     # were pulled and replaced with athena's (athena now boots from that box, inheriting its
     # iLO at 192.168.1.34 -- see services/orion-biometrics/.env), its 2x V100 16GB moved into
-    # circe, and its old PDU outlets (34,35) are now athena's own reading, not a proxy. This
-    # entry is kept, not deleted, so `atlas` still resolves for any historical trace/lineage
-    # lookup; expected_online:false stops pressure_organ.py from treating its permanent
-    # silence as an unexpected outage (see orion/substrate/biometrics_loop/pressure_organ.py).
-    # It will never report again -- do not re-flip this without a real box behind the name.
+    # circe, and its old PDU outlets (34,35) briefly became athena's own reading, not a proxy.
+    # UPDATE 2026-09-02: athena was physically pulled off that Panduit PDU (see athena's own
+    # comment below) -- outlets 34,35 no longer carry any known machine's draw. This entry is
+    # kept, not deleted, so `atlas` still resolves for any historical trace/lineage lookup;
+    # expected_online:false stops pressure_organ.py from treating its permanent silence as an
+    # unexpected outage (see orion/substrate/biometrics_loop/pressure_organ.py). It will never
+    # report again -- do not re-flip this without a real box behind the name.
     aliases:
       - atlas
       - atlas.tail348bbe.ts.net
@@ -31,6 +33,11 @@ nodes:
       monitoring: false
 
   athena:
+    # Physically pulled off the Panduit PDU 2026-09-02 (Juniper). Power/chassis telemetry for
+    # athena comes exclusively from its iLO now -- see PDU_OUTLETS in services/orion-biometrics/
+    # settings.py and .env_example for the per-node config detail; PDU_HOST/PDU_PROXY_OUTLETS
+    # stay set so athena keeps proxying circe's outlets over SNMP, unrelated to athena's own
+    # power source.
     aliases:
       - athena
       - athena.tail348bbe.ts.net

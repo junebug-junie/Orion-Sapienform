@@ -118,13 +118,18 @@ class Settings(BaseSettings):
     #     atlas   PDU_OUTLETS=34,35      (2 PSUs)
     # athena is not on this PDU and leaves it empty, which disables the poller entirely.
     #
-    # RE-CABLED 2026-08-21. atlas is decommissioned (see node_catalog.yaml); its old outlets
-    # 34,35 are now athena's own reading (238 W chassis vs 235 W PDU, confirmed live). circe
-    # was separately relocated to this PDU's bank B1, now outlets 1,7,13 (~669 W, confirmed
-    # live via snmpget and the fleet cluster event's measurements_proxied). The SNMP outage
-    # blocking that confirmation was unrelated to outlet numbers: this PDU's SNMP Manager
-    # allow-list only had a stale athena address (an old DHCP lease), so athena's real queries
-    # were silently dropped -- fixed in the PDU's own admin panel, not in this repo.
+    # RE-CABLED 2026-08-21, UN-CABLED 2026-09-02. atlas was decommissioned 2026-08-21 (see
+    # node_catalog.yaml) and athena inherited its PDU spot, outlets 34,35 (238 W chassis vs
+    # 235 W PDU, confirmed live). Juniper physically pulled athena off this Panduit PDU
+    # 2026-09-02 -- outlets 34,35 no longer carry athena's draw (or any known machine's), so
+    # athena is back to the pre-2026-08-21 shape: not on this PDU, PDU_OUTLETS empty in
+    # athena's local .env, `chassis_watts` exclusively from its iLO. Do not re-set athena's
+    # PDU_OUTLETS without confirming a real re-cabling -- the same silent-wrong-reading risk
+    # this whole map exists to name applies in reverse: a stale outlet number now reads
+    # whatever else is plugged in there, not athena, and looks exactly as valid as a real
+    # reading. circe is unaffected -- it was always a separate relocation (bank B1, outlets
+    # 1,7,13) and PDU_PROXY_OUTLETS below still proxies it from athena over LAN/SNMP, which
+    # has nothing to do with athena's own power source.
     #
     # This is the only source of chassis power for a node with no BMC, which is the whole
     # reason it exists: circe has never reported watts, and every fleet total to date has

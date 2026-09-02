@@ -91,7 +91,7 @@ Optional per-route upstream model alias in the route table:
 ```json
 {
   "agent": {
-    "url": "http://100.112.254.99:8014",
+    "url": "http://100.112.254.99:8015",
     "served_by": "circe-worker-agent-1",
     "backend": "llamacpp",
     "model": "qwen-coder-local"
@@ -192,6 +192,15 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Now that Muse Glimmer is live on Circe's dedicated agent-lane worker (port 8014),
 > `agent` points there instead by default.
 >
+> **CORRECTED 2026-09-02**: the agent-lane worker's port moved 8014 -> 8015
+> (confirmed live: 8014 collides with orion-circe-diffusion-host's own port
+> mapping on circe, an unrelated service that happened to claim the same
+> host port -- not something to fix on diffusion-host's side). The worker
+> also now serves `qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex`
+> (`config/llm_profiles.yaml`), not Muse Glimmer -- that profile is still
+> defined in the file, just no longer wired to `ATLAS_AGENT_PROFILE_NAME`
+> by default.
+>
 > **Do not infer physical host from the `atlas-*` naming** anywhere in this file --
 > `ATLAS_AGENT_*` env vars and the `atlas-agent` compose service/container name are a
 > fixed naming convention for this worker *pattern*, reused across whichever physical
@@ -215,7 +224,7 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.112.254.99:8015","served_by":"circe-worker-agent-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
   "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
 }'
@@ -283,7 +292,7 @@ on to make a request wait for upstream slot slack, and an FCC turn cannot do tha
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.112.254.99:8015","served_by":"circe-worker-agent-1","backend":"llamacpp"},
   "harness":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp","priority":"system"},
   "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
   "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}

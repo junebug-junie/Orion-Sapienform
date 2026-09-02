@@ -246,7 +246,11 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
 
 
 def _success_frames(
-    run: HarnessRunV1, *, correlation_id: str, fcc_model_label: str | None = None
+    run: HarnessRunV1,
+    *,
+    correlation_id: str,
+    fcc_model_label: str | None = None,
+    mode_tag: str = "orion",
 ) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     if run.substrate_appraisal is not None:
@@ -269,7 +273,7 @@ def _success_frames(
     final_frame: dict[str, Any] = {
         "type": "final",
         "correlation_id": correlation_id,
-        "mode": "orion",
+        "mode": mode_tag,
         "llm_response": final_text,
         "finalize_ran": run.finalize_ran,
         "finalize_changed": run.finalize_changed,
@@ -721,6 +725,13 @@ async def execute_unified_turn(
     # tell backends apart. Falls back to the alias when discovery never fired
     # (e.g. the motor failed before any assistant turn).
     resolved_model_label = run.fcc_served_model or harness_req.fcc_model_label
+    # "orion" or "agent" -- both share this exact FCC path now (see
+    # websocket_handler.py/api_routes.py's `mode in ("orion", "agent")`
+    # branches); this was hardcoded "orion" until 2026-09-02, which
+    # permanently mislabeled every Agent-mode turn's final frame AND its
+    # persisted chat_history_log row (via _publish_unified_turn_chat_history's
+    # own mode_tag below) as "orion" -- caught live, verifying this exact fix.
+    mode_tag = str(payload.get("mode") or "orion").strip().lower()
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,
@@ -740,7 +751,12 @@ async def execute_unified_turn(
         }
         return [
             degraded_frame,
-            *_success_frames(run, correlation_id=correlation_id, fcc_model_label=resolved_model_label),
+            *_success_frames(
+                run,
+                correlation_id=correlation_id,
+                fcc_model_label=resolved_model_label,
+                mode_tag=mode_tag,
+            ),
         ]
     if not run.finalize_ran or not run.final_text:
         return [_harness_error_frame(run, correlation_id=correlation_id)]
@@ -755,7 +771,12 @@ async def execute_unified_turn(
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
         fcc_model_label=resolved_model_label,
     )
-    return _success_frames(run, correlation_id=correlation_id, fcc_model_label=resolved_model_label)
+    return _success_frames(
+        run,
+        correlation_id=correlation_id,
+        fcc_model_label=resolved_model_label,
+        mode_tag=mode_tag,
+    )
 
 
 async def _publish_unified_turn_chat_history(
@@ -806,7 +827,11 @@ async def _publish_unified_turn_chat_history(
 
     session = str(session_id or "anonymous")
     user_id = payload.get("user_id")
-    mode_tag = "orion"
+    # "orion" or "agent" -- was hardcoded "orion" until 2026-09-02, which
+    # permanently mislabeled every Agent-mode turn's persisted
+    # chat_history_log row. See execute_unified_turn's own mode_tag comment
+    # above this function's two call sites for the full context.
+    mode_tag = str(payload.get("mode") or "orion").strip().lower()
     spark_meta = {
         "mode": mode_tag,
         "unified_turn": True,

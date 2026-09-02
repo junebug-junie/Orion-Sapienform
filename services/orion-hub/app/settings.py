@@ -134,8 +134,18 @@ class Settings(BaseSettings):
     )
 
     # --- Context-exec agent lane (Hub Agent mode) ---
+    # Default flipped True -> False 2026-09-02: orion-context-exec has zero
+    # containers deployed on athena (confirmed live) -- with this on, every
+    # Hub "Agent" mode turn failed with "context-exec run unreachable"
+    # (services/orion-hub/scripts/context_exec_client.py). Hub's Agent mode
+    # now routes through the same FCC/harness-governor path Orion mode uses
+    # instead (see websocket_handler.py's `client_mode in ("orion", "agent")`
+    # branch) -- this flag's code path (context_exec_agent_bridge.py) is
+    # left in place, just off by default, not deleted; flip back to true
+    # only if orion-context-exec is ever actually redeployed AND you want
+    # Agent mode to use it again instead of FCC.
     HUB_AGENT_CONTEXT_EXEC_ENABLED: bool = Field(
-        default=True,
+        default=False,
         alias="HUB_AGENT_CONTEXT_EXEC_ENABLED",
     )
     HUB_CONTEXT_EXEC_API_URL: str = Field(

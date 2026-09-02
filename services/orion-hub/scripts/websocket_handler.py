@@ -1014,8 +1014,13 @@ async def websocket_endpoint(websocket: WebSocket):
     """Orion capability: Hub chat entry.
 
     Accepts every Hub chat WebSocket and routes each message by client mode;
-    an Orion-mode message with ORION_UNIFIED_TURN_ENABLED routes into
-    run_unified_turn rather than the older direct Cortex request path. This
+    an Orion-mode or Agent-mode message with ORION_UNIFIED_TURN_ENABLED
+    routes into run_unified_turn (real Claude via the FCC/harness-governor
+    subprocess spawn) rather than the older direct Cortex request path.
+    Agent mode joined this branch 2026-09-02 -- it used to call
+    orion-context-exec directly (a service with zero live containers on
+    athena, always failing), now it's the same FCC mechanism Orion mode
+    already used, just tagged "agent" instead of "orion" for tracing. This
     function owns connection lifecycle and frame relay only — turn cognition
     lives in the unified turn orchestrator.
 
@@ -1365,7 +1370,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
             trace_id = str(uuid.uuid4())
 
-            if client_mode == "orion" and settings.ORION_UNIFIED_TURN_ENABLED:
+            # "agent" rides the exact same FCC/harness-governor path as
+            # "orion" -- same claude -p spawn mechanism, same
+            # run_unified_turn plumbing, just tagged differently below for
+            # tracing (active_turn["kind"], cancellation, TTS lane). This
+            # replaced Hub's Agent Mode calling into orion-context-exec
+            # directly (context_exec_agent_bridge.py), a service that has
+            # zero containers deployed on athena -- confirmed live
+            # 2026-09-02, every Agent-mode turn failed with "context-exec
+            # run unreachable". Juniper: "context exec is failed prototype";
+            # she asked for Agent mode to route through FCC like Orion does,
+            # not a different backend. See HUB_AGENT_CONTEXT_EXEC_ENABLED in
+            # app/settings.py (now defaults off) for why the old path is
+            # naturally unreachable now rather than deleted outright.
+            if client_mode in ("orion", "agent") and settings.ORION_UNIFIED_TURN_ENABLED:
                 if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
                     # Pop the user turn just appended above -- no assistant
                     # turn will ever answer it on this early-exit path, and
@@ -1433,7 +1451,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 active_turn["correlation_id"] = trace_id
-                active_turn["kind"] = "orion"
+                # "orion" or "agent" -- both are FCC-via-governor turns now;
+                # turn_cancel.py's cancel_in_flight_turn() already treats
+                # any kind other than "agent-claude"/"agent_claude" as "the
+                # default: Orion unified harness motor (and any other
+                # FCC-via-governor path)", so this needs no matching change
+                # there.
+                active_turn["kind"] = client_mode
                 # Affect bracket, leg 1 of 2. Fired here rather than earlier
                 # (right after voice.stt.done) on purpose: everything between
                 # those two points can still bail out with `continue`
@@ -1491,7 +1515,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         ),
                         bus=rpc_bus or bus,
                         correlation_id=trace_id,
-                        kind="orion",
+                        kind=client_mode,
                     )
                 finally:
                     active_turn["correlation_id"] = None
@@ -1563,7 +1587,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         tts_q=tts_q,
                         correlation_id=trace_id,
                         session_id=session_id,
-                        lane="orion",
+                        lane=client_mode,
                     )
                 continue
 

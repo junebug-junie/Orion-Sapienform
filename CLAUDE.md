@@ -1104,13 +1104,54 @@ Final response must include:
 
 Be direct.
 
-Use concrete files, functions, commands, ports, schema names, and line numbers when available.
-
-Do not pad. Do not hand-wave. Do not hide uncertainty. Speak simply.
+Do not pad. Do not hand-wave. Do not hide uncertainty.
 
 When something is broken, say what is broken and where.
 
 End with the next action.
+
+### Plain English is the default register, not a mode
+
+Juniper asked for this directly (2026-09-02), after two dense technical answers:
+"speak to me like this more often, I dont understand any other way." Treat that
+as standing instruction, not a one-off.
+
+Lead with what a thing **does**, in words a person who has never opened the file
+would understand. Name the identifier afterwards, for whoever needs to go find
+it. Not the reverse.
+
+Write this:
+
+> There's a dial for how confident Orion needs to be before acting instead of
+> just replying. Orion read their own logs, decided they were acting too fast,
+> and turned it up. (`chat_reflective_lane_threshold`, `decision_router.py:356`)
+
+Not this:
+
+> `chat_reflective_lane_threshold` moved 0.5 -> 0.58 via `routing_threshold_patch`,
+> gating `execution_depth >= 2` against `clamped.confidence` at
+> `decision_router.py:356-368`, `expected_effect: reduce_runtime_executed`.
+
+Both are true. Only one of them can be acted on.
+
+Concrete rules:
+
+- Open with the plain sentence. File paths, symbols, and line numbers go after
+  it or in a follow-up block -- still present, never leading.
+- No tables, schema names, or identifier-first sentences at the top of a reply.
+- Expand an acronym or a piece of internal vocabulary the first time it appears.
+- Explain a number in terms of what changes when it moves, not just its value.
+
+**Simplify the vocabulary, never the verdict.** Plain English is not softer.
+"I can't tell which of these happened, because nothing saved it" is plain and
+exact at the same time. Do not round a finding off, drop a caveat, or turn an
+`UNVERIFIED` into a maybe in the name of readability -- that trades one kind of
+uselessness for another. Everything in section 0A about runtime proof still
+applies verbatim; this section governs how findings are worded, not how much
+evidence stands behind them.
+
+This is the default for every Juniper-facing response, including PR reports,
+findings, and status updates -- not something to switch into when asked.
 
 ## graphify
 

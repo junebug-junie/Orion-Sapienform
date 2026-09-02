@@ -78,6 +78,39 @@ services:
       - max_parallel_maintenance_workers=1
       - -c
       - vacuum_cost_delay=2ms
+      # Cache sizing. Both were left at the postgres:15 DEFAULTS until now, on a
+      # 41GB database: shared_buffers=128MB and effective_cache_size=4GB. The
+      # max_connections note above already named the first as a live cost --
+      # "with shared_buffers at the 128MB default IS this database's cache" --
+      # because everything not in those 128MB is served from kernel page cache
+      # inside the cgroup, where it competes with backend memory and is evicted
+      # by any other pressure in the same limit.
+      #
+      # Sized against `mem_limit` (16g), NOT host RAM. The host has 503GB, but
+      # this container cannot use it; sizing to the host is the classic way to
+      # get a cgroup OOM. 4GB is the conventional 25%-of-available for a
+      # dedicated database, applied to the real ceiling. Headroom check: 300
+      # backends x ~2.6MB anon RSS is ~780MB (measured, see above), so 4GB
+      # shared + ~0.8GB backends + 1GB shm_size leaves ~10GB of the 16g for page
+      # cache and work memory. The cgroup was already sitting at ~97.6% of its
+      # limit on reclaimable page cache, so this moves cache from a generic,
+      # first-evicted pool into one Postgres manages with usage counts and a
+      # clock sweep -- roughly memory-neutral, strictly better hit behaviour.
+      #
+      # effective_cache_size allocates NOTHING. It is a planner hint for how much
+      # is cached in total (shared_buffers + OS cache), and the 4GB default makes
+      # the planner systematically overprice index scans and prefer seq scans it
+      # should not. 12GB reflects what is actually reachable inside the 16g cap.
+      #
+      # work_mem is deliberately NOT raised here. It is per-sort, not per-backend,
+      # so at max_connections=300 a careless bump multiplies into real OOM risk --
+      # the one knob on this list where the cgroup cap genuinely bites.
+      #
+      # Both are postmaster-level; a `docker compose up -d` recreate is required.
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}

@@ -51,11 +51,16 @@ failure can never be mistaken for a pass.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
 
 EXIT_OK = 0
 EXIT_ALARM = 1
@@ -206,6 +211,138 @@ def top_clients(conn, limit: int = 10) -> list[tuple[str, int]]:
         return [(str(a), int(n)) for a, n in cur.fetchall()]
 
 
+DEFAULT_NOTIFY_BASE_URL = os.getenv("NOTIFY_BASE_URL", "http://localhost:7140")
+
+
+def default_state_file() -> str:
+    """Same telemetry-tree convention as scripts/disk_threshold_watchdog.py."""
+    root = os.getenv("TELEMETRY_ROOT", "/mnt/telemetry")
+    project = os.getenv("PROJECT", "orion-athena")
+    return os.path.join(root, project, "postgres-headroom", "state.json")
+
+
+class _StateLock:
+    """Non-blocking flock on `<state_file>.lock`.
+
+    Same pattern as disk_threshold_watchdog.py: overlapping cron ticks must not
+    interleave the read-evaluate-write cycle, and a run that cannot get the lock
+    skips rather than waits -- the next tick is only minutes away.
+    """
+
+    def __init__(self, state_file: str) -> None:
+        self._path = f"{state_file}.lock"
+        self._fh = None
+
+    def __enter__(self) -> bool:
+        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+        self._fh = open(self._path, "w")
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._fh.close()
+            self._fh = None
+            return False
+        return True
+
+    def __exit__(self, *exc: object) -> None:
+        if self._fh is not None:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            self._fh.close()
+            self._fh = None
+
+
+def _load_state(state_file: str) -> dict[str, Any]:
+    try:
+        with open(state_file, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        return loaded if isinstance(loaded, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_state(state_file: str, state: dict[str, Any]) -> None:
+    """Atomic replace so a crash mid-write cannot leave unparseable state."""
+    os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_file) or ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2, sort_keys=True)
+        os.replace(tmp, state_file)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def notify_alarm(args, *, reason: str, message: str, severity: str) -> None:
+    """Fire at most one Pending Attention card per unbroken alarm episode.
+
+    Debounce rule copied deliberately from disk_threshold_watchdog.py, including
+    the part that is easy to get wrong: state records `notified=True` ONLY after
+    the client confirms `ok`. A card that failed to land (orion-notify down or
+    erroring -- NotifyClient returns ok=False, it does not raise) is retried on
+    the next tick instead of being debounced into permanent silence by the mere
+    fact that we noticed the alarm once.
+
+    A human acks these cards; nothing here auto-resolves them, so re-firing every
+    10 minutes while one is already open would be noise, not signal.
+    """
+    if not args.notify:
+        return
+    with _StateLock(args.state_file) as acquired:
+        if not acquired:
+            return
+        state = _load_state(args.state_file)
+        already = state.get("reason") == reason and state.get("notified") is True
+        if already:
+            return
+        try:
+            from orion.notify.client import NotifyClient
+        except ImportError as exc:
+            print(f"  notify unavailable ({exc}); alarm not escalated", file=sys.stderr)
+            return
+        client = NotifyClient(
+            base_url=args.notify_base_url, api_token=args.notify_api_token, timeout=10
+        )
+        accepted = client.attention_request(
+            message=message,
+            severity=severity,
+            require_ack=True,
+            context={
+                "source_service": "check_postgres_connection_headroom",
+                "reason": reason,
+            },
+        )
+        ok = bool(getattr(accepted, "ok", False))
+        state.update(
+            {
+                "reason": reason,
+                "notified": ok,
+                "last_alarm_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        _save_state(args.state_file, state)
+        print(
+            f"  attention card {'sent' if ok else 'FAILED to send (will retry next tick)'}",
+            file=sys.stderr,
+        )
+
+
+def clear_alarm(args) -> None:
+    """Alarm cleared: forget the episode so the next one notifies again.
+
+    Silent by design -- an ack'd card has already been seen by a human, and there
+    is nothing for this script to auto-resolve.
+    """
+    if not args.notify:
+        return
+    with _StateLock(args.state_file) as acquired:
+        if not acquired:
+            return
+        state = _load_state(args.state_file)
+        if state.get("reason") or state.get("notified"):
+            _save_state(args.state_file, {"reason": None, "notified": False})
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dsn", default=None, help="Postgres DSN (default $POSTGRES_URI)")
@@ -217,7 +354,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--min-free-pct", type=float, default=DEFAULT_MIN_FREE_PCT)
     ap.add_argument("--stale-hours", type=int, default=2)
     ap.add_argument("--verbose", action="store_true", help="idle split and top clients")
+    ap.add_argument(
+        "--notify",
+        action="store_true",
+        help="raise a Hub Pending Attention card on alarm (debounced; one per episode)",
+    )
+    ap.add_argument("--notify-base-url", default=DEFAULT_NOTIFY_BASE_URL)
+    ap.add_argument("--notify-api-token", default=os.getenv("NOTIFY_API_TOKEN"))
+    ap.add_argument("--state-file", default=None, help="debounce state (see default_state_file)")
     args = ap.parse_args(argv)
+    if args.state_file is None:
+        args.state_file = default_state_file()
 
     params = connection_params(args.dsn)
 
@@ -246,6 +393,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "SATURATED: Postgres refused this connection -- no slots left "
                 f"({exc.__class__.__name__}: {str(exc).strip()})",
                 file=sys.stderr,
+            )
+            notify_alarm(
+                args,
+                reason="saturated",
+                message=(
+                    "Postgres refused a new connection: every slot is in use. "
+                    "Operators cannot get in either -- all client backends are "
+                    "superusers, so the reserved slots hold nothing back."
+                ),
+                severity="critical",
             )
             return EXIT_ALARM
         print(f"cannot check connection headroom: {exc}", file=sys.stderr)
@@ -277,7 +434,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             f"(threshold {args.min_free_pct:.0f}%). {headroom.summary()}",
             file=sys.stderr,
         )
+        notify_alarm(
+            args,
+            reason="headroom_low",
+            message=(
+                f"Postgres connection headroom low: {headroom.summary()}. "
+                f"Below the {args.min_free_pct:.0f}% free threshold."
+                + (
+                    " Every client backend is a superuser, so the reserved slots "
+                    "will not hold a door open for an operator."
+                    if headroom.reserve_is_decorative
+                    else ""
+                )
+            ),
+            severity="warning",
+        )
         return EXIT_ALARM
+    clear_alarm(args)
     return EXIT_OK
 
 

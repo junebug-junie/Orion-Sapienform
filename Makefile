@@ -1,4 +1,4 @@
-.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom
+.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
 
 SERVICE ?=
 ARGS ?=
@@ -405,7 +405,19 @@ check-sql-migrations-applied-quiet:
 # check-sql-migrations-applied this is an operator/agent command, not a CI gate.
 # Exit 1 = alarm (saturated or below threshold); exit 2 = could not check.
 # Must use the repo venv -- system python3 has no psycopg2.
-# Cron it as:
-#   */10 * * * * make postgres-headroom
 postgres-headroom:
 	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose
+
+# Cron-facing variant. Identical gate, plus --notify, which raises ONE Hub Pending
+# Attention card per alarm episode (debounced; a send that fails is retried on the
+# next tick rather than being treated as delivered).
+#
+# Kept as a separate target on purpose: an operator running `make postgres-headroom`
+# by hand to look at the numbers must not raise a card, and the plain target is also
+# the one a human reads output from. The schedule above this used to live here as a
+# COMMENT and was never installed -- between PR #2010 and 2026-09-02 nothing ran this
+# gate at all, so a slow crawl toward max_connections had no watcher. Installed now:
+#   3-59/10 * * * * make postgres-headroom-watch \
+#       >> /mnt/scripts/Orion-Sapienform/logs/orion-postgres-headroom.log 2>&1
+postgres-headroom-watch:
+	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose --notify

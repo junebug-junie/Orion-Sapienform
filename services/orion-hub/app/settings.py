@@ -1007,6 +1007,34 @@ class Settings(BaseSettings):
         alias="HUB_TTS_TIMEOUT_SEC",
         description="Hub bus RPC wait for text-to-speech (should exceed whisper TTS synth worker timeout).",
     )
+    HUB_TTS_STREAM_ENABLED: bool = Field(
+        default=True,
+        alias="HUB_TTS_STREAM_ENABLED",
+        description=(
+            "Speak long replies as sentence-aligned chunks, queued to the browser as each "
+            "is synthesized, instead of one clip after the whole reply is rendered. "
+            "False restores the pre-2026-09-02 single-shot behavior."
+        ),
+    )
+    HUB_TTS_STREAM_FIRST_CHUNK_CHARS: int = Field(
+        default=140,
+        alias="HUB_TTS_STREAM_FIRST_CHUNK_CHARS",
+        description=(
+            "Target size of the FIRST spoken chunk. This alone sets how long Juniper waits "
+            "for Orion's voice to start; at the measured real-time factor of ~0.33, 140 chars "
+            "is roughly 2s of synthesis. Lower starts sooner but clips prosody shorter."
+        ),
+    )
+    HUB_TTS_STREAM_CHUNK_CHARS: int = Field(
+        default=280,
+        alias="HUB_TTS_STREAM_CHUNK_CHARS",
+        description=(
+            "Target size of every chunk after the first. Kept near 2x the first chunk: a chunk "
+            "must render inside the previous chunk's playback, which at RTF 0.33 holds while "
+            "a chunk is under ~3x its predecessor. Raising this past that risks the voice "
+            "running dry mid-reply on a slower card."
+        ),
+    )
 
 
     # --- Hub Prompt Context (UI-side rolling history) ---

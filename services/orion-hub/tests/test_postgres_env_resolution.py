@@ -20,7 +20,14 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
 from scripts import api_routes
 
 
+# conftest.pytest_configure sets SUBSTRATE_CONTROL_PLANE_DETACHED=1 for the whole
+# suite so no test can bind the control-plane stores to live Postgres. That flag
+# short-circuits _resolve_control_plane_postgres_url before it reads any URL key,
+# which is exactly the logic the tests below exist to pin -- so each one clears it
+# explicitly. Clearing it here is safe: these tests only call the resolver, they
+# never construct a store from what it returns.
 def test_control_plane_postgres_resolution_precedence(monkeypatch) -> None:
+    monkeypatch.delenv("SUBSTRATE_CONTROL_PLANE_DETACHED", raising=False)
     monkeypatch.setenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "postgresql://cp:pw@10.0.0.8:5432/control")
     monkeypatch.setenv("SUBSTRATE_POLICY_POSTGRES_URL", "postgresql://policy:pw@10.0.0.9:5432/policy")
     monkeypatch.setenv("DATABASE_URL", "postgresql://db:pw@10.0.0.10:5432/default")
@@ -29,6 +36,7 @@ def test_control_plane_postgres_resolution_precedence(monkeypatch) -> None:
 
 
 def test_control_plane_postgres_resolution_falls_back_to_policy_then_database(monkeypatch) -> None:
+    monkeypatch.delenv("SUBSTRATE_CONTROL_PLANE_DETACHED", raising=False)
     monkeypatch.delenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", raising=False)
     monkeypatch.setenv("SUBSTRATE_POLICY_POSTGRES_URL", "postgresql://policy:pw@10.0.0.9:5432/policy")
     monkeypatch.setenv("DATABASE_URL", "postgresql://db:pw@10.0.0.10:5432/default")
@@ -41,6 +49,7 @@ def test_control_plane_postgres_resolution_falls_back_to_policy_then_database(mo
 
 
 def test_host_network_mode_warns_on_docker_service_hostname(monkeypatch, caplog) -> None:
+    monkeypatch.delenv("SUBSTRATE_CONTROL_PLANE_DETACHED", raising=False)
     monkeypatch.setenv("HUB_DOCKER_NETWORK_MODE", "host")
     monkeypatch.setenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney")
 

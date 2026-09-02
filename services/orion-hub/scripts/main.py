@@ -292,6 +292,7 @@ presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 substrate_decay_task: Optional[asyncio.Task] = None
+substrate_review_task: Optional[asyncio.Task] = None
 substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
 affect_ambient_loop_task: Optional[asyncio.Task] = None
 heartbeat_chassis: Optional[HeartbeatOnly] = None
@@ -385,7 +386,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -747,6 +748,39 @@ async def startup_event():
     else:
         logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
 
+    if settings.SUBSTRATE_REVIEW_SCHEDULER_ENABLED:
+        review_interval_sec = max(1.0, float(settings.SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC))
+        review_bootstrap_limit = max(1, int(settings.SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT))
+        review_prune_after_sec = max(0.0, float(settings.SUBSTRATE_REVIEW_SCHEDULER_PRUNE_AFTER_SEC))
+
+        async def _run_substrate_review_scheduler() -> None:
+            # Offloaded to a thread for the same reason as the concept seed and
+            # decay loops: a tick can issue blocking semantic reads (and, on
+            # SUBSTRATE_STORE_BACKEND=sparql, blocking HTTP writes) against the
+            # substrate store, which would otherwise stall Hub's event loop.
+            while True:
+                await asyncio.sleep(review_interval_sec)
+                try:
+                    await asyncio.to_thread(
+                        api_routes_runtime.execute_substrate_review_scheduled_cycle,
+                        bootstrap_limit=review_bootstrap_limit,
+                        prune_after_sec=review_prune_after_sec,
+                    )
+                except Exception as exc:  # advisory runtime loop; never crash service startup
+                    logger.warning("substrate_review_scheduler_error error=%s", exc)
+
+        substrate_review_task = asyncio.create_task(
+            _run_substrate_review_scheduler(),
+            name="hub-substrate-review-scheduler",
+        )
+        logger.info(
+            "substrate_review_scheduler_enabled interval_sec=%s bootstrap_limit=%s",
+            review_interval_sec,
+            review_bootstrap_limit,
+        )
+    else:
+        logger.info("substrate_review_scheduler_disabled reason=env_disabled")
+
     if settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED:
         from scripts.topic_foundry_scheduler_policy import (
             next_wait_seconds as _tf_next_wait_seconds,
@@ -1039,7 +1073,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1068,6 +1102,13 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_decay_task = None
+    if substrate_review_task is not None:
+        substrate_review_task.cancel()
+        try:
+            await substrate_review_task
+        except asyncio.CancelledError:
+            pass
+        substrate_review_task = None
     if substrate_topic_foundry_scheduler_task is not None:
         substrate_topic_foundry_scheduler_task.cancel()
         try:

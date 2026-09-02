@@ -1245,6 +1245,24 @@ class Settings(BaseSettings):
     # the underlying writes blocking HTTP calls to Fuseki.
     SUBSTRATE_DECAY_SCHEDULER_ENABLED: bool = Field(default=True, alias="SUBSTRATE_DECAY_SCHEDULER_ENABLED")
     SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC: float = Field(default=120.0, alias="SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC")
+    # Drives the graph-review loop unattended: seed substrate_review_queue_item
+    # from the frontier when it is empty, then drain one due item per tick (see
+    # api_routes.py::execute_substrate_review_scheduled_cycle). Before this
+    # existed, both halves were operator-endpoint-only and the queue had never
+    # held a row, which starved the downstream SUBSTRATE_AUTONOMY mutation
+    # scheduler that consumes the review runtime's telemetry. Interval is far
+    # slower than SUBSTRATE_AUTONOMY_INTERVAL_SEC (30s) because each tick can
+    # run semantic graph queries against the substrate store.
+    SUBSTRATE_REVIEW_SCHEDULER_ENABLED: bool = Field(default=False, alias="SUBSTRATE_REVIEW_SCHEDULER_ENABLED")
+    SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC: float = Field(default=420.0, alias="SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC")
+    SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT: int = Field(default=12, alias="SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT")
+    # How long a suppressed/terminated queue item rests before prune_finished
+    # drops it and the bootstrapper may reconsider that region. Nothing else
+    # removes an item, and upsert() copies suppression forward on a region-key
+    # match, so without pruning the queue reaches a permanently un-drainable
+    # state after ~6 executed cycles. Default matches the policy's own
+    # slow_revisit_seconds (6h) -- the slowest rest the schema already defines.
+    SUBSTRATE_REVIEW_SCHEDULER_PRUNE_AFTER_SEC: float = Field(default=21600.0, alias="SUBSTRATE_REVIEW_SCHEDULER_PRUNE_AFTER_SEC")
     # Autonomous topic-foundry training + concept ingestion (Gap 5 of the
     # concept-graph-pipeline design). Each tick: (1) ensure a well-known
     # dataset+model exist on topic-foundry (idempotent get-or-create by name,

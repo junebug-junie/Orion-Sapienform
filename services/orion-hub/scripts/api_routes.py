@@ -182,6 +182,7 @@ from .cocreation_signals_routes import router as cocreation_signals_router
 from .chat_turn_trace_routes import router as chat_turn_trace_router
 from .cabinet_sensors_routes import router as cabinet_sensors_router
 from .cabinet_ambient_routes import router as cabinet_ambient_router
+from .biometrics_preview_routes import router as biometrics_preview_router
 from .reverie_routes import router as reverie_router
 router.include_router(grammar_atlas_router)
 router.include_router(chat_turn_trace_router)
@@ -204,6 +205,7 @@ router.include_router(attention_organ_router)
 router.include_router(cocreation_signals_router)
 router.include_router(cabinet_sensors_router)
 router.include_router(cabinet_ambient_router)
+router.include_router(biometrics_preview_router)
 router.include_router(reverie_router)
 
 

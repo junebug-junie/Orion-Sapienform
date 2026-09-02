@@ -456,6 +456,37 @@ class Settings(BaseSettings):
         alias="CABINET_AMBIENT_HISTORY_MAX_POINTS",
     )
 
+    # --- Biometrics preview/modal (Cognitive EKG toggle + deep-inspect modal) ---
+    # Athena's own orion-biometrics is local (127.0.0.1:8100, hardcoded in
+    # biometrics_node_client.py); circe's is cross-host over tailscale. This is
+    # circe's real per-service IP (NOT the shared bus/Redis host
+    # 100.92.216.81) -- confirmed against JUNIPER_AFFECTIVE_STATE_BASE_URL,
+    # HUB_AITOWN_CONVEX_URL, and the diffusion-host circe endpoint, all on
+    # 100.112.254.99.
+    CIRCE_BIOMETRICS_BASE_URL: str = Field(
+        default="http://100.112.254.99:8100",
+        alias="CIRCE_BIOMETRICS_BASE_URL",
+    )
+    BIOMETRICS_NODE_CLIENT_TIMEOUT_SEC: float = Field(
+        default=5.0,
+        alias="BIOMETRICS_NODE_CLIENT_TIMEOUT_SEC",
+    )
+    # GPU index -> Orion model-routing lane label, per node. nvidia-smi itself
+    # has no lane concept -- this is a small, hand-maintained join against
+    # scattered CUDA_VISIBLE_DEVICES* env keys across several services'
+    # .env_example/docker-compose files (no central registry exists). An
+    # index absent from the map renders "unassigned" in the API response,
+    # never guessed. Ship as an honestly-partial, easily-edited blob -- do
+    # not try to reconcile every index at once; the mapping already churns.
+    GPU_LANE_MAP_ATHENA_JSON: str = Field(
+        default="{}",
+        alias="GPU_LANE_MAP_ATHENA_JSON",
+    )
+    GPU_LANE_MAP_CIRCE_JSON: str = Field(
+        default="{}",
+        alias="GPU_LANE_MAP_CIRCE_JSON",
+    )
+
     # --- Organ signal gateway inspect (Phase 2b Hub) ---
     SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")
     SIGNALS_INSPECT_SUBSCRIBE_PATTERN: str = Field(

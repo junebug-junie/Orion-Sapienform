@@ -1,12 +1,16 @@
-"""Cabinet sensors operator tab: wiring contract + static-content assertions.
+"""Cabinet sensors panel: wiring contract + static-content assertions.
 
-This tab visualizes Athena Nano host snapshots from
-GET /api/cabinet/sensors/latest (cabinet_sensors_routes.py, Task 1). Modeled
-directly on test_field_attention_operator_panel.py: the panel needs the same
-app.js registration points (element binding, missing-panel fallback,
-visibility toggle, button styling, hash routing) plus a script tag plus a nav
-anchor -- missing any one produces a tab that silently falls back to Hub on a
-specific interaction rather than failing loudly.
+This panel visualizes Athena Nano host snapshots from
+GET /api/cabinet/sensors/latest (cabinet_sensors_routes.py, Task 1).
+
+Relocated 2026-09-02 from a standalone top-level Hub tab into the Biometrics
+modal's Cabinet subview (biometrics-view.js) -- see
+docs/superpowers/pr-reports/ for that patch. `id="cabinet"` and every mount
+id inside it are UNCHANGED (cabinet-sensors.js binds by getElementById,
+location-independent), so most of this file's content assertions still hold
+verbatim; only the assertions that were specific to the OLD standalone-tab
+wiring (nav button, app.js's setActiveTab registration) are updated below to
+assert the new modal-subview wiring instead.
 
 The backend route is covered by test_cabinet_sensors_api.py; this file does
 not duplicate API behavior.
@@ -26,6 +30,9 @@ CABINET_SENSORS_JS = (HUB_ROOT / "static" / "js" / "cabinet-sensors.js").read_te
 FIELD_ATTENTION_JS = (HUB_ROOT / "static" / "js" / "field-attention.js").read_text(
     encoding="utf-8"
 )
+BIOMETRICS_VIEW_JS = (HUB_ROOT / "static" / "js" / "biometrics-view.js").read_text(
+    encoding="utf-8"
+)
 
 
 # --------------------------------------------------------------------------
@@ -33,11 +40,20 @@ FIELD_ATTENTION_JS = (HUB_ROOT / "static" / "js" / "field-attention.js").read_te
 # --------------------------------------------------------------------------
 
 
-def test_template_declares_nav_button_panel_and_script_tag() -> None:
-    assert 'data-hash-target="#cabinet"' in INDEX_HTML
-    assert 'id="cabinetTabButton"' in INDEX_HTML
+def test_template_no_longer_declares_a_standalone_nav_tab() -> None:
+    """Relocated into the Biometrics modal -- a reintroduced top-level nav
+    button/hash-target would mean two competing owners for #cabinet's
+    visibility (the modal's showModalSubview() and app.js's old setActiveTab
+    path), which is exactly the collision the relocation removed."""
+    assert 'id="cabinetTabButton"' not in INDEX_HTML
+    assert 'data-hash-target="#cabinet"' not in INDEX_HTML
+
+
+def test_template_declares_panel_and_script_tag() -> None:
     assert 'id="cabinet" data-panel="cabinet"' in INDEX_HTML
     assert "/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" in INDEX_HTML
+    assert "/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" in INDEX_HTML
+    assert 'id="biometricsSubtabCabinet"' in INDEX_HTML
     for mount_id in (
         "cabinetStatus",
         "cabinetSources",
@@ -105,25 +121,27 @@ def test_template_names_no_snapshot_service_and_hub_activity_label() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_app_js_registers_the_panel_in_every_place_setactivetab_needs() -> None:
-    """All Field Attention-style registration points -- see module docstring."""
-    assert 'document.getElementById("cabinetTabButton")' in APP_JS
-    assert 'document.getElementById("cabinet")' in APP_JS
-    assert 'tabKey === "cabinet" && !cabinetPanel' in APP_JS
-    assert 'const isCabinet = effectiveTab === "cabinet";' in APP_JS
-    assert 'cabinetPanel.classList.toggle("hidden", !isCabinet);' in APP_JS
-    assert "styleTabButton(cabinetTabButton, isCabinet);" in APP_JS
-    assert 'h === "#cabinet" && cabinetPanel' in APP_JS
-    assert 'history.replaceState(null, "", "#cabinet");' in APP_JS
+def test_app_js_no_longer_owns_cabinet_tab_switching() -> None:
+    """app.js's old setActiveTab wiring for #cabinet must be fully gone --
+    a leftover reference would mean app.js and biometrics-view.js both think
+    they own #cabinet's visibility."""
+    assert 'document.getElementById("cabinetTabButton")' not in APP_JS
+    assert 'tabKey === "cabinet"' not in APP_JS
+    assert "isCabinet" not in APP_JS
+    assert "styleTabButton(cabinetTabButton" not in APP_JS
+    assert 'h === "#cabinet" && cabinetPanel' not in APP_JS
 
 
 def test_app_js_resets_an_unresolvable_cabinet_hash_to_hub() -> None:
+    """A stale #cabinet bookmark (pre-relocation link) still falls through to
+    #hub gracefully instead of erroring or landing on a dead panel."""
     assert '|| h === "#cabinet"' in APP_JS
 
 
-def test_app_js_drives_the_panels_poll_lifecycle_on_tab_switch() -> None:
-    assert "window.OrionCabinetSensors.activate()" in APP_JS
-    assert "window.OrionCabinetSensors.deactivate()" in APP_JS
+def test_biometrics_view_js_drives_the_cabinet_subview_poll_lifecycle() -> None:
+    assert "window.OrionCabinetSensors.activate()" in BIOMETRICS_VIEW_JS
+    assert "window.OrionCabinetSensors.deactivate()" in BIOMETRICS_VIEW_JS
+    assert "window.OrionCabinetSensors" not in APP_JS
 
 
 def test_app_js_does_not_confuse_cabinet_with_field_attention() -> None:

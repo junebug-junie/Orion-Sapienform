@@ -12,6 +12,7 @@ metric layer's own liveness pass uses, so this cannot write to production.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -20,7 +21,27 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _repo_root() -> Path:
+    """The checkout this reducer reads repo facts from.
+
+    `ORION_REPO_ROOT` first, following the same convention as
+    `orion/memory_graph/project.py` and `orion/field/channel_glossary.py`.
+    This is load-bearing, not defensive: the Hub image copies only `orion/` and
+    `services/orion-hub/` into `/app` (verified live 2026-09-02 -- `/app/scripts`
+    and `/app/services` do not exist inside `orion-athena-hub`), so a
+    `__file__`-derived root made every instrument whose module lives under
+    `scripts/` render MISSING and made every retention ceiling unresolvable --
+    the single fact this board exists to surface. The full repo is already bind
+    mounted at `/repo` with `ORION_REPO_ROOT=/repo` set in the Hub compose file.
+    """
+    override = str(os.environ.get("ORION_REPO_ROOT") or "").strip()
+    if override and Path(override).is_dir():
+        return Path(override)
+    return Path(__file__).resolve().parents[2]
+
+
+REPO_ROOT = _repo_root()
 MANIFEST_PATH = Path(__file__).resolve().parent / "instruments.yaml"
 
 # Claim kinds the manifest may declare. `sql` is checked against live Postgres;
@@ -91,7 +112,7 @@ class ClaimResult:
 
     claim: Claim
     observed: Any = None
-    status: str = "UNKNOWN"  # HOLDS | DRIFTED | MANUAL | ERROR
+    status: str = "UNKNOWN"  # HOLDS | DRIFTED | MANUAL | SKIPPED | ERROR
     detail: str = ""
 
     @property
@@ -210,35 +231,98 @@ def check_repo_presence(inst: Instrument, root: Path | None = None) -> tuple[boo
         return False, None
     if not inst.entrypoint:
         return True, None
+    needle = f"def {inst.entrypoint}"
     if target.is_dir():
-        return True, None
-    return True, f"def {inst.entrypoint}" in target.read_text()
+        # A package that declares an entrypoint still has to define it somewhere.
+        # Returning True unchecked here let a manifest name a function that does
+        # not exist and still pass `test_every_instrument_module_exists`.
+        return True, any(
+            needle in f.read_text(errors="ignore") for f in target.rglob("*.py")
+        )
+    return True, needle in target.read_text()
+
+
+def _python_hit_paths(pattern: str, root: Path) -> list[str]:
+    """Pure-Python fallback for `_rg_hit_count` when ripgrep is unavailable.
+
+    Slower than ripgrep but dependency-free, which is what lets this gate run on
+    a CI runner without asserting ripgrep is installed. Mirrors ripgrep's
+    defaults closely enough for this use: skips hidden directories and the few
+    heavyweight trees an absence scan never needs to read.
+    """
+    skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "graphify-out"}
+    out: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        parts = rel.parts
+        if any(p in skip_dirs or p.startswith(".") for p in parts[:-1]):
+            continue
+        try:
+            if pattern in path.read_text(errors="ignore"):
+                out.append(str(rel))
+        except OSError:
+            continue
+    return out
 
 
 def _rg_hit_count(pattern: str, root: Path) -> int:
     """Count non-excluded files mentioning `pattern`. 0 means the deletion held."""
-    proc = subprocess.run(
-        ["rg", "--files-with-matches", "--fixed-strings", pattern, "."],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
-    # rg exits 1 for "no matches" -- that is the passing case here, not an error.
-    if proc.returncode not in (0, 1):
-        raise RuntimeError(f"rg failed for {pattern!r}: {proc.stderr.strip()}")
+    try:
+        proc = subprocess.run(
+            ["rg", "--files-with-matches", "--fixed-strings", pattern, "."],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        # rg exits 1 for "no matches" -- the passing case here, not an error.
+        if proc.returncode not in (0, 1):
+            raise RuntimeError(f"rg failed for {pattern!r}: {proc.stderr.strip()}")
+        lines = proc.stdout.splitlines()
+    except FileNotFoundError:
+        lines = _python_hit_paths(pattern, root)
+
     hits = [
         line
-        for line in proc.stdout.splitlines()
+        for line in lines
         if line.strip()
-        and not any(line.lstrip("./").startswith(x) for x in _ABSENCE_SCAN_EXCLUDES)
+        # removeprefix, not lstrip: lstrip takes a CHARACTER SET, so `./.claude/x`
+        # would strip the hidden directory's own leading dot and yield `claude/x`.
+        # Harmless today only because ripgrep skips hidden paths by default and no
+        # exclude below starts with a dot -- both of which could change. Stated
+        # rather than fixed silently: this is a latent wart, not a live bug.
+        and not any(
+            line.strip().removeprefix("./").startswith(x)
+            for x in _ABSENCE_SCAN_EXCLUDES
+        )
     ]
     return len(hits)
 
 
-def evaluate_claim(claim: Claim, conn: Any | None, root: Path | None = None) -> ClaimResult:
-    """Re-run one claim against live state and compare to its recorded value."""
+def evaluate_claim(
+    claim: Claim,
+    conn: Any | None,
+    root: Path | None = None,
+    static_only: bool = False,
+) -> ClaimResult:
+    """Re-run one claim against live state and compare to its recorded value.
+
+    `static_only` is for CI, which has no database. SQL claims then report
+    SKIPPED -- deliberately a third state, not HOLDS and not ERROR. Reporting
+    them HOLDS would let a gate nobody can run read as green, and ERROR would
+    make the static lane permanently red and get it switched off. The repo's
+    static-gate workflow admits DB-free gates only, so without this the gate
+    could not join CI at all -- and a gate nothing runs is the decoration this
+    whole manifest argues against.
+    """
     root = root or REPO_ROOT
     result = ClaimResult(claim=claim)
+
+    if static_only and claim.kind == "sql":
+        result.status = "SKIPPED"
+        result.detail = "needs a database; not checked in the static lane"
+        return result
 
     if claim.kind == "manual":
         result.status = "MANUAL"
@@ -299,6 +383,18 @@ def _storage_state(inst: Instrument, conn: Any, state: InstrumentState) -> None:
             "singleton upsert -- current value only, no history is recoverable "
             "from this table by construction"
         )
+    elif st.kind == "derived":
+        # A shared table this instrument READS. Without this note the board
+        # renders a busy upstream table's freshness as the instrument's own
+        # output: the emergent-clustering probe is run by hand (twice, ever) yet
+        # substrate_attention_frames is written every tick, so "writing now, 1m
+        # ago" would be a false liveness reading -- exactly the failure the board
+        # exists to catch.
+        state.storage_note = (
+            f"{st.table} is this instrument's INPUT, not its output -- the row "
+            "count and last-write above describe that shared table, not this "
+            "instrument's own activity"
+        )
 
 
 def resolve_retention_hours(
@@ -320,6 +416,7 @@ def resolve_retention_hours(
     if not st.retention_setting or not st.retention_service:
         return None, ""
     base = root / "services" / st.retention_service
+    problem = ""
     for name in (".env", ".env_example"):
         env_path = base / name
         if not env_path.exists():
@@ -330,17 +427,22 @@ def resolve_retention_hours(
                 try:
                     return float(line.split("=", 1)[1].strip()), name
                 except ValueError:
-                    return None, f"{name} (unparseable)"
-    return None, "not found"
+                    # Keep looking. Returning here meant one unparseable live
+                    # value (`...=168  # 7 days`) suppressed the ceiling entirely
+                    # rather than falling back to the template default.
+                    problem = problem or f"{name} (unparseable)"
+                break
+    return None, problem or "not found"
 
 
 def resolve_consumers(inst: Instrument) -> tuple[list[str], str]:
     """Blast radius for this instrument's metrics, from the metric semantic layer.
 
     Reuses orion.metrics rather than rescanning. `ScanResult.consumers_for()`
-    already excludes tests, the registry-of-origin, and low-confidence access
-    kinds, and is the same call `check_metric_lineage.py --metric` renders -- so
-    the board and that CLI cannot disagree about who consumes what.
+    excludes tests and low-confidence access kinds on its own; the
+    registry-of-origin exclusion is the CALLER's job and is passed explicitly
+    below, exactly as `check_metric_lineage.py --metric` does -- so the board and
+    that CLI cannot disagree about who consumes what.
 
     Returns (consumers, note). The note carries the reason whenever the list is
     empty, so an unreachable or failed scan is never rendered as the much
@@ -373,7 +475,15 @@ def resolve_consumers(inst: Instrument) -> tuple[list[str], str]:
 
     out: list[str] = []
     for token in sorted(tokens):
-        for hit in scan.consumers_for(token):
+        # exclude_paths is required, not optional: consumers_for()'s own docstring
+        # records that omitting the registry-of-origin inverted the metric tool's
+        # central claim (38 of 57 organ tokens whose ONLY high-confidence non-test
+        # hit was the registry declaring them). Every other caller in the repo
+        # passes it; this one must too or the board and check_metric_lineage.py
+        # disagree about blast radius.
+        for hit in scan.consumers_for(
+            token, exclude_paths=graph.registry_sources_for(token)
+        ):
             loc = f"{hit.path}:{hit.line}"
             if loc not in out:
                 out.append(loc)
@@ -385,6 +495,7 @@ def build_state(
     conn: Any | None = None,
     root: Path | None = None,
     with_consumers: bool = True,
+    static_only: bool = False,
 ) -> list[InstrumentState]:
     """Join manifest + repo + live database into what the board renders."""
     manifest = manifest or load_manifest()
@@ -412,7 +523,9 @@ def build_state(
             except Exception as exc:  # noqa: BLE001
                 state.storage_note = f"storage read failed: {exc}"
 
-        state.claims = [evaluate_claim(c, conn, root) for c in inst.claims]
+        state.claims = [
+            evaluate_claim(c, conn, root, static_only=static_only) for c in inst.claims
+        ]
 
         if with_consumers:
             state.consumers, state.consumer_note = resolve_consumers(inst)

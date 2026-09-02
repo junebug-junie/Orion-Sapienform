@@ -42,6 +42,7 @@ _MARK = {
     "HOLDS": "ok  ",
     "DRIFTED": "DRIFT",
     "MANUAL": "man ",
+    "SKIPPED": "skip",
     "ERROR": "ERR ",
 }
 
@@ -69,13 +70,24 @@ def _fmt_hours(hours: float | None) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", action="store_true", help="never exit non-zero")
+    ap.add_argument(
+        "--static-only",
+        action="store_true",
+        dest="static_only",
+        help="skip database-backed claims (for the CI static lane)",
+    )
     ap.add_argument("--json", action="store_true", dest="as_json")
     args = ap.parse_args()
 
     manifest = load_manifest()
-    conn, conn_err = _open_conn()
+    conn, conn_err = (None, "static-only mode") if args.static_only else _open_conn()
     try:
-        states = build_state(manifest, conn=conn, with_consumers=not args.as_json)
+        states = build_state(
+            manifest,
+            conn=conn,
+            with_consumers=not args.as_json,
+            static_only=args.static_only,
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -121,7 +133,10 @@ def main() -> int:
         return 0
 
     print("Sentience Striving Program -- instrument gate")
-    if conn is None:
+    if args.static_only:
+        print("  static lane: manifest, code presence and retention only;")
+        print("  database-backed claims are SKIPPED, not passed.")
+    elif conn is None:
         print(f"  !! no database connection ({conn_err}); SQL claims will ERROR")
     print()
 

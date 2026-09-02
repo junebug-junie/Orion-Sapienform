@@ -81,10 +81,15 @@
 
     var grid = el("div", "grid");
 
-    // Doing now.
+    // Doing now. storage_note MUST ride along here and not only on the no-table
+    // branch: an instrument with rows is exactly the case where the note matters
+    // ("this table is my INPUT, not my output"; "singleton -- no history exists").
+    // Rendering it only when row_count is null dropped it for every instrument
+    // that had one, which is the false-liveness reading the note exists to stop.
     if (inst.row_count !== null && inst.row_count !== undefined) {
-      grid.appendChild(cell("writing now", fmtAgo(inst.last_seen),
-        inst.row_count.toLocaleString() + " rows in " + inst.table));
+      var rows = inst.row_count.toLocaleString() + " rows in " + inst.table;
+      if (inst.storage_note) rows += " — " + inst.storage_note;
+      grid.appendChild(cell("writing now", fmtAgo(inst.last_seen), rows));
     } else {
       grid.appendChild(cell("writing now", "no SQL table", inst.storage_note || inst.storage_kind));
     }

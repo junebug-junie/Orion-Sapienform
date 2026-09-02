@@ -13,7 +13,16 @@ Postgres access deliberately uses SQLAlchemy's `raw_connection()` rather than
 `orion.metrics.liveness.open_readonly_connection`: that helper imports `psycopg`,
 which is NOT installed in this container (verified live 2026-09-02 -- psycopg2,
 asyncpg and sqlalchemy are present, psycopg is not). The reducer only ever calls
-`.cursor()`, so any DB-API connection satisfies it.
+`.cursor()`, so any DB-API connection satisfies it. Bypassing that helper means
+also re-creating what it guarantees: see `_engine()` for the AUTOCOMMIT +
+`default_transaction_read_only` settings that replace it.
+
+Route handlers here are plain `def`, NOT `async def`, matching
+`attention_organ_routes`. Everything `_state()` does is blocking -- Postgres
+reads, a ripgrep subprocess, and (with `consumers=true`) a walk of ~4,300 source
+files that takes tens of seconds. On an `async def` handler that runs directly on
+the event loop and freezes every other Hub route and websocket for the duration;
+on a sync one Starlette runs it in a threadpool.
 """
 
 from __future__ import annotations
@@ -32,7 +41,26 @@ _ENGINE = None
 
 
 def _engine():
-    """Lazily build a read-only-intent engine, mirroring attention_organ_routes."""
+    """Lazily build a read-only engine, mirroring attention_organ_routes.
+
+    Two settings carry the whole safety story of this path and are not
+    decoration:
+
+    * `isolation_level="AUTOCOMMIT"` -- without it psycopg2 opens an implicit
+      transaction and the FIRST failing statement poisons every later one on the
+      same connection with "current transaction is aborted, commands ignored
+      until end of transaction block". `build_state` reuses one connection across
+      every instrument's storage read and every SQL claim, so one genuinely
+      drifted claim (a renamed column, a dropped table) would have rendered the
+      whole board ERROR while naming the wrong cause. Reproduced live 2026-09-02
+      against the real database.
+    * `default_transaction_read_only=on` -- the guarantee
+      `orion.db_readonly.open_readonly_connection` sets and verifies, which this
+      path bypasses. `instruments.py` promises "this cannot write to production";
+      without this the promise held only for the CLI. Confirmed live: a write on
+      this engine fails with "cannot execute CREATE TABLE in a read-only
+      transaction".
+    """
     global _ENGINE
     if _ENGINE is None:
         from sqlalchemy import create_engine
@@ -44,7 +72,12 @@ def _engine():
         )
         if not uri:
             return None
-        _ENGINE = create_engine(uri, pool_pre_ping=True)
+        _ENGINE = create_engine(
+            uri,
+            pool_pre_ping=True,
+            isolation_level="AUTOCOMMIT",
+            connect_args={"options": "-c default_transaction_read_only=on"},
+        )
     return _ENGINE
 
 
@@ -86,7 +119,7 @@ def _state(with_consumers: bool):
 
 
 @router.get("/api/sentience-program")
-async def sentience_program_state(consumers: bool = False) -> JSONResponse:
+def sentience_program_state(consumers: bool = False) -> JSONResponse:
     """Machine-readable board state.
 
     `consumers=true` resolves blast radius through the metric semantic layer.
@@ -157,7 +190,7 @@ async def sentience_program_state(consumers: bool = False) -> JSONResponse:
 
 
 @router.get("/sentience-program")
-async def sentience_program_page() -> HTMLResponse:
+def sentience_program_page() -> HTMLResponse:
     from .main import TEMPLATES_DIR, build_hub_ui_asset_version
 
     template_path = TEMPLATES_DIR / "sentience_program.html"

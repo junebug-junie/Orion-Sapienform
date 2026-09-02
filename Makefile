@@ -413,5 +413,14 @@ postgres-headroom:
 # Sentience Striving Program instrument gate. Re-runs every claim in
 # orion/sentience_striving_program/instruments.yaml against live repo + database
 # state and fails on drift. `REPORT=1` reports without failing.
+# Must use the repo venv -- this gate reads live Postgres and system python3 has
+# no psycopg2 (and on this host there is no bare `python` on PATH at all).
+# METRIC_PYTHON, not `.venv/bin/python`: a linked worktree has no .venv of its
+# own, so the literal path exits 127 exactly where CLAUDE.md 2 requires this
+# repo's implementation work to happen. METRIC_PYTHON already resolves the main
+# checkout's venv via `git rev-parse --git-common-dir` and is the only
+# worktree-aware interpreter resolution in this file. Its metric-specific name
+# is a wart; generalising it is the repo-wide cleanup its own comment above
+# explicitly defers, not this patch's job.
 check-sentience-instruments:
-	@python scripts/check_sentience_instruments.py $(if $(REPORT),--report,)
+	@$(METRIC_PYTHON) scripts/check_sentience_instruments.py $(if $(STATIC),--static-only,) $(if $(REPORT),--report,)

@@ -1524,8 +1524,16 @@ yelling":
   rests on it, recorded **as re-runnable queries** rather than sentences.
 - **`scripts/check_sentience_instruments.py`** (`make check-sentience-instruments`) —
   re-runs every claim against live repo and database state and exits non-zero on drift.
-  Mutation-tested four ways; the narrative-count mutation reproduces the real
-  2026-08-20 → 2026-09-02 drift, so this gate would have gone red on 2026-08-21.
+  Wired into `.github/workflows/orion-static-gates.yml` via `--static-only`, which
+  reports database-backed claims as SKIPPED rather than passed: that workflow admits
+  DB-free gates only, and a gate nothing runs is the decoration this manifest argues
+  against. Mutation-tested eight ways in-session (recorded-value drift, a deleted
+  symbol returning, a moved module path, a stale review window, duplicate router
+  registration, an async handler, dropped read-only enforcement, dropped autocommit) —
+  each mutation red, baseline green. The mutations are a method, not a committed
+  artifact; what IS committed is the regression test each one pins. The
+  recorded-value mutation reproduces the real 2026-08-20 → 2026-09-02 narrative drift,
+  so this gate would have gone red on 2026-08-21.
 - **`/sentience-program`** on Hub — the operator view of the same join: what each
   instrument is doing now, how far its history actually reaches and what bounds it, what
   it affects, and which outcome it ladders to.

@@ -26,13 +26,18 @@ patch.
 
 ## What's in this module
 
-- `fit_encoder.py` — the CLI. Two subcommands: `train` (fit a candidate
-  encoder against a corpus slice) and `detect-anomalies` (score a corpus
-  slice against an already-trained encoder). `promote` (item 2's eventual
-  candidate → active promotion path) is not built yet.
-- `tests/` — 33 tests covering windowing, field selection/pruning, the
-  purged temporal split, the two-tier gate, the AR(1) surrogate, and the
-  anomaly detector.
+- `fit_encoder.py` — the CLI. Four subcommands: `train` (fit a candidate
+  encoder against a corpus slice), `detect-anomalies` (score a corpus slice
+  against an already-trained encoder), `promote` (copy a candidate that
+  passed its floor gate to the durable models root and mark it active), and
+  `enrich-corpus` (join the phi-v2 audit's dense-enough live signals onto an
+  existing corpus before training — see the `v4` section below).
+- `corpus_enrichment.py` — the Postgres-reading half of `enrich-corpus`,
+  kept separate from `fit_encoder.py` so the training/scoring/promotion path
+  stays DB-free and importable with no `psycopg2` installed.
+- `tests/` — covers windowing, field selection/pruning, the purged temporal
+  split (single- and multi-block), the two-tier gate, the AR(1) surrogate,
+  the anomaly detector, and the corpus-enrichment asof/forward-fill join.
 - `docs/DESIGN.md` — the technical history and the open valence-replacement
   design question.
 
@@ -289,6 +294,160 @@ live cognition consumer reads its output. Practical uses today:
 If it needs to run automatically or feed a live consumer, that's unbuilt
 follow-on work (a scheduler + a destination for the output), not something
 this patch does.
+
+## `v4`: phi-v2 clean-metrics retrain (2026-09-02)
+
+`v4` is the current live model (promoted via `cmd_promote`, `/mnt/telemetry/models/mood_arc/v4`
++ `active.json` — the first time this actually happened; `v1`-`v3` were config-documented as
+"the model to use," never formally promoted through this mechanism). It started as a request to
+use `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s live-audited "clean metrics" as `v3`'s
+input feature set, deliberately unsupervised (no predictive target — that's phi-v2's own
+still-open, deliberately deferred second half). What it actually took to get there is worth
+recording in full, since two of the three problems found were genuine methodology gaps, not
+mistakes specific to this one retrain.
+
+**What's new in `v4` vs `v3`'s 15 channels:** `action_warrant` (`substrate_proposal_frames`),
+`heartbeat_mean_ratio` + per-domain `prediction_error_{execution,chat,biometrics,bus_synaptic}`
+(`substrate_attention_self_model`) — joined onto the existing `field_channel_corpus.v1` corpus by
+`orion/mood_arc/corpus_enrichment.py` (new module) via `fit_encoder.py enrich-corpus` (new
+subcommand), using last-observation-carried-forward on each source's own real *occurrence-time*
+column (`generated_at`, never `created_at` — every source table here has both, and they're
+different clocks). Field-digester's cabinet sensors, including the mic
+(`cabinet_ambient_audio_activity`), needed no new plumbing at all — they already reach
+`field_channel_corpus.v1` through the same `node_vectors` merge every other channel does, so
+`select_fields()` was already evaluating them.
+
+**Deliberately deferred, not wired in:** `git_delta`/`pr_lifecycle_delta`/`graph_delta`
+(`substrate_codebase_delta_log`), `dev_economics` (`dev_economics_ledger_log`),
+`doc_semantic_drift` (`doc_semantic_drift_log`), `swear_frequency`
+(`juniper_affective_state_log`). Real update cadence for these is ~16min-11.6h (live-checked
+2026-09-02) — far coarser than `fit_encoder.py`'s ~60s default window (`window_size=30` at
+~2s/tick), so forward-filling them in makes them constant across nearly every window: added input
+dimensionality with no real per-window trajectory signal at this timescale. `corpus_enrichment.py`
+fully implements and tests the fetch functions for all four (they're real, reusable, live-verified
+SQL); `fetch_all_series()` just doesn't call them by default. Wiring them back in is real
+follow-up work needing a different representation (a per-window static "context" feature, not a
+repeated-30x trajectory slot) — not a bigger window or more epochs on the current shape.
+
+**Metric-shape finding, not fixed here, worth reading before trusting a "calm" reading on these
+channels:** `prediction_error_*`/`git_delta`/etc. and the mic channel are all **baseline-relative
+deviation** measures (bounded [0,1] via `min(1.0, max(0.0, zscore) / saturation)` clamps,
+`orion/substrate/prediction_error.py`), not absolute level — a structurally different family from
+`v3`'s core channels (`cpu_pressure` etc.), which are absolute magnitudes that decay toward 0 on
+producer silence. Hand-verified for the mic specifically:
+`orion/telemetry/ambient_audio.py`'s own docstring proves `cabinet_ambient_audio_activity == 0.0`
+for a raw RMS level that is *exactly constant tick to tick* — a sustained loud environment reads
+as "calm" by construction, because the channel measures change-from-adaptive-baseline, not
+loudness. Read any of these channels' low values as "not currently changing," not "currently
+quiet."
+
+**Four real problems found and fixed in sequence, in the order they were found:**
+
+1. **Scale-dominance bug.** `dev_economics_total_tokens` (live range 0-59,290,459, avg ~4.07M) was
+   briefly included before the sparse-signal scope-narrowing above — its raw magnitude
+   (`channel_variance` ≈ 9.2e13) completely dominated the shared per-channel MSE reconstruction
+   loss against every other ~[0,1]-scaled channel, producing a floor_ratio (0.081) that looked like
+   a spectacular pass but was really "the model learned to reconstruct token counts." Fixed by
+   dropping `total_tokens` from `fetch_dev_economics()` (the whole `dev_economics` group was later
+   deferred entirely per the cadence-mismatch finding above, but the scale lesson generalizes:
+   check live min/max before joining any new raw-magnitude signal into a shared reconstruction
+   scale).
+2. **Cadence/dimensionality mismatch** (see "deliberately deferred" above) — narrowing to the
+   dense-enough subset and doubling `hidden_dim`/`latent_dim` (128/64 → 256/128, proportional to
+   the larger channel count) was tried next. It did **not** fix the floor gate on its own
+   (`floor_ratio` went from 0.683 to 0.774 — worse, not better) — see finding 3.
+3. **Non-stationary held-out split — the actual root cause.** `purged_temporal_split()`'s
+   single-trailing-15%-block held-out design was validated on `v3`'s short (10.3h), largely
+   stationary window, where the trailing block stays inside the same regime as train. Confirmed
+   live: comparing `v4`'s corpus's temporally-first-85% slice against its temporally-last-15%
+   slice showed `prediction_error`'s mean shifted **+1.73 standard deviations** and
+   `thermal_pressure`'s **+1.21** — the held-out block was a genuinely different operating regime,
+   not a random draw from train's distribution. Since `floor_ratio` and `ceiling_ratio` share the
+   same numerator (real held-out reconstruction loss), this inflated both regardless of whether
+   real trajectory structure existed, and got *worse* with more model capacity (a more expressive
+   model overfits train's regime harder, generalizing worse to the shifted tail) — exactly the
+   pattern found in step 2. Fixed with `block_purged_temporal_split()` (new, `fit_encoder.py`,
+   opt-in via `--held-out-blocks`, standard blocked/purged cross-validation practice for
+   non-stationary time series): spreads held-out across N evenly-spaced, doubly-embargoed time
+   blocks instead of one trailing chunk. `--held-out-blocks 1` (the default) is byte-identical to
+   the original single-block method — `v3`'s already-validated 0.210 result is untouched by this
+   change.
+4. **Block-boundary leakage in the fix for #3 — caught by code review, not by the training
+   numbers.** The first `block_purged_temporal_split()` divided windows into N segments and
+   applied the trailing-embargo logic *within* each segment independently, but never embargoed a
+   segment's own *leading* edge — so a held-out window at the end of segment `i` sat directly
+   adjacent (zero gap, physically overlapping raw ticks under the 50%-overlap stride) to a
+   training window at the start of segment `i+1`, at every one of the N-1 internal block
+   boundaries. The promoted candidate's first "passing" `floor_ratio=0.415` was trained under this
+   leak. A related bug in the same rewrite (`block_purge_excluded_ar1_intervals()`'s upper bound
+   under-covering a run's orphaned trailing rows — `_build_windows_with_span()` drops any run's
+   tail once fewer than `window_size` rows remain) could separately re-admit rows into the AR(1)
+   baseline fit. Fixed: `_segment_train_held_ranges()` now embargoes both edges of every internal
+   segment, and `block_purge_ar1_training_rows()` replaced the interval-upper-bound approach with
+   direct inclusion-checking against real train-window spans (a row is safe for AR(1) fitting only
+   if it falls inside some actual train window — no upper-bound estimate to get wrong). Both fixes
+   are covered by new regression tests
+   (`test_block_purged_temporal_split_embargoes_internal_block_boundaries`,
+   `test_block_purge_ar1_training_rows_excludes_orphaned_trailing_rows`). `--held-out-blocks 1`
+   remains byte-identical to `v3`'s original methodology throughout.
+
+   **A second review pass on the fix itself found one more leak in `block_purge_ar1_training_rows()`**
+   (the same rewrite, not a new issue): its first version admitted AR(1)-training rows via each
+   segment's `(start_ts[train_lo], end_ts[train_hi-1])` span — a train window's own *end* — which
+   can still extend past the following held-out block's *start* under small/zero
+   `--purge-gap-windows` with overlapping windows, the exact leak class the ORIGINAL single-cutoff
+   code's own inline comment already existed to avoid. Fixed to use
+   `(start_ts[train_lo], start_ts[held_lo])` instead — the held-out block's own start, matching the
+   single-block reasoning exactly. **This fix touches only `ar1_surrogate_loss`/`ceiling_ratio`
+   (diagnostic-only, no pass/fail threshold) — `floor_ratio`/`floor_pass`, the actual promotion
+   gate, is computed entirely from `block_purged_temporal_split()`'s window split and never reads
+   `block_purge_ar1_training_rows()`'s output, so `v4`'s promoted `floor_ratio=0.406` PASS is
+   unaffected and was not retrained again for this.** The promoted manifest's `ceiling_ratio=0.733`
+   reflects the pre-this-fix AR(1) row selection; a fresh `train` run with identical arguments
+   would likely report a marginally different (not qualitatively different) `ceiling_ratio` under
+   the now-fully-fixed code. Not refreshed here — each retrain costs real time (~30-90min under
+   this session's host load) for a diagnostic-only number with no calibrated threshold to cross.
+
+**Results, holding channels (37) and capacity (256/128) constant, varying only the split:**
+
+| | `--held-out-blocks` | `floor_ratio` | `floor_pass` | `ceiling_ratio` |
+|---|---|---|---|---|
+| Attempt 3 | 1 (single trailing block) | 0.774 | **FAIL** | 1.494 |
+| Attempt 4 (leaked at block boundaries) | 5 | 0.415 (CI 0.396-0.436) | PASS (invalid — see #4) | 0.660 |
+| **Attempt 5 (`v4`, promoted, leak-fixed)** | 5 | **0.406** (CI 0.383-0.430) | **PASS** | **0.733** |
+
+The leak-fixed result (attempt 5) landed close to the leaked one (0.406 vs. 0.415) — reassuring
+that the internal-boundary leak wasn't actually doing much of the work, but it was still a real
+defect worth fixing before trusting the number, not a rounding difference. `ceiling_ratio` (0.733)
+is notably worse than `v3`'s (0.190) — real reconstruction still clearly beats the AR(1) surrogate
+(ratio well under 1), just by a smaller margin. Plausibly genuine added entropy in a 3.4-day
+multi-regime corpus vs. `v3`'s stationary 10.3h slice, not a red flag — `ceiling_ratio` has no
+calibrated pass/fail threshold (diagnostic only, same as every prior version). Treat `v4` the same
+way `v3`'s own writeup treated itself: real evidence, n=1 on this exact corpus/config, not yet
+independently re-confirmed with a second seed.
+
+**Independence check (CLAUDE.md's metric quality gate, step 2), recorded here per that gate's own
+requirement:** the new per-domain `prediction_error_{execution,chat,biometrics,bus_synaptic}`
+channels are components of the pre-existing `prediction_error` channel (a `max()`-merge across the
+same underlying node instruments), a short, direct causal chain that would normally flag them as
+redundant. Checked against real training-run evidence rather than asserted: `prune_correlated_fields()`'s
+full printed output (`--corr-threshold 0.9`, the same run that produced the promoted `v4`) does
+**not** flag `prediction_error` against any of its four components — none appear in its "dropping
+X (kept Y, r=...)" list, meaning pairwise Pearson correlation between the max-merge and each
+component stays under 0.9 in practice. Consistent with `max()` being nonlinear: the merge and any
+one component diverge whenever a *different* component is currently the maximum. Read as
+"empirically not redundant by the pruning gate's own linear-correlation test," not as a from-first-
+principles proof of independence — a true multicollinearity check (e.g. VIF) hasn't been run.
+
+**Follow-up work, explicitly not done here:**
+
+- Wire the four deferred sparse signals in via a per-window context representation, not the
+  current per-tick trajectory slot.
+- phi-v2's actual point (a named, falsifiable predictive target — "predict a near-future
+  prediction-error spike" — replacing pure reconstruction-only training) is still fully open. `v4`
+  only consumed phi-v2's *clean-metrics audit*, not its target-design proposal.
+- A second training seed against the same corpus/config, to move past n=1 the way `v3`'s own
+  `ceiling_ratio`-stability observation was itself only n=2.
 
 ## Semantic taxonomy of the channels
 

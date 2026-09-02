@@ -134,6 +134,20 @@ class MoodArcEncoderManifestV1(BaseModel):
     # populates a real value; None is never fabricated as 0 (0 would falsely
     # claim "no purge zone was used", a real and different config choice).
     purge_gap_windows: Optional[int] = None
+    # held_out_blocks: number of time-distributed held-out blocks used by
+    # block_purged_temporal_split() (fit_encoder.py). 1 (or None, for
+    # manifests written before this field existed) means the original
+    # single-trailing-block methodology (v3's validated behavior).
+    # Confirmed live 2026-09-02: a single trailing block on a wide
+    # (multi-day) window can be drawn from a materially different operating
+    # regime than train (prediction_error's mean shifted +1.73 standard
+    # deviations between a 3.4-day corpus's first-85%/last-15% slices),
+    # inflating floor_ratio/ceiling_ratio for reasons unrelated to learned
+    # structure. >1 spreads held-out across that many equal time segments
+    # instead. Optional/None only for manifests written before this
+    # methodology addition; fit_encoder.py always populates a real value
+    # (>=1) once written -- None is never fabricated as 1.
+    held_out_blocks: Optional[int] = None
     # ar1_surrogate_loss: held-out reconstruction loss against synthetic
     # windows generated from a per-channel AR(1) null model fit on the
     # training portion only (see generate_ar1_surrogate_windows()) -- the

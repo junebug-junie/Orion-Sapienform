@@ -108,7 +108,7 @@ import numpy as np
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import CorpusStatsV1, TrainingStatsV1
-from orion.telemetry.corpus_rotation import resolve_rotated_corpus_files
+from orion.telemetry.corpus_rotation import ROTATED_SUFFIX_RE, resolve_rotated_corpus_files
 
 ARCHITECTURE = "mlp_shallow_v1"  # same architecture family as the phi encoder
 
@@ -594,6 +594,197 @@ def purged_temporal_split(
             f"purged_temporal_split: no held-out windows (n={n}, held_out_frac={held_out_frac})"
         )
     return np.stack(train_windows, axis=0), np.stack(held_windows, axis=0)
+
+
+def _block_boundaries(n: int, n_blocks: int) -> list[tuple[int, int]]:
+    """n_blocks contiguous [start, end) index ranges partitioning [0, n), as close to equal
+    size as integer rounding allows. Shared by _segment_train_held_ranges() so every caller
+    agrees on where each block sits."""
+    boundaries = [round(i * n / n_blocks) for i in range(n_blocks + 1)]
+    return [(boundaries[i], boundaries[i + 1]) for i in range(n_blocks)]
+
+
+def _segment_train_held_ranges(
+    n: int, held_out_frac: float, purge_gap_windows: int, n_blocks: int
+) -> list[tuple[int, int, int, int]]:
+    """For each of n_blocks segments, returns (train_lo, train_hi, held_lo, held_hi) GLOBAL
+    index ranges (each half-open [lo, hi)).
+
+    held_lo:held_hi is always the trailing held_out_frac fraction of the segment -- it
+    always reaches exactly to the segment's own end (held_hi == seg_end).
+
+    train_lo:train_hi is embargoed on BOTH sides:
+      - purge_gap_windows before this segment's OWN held-out block (the original
+        purged_temporal_split() embargo, applied within the segment).
+      - purge_gap_windows at this segment's OWN leading edge, for every segment except the
+        first -- because that leading edge sits immediately adjacent, in physically
+        overlapping raw ticks (50%-overlap stride), to the PREVIOUS segment's held-out
+        tail, which always ends exactly at this segment's start. Missing this second
+        embargo (found by code review, 2026-09-02, confirmed against the split actually
+        used to train the promoted v4 candidate) meant every one of the n_blocks-1 internal
+        block boundaries had a held-out window directly adjacent to a training window with
+        zero gap -- the exact leakage class purge_gap_windows exists to prevent, reintroduced
+        at every internal seam.
+    """
+    ranges: list[tuple[int, int, int, int]] = []
+    for i, (seg_start, seg_end) in enumerate(_block_boundaries(n, n_blocks)):
+        seg_len = seg_end - seg_start
+        if seg_len == 0:
+            ranges.append((seg_start, seg_start, seg_start, seg_start))
+            continue
+        local_purge_start, local_held_start = _purge_split_indices(seg_len, held_out_frac, purge_gap_windows)
+        held_lo, held_hi = seg_start + local_held_start, seg_end
+        train_hi = seg_start + max(0, local_purge_start)
+        leading_embargo = purge_gap_windows if i > 0 else 0
+        train_lo = min(train_hi, seg_start + leading_embargo)
+        ranges.append((train_lo, train_hi, held_lo, held_hi))
+    return ranges
+
+
+def block_purged_temporal_split(
+    windows: list[np.ndarray],
+    *,
+    held_out_frac: float = DEFAULT_HELD_OUT_FRAC,
+    purge_gap_windows: int = DEFAULT_PURGE_GAP_WINDOWS,
+    n_blocks: int = 1,
+    _ranges: list[tuple[int, int, int, int]] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generalizes purged_temporal_split() to n_blocks time-distributed held-out blocks
+    instead of one single trailing block. n_blocks=1 (the default) delegates straight to
+    purged_temporal_split() -- v3's already-validated methodology is untouched unless a
+    caller opts into n_blocks>1.
+
+    Why this exists: purged_temporal_split()'s single trailing block was validated on v3's
+    short (10.3h), largely-stationary training window, where the trailing 15% stays inside
+    the same operating regime as train. Confirmed live (2026-09-02) that a much wider
+    (3.4-day) window breaks this assumption badly: comparing the temporally-first-85%
+    ("train-equivalent") slice against the temporally-last-15% ("held-out-equivalent")
+    slice showed `prediction_error`'s mean shifted +1.73 standard deviations and
+    `thermal_pressure`'s +1.21 -- the trailing block is a genuinely different regime, not a
+    random draw from the same distribution train saw. That inflates both floor_ratio and
+    ceiling_ratio's shared numerator (real held-out reconstruction loss) regardless of
+    whether the model learned real trajectory structure, and gets WORSE with more model
+    capacity (a more expressive model overfits train's regime harder, generalizing worse to
+    the shifted tail) -- exactly the pattern that motivated this function. See
+    orion/mood_arc/README.md's v4 section for the full before/after.
+
+    Splits `windows` into n_blocks equal contiguous segments (by index, which is
+    chronological -- build_windows guarantees temporal order) and applies
+    purged_temporal_split()'s own trailing-block-plus-embargo logic WITHIN each segment,
+    with an additional leading-edge embargo between adjacent segments (see
+    _segment_train_held_ranges()'s docstring). This spreads held-out across every part of
+    the time range instead of concentrating it in whichever regime happened to be running
+    at the very end -- standard purged/blocked cross-validation practice for non-stationary
+    time series.
+
+    `_ranges`, when given, must be the exact output of _segment_train_held_ranges() for
+    these same (n, held_out_frac, purge_gap_windows, n_blocks) -- lets cmd_train compute it
+    once and pass the identical ranges here and to block_purge_ar1_training_rows(), so the
+    window split and the AR(1) leakage-safe row set can never silently diverge (found by
+    code review: both independently recomputing the same ranges from the same arguments is
+    fine today, but is a latent risk if one call site's arguments are ever edited without
+    mirroring the other). Internal wiring, not meant for a caller to hand-construct --
+    recomputed internally when omitted.
+    """
+    n = len(windows)
+    if n == 0:
+        raise ValueError("block_purged_temporal_split: no windows to split")
+    if n_blocks < 1:
+        raise ValueError(f"block_purged_temporal_split: n_blocks must be >= 1, got {n_blocks}")
+    if n_blocks == 1:
+        return purged_temporal_split(windows, held_out_frac=held_out_frac, purge_gap_windows=purge_gap_windows)
+
+    train_windows: list[np.ndarray] = []
+    held_windows: list[np.ndarray] = []
+    starved_segments: list[int] = []
+    ranges = _ranges if _ranges is not None else _segment_train_held_ranges(n, held_out_frac, purge_gap_windows, n_blocks)
+    for i, (train_lo, train_hi, held_lo, held_hi) in enumerate(ranges):
+        if train_hi > train_lo:
+            train_windows.extend(windows[train_lo:train_hi])
+        else:
+            starved_segments.append(i)
+        if held_hi > held_lo:
+            held_windows.extend(windows[held_lo:held_hi])
+
+    if starved_segments:
+        print(
+            f"block_purged_temporal_split: WARNING -- segment(s) {starved_segments} contributed "
+            f"ZERO training windows (n_blocks={n_blocks}, purge_gap_windows={purge_gap_windows}, "
+            f"held_out_frac={held_out_frac}); that time region is entirely held-out/embargoed, not "
+            "represented in train. This can happen either because the segment was too small to "
+            "begin with (n_blocks too large for the corpus) or because purge_gap_windows embargoed "
+            "all of it -- check both before assuming one specific fix."
+        )
+
+    if not train_windows:
+        raise ValueError(
+            f"block_purged_temporal_split: no training windows remain after purge "
+            f"(n={n}, n_blocks={n_blocks}, held_out_frac={held_out_frac}, "
+            f"purge_gap_windows={purge_gap_windows}); reduce purge_gap_windows/held_out_frac/"
+            "n_blocks or gather more corpus"
+        )
+    if not held_windows:
+        raise ValueError(
+            f"block_purged_temporal_split: no held-out windows (n={n}, n_blocks={n_blocks}, "
+            f"held_out_frac={held_out_frac})"
+        )
+    return np.stack(train_windows, axis=0), np.stack(held_windows, axis=0)
+
+
+def block_purge_ar1_training_rows(
+    rows: list[FieldChannelCorpusRowV1],
+    start_ts: list[datetime],
+    *,
+    held_out_frac: float,
+    purge_gap_windows: int,
+    n_blocks: int,
+    _ranges: list[tuple[int, int, int, int]] | None = None,
+) -> list[FieldChannelCorpusRowV1]:
+    """The subset of `rows` safe to use for fit_ar1_per_channel()'s training-only fit.
+
+    n_blocks=1 reproduces cmd_train's original single-cutoff filter EXACTLY (rows strictly
+    before the held-out boundary's own start_ts) -- v3's methodology, including this part
+    of it, is untouched. Empty input (n=0) returns [] rather than indexing start_ts[-1] --
+    matches purged_temporal_split()'s own empty-list slicing behavior for this edge case
+    (cmd_train's own `if not triples: raise SystemExit(...)` guard makes this unreachable in
+    practice, but the function's own docstring claims exact reproduction, so it must not
+    crash differently than the original on this input either).
+
+    n_blocks>1 uses each segment's (start_ts[train_lo], start_ts[held_lo]) HALF-OPEN span --
+    same reasoning as the n_blocks=1 cutoff: a held-out window's own START, not any window's
+    END, is the safe boundary. An earlier version of this function used
+    (start_ts[train_lo], end_ts[train_hi-1]) instead (a train window's own end as the upper
+    bound); found by code review to reintroduce exactly the leak class the ORIGINAL
+    single-cutoff code's own inline comment already covers: with 50%-overlapping windows, a
+    small/zero --purge-gap-windows can leave a train window's end_ts physically inside the
+    following held-out window's span, so an end_ts-based upper bound admits rows that are
+    also part of a held-out window. Using each segment's held-out block's own start_ts
+    instead avoids this exactly like the single-block case does, and still correctly excludes
+    a run's orphaned trailing rows (_build_windows_with_span() drops any run's tail once
+    fewer than window_size rows remain) -- such rows sit far past every segment's held_lo
+    boundary, never inside any span. `end_ts` is no longer needed by this function now that
+    the upper bound comes from held_lo's own start_ts, not any window's end.
+
+    `_ranges`, when given, must be the exact output of _segment_train_held_ranges() for these
+    same (n, held_out_frac, purge_gap_windows, n_blocks) -- see block_purged_temporal_split()'s
+    matching parameter; cmd_train computes the ranges once and passes them to both, so the two
+    can never silently diverge. Internal wiring, recomputed when omitted.
+    """
+    n = len(start_ts)
+    if n == 0:
+        return []
+    if n_blocks == 1:
+        _purge_start, held_start = _purge_split_indices(n, held_out_frac, purge_gap_windows)
+        cutoff_ts = start_ts[held_start]
+        return [r for r in rows if r.generated_at < cutoff_ts]
+
+    ranges = _ranges if _ranges is not None else _segment_train_held_ranges(n, held_out_frac, purge_gap_windows, n_blocks)
+    train_spans = [
+        (start_ts[train_lo], start_ts[held_lo])
+        for train_lo, train_hi, held_lo, _held_hi in ranges
+        if train_hi > train_lo
+    ]
+    return [r for r in rows if any(lo <= r.generated_at < hi for lo, hi in train_spans)]
 
 
 def init_weights(d_in: int, hidden_dim: int, latent_dim: int, seed: int, data_mean: np.ndarray) -> dict[str, np.ndarray]:
@@ -1120,6 +1311,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_p.add_argument("--lr", type=float, default=DEFAULT_LR)
     train_p.add_argument("--held-out-frac", type=float, default=DEFAULT_HELD_OUT_FRAC)
     train_p.add_argument("--purge-gap-windows", type=int, default=DEFAULT_PURGE_GAP_WINDOWS)
+    train_p.add_argument(
+        "--held-out-blocks",
+        type=int,
+        default=1,
+        help=(
+            "Number of time-distributed held-out blocks (block_purged_temporal_split()). "
+            "Default 1 reproduces the original single-trailing-block methodology exactly "
+            "(v3's validated behavior, unchanged). Use >1 for a wide/non-stationary training "
+            "window, where a single trailing block can be drawn from a different regime than "
+            "train and inflate floor_ratio/ceiling_ratio for reasons unrelated to learned "
+            "structure -- confirmed live 2026-09-02 on a 3.4-day mood-arc v4 corpus (default: "
+            "%(default)s)"
+        ),
+    )
     train_p.add_argument("--bootstrap-block-size", type=int, default=DEFAULT_BOOTSTRAP_BLOCK_SIZE)
     train_p.add_argument("--bootstrap-n", type=int, default=DEFAULT_BOOTSTRAP_N)
     train_p.add_argument("--min-hours", type=float, default=DEFAULT_MIN_HOURS)
@@ -1216,6 +1421,58 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Durable root to promote into (default: {DEFAULT_MODELS_ROOT})",
     )
 
+    enrich_p = sub.add_parser(
+        "enrich-corpus",
+        help=(
+            "Join the phi-v2 audit's (docs/superpowers/specs/2026-08-21-phi-v2-design.md) "
+            "signals that are dense enough for this window (action_warrant, "
+            "heartbeat_mean_ratio, per-domain prediction-error) and are NOT already reached "
+            "via field-digester's node_vectors/capability_vectors merge, onto an existing "
+            "field_channel_corpus.v1 JSONL corpus, by last-observation-carried-forward join "
+            "on each source's real occurrence-time column. Sparser audit signals "
+            "(git/pr_lifecycle/graph_delta, dev_economics, doc_semantic_drift, "
+            "swear_frequency) are deliberately deferred -- see "
+            "orion.mood_arc.corpus_enrichment.fetch_all_series's docstring. Writes an "
+            "augmented JSONL `train` can consume unchanged -- the join adds candidate "
+            "channels, it does not change how `train` selects or gates them."
+        ),
+    )
+    enrich_p.add_argument(
+        "--corpus", type=Path, required=True, help="Existing field_channel_corpus.v1 JSONL (rotation-aware)"
+    )
+    enrich_p.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help=(
+            "Output path for the enriched JSONL. Must NOT look like a rotated sibling of "
+            "--corpus (refused at runtime) -- a later `train --corpus` call's "
+            "rotation-aware loading would silently union it back with --corpus's other "
+            "rotated files and double-count rows."
+        ),
+    )
+    enrich_p.add_argument(
+        "--pg-dsn",
+        type=str,
+        default=None,
+        help=(
+            "Postgres DSN to read from (default: orion.metrics.liveness.resolve_dsn()'s env "
+            "chain -- see that module's _ENV_KEYS for the exact, current precedence order and "
+            "its DEFAULT_POSTGRES_URI for the final fallback; not spelled out literally here so "
+            "this help text can't silently drift if that chain is ever changed)"
+        ),
+    )
+    enrich_p.add_argument(
+        "--lookback-hours",
+        type=float,
+        default=48.0,
+        help=(
+            "How far before the corpus's own earliest row to query each source table, so the "
+            "earliest corpus ticks can still find a real prior value to forward-fill from "
+            "instead of starting genuinely absent (default: %(default)s)"
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -1251,26 +1508,41 @@ def cmd_train(args: argparse.Namespace) -> int:
         )
     windows = [w for w, _, _ in triples]
     start_ts = [s for _, s, _ in triples]
-    end_ts = [e for _, _, e in triples]
     n_windows = len(windows)
 
-    _purge_start, held_start = _purge_split_indices(n_windows, args.held_out_frac, args.purge_gap_windows)
-    train_matrix, held_matrix = purged_temporal_split(
-        windows, held_out_frac=args.held_out_frac, purge_gap_windows=args.purge_gap_windows
+    # Computed once (when n_blocks>1) and handed to both calls below, so the
+    # main window split and the AR(1) leakage-safe row set can never
+    # silently diverge by each independently recomputing the same segment
+    # boundaries (found by code review). n_blocks=1 needs no shared
+    # precomputation -- both functions take their own original-methodology
+    # fast path for it.
+    precomputed_ranges = (
+        _segment_train_held_ranges(n_windows, args.held_out_frac, args.purge_gap_windows, args.held_out_blocks)
+        if args.held_out_blocks > 1
+        else None
     )
-    # AR(1) leakage-safe cutoff: rows strictly before the FIRST held-out
-    # window's own start timestamp. Deliberately not derived from
-    # purge_gap_windows/end_ts of the last training window -- found by code
-    # review (2026-07-13) that with 50%-overlapping windows (window_size=30,
-    # stride=15), a small --purge-gap-windows override (e.g. 0) could still
-    # leave the last "training" window's end timestamp *after* the first
-    # held-out window's start (they physically overlap in raw ticks), which
-    # would leak held-out rows into fit_ar1_per_channel's training-only fit
-    # regardless of how large purge_gap_windows claims to be. Using the
-    # held-out boundary's own start_ts directly is correct for any
-    # purge_gap_windows value, including 0.
-    cutoff_ts = start_ts[held_start]
-    train_rows_for_ar1 = [r for r in rows if r.generated_at < cutoff_ts]
+    train_matrix, held_matrix = block_purged_temporal_split(
+        windows,
+        held_out_frac=args.held_out_frac,
+        purge_gap_windows=args.purge_gap_windows,
+        n_blocks=args.held_out_blocks,
+        _ranges=precomputed_ranges,
+    )
+    # AR(1) leakage-safe row set: rows falling inside some actual TRAIN
+    # window's own [start_ts, held-out-block's start_ts) span (see
+    # block_purge_ar1_training_rows()'s docstring for the exact boundary
+    # reasoning -- found by code review to matter for both a run's orphaned
+    # trailing rows and overlap leakage at small --purge-gap-windows).
+    # n_blocks=1 reproduces cmd_train's original single-cutoff filter
+    # exactly.
+    train_rows_for_ar1 = block_purge_ar1_training_rows(
+        rows,
+        start_ts,
+        held_out_frac=args.held_out_frac,
+        purge_gap_windows=args.purge_gap_windows,
+        n_blocks=args.held_out_blocks,
+        _ranges=precomputed_ranges,
+    )
 
     best_weights, training_stats = train_autoencoder(
         train_matrix,
@@ -1335,6 +1607,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         training=training_stats,
         shuffle_baseline_loss=shuffle_baseline_loss,
         purge_gap_windows=args.purge_gap_windows,
+        held_out_blocks=args.held_out_blocks,
         ar1_surrogate_loss=ar1_surrogate_loss,
         floor_ratio=gate["floor_ratio"],
         floor_pass=gate["floor_pass"],
@@ -1526,6 +1799,94 @@ def cmd_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_enrich_corpus(args: argparse.Namespace) -> int:
+    # Lazy imports: enrich-corpus is the only subcommand that touches Postgres
+    # (psycopg2, via orion.db_readonly). train/detect-anomalies/promote stay
+    # importable and runnable with no DB driver installed, same reasoning as
+    # the existing lazy scripts.fit_phi_encoder imports elsewhere in this file
+    # (see test_fit_encoder_no_scripts_dependency.py).
+    from orion.db_readonly import open_readonly_connection
+    from orion.metrics.liveness import resolve_dsn
+    from orion.mood_arc.corpus_enrichment import enrich_corpus
+
+    # resolve_dsn() checks POSTGRES_URI (the canonical operator-set key per
+    # .env_example) before DATABASE_URL before ORION_SQL_URL, falling back to
+    # a localhost default -- reused here rather than checking only
+    # $DATABASE_URL, which would miss an environment where only POSTGRES_URI
+    # is set (the documented convention; found by code review).
+    dsn = args.pg_dsn or resolve_dsn()
+
+    # Refuse an --out path that resolve_rotated_corpus_files() would actually
+    # treat as a rotated sibling of --corpus: same directory, and the suffix
+    # after "{corpus.name}." matches ROTATED_SUFFIX_RE exactly (the same
+    # regex that function itself uses -- reused, not re-derived, per code
+    # review: a bare startswith() check would also refuse legitimate names
+    # like "field_channels.jsonl.enriched" that resolve_rotated_corpus_files()
+    # would never actually treat as a rotated sibling). A later
+    # `train --corpus <that path>` call's rotation-aware _load_jsonl() would
+    # otherwise silently UNION a genuine collision back with --corpus's other
+    # rotated siblings, double-counting every row that exists in both and
+    # corrupting row_count/channel_variance/AR(1) statistics with duplicates.
+    _rotated_prefix_len = len(args.corpus.name) + 1
+    if (
+        args.out.parent == args.corpus.parent
+        and args.out.name.startswith(f"{args.corpus.name}.")
+        and ROTATED_SUFFIX_RE.match(args.out.name[_rotated_prefix_len:])
+    ):
+        raise SystemExit(
+            f"enrich-corpus: --out {args.out} looks like a rotated sibling of --corpus "
+            f"{args.corpus} (same directory, matches ROTATED_SUFFIX_RE) -- a "
+            "later `train --corpus` pointed at either path would silently union both files "
+            "via rotation-aware loading and double-count rows. Use a distinct path/directory."
+        )
+
+    rows = _load_jsonl(args.corpus)
+    if not rows:
+        raise SystemExit(f"enrich-corpus: no rows loaded from {args.corpus}")
+
+    conn = open_readonly_connection(dsn, connect_timeout=10, statement_timeout_ms=60_000)
+    if conn is None:
+        if args.pg_dsn:
+            dsn_source = "--pg-dsn"
+            # No resolved_host() equivalent for an explicit --pg-dsn (that helper always
+            # re-resolves via resolve_dsn(), ignoring any override) -- mirror its own
+            # safety guard (never crash on a malformed DSN) inline instead.
+            try:
+                from urllib.parse import urlsplit
+
+                parsed = urlsplit(dsn)
+                host = f"{parsed.hostname}:{parsed.port or '?'}" if parsed.hostname else "?"
+            except Exception:
+                host = "?"
+        else:
+            from orion.metrics.liveness import _ENV_KEYS, resolved_host
+
+            dsn_source = f"resolve_dsn() ({'/'.join('$' + k for k in _ENV_KEYS)}/default)"
+            host = resolved_host()
+        raise SystemExit(
+            f"enrich-corpus: could not open a confirmed read-only Postgres connection "
+            f"(dsn from {dsn_source}, host {host}) -- see logs above"
+        )
+    try:
+        missing = enrich_corpus(rows, conn, lookback_hours=args.lookback_hours)
+    finally:
+        conn.close()
+
+    for name in sorted(missing):
+        count = missing[name]
+        pct = 100.0 * count / len(rows)
+        flag = " <-- ALL ROWS missing, check table/column/cadence before trusting this join" if count == len(rows) else ""
+        print(f"enrich-corpus: {name}: {count}/{len(rows)} rows ({pct:.1f}%) had no value yet{flag}")
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with args.out.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(row.model_dump_json())
+            f.write("\n")
+    print(f"enrich-corpus: wrote {len(rows)} rows to {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "train":
@@ -1534,6 +1895,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_detect_anomalies(args)
     if args.command == "promote":
         return cmd_promote(args)
+    if args.command == "enrich-corpus":
+        return cmd_enrich_corpus(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

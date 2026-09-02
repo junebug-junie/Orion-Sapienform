@@ -294,6 +294,207 @@ def test_purged_temporal_split_raises_clear_error_when_too_few_windows() -> None
         purged_temporal_split(windows, held_out_frac=0.15, purge_gap_windows=6)
 
 
+def test_block_purged_temporal_split_n_blocks_1_matches_purged_temporal_split() -> None:
+    """n_blocks=1 must be byte-identical to the original single-block function -- v3's
+    already-validated methodology must not shift under the new code path."""
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split, purged_temporal_split
+
+    n = 100
+    windows = [np.full(4, float(i)) for i in range(n)]
+
+    train_a, held_a = purged_temporal_split(windows, held_out_frac=0.15, purge_gap_windows=6)
+    train_b, held_b = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=6, n_blocks=1
+    )
+    assert np.array_equal(train_a, train_b)
+    assert np.array_equal(held_a, held_b)
+
+
+def test_block_purged_temporal_split_spreads_held_out_across_the_whole_range() -> None:
+    """The whole point: with n_blocks>1, held-out windows must come from MULTIPLE distinct
+    regions of the time range, not be concentrated at the trailing end -- the exact defect
+    that motivated this (a single trailing block can be drawn from a different regime than
+    train on a wide, non-stationary corpus)."""
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    n = 300
+    windows = [np.full(4, float(i)) for i in range(n)]
+
+    train, held = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    held_indices = sorted(int(w[0]) for w in held)
+    # Held-out indices must span at least 4 of the 5 roughly-equal-sized segments (allows
+    # for integer-rounding edge slack at a segment boundary), not sit entirely in the last
+    # one the way the n_blocks=1 case does.
+    segment_width = n / 5
+    touched_segments = {int(idx // segment_width) for idx in held_indices}
+    assert len(touched_segments) >= 4
+    # A genuinely single trailing block (the old bug this replaces) would have every held
+    # index in the top ~15% of the whole range -- assert that's NOT what happened.
+    assert min(held_indices) < n * 0.5
+
+
+def test_block_purged_temporal_split_train_excludes_every_blocks_embargo() -> None:
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    n = 300
+    windows = [np.full(4, float(i)) for i in range(n)]
+    train, held = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    train_indices = {int(w[0]) for w in train}
+    held_indices = {int(w[0]) for w in held}
+    # No index is in both -- train and held-out are disjoint even across multiple blocks.
+    assert train_indices.isdisjoint(held_indices)
+    # Something was actually excluded as embargo (neither train nor held) -- purge_gap_windows
+    # > 0 must have a real effect, not be silently absorbed.
+    excluded = n - len(train_indices) - len(held_indices)
+    assert excluded > 0
+
+
+def test_block_purged_temporal_split_embargoes_internal_block_boundaries() -> None:
+    """Regression test for the finding this fixed: a training window must never be
+    positioned within purge_gap_windows of ANY held-out window's index -- including at an
+    internal segment boundary (segment i's held-out tail immediately followed by segment
+    i+1's train head), not just before each segment's own trailing held-out block. This is
+    the exact leakage class that was reintroduced at every internal block boundary in an
+    earlier version of block_purged_temporal_split()."""
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    n = 300
+    purge_gap_windows = 4
+    windows = [np.full(4, float(i)) for i in range(n)]
+    train, held = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=purge_gap_windows, n_blocks=5
+    )
+    train_indices = sorted(int(w[0]) for w in train)
+    held_indices = sorted(int(w[0]) for w in held)
+
+    for t_idx in train_indices:
+        for h_idx in held_indices:
+            assert abs(t_idx - h_idx) > purge_gap_windows, (
+                f"train window {t_idx} is within purge_gap_windows of held-out window "
+                f"{h_idx} (gap={abs(t_idx - h_idx)}, required > {purge_gap_windows}) -- "
+                "leakage at a block boundary"
+            )
+
+
+def test_block_purged_temporal_split_rejects_n_blocks_below_1() -> None:
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    windows = [np.full(4, float(i)) for i in range(50)]
+    with pytest.raises(ValueError, match="n_blocks"):
+        block_purged_temporal_split(windows, held_out_frac=0.15, purge_gap_windows=3, n_blocks=0)
+
+
+def _rows_at(base: datetime, n: int, step_sec: float = 2.0) -> list[FieldChannelCorpusRowV1]:
+    return [_make_row(t=base + timedelta(seconds=step_sec * i), channels={}, idx=i) for i in range(n)]
+
+
+def test_block_purge_ar1_training_rows_n_blocks_1_matches_original_cutoff() -> None:
+    """n_blocks=1 must reproduce cmd_train's original single-cutoff filter exactly: rows
+    strictly before start_ts[held_start] are safe for AR(1) fitting, everything from there
+    on (including the purge-embargo zone -- the original behavior did not exclude it) is
+    not."""
+    from orion.mood_arc.fit_encoder import _purge_split_indices, block_purge_ar1_training_rows
+
+    n = 100
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+    rows = _rows_at(base, n)
+
+    safe_rows = block_purge_ar1_training_rows(
+        rows, start_ts, held_out_frac=0.15, purge_gap_windows=6, n_blocks=1
+    )
+    _purge_start, held_start = _purge_split_indices(n, 0.15, 6)
+    cutoff_ts = start_ts[held_start]
+    expected = [r for r in rows if r.generated_at < cutoff_ts]
+    assert [r.generated_at for r in safe_rows] == [r.generated_at for r in expected]
+
+
+def test_block_purge_ar1_training_rows_excludes_orphaned_trailing_rows() -> None:
+    """Regression test for the finding this fixed: a row past the last window's own end_ts
+    (e.g. a run's trailing rows that never formed a complete window) must be excluded from
+    the AR(1) fit, not silently re-admitted by an interval upper bound that only reaches to
+    a window's end_ts."""
+    from orion.mood_arc.fit_encoder import block_purge_ar1_training_rows
+
+    n = 300
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+    rows = _rows_at(base, n)
+    # An orphaned trailing row, well past the last window's own end_ts, that never formed a
+    # complete window (build_windows drops a run's tail once fewer than window_size remain).
+    orphan = _make_row(t=end_ts[-1] + timedelta(seconds=3600), channels={}, idx=99999)
+    rows_with_orphan = rows + [orphan]
+
+    safe_rows = block_purge_ar1_training_rows(
+        rows_with_orphan, start_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    assert orphan not in safe_rows
+
+
+def test_block_purge_ar1_training_rows_covers_every_segments_train_span() -> None:
+    """Every segment's own train range must contribute at least its own rows to the safe
+    set -- multi-block AR(1) fitting shouldn't collapse to only the first segment."""
+    from orion.mood_arc.fit_encoder import block_purge_ar1_training_rows
+
+    n = 300
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+    rows = _rows_at(base, n)
+
+    safe_rows = block_purge_ar1_training_rows(
+        rows, start_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    safe_times = {r.generated_at for r in safe_rows}
+    segment_width = n // 5
+    touched_segments = {int((t - base).total_seconds() // 2) // segment_width for t in safe_times}
+    assert len(touched_segments) >= 4
+
+
+def test_block_purge_ar1_training_rows_excludes_rows_inside_overlapping_held_window() -> None:
+    """Regression test for the finding this fixed: with overlapping windows (window spans
+    wider than the stride between them, as with real window_size=30/stride=15), a train
+    window's own end_ts can sit PAST a held-out window's start_ts even at purge_gap_windows=0
+    -- an earlier version of this function used a train window's end_ts as the safe upper
+    bound and would have wrongly admitted rows from that overlap into the AR(1) fit. The
+    fixed version uses the held-out block's own start_ts as the (exclusive) upper bound
+    instead, matching the reasoning the ORIGINAL single-cutoff code already used."""
+    from orion.mood_arc.fit_encoder import _segment_train_held_ranges, block_purge_ar1_training_rows
+
+    n = 100
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    # Deliberately wide window spans (60s) relative to the 2s index step, so a train
+    # window's own end_ts extends far past the next several windows' start_ts -- exactly the
+    # overlap shape real 50%-overlapping windows produce, exaggerated here to make the test
+    # deterministic and obvious.
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+    rows = _rows_at(base, n)
+
+    purge_gap_windows = 0  # no requested embargo -- the leak this test targets doesn't need one
+    n_blocks = 2
+    ranges = _segment_train_held_ranges(n, 0.15, purge_gap_windows, n_blocks)
+    _train_lo, train_hi, held_lo, _held_hi = ranges[0]
+    assert end_ts[train_hi - 1] > start_ts[held_lo], (
+        "test setup must reproduce the overlap the fix addresses -- the first segment's "
+        "last train window's end_ts must extend past its own held-out block's start_ts"
+    )
+
+    safe_rows = block_purge_ar1_training_rows(
+        rows, start_ts, held_out_frac=0.15, purge_gap_windows=purge_gap_windows, n_blocks=n_blocks
+    )
+    safe_times = {r.generated_at for r in safe_rows}
+    # The held-out block's own first tick must be excluded, even though it falls inside the
+    # OLD (buggy) end_ts-based train span -- this is exactly the row the fix protects.
+    assert start_ts[held_lo] not in safe_times
+
+
 def test_purged_temporal_split_raises_on_empty_windows() -> None:
     from orion.mood_arc.fit_encoder import purged_temporal_split
 
@@ -635,3 +836,43 @@ def test_compute_window_probes_raises_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError, match="field_channel_corpus.v1"):
         compute_window_probes(np.zeros((1, 12)), {"W2": np.zeros((4, 2))}, ("a", "b", "c"))
+
+
+def test_enrich_corpus_refuses_out_that_looks_like_a_rotated_sibling(tmp_path: Path) -> None:
+    """Regression test for the finding this fixed: --out must not collide with --corpus's
+    own rotation family, or a later `train --corpus` call would silently union the enriched
+    file back with the original's rotated siblings and double-count rows. This must be
+    refused BEFORE any Postgres connection is attempted (no --pg-dsn/DATABASE_URL needed for
+    this test to pass)."""
+    corpus = tmp_path / "field_channels.jsonl"
+    corpus.write_text('{"generated_at": "2026-08-30T00:00:00Z", "tick_id": "t0", "channels": {}}\n')
+    colliding_out = tmp_path / "field_channels.jsonl.20260901T000000.123456Z"
+
+    proc = _run_fit("enrich-corpus", "--corpus", str(corpus), "--out", str(colliding_out))
+    assert proc.returncode != 0
+    combined = (proc.stdout + proc.stderr).lower()
+    assert "rotated sibling" in combined
+
+
+def test_enrich_corpus_does_not_refuse_a_non_rotated_out_name(tmp_path: Path) -> None:
+    """Regression test for the finding this fixed: a naive `startswith(f"{corpus.name}.")`
+    check would ALSO refuse a legitimate, non-colliding --out name like
+    "field_channels.jsonl.enriched" -- resolve_rotated_corpus_files() only treats a name as a
+    rotated sibling when the suffix matches ROTATED_SUFFIX_RE exactly, so the guard must too.
+    This test only checks the guard doesn't fire for this name -- the command will still fail
+    later (no reachable Postgres in this test environment), just for an unrelated reason."""
+    corpus = tmp_path / "field_channels.jsonl"
+    corpus.write_text('{"generated_at": "2026-08-30T00:00:00Z", "tick_id": "t0", "channels": {}}\n')
+    non_colliding_out = tmp_path / "field_channels.jsonl.enriched"
+
+    proc = _run_fit(
+        "enrich-corpus",
+        "--corpus",
+        str(corpus),
+        "--out",
+        str(non_colliding_out),
+        "--pg-dsn",
+        "postgresql://nouser:nopass@127.0.0.1:1/nodb",
+    )
+    combined = (proc.stdout + proc.stderr).lower()
+    assert "rotated sibling" not in combined

@@ -3,6 +3,7 @@
 orion-whisper-tts
 orion-bus
 orion-agent-council
+orion-gpu-lane-controller
 
 orion-juniper-affective-state
 orion-affectgpt-worker

@@ -69,6 +69,16 @@ def test_provenance_and_honesty_columns_are_persisted() -> None:
         assert name in cols
 
 
+def test_measurements_by_node_is_a_column_not_only_the_summed_total() -> None:
+    """`measurements` sums across the fleet by design (aggregate_fleet_measurements) --
+    the per-node breakdown that sum necessarily loses (which machine drew how much) has
+    to survive somewhere or a query like "what was circe's proxied wattage on
+    2026-08-14" is permanently unanswerable, even though the source event carried it."""
+    cols = _columns()
+    assert "measurements_by_node" in cols
+    assert cols["measurements_by_node"].nullable
+
+
 def test_normalizer_maps_timestamp_to_observed_at_and_hoists_watts() -> None:
     observed = datetime(2026, 8, 28, 4, 30, tzinfo=timezone.utc)
     out = _normalize_biometrics_cluster_payload(
@@ -255,6 +265,10 @@ def test_write_row_actually_invokes_the_normalizer(monkeypatch) -> None:
             "timestamp": datetime(2026, 8, 28, 4, 30, tzinfo=timezone.utc),
             "measurements": {"pdu_watts": 1526.0, "chassis_watts": 1457.0},
             "measurements_proxied": {"circe": ["chassis_watts", "pdu_watts"]},
+            "measurements_by_node": {
+                "athena": {"chassis_watts": 390.0},
+                "circe": {"chassis_watts": 512.0, "pdu_watts": 512.0},
+            },
         }
     ).model_dump()
 
@@ -271,3 +285,8 @@ def test_write_row_actually_invokes_the_normalizer(monkeypatch) -> None:
     assert row.pdu_watts == 1526.0
     assert row.chassis_watts == 1457.0
     assert row.measurements_proxied == {"circe": ["chassis_watts", "pdu_watts"]}
+    # The per-node breakdown reaches the row through _write_row's generic key filter
+    # (no hoisting/normalization needed, same as measurements/measurements_proxied) --
+    # this is the exact path that silently dropped it before the column existed.
+    assert row.measurements_by_node["athena"]["chassis_watts"] == 390.0
+    assert row.measurements_by_node["circe"]["chassis_watts"] == 512.0

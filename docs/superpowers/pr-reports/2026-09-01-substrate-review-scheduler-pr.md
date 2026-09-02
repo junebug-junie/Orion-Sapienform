@@ -118,10 +118,27 @@ rows from August and looked like a fix.
 ## Tests run
 
 ```text
-pytest orion/substrate/tests -q                     -> 646 passed
-pytest services/orion-hub/tests -q  (branch)        -> 32 failed, 1910 passed, 5 skipped
-pytest services/orion-hub/tests -q  (merge-base)    -> 32 failed, 1898 passed, 5 skipped
+pytest orion/substrate/tests -q                        -> 646 passed
+pytest services/orion-hub/tests  (branch bd99ee2dc)    -> 31 failed, 1929 passed, 5 skipped
+pytest services/orion-hub/tests  (baseline 4620f4660)  -> 32 failed, 1915 passed, 5 skipped
 ```
+
+Set-difference of the FAILED lists (sets, not counts -- equal counts can hide an
+equal-sized swap): **zero new failures**, one fixed
+(`test_one_live_surface_invariant_blocks_before_side_effects`).
+
+### Control-plane isolation, measured as an A/B
+
+Both runs on the same box against the same live database, minutes apart:
+
+| run | fix present | rows written to `substrate_review_telemetry` |
+|---|---|---|
+| branch `bd99ee2dc` | yes | 1610 -> 1610 = **0** |
+| baseline `4620f4660` | no | 1610 -> 1622 = **+12** |
+
+The positive control matters here. An earlier "1562 -> 1562, no rows written"
+result was an artifact of pytest collection order and could not distinguish a
+working fix from a run that happened not to write. This pair can.
 
 Set-difference of the two FAILED lists: **zero new failures**, one incidentally
 fixed (`test_routing_dry_run_produces_trial_and_decision_without_side_effects`).
@@ -295,4 +312,4 @@ scripts/safe_docker_build.sh orion-hub up -d
 
 ## PR link
 
-<pending>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2024

@@ -8,6 +8,41 @@ import sqlite3
 from orion.core.schemas.substrate_review_queue import GraphReviewQueueItemV1, GraphReviewQueueSnapshotV1
 
 
+#: Fields a re-seed of an already-queued region is allowed to overwrite. These
+#: describe the *incoming proposal* -- why this region is being raised again,
+#: how urgently, and by whom. Every other field on
+#: :class:`GraphReviewQueueItemV1` describes the *life of the queue item itself*
+#: (its id, its cycle budget, its suppression/termination state, and the
+#: timestamps recording when it was created and last reviewed) and is carried
+#: forward from the existing item.
+#:
+#: The split is stated as "what a re-seed refreshes" rather than "what it
+#: preserves" so that a field added to the schema later defaults to being
+#: preserved. The inverse default is what broke the review scheduler live on
+#: 2026-09-02: the merge rebuilt the item from the incoming seed and named the
+#: four fields to carry forward, so ``created_at`` silently reset to now and
+#: ``last_review_at`` silently reset to ``None`` on every re-seed. Because
+#: :meth:`prune_finished` ages an item against ``last_review_at or created_at``,
+#: and the review scheduler re-seeds precisely when every item is suppressed,
+#: each tick refreshed the clock that was supposed to retire the item. The queue
+#: sat at 8 permanently-suppressed items for hours with the scheduler running
+#: normally -- the tick meant to recover the queue was what guaranteed it never
+#: could. :func:`test_reseed_after_suppression_preserves_the_prune_clock` pins it.
+_RESEED_REFRESHED_FIELDS = (
+    "focal_node_refs",
+    "focal_edge_refs",
+    "anchor_scope",
+    "subject_ref",
+    "target_zone",
+    "originating_decision_id",
+    "originating_request_id",
+    "reason_for_revisit",
+    "priority",
+    "next_review_at",
+    "notes",
+)
+
+
 class GraphReviewQueue:
     def __init__(
         self,
@@ -56,20 +91,27 @@ class GraphReviewQueue:
                 break
         if existing_id is not None:
             prev = self._items[existing_id]
-            item = item.model_copy(
-                update={
-                    "queue_item_id": existing_id,
-                    "cycle_budget": prev.cycle_budget,
-                    "suppression_state": prev.suppression_state,
-                    "termination_state": prev.termination_state,
-                }
+            item = prev.model_copy(
+                update={field: getattr(item, field) for field in _RESEED_REFRESHED_FIELDS}
             )
             self._items[existing_id] = item
             self._persist()
             return
 
         if len(self._items) >= self._max_items:
-            evict_id = sorted(self._items.items(), key=lambda kv: (kv[1].priority, kv[1].created_at))[0][0]
+            # Suppressed/terminated items are what prune_finished exists to reap, so
+            # they are evicted ahead of anything still live. The age tiebreak below
+            # only became load-bearing once created_at stopped being refreshed on
+            # every re-seed: without the liveness term, a long-surviving active
+            # region would now lose its slot to a younger already-dead one.
+            evict_id = sorted(
+                self._items.items(),
+                key=lambda kv: (
+                    not (kv[1].suppression_state or kv[1].termination_state),
+                    kv[1].priority,
+                    kv[1].created_at,
+                ),
+            )[0][0]
             del self._items[evict_id]
         self._items[item.queue_item_id] = item
         self._persist()

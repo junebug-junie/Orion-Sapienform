@@ -5869,6 +5869,7 @@ def execute_substrate_review_scheduled_cycle(
                 "due_now": due_now,
                 "bootstrapped": bootstrap is not None,
                 "items_enqueued": (bootstrap or {}).get("items_enqueued"),
+                "items_merged": (bootstrap or {}).get("items_merged"),
                 "bootstrap_notes": (bootstrap or {}).get("notes"),
                 "execution_outcome": ((cycle or {}).get("result") or {}).get("outcome"),
                 "selected_queue_item_id": ((cycle or {}).get("result") or {}).get(
@@ -5925,6 +5926,7 @@ def _bootstrap_substrate_review_frontier(*, limit: int = 12) -> Dict[str, Any]:
         "generated_at": now.isoformat(),
         "items_before": execution.items_before,
         "items_enqueued": execution.items_enqueued,
+        "items_merged": execution.items_merged,
         "items_after": execution.items_after,
         "due_after": execution.due_after,
         "source_posture": _substrate_source_posture(),

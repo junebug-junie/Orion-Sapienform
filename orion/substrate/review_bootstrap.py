@@ -14,6 +14,7 @@ class GraphReviewBootstrapExecutionV1:
     items_before: int
     items_after: int
     items_enqueued: int
+    items_merged: int
     due_after: int
     scheduled_decision_count: int
     semantic_source: str
@@ -48,6 +49,7 @@ class GraphReviewBootstrapper:
         ]
 
         scheduled_decision_count = 0
+        upserted_count = 0
         notes: list[str] = []
 
         for query_kind, query_result, target_zone in seed_specs:
@@ -80,6 +82,7 @@ class GraphReviewBootstrapper:
                 invocation_surface="operator_review",
             )
             scheduled_decision_count += len(scheduled.schedule_decisions)
+            upserted_count += len(scheduled.enqueued_items)
 
         queue_after = self._scheduler.queue.snapshot(limit=200).queue_items
         after_ids = {item.queue_item_id for item in queue_after}
@@ -98,6 +101,13 @@ class GraphReviewBootstrapper:
             items_before=len(queue_before),
             items_after=len(queue_after),
             items_enqueued=len(after_ids - before_ids),
+            # A seed that lands on an already-queued region key merges into it and
+            # mints no new id, so items_enqueued alone reports 0 for a steady-state
+            # tick and cannot be told apart from "seeded nothing at all". That
+            # ambiguity is what hid the 2026-09-02 re-seed clock reset: every tick
+            # logged bootstrapped=true, items_enqueued=0 while silently resurrecting
+            # eight dead items, and reading it required a Postgres query.
+            items_merged=max(0, upserted_count - len(after_ids - before_ids)),
             due_after=due_after,
             scheduled_decision_count=scheduled_decision_count,
             semantic_source=semantic_source,

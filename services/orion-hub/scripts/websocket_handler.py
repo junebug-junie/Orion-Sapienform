@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 import time
 import base64
 import json
@@ -490,10 +491,27 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optiona
     try:
         while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
+            # voice.tts.done says synthesis finished; nothing said when the
+            # audio actually left the socket. That gap -- a shared queue this
+            # connection also drains notifications/outreach/room-relay through,
+            # plus a single ~600KB base64 send -- was completely dark while
+            # diagnosing a "text is on screen, no speech" report on 2026-09-02,
+            # so the only honest answer was "the server logged a successful
+            # send". These two lines make the next occurrence measurable
+            # instead of inferred.
+            audio_len = len(msg.get("audio_response") or "") if isinstance(msg, dict) else 0
+            queued_at = perf_counter()
             try:
                 await websocket.send_json(await _with_biometrics(msg, cache=cache))
             except WebSocketDisconnect:
                 break
+            if audio_len:
+                logger.info(
+                    "voice.tts.sent audio_b64_len=%d send_ms=%.1f queue_depth_after=%d",
+                    audio_len,
+                    (perf_counter() - queued_at) * 1000.0,
+                    queue.qsize(),
+                )
             queue.task_done()
             await asyncio.sleep(0.01)
     except asyncio.CancelledError:

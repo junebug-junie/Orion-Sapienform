@@ -218,6 +218,28 @@ class SubstrateMutationStore:
         self._persist()
         return []
 
+    def record_settlement(self, adoption_id: str) -> bool:
+        """Release a surface because its change survived, not because it failed.
+
+        ``record_adoption`` takes the one-live-mutation-per-surface lock and,
+        until this existed, ``record_rollback`` was the only thing that gave it
+        back. So a mutation that *succeeded* held its surface forever: on
+        2026-09-02 a single adoption blocked 77 subsequent proposals for
+        thirteen hours, every one of them decided ``hold /
+        active_surface_mutation_exists``.
+
+        Settling keeps the applied change and the adoption record. It only
+        clears the lock, so the surface can be proposed against again.
+        """
+        adoption = self._adoptions.get(adoption_id)
+        if adoption is None or adoption.status != "applied":
+            return False
+        self._adoptions[adoption_id] = adoption.model_copy(update={"status": "settled"})
+        if self._active_surface_by_target.get(adoption.target_surface) == adoption_id:
+            self._active_surface_by_target.pop(adoption.target_surface, None)
+        self._persist()
+        return True
+
     def record_rollback(self, rollback: MutationRollbackV1) -> None:
         self._rollbacks[rollback.rollback_id] = rollback
         adoption = self._adoptions.get(rollback.adoption_id)

@@ -212,7 +212,12 @@ class MutationAdoptionV1(BaseModel):
     target_surface: str
     applied_patch: dict[str, Any] = Field(default_factory=dict)
     rollback_payload: dict[str, Any] = Field(default_factory=dict, min_length=1)
-    status: Literal["applied", "rolled_back"] = "applied"
+    # "settled" = the rollback window closed without a regression, so the change
+    # is kept and its surface lock is released. Without it the only exit from
+    # "applied" was "rolled_back", and a mutation that succeeded held its
+    # target surface forever -- 77 proposals were refused behind one such lock
+    # on 2026-09-02.
+    status: Literal["applied", "rolled_back", "settled"] = "applied"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     applied_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     rollback_window_sec: int = Field(default=900, ge=30, le=86400)

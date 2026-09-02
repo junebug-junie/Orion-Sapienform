@@ -144,6 +144,17 @@ async def api_biometrics_preview_snapshot(node: str = Query(...)) -> Dict[str, A
 async def query_channel_history_rows(
     *, node: str, channel: str, column: str, hours: int
 ) -> Sequence[Mapping[str, Any]]:
+    """No `::timestamptz` cast on the bound cutoff parameter (confirmed live
+    2026-09-02): asyncpg infers a `$n::timestamptz` cast as "this parameter
+    must already be a datetime.datetime", and errors on the plain ISO string
+    `_iso_utc()` produces -- `invalid input for query argument $2: ...
+    expected a datetime.date or datetime.datetime instance, got 'str'`. This
+    table's `timestamp` column is TEXT (see BiometricsSummarySQL), and
+    cabinet_sensors_routes.py's query_sensor_history_rows already compares it
+    as plain text successfully in production against the same table -- match
+    that proven pattern rather than re-adding a cast that only unit tests
+    (which mock the DB layer) failed to catch.
+    """
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         raise RuntimeError("DATABASE_URL is not configured")
@@ -160,9 +171,9 @@ async def query_channel_history_rows(
               ({column}->>$3)::double precision AS v
             FROM orion_biometrics_summary
             WHERE node = $1
-              AND timestamp::timestamptz >= $2::timestamptz
+              AND timestamp >= $2
               AND {column} ? $3
-            ORDER BY timestamp::timestamptz ASC
+            ORDER BY timestamp ASC
             """,
             node,
             cutoff,
@@ -223,6 +234,9 @@ async def query_multi_channel_history_rows(
     live incident history with Postgres connection exhaustion (PR #2010), so
     N short-lived connections opening at once -- exactly when an operator is
     trying to diagnose a problem -- is a real risk, not a theoretical one.
+
+    Same no-`::timestamptz`-cast-on-the-bound-parameter fix as
+    query_channel_history_rows above -- see that function's docstring.
     """
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
@@ -249,8 +263,8 @@ async def query_multi_channel_history_rows(
               {select_cols}
             FROM orion_biometrics_summary
             WHERE node = $1
-              AND timestamp::timestamptz >= $2::timestamptz
-            ORDER BY timestamp::timestamptz ASC
+              AND timestamp >= $2
+            ORDER BY timestamp ASC
             """,
             node,
             cutoff,

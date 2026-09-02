@@ -511,11 +511,12 @@ browser actually sees. Giving the UI a real restore path is separate work.
 The frontend handles `orion_outreach` in its own early-return branch
 (`static/js/app.js`) rather than falling through to the generic assistant
 branch — that branch also runs `updateMemoryPanelFromResponse()`, which would
-blank the recall panel still showing the last real turn. It also costs the
-frame's piggybacked biometrics snapshot, which is harmless: `biometrics_heartbeat`
-re-pushes every `BIOMETRICS_PUSH_INTERVAL_SEC` (default 5s). `addNotification`
+blank the recall panel still showing the last real turn. `addNotification`
 suppresses the toast for `notification_type == endogenous_outreach`, since the
 same `tts_q` carries both rails and the bubble already showed the text.
+(Websocket frames no longer piggyback a biometrics snapshot at all — the
+`#biometricsPanel` widget that was its only client-side reader was removed;
+see `_with_biometrics()` in `scripts/websocket_handler.py`.)
 
 **Single-process assumption:** the live-bubble rail is in-process. Hub runs one
 uvicorn worker (`Dockerfile` CMD has no `--workers`). If that changes, this rail

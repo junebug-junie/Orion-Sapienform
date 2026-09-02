@@ -55,6 +55,12 @@ _CHANNEL_COLUMN: dict[str, str] = {
     "power": "pressures",
     "disk_capacity": "pressures",
     "fan": "pressures",
+    # Raw watts, not a 0-1 pressure -- lives in the `measurements` JSONB column, not
+    # `pressures`. Only athena writes this into its own summary row today (self-reported
+    # via iLO); circe's current reading comes from the live cluster read in /snapshot
+    # above (cluster_measurements_by_node), not from history, since circe's own PDU proxy
+    # value is computed on athena and never persisted into circe's own summary row.
+    "chassis_watts": "measurements",
 }
 
 # Injectable seam for tests, same pattern as cabinet_sensors_routes._history_query.
@@ -129,6 +135,7 @@ async def api_biometrics_preview_snapshot(node: str = Query(...)) -> Dict[str, A
         logger.warning("biometrics preview snapshot unavailable for %s: %s", nid, exc)
         return {"ok": False, "node": nid, "error": "node_unreachable"}
     node_payload = (payload.get("nodes") or {}).get(nid, {}) if isinstance(payload, dict) else {}
+    cluster_payload = payload.get("cluster") if isinstance(payload, dict) else None
     return {
         "ok": True,
         "node": nid,
@@ -138,6 +145,12 @@ async def api_biometrics_preview_snapshot(node: str = Query(...)) -> Dict[str, A
         "reason": node_payload.get("reason"),
         "summary": node_payload.get("summary") or {},
         "induction": node_payload.get("induction") or {},
+        # Per-node raw measurements (e.g. chassis_watts) this node's own biometrics hub
+        # aggregator computed, keyed by node -- see BiometricsClusterV1.measurements_by_node.
+        # Only the node whose PDU-proxy poller is configured (athena, for circe's wattage)
+        # will actually have a proxied entry for another node; absent means unmeasured, not
+        # zero, same as every other measurement in this module.
+        "cluster_measurements_by_node": (cluster_payload or {}).get("measurements_by_node") if isinstance(cluster_payload, dict) else None,
     }
 
 

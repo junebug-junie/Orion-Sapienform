@@ -412,8 +412,6 @@ class Settings(BaseSettings):
         default='{"circe":0.6,"athena":0.4}',
         alias="BIOMETRICS_ROLE_WEIGHTS_JSON",
     )
-    BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
-
     # --- Cabinet Nano sensors (Hub operator tab; host bind-mount) ---
     # Same host paths as orion-biometrics. Written by
     # scripts/orion_cabinet_sensor_reader.py → /run/orion-sensors/*.json.

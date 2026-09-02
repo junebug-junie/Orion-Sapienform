@@ -90,6 +90,11 @@ class BiometricsClusterSQL(Base):
     measurements = Column(JSONB(none_as_null=True), nullable=True)
     measurements_missing = Column(JSONB(none_as_null=True), nullable=True)
     measurements_proxied = Column(JSONB(none_as_null=True), nullable=True)
+    # The per-node breakdown `measurements` necessarily loses by summing (see
+    # BiometricsClusterV1.measurements_by_node's own docstring). Stored whole, same as
+    # `measurements` itself -- no float columns to hoist into, since "which node drew
+    # how much" is exactly the shape a flat float column cannot represent.
+    measurements_by_node = Column(JSONB(none_as_null=True), nullable=True)
     nodes_absent = Column(JSONB(none_as_null=True), nullable=True)
 
     __table_args__ = (

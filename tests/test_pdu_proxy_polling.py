@@ -63,6 +63,26 @@ def test_a_powered_down_node_reads_a_true_zero_rather_than_vanishing():
     assert proxied["circe"] == ["chassis_watts", "pdu_watts"]
 
 
+# ------------------------------------------------------------ per-node breakdown survives the sum
+
+def test_the_merged_per_node_dict_is_what_the_cluster_schema_should_carry_by_node():
+    """publish_cluster() builds this exact `merged` dict, then only its SUM
+    (aggregate_fleet_measurements) used to make it into BiometricsClusterV1 -- losing which
+    machine drew how much. measurements_by_node exists so this dict (proxy-filled, self-report
+    still winning) rides along per-node instead of being discarded after summing."""
+    per_node = {
+        "athena": {"chassis_watts": 470.0},
+        "circe": {"gpu_watts_total": 153.0},
+    }
+    merged, _ = _merge(per_node, {"circe": {"chassis_watts": 419.0, "pdu_watts": 419.0}})
+    c = BiometricsClusterV1(sources=["athena", "circe"], measurements_by_node=merged)
+    rt = BiometricsClusterV1.model_validate_json(c.model_dump_json())
+    # athena's self-report and circe's proxied reading are both individually recoverable --
+    # the whole point, since aggregate_fleet_measurements' total alone cannot tell them apart.
+    assert rt.measurements_by_node["athena"]["chassis_watts"] == pytest.approx(470.0)
+    assert rt.measurements_by_node["circe"]["chassis_watts"] == pytest.approx(419.0)
+
+
 # ------------------------------------------------------------ provenance
 
 def test_a_proxied_reading_is_labelled():

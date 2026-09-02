@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from scripts.utils import split_sentences
 from scripts.websocket_handler import chunk_text_for_speech, run_tts_remote
 
 # conftest's _ensure_hub_paths() deletes every cached `scripts.*` module so the
@@ -22,19 +23,37 @@ _WH = sys.modules[run_tts_remote.__module__]
 
 # --- chunker ------------------------------------------------------------
 
-def test_chunks_are_sentence_aligned_and_lossless():
-    """Every chunk boundary lands on a sentence end, and no text is dropped."""
+def test_chunks_are_sentence_aligned_and_drop_no_sentence():
+    """Every chunk boundary lands on a sentence end; no sentence is lost or reordered.
+
+    The guarantee is over SENTENCES, not bytes. The pre-existing
+    `split_sentences` helper this builds on collapses newlines to spaces and
+    strips each sentence, so chunking is not byte-identical to the input:
+    "A.\nB." comes back as "A. B.". That is why the assertion below compares
+    against split_sentences' own output rather than the raw string -- an
+    earlier version of this test asserted `" ".join(chunks) == text` and
+    passed only because its fixture happened to be single-spaced with no
+    newlines. Audibly this is a non-issue (XTTS splits on sentences itself),
+    but the weaker claim is the true one.
+    """
     text = (
         "One sentence here. Two sentences here now. Three of them by now. "
         "Four is where we are. Five and still going on. Six ends the run."
     )
     chunks = chunk_text_for_speech(text, first_chunk_chars=40, chunk_chars=80)
     assert len(chunks) > 1, "this fixture must actually split"
-    # Sentence-aligned: each chunk ends on terminal punctuation.
     for c in chunks:
         assert c.endswith((".", "!", "?")), c
-    # Lossless: rejoining reproduces the sentence sequence exactly.
-    assert " ".join(chunks) == text
+    # Every sentence survives, in order, exactly once.
+    assert " ".join(chunks).split() == " ".join(split_sentences(text)).split()
+
+
+def test_whitespace_is_normalized_not_preserved():
+    """Pins the known, inherited whitespace behavior so it cannot change silently."""
+    chunks = chunk_text_for_speech(
+        "First line here.\nSecond line here.", first_chunk_chars=10, chunk_chars=20
+    )
+    assert chunks == ["First line here.", "Second line here."]
 
 
 def test_first_chunk_is_smaller_than_later_chunks():

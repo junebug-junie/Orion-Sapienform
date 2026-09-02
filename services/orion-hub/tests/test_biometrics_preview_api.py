@@ -357,3 +357,89 @@ def test_router_registered_on_api_routes():
     paths = {getattr(route, "path", None) for route in api_routes.router.routes}
     assert "/api/biometrics/preview/snapshot" in paths
     assert "/api/biometrics/preview/gpu" in paths
+
+
+# --------------------------------------------------------------------------
+# Live-DB integration tests
+# --------------------------------------------------------------------------
+#
+# Confirmed live 2026-09-02: query_channel_history_rows/
+# query_multi_channel_history_rows originally cast the bound cutoff
+# parameter as `$2::timestamptz`, which asyncpg rejects for a plain ISO
+# string ("expected a datetime.date or datetime.datetime instance, got
+# 'str'") -- every other test in this file mocks the DB layer (_history_query/
+# _history_multi_query injected directly), so this asyncpg-level parameter-
+# binding error was invisible to the suite and only surfaced against the
+# real deployed database. These two tests hit the actual local Postgres
+# (same one CLAUDE.md documents as directly queryable) so this class of bug
+# fails the suite, not just a live curl after deploy.
+
+import asyncio
+
+_LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"
+
+
+def _local_postgres_reachable() -> bool:
+    try:
+        import asyncpg
+    except ImportError:
+        return False
+
+    async def _try():
+        conn = await asyncpg.connect(dsn=_LOCAL_DATABASE_URL, timeout=2)
+        await conn.close()
+
+    try:
+        asyncio.run(_try())
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _local_postgres_reachable(), reason="local Postgres not reachable")
+@pytest.mark.asyncio
+async def test_query_channel_history_rows_against_real_postgres_does_not_raise(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", _LOCAL_DATABASE_URL)
+    # Real asyncpg parameter binding, not the mocked _history_query seam --
+    # this is the whole point: prove the query itself is valid SQL with
+    # valid parameter types, whether or not any rows come back.
+    rows = await biometrics_preview_routes.query_channel_history_rows(
+        node="athena", channel="strain", column="composites", hours=24
+    )
+    assert isinstance(rows, list)
+
+
+@pytest.mark.skipif(not _local_postgres_reachable(), reason="local Postgres not reachable")
+@pytest.mark.asyncio
+async def test_query_multi_channel_history_rows_against_real_postgres_does_not_raise(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", _LOCAL_DATABASE_URL)
+    rows = await biometrics_preview_routes.query_multi_channel_history_rows(
+        node="athena",
+        columns_by_channel={"strain": "composites", "gpu_util": "pressures"},
+        hours=24,
+    )
+    assert isinstance(rows, list)
+
+
+@pytest.mark.skipif(not _local_postgres_reachable(), reason="local Postgres not reachable")
+def test_history_endpoint_against_real_postgres_returns_ok_true(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", _LOCAL_DATABASE_URL)
+    app = FastAPI()
+    app.include_router(biometrics_preview_routes.router)
+    tc = TestClient(app)
+    r = tc.get("/api/biometrics/preview/history?node=athena&channel=strain&window=24h")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True, body  # was False with "history_unavailable" under the bug
+
+
+@pytest.mark.skipif(not _local_postgres_reachable(), reason="local Postgres not reachable")
+def test_history_multi_endpoint_against_real_postgres_returns_ok_true(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", _LOCAL_DATABASE_URL)
+    app = FastAPI()
+    app.include_router(biometrics_preview_routes.router)
+    tc = TestClient(app)
+    r = tc.get("/api/biometrics/preview/history_multi?node=athena&channels=strain,gpu_util&window=24h")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True, body  # was False with "history_unavailable" under the bug

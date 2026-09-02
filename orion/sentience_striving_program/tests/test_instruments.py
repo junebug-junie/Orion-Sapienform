@@ -251,3 +251,180 @@ def test_duplicate_instrument_id_is_rejected(tmp_path):
     )
     with pytest.raises(ValueError, match="duplicate instrument id"):
         load_manifest(path)
+
+
+# ---------------------------------------------------------------------------
+# Regression lane -- each of these reproduces a bug found in review
+# ---------------------------------------------------------------------------
+
+
+def test_repo_root_honours_orion_repo_root(monkeypatch, tmp_path):
+    """The reducer must read the mounted repo, not the package's own parent.
+
+    The Hub image copies only `orion/` and `services/orion-hub/` into `/app`
+    (verified live: `/app/scripts` and `/app/services` do not exist inside
+    `orion-athena-hub`), so a `__file__`-derived root rendered every instrument
+    under `scripts/` as MISSING and made every retention ceiling unresolvable.
+    """
+    from orion.sentience_striving_program import instruments as mod
+
+    monkeypatch.setenv("ORION_REPO_ROOT", str(tmp_path))
+    assert mod._repo_root() == tmp_path
+    # A bogus value must not break the CLI -- fall back, do not blow up.
+    monkeypatch.setenv("ORION_REPO_ROOT", str(tmp_path / "nope"))
+    assert mod._repo_root() == REPO_ROOT
+    monkeypatch.delenv("ORION_REPO_ROOT")
+    assert mod._repo_root() == REPO_ROOT
+
+
+def test_derived_storage_is_labelled_as_an_input_not_output(tmp_path):
+    """A shared upstream table's freshness is not the instrument's liveness.
+
+    `substrate_attention_frames` is written every tick; the emergent-clustering
+    probe has been run by hand twice, ever. Without this note the board renders
+    "123,945 rows, writing now" for a probe that has not run in weeks.
+    """
+    from orion.sentience_striving_program.instruments import (
+        Instrument,
+        InstrumentState,
+        Storage,
+        _storage_state,
+    )
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql):
+            self.sql = sql
+
+        def fetchone(self):
+            return (7, None, None)
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    inst = Instrument(
+        id="i", title="t", theory="t", program_ref="r", module="m", outcome="O1",
+        unlock="u", last_reviewed="2026-09-02",
+        storage=Storage(kind="derived", table="shared_upstream_table"),
+        claims=(),
+    )
+    state = InstrumentState(instrument=inst)
+    _storage_state(inst, _Conn(), state)
+    assert state.row_count == 7
+    assert "INPUT, not its output" in state.storage_note
+
+
+def test_unparseable_env_value_falls_back_to_the_template(tmp_path):
+    """One bad live value must not suppress the ceiling entirely.
+
+    `SETTING=168  # 7 days` in `.env` used to return None and stop, so the board
+    rendered no retention ceiling at all -- the single fact it exists to show.
+    """
+    from orion.sentience_striving_program.instruments import (
+        Instrument,
+        Storage,
+        resolve_retention_hours,
+    )
+
+    svc = tmp_path / "services" / "svc"
+    svc.mkdir(parents=True)
+    (svc / ".env").write_text("RET_HOURS=168  # 7 days\n")
+    (svc / ".env_example").write_text("RET_HOURS=72.0\n")
+    inst = Instrument(
+        id="i", title="t", theory="t", program_ref="r", module="m", outcome="O1",
+        unlock="u", last_reviewed="2026-09-02",
+        storage=Storage(kind="append_only", table="t",
+                        retention_setting="RET_HOURS", retention_service="svc"),
+        claims=(),
+    )
+    hours, source = resolve_retention_hours(inst, tmp_path)
+    assert (hours, source) == (72.0, ".env_example")
+
+
+def test_package_entrypoint_is_actually_checked(tmp_path):
+    """A package module that declares a missing entrypoint must not pass.
+
+    `check_repo_presence` returned (True, None) for any directory, so a manifest
+    could name a function that does not exist and the contract test would still
+    go green.
+    """
+    from orion.sentience_striving_program.instruments import Instrument, Storage
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "a.py").write_text("def really_here():\n    return 1\n")
+
+    def _inst(entry):
+        return Instrument(
+            id="i", title="t", theory="t", program_ref="r", module="pkg",
+            outcome="O1", unlock="u", last_reviewed="2026-09-02",
+            storage=Storage(kind="none"), claims=(), entrypoint=entry,
+        )
+
+    assert check_repo_presence(_inst("really_here"), tmp_path) == (True, True)
+    assert check_repo_presence(_inst("not_here_at_all"), tmp_path) == (True, False)
+
+
+# ---------------------------------------------------------------------------
+# Static lane -- the CI mode, which has no database
+# ---------------------------------------------------------------------------
+
+
+def test_static_only_skips_sql_claims_rather_than_passing_them(manifest):
+    """SQL claims must report SKIPPED in the static lane -- not HOLDS, not ERROR.
+
+    HOLDS would let a gate nobody can run read as green. ERROR would make the
+    static lane permanently red and get it switched off. Both failure modes end
+    with the gate not doing its job, so the third state is load-bearing.
+    """
+    states = build_state(manifest, conn=None, root=REPO_ROOT, with_consumers=False,
+                         static_only=True)
+    sql_claims = [
+        c for s in states for c in s.claims if c.claim.kind == "sql"
+    ]
+    assert sql_claims, "expected at least one SQL claim in the real manifest"
+    assert all(c.status == "SKIPPED" for c in sql_claims)
+    assert not any(c.drifted for c in sql_claims)
+
+
+def test_static_lane_still_checks_non_sql_claims(manifest):
+    """The static lane must not degrade into checking nothing at all."""
+    states = build_state(manifest, conn=None, root=REPO_ROOT, with_consumers=False,
+                         static_only=True)
+    checked = [
+        c for s in states for c in s.claims if c.status in ("HOLDS", "DRIFTED")
+    ]
+    assert checked, "static lane checked no claims -- it would be a no-op gate"
+
+
+def test_python_absence_fallback_matches_ripgrep():
+    """The dependency-free fallback must agree with ripgrep, on a real hit.
+
+    Asserted against a pattern that genuinely exists: comparing two empty
+    results would pass even if the fallback were broken and always returned
+    nothing.
+    """
+    import shutil
+    import subprocess
+
+    from orion.sentience_striving_program.instruments import _python_hit_paths
+
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep not available to compare against")
+
+    pattern = "def reduce_attention_self_model"
+    fallback = set(_python_hit_paths(pattern, REPO_ROOT))
+    assert fallback, "fallback found nothing for a pattern known to exist"
+
+    proc = subprocess.run(
+        ["rg", "--files-with-matches", "--fixed-strings", pattern, "."],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    expected = {ln.removeprefix("./") for ln in proc.stdout.splitlines() if ln.strip()}
+    assert fallback == expected

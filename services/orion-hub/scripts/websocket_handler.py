@@ -437,27 +437,29 @@ async def _with_biometrics(
     *,
     cache: Optional[BiometricsCache],
 ) -> Dict[str, Any]:
-    enriched = dict(payload)
-    if cache:
-        enriched["biometrics"] = await cache.get_snapshot()
-    else:
-        enriched["biometrics"] = {
-            "status": "NO_SIGNAL",
-            "reason": "cache_unavailable",
-            "as_of": None,
-            "freshness_s": None,
-            "constraint": "NONE",
-            "cluster": {
-                "composite": {"strain": 0.0, "homeostasis": 0.0, "stability": 1.0},
-                "trend": {
-                    "strain": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
-                    "homeostasis": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
-                    "stability": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
-                },
-            },
-            "nodes": {},
-        }
-    return enriched
+    """No longer attaches a `biometrics` key.
+
+    This used to enrich every outgoing websocket message with a cache snapshot
+    (lock acquisition + dict copies + per-node snapshot construction, every
+    call) for the client's `updateBiometricsPanel()`/`d.biometrics` reader.
+    That reader -- and the `#biometricsPanel` widget it drove -- was removed
+    in the same change that stopped attaching this key: `rg -n '\\.biometrics\\b'
+    services/orion-hub/static/js/` has zero matches. `biometrics-view.js`'s
+    replacement (the EKG-card preview + modal) polls `/api/biometrics/preview/*`
+    over plain HTTP instead, so nothing on the client reads this field anymore.
+
+    Kept as a passthrough rather than removed outright, and `cache` kept
+    unused rather than threaded out: this function is still called at 20+
+    sites across this module, several through multi-level parameter passing
+    (e.g. `drain_queue`) -- unwinding that threading is a separate, larger,
+    real-time-path-risk cleanup better done as its own change, not folded
+    into a widget swap. `biometrics_heartbeat`, the one caller whose entire
+    job was this enrichment (a periodic `{"biometrics_tick": True}` push with
+    no other purpose), was fully removed in this same change instead, since
+    keeping an infinite per-connection send loop running for a payload key
+    nobody reads is not a defensible passthrough.
+    """
+    return dict(payload)
 
 
 async def _rehydrate_connection_history(
@@ -723,29 +725,6 @@ async def run_tts_remote(
     await queue.put(msg)
 
 
-async def biometrics_heartbeat(
-    websocket: WebSocket,
-    *,
-    cache: Optional[BiometricsCache],
-    interval_sec: float,
-) -> None:
-    try:
-        while websocket.client_state.name == "CONNECTED":
-            try:
-                await websocket.send_json(
-                    await _with_biometrics({"biometrics_tick": True}, cache=cache)
-                )
-            except WebSocketDisconnect:
-                break
-            await asyncio.sleep(interval_sec)
-    except asyncio.CancelledError:
-        pass
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        logger.error("Biometrics heartbeat error: %s", e, exc_info=True)
-
-
 def _agent_claude_enabled() -> bool:
     return bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False))
 
@@ -969,13 +948,6 @@ async def websocket_endpoint(websocket: WebSocket):
     if notification_cache is not None:
         notification_cache.register_queue(tts_q)
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q, biometrics_cache))
-    biometrics_task = asyncio.create_task(
-        biometrics_heartbeat(
-            websocket,
-            cache=biometrics_cache,
-            interval_sec=float(getattr(settings, "BIOMETRICS_PUSH_INTERVAL_SEC", 5.0)),
-        )
-    )
     # Active FCC / harness turn for this socket — cancelled on WS disconnect.
     active_turn: Dict[str, Optional[str]] = {"correlation_id": None, "kind": None}
     # Registered by reference: mutating active_turn above is automatically visible
@@ -2423,7 +2395,6 @@ async def websocket_endpoint(websocket: WebSocket):
         if _room_relay is not None:
             _room_relay.unregister_connection(connection_id)
         drain_task.cancel()
-        biometrics_task.cancel()
         if notification_cache is not None:
             notification_cache.unregister_queue(tts_q)
         if presence_state:

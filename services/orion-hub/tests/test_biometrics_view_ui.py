@@ -248,8 +248,13 @@ def test_biometrics_view_js_charts_more_than_the_original_four_channels() -> Non
     """Regression test: the original ship only charted strain/gpu_util/
     thermal/power. Channels absent from that original set must now be
     covered too, or this is the same sparse-trends complaint again."""
-    assert "var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS);" in BIOMETRICS_VIEW_JS
-    for channel in ("homeostasis", "stability", "cpu", "gpu_mem", "mem", "disk", "net", "fan"):
+    assert (
+        "var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS).concat(RAW_CHANNELS);"
+        in BIOMETRICS_VIEW_JS
+    )
+    for channel in (
+        "homeostasis", "stability", "cpu", "gpu_mem", "mem", "disk", "net", "fan", "chassis_watts",
+    ):
         assert f'"{channel}"' in BIOMETRICS_VIEW_JS, channel
 
 

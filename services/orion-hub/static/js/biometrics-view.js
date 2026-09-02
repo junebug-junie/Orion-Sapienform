@@ -47,6 +47,23 @@
     return digits === undefined ? String(n) : n.toFixed(digits);
   }
 
+  // Real-time chassis wattage for a node. Athena self-reports it directly (iLO) into
+  // its own snapshot's summary.measurements. Circe has no BMC -- its only source is a
+  // PDU-proxy reading that athena's cluster aggregator computes and exposes on ATHENA's
+  // own snapshot response (see biometrics_preview_routes.py's /snapshot,
+  // cluster_measurements_by_node), never on circe's own. Callers pass in whichever
+  // snapshot payload came back from node=athena. Returns undefined -- never a guessed
+  // number -- when nobody has measured it.
+  function chassisWattsFor(node, athenaSnapshot) {
+    if (!athenaSnapshot) return undefined;
+    if (node === "athena") {
+      var own = (athenaSnapshot.summary && athenaSnapshot.summary.measurements) || {};
+      return own.chassis_watts;
+    }
+    var byNode = athenaSnapshot.cluster_measurements_by_node || {};
+    return (byNode[node] || {}).chassis_watts;
+  }
+
   async function fetchJson(url) {
     var response = await fetch(url);
     return response.json();
@@ -268,7 +285,11 @@
         ]);
       })
     );
-    results.forEach(function (pair) {
+    // athena's own snapshot is the only one carrying circe's proxied wattage (see
+    // chassisWattsFor) -- nodes[0] is always "athena", Promise.all preserves input order.
+    var athenaSnapshot = results[0] && results[0][0];
+    results.forEach(function (pair, i) {
+      var node = nodes[i];
       var payload = pair[0];
       var induction = pair[1];
       var composites = (payload.summary && payload.summary.composites) || {};
@@ -281,6 +302,8 @@
           trend: trendInfo ? trendArrow(trendInfo.trend) : null,
         })
       );
+      var watts = chassisWattsFor(node, athenaSnapshot);
+      grid.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
     });
     if (status) status.textContent = results.every((r) => r[0].ok) ? "live" : "partial";
     loaded.cardPreview = true;
@@ -318,7 +341,12 @@
   var PRESSURE_CHANNELS = [
     "cpu", "gpu_util", "gpu_mem", "mem", "swap", "disk", "net", "thermal", "power", "disk_capacity", "fan",
   ];
-  var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS);
+  // Raw physical units, not a 0-1 pressure -- own value source (chassisWattsFor, a live
+  // cluster read, not the pressures/composites dict), own format ("### W"), no tone.
+  // Still gets a trend chart for free via the ALL_CHANNELS-driven history loop below,
+  // since _CHANNEL_COLUMN maps it to the `measurements` JSONB column.
+  var RAW_CHANNELS = ["chassis_watts"];
+  var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS).concat(RAW_CHANNELS);
   var INVERTED_CHANNELS = { homeostasis: true, stability: true };
 
   async function loadNodeDetail(node) {
@@ -340,6 +368,15 @@
     var snapshotPromise = fetchJson("/api/biometrics/preview/snapshot?node=" + node).catch(function () {
       return { ok: false };
     });
+    // chassisWattsFor needs ATHENA's own snapshot response specifically (only it carries
+    // circe's proxied wattage -- see that function's docstring). Reuse snapshotPromise
+    // rather than double-fetching when node is already "athena".
+    var athenaSnapshotPromise =
+      node === "athena"
+        ? snapshotPromise
+        : fetchJson("/api/biometrics/preview/snapshot?node=athena").catch(function () {
+            return { ok: false };
+          });
     // One request for every channel, not one request PER channel -- the
     // /history endpoint opens its own short-lived Postgres connection per
     // call with no pooling, and this repo has live incident history with
@@ -354,9 +391,10 @@
       return { ok: false, metrics: {} };
     });
 
-    var pair = await Promise.all([snapshotPromise, inductionPromise]);
+    var pair = await Promise.all([snapshotPromise, inductionPromise, athenaSnapshotPromise]);
     var snapshot = pair[0];
     var induction = pair[1];
+    var athenaSnapshot = pair[2];
     var metrics = induction.metrics || {};
 
     if (snapEl) {
@@ -364,15 +402,18 @@
       var pressures = (snapshot.summary && snapshot.summary.pressures) || {};
       var rows = ALL_CHANNELS.map(function (ch) {
         var isComposite = COMPOSITE_CHANNELS.indexOf(ch) !== -1;
-        var value = isComposite ? composites[ch] : pressures[ch];
+        var isRaw = RAW_CHANNELS.indexOf(ch) !== -1;
+        var value = isComposite ? composites[ch] : isRaw ? chassisWattsFor(node, athenaSnapshot) : pressures[ch];
         if (value === undefined) return null; // absent channel on this node -- omit, never zero-fill
         // (an unreachable node has no composites/pressures at all, so every
         // row already short-circuits above -- the "node status" tile below
         // is what carries the critical tone for that case.)
         var invert = !!INVERTED_CHANNELS[ch];
-        var tone = toneForPressure(value, invert);
+        // Raw physical units carry no good/warning/critical judgement -- same "neutral"
+        // convention the untoned GPU power tile already uses.
+        var tone = isRaw ? "neutral" : toneForPressure(value, invert);
         var trendInfo = metrics[ch];
-        return { ch: ch, value: value, tone: tone, trend: trendInfo ? trendArrow(trendInfo.trend) : null };
+        return { ch: ch, value: value, tone: tone, raw: isRaw, trend: trendInfo ? trendArrow(trendInfo.trend) : null };
       }).filter(Boolean);
       // Worst-first: the point of color-coding is drawing the eye to what
       // needs attention without the operator scanning every tile.
@@ -386,7 +427,8 @@
         snapEl.appendChild(noData);
       }
       rows.forEach(function (row) {
-        snapEl.appendChild(tile(row.ch, fmt(row.value, 2), null, { tone: row.tone, trend: row.trend }));
+        var display = row.raw ? fmt(row.value, 0) + " W" : fmt(row.value, 2);
+        snapEl.appendChild(tile(row.ch, display, null, { tone: row.tone, trend: row.trend }));
       });
       snapEl.appendChild(
         tile("node status", snapshot.status || (snapshot.ok ? "—" : "unreachable"), "freshness " + fmt(snapshot.freshness_s, 1) + "s", {

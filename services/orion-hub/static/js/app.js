@@ -163,8 +163,6 @@ let orionSessionId = localStorage.getItem('orion_sid') || null;
 let browserClientId = localStorage.getItem('orion_browser_client_id') || null;
 let presenceContext = null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
-let selectedBiometricsNode = "cluster";
-let lastBiometricsPayload = null;
 let notifications = [];
 let pendingAttention = [];
 const seenMessageIds = new Set();
@@ -655,18 +653,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // wording changed) -- always set from the last real status fetch, never
   // inferred from what's currently displayed.
   let affectAmbientEnabled = false;
-
-  // Biometrics
-  const biometricsPanel = document.getElementById("biometricsPanel");
-  const bioStatus = document.getElementById("bioStatus");
-  const bioConstraint = document.getElementById("bioConstraint");
-  const bioNodeSelect = document.getElementById("bioNodeSelect");
-  const bioStrainValue = document.getElementById("bioStrainValue");
-  const bioStrainTrend = document.getElementById("bioStrainTrend");
-  const bioHomeostasisValue = document.getElementById("bioHomeostasisValue");
-  const bioHomeostasisTrend = document.getElementById("bioHomeostasisTrend");
-  const bioStabilityValue = document.getElementById("bioStabilityValue");
-  const bioStabilityTrend = document.getElementById("bioStabilityTrend");
 
   const toastMessage = document.getElementById("toastMessage");
 
@@ -9199,11 +9185,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function formatMetric(value) {
-    if (value === null || value === undefined || Number.isNaN(value)) return "--";
-    return `${(Number(value) * 100).toFixed(0)}%`;
-  }
-
   function formatPercent(value, digits = 1) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
     return `${(Number(value) * 100).toFixed(digits)}%`;
@@ -9212,82 +9193,6 @@ document.addEventListener("DOMContentLoaded", () => {
   function formatNumber(value, digits = 2) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
     return Number(value).toFixed(digits);
-  }
-
-  function trendArrow(trendValue) {
-    const eps = 0.001;
-    const normalized = Number(trendValue);
-    if (Number.isNaN(normalized)) return "→";
-    if (normalized > eps) return "↗";
-    if (normalized < -eps) return "↘";
-    return "→";
-  }
-
-  function updateBiometricsPanel(biometrics) {
-    if (!biometricsPanel) return;
-    lastBiometricsPayload = biometrics;
-    if (bioNodeSelect) {
-      const nodes = Object.keys(biometrics?.nodes || {});
-      const options = ["cluster", ...nodes];
-      const existing = Array.from(bioNodeSelect.options).map((opt) => opt.value);
-      const changed = options.length !== existing.length || options.some((opt, i) => opt !== existing[i]);
-      if (changed) {
-        bioNodeSelect.innerHTML = "";
-        options.forEach((opt) => {
-          const option = document.createElement("option");
-          option.value = opt;
-          option.textContent = opt === "cluster" ? "Cluster" : opt;
-          bioNodeSelect.appendChild(option);
-        });
-      }
-      if (!options.includes(selectedBiometricsNode)) {
-        selectedBiometricsNode = "cluster";
-      }
-      bioNodeSelect.value = selectedBiometricsNode;
-    }
-    const selectedNodePayload =
-      selectedBiometricsNode !== "cluster"
-        ? biometrics?.nodes?.[selectedBiometricsNode]
-        : null;
-    const status = selectedNodePayload?.status || biometrics?.status || "NO_SIGNAL";
-    const freshness =
-      selectedNodePayload?.freshness_s !== undefined
-        ? selectedNodePayload?.freshness_s
-        : biometrics?.freshness_s;
-    const displayFreshness =
-      typeof freshness === "number" && Number.isFinite(freshness) ? `${freshness.toFixed(0)}s` : "--";
-    const statusLabel = status === "OK" ? "LIVE" : String(status).replace(/_/g, " ");
-    if (bioStatus) {
-      bioStatus.textContent = `${statusLabel} • ${displayFreshness}`;
-    }
-    const constraint =
-      selectedNodePayload?.summary?.constraint || biometrics?.constraint || "NONE";
-    if (bioConstraint) {
-      if (constraint && constraint !== "NONE") {
-        bioConstraint.textContent = constraint;
-        bioConstraint.classList.remove("hidden");
-      } else {
-        bioConstraint.classList.add("hidden");
-      }
-    }
-    let composite = biometrics?.cluster?.composite || {};
-    let trend = biometrics?.cluster?.trend || {};
-    if (selectedBiometricsNode !== "cluster") {
-      const node = biometrics?.nodes?.[selectedBiometricsNode] || {};
-      composite = node?.summary?.composites || {};
-      trend = node?.induction?.metrics || {};
-    }
-    const strainTrend = (trend?.strain?.trend ?? 0.5) - 0.5;
-    const homeostasisTrend = (trend?.homeostasis?.trend ?? 0.5) - 0.5;
-    const stabilityTrend = (trend?.stability?.trend ?? 0.5) - 0.5;
-
-    if (bioStrainValue) bioStrainValue.textContent = formatMetric(composite?.strain ?? null);
-    if (bioHomeostasisValue) bioHomeostasisValue.textContent = formatMetric(composite?.homeostasis ?? null);
-    if (bioStabilityValue) bioStabilityValue.textContent = formatMetric(composite?.stability ?? null);
-
-    if (bioStrainTrend) bioStrainTrend.textContent = trendArrow(strainTrend);
-    if (bioHomeostasisTrend) bioHomeostasisTrend.textContent = trendArrow(homeostasisTrend);
-    if (bioStabilityTrend) bioStabilityTrend.textContent = trendArrow(stabilityTrend);
   }
 
   // --- 3. Event Listeners ---
@@ -11059,7 +10964,6 @@ document.addEventListener("DOMContentLoaded", () => {
               }
             }
           }
-          if (d.biometrics) updateBiometricsPanel(d.biometrics);
           if (d.kind === 'notification' && d.notification) {
             addNotification(d.notification);
           }
@@ -14104,15 +14008,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (tsSegmentsExport) {
     tsSegmentsExport.addEventListener("click", exportSegmentsCsv);
-  }
-
-  if (bioNodeSelect) {
-    bioNodeSelect.addEventListener("change", () => {
-      selectedBiometricsNode = bioNodeSelect.value || "cluster";
-      if (lastBiometricsPayload) {
-        updateBiometricsPanel(lastBiometricsPayload);
-      }
-    });
   }
 
   // ─────────────────────────────────────────────────────────────────────

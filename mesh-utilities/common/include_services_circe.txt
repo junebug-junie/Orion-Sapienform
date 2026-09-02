@@ -6,6 +6,7 @@ orion-ai-town
 orion-affectgpt-worker
 orion-biometrics
 orion-diffusion-host
+orion-gpu-lane-controller
 orion-juniper-affective-state
 orion-vision-host
 orion-whisper-tts

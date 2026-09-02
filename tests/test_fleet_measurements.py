@@ -171,3 +171,27 @@ def test_fleet_measurements_are_not_clamped_like_the_pressures():
     c = BiometricsClusterV1(measurements=totals, pressures={"cpu": 0.5})
     assert c.measurements["chassis_watts"] > 1.0
     assert all(0.0 <= v <= 1.0 for v in c.pressures.values())
+
+
+def test_measurements_by_node_survives_what_the_fleet_sum_discards():
+    """The fleet total in `measurements` necessarily loses per-node identity (that's the whole
+    point of summing) -- `measurements_by_node` is the pre-aggregation breakdown that has to
+    ride along separately or a per-node reading (e.g. circe's proxied wattage) is unrecoverable
+    once only the total is kept."""
+    from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+
+    c = BiometricsClusterV1(
+        sources=sorted(LIVE),
+        measurements_by_node={"athena": {"chassis_watts": 390.0}, "circe": {"gpu_watts_total": 172.96}},
+    )
+    rt = BiometricsClusterV1.model_validate_json(c.model_dump_json())
+    assert rt.measurements_by_node["athena"]["chassis_watts"] == pytest.approx(390.0)
+    # circe has no BMC -- absent means unmeasured, not zero, same as everywhere else in this file.
+    assert "chassis_watts" not in rt.measurements_by_node["circe"]
+
+
+def test_measurements_by_node_defaults_to_none_for_producers_predating_this():
+    from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+
+    c = BiometricsClusterV1.model_validate({"sources": ["athena"]})
+    assert c.measurements_by_node is None

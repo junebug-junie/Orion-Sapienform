@@ -151,6 +151,10 @@ def _build_snapshot_payload() -> Dict[str, Any]:
         "cluster": {
             "composite": (cluster_payload or {}).get("composites") if isinstance(cluster_payload, dict) else {},
             "trend": _cluster_trend({k: v.get("payload") or {} for k, v in _INDUCTION_BY_NODE.items()}),
+            # Per-node raw measurements (e.g. chassis_watts), pre-aggregation -- see
+            # BiometricsClusterV1.measurements_by_node. Only populated on the node running
+            # BiometricsHubWorker/publish_cluster (athena); absent elsewhere, not zero-filled.
+            "measurements_by_node": (cluster_payload or {}).get("measurements_by_node") if isinstance(cluster_payload, dict) else None,
         },
         "nodes": nodes,
     }
@@ -227,6 +231,19 @@ def _proxy_measurements() -> Dict[str, Dict[str, float]]:
         if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
             out[node] = {"chassis_watts": float(watts), "pdu_watts": float(watts)}
     return out
+
+
+def _measurements_by_node_for_cluster(
+    per_node: Dict[str, Optional[Dict[str, float]]]
+) -> Optional[Dict[str, Dict[str, float]]]:
+    """Drop nodes whose measurements is None -- a producer predating the `measurements` field,
+    the same case `aggregate_fleet_measurements` already treats as "missing everything" rather
+    than a zero contributor. `BiometricsClusterV1.measurements_by_node` is typed
+    Dict[str, float] per node (not Optional), so passing a None entry through would raise a
+    pydantic ValidationError and crash every cluster publish, not just omit that one node.
+    """
+    filtered = {k: v for k, v in per_node.items() if v is not None}
+    return filtered or None
 
 
 def _heartbeat_details() -> Dict[str, Any]:
@@ -519,6 +536,7 @@ class BiometricsHub:
             measurements=fleet_measurements or None,
             measurements_missing=fleet_missing or None,
             measurements_proxied=proxied or None,
+            measurements_by_node=_measurements_by_node_for_cluster(per_node),
         )
         global _CLUSTER
         _CLUSTER = {"payload": cluster.model_dump(mode="json"), "timestamp": cluster.timestamp}

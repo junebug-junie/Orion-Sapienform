@@ -815,6 +815,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("chat_response_feedback artifact_ref migration warning: %s", e)
 
+    # Own transaction, own handler -- same hazard as the chat_response_feedback ALTER
+    # above. app/models/biometrics_cluster.py has ALREADY declared measurements_by_node,
+    # so the moment this deploys, _write_row's generic key-to-column filter puts it in
+    # every INSERT for BiometricsClusterSQL. Against a live Postgres without the column
+    # that is UndefinedColumn -> ProgrammingError, and only IntegrityError is handled
+    # downstream -- so ALL biometrics-cluster persistence would stop, not just the new
+    # field, while the bus publish and the Hub's wattage cards keep looking healthy.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS orion_biometrics_cluster "
+                "ADD COLUMN IF NOT EXISTS measurements_by_node JSONB;"
+            )
+    except Exception as e:
+        logger.warning("orion_biometrics_cluster measurements_by_node migration warning: %s", e)
+
     # drive_audits retention startup job removed 2026-08-13 (same patch that
     # fully untangled DriveAuditSQL's write path) -- the table and its boot
     # DDL are both gone, so a DELETE against it was dead weight even guarded

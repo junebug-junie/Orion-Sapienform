@@ -172,3 +172,76 @@ def test_self_relationship_zone_never_enters_the_queue() -> None:
     assert queue.snapshot(limit=50).queue_items == []
     assert result.schedule_decisions[0].outcome == "operator_only"
     assert "strict_zone_guardrail" in result.schedule_decisions[0].notes
+
+
+def test_reseed_after_suppression_preserves_the_prune_clock() -> None:
+    """The live 2026-09-02 failure: a re-seed reset the clock the prune reads.
+
+    Ordering is the whole point. ``test_prune_finished_then_reseed_recovers_the_queue``
+    prunes and *then* re-seeds; the scheduler does the reverse -- it re-seeds
+    whenever nothing is usable, which is exactly when every item is suppressed --
+    so the re-seed lands first and the prune runs against whatever it left behind.
+    Suppression is driven through the real ``mark_reviewed``/``apply_cycle_feedback``
+    path rather than injected, because the bug was that a re-seed discarded the
+    history those two calls had recorded.
+    """
+    queue = GraphReviewQueue(max_items=20)
+    seeded_at = datetime.now(timezone.utc) - timedelta(days=2)
+
+    queue.upsert(_item(node="a", created_at=seeded_at, next_review_at=seeded_at))
+    item_id = queue.snapshot(limit=50).queue_items[0].queue_item_id
+    queue.mark_reviewed(item_id, reviewed_at=seeded_at)
+    queue.apply_cycle_feedback(item_id, no_change=True)
+    queue.apply_cycle_feedback(item_id, no_change=True)
+    assert queue.usable_items(limit=50) == []  # suppressed, as the scheduler finds it
+
+    queue.upsert(_item(node="a"))  # the tick's bootstrap re-seeds the same region
+
+    revived = queue.snapshot(limit=50).queue_items[0]
+    assert revived.created_at == seeded_at
+    assert revived.last_review_at == seeded_at
+    assert queue.prune_finished(older_than_sec=21600.0) == 1
+    assert queue.snapshot(limit=50).queue_items == []
+
+
+def test_reseed_still_refreshes_the_incoming_proposal_details() -> None:
+    """Preserving lifecycle must not freeze the item against a newer proposal."""
+    queue = GraphReviewQueue(max_items=20)
+    queue.upsert(_item(node="a"))
+    original_id = queue.snapshot(limit=50).queue_items[0].queue_item_id
+
+    fresh = _item(node="a").model_copy(
+        update={"priority": 91, "reason_for_revisit": "raised again", "notes": ["second"]}
+    )
+    queue.upsert(fresh)
+
+    merged = queue.snapshot(limit=50).queue_items[0]
+    assert merged.queue_item_id == original_id
+    assert merged.priority == 91
+    assert merged.reason_for_revisit == "raised again"
+    assert merged.notes == ["second"]
+
+
+def test_reseed_refresh_list_partitions_every_schema_field() -> None:
+    """Adding a field to the schema must force an explicit refresh/preserve call.
+
+    The original merge listed what to *preserve*, so a new field silently
+    defaulted to being overwritten by the re-seed -- which is how ``created_at``
+    and ``last_review_at`` came to be wiped. Listing what to *refresh* makes the
+    safe direction the default; this pins the list against the schema so the
+    choice cannot be skipped by omission.
+    """
+    from orion.substrate.review_queue import _RESEED_REFRESHED_FIELDS
+
+    refreshed = set(_RESEED_REFRESHED_FIELDS)
+    preserved = {
+        "queue_item_id",
+        "cycle_budget",
+        "suppression_state",
+        "termination_state",
+        "last_review_at",
+        "created_at",
+    }
+
+    assert refreshed.isdisjoint(preserved)
+    assert refreshed | preserved == set(GraphReviewQueueItemV1.model_fields)

@@ -131,7 +131,12 @@ instruments:
     module: orion/substrate/prediction_error.py
     outcome: O2
     storage:
-      kind: append_only
+      # `derived`, NOT append_only: substrate_field_state is the per-tick snapshot
+      # of the WHOLE field, written by orion-field-digester every tick regardless
+      # of whether any prediction-error domain produces anything. Declared as an
+      # input so the board does not read that table's freshness as this
+      # instrument's own liveness -- the false-green this board exists to catch.
+      kind: derived
       table: substrate_field_state
       ts_column: created_at
     metrics:
@@ -233,15 +238,20 @@ instruments:
         question: >-
           Has node:substrate.bus_synaptic's 36.31% top-1 concentration been
           root-caused, the way node:substrate.route's was?
-        kind: absent_from_repo
-        target: "bus_synaptic concentration root cause"
-        recorded: 0
+        kind: manual
+        recorded: "NOT ROOT-CAUSED"
         recorded_at: 2026-09-02
         blocks: O4
         note: >-
           Objective 7's named path-back-open (a), and the load-bearing one:
           36.31% sits in the same range as the killed drives system's own post-fix
-          31.65%. No follow-up exists anywhere under docs/.
+          31.65%. No follow-up exists anywhere under docs/ as of 2026-09-02.
+          Deliberately `manual`, not `absent_from_repo`: the root-cause write-up
+          would land under docs/, and the absence scan excludes docs/ so that the
+          other absence claims do not match prose that merely NAMES a deleted
+          function. An absent_from_repo claim here could therefore never change
+          state -- a detector structurally incapable of firing, reported as a
+          green "ok" forever. `manual` reports it as unrun, which is true.
 
   - id: curiosity_worldview
     title: "Orion's self-authored world-view priors"

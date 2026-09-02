@@ -101,6 +101,16 @@ jobs:
       - name: Daily schedule collisions (report-only)
         run: python scripts/check_daily_schedule_collisions.py
 
+      # Sentience Striving Program instrument manifest. --static-only because
+      # this workflow admits DB-free gates only; the SQL-backed claims report
+      # SKIPPED here (a third state, deliberately not HOLDS) and are covered by
+      # the full `make check-sentience-instruments` against live Postgres.
+      # What the static lane still catches, and what it exists for: a manifest
+      # naming a module or entrypoint that no longer exists, and an unlock
+      # narrative that has gone unreviewed past its window. Green on this branch.
+      - name: Sentience program instrument manifest (static lane)
+        run: python scripts/check_sentience_instruments.py --static-only
+
       # Stdlib-only, no live infra, green on main. Every SystemHealthV1(...) call
       # site must pass the fields the model requires plus heartbeat_interval_sec.
       # Producers build the payload inside a heartbeat loop's try/except, so a

@@ -410,14 +410,21 @@ check-sql-migrations-applied-quiet:
 # every worktree -- which is where this repo does its implementation work, and
 # where a silent 127 into a cron log is the failure mode that matters most.
 postgres-headroom:
-	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose
+	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose
 
 # Sentience Striving Program instrument gate. Re-runs every claim in
 # orion/sentience_striving_program/instruments.yaml against live repo + database
-# state and fails on drift. `REPORT=1` reports without failing.
+# state and fails on drift. `REPORT=1` reports without failing; `STATIC=1` skips
+# the database-backed claims (the mode CI runs).
+#
+# METRIC_PYTHON, not bare `python` (which does not exist on this host) and not
+# `.venv/bin/python`: a linked worktree has no .venv of its own, so a literal
+# path exits 127 exactly where CLAUDE.md 2 requires this repo's implementation
+# work to happen. METRIC_PYTHON resolves the main checkout's venv via
+# `git rev-parse --git-common-dir` and is the only worktree-aware interpreter
+# resolution in this file.
 check-sentience-instruments:
-	@python scripts/check_sentience_instruments.py $(if $(REPORT),--report,)
-	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose
+	@$(METRIC_PYTHON) scripts/check_sentience_instruments.py $(if $(STATIC),--static-only,) $(if $(REPORT),--report,)
 
 # Cron-facing variant. Identical gate, plus --notify, which raises ONE Hub Pending
 # Attention card per alarm episode (debounced by severity rank; a send that fails

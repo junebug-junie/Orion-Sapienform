@@ -105,24 +105,46 @@ pre-existing gap, unchanged by this patch.
 
 ## Docker/build/smoke checks
 
-```text
-UNVERIFIED on the live path.
-```
+VERIFIED on the live path, 2026-09-02T03:58Z, on circe.
 
-There is no whisper-tts container on athena — the service runs on circe, whose
-image was built 2026-08-30T01:27, i.e. before #1981 merged. This patch is
-source-verified and unit-tested only. Per the service's own README the engine
-is constructed lazily and `/health` never touches it, so a green `up -d` would
-prove nothing either. After merge, on circe:
+The rebuild landed at 2026-09-02T00:50:25Z, 6.5 minutes after the merge, and
+`/app/app/tts.py` inside `orion-circe-whisper-tts` is md5-identical to main's
+(`6ccc1008d51bad0d04a80c657e32bc04`). But the deploy was still serving the OLD
+voice: circe's own `services/orion-whisper-tts/.env:32` still read
+`TTS_DEFAULT_SPEAKER_WAV=/models/voices/orion_reference_v2.wav`. `.env` is
+gitignored and per-host, so the sync run against athena's worktree could not
+reach it, and nothing in the pipeline compares a remote host's live env to the
+merged `.env_example`. New code, old reference, no error anywhere.
 
 ```bash
-cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
-scripts/safe_docker_build.sh orion-whisper-tts up -d --build
+# circe -- the one key, backed up as .env.bak.20260902-tts-multiref
+sed -i 's|^TTS_DEFAULT_SPEAKER_WAV=.*|TTS_DEFAULT_SPEAKER_WAV=/models/voices/orion_v3_chunks|' \
+  services/orion-whisper-tts/.env
+docker compose --env-file .env --env-file services/orion-whisper-tts/.env \
+  -f services/orion-whisper-tts/docker-compose.yml up -d --force-recreate
+# -> Container orion-circe-whisper-tts Recreated / Started, healthy in 25s
 ```
 
-then round-trip a synthesis over `orion:tts:intake` and confirm the reply
-metadata reports `speaker_wav_count: 7` and `speaker_wav_basename:
-orion_v3_chunks`, and record single-vs-multi synthesis latency (see Risks).
+Round-tripped six real syntheses over `orion:tts:intake` (typed
+`tts.synthesize.request`, `rpc_request` on a per-correlation reply channel),
+after one discarded warm-up that absorbed the lazy model load (37.42s):
+
+```text
+multi-1   3.03s  count=7  basename=orion_v3_chunks  source=/models/voices/orion_v3_chunks
+                 refs=[chunk_1..chunk_7]   <- natural order, all seven
+multi-2   2.94s  count=7
+multi-3   2.84s  count=7
+single-1  2.87s  count=1  basename=orion_reference_v2.wav   (options.speaker_wav override)
+single-2  2.91s  count=1
+single-3  3.06s  count=1
+
+median multi 2.94s | median single 2.91s | delta +0.02s
+```
+
+Audio written to `/mnt/telemetry/tts_samples/20260902_live_multiref/` on
+athena: `sample_B_multiref.wav` and `sample_A_single.wav`, same sentence, same
+session, same engine instance -- a controlled A/B rather than two takes from
+different days.
 
 ## Review findings fixed
 
@@ -163,25 +185,40 @@ directory literally named `something.wav` was filtered at runtime but untested
 
 ## Restart required
 
+Done, on circe. Both halves were required and the second was missed on the
+first pass:
+
 ```bash
-# on circe, after this merges
-cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
-scripts/safe_docker_build.sh orion-whisper-tts up -d --build
+git pull --ff-only
+scripts/safe_docker_build.sh orion-whisper-tts up -d --build   # code
+sed -i 's|^TTS_DEFAULT_SPEAKER_WAV=.*|TTS_DEFAULT_SPEAKER_WAV=/models/voices/orion_v3_chunks|' \
+  services/orion-whisper-tts/.env                              # reference
+docker compose --env-file .env --env-file services/orion-whisper-tts/.env \
+  -f services/orion-whisper-tts/docker-compose.yml up -d --force-recreate
 ```
 
 A rebuild, not a restart: this is a code change, and `docker compose restart`
-would not pick up the `.env` change either. The same rebuild finally lands
-#1981 on circe, whose image predates that merge.
+picks up neither the image nor an `env_file` change. The same rebuild landed
+#1981 on circe, whose image predated that merge.
 
 ## Risks / concerns
 
-- Severity: medium. Concern: **unmeasured per-request cost.** Conditioning
-  latents are recomputed on every request and nothing caches them (README),
-  and the directory is re-globbed per request, so this multiplies reference
-  decode + speaker-encoder work by 7 on every turn Orion speaks.
-  `WHISPER_TTS_SYNTH_TIMEOUT_SEC=120` gives headroom against a ~2.9s baseline,
-  but the real number is not yet known. Mitigation: measure on the first live
-  round-trip and record it; rollback is one env value.
+- Severity: ~~medium~~ **retired, measured.** Concern was unmeasured
+  per-request cost: latents are recomputed every request and nothing caches
+  them, so reference decode + speaker-encoder work is 7x per turn. Measured
+  live: median 2.94s multi vs 2.91s single, **delta +0.02s** across three
+  paired requests each. The 7x applies to reference encoding, which is
+  negligible beside GPT decode on a P100. No mitigation needed; rollback is
+  still one env value.
+- Severity: medium. Concern: **per-host env drift is unguarded.** This deploy
+  ran correct code against a stale reference for three hours and nothing
+  detected it -- not the healthcheck, not CI, not `.env_example` parity, which
+  only ever compares against the checkout it runs in. Any merged change to a
+  service `.env_example` default silently fails to take on a remote host until
+  someone edits that host by hand. Mitigation: none shipped here. The gate
+  that would catch it is a per-host env-parity check reading the live
+  container's `printenv` against merged `.env_example`, which is a real
+  follow-up, not a line in this report.
 - Severity: low. Concern: re-globbing per request means the voice can change
   the moment a file is added to the directory, with no log line at that
   instant — only the per-request `speaker_wav_count` records it after the

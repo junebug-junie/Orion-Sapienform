@@ -40,6 +40,7 @@ from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
+from scripts.utils import split_sentences
 from scripts.fcc_claude_bridge import (
     active_turns,
     build_harness_reasoning_trace,
@@ -615,6 +616,8 @@ async def synthesize_tts_reply(
     lane: str,
     correlation_id: str = "-",
     session_id: str = "-",
+    chunk_index: int = 0,
+    chunk_total: int = 1,
 ) -> dict:
     """The shared TTS synthesis core: build the request, await `speak()`
     under a timeout, and return a plain dict shaped for merging into
@@ -642,11 +645,13 @@ async def synthesize_tts_reply(
     if not text or not text.strip() or not tts_client:
         return {}
     logger.info(
-        "voice.tts.start lane=%s corr=%s sid=%s text_len=%d",
+        "voice.tts.start lane=%s corr=%s sid=%s text_len=%d chunk=%d/%d",
         lane,
         correlation_id,
         session_id,
         len(text),
+        chunk_index + 1,
+        chunk_total,
     )
     try:
         req = TTSRequestPayload(text=text)
@@ -660,20 +665,24 @@ async def synthesize_tts_reply(
             # nothing raised, nothing queued/returned, the UI does nothing.
             # Treated as a real failure, not a quiet no-op.
             logger.warning(
-                "voice.tts.empty_result lane=%s corr=%s sid=%s text_len=%d",
+                "voice.tts.empty_result lane=%s corr=%s sid=%s text_len=%d chunk=%d/%d",
                 lane,
                 correlation_id,
                 session_id,
                 len(text),
+                chunk_index + 1,
+                chunk_total,
             )
             return {"tts_error": "TTS returned no audio"}
         logger.info(
-            "voice.tts.done lane=%s corr=%s sid=%s text_len=%d audio_b64_len=%d "
-            "content_type=%s duration_sec=%s metadata=%s",
+            "voice.tts.done lane=%s corr=%s sid=%s text_len=%d chunk=%d/%d "
+            "audio_b64_len=%d content_type=%s duration_sec=%s metadata=%s",
             lane,
             correlation_id,
             session_id,
             len(text),
+            chunk_index + 1,
+            chunk_total,
             len(result.audio_b64),
             result.content_type,
             result.duration_sec,
@@ -701,6 +710,73 @@ async def synthesize_tts_reply(
         return {"tts_error": err}
 
 
+def chunk_text_for_speech(
+    text: str,
+    *,
+    first_chunk_chars: int,
+    chunk_chars: int,
+) -> list[str]:
+    """Split reply text into sentence-aligned chunks for streamed synthesis.
+
+    Measured on the live rail 2026-09-02 (circe, XTTS v2): synthesis is
+    almost perfectly linear -- ~0.2s fixed cost plus ~0.33s per second of
+    audio produced (real-time factor 0.33, flat from 54 to 814 chars, and
+    identical on a P100 and a V100, so this is per-token overhead, not
+    something a faster card moves). Two consequences drive this function:
+
+    1. Because RTF < 1, audio renders ~3x faster than it plays. Once
+       playback starts, synthesising the REST of the reply concurrently
+       with playback can never starve, so the only number that matters for
+       how fast Orion feels is the time to the FIRST chunk.
+    2. Because the cost is linear in output length, the first chunk should
+       be short. A 814-char reply costs ~16s as one blob; its first
+       sentence costs ~2s.
+
+    Hence: a deliberately small first chunk (fast start), then a doubling
+    ramp up to `chunk_chars` (fewer per-chunk fixed costs, and longer spans
+    for XTTS's own prosody). The ramp is what makes a fast start safe --
+    chunk k+1 must finish rendering inside chunk k's playback, which at
+    RTF 0.33 holds while a chunk stays under ~3x its predecessor. Doubling
+    sits inside that bound with margin for a slower card (the P100 is being
+    replaced with a T10 on 2026-09-04).
+
+    Known limit: a single unusually long sentence lands in one chunk whole,
+    since this never splits mid-sentence. Following a short first chunk that
+    can briefly outrun playback and insert a pause. The pause is cosmetic --
+    no audio is lost or reordered -- and is still far shorter than the
+    17s of silence the single-shot path opened with, so it is not worth
+    splitting sentences on clause boundaries to chase.
+
+    Splitting on sentence boundaries only, never mid-sentence: XTTS already
+    splits internally on sentences and generates each independently, so
+    chunking here reproduces the same audio per sentence -- the joins land
+    on pauses that were already there, not inside a phrase.
+    """
+    sentences = split_sentences(text)
+    if not sentences:
+        return []
+    chunks: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
+    for sentence in sentences:
+        buf.append(sentence)
+        buf_len += len(sentence) + 1
+        # Ramp the target: each chunk aims for twice the previous one, up to
+        # `chunk_chars`. A flat "small first, big rest" pair cannot win here --
+        # measured 2026-09-02, dropping the first target to 80 with the second
+        # still at 280 starts the voice at 1.95s but then runs DRY for 1.77s,
+        # because a ~5s first clip cannot cover a ~7s synthesis of the second.
+        # Doubling keeps every step inside the RTF-0.33 headroom while still
+        # letting the first chunk be one short sentence.
+        target = min(first_chunk_chars * (2 ** len(chunks)), chunk_chars)
+        if buf_len >= target:
+            chunks.append(" ".join(buf))
+            buf, buf_len = [], 0
+    if buf:
+        chunks.append(" ".join(buf))
+    return chunks
+
+
 async def run_tts_remote(
     text: str,
     tts_client,
@@ -709,20 +785,56 @@ async def run_tts_remote(
     correlation_id: str = "-",
     session_id: str = "-",
 ):
-    result = await synthesize_tts_reply(
-        text,
-        tts_client,
-        timeout_sec=float(settings.HUB_TTS_TIMEOUT_SEC),
-        lane="ws",
-        correlation_id=correlation_id,
-        session_id=session_id,
-    )
-    if not result:
-        return
-    msg = {**result, "state": "speaking" if "audio_response" in result else "idle"}
-    if "tts_error" in result:
-        msg["text"] = text
-    await queue.put(msg)
+    """Synthesize `text` and push audio onto `queue` for the browser.
+
+    Streams sentence-aligned chunks by default: each chunk is queued the
+    moment it is synthesized, so the browser begins speaking chunk 1 while
+    chunk 2 is still on the GPU. The frontend needs no change for this --
+    `handleTtsFields` already pushes every `audio_response` onto its own
+    `audioQueue` and `playAudio`'s `onended` drains it in order, so N
+    sequential messages play as one continuous reply.
+
+    Set HUB_TTS_STREAM_ENABLED=false to fall back to one synthesis of the
+    whole reply (the pre-2026-09-02 behavior).
+    """
+    chunks: list[str] = []
+    if getattr(settings, "HUB_TTS_STREAM_ENABLED", True):
+        chunks = chunk_text_for_speech(
+            text,
+            first_chunk_chars=int(settings.HUB_TTS_STREAM_FIRST_CHUNK_CHARS),
+            chunk_chars=int(settings.HUB_TTS_STREAM_CHUNK_CHARS),
+        )
+    # Empty/whitespace text yields no chunks; fall through to the single-shot
+    # call so synthesize_tts_reply keeps ownership of that "nothing to say"
+    # decision rather than this function growing a second copy of it.
+    if len(chunks) <= 1:
+        chunks = [text]
+
+    total = len(chunks)
+    for index, chunk in enumerate(chunks):
+        result = await synthesize_tts_reply(
+            chunk,
+            tts_client,
+            timeout_sec=float(settings.HUB_TTS_TIMEOUT_SEC),
+            lane="ws",
+            correlation_id=correlation_id,
+            session_id=session_id,
+            chunk_index=index,
+            chunk_total=total,
+        )
+        if not result:
+            return
+        msg = {**result, "state": "speaking" if "audio_response" in result else "idle"}
+        if "tts_error" in result:
+            # Stop the stream rather than skipping ahead. Playing chunk 3
+            # after chunk 2 failed would speak a reply with a hole in the
+            # middle and no indication anything was dropped -- worse than
+            # stopping, because it is silently wrong rather than visibly
+            # short. The browser surfaces tts_error as a warning line.
+            msg["text"] = chunk
+            await queue.put(msg)
+            return
+        await queue.put(msg)
 
 
 def _agent_claude_enabled() -> bool:

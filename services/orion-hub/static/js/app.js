@@ -9504,6 +9504,21 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   if (interruptButton) {
+    // NOTE (2026-09-02): this handler is currently unreachable -- #interruptButton
+    // ships with `class="hidden"` in index.html and nothing ever removes it.
+    //
+    // Before reviving it, know that clearing audioQueue is NO LONGER sufficient
+    // to stop Orion talking. TTS now streams: the hub synthesizes the reply as
+    // several sentence chunks and pushes each one as its own audio_response
+    // message (see run_tts_remote in scripts/websocket_handler.py). Stopping the
+    // current source and emptying the queue only kills what has already arrived
+    // -- the server loop keeps going and the NEXT chunk will land, get queued by
+    // handleTtsFields, and start playing. Orion would resume mid-reply after
+    // being interrupted.
+    //
+    // A working interrupt needs to suppress inbound audio for the rest of the
+    // turn (and ideally tell the server to cancel the remaining chunks, which
+    // also stops burning GPU on speech nobody will hear).
     interruptButton.addEventListener('click', () => {
       if (currentAudioSource) currentAudioSource.stop();
       audioQueue = [];

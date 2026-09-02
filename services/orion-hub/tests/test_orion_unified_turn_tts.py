@@ -143,7 +143,15 @@ def test_dispatch_fires_when_all_conditions_are_met():
             lane="orion",
         )
         assert dispatched is True
-        await asyncio.sleep(0)  # let the fire-and-forget task actually run
+        # Await the dispatched task itself rather than guessing how many
+        # event-loop ticks it needs to reach speak(). A single sleep(0) only
+        # ran the task up to its FIRST suspension point, which on Python
+        # 3.10 is asyncio.wait_for's inner ensure_future -- i.e. before
+        # speak() was ever awaited. That made this assertion depend on the
+        # exact await-chain depth inside synthesize_tts_reply, so it broke
+        # on an unrelated refactor of the callee (observed failing on main,
+        # 2026-09-02). Draining the real task is deterministic.
+        await asyncio.gather(*ws_handler._TTS_DISPATCH_INFLIGHT)
         client.speak.assert_awaited_once()
 
     asyncio.run(_run())

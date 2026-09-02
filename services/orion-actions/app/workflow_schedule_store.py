@@ -640,6 +640,30 @@ class WorkflowScheduleStore:
         schedule = self._schedules.get(schedule_id)
         if schedule is None:
             return
+        # An outcome for a *superseded* claim updates the run, not the schedule.
+        # A later claim has already been made and has already reported, so this
+        # one's due-slot is history: re-arming it would run the workflow off its
+        # own schedule, and folding it into the failure budget would let ancient
+        # orphans page about a schedule that is currently fine. Observed live on
+        # deploy 2026-09-02: reaping the 2026-08-20 orphan armed a retry that
+        # dispatched a real compactor run at 05:40 UTC, 6.5h off its 12:10 slot,
+        # for a due-slot the job had already passed 12 times.
+        if (
+            run is not None
+            and schedule.last_run_at is not None
+            and run.dispatch_at < schedule.last_run_at
+        ):
+            self._event(
+                kind="schedule_run_failed_superseded",
+                schedule_id=schedule_id,
+                extra={
+                    "run_id": run_id,
+                    "error": error,
+                    "dispatch_at": run.dispatch_at.isoformat(),
+                    "superseded_by_run_at": schedule.last_run_at.isoformat(),
+                },
+            )
+            return
         schedule.last_result_status = "failed"
         schedule.updated_at = now
         attempts = self._consecutive_failures(schedule) + 1

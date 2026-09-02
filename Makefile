@@ -409,3 +409,9 @@ check-sql-migrations-applied-quiet:
 #   */10 * * * * make postgres-headroom
 postgres-headroom:
 	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose
+
+# Sentience Striving Program instrument gate. Re-runs every claim in
+# orion/sentience_striving_program/instruments.yaml against live repo + database
+# state and fails on drift. `REPORT=1` reports without failing.
+check-sentience-instruments:
+	@python scripts/check_sentience_instruments.py $(if $(REPORT),--report,)

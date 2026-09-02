@@ -1,0 +1,305 @@
+# Sentience Striving Program -- instrument manifest.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# README.md (this directory) is the program's narrative record. It goes stale
+# silently: on 2026-09-02 a read found four separate claims in it that live data
+# had already moved past -- section 15d asserted PR #1894 was unmerged, the
+# curiosity loop undeployed and at "zero real runs" (it was merged, enabled, and
+# 26 runs deep, with its own falsifiable detector passing); and Objective 7's
+# 2026-08-20 "only 5 distinct narratives exist" -- the finding that whole
+# objective was CLOSED on -- had since become 16.
+#
+# Prose cannot detect its own decay. This file records the same claims as
+# re-runnable queries so `scripts/check_sentience_instruments.py` can go red the
+# day one drifts, per CLAUDE.md's "deterministic gates over repeated yelling."
+#
+# WHAT THIS FILE IS NOT
+# ---------------------
+# Not a taxonomy, and not a second metric registry. Every mechanical fact about
+# an instrument -- who writes it, who reads it, is the signal degenerate -- is
+# resolved at read time from `orion/metrics/` (lineage.py, consumers.py,
+# liveness.py), the existing metric semantic layer. This file declares only what
+# that layer structurally cannot know:
+#
+#   1. that a thing is an *instrument of this program* at all (the metric layer's
+#      four surfaces -- bus_channel, field_channel, inner_state, organ_signal --
+#      have no notion of "the AST/HOT reducer" as one object),
+#   2. which program outcome (O1-O4) it ladders to, and why -- irreducibly
+#      editorial, so it is freshness-gated rather than correctness-gated,
+#   3. the claims the program currently rests on it, as SQL.
+#
+# Per CLAUDE.md's keyword-cathedral rule, every entry below has a schema, a
+# producer (this file), a consumer (the checker + Hub's /sentience-program page),
+# a reducer (instruments.py's join), a test, and a gate. An entry that names
+# something not present in the repo fails the checker -- that is the point.
+
+version: 1
+
+# Section 5 of README.md, verbatim. Restated here so the checker can verify every
+# instrument claims a real outcome, and so the Hub page has one source for labels.
+outcomes:
+  O1:
+    title: "Capability actually varies with state"
+    claim: >-
+      Orion's autonomous-action budget demonstrably rises and falls with real
+      internal pressure, not a flat per-cycle allowance, with a demonstrated,
+      verified ceiling.
+  O2:
+    title: "Self-initiation is attributable, not orphaned"
+    claim: >-
+      When self-initiated action occurs, it is traceable to a live, currently-
+      firing internal signal -- not a mechanism that has never once fired across
+      its deployed lifetime.
+  O3:
+    title: "A consciousness-theory instrument produces a distinguishable signal"
+    claim: >-
+      A blind rater, given only the instrument's output on real historical data
+      (not shown which theory produced it), can distinguish it from noise and
+      describe what it appears to track.
+  O4:
+    title: "The drives question is answered empirically, continuously"
+    claim: >-
+      Named categories (if any survive) are a report on clustering of real
+      coalition-winning history, versioned and re-derivable, not a constant.
+
+# How long an `unlock:` narrative may go un-re-read before the checker flags it.
+# 90 days is deliberately generous: this gate exists to catch narratives that
+# have been abandoned, not to manufacture review churn. The claims below carry
+# their own drift detection and need no such window -- they are checked against
+# live data on every run.
+review_max_age_days: 90
+
+instruments:
+  - id: ast_hot_reducer
+    title: "AST/HOT attention self-model reducer"
+    theory: "Attention Schema Theory + Higher-Order Theories"
+    program_ref: "README.md section 6 item 2; section 9b items 2 and 4"
+    module: orion/substrate/attention_self_model.py
+    entrypoint: reduce_attention_self_model
+    outcome: O3
+    storage:
+      kind: append_only
+      table: substrate_attention_self_model
+      ts_column: created_at
+      # Confirmed 2026-09-02: this is why history is ~7 days, and the setting's
+      # own comment says it was sized to clear a 48h replay window with margin --
+      # NOT to save disk. The table is 50 MB for 7 days against a 41 GB database
+      # and 136 GB of free host disk, so a full year would cost ~2.6 GB.
+      retention_setting: SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS
+      retention_service: orion-substrate-runtime
+    metrics:
+      - metric://field_channel/orion-field-digester/prediction_error
+    unlock: >-
+      The only instrument in this program whose selection logic is actually
+      proven correct (unit-tested branch-for-branch). O3 is therefore gated not
+      on whether it works but on whether its OUTPUT is legible -- its narrative
+      layer is a fixed template with one substituted slot, so a blind-rater trial
+      would trivially pass without testing what O3 asks. Objective 7 was closed
+      partly on this. Enriching the narrative is named path-back-open (b).
+    last_reviewed: 2026-09-02
+    claims:
+      - id: narrative_diversity
+        question: "How many distinct reason_narrative strings has the reducer ever emitted?"
+        sql: >-
+          SELECT count(DISTINCT self_model_json->>'reason_narrative')
+          FROM substrate_attention_self_model
+        recorded: 16
+        recorded_at: 2026-09-02
+        blocks: O3
+        note: >-
+          Was 5 when Objective 7 was closed on 2026-08-20 ("too template-thin for
+          the legibility bar"). It moved to 16 and nothing noticed for 13 days.
+          This claim is the reason this file exists.
+      - id: branch_coverage
+        question: "How many distinct attention_reason branches has the reducer ever taken?"
+        sql: >-
+          SELECT count(DISTINCT self_model_json->>'attention_reason')
+          FROM substrate_attention_self_model
+        recorded: 1
+        recorded_at: 2026-09-02
+        blocks: O3
+        note: >-
+          100% bottom_up_salience across all rows. Zero top_down_override, zero
+          field_salience_only -- the two branches whose why-logic is unit-tested
+          but has never once fired in production. Unmoved since 2026-08-20.
+
+  - id: prediction_error_domains
+    title: "Predictive-processing prediction-error domains"
+    theory: "Predictive Processing / Active Inference"
+    program_ref: "README.md section 6 item 3; section 9b item 3"
+    module: orion/substrate/prediction_error.py
+    outcome: O2
+    storage:
+      kind: append_only
+      table: substrate_field_state
+      ts_column: created_at
+    metrics:
+      - metric://field_channel/orion-field-digester/prediction_error
+    unlock: >-
+      Four live field-native domains (execution, biometrics, chat, route) replaced
+      the deleted drives bucket-vote as the substrate for attributable self-
+      initiation. transport was retired outright on 2026-07-31 rather than left
+      excluded-but-ticking, per CLAUDE.md's metric-retirement rule.
+    last_reviewed: 2026-09-02
+    claims:
+      - id: transport_retired
+        question: "Is the retired transport domain really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def transport_prediction_error"
+        recorded: 0
+        recorded_at: 2026-09-02
+        note: >-
+          CLAUDE.md records transport as the canonical case of a known-bad metric
+          that was excluded from one consumer while still ticking and still
+          winning budget slots in another. This claim keeps it dead.
+
+  - id: rpt_lamme_recurrence
+    title: "Recurrent Processing Theory (Lamme) -- per-tick recurrence"
+    theory: "Recurrent Processing Theory"
+    program_ref: "README.md section 9b item 5"
+    module: orion/attention/field_attention/scoring.py
+    entrypoint: novelty_for_target
+    outcome: O3
+    storage:
+      kind: append_only
+      table: substrate_attention_frames
+      ts_column: created_at
+      retention_setting: ATTENTION_FRAME_RETENTION_HOURS
+      retention_service: orion-attention-runtime
+    unlock: >-
+      Already field-native and needed no correction -- novelty_for_target() reads
+      the PREVIOUS FieldAttentionFrameV1, which is real per-tick recurrence rather
+      than a modelled proxy for it. Listed so the program can tell "already true"
+      apart from "still to build"; it is not an open work item.
+    last_reviewed: 2026-09-02
+    claims: []
+
+  - id: goal_provenance
+    title: "Field-native goal provenance"
+    theory: "(program-native -- replaces goal.drive_origin)"
+    program_ref: "README.md section 6 items 3 and 6"
+    module: orion/attention/field_attention/goal_provenance.py
+    outcome: O2
+    storage:
+      # Structurally the same trap that broke the AST/HOT acceptance check in
+      # 2026-07: a singleton upsert row, not a history table. Current value only.
+      # Declared explicitly so the board renders "no history" as a fact rather
+      # than rendering an empty chart that reads like an outage.
+      kind: singleton
+      table: substrate_goal_provenance_streak
+      ts_column: updated_at
+    unlock: >-
+      FieldGoalProvenanceV1 carries no taxonomy field -- only which real field
+      target won, and for how many consecutive ticks. This is the O4-compliant
+      shape (a report on what won, not an asserted category) applied to O2's
+      attributability question.
+    last_reviewed: 2026-09-02
+    claims:
+      - id: dominant_target_not_route
+        question: >-
+          Is node:substrate.route still structurally winning the node-target slot
+          every tick, as it did before the PR #1774 variance-floor fix?
+        sql: >-
+          SELECT count(*) FROM substrate_goal_provenance_streak
+          WHERE target_id = 'node:substrate.route'
+        recorded: 0
+        recorded_at: 2026-09-02
+        note: >-
+          README.md marks this UNVERIFIED, pending real post-deploy observation.
+          Live read on 2026-09-02 shows node:substrate.chat holding the slot at
+          streak 17, so route is not winning at this instant. That is ONE sample
+          and the table is a singleton -- it structurally cannot answer "sustained."
+          Treat as evidence, not as the acceptance check being met.
+
+  - id: emergent_clustering_probe
+    title: "Emergent-clustering probe"
+    theory: "(program-native -- toward the empirical drives answer)"
+    program_ref: "README.md section 6 item 5"
+    module: scripts/analysis/measure_emergent_clustering_probe.py
+    outcome: O4
+    storage:
+      kind: derived
+      table: substrate_attention_frames
+      ts_column: created_at
+    unlock: >-
+      The instrument that would answer O4 if it ever cleared its own bar. Run
+      twice (2026-07-21, 2026-08-20); AMBIGUOUS both times. The second run over a
+      richer 18-target universe found structure LESS stable, not more
+      (correlation-of-correlations 0.9940 -> 0.3948).
+    last_reviewed: 2026-09-02
+    claims:
+      - id: top1_concentration_root_caused
+        question: >-
+          Has node:substrate.bus_synaptic's 36.31% top-1 concentration been
+          root-caused, the way node:substrate.route's was?
+        kind: absent_from_repo
+        target: "bus_synaptic concentration root cause"
+        recorded: 0
+        recorded_at: 2026-09-02
+        blocks: O4
+        note: >-
+          Objective 7's named path-back-open (a), and the load-bearing one:
+          36.31% sits in the same range as the killed drives system's own post-fix
+          31.65%. No follow-up exists anywhere under docs/.
+
+  - id: curiosity_worldview
+    title: "Orion's self-authored world-view priors"
+    theory: "(program-native -- self-directed enquiry)"
+    program_ref: "README.md section 15"
+    module: orion/curiosity
+    outcome: O4
+    storage:
+      kind: graph
+      graph: orion_worldview
+      graph_host_env: HUB_CURIOSITY_GRAPH_HOST
+    unlock: >-
+      The first mechanism in the repo where Orion, not a design chat, authors a
+      persistent claim about its own world that carries a falsifiable status. Not
+      an answer to O4 -- a structural precedent for the shape any surviving
+      category must have: held with a confidence, testable, closable.
+      Contributes nothing to O1 or O3; said plainly so it is not later cited as
+      having moved either.
+    last_reviewed: 2026-09-02
+    claims:
+      - id: not_self_grading
+        question: >-
+          Section 15b's falsifiable detector: across 20+ real runs, is there at
+          least one refuted prior and at least one downward confidence revision?
+          If confidence is monotonic, the loop is accumulating agreement with
+          itself rather than learning.
+        kind: manual
+        recorded: "PASS"
+        recorded_at: 2026-09-02
+        note: >-
+          Run live 2026-09-02 -- the first time since the loop was deployed.
+          26 distinct run_ids; 9 priors (4 refuted, 4 supported, 1 open); and real
+          downward revisions recorded as PriorRevision nodes, e.g.
+          editorial_bias_concrete_over_atmospheric walking 0.85 -> 0.6 -> 0.35 ->
+          0.15 -> 0 across four separate runs, ending refuted. README.md section
+          15d still says this loop is unmerged, undeployed and at zero runs; all
+          three are wrong. Not automated here because the read is a FalkorDB
+          Cypher query, not SQL -- see the commands in section 15b.
+
+  - id: capability_policy_salience
+    title: "Capability policy coupled to live salience"
+    theory: "(program-native -- the O1 mechanism)"
+    program_ref: "README.md section 6 item 6"
+    module: orion/autonomy/capability_policy.py
+    outcome: O1
+    storage:
+      kind: none
+    unlock: >-
+      The only instrument laddering to O1. Now reads the real field-native active
+      goal instead of a per-call synthetic GoalProposalV1 fabrication. O1 asks for
+      a DEMONSTRATED, VERIFIED CEILING on the action budget -- no instrument in
+      this program currently measures that, which is the honest reason O1 has the
+      least evidence behind it of the four outcomes.
+    last_reviewed: 2026-09-02
+    claims:
+      - id: synthetic_goal_stub_deleted
+        question: "Is the synthetic goal fabrication really gone?"
+        kind: absent_from_repo
+        target: "def goal_proposal_from_episode_intent"
+        recorded: 0
+        recorded_at: 2026-09-02

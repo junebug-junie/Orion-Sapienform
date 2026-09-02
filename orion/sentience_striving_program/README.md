@@ -1481,8 +1481,87 @@ Recorded here because both are the class of thing this program keeps rediscoveri
 
 ### 15d. Status
 
-Merged into `main`? Not as of writing — PR #1894 open. **Not deployed**:
-`HUB_CURIOSITY_INVESTIGATION_ENABLED=false` and `HUB_CURIOSITY_OUTREACH_ENABLED=false` in the
-live `.env`, nothing restarted. So there are **zero real runs**, and every claim in §15a is
-about the mechanism, not about observed behaviour. Nothing in this section should be cited as
-evidence until the 20-run check in §15b has actually been run.
+**Superseded 2026-09-02 — every claim in the original version of this subsection was wrong
+by then, and nothing noticed for a week.** It read: PR #1894 open, not deployed, both flags
+`false`, "zero real runs," nothing citable. Live state on 2026-09-02: PR #1894 **merged**
+(`975f437e8`), `HUB_CURIOSITY_INVESTIGATION_ENABLED=true` in the live `.env`, and **26
+distinct `run_id`s** in `orion_worldview`.
+
+**§15b's falsifiable detector was run for the first time on 2026-09-02, and it PASSES.**
+Both halves:
+
+- **At least one `refuted`** — 9 priors: 4 `refuted`, 4 `supported`, 1 `open`.
+- **At least one downward confidence revision** — real, and recorded as `PriorRevision`
+  nodes this section did not know existed. `editorial_bias_concrete_over_atmospheric`
+  walked `0.85 → 0.6 → 0.35 → 0.15 → 0` across four separate runs, ending `refuted`;
+  a second prior went `0.75 → 0.15`, `open → refuted`.
+
+So the self-grading failure mode §15b was written to catch — "confidence is monotonic, the
+loop is accumulating agreement with itself, and the graph makes that permanent" — **is not
+happening.** §15a's claims may now be cited as being about observed behaviour, with the
+caveat that 26 runs is a thin base.
+
+§15b's *second* check still fails and is unchanged: `orion_worldview` is read by Hub (to
+build the next prompt) and by Orion in-turn, and by nothing else. It still does not reach
+Orion's chat context. That remains Juniper's open call, not a defect.
+
+## 16. The instrument board — this file cannot detect its own decay
+
+§15d above is the fourth staleness failure found in a single 2026-09-02 read of this
+document, alongside: Objective 7's "only 5 distinct `reason_narrative` strings exist"
+(the finding that objective was **closed** on) having since become **16**; the same
+instrument's history being capped at **7 days** by
+`SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS`, so the "19,417 rows, full history"
+that Objective 7's O3 attempt replayed against was never full history; and
+`pg_stat_user_tables.n_live_tup` reporting **0** rows for a table whose real count was
+19,774 — a stats-view read would have rendered a live instrument as dead.
+
+Prose does not go red. The response, per CLAUDE.md's "deterministic gates over repeated
+yelling":
+
+- **`orion/sentience_striving_program/instruments.yaml`** — each instrument's producing
+  module, backing table, retention ceiling, outcome linkage, and the claims this program
+  rests on it, recorded **as re-runnable queries** rather than sentences.
+- **`scripts/check_sentience_instruments.py`** (`make check-sentience-instruments`) —
+  re-runs every claim against live repo and database state and exits non-zero on drift.
+  Mutation-tested four ways; the narrative-count mutation reproduces the real
+  2026-08-20 → 2026-09-02 drift, so this gate would have gone red on 2026-08-21.
+- **`/sentience-program`** on Hub — the operator view of the same join: what each
+  instrument is doing now, how far its history actually reaches and what bounds it, what
+  it affects, and which outcome it ladders to.
+
+Deliberately **not** a second metric registry. Every mechanical fact — who writes a signal,
+who reads it, whether it is degenerate — is resolved at read time from `orion/metrics/`
+(the existing metric semantic layer), so the board and `check_metric_lineage.py` cannot
+disagree. The manifest declares only what that layer structurally cannot know: that a thing
+is an instrument *of this program*, which outcome it ladders to and why (irreducibly
+editorial, so freshness-gated rather than correctness-gated), and the claims resting on it.
+
+**A DRIFT is not automatically a regression.** It means live data moved past what the
+program recorded. The required response is to re-read the finding and update `recorded`/
+`recorded_at` in the same patch — which is the review this document went 13 days without.
+
+### 16a. Open, and surfaced rather than fixed
+
+- **The 7-day retention ceiling is not a storage decision.** The setting's own comment says
+  it was sized to clear a 48h replay window with margin. Measured 2026-09-02: the table is
+  **50 MB** for 7 days against a **41 GB** database and **136 GB** of free host disk, so a
+  full year would cost ~2.6 GB — versus `grammar_events` at 6.5 GB. Raising
+  `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` is a one-line live config change and
+  is **not** made here. Summarising beyond day 7 was considered and argued against: every
+  bug this program has actually caught was found by recovering a *pre-aggregation* value
+  (`bus_synaptic`'s permanent 0.27 floor via `mean(|z|)`'s rest point; `route`'s underflow
+  via the exact geometric ratio between raw values), and a rollup would force the choice of
+  which aggregates survive before anyone knows what future-you needs to check.
+- **`substrate_goal_provenance_streak` is a singleton upsert, not a history table** — the
+  same structural trap that broke the AST/HOT acceptance check in 2026-07. §6 item 3's
+  `UNVERIFIED` acceptance check for the PR #1774 route variance-floor fix asks whether
+  route's dominance breaks *in sustained operation*; this table structurally cannot answer
+  that. A live read on 2026-09-02 shows `node:substrate.chat` holding the slot at streak 17,
+  so route is not winning at that instant — evidence, not the check being met.
+- **O3's blocker half-moved and nobody noticed.** Distinct narratives 5 → 16, but
+  `attention_reason` is `bottom_up_salience` for **19,774 of 19,774** rows: zero
+  `top_down_override`, zero `field_salience_only`. Objective 7's path-back-open (b) is
+  narrative enrichment; the branch-coverage half has not moved at all and is arguably the
+  harder blocker, since those two branches are unit-tested but have never fired in
+  production.

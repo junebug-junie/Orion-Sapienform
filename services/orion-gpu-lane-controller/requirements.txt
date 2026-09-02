@@ -1,0 +1,9 @@
+# This service is HTTP-only + shells out to the host's `docker` CLI (see
+# Dockerfile) -- no ML/GPU python deps of its own, unlike most other
+# circe-local services in this repo.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+redis[hiredis]==5.0.7
+loguru

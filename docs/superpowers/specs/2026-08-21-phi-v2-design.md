@@ -4,6 +4,22 @@ Status: DESIGN DRAFT — not implemented. Written after a full empirical audit o
 the current live metric surface (substrate runtime, cocreation-signals,
 heartbeat, biometrics, chat/relationship signals). No code changed yet.
 
+**Update (2026-09-02):** this doc's live-metric audit (the "Signals confirmed
+real, live, and independent" table below) was consumed by `mood_arc`'s `v4`
+retrain — see `orion/mood_arc/README.md`'s v4 section — as the input feature
+set for that module's existing unsupervised windowed-trajectory autoencoder,
+deliberately narrowed to the subset dense enough for that module's ~60s
+window (`action_warrant`, `heartbeat_mean_ratio`, per-domain
+`prediction_error`; the field-digester-sourced signals in this table were
+already flowing into that corpus and needed no new plumbing). **This doc's
+actual point — a named, falsifiable predictive target (Missing Question 1:
+"predict a near-future prediction-error spike") replacing pure
+reconstruction-only training — is still fully open, not touched by that
+retrain.** Consuming the audit is not the same as implementing this design;
+the "Recommended next patch" below (retire the dead registry entries, rewrite
+`fit_phi_encoder.py` against the real feature set and the named target) is
+still exactly as unstarted as it was when this doc was written.
+
 ## Summary
 
 Phi v1 (`phi_heuristic.valence` / `phi_intrinsic_reward.v1`) is dead — its sole

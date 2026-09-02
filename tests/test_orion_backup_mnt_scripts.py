@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ from scripts.backup.orion_backup_mnt_scripts import (
     build_rsync_command,
     cleanup_incomplete_snapshots,
     find_previous_snapshot,
+    parse_snapshot_age_utc,
     prune_successful_snapshots,
     run_backup,
     send_failure_notification,
@@ -421,3 +424,85 @@ def test_send_failure_notification_message_includes_run_context(
     assert target_root in message
     assert "2026-05-09T22-00-00Z-12345" in message
     assert "rsync exited with 23" in message
+
+
+def _make_snapshots(root: Path, days: list[str]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for day in days:
+        (root / f"{day}T22-00-00Z-12345").mkdir()
+
+
+def test_prune_age_window_trims_the_span_a_count_alone_leaves_behind(tmp_path: Path) -> None:
+    # This fixture is the real live postgres set as of 2026-09-02: exactly 14
+    # snapshots (so the count cap removes nothing) spanning 17 days, with the
+    # 4-day hole left by the 2026-08-16/17/18 failures. A pure count policy
+    # calls this "14 days retained"; it is not.
+    snapshots = tmp_path / "snapshots"
+    days = ["2026-08-13", "2026-08-14", "2026-08-15"] + [
+        f"2026-08-{d:02d}" for d in range(19, 30)
+    ]
+    assert len(days) == 14
+    _make_snapshots(snapshots, days)
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=7, now=now
+    )
+
+    # cutoff is 2026-08-19T04:00Z; 08-13/14/15 fall outside it, 08-19T22:00Z
+    # is inside it by 18 hours and must survive.
+    assert [Path(r).name[:10] for r in removed] == ["2026-08-13", "2026-08-14", "2026-08-15"]
+    surviving = sorted(p.name[:10] for p in snapshots.iterdir())
+    assert surviving[0] == "2026-08-19"
+    assert len(surviving) == 11
+
+
+def test_prune_floor_outranks_the_age_window(tmp_path: Path) -> None:
+    # Every snapshot here is months past the window. Without the floor this
+    # deletes all ten -- which is precisely what must never happen during a
+    # failure streak, when no replacement can be written.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-01-{d:02d}" for d in range(1, 11)])
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=7, now=now
+    )
+
+    assert len(removed) == 3
+    assert len(list(snapshots.iterdir())) == 7
+
+
+def test_prune_never_ages_out_an_unparseable_name(tmp_path: Path) -> None:
+    # Deleting a backup because its directory name did not match a pattern is
+    # the wrong failure direction; the walk must stop instead.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, ["2026-01-01", "2026-01-02"])
+    (snapshots / "0000-hand-copied-restore-point").mkdir()
+    now = dt.datetime(2026, 9, 2, 4, 0, tzinfo=dt.timezone.utc)
+
+    removed = prune_successful_snapshots(
+        snapshots, keep=14, max_age_days=14, min_keep=1, now=now
+    )
+
+    assert removed == []
+    assert (snapshots / "0000-hand-copied-restore-point").exists()
+
+
+def test_prune_without_max_age_is_count_only(tmp_path: Path) -> None:
+    # Default stays the pre-existing behaviour so the age window is opt-in.
+    snapshots = tmp_path / "snapshots"
+    _make_snapshots(snapshots, [f"2026-01-{d:02d}" for d in range(1, 11)])
+
+    removed = prune_successful_snapshots(snapshots, keep=14)
+
+    assert removed == []
+    assert len(list(snapshots.iterdir())) == 10
+
+
+def test_parse_snapshot_age_handles_both_dir_name_shapes() -> None:
+    bare = parse_snapshot_age_utc("2026-09-02T03-45-01Z")
+    with_pid = parse_snapshot_age_utc("2026-09-02T03-45-01Z-412548")
+    assert bare == dt.datetime(2026, 9, 2, 3, 45, 1, tzinfo=dt.timezone.utc)
+    assert with_pid == bare
+    assert parse_snapshot_age_utc("latest") is None

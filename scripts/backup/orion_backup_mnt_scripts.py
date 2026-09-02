@@ -20,6 +20,11 @@ from typing import Any, Callable
 DEFAULT_SOURCE = Path("/mnt/scripts")
 DEFAULT_STORAGE_WARM = Path("/mnt/storage-warm")
 DEFAULT_KEEP_SUCCESSFUL = 14
+# The age window that makes retention an actual window rather than a count
+# that drifts every time a run fails, and the floor that keeps a failure
+# streak from aging out every restore point. See prune_successful_snapshots.
+DEFAULT_MAX_AGE_DAYS = 14
+DEFAULT_MIN_KEEP = 7
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,8 @@ class BackupConfig:
     storage_warm_path: Path = DEFAULT_STORAGE_WARM
     node_name: str = socket.gethostname()
     keep_successful: int = DEFAULT_KEEP_SUCCESSFUL
+    max_age_days: int | None = DEFAULT_MAX_AGE_DAYS
+    min_keep: int = DEFAULT_MIN_KEEP
     notify_url: str | None = None
     notify_token: str | None = None
     require_mounts: bool = True
@@ -84,9 +91,62 @@ def write_run_evidence(paths: BackupPaths, outcome: RunOutcome) -> None:
     _write_json_atomic(paths.manifest_path, payload)
 
 
-def prune_successful_snapshots(snapshots_dir: Path, *, keep: int) -> list[str]:
+SNAPSHOT_TIMESTAMP_LEN = len("2026-05-01T22-00-00Z")
+
+
+def parse_snapshot_age_utc(name: str) -> dt.datetime | None:
+    """Recover the capture time from a snapshot directory name, or None if the
+    name isn't in the expected shape.
+
+    Snapshot dirs are named after the run_id, which is the fixed-width
+    timestamp plus a "-<pid>" suffix (e.g. "2026-09-02T03-45-01Z-412548").
+    Only the fixed-width prefix is parsed, so both the bare-timestamp form and
+    the run_id form work. An unparseable name returns None and is then treated
+    as un-ageable by the caller rather than guessed at -- deleting a snapshot
+    because its name didn't match a pattern is exactly the wrong failure
+    direction for a backup.
+    """
+    try:
+        parsed = dt.datetime.strptime(
+            name[:SNAPSHOT_TIMESTAMP_LEN], "%Y-%m-%dT%H-%M-%SZ"
+        )
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=dt.timezone.utc)
+
+
+def prune_successful_snapshots(
+    snapshots_dir: Path,
+    *,
+    keep: int,
+    max_age_days: int | None = None,
+    min_keep: int = 1,
+    now: dt.datetime | None = None,
+) -> list[str]:
+    """Delete snapshots that fall outside the retention policy.
+
+    Two independent bounds, because a count alone is not a retention window:
+    with one run per night `keep=14` *looks* like "14 days", but every failed
+    run stretches the retained set further back in time. Confirmed live
+    2026-09-02: the postgres target held exactly 14 snapshots spanning 17 days
+    (2026-08-13..2026-08-29, with a 4-day hole from the 08-16/17/18 failures)
+    while falkordb and chroma -- which had not failed -- held 14 spanning
+    exactly 14 days.
+
+    - `keep` caps the *count* (existing behaviour, unchanged).
+    - `max_age_days` caps the *age*, which is what makes the window real.
+    - `min_keep` is a floor that outranks `max_age_days`: never delete down
+      past this many snapshots no matter how old they are. This is what makes
+      it safe to prune on a failed run -- without it, a long enough failure
+      streak would age out every restore point precisely when no new one can
+      be written.
+    """
     if keep < 1:
         raise ValueError("keep must be at least 1")
+    if min_keep < 1:
+        raise ValueError("min_keep must be at least 1")
+    if max_age_days is not None and max_age_days < 1:
+        raise ValueError("max_age_days must be at least 1")
     if not snapshots_dir.exists():
         return []
     candidates = sorted(
@@ -94,7 +154,16 @@ def prune_successful_snapshots(snapshots_dir: Path, *, keep: int) -> list[str]:
         for path in snapshots_dir.iterdir()
         if path.is_dir() and not path.name.startswith(".incomplete-")
     )
+    # Count cap first, then the age window over whatever survived it.
     to_remove = candidates[:-keep]
+    survivors = candidates[len(to_remove):]
+    if max_age_days is not None:
+        cutoff = (now or dt.datetime.now(dt.timezone.utc)) - dt.timedelta(days=max_age_days)
+        while len(survivors) > min_keep:
+            captured_at = parse_snapshot_age_utc(survivors[0].name)
+            if captured_at is None or captured_at >= cutoff:
+                break
+            to_remove.append(survivors.pop(0))
     removed: list[str] = []
     for path in to_remove:
         shutil.rmtree(path)
@@ -307,12 +376,29 @@ def run_backup(
                 raise RuntimeError(f"rsync exited with {rsync_exit}")
             paths.incomplete_snapshot.replace(paths.final_snapshot)
             _update_latest_symlink(paths.latest_symlink, paths.final_snapshot)
-            retention_actions = prune_successful_snapshots(paths.snapshots_dir, keep=cfg.keep_successful)
             snapshot_path = str(paths.final_snapshot)
             status = "success"
         except Exception as exc:
             status = "failure"
             error_summary = str(exc)
+        # Retention runs on failure too. A failed run still leaves snapshots
+        # that have aged out of the window, and the disk they are aging out
+        # on is the same disk the next run needs space in -- gating retention
+        # on success is what let the 2026-08-30..09-02 postgres failures hold
+        # a full-to-0-bytes /mnt/storage-warm without ever releasing anything.
+        # min_keep is the guard that makes this safe; see
+        # prune_successful_snapshots.
+        try:
+            retention_actions = prune_successful_snapshots(
+                paths.snapshots_dir,
+                keep=cfg.keep_successful,
+                max_age_days=cfg.max_age_days,
+                min_keep=cfg.min_keep,
+            )
+        except Exception as exc:  # noqa: BLE001 - must not mask the real error
+            retention_actions = []
+            if error_summary is None:
+                error_summary = f"retention failed: {exc}"
         outcome = RunOutcome(
             run_id=run_id,
             status=status,
@@ -351,6 +437,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--storage-warm", type=Path, default=DEFAULT_STORAGE_WARM)
     parser.add_argument("--node-name", default=socket.gethostname())
     parser.add_argument("--keep-successful", type=int, default=DEFAULT_KEEP_SUCCESSFUL)
+    parser.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS)
+    parser.add_argument("--min-keep", type=int, default=DEFAULT_MIN_KEEP)
     parser.add_argument("--notify-url", default=os.environ.get("ORION_BACKUP_NOTIFY_URL"))
     parser.add_argument("--notify-token", default=os.environ.get("ORION_BACKUP_NOTIFY_TOKEN"))
     parser.add_argument("--no-require-mounts", action="store_true")
@@ -361,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
         storage_warm_path=args.storage_warm,
         node_name=args.node_name,
         keep_successful=args.keep_successful,
+        max_age_days=args.max_age_days,
+        min_keep=args.min_keep,
         notify_url=args.notify_url,
         notify_token=args.notify_token,
         require_mounts=not args.no_require_mounts,

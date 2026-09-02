@@ -26,7 +26,7 @@ There is no portable “copy the disk layout” backup. What we need is a
 | Mechanism | `rsync -aHAX --numeric-ids --delete` with `--link-dest` after the first success |
 | Destination | `/mnt/storage-warm/backups/<node-name>/mnt-scripts/` |
 | Consistency | Best-effort live copy (v1 does **not** stop Orion services) |
-| Retention | Keep the latest **14** successful snapshots |
+| Retention | Keep the latest **14**, drop anything older than **14 days**, never go below **7** |
 | Staging | Write to `snapshots/.incomplete-<run-id>/`, rename to `snapshots/<run-id>/` only on success |
 | Identity | `<run-id>` = UTC timestamp to the second + PID (avoids same-second collisions) |
 | Locking | Exclusive `backup.lock` under the backup root (dry-run skips the lock) |
@@ -190,6 +190,21 @@ file copy:
 |--------|-----------------|-----|
 | Postgres | `docker exec ... pg_dumpall`, streamed straight to the destination file | Logical dump, always consistent regardless of concurrent writes; streamed rather than buffered in memory since a full cluster dump has been observed at 1.2GB+ live and only grows |
 | FalkorDB | `redis-cli BGSAVE`, poll `INFO persistence` for `rdb_bgsave_in_progress`/`rdb_last_bgsave_status`, then copy the resulting `dump.rdb` | Atomic point-in-time RDB snapshot; polling the explicit status fields (not just watching `LASTSAVE` change) avoids both false-negatives from `LASTSAVE`'s 1-second resolution and false-failures on a save that legitimately takes longer than a short fixed timeout |
+### Restoring a Postgres dump
+
+The cluster dump is gzipped on the way to disk (`pg_dumpall.sql.gz`):
+
+```bash
+gunzip -c /mnt/storage-warm/backups/<node>/db/postgres/latest/pg_dumpall.sql.gz \
+  | docker exec -i orion-athena-sql-db psql -U postgres
+```
+
+Snapshots written before 2026-09-02 are uncompressed `pg_dumpall.sql` -- pipe
+those straight from `cat` instead. Both exit codes in the dump pipeline are
+checked separately, because `gzip` exits 0 after faithfully compressing a
+*truncated* stream; trusting only the tail of the pipe would store a partial
+dump as a healthy snapshot.
+
 | Chroma | `docker stop`, plain copy of the host bind-mount path, `docker start` | Chroma's per-collection index segments mutate on write with no CLI-accessible checkpoint API available here; an earlier version of this tool tried a live `sqlite3 .backup` for the metadata file only and left the segment files raw-copied, which doesn't actually solve the consistency problem for those files (and can leave a stale `-wal`/`-shm` sidecar next to a `.backup` output, corrupting restore) -- stopping for the copy window is simple and actually consistent |
 | Convex | Same stop/copy/start treatment, against the resolved Docker volume mountpoint (`docker volume inspect ... --format '{{.Mountpoint}}'`) | Same reason -- confirmed live that a raw copy of Convex's `db.sqlite3` tears mid-write ("file changed as we read it"), and its data directory also mixes in live RocksDB-style segment files that have no safe online-backup API exposed to this tool either |
 
@@ -226,9 +241,33 @@ logs. Confirm this before assuming something broke.
 Layout mirrors the `/mnt/scripts` backup, one level down per target:
 `/mnt/storage-warm/backups/<node-name>/db/<target>/{snapshots,latest,status,logs,manifests}`,
 plus a shared `db/backup.lock` and `db/status/latest.json` for the whole run.
-Each target has its own retention count (`Target.keep_successful`, default 14)
-and is pruned independently, since a text SQL dump and a ~20GB Convex copy
-have very different reasonable retention windows.
+Each target is pruned independently, since a text SQL dump and a ~20GB
+Convex copy have very different reasonable retention windows.
+
+### Retention policy
+
+Three bounds, all on `prune_successful_snapshots`:
+
+| Knob | Default | What it bounds |
+|------|---------|----------------|
+| `keep_successful` | 14 | Maximum snapshot **count** |
+| `max_age_days` | 14 | Maximum snapshot **age** |
+| `min_keep` | 7 | Floor: never delete below this, at any age |
+
+A count is not a window. With one run per night `keep=14` looks like "14 days
+retained", but every failed run stretches the retained set further back in
+time. Confirmed live 2026-09-02: the postgres target held exactly 14 snapshots
+spanning **17 days** (2026-08-13..2026-08-29, with a 4-day hole from the
+08-16/17/18 failures) while falkordb and chroma -- which had not failed --
+held 14 spanning exactly 14. `max_age_days` is what makes the window real.
+
+`min_keep` is the floor that outranks the age window, and it is what makes it
+safe to prune on a **failed** run. Retention used to be gated on the success
+path, which meant a failure streak released no space at all -- the exact
+condition under which the next run needs space most. The 2026-08-30..09-02
+postgres failures sat on a 100%-full `/mnt/storage-warm` for four nights
+without releasing a byte. Retention now runs either way; the floor guarantees
+a long outage can never age out every restore point.
 
 ### Manual run
 

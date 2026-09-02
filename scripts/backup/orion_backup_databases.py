@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from scripts.backup.orion_backup_mnt_scripts import (
+    DEFAULT_MAX_AGE_DAYS,
+    DEFAULT_MIN_KEEP,
     _update_latest_symlink,
     _utc_iso,
     _write_json_atomic,
@@ -172,22 +175,54 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     # dump -- see _terminate_stale_pg_dump_backends for why this can happen.
     _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
     dest_dir.mkdir(parents=True)
-    dest_file = dest_dir / "pg_dumpall.sql"
+    dest_file = dest_dir / "pg_dumpall.sql.gz"
     cmd = ["docker", "exec", container, "pg_dumpall", "-U", pg_user]
-    log.append("$ " + " ".join(cmd) + f" > {dest_file}")
-    try:
-        with dest_file.open("wb") as fh:
-            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=POSTGRES_DUMP_TIMEOUT_SEC)
-    except subprocess.TimeoutExpired:
-        # The local docker-exec client just got killed by the timeout above --
-        # the server-side backend it started did not. Clear it now rather than
-        # leaving it to hold locks for however long the dump would otherwise
-        # have taken to finish on its own (observed: 1hr+ and still running).
-        _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
-        raise
-    if proc.returncode != 0:
+    log.append("$ " + " ".join(cmd) + f" | gzip > {dest_file}")
+    dump: subprocess.Popen | None = None
+    gz: subprocess.Popen | None = None
+    # pg_dumpall's stderr goes to a temp file rather than a pipe: it is being
+    # read only after gzip finishes, and a pipe deep enough to fill its buffer
+    # would deadlock the dump against a gzip that is still waiting on stdin.
+    with tempfile.TemporaryFile() as dump_err_file:
+        try:
+            with dest_file.open("wb") as fh:
+                dump = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=dump_err_file)
+                try:
+                    gz = subprocess.Popen(
+                        ["gzip"], stdin=dump.stdout, stdout=fh, stderr=subprocess.PIPE
+                    )
+                finally:
+                    # Drop our own handle so gzip sees EOF when pg_dumpall exits.
+                    dump.stdout.close()
+                _, gz_err = gz.communicate(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+                dump.wait(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            # The local docker-exec client just got killed by the timeout above --
+            # the server-side backend it started did not. Clear it now rather than
+            # leaving it to hold locks for however long the dump would otherwise
+            # have taken to finish on its own (observed: 1hr+ and still running).
+            for proc in (gz, dump):
+                if proc is not None:
+                    proc.kill()
+            _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
+            dest_file.unlink(missing_ok=True)
+            raise
+        dump_err_file.seek(0)
+        dump_err = dump_err_file.read()
+    # Both exit codes are checked, and pg_dumpall's on its own account: gzip
+    # exits 0 after faithfully compressing a *truncated* stream, so a dump that
+    # died halfway would otherwise be stored as a healthy snapshot and only be
+    # discovered at restore time.
+    failures = []
+    if dump.returncode != 0:
+        failures.append(
+            f"pg_dumpall failed ({dump.returncode}): {dump_err.decode(errors='replace')[:500]}"
+        )
+    if gz.returncode != 0:
+        failures.append(f"gzip failed ({gz.returncode}): {gz_err.decode(errors='replace')[:500]}")
+    if failures:
         dest_file.unlink(missing_ok=True)
-        raise RuntimeError(f"pg_dumpall failed ({proc.returncode}): {proc.stderr.decode(errors='replace')[:500]}")
+        raise RuntimeError("; ".join(failures))
 
 
 def capture_falkordb(
@@ -273,6 +308,8 @@ class Target:
     name: str
     capture: Callable[[Path, list[str]], None]
     keep_successful: int = DEFAULT_KEEP_SUCCESSFUL
+    max_age_days: int | None = DEFAULT_MAX_AGE_DAYS
+    min_keep: int = DEFAULT_MIN_KEEP
 
 
 def default_targets() -> list[Target]:
@@ -337,7 +374,6 @@ def run_target_backup(
         _chmod_tree_owner_only(incomplete)
         incomplete.replace(final)
         _update_latest_symlink(latest, final)
-        retention_actions = prune_successful_snapshots(snapshots_dir, keep=target.keep_successful)
         status = "success"
         snapshot_path: str | None = str(final)
         error_summary = None
@@ -345,9 +381,23 @@ def run_target_backup(
         status = "failure"
         snapshot_path = None
         error_summary = str(exc)
-        retention_actions = []
         if incomplete.exists():
             shutil.rmtree(incomplete, ignore_errors=True)
+    # Retention runs whether or not the capture succeeded -- see the same
+    # comment in orion_backup_mnt_scripts.run_backup. A failed postgres dump
+    # does not make yesterday's aged-out snapshot worth keeping, and the space
+    # it holds is the space the next attempt needs.
+    try:
+        retention_actions = prune_successful_snapshots(
+            snapshots_dir,
+            keep=target.keep_successful,
+            max_age_days=target.max_age_days,
+            min_keep=target.min_keep,
+        )
+    except Exception as exc:  # noqa: BLE001 - must not mask the capture error
+        retention_actions = []
+        if error_summary is None:
+            error_summary = f"retention failed: {exc}"
     log_path = root / "logs" / f"{run_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("\n".join(log) + "\n")

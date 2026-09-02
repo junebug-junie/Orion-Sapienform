@@ -99,7 +99,19 @@ class GraphReviewQueue:
             return
 
         if len(self._items) >= self._max_items:
-            evict_id = sorted(self._items.items(), key=lambda kv: (kv[1].priority, kv[1].created_at))[0][0]
+            # Suppressed/terminated items are what prune_finished exists to reap, so
+            # they are evicted ahead of anything still live. The age tiebreak below
+            # only became load-bearing once created_at stopped being refreshed on
+            # every re-seed: without the liveness term, a long-surviving active
+            # region would now lose its slot to a younger already-dead one.
+            evict_id = sorted(
+                self._items.items(),
+                key=lambda kv: (
+                    not (kv[1].suppression_state or kv[1].termination_state),
+                    kv[1].priority,
+                    kv[1].created_at,
+                ),
+            )[0][0]
             del self._items[evict_id]
         self._items[item.queue_item_id] = item
         self._persist()

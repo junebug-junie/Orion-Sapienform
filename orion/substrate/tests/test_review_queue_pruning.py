@@ -211,7 +211,14 @@ def test_reseed_still_refreshes_the_incoming_proposal_details() -> None:
     original_id = queue.snapshot(limit=50).queue_items[0].queue_item_id
 
     fresh = _item(node="a").model_copy(
-        update={"priority": 91, "reason_for_revisit": "raised again", "notes": ["second"]}
+        update={
+            "priority": 91,
+            "reason_for_revisit": "raised again",
+            "notes": ["second"],
+            "focal_edge_refs": ["e-new"],
+            "originating_decision_id": "d-second",
+            "originating_request_id": "r-second",
+        }
     )
     queue.upsert(fresh)
 
@@ -220,6 +227,52 @@ def test_reseed_still_refreshes_the_incoming_proposal_details() -> None:
     assert merged.priority == 91
     assert merged.reason_for_revisit == "raised again"
     assert merged.notes == ["second"]
+    assert merged.focal_edge_refs == ["e-new"]
+    assert merged.originating_decision_id == "d-second"
+    assert merged.originating_request_id == "r-second"
+
+
+def test_reseed_preserves_created_at_for_an_item_never_reviewed() -> None:
+    """The live row shape: suppressed with ``last_review_at`` still None.
+
+    All eight rows stuck in production on 2026-09-02 had ``last_review_at``
+    NULL, so ``created_at`` was the only clock they had. The companion test
+    above ages an item whose two timestamps are both set, which means its prune
+    assertion passes if *either* survives the merge. This one removes that
+    redundancy: refresh ``created_at`` and nothing else, and the prune goes back
+    to returning 0.
+    """
+    queue = GraphReviewQueue(max_items=20)
+    seeded_at = datetime.now(timezone.utc) - timedelta(days=2)
+
+    queue.upsert(
+        _item(node="a", suppressed=True, last_review_at=None, created_at=seeded_at)
+    )
+    queue.upsert(_item(node="a"))  # the tick's bootstrap re-seeds the same region
+
+    revived = queue.snapshot(limit=50).queue_items[0]
+    assert revived.last_review_at is None
+    assert revived.created_at == seeded_at
+    assert queue.prune_finished(older_than_sec=21600.0) == 1
+
+
+def test_eviction_drops_a_dead_item_before_a_live_one() -> None:
+    """``created_at`` no longer resets, so age alone must not decide liveness.
+
+    Before the merge fix a re-seeded item looked young and was shielded from the
+    age tiebreak. With the clock preserved, the oldest item wins that tiebreak --
+    which would evict a long-surviving active region in favour of a younger
+    already-suppressed one that ``prune_finished`` is about to reap anyway.
+    """
+    queue = GraphReviewQueue(max_items=2)
+    old = datetime.now(timezone.utc) - timedelta(days=7)
+    queue.upsert(_item(node="live-and-old", created_at=old))
+    queue.upsert(_item(node="dead-but-young", suppressed=True))
+
+    queue.upsert(_item(node="forces-eviction"))
+
+    survivors = {i.focal_node_refs[0] for i in queue.snapshot(limit=50).queue_items}
+    assert survivors == {"live-and-old", "forces-eviction"}
 
 
 def test_reseed_refresh_list_partitions_every_schema_field() -> None:

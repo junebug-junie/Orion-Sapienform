@@ -47,12 +47,25 @@ The proposal already carries `{"chat_reflective_lane_threshold": 0.50}` from
 `_default_rollback_for_class` (`mutation_proposals.py:51`), so the `setdefault`
 is a no-op and `live_threshold` is dropped. The getter's default is `0.75`
 (`mutation_control_surface.py:221`) and no `CHAT_REFLECTIVE_LANE_THRESHOLD` is
-set in the cortex-orch container, so if no row existed before 04:11 the real
-move was `0.75 -> 0.58` — the opposite direction from the recorded intent
-(`expected_effect: reduce_runtime_executed`). **This is UNVERIFIED and now
-unverifiable**: single upserted row, no audit trail. A rollback today would set
-`0.50`, which if the prior was `0.75` lands further from the start than the
-change did.
+set in the cortex-orch container.
+
+**The prior was almost certainly `0.5`, and it was test pollution.** A leaked
+test write — `set_chat_reflective_lane_threshold(value=0.5, actor="scheduler_seed")`
+at `services/orion-hub/tests/test_substrate_mutation_scheduler_runtime.py:80` —
+hit this live row 4,925 times before the store-isolation fix landed. So the
+recorded `0.5 -> 0.58` is very likely accurate, the direction matches the stated
+intent (`expected_effect: reduce_runtime_executed`, i.e. act less readily), and
+the hardcoded rollback constant happens to equal the real prior **by
+coincidence**. Orion's baseline was never a designed value: the intended default
+is `0.75` and nothing ever set it.
+
+Strictly this stays **UNVERIFIED** — one upserted row, no audit trail, so the
+reading cannot be confirmed, only inferred from the test that was writing it.
+That the capture bug was harmless this once is luck, not correctness: the
+`setdefault` no-op is unconditional, and the next mutation class whose hardcoded
+rollback does *not* match reality gets an undo button pointing somewhere nobody
+chose. This is exactly the argument for item 1: the question should never have
+required archaeology.
 
 **Why the pipeline is stuck.** `mutation_queue.py:212` (`record_adoption`)
 acquires `_active_surface_by_target`. `mutation_queue.py:226` (`record_rollback`)

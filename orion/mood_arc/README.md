@@ -391,6 +391,23 @@ quiet."
    `test_block_purge_ar1_training_rows_excludes_orphaned_trailing_rows`). `--held-out-blocks 1`
    remains byte-identical to `v3`'s original methodology throughout.
 
+   **A second review pass on the fix itself found one more leak in `block_purge_ar1_training_rows()`**
+   (the same rewrite, not a new issue): its first version admitted AR(1)-training rows via each
+   segment's `(start_ts[train_lo], end_ts[train_hi-1])` span — a train window's own *end* — which
+   can still extend past the following held-out block's *start* under small/zero
+   `--purge-gap-windows` with overlapping windows, the exact leak class the ORIGINAL single-cutoff
+   code's own inline comment already existed to avoid. Fixed to use
+   `(start_ts[train_lo], start_ts[held_lo])` instead — the held-out block's own start, matching the
+   single-block reasoning exactly. **This fix touches only `ar1_surrogate_loss`/`ceiling_ratio`
+   (diagnostic-only, no pass/fail threshold) — `floor_ratio`/`floor_pass`, the actual promotion
+   gate, is computed entirely from `block_purged_temporal_split()`'s window split and never reads
+   `block_purge_ar1_training_rows()`'s output, so `v4`'s promoted `floor_ratio=0.406` PASS is
+   unaffected and was not retrained again for this.** The promoted manifest's `ceiling_ratio=0.733`
+   reflects the pre-this-fix AR(1) row selection; a fresh `train` run with identical arguments
+   would likely report a marginally different (not qualitatively different) `ceiling_ratio` under
+   the now-fully-fixed code. Not refreshed here — each retrain costs real time (~30-90min under
+   this session's host load) for a diagnostic-only number with no calibrated threshold to cross.
+
 **Results, holding channels (37) and capacity (256/128) constant, varying only the split:**
 
 | | `--held-out-blocks` | `floor_ratio` | `floor_pass` | `ceiling_ratio` |

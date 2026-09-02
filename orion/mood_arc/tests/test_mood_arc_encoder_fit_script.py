@@ -406,7 +406,7 @@ def test_block_purge_ar1_training_rows_n_blocks_1_matches_original_cutoff() -> N
     rows = _rows_at(base, n)
 
     safe_rows = block_purge_ar1_training_rows(
-        rows, start_ts, end_ts, held_out_frac=0.15, purge_gap_windows=6, n_blocks=1
+        rows, start_ts, held_out_frac=0.15, purge_gap_windows=6, n_blocks=1
     )
     _purge_start, held_start = _purge_split_indices(n, 0.15, 6)
     cutoff_ts = start_ts[held_start]
@@ -432,7 +432,7 @@ def test_block_purge_ar1_training_rows_excludes_orphaned_trailing_rows() -> None
     rows_with_orphan = rows + [orphan]
 
     safe_rows = block_purge_ar1_training_rows(
-        rows_with_orphan, start_ts, end_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+        rows_with_orphan, start_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
     )
     assert orphan not in safe_rows
 
@@ -449,12 +449,50 @@ def test_block_purge_ar1_training_rows_covers_every_segments_train_span() -> Non
     rows = _rows_at(base, n)
 
     safe_rows = block_purge_ar1_training_rows(
-        rows, start_ts, end_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+        rows, start_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
     )
     safe_times = {r.generated_at for r in safe_rows}
     segment_width = n // 5
     touched_segments = {int((t - base).total_seconds() // 2) // segment_width for t in safe_times}
     assert len(touched_segments) >= 4
+
+
+def test_block_purge_ar1_training_rows_excludes_rows_inside_overlapping_held_window() -> None:
+    """Regression test for the finding this fixed: with overlapping windows (window spans
+    wider than the stride between them, as with real window_size=30/stride=15), a train
+    window's own end_ts can sit PAST a held-out window's start_ts even at purge_gap_windows=0
+    -- an earlier version of this function used a train window's end_ts as the safe upper
+    bound and would have wrongly admitted rows from that overlap into the AR(1) fit. The
+    fixed version uses the held-out block's own start_ts as the (exclusive) upper bound
+    instead, matching the reasoning the ORIGINAL single-cutoff code already used."""
+    from orion.mood_arc.fit_encoder import _segment_train_held_ranges, block_purge_ar1_training_rows
+
+    n = 100
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    # Deliberately wide window spans (60s) relative to the 2s index step, so a train
+    # window's own end_ts extends far past the next several windows' start_ts -- exactly the
+    # overlap shape real 50%-overlapping windows produce, exaggerated here to make the test
+    # deterministic and obvious.
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+    rows = _rows_at(base, n)
+
+    purge_gap_windows = 0  # no requested embargo -- the leak this test targets doesn't need one
+    n_blocks = 2
+    ranges = _segment_train_held_ranges(n, 0.15, purge_gap_windows, n_blocks)
+    _train_lo, train_hi, held_lo, _held_hi = ranges[0]
+    assert end_ts[train_hi - 1] > start_ts[held_lo], (
+        "test setup must reproduce the overlap the fix addresses -- the first segment's "
+        "last train window's end_ts must extend past its own held-out block's start_ts"
+    )
+
+    safe_rows = block_purge_ar1_training_rows(
+        rows, start_ts, held_out_frac=0.15, purge_gap_windows=purge_gap_windows, n_blocks=n_blocks
+    )
+    safe_times = {r.generated_at for r in safe_rows}
+    # The held-out block's own first tick must be excluded, even though it falls inside the
+    # OLD (buggy) end_ts-based train span -- this is exactly the row the fix protects.
+    assert start_ts[held_lo] not in safe_times
 
 
 def test_purged_temporal_split_raises_on_empty_windows() -> None:
@@ -808,9 +846,33 @@ def test_enrich_corpus_refuses_out_that_looks_like_a_rotated_sibling(tmp_path: P
     this test to pass)."""
     corpus = tmp_path / "field_channels.jsonl"
     corpus.write_text('{"generated_at": "2026-08-30T00:00:00Z", "tick_id": "t0", "channels": {}}\n')
-    colliding_out = tmp_path / "field_channels.jsonl.20260901T000000Z"
+    colliding_out = tmp_path / "field_channels.jsonl.20260901T000000.123456Z"
 
     proc = _run_fit("enrich-corpus", "--corpus", str(corpus), "--out", str(colliding_out))
     assert proc.returncode != 0
     combined = (proc.stdout + proc.stderr).lower()
     assert "rotated sibling" in combined
+
+
+def test_enrich_corpus_does_not_refuse_a_non_rotated_out_name(tmp_path: Path) -> None:
+    """Regression test for the finding this fixed: a naive `startswith(f"{corpus.name}.")`
+    check would ALSO refuse a legitimate, non-colliding --out name like
+    "field_channels.jsonl.enriched" -- resolve_rotated_corpus_files() only treats a name as a
+    rotated sibling when the suffix matches ROTATED_SUFFIX_RE exactly, so the guard must too.
+    This test only checks the guard doesn't fire for this name -- the command will still fail
+    later (no reachable Postgres in this test environment), just for an unrelated reason."""
+    corpus = tmp_path / "field_channels.jsonl"
+    corpus.write_text('{"generated_at": "2026-08-30T00:00:00Z", "tick_id": "t0", "channels": {}}\n')
+    non_colliding_out = tmp_path / "field_channels.jsonl.enriched"
+
+    proc = _run_fit(
+        "enrich-corpus",
+        "--corpus",
+        str(corpus),
+        "--out",
+        str(non_colliding_out),
+        "--pg-dsn",
+        "postgresql://nouser:nopass@127.0.0.1:1/nodb",
+    )
+    combined = (proc.stdout + proc.stderr).lower()
+    assert "rotated sibling" not in combined

@@ -136,6 +136,7 @@ def _fetch_scalar_series(
     columns: list[tuple[str, str]],
     since: datetime,
     until: datetime,
+    require_not_null: bool = False,
 ) -> TimeSeries:
     """Generic single-table scalar-column fetch, shared by fetch_swear_frequency,
     fetch_doc_semantic_drift, and fetch_dev_economics -- their query bodies (SELECT
@@ -146,15 +147,29 @@ def _fetch_scalar_series(
     `columns` is a list of (sql_column, channel_name) pairs. A row contributes a series
     entry only if at least one of its requested columns is non-NULL; each column is included
     independently (a row with column A present and column B NULL still contributes A's
-    value) -- matches the original per-function behavior of dropping only genuinely-NULL
-    fields, never fabricating a 0.0 for "no reading this row"."""
+    value) -- never fabricating a 0.0 for "no reading this column, this row".
+
+    `require_not_null` (default False), when True, pushes "at least one requested column is
+    non-NULL" down into the SQL WHERE clause instead of only filtering in Python -- for a
+    single-column caller (fetch_swear_frequency, fetch_doc_semantic_drift) this avoids
+    fetching rows that get discarded anyway (their originals, before this helper existed,
+    filtered server-side too; found by code review that the first version of this shared
+    helper silently dropped that pushdown, quadrupling the row count fetched over the wire
+    for a signal that's ~78% NULL). Leave False for a multi-column caller where a row can be
+    meaningful with only SOME columns present (fetch_dev_economics: session_count is always
+    present, total_estimated_cost_usd is legitimately sometimes NULL -- neither should gate
+    the other out at the SQL level)."""
     col_names = ", ".join(col for col, _channel in columns)
+    where_extra = ""
+    if require_not_null:
+        not_null_clauses = " OR ".join(f"{col} IS NOT NULL" for col, _channel in columns)
+        where_extra = f" AND ({not_null_clauses})"
     rows = _fetch(
         conn,
         f"""
         SELECT {ts_column}, {col_names}
         FROM {table}
-        WHERE {ts_column} >= %s AND {ts_column} <= %s
+        WHERE {ts_column} >= %s AND {ts_column} <= %s{where_extra}
         ORDER BY {ts_column} ASC
         """,
         (since, until),
@@ -183,6 +198,7 @@ def fetch_swear_frequency(conn, since: datetime, until: datetime) -> TimeSeries:
         columns=[("swear_frequency", "swear_frequency")],
         since=since,
         until=until,
+        require_not_null=True,
     )
 
 
@@ -227,7 +243,17 @@ def fetch_dev_economics(conn, since: datetime, until: datetime) -> TimeSeries:
     (0-7) and total_estimated_cost_usd ($0.07-$33) stayed in because their live ranges are
     within a defensible order of magnitude of the rest of the corpus; total_tokens is not.
     Properly normalizing it (rather than dropping it) is real follow-up work, not done here --
-    see orion/mood_arc/README.md's v4 section."""
+    see orion/mood_arc/README.md's v4 section.
+
+    Null-handling note: session_count is NOT NULL in the live schema (confirmed via `\\d
+    dev_economics_ledger_log`), so it should never actually be NULL here -- but
+    `_fetch_scalar_series()`'s generic per-column "include if non-NULL, drop if NULL"
+    handling means a row with a schema-violating NULL session_count would be silently
+    dropped as an ordinary missing-value row rather than surfaced as the real anomaly it
+    would be (found by code review: an earlier fetch_dev_economics() unconditionally did
+    `float(session_count)` with no null guard at all, so it would have crashed loudly on
+    that same anomaly instead). Not re-engineered here since this function is currently
+    deferred, not called by fetch_all_series() -- worth reconsidering if/when it's wired in."""
     return _fetch_scalar_series(
         conn,
         table="dev_economics_ledger_log",
@@ -252,6 +278,7 @@ def fetch_doc_semantic_drift(conn, since: datetime, until: datetime) -> TimeSeri
         columns=[("diff_scoped_embedding_diff", "doc_semantic_drift")],
         since=since,
         until=until,
+        require_not_null=True,
     )
 
 

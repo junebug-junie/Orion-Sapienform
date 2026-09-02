@@ -115,8 +115,14 @@ def test_asof_forward_fill_series_need_not_be_pre_sorted() -> None:
 
 
 class _FakeCursor:
-    def __init__(self, rows: list[tuple]) -> None:
-        self._rows = rows
+    """Shared cursor test double for both this file's mocked-connection tests: records every
+    executed query's SQL text (for assertions on which table/columns a fetch_*() call
+    touches) and returns a pre-set `rows` list from fetchall() (for asserting how a fetch_*()
+    call parses real-shaped row tuples). One class covers both needs -- consolidated from two
+    near-identical inline fakes (found by code review, 2026-09-02)."""
+
+    def __init__(self, conn: "_FakeConn") -> None:
+        self._conn = conn
 
     def __enter__(self):
         return self
@@ -125,18 +131,19 @@ class _FakeCursor:
         return False
 
     def execute(self, query, params):
-        pass
+        self._conn.queries.append(query)
 
     def fetchall(self):
-        return self._rows
+        return self._conn.rows
 
 
 class _FakeConn:
-    def __init__(self, rows: list[tuple]) -> None:
-        self._rows = rows
+    def __init__(self, rows: list[tuple] | None = None) -> None:
+        self.rows = rows if rows is not None else []
+        self.queries: list[str] = []
 
     def cursor(self):
-        return _FakeCursor(self._rows)
+        return _FakeCursor(self)
 
 
 def test_fetch_attention_self_model_splits_into_independent_per_field_series() -> None:
@@ -196,29 +203,7 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
     the floor gate). Only action_warrant and attention_self_model (dense enough) belong in
     the default join until a per-window "context" representation is designed for the rest."""
 
-    class _RecordingConn:
-        def __init__(self) -> None:
-            self.queries: list[str] = []
-
-        def cursor(self):
-            conn = self
-
-            class _Cur:
-                def __enter__(self_inner):
-                    return self_inner
-
-                def __exit__(self_inner, *exc):
-                    return False
-
-                def execute(self_inner, query, params):
-                    conn.queries.append(query)
-
-                def fetchall(self_inner):
-                    return []
-
-            return _Cur()
-
-    conn = _RecordingConn()
+    conn = _FakeConn()
     since = datetime(2026, 9, 1, tzinfo=timezone.utc)
     until = datetime(2026, 9, 2, tzinfo=timezone.utc)
 

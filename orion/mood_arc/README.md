@@ -341,7 +341,7 @@ as "calm" by construction, because the channel measures change-from-adaptive-bas
 loudness. Read any of these channels' low values as "not currently changing," not "currently
 quiet."
 
-**Three real problems found and fixed in sequence, in the order they were found:**
+**Four real problems found and fixed in sequence, in the order they were found:**
 
 1. **Scale-dominance bug.** `dev_economics_total_tokens` (live range 0-59,290,459, avg ~4.07M) was
    briefly included before the sparse-signal scope-narrowing above — its raw magnitude
@@ -372,20 +372,55 @@ quiet."
    blocks instead of one trailing chunk. `--held-out-blocks 1` (the default) is byte-identical to
    the original single-block method — `v3`'s already-validated 0.210 result is untouched by this
    change.
+4. **Block-boundary leakage in the fix for #3 — caught by code review, not by the training
+   numbers.** The first `block_purged_temporal_split()` divided windows into N segments and
+   applied the trailing-embargo logic *within* each segment independently, but never embargoed a
+   segment's own *leading* edge — so a held-out window at the end of segment `i` sat directly
+   adjacent (zero gap, physically overlapping raw ticks under the 50%-overlap stride) to a
+   training window at the start of segment `i+1`, at every one of the N-1 internal block
+   boundaries. The promoted candidate's first "passing" `floor_ratio=0.415` was trained under this
+   leak. A related bug in the same rewrite (`block_purge_excluded_ar1_intervals()`'s upper bound
+   under-covering a run's orphaned trailing rows — `_build_windows_with_span()` drops any run's
+   tail once fewer than `window_size` rows remain) could separately re-admit rows into the AR(1)
+   baseline fit. Fixed: `_segment_train_held_ranges()` now embargoes both edges of every internal
+   segment, and `block_purge_ar1_training_rows()` replaced the interval-upper-bound approach with
+   direct inclusion-checking against real train-window spans (a row is safe for AR(1) fitting only
+   if it falls inside some actual train window — no upper-bound estimate to get wrong). Both fixes
+   are covered by new regression tests
+   (`test_block_purged_temporal_split_embargoes_internal_block_boundaries`,
+   `test_block_purge_ar1_training_rows_excludes_orphaned_trailing_rows`). `--held-out-blocks 1`
+   remains byte-identical to `v3`'s original methodology throughout.
 
 **Results, holding channels (37) and capacity (256/128) constant, varying only the split:**
 
 | | `--held-out-blocks` | `floor_ratio` | `floor_pass` | `ceiling_ratio` |
 |---|---|---|---|---|
 | Attempt 3 | 1 (single trailing block) | 0.774 | **FAIL** | 1.494 |
-| Attempt 4 (`v4`, promoted) | 5 | **0.415** (CI 0.396-0.436) | **PASS** | 0.660 |
+| Attempt 4 (leaked at block boundaries) | 5 | 0.415 (CI 0.396-0.436) | PASS (invalid — see #4) | 0.660 |
+| **Attempt 5 (`v4`, promoted, leak-fixed)** | 5 | **0.406** (CI 0.383-0.430) | **PASS** | **0.733** |
 
-`ceiling_ratio` (0.660) is notably worse than `v3`'s (0.190) — real reconstruction still clearly
-beats the AR(1) surrogate (ratio well under 1), just by a smaller margin. Plausibly genuine added
-entropy in a 3.4-day multi-regime corpus vs. `v3`'s stationary 10.3h slice, not a red flag —
-`ceiling_ratio` has no calibrated pass/fail threshold (diagnostic only, same as every prior
-version). Treat `v4` the same way `v3`'s own writeup treated itself: real evidence, n=1 on this
-exact corpus/config, not yet independently re-confirmed with a second seed.
+The leak-fixed result (attempt 5) landed close to the leaked one (0.406 vs. 0.415) — reassuring
+that the internal-boundary leak wasn't actually doing much of the work, but it was still a real
+defect worth fixing before trusting the number, not a rounding difference. `ceiling_ratio` (0.733)
+is notably worse than `v3`'s (0.190) — real reconstruction still clearly beats the AR(1) surrogate
+(ratio well under 1), just by a smaller margin. Plausibly genuine added entropy in a 3.4-day
+multi-regime corpus vs. `v3`'s stationary 10.3h slice, not a red flag — `ceiling_ratio` has no
+calibrated pass/fail threshold (diagnostic only, same as every prior version). Treat `v4` the same
+way `v3`'s own writeup treated itself: real evidence, n=1 on this exact corpus/config, not yet
+independently re-confirmed with a second seed.
+
+**Independence check (CLAUDE.md's metric quality gate, step 2), recorded here per that gate's own
+requirement:** the new per-domain `prediction_error_{execution,chat,biometrics,bus_synaptic}`
+channels are components of the pre-existing `prediction_error` channel (a `max()`-merge across the
+same underlying node instruments), a short, direct causal chain that would normally flag them as
+redundant. Checked against real training-run evidence rather than asserted: `prune_correlated_fields()`'s
+full printed output (`--corr-threshold 0.9`, the same run that produced the promoted `v4`) does
+**not** flag `prediction_error` against any of its four components — none appear in its "dropping
+X (kept Y, r=...)" list, meaning pairwise Pearson correlation between the max-merge and each
+component stays under 0.9 in practice. Consistent with `max()` being nonlinear: the merge and any
+one component diverge whenever a *different* component is currently the maximum. Read as
+"empirically not redundant by the pruning gate's own linear-correlation test," not as a from-first-
+principles proof of independence — a true multicollinearity check (e.g. VIF) hasn't been run.
 
 **Follow-up work, explicitly not done here:**
 

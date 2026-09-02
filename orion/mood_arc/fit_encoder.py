@@ -598,11 +598,47 @@ def purged_temporal_split(
 
 def _block_boundaries(n: int, n_blocks: int) -> list[tuple[int, int]]:
     """n_blocks contiguous [start, end) index ranges partitioning [0, n), as close to equal
-    size as integer rounding allows. Shared by block_purged_temporal_split() and
-    block_purge_excluded_ar1_intervals() so both use the exact same segmentation -- the
-    windows split and the AR(1) leakage exclusion must agree on where each block sits."""
+    size as integer rounding allows. Shared by _segment_train_held_ranges() so every caller
+    agrees on where each block sits."""
     boundaries = [round(i * n / n_blocks) for i in range(n_blocks + 1)]
     return [(boundaries[i], boundaries[i + 1]) for i in range(n_blocks)]
+
+
+def _segment_train_held_ranges(
+    n: int, held_out_frac: float, purge_gap_windows: int, n_blocks: int
+) -> list[tuple[int, int, int, int]]:
+    """For each of n_blocks segments, returns (train_lo, train_hi, held_lo, held_hi) GLOBAL
+    index ranges (each half-open [lo, hi)).
+
+    held_lo:held_hi is always the trailing held_out_frac fraction of the segment -- it
+    always reaches exactly to the segment's own end (held_hi == seg_end).
+
+    train_lo:train_hi is embargoed on BOTH sides:
+      - purge_gap_windows before this segment's OWN held-out block (the original
+        purged_temporal_split() embargo, applied within the segment).
+      - purge_gap_windows at this segment's OWN leading edge, for every segment except the
+        first -- because that leading edge sits immediately adjacent, in physically
+        overlapping raw ticks (50%-overlap stride), to the PREVIOUS segment's held-out
+        tail, which always ends exactly at this segment's start. Missing this second
+        embargo (found by code review, 2026-09-02, confirmed against the split actually
+        used to train the promoted v4 candidate) meant every one of the n_blocks-1 internal
+        block boundaries had a held-out window directly adjacent to a training window with
+        zero gap -- the exact leakage class purge_gap_windows exists to prevent, reintroduced
+        at every internal seam.
+    """
+    ranges: list[tuple[int, int, int, int]] = []
+    for i, (seg_start, seg_end) in enumerate(_block_boundaries(n, n_blocks)):
+        seg_len = seg_end - seg_start
+        if seg_len == 0:
+            ranges.append((seg_start, seg_start, seg_start, seg_start))
+            continue
+        local_purge_start, local_held_start = _purge_split_indices(seg_len, held_out_frac, purge_gap_windows)
+        held_lo, held_hi = seg_start + local_held_start, seg_end
+        train_hi = seg_start + max(0, local_purge_start)
+        leading_embargo = purge_gap_windows if i > 0 else 0
+        train_lo = min(train_hi, seg_start + leading_embargo)
+        ranges.append((train_lo, train_hi, held_lo, held_hi))
+    return ranges
 
 
 def block_purged_temporal_split(
@@ -628,17 +664,17 @@ def block_purged_temporal_split(
     ceiling_ratio's shared numerator (real held-out reconstruction loss) regardless of
     whether the model learned real trajectory structure, and gets WORSE with more model
     capacity (a more expressive model overfits train's regime harder, generalizing worse to
-    the shifted tail) -- exactly the pattern that motivated this function. A v4 retrain
-    against the full phi-v2-clean-metrics channel set and a hand-tuned hidden_dim/latent_dim
-    both failed the floor gate before this existed; see orion/mood_arc/README.md's v4
-    section for the full before/after.
+    the shifted tail) -- exactly the pattern that motivated this function. See
+    orion/mood_arc/README.md's v4 section for the full before/after.
 
     Splits `windows` into n_blocks equal contiguous segments (by index, which is
     chronological -- build_windows guarantees temporal order) and applies
-    purged_temporal_split()'s own trailing-block-plus-embargo logic WITHIN each segment
-    independently. This spreads held-out across every part of the time range instead of
-    concentrating it in whichever regime happened to be running at the very end --
-    standard purged/blocked cross-validation practice for non-stationary time series.
+    purged_temporal_split()'s own trailing-block-plus-embargo logic WITHIN each segment,
+    with an additional leading-edge embargo between adjacent segments (see
+    _segment_train_held_ranges()'s docstring). This spreads held-out across every part of
+    the time range instead of concentrating it in whichever regime happened to be running
+    at the very end -- standard purged/blocked cross-validation practice for non-stationary
+    time series.
     """
     n = len(windows)
     if n == 0:
@@ -650,13 +686,25 @@ def block_purged_temporal_split(
 
     train_windows: list[np.ndarray] = []
     held_windows: list[np.ndarray] = []
-    for seg_start, seg_end in _block_boundaries(n, n_blocks):
-        segment = windows[seg_start:seg_end]
-        if not segment:
-            continue
-        purge_start, held_start = _purge_split_indices(len(segment), held_out_frac, purge_gap_windows)
-        train_windows.extend(segment[: max(0, purge_start)])
-        held_windows.extend(segment[held_start:])
+    starved_segments: list[int] = []
+    for i, (train_lo, train_hi, held_lo, held_hi) in enumerate(
+        _segment_train_held_ranges(n, held_out_frac, purge_gap_windows, n_blocks)
+    ):
+        if train_hi > train_lo:
+            train_windows.extend(windows[train_lo:train_hi])
+        else:
+            starved_segments.append(i)
+        if held_hi > held_lo:
+            held_windows.extend(windows[held_lo:held_hi])
+
+    if starved_segments:
+        print(
+            f"block_purged_temporal_split: WARNING -- segment(s) {starved_segments} contributed "
+            f"ZERO training windows after embargo (n_blocks={n_blocks}, "
+            f"purge_gap_windows={purge_gap_windows}); that time region is entirely "
+            "held-out/embargoed, not represented in train. Reduce purge_gap_windows or n_blocks "
+            "if this is unintended."
+        )
 
     if not train_windows:
         raise ValueError(
@@ -673,35 +721,43 @@ def block_purged_temporal_split(
     return np.stack(train_windows, axis=0), np.stack(held_windows, axis=0)
 
 
-def block_purge_excluded_ar1_intervals(
+def block_purge_ar1_training_rows(
+    rows: list[FieldChannelCorpusRowV1],
     start_ts: list[datetime],
     end_ts: list[datetime],
     *,
     held_out_frac: float,
     purge_gap_windows: int,
     n_blocks: int,
-) -> list[tuple[datetime, datetime]]:
-    """The real-timestamp interval(s), one per block, that must be excluded from
-    fit_ar1_per_channel()'s training-only fit -- generalizes cmd_train's original single
-    `cutoff_ts = start_ts[held_start]` derivation (see its own inline comment for why the
-    boundary must come from a window's own start_ts, not index/purge_gap_windows math
-    alone -- 50%-overlapping windows can physically overlap in raw ticks) to n_blocks
-    segments. For n_blocks=1 this returns exactly one interval matching the original
-    cutoff_ts boundary (`[start_ts[held_start], end_ts[-1]]`, equivalent to the original
-    `generated_at < cutoff_ts` filter since no row's timestamp can exceed the corpus's own
-    last window's end_ts)."""
-    n = len(start_ts)
-    intervals: list[tuple[datetime, datetime]] = []
-    for seg_start, seg_end in _block_boundaries(n, n_blocks):
-        seg_n = seg_end - seg_start
-        if seg_n == 0:
-            continue
-        _purge_start, held_start = _purge_split_indices(seg_n, held_out_frac, purge_gap_windows)
-        excluded_start_idx = seg_start + held_start
-        if excluded_start_idx >= seg_end:
-            continue
-        intervals.append((start_ts[excluded_start_idx], end_ts[seg_end - 1]))
-    return intervals
+) -> list[FieldChannelCorpusRowV1]:
+    """The subset of `rows` safe to use for fit_ar1_per_channel()'s training-only fit.
+
+    n_blocks=1 reproduces cmd_train's original single-cutoff filter EXACTLY (rows strictly
+    before the held-out boundary's own start_ts) -- v3's methodology, including this part
+    of it, is untouched.
+
+    n_blocks>1 uses a different, conservative approach instead of a hand-derived per-segment
+    interval: a row is safe only if it falls inside some actual TRAIN window's own
+    [start_ts, end_ts] span (inclusion-based). This was found by code review to matter: an
+    earlier version of this function derived each segment's excluded-interval upper bound
+    from a window's end_ts, which does not cover a run's orphaned trailing rows
+    (_build_windows_with_span() drops any run's tail once fewer than window_size rows
+    remain) -- those rows could silently re-enter the AR(1) fit. Checking membership in real
+    train-window spans instead has no upper-bound-estimation step to get wrong: a row not
+    covered by any train window (held-out, embargoed, or an orphaned trailing row) is
+    correctly excluded by construction, the safe direction.
+    """
+    if n_blocks == 1:
+        n = len(start_ts)
+        _purge_start, held_start = _purge_split_indices(n, held_out_frac, purge_gap_windows)
+        cutoff_ts = start_ts[held_start]
+        return [r for r in rows if r.generated_at < cutoff_ts]
+
+    ranges = _segment_train_held_ranges(len(start_ts), held_out_frac, purge_gap_windows, n_blocks)
+    train_spans = [
+        (start_ts[train_lo], end_ts[train_hi - 1]) for train_lo, train_hi, _held_lo, _held_hi in ranges if train_hi > train_lo
+    ]
+    return [r for r in rows if any(lo <= r.generated_at <= hi for lo, hi in train_spans)]
 
 
 def init_weights(d_in: int, hidden_dim: int, latent_dim: int, seed: int, data_mean: np.ndarray) -> dict[str, np.ndarray]:
@@ -1357,12 +1413,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     enrich_p.add_argument(
         "--corpus", type=Path, required=True, help="Existing field_channel_corpus.v1 JSONL (rotation-aware)"
     )
-    enrich_p.add_argument("--out", type=Path, required=True, help="Output path for the enriched JSONL")
+    enrich_p.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help=(
+            "Output path for the enriched JSONL. Must NOT look like a rotated sibling of "
+            "--corpus (refused at runtime) -- a later `train --corpus` call's "
+            "rotation-aware loading would silently union it back with --corpus's other "
+            "rotated files and double-count rows."
+        ),
+    )
     enrich_p.add_argument(
         "--pg-dsn",
         type=str,
         default=None,
-        help="Postgres DSN to read from (default: $DATABASE_URL)",
+        help=(
+            "Postgres DSN to read from (default: orion.metrics.liveness.resolve_dsn()'s "
+            "chain -- $POSTGRES_URI, then $DATABASE_URL, then $ORION_SQL_URL, then a "
+            "localhost default)"
+        ),
     )
     enrich_p.add_argument(
         "--lookback-hours",
@@ -1419,29 +1489,20 @@ def cmd_train(args: argparse.Namespace) -> int:
         purge_gap_windows=args.purge_gap_windows,
         n_blocks=args.held_out_blocks,
     )
-    # AR(1) leakage-safe exclusion: rows inside any held-out block's own
-    # window-timestamp span. Deliberately not derived from
-    # purge_gap_windows/end_ts of the last training window alone -- found by
-    # code review (2026-07-13) that with 50%-overlapping windows
-    # (window_size=30, stride=15), a small --purge-gap-windows override
-    # (e.g. 0) could still leave a "training" window's end timestamp *after*
-    # a held-out window's start (they physically overlap in raw ticks),
-    # which would leak held-out rows into fit_ar1_per_channel's
-    # training-only fit regardless of how large purge_gap_windows claims to
-    # be. block_purge_excluded_ar1_intervals() generalizes this from a
-    # single cutoff to one interval per held-out block (--held-out-blocks),
-    # each still derived from that block's own first held-out window's
-    # start_ts, not index math alone.
-    excluded_intervals = block_purge_excluded_ar1_intervals(
+    # AR(1) leakage-safe row set: rows falling inside some actual TRAIN
+    # window's own timestamp span (see block_purge_ar1_training_rows()'s
+    # docstring for why inclusion-based, not an excluded-interval upper
+    # bound -- found by code review to matter for a run's orphaned trailing
+    # rows). n_blocks=1 reproduces cmd_train's original single-cutoff
+    # filter exactly.
+    train_rows_for_ar1 = block_purge_ar1_training_rows(
+        rows,
         start_ts,
         end_ts,
         held_out_frac=args.held_out_frac,
         purge_gap_windows=args.purge_gap_windows,
         n_blocks=args.held_out_blocks,
     )
-    train_rows_for_ar1 = [
-        r for r in rows if not any(lo <= r.generated_at <= hi for lo, hi in excluded_intervals)
-    ]
 
     best_weights, training_stats = train_autoencoder(
         train_matrix,
@@ -1704,14 +1765,31 @@ def cmd_enrich_corpus(args: argparse.Namespace) -> int:
     # importable and runnable with no DB driver installed, same reasoning as
     # the existing lazy scripts.fit_phi_encoder imports elsewhere in this file
     # (see test_fit_encoder_no_scripts_dependency.py).
-    import os
-
     from orion.db_readonly import open_readonly_connection
+    from orion.metrics.liveness import resolve_dsn
     from orion.mood_arc.corpus_enrichment import enrich_corpus
 
-    dsn = args.pg_dsn or os.environ.get("DATABASE_URL")
-    if not dsn:
-        raise SystemExit("enrich-corpus: no --pg-dsn given and $DATABASE_URL is unset")
+    # resolve_dsn() checks POSTGRES_URI (the canonical operator-set key per
+    # .env_example) before DATABASE_URL before ORION_SQL_URL, falling back to
+    # a localhost default -- reused here rather than checking only
+    # $DATABASE_URL, which would miss an environment where only POSTGRES_URI
+    # is set (the documented convention; found by code review).
+    dsn = args.pg_dsn or resolve_dsn()
+
+    # Refuse an --out path that resolve_rotated_corpus_files() would treat as
+    # a rotated sibling of --corpus (matches "{corpus.name}.<rotation
+    # suffix>" in the same directory) -- found by code review: a later
+    # `train --corpus <that path>` call's rotation-aware _load_jsonl() would
+    # silently UNION the enriched file with the original's other rotated
+    # siblings, double-counting every row that exists in both and corrupting
+    # row_count/channel_variance/AR(1) statistics with duplicates.
+    if args.out.parent == args.corpus.parent and args.out.name.startswith(f"{args.corpus.name}."):
+        raise SystemExit(
+            f"enrich-corpus: --out {args.out} looks like a rotated sibling of --corpus "
+            f"{args.corpus} (same directory, name starts with '{args.corpus.name}.') -- a "
+            "later `train --corpus` pointed at either path would silently union both files "
+            "via rotation-aware loading and double-count rows. Use a distinct path/directory."
+        )
 
     rows = _load_jsonl(args.corpus)
     if not rows:
@@ -1719,9 +1797,14 @@ def cmd_enrich_corpus(args: argparse.Namespace) -> int:
 
     conn = open_readonly_connection(dsn, connect_timeout=10, statement_timeout_ms=60_000)
     if conn is None:
+        from urllib.parse import urlsplit
+
+        dsn_source = "--pg-dsn" if args.pg_dsn else "resolve_dsn() ($POSTGRES_URI/$DATABASE_URL/$ORION_SQL_URL/default)"
+        parsed = urlsplit(dsn)
+        host = f"{parsed.hostname}:{parsed.port or '?'}" if parsed.hostname else "?"
         raise SystemExit(
-            "enrich-corpus: could not open a confirmed read-only Postgres connection "
-            f"(dsn from {'--pg-dsn' if args.pg_dsn else '$DATABASE_URL'}) -- see logs above"
+            f"enrich-corpus: could not open a confirmed read-only Postgres connection "
+            f"(dsn from {dsn_source}, host {host}) -- see logs above"
         )
     try:
         missing = enrich_corpus(rows, conn, lookback_hours=args.lookback_hours)

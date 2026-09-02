@@ -89,11 +89,20 @@ def fetch_action_warrant(conn, since: datetime, until: datetime) -> TimeSeries:
     return [(ts, {"action_warrant": v}) for ts, v in rows if v is not None]
 
 
-def fetch_attention_self_model(conn, since: datetime, until: datetime) -> TimeSeries:
+def fetch_attention_self_model(conn, since: datetime, until: datetime) -> dict[str, TimeSeries]:
     """substrate_attention_self_model.self_model_json -- heartbeat_mean_ratio (relayed from
     orion-heartbeat's /h1 over HTTP, no Postgres table of its own) + the per-domain
-    prediction_error_by_domain breakdown, ~30.6s cadence. A row may carry only one of the two
-    groups; both are merged into the same series entry when present."""
+    prediction_error_by_domain breakdown, ~30.6s cadence.
+
+    Returns one INDEPENDENT series per field (dict keyed by channel name, matching
+    fetch_codebase_delta()'s shape), NOT one combined series. A DB row may carry only one of
+    heartbeat_mean_ratio/prediction_error_by_domain (confirmed live) -- if both were merged
+    into a single series entry per row (an earlier version of this function did exactly
+    that), asof_forward_fill()'s single-nearest-entry lookup would silently drop whichever
+    field the NEAREST row happened to lack, even when an earlier row had a real, still-valid
+    value for it that correct last-observation-carried-forward should have kept. Returning
+    independent per-field series and asof-joining each on its own (see fetch_all_series())
+    gives every field its own correct LOCF regardless of what else that row carried."""
     rows = _fetch(
         conn,
         """
@@ -105,16 +114,58 @@ def fetch_attention_self_model(conn, since: datetime, until: datetime) -> TimeSe
         """,
         (since, until),
     )
-    out: TimeSeries = []
+    out: dict[str, TimeSeries] = {"heartbeat_mean_ratio": []}
+    for domain in _PREDICTION_ERROR_DOMAINS:
+        out[f"prediction_error_{domain}"] = []
     for ts, heartbeat_raw, domains_raw in rows:
-        values: dict[str, float] = {}
         if heartbeat_raw is not None:
-            values["heartbeat_mean_ratio"] = float(heartbeat_raw)
+            out["heartbeat_mean_ratio"].append((ts, {"heartbeat_mean_ratio": float(heartbeat_raw)}))
         if domains_raw:
             for domain in _PREDICTION_ERROR_DOMAINS:
                 v = domains_raw.get(domain)
                 if v is not None:
-                    values[f"prediction_error_{domain}"] = float(v)
+                    out[f"prediction_error_{domain}"].append((ts, {f"prediction_error_{domain}": float(v)}))
+    return out
+
+
+def _fetch_scalar_series(
+    conn,
+    *,
+    table: str,
+    ts_column: str,
+    columns: list[tuple[str, str]],
+    since: datetime,
+    until: datetime,
+) -> TimeSeries:
+    """Generic single-table scalar-column fetch, shared by fetch_swear_frequency,
+    fetch_doc_semantic_drift, and fetch_dev_economics -- their query bodies (SELECT
+    ts_column + N scalar columns, WHERE ts_column BETWEEN since/until, ORDER BY ts_column
+    ASC) were near-identical copy-pasted code, differing only in table/column/channel-name
+    literals (found by code review, 2026-09-02).
+
+    `columns` is a list of (sql_column, channel_name) pairs. A row contributes a series
+    entry only if at least one of its requested columns is non-NULL; each column is included
+    independently (a row with column A present and column B NULL still contributes A's
+    value) -- matches the original per-function behavior of dropping only genuinely-NULL
+    fields, never fabricating a 0.0 for "no reading this row"."""
+    col_names = ", ".join(col for col, _channel in columns)
+    rows = _fetch(
+        conn,
+        f"""
+        SELECT {ts_column}, {col_names}
+        FROM {table}
+        WHERE {ts_column} >= %s AND {ts_column} <= %s
+        ORDER BY {ts_column} ASC
+        """,
+        (since, until),
+    )
+    out: TimeSeries = []
+    for row in rows:
+        ts = row[0]
+        values: dict[str, float] = {}
+        for (_sql_col, channel_name), value in zip(columns, row[1:]):
+            if value is not None:
+                values[channel_name] = float(value)
         if values:
             out.append((ts, values))
     return out
@@ -125,18 +176,14 @@ def fetch_swear_frequency(conn, since: datetime, until: datetime) -> TimeSeries:
     live (2026-09-02); NULL windows (78% of them, per the model's own docstring) are dropped
     here rather than forward-filled as 0.0, since NULL means 'no message activity that window',
     not 'zero swearing' -- the two are different facts."""
-    rows = _fetch(
+    return _fetch_scalar_series(
         conn,
-        """
-        SELECT observed_at, swear_frequency
-        FROM juniper_affective_state_log
-        WHERE observed_at >= %s AND observed_at <= %s
-          AND swear_frequency IS NOT NULL
-        ORDER BY observed_at ASC
-        """,
-        (since, until),
+        table="juniper_affective_state_log",
+        ts_column="observed_at",
+        columns=[("swear_frequency", "swear_frequency")],
+        since=since,
+        until=until,
     )
-    return [(ts, {"swear_frequency": float(v)}) for ts, v in rows]
 
 
 def fetch_codebase_delta(conn, since: datetime, until: datetime) -> dict[str, TimeSeries]:
@@ -181,41 +228,31 @@ def fetch_dev_economics(conn, since: datetime, until: datetime) -> TimeSeries:
     within a defensible order of magnitude of the rest of the corpus; total_tokens is not.
     Properly normalizing it (rather than dropping it) is real follow-up work, not done here --
     see orion/mood_arc/README.md's v4 section."""
-    rows = _fetch(
+    return _fetch_scalar_series(
         conn,
-        """
-        SELECT observed_at, session_count, total_estimated_cost_usd
-        FROM dev_economics_ledger_log
-        WHERE observed_at >= %s AND observed_at <= %s
-        ORDER BY observed_at ASC
-        """,
-        (since, until),
+        table="dev_economics_ledger_log",
+        ts_column="observed_at",
+        columns=[
+            ("session_count", "dev_economics_session_count"),
+            ("total_estimated_cost_usd", "dev_economics_total_estimated_cost_usd"),
+        ],
+        since=since,
+        until=until,
     )
-    out: TimeSeries = []
-    for ts, session_count, cost in rows:
-        values: dict[str, float] = {"dev_economics_session_count": float(session_count)}
-        if cost is not None:
-            values["dev_economics_total_estimated_cost_usd"] = float(cost)
-        out.append((ts, values))
-    return out
 
 
 def fetch_doc_semantic_drift(conn, since: datetime, until: datetime) -> TimeSeries:
     """doc_semantic_drift_log.diff_scoped_embedding_diff, ~3.9h cadence, the sparsest of all
     13 -- rows where the hunk was unscoreable (diff_scoped_embedding_diff IS NULL, e.g.
     whitespace-only) are dropped rather than forward-filled as 0.0."""
-    rows = _fetch(
+    return _fetch_scalar_series(
         conn,
-        """
-        SELECT observed_at, diff_scoped_embedding_diff
-        FROM doc_semantic_drift_log
-        WHERE observed_at >= %s AND observed_at <= %s
-          AND diff_scoped_embedding_diff IS NOT NULL
-        ORDER BY observed_at ASC
-        """,
-        (since, until),
+        table="doc_semantic_drift_log",
+        ts_column="observed_at",
+        columns=[("diff_scoped_embedding_diff", "doc_semantic_drift")],
+        since=since,
+        until=until,
     )
-    return [(ts, {"doc_semantic_drift": float(v)}) for ts, v in rows]
 
 
 def fetch_all_series(conn, since: datetime, until: datetime) -> dict[str, TimeSeries]:
@@ -244,11 +281,13 @@ def fetch_all_series(conn, since: datetime, until: datetime) -> dict[str, TimeSe
     v4 section.
 
     The dict key is only for reporting which query/table a missing-value count belongs to --
-    the actual channel names trained on live inside each series' value dicts."""
-    return {
-        "action_warrant": fetch_action_warrant(conn, since, until),
-        "attention_self_model": fetch_attention_self_model(conn, since, until),
-    }
+    the actual channel names trained on live inside each series' value dicts. Note
+    attention_self_model contributes 5 SEPARATE entries here (one per field:
+    heartbeat_mean_ratio + 4 prediction_error_{domain} channels), not one combined
+    "attention_self_model" entry -- see fetch_attention_self_model()'s docstring for why."""
+    series: dict[str, TimeSeries] = {"action_warrant": fetch_action_warrant(conn, since, until)}
+    series.update(fetch_attention_self_model(conn, since, until))
+    return series
 
 
 def asof_forward_fill(rows: list[FieldChannelCorpusRowV1], series: TimeSeries) -> int:

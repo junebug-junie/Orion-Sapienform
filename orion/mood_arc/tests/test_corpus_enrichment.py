@@ -1,16 +1,24 @@
 """Tests for orion/mood_arc/corpus_enrichment.py's asof/forward-fill join logic.
 
-Pure logic, synthetic timestamps -- no Postgres connection anywhere in this file. The
-fetch_*() functions themselves (real SQL against real tables) are exercised by hand against
-live Postgres as part of the v4 retrain, not here (see orion/mood_arc/README.md's v4 section)
--- they are thin, directly-inspectable query wrappers, and a mocked-cursor test of them would
-mostly just be re-asserting the SQL string back at itself.
+Pure logic, synthetic timestamps -- no Postgres connection anywhere in this file. Most
+fetch_*() functions (real SQL against real tables) are exercised by hand against live
+Postgres as part of the v4 retrain, not here (see orion/mood_arc/README.md's v4 section) --
+they are thin, directly-inspectable query wrappers, and a mocked-cursor test of them would
+mostly just be re-asserting the SQL string back at itself. fetch_attention_self_model() is
+the one exception (a fake cursor/connection, not live Postgres): it has real per-row
+branching logic (splitting a combined row into independent per-field series) worth locking
+in directly, found by code review to matter for correct LOCF behavior.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from orion.mood_arc.corpus_enrichment import asof_forward_fill, enrich_corpus, fetch_all_series
+from orion.mood_arc.corpus_enrichment import (
+    asof_forward_fill,
+    enrich_corpus,
+    fetch_all_series,
+    fetch_attention_self_model,
+)
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 
 
@@ -106,6 +114,70 @@ def test_asof_forward_fill_series_need_not_be_pre_sorted() -> None:
     assert rows[3].channels["x"] == 2.0  # tick :30, after :25
 
 
+class _FakeCursor:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params):
+        pass
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def cursor(self):
+        return _FakeCursor(self._rows)
+
+
+def test_fetch_attention_self_model_splits_into_independent_per_field_series() -> None:
+    """Regression test for the finding this fixed: a DB row carrying only ONE of
+    heartbeat_mean_ratio/prediction_error_by_domain must not blank out the OTHER field for
+    that timestamp -- each field needs its own independent series so asof_forward_fill()'s
+    single-nearest-entry lookup gives each field correct last-observation-carried-forward
+    regardless of what else the nearest row happened to contain."""
+    t0 = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 9, 1, 0, 0, 30, tzinfo=timezone.utc)
+    t2 = datetime(2026, 9, 1, 0, 1, 0, tzinfo=timezone.utc)
+    rows = [
+        # t0: both groups present.
+        (t0, "0.9", {"execution": 0.1, "chat": 0.2, "biometrics": 0.3, "bus_synaptic": 0.4}),
+        # t1: heartbeat ONLY -- prediction_error_by_domain absent this row.
+        (t1, "0.95", None),
+        # t2: prediction_error ONLY -- heartbeat_mean_ratio absent this row.
+        (t2, None, {"execution": 0.5, "chat": 0.6, "biometrics": 0.7, "bus_synaptic": 0.8}),
+    ]
+    conn = _FakeConn(rows)
+
+    series = fetch_attention_self_model(conn, t0, t2)
+
+    assert [v for _, v in series["heartbeat_mean_ratio"]] == [
+        {"heartbeat_mean_ratio": 0.9},
+        {"heartbeat_mean_ratio": 0.95},
+    ]
+    assert [v for _, v in series["prediction_error_execution"]] == [
+        {"prediction_error_execution": 0.1},
+        {"prediction_error_execution": 0.5},
+    ]
+
+    # The real regression: asof-joining onto a tick at t2 must still carry heartbeat's t1
+    # value forward (LOCF), not lose it because t2's own DB row had no heartbeat reading.
+    corpus_rows = [_row(t2, idx=0)]
+    asof_forward_fill(corpus_rows, series["heartbeat_mean_ratio"])
+    asof_forward_fill(corpus_rows, series["prediction_error_execution"])
+    assert corpus_rows[0].channels["heartbeat_mean_ratio"] == 0.95  # carried forward from t1
+    assert corpus_rows[0].channels["prediction_error_execution"] == 0.5  # t2's own reading
+
+
 def test_enrich_corpus_empty_rows_is_a_no_op() -> None:
     class _NeverCalledConn:
         def cursor(self):  # pragma: no cover -- must never be reached
@@ -152,7 +224,17 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
 
     series = fetch_all_series(conn, since, until)
 
-    assert set(series.keys()) == {"action_warrant", "attention_self_model"}
+    # attention_self_model contributes 5 SEPARATE series (heartbeat_mean_ratio + 4
+    # prediction_error_{domain} channels), not one combined entry -- see
+    # fetch_attention_self_model()'s docstring for why (independent LOCF per field).
+    assert set(series.keys()) == {
+        "action_warrant",
+        "heartbeat_mean_ratio",
+        "prediction_error_execution",
+        "prediction_error_chat",
+        "prediction_error_biometrics",
+        "prediction_error_bus_synaptic",
+    }
     joined_queries = " ".join(conn.queries).lower()
     for forbidden_table in (
         "juniper_affective_state_log",

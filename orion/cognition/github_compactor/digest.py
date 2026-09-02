@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import NAMESPACE_URL, uuid5
 
-from orion.cognition.compactor.budget import assert_fields_within_budget
+from orion.cognition.compactor.budget import fit_fields_within_budget
 from orion.cognition.compactor.digest import parse_compactor_digest_json
 from orion.cognition.compactor.truncate import truncate_at_word_boundary
 from orion.cognition.github_compactor.constants import (
@@ -52,14 +52,24 @@ def trim_github_compactor_input(fetch_payload: dict, *, max_items: int = MAX_DIG
     return trimmed
 
 
-def assert_digest_within_budget(digest: GithubCompactorDigestV1) -> None:
-    assert_fields_within_budget(
+def fit_digest_within_budget(
+    digest: GithubCompactorDigestV1,
+) -> tuple[GithubCompactorDigestV1, list[str]]:
+    """Return the digest with over-budget prose fields trimmed to their caps.
+
+    Returns ``(digest, trimmed_field_names)``; the names are empty when nothing
+    needed trimming. Callers should surface a non-empty list as run evidence.
+    """
+    fitted, trimmed = fit_fields_within_budget(
         {
             "card_summary": (digest.card_summary, CARD_SUMMARY_MAX_CHARS),
             "journal_title": (digest.journal_title, JOURNAL_TITLE_MAX_CHARS),
             "journal_body": (digest.journal_body, JOURNAL_BODY_MAX_CHARS),
         }
     )
+    if not trimmed:
+        return digest, []
+    return digest.model_copy(update=fitted), trimmed
 
 
 def build_quiet_day_digest(*, repo: str, window_label: str) -> GithubCompactorDigestV1:

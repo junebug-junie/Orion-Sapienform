@@ -8,7 +8,7 @@ from app.main import _publish_workflow_attention_signal, _schedule_attention_not
 from app.main import info as actions_info
 from app.workflow_schedule_metrics import WorkflowScheduleMetrics
 from app.workflow_schedule_store import WorkflowScheduleStore
-from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
+from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1
 
 
 def _dispatch_request(*, request_id: str, kind: str = "one_shot") -> WorkflowDispatchRequestV1:
@@ -73,7 +73,140 @@ def test_recurring_dispatch_failure_requeues_claimed_slot(tmp_path) -> None:
     reloaded = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
     row = reloaded.list_schedules(include_inactive=True)[0]
     assert row.next_run_at is not None
-    assert row.next_run_at.isoformat() == claimed_for
+    assert row.state == "scheduled"
+    # The slot is retried, but at now + backoff -- NOT rewound to `claimed_for`,
+    # which is already in the past and made the next scheduler tick re-claim it
+    # immediately. First attempt: 07:01 + 300s.
+    assert row.next_run_at == datetime(2026, 3, 25, 7, 6, tzinfo=timezone.utc)
+    assert datetime.fromisoformat(claimed_for) < row.next_run_at
+
+
+def test_dispatch_failure_backoff_grows_then_abandons_the_slot(tmp_path) -> None:
+    """A persistently failing slot retries a bounded number of times, then stops.
+
+    Before this bound existed, mark_dispatch_failed rewound next_run_at to a time
+    already in the past, so the next scheduler poll (45s) re-claimed the same slot
+    forever: 343 failure notifications from one schedule on 2026-08-20.
+    """
+    store = WorkflowScheduleStore(
+        str(tmp_path / "wf-schedules.json"),
+        max_dispatch_attempts=3,
+        retry_backoff_seconds=300,
+    )
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-backoff", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+
+    def _fail_once(at: datetime) -> None:
+        claimed = store.claim_due(now_utc=at)
+        assert len(claimed) == 1
+        store.mark_dispatch_failed(
+            run_id=claimed[0].run.run_id,
+            schedule_id=claimed[0].schedule.schedule_id,
+            error="boom",
+            now_utc=at,
+        )
+
+    # Attempt 1 -> 300 * 2**0 = 300s.
+    _fail_once(datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+    row = store.list_schedules(include_inactive=True)[0]
+    assert row.next_run_at == datetime(2026, 3, 25, 7, 5, tzinfo=timezone.utc)
+
+    # Attempt 2 -> 300 * 2**1 = 600s. Same slot, so the claimed_for key is stable.
+    _fail_once(datetime(2026, 3, 25, 7, 5, tzinfo=timezone.utc))
+    row = store.list_schedules(include_inactive=True)[0]
+    assert row.next_run_at == datetime(2026, 3, 25, 7, 15, tzinfo=timezone.utc)
+
+    # Attempt 3 spends the budget: the slot is abandoned to the next natural
+    # occurrence claim_due already advanced to, not retried again.
+    _fail_once(datetime(2026, 3, 25, 7, 15, tzinfo=timezone.utc))
+    row = store.list_schedules(include_inactive=True)[0]
+    assert row.next_run_at is not None
+    assert row.next_run_at > datetime(2026, 3, 25, 8, 0, tzinfo=timezone.utc)
+    assert store.claim_due(now_utc=datetime(2026, 3, 25, 7, 30, tzinfo=timezone.utc)) == []
+
+
+def test_attention_clears_once_a_degraded_schedule_recovers(tmp_path) -> None:
+    """The live bug: `health` stays "degraded" for 5 runs, attention must not.
+
+    github_compactor_pass sent 8 notifications/day from 2026-08-21 to 2026-09-01,
+    including every day its run completed, because the attention condition paged
+    off `health == "degraded"` -- a trailing-5-run property that outlives the
+    failure by days.
+    """
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"), max_dispatch_attempts=1)
+    store.upsert_from_dispatch(
+        _dispatch_request(request_id="req-recover", kind="recurring"),
+        now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc),
+    )
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+    store.mark_dispatch_failed(
+        run_id=claimed[0].run.run_id,
+        schedule_id=claimed[0].schedule.schedule_id,
+        error="boom",
+        now_utc=datetime(2026, 3, 25, 7, 1, tzinfo=timezone.utc),
+    )
+    # Currently failing: attention fires.
+    signals = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 7, 2, tzinfo=timezone.utc))
+    assert [s.kind for s in signals] == ["degraded"]
+
+    # Next day's run succeeds. health is still "degraded" (1 failure in the last
+    # 5 runs), but the schedule is working again, so attention must clear exactly
+    # once as "recovered" and then stay silent.
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 26, 7, 0, tzinfo=timezone.utc))
+    store.mark_dispatch_succeeded(
+        run_id=claimed[0].run.run_id,
+        schedule_id=claimed[0].schedule.schedule_id,
+        now_utc=datetime(2026, 3, 26, 7, 1, tzinfo=timezone.utc),
+    )
+    # Read health the way the badge does, through the "list" management surface
+    # that attaches analytics.
+    listed = store.apply_management(
+        WorkflowScheduleManageRequestV1.model_validate({"operation": "list", "request_id": "req-list"}),
+        now_utc=datetime(2026, 3, 26, 7, 2, tzinfo=timezone.utc),
+    )
+    assert listed.schedules[0].analytics is not None
+    assert listed.schedules[0].analytics.health == "degraded"
+
+    recovered = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 26, 7, 2, tzinfo=timezone.utc))
+    assert [s.transition for s in recovered] == ["recovered"]
+
+    # ...and no further nagging as the daily cycle keeps succeeding, even though
+    # `health` stays "degraded" until the failure ages out of the 5-run window.
+    # This is the steady state that produced 8 messages/day live.
+    for day in (27, 28):
+        claimed = store.claim_due(now_utc=datetime(2026, 3, day, 7, 0, tzinfo=timezone.utc))
+        assert len(claimed) == 1
+        store.mark_dispatch_succeeded(
+            run_id=claimed[0].run.run_id,
+            schedule_id=claimed[0].schedule.schedule_id,
+            now_utc=datetime(2026, 3, day, 7, 1, tzinfo=timezone.utc),
+        )
+        assert store.evaluate_attention_signals(now_utc=datetime(2026, 3, day, 7, 2, tzinfo=timezone.utc)) == []
+
+
+def test_set_notify_on_updates_the_copy_a_dispatch_actually_reads(tmp_path) -> None:
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    request = _dispatch_request(request_id="req-notify", kind="recurring")
+    request.workflow_request["execution_policy"] = request.execution_policy.model_dump(mode="json")
+    created = store.upsert_from_dispatch(request, now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
+    assert created is not None
+    assert created.workflow_request["execution_policy"]["notify_on"] == "completion"
+
+    assert store.set_notify_on(schedule_id=created.schedule_id, notify_on="failure") is True
+
+    reloaded = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    row = reloaded.list_schedules(include_inactive=True)[0]
+    assert row.notify_on == "failure"
+    assert row.execution_policy.notify_on == "failure"
+    # _dispatch_scheduled_workflow forwards this copy to cortex-orch, and it is what
+    # _emit_workflow_notify reads -- updating only the record field is a no-op live.
+    assert row.workflow_request["execution_policy"]["notify_on"] == "failure"
+
+    # Idempotent: a second call reports "nothing changed".
+    assert reloaded.set_notify_on(schedule_id=created.schedule_id, notify_on="failure") is False
+    assert reloaded.set_notify_on(schedule_id="missing", notify_on="failure") is False
 
 
 def test_attention_notify_integration_dedupe_payload_and_no_spam(tmp_path) -> None:
@@ -109,9 +242,13 @@ def test_attention_notify_integration_dedupe_payload_and_no_spam(tmp_path) -> No
     assert len(sent) == 1
     assert len(attention_requests) == 1
     req = sent[0]
-    assert req.dedupe_key == f"workflow:schedule:attention:{created.schedule_id}:failing"
+    # One failure with a retry still pending is "degraded", not "failing" -- the old
+    # "failing" label came from mark_dispatch_failed rewinding next_run_at into the
+    # past, which made a retry-pending schedule read as overdue. Escalation to
+    # "failing" now happens on real repeat failure, not on that artifact.
+    assert req.dedupe_key == f"workflow:schedule:attention:{created.schedule_id}:degraded"
     assert req.context["transition"] == "entered"
-    assert req.context["condition"] == "failing"
+    assert req.context["condition"] == "degraded"
     assert req.context["state"] == "active"
     assert req.context["schedule_id_short"] == created.schedule_id[-8:]
     assert attention_requests[0]["context"]["reason"].startswith("Workflow schedule needs attention:")

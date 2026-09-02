@@ -23,7 +23,7 @@ from orion.cognition.chat_history_compactor.constants import (
     JOURNAL_TITLE_MAX_CHARS,
 )
 from orion.cognition.chat_history_compactor.digest import (
-    assert_chat_compactor_digest_within_budget,
+    fit_chat_compactor_digest_within_budget,
     build_quiet_day_chat_digest,
     parse_chat_history_compactor_digest_json,
     trim_chat_history_compactor_input,
@@ -102,7 +102,10 @@ def test_eval_small_window_passes_through_untrimmed() -> None:
 
 def test_eval_quiet_window_digest_is_honest_and_within_budget() -> None:
     digest = build_quiet_day_chat_digest(window_label="2026-07-08")
-    assert_chat_compactor_digest_within_budget(digest)
+    fitted, trimmed = fit_chat_compactor_digest_within_budget(digest)
+    # The quiet digest is authored in-code, so it must already fit -- nothing to trim.
+    assert trimmed == []
+    assert fitted is digest
     assert digest.turn_refs == []
     # The quiet digest must say nothing was written, not fake substance.
     assert "No indexed chat digest memory card was written" in digest.journal_body
@@ -128,16 +131,27 @@ def test_eval_digest_json_round_trip_and_rejection() -> None:
         parse_chat_history_compactor_digest_json("not json at all")
 
 
-def test_eval_over_budget_digest_fails_loud() -> None:
+def test_eval_over_budget_digest_is_repaired_not_discarded() -> None:
+    """Quality bar: an over-budget digest still yields a usable card.
+
+    The cap is a storage/display bound on already-validated content, so the
+    graceful outcome is a summary trimmed to the bound -- not a discarded digest
+    and a failed daily run.
+    """
     over = parse_chat_history_compactor_digest_json(
         json.dumps(
             {
                 "card_summary": "x" * (CARD_SUMMARY_MAX_CHARS + 1),
                 "journal_title": "Title",
                 "journal_body": "Body",
-                "turn_refs": [],
+                "turn_refs": ["corr-a"],
             }
         )
     )
-    with pytest.raises(ValueError, match="compactor_output_over_budget:card_summary"):
-        assert_chat_compactor_digest_within_budget(over)
+    fitted, trimmed = fit_chat_compactor_digest_within_budget(over)
+    assert trimmed == ["card_summary"]
+    assert len(fitted.card_summary) == CARD_SUMMARY_MAX_CHARS
+    # Everything the digest actually asserted about the window survives intact.
+    assert fitted.journal_title == "Title"
+    assert fitted.journal_body == "Body"
+    assert fitted.turn_refs == ["corr-a"]

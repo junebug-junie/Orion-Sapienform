@@ -48,12 +48,16 @@ class WorkflowScheduleStore:
         claim_ttl_seconds: int = 300,
         history_limit: int = 200,
         metrics: WorkflowScheduleMetrics | None = None,
+        max_dispatch_attempts: int = 3,
+        retry_backoff_seconds: int = 300,
     ) -> None:
         self._path = self._resolve_path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._claim_ttl = max(30, int(claim_ttl_seconds))
         self._history_limit = max(20, int(history_limit))
+        self._max_dispatch_attempts = max(1, int(max_dispatch_attempts))
+        self._retry_backoff_seconds = max(0, int(retry_backoff_seconds))
         self._schedules: Dict[str, WorkflowScheduleRecordV1] = {}
         self._runs: List[WorkflowScheduleRunRecordV1] = []
         self._events: List[WorkflowScheduleEventRecordV1] = []
@@ -280,7 +284,19 @@ class WorkflowScheduleStore:
                     condition = "failing"
                 elif analytics.is_overdue and int(analytics.overdue_seconds or 0) >= min_overdue:
                     condition = "overdue"
-                elif analytics.health == "degraded" and int(analytics.recent_failure_count or 0) >= 2:
+                elif analytics.health == "degraded" and str(analytics.most_recent_result_status or "").lower() == "failed":
+                    # `health` summarises the last 5 runs, so it stays "degraded" for
+                    # days after a schedule has recovered. Paging off that alone kept
+                    # re-firing this signal every reminder-cooldown window on a
+                    # schedule whose runs were all succeeding -- confirmed live
+                    # 2026-08-21..09-01: 8 notifications/day (this signal is published
+                    # twice, generic + pending-attention) for github_compactor_pass,
+                    # including every day it completed. The old `recent_failure_count
+                    # >= 2` guard could not catch that, because failures arrive in
+                    # retry bursts and a burst is always >= 2. Attention is about the
+                    # schedule's *current* state, so require the newest run to have
+                    # actually failed; recovery then clears the signal and emits the
+                    # existing "recovered" transition exactly once.
                     condition = "degraded"
 
                 state = "active" if condition != "ok" else "clear"
@@ -504,6 +520,75 @@ class WorkflowScheduleStore:
                 self._persist()
         return claimed
 
+    def _consecutive_failures(self, *, schedule_id: str) -> int:
+        """Count failed runs since this schedule's most recent success.
+
+        Deliberately NOT keyed on the due-slot's `claimed_for_run_at`: scheduling
+        a retry moves `next_run_at`, so the retry is claimed under a *new* slot key
+        and a per-slot counter resets to 1 on every attempt -- leaving the retry
+        budget permanently unspent and the unbounded loop intact. Consecutive
+        failures is also the quantity actually being bounded ("stop hammering a
+        workflow that keeps failing"), needs no extra bookkeeping, survives
+        restarts because it is derived from persisted run history, and resets
+        naturally on the next success.
+
+        Non-terminal runs (`dispatched`) are skipped rather than treated as either
+        outcome, so an orphaned in-flight row cannot silently reset the count.
+        """
+        count = 0
+        for run in reversed(self._runs):
+            if run.schedule_id != schedule_id:
+                continue
+            status = str(run.status).lower()
+            if status == "failed":
+                count += 1
+            elif status == "completed":
+                break
+        return count
+
+    def set_notify_on(self, *, schedule_id: str, notify_on: str, now_utc: datetime | None = None) -> bool:
+        """Update a schedule's notify_on in every place a dispatch actually reads it.
+
+        Three copies exist and they are not interchangeable: the record field, the
+        record's execution_policy, and the execution_policy embedded in
+        `workflow_request`. The last one is authoritative for notifications --
+        `_dispatch_scheduled_workflow` forwards `workflow_request["execution_policy"]`
+        to cortex-orch, which is what `_emit_workflow_notify` reads -- so updating
+        only the record field would leave the live behaviour unchanged.
+
+        Returns True when a change was written.
+        """
+        now = _utc_now(now_utc)
+        with self._lock:
+            schedule = self._schedules.get(schedule_id)
+            if schedule is None:
+                return False
+            request = dict(schedule.workflow_request or {})
+            embedded = dict(request.get("execution_policy") or {})
+            already = (
+                schedule.notify_on == notify_on
+                and schedule.execution_policy.notify_on == notify_on
+                and embedded.get("notify_on") == notify_on
+            )
+            if already:
+                return False
+            previous = schedule.notify_on
+            schedule.notify_on = notify_on
+            schedule.execution_policy = schedule.execution_policy.model_copy(update={"notify_on": notify_on})
+            if embedded:
+                embedded["notify_on"] = notify_on
+                request["execution_policy"] = embedded
+                schedule.workflow_request = request
+            schedule.updated_at = now
+            schedule.revision += 1
+            self._event(
+                kind="schedule_notify_on_updated",
+                schedule_id=schedule_id,
+                extra={"from": previous, "to": notify_on},
+            )
+            self._persist()
+            return True
+
     def mark_dispatch_failed(self, *, run_id: str, schedule_id: str, error: str, now_utc: datetime | None = None) -> None:
         now = _utc_now(now_utc)
         with self._lock:
@@ -528,8 +613,42 @@ class WorkflowScheduleStore:
                 if schedule.state == "completed" and schedule.execution_policy.schedule and schedule.execution_policy.schedule.kind == "recurring":
                     schedule.state = "scheduled"
                 if schedule.execution_policy.schedule and schedule.execution_policy.schedule.kind == "recurring" and claimed_for is not None:
-                    if schedule.next_run_at is None or claimed_for < schedule.next_run_at:
-                        schedule.next_run_at = claimed_for
+                    # Retry the same slot, but bounded and with backoff. Rewinding
+                    # next_run_at straight to `claimed_for` (a time already in the
+                    # past) made the very next scheduler tick re-claim it, so a
+                    # persistently failing workflow retried at poll cadence forever:
+                    # confirmed live 2026-08-20, 343 failure notifications from one
+                    # schedule in a single day, each retry a full LLM workflow run.
+                    # The loop was only ever broken by a dispatch that hung without
+                    # being marked, not by any guard.
+                    attempts = self._consecutive_failures(schedule_id=schedule_id)
+                    if attempts >= self._max_dispatch_attempts:
+                        # Budget spent: leave next_run_at on the next natural
+                        # occurrence (claim_due already advanced it) and let the
+                        # attention signal page instead of burning more runs.
+                        self._event(
+                            kind="schedule_retry_budget_exhausted",
+                            schedule_id=schedule_id,
+                            extra={
+                                "run_id": run_id,
+                                "attempts": attempts,
+                                "claimed_for": claimed_for.isoformat(),
+                                "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+                            },
+                        )
+                    else:
+                        retry_at = now + timedelta(seconds=self._retry_backoff_seconds * (2 ** (attempts - 1)))
+                        if schedule.next_run_at is None or retry_at < schedule.next_run_at:
+                            schedule.next_run_at = retry_at
+                        self._event(
+                            kind="schedule_retry_scheduled",
+                            schedule_id=schedule_id,
+                            extra={
+                                "run_id": run_id,
+                                "attempts": attempts,
+                                "retry_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+                            },
+                        )
                     schedule.state = "scheduled"
                 self._event(kind="schedule_run_failed", schedule_id=schedule_id, extra={"run_id": run_id, "error": error})
             self._persist()

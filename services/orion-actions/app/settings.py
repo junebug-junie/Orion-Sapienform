@@ -169,6 +169,8 @@ class Settings(BaseSettings):
     actions_workflow_schedule_store_path: str = Field("/tmp/orion-actions/workflow_schedules.json", alias="ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH")
     actions_scheduler_cursor_store_path: str = Field("", alias="ACTIONS_SCHEDULER_CURSOR_STORE_PATH")
     actions_workflow_schedule_claim_batch_size: int = Field(10, alias="ACTIONS_WORKFLOW_SCHEDULE_CLAIM_BATCH_SIZE")
+    actions_workflow_schedule_max_dispatch_attempts: int = Field(3, alias="ACTIONS_WORKFLOW_SCHEDULE_MAX_DISPATCH_ATTEMPTS")
+    actions_workflow_schedule_retry_backoff_seconds: int = Field(300, alias="ACTIONS_WORKFLOW_SCHEDULE_RETRY_BACKOFF_SECONDS")
     actions_workflow_attention_overdue_min_seconds: int = Field(3600, alias="ACTIONS_WORKFLOW_ATTENTION_OVERDUE_MIN_SECONDS")
     actions_workflow_attention_reminder_cooldown_seconds: int = Field(21600, alias="ACTIONS_WORKFLOW_ATTENTION_REMINDER_COOLDOWN_SECONDS")
     actions_self_experiments_enabled: bool = Field(False, alias="ACTIONS_SELF_EXPERIMENTS_ENABLED")
@@ -204,6 +206,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "actions_workflow_schedule_claim_batch_size",
+        "actions_workflow_schedule_max_dispatch_attempts",
+        "actions_workflow_schedule_retry_backoff_seconds",
         "actions_workflow_attention_overdue_min_seconds",
         "actions_workflow_attention_reminder_cooldown_seconds",
         mode="before",

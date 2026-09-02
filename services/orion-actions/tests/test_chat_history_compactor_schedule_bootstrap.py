@@ -70,3 +70,13 @@ def test_bootstrap_does_not_duplicate_operator_edited_schedule(tmp_path: Path) -
     active = [s for s in store.list_schedules() if s.workflow_id == "chat_history_compactor_pass"]
     assert len(active) == 1
     assert active[0].execution_policy.schedule.hour_local == 7
+
+
+def test_chat_bootstrap_seeds_failure_only_notifications(tmp_path: Path) -> None:
+    """Same policy as the GitHub compactor: an unattended daily job pings on failure only."""
+    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"))
+    record = ensure_chat_history_compactor_daily_schedule(store)
+    assert record is not None
+    assert record.notify_on == "failure"
+    assert record.execution_policy.notify_on == "failure"
+    assert record.workflow_request["execution_policy"]["notify_on"] == "failure"

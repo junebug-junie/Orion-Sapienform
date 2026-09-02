@@ -10,7 +10,7 @@ from orion.cognition.chat_history_compactor.constants import (
     DIGEST_TURN_PROMPT_MAX_CHARS,
 )
 from orion.cognition.chat_history_compactor.digest import (
-    assert_chat_compactor_digest_within_budget,
+    fit_chat_compactor_digest_within_budget,
     build_quiet_day_chat_digest,
     parse_chat_history_compactor_digest_json,
     stable_chat_compactor_journal_entry_id,
@@ -30,15 +30,29 @@ def test_chat_history_compactor_digest_v1_rejects_empty_card_summary() -> None:
         )
 
 
-def test_assert_chat_compactor_digest_within_budget() -> None:
+def test_fit_chat_compactor_digest_within_budget_repairs_over_limit() -> None:
     digest = ChatHistoryCompactorDigestV1(
         card_summary="x" * (CARD_SUMMARY_MAX_CHARS + 1),
         journal_title="t",
         journal_body="b",
+        turn_refs=["corr-1"],
+    )
+    fitted, trimmed = fit_chat_compactor_digest_within_budget(digest)
+    assert trimmed == ["card_summary"]
+    assert len(fitted.card_summary) == CARD_SUMMARY_MAX_CHARS
+    assert fitted.turn_refs == ["corr-1"]
+
+
+def test_fit_chat_compactor_digest_within_budget_passes_in_limit_through() -> None:
+    digest = ChatHistoryCompactorDigestV1(
+        card_summary="x" * CARD_SUMMARY_MAX_CHARS,
+        journal_title="t",
+        journal_body="b",
         turn_refs=[],
     )
-    with pytest.raises(ValueError, match="compactor_output_over_budget:card_summary"):
-        assert_chat_compactor_digest_within_budget(digest)
+    fitted, trimmed = fit_chat_compactor_digest_within_budget(digest)
+    assert trimmed == []
+    assert fitted is digest
 
 
 def test_build_quiet_day_chat_digest() -> None:

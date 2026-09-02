@@ -596,6 +596,114 @@ def purged_temporal_split(
     return np.stack(train_windows, axis=0), np.stack(held_windows, axis=0)
 
 
+def _block_boundaries(n: int, n_blocks: int) -> list[tuple[int, int]]:
+    """n_blocks contiguous [start, end) index ranges partitioning [0, n), as close to equal
+    size as integer rounding allows. Shared by block_purged_temporal_split() and
+    block_purge_excluded_ar1_intervals() so both use the exact same segmentation -- the
+    windows split and the AR(1) leakage exclusion must agree on where each block sits."""
+    boundaries = [round(i * n / n_blocks) for i in range(n_blocks + 1)]
+    return [(boundaries[i], boundaries[i + 1]) for i in range(n_blocks)]
+
+
+def block_purged_temporal_split(
+    windows: list[np.ndarray],
+    *,
+    held_out_frac: float = DEFAULT_HELD_OUT_FRAC,
+    purge_gap_windows: int = DEFAULT_PURGE_GAP_WINDOWS,
+    n_blocks: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generalizes purged_temporal_split() to n_blocks time-distributed held-out blocks
+    instead of one single trailing block. n_blocks=1 (the default) delegates straight to
+    purged_temporal_split() -- v3's already-validated methodology is untouched unless a
+    caller opts into n_blocks>1.
+
+    Why this exists: purged_temporal_split()'s single trailing block was validated on v3's
+    short (10.3h), largely-stationary training window, where the trailing 15% stays inside
+    the same operating regime as train. Confirmed live (2026-09-02) that a much wider
+    (3.4-day) window breaks this assumption badly: comparing the temporally-first-85%
+    ("train-equivalent") slice against the temporally-last-15% ("held-out-equivalent")
+    slice showed `prediction_error`'s mean shifted +1.73 standard deviations and
+    `thermal_pressure`'s +1.21 -- the trailing block is a genuinely different regime, not a
+    random draw from the same distribution train saw. That inflates both floor_ratio and
+    ceiling_ratio's shared numerator (real held-out reconstruction loss) regardless of
+    whether the model learned real trajectory structure, and gets WORSE with more model
+    capacity (a more expressive model overfits train's regime harder, generalizing worse to
+    the shifted tail) -- exactly the pattern that motivated this function. A v4 retrain
+    against the full phi-v2-clean-metrics channel set and a hand-tuned hidden_dim/latent_dim
+    both failed the floor gate before this existed; see orion/mood_arc/README.md's v4
+    section for the full before/after.
+
+    Splits `windows` into n_blocks equal contiguous segments (by index, which is
+    chronological -- build_windows guarantees temporal order) and applies
+    purged_temporal_split()'s own trailing-block-plus-embargo logic WITHIN each segment
+    independently. This spreads held-out across every part of the time range instead of
+    concentrating it in whichever regime happened to be running at the very end --
+    standard purged/blocked cross-validation practice for non-stationary time series.
+    """
+    n = len(windows)
+    if n == 0:
+        raise ValueError("block_purged_temporal_split: no windows to split")
+    if n_blocks < 1:
+        raise ValueError(f"block_purged_temporal_split: n_blocks must be >= 1, got {n_blocks}")
+    if n_blocks == 1:
+        return purged_temporal_split(windows, held_out_frac=held_out_frac, purge_gap_windows=purge_gap_windows)
+
+    train_windows: list[np.ndarray] = []
+    held_windows: list[np.ndarray] = []
+    for seg_start, seg_end in _block_boundaries(n, n_blocks):
+        segment = windows[seg_start:seg_end]
+        if not segment:
+            continue
+        purge_start, held_start = _purge_split_indices(len(segment), held_out_frac, purge_gap_windows)
+        train_windows.extend(segment[: max(0, purge_start)])
+        held_windows.extend(segment[held_start:])
+
+    if not train_windows:
+        raise ValueError(
+            f"block_purged_temporal_split: no training windows remain after purge "
+            f"(n={n}, n_blocks={n_blocks}, held_out_frac={held_out_frac}, "
+            f"purge_gap_windows={purge_gap_windows}); reduce purge_gap_windows/held_out_frac/"
+            "n_blocks or gather more corpus"
+        )
+    if not held_windows:
+        raise ValueError(
+            f"block_purged_temporal_split: no held-out windows (n={n}, n_blocks={n_blocks}, "
+            f"held_out_frac={held_out_frac})"
+        )
+    return np.stack(train_windows, axis=0), np.stack(held_windows, axis=0)
+
+
+def block_purge_excluded_ar1_intervals(
+    start_ts: list[datetime],
+    end_ts: list[datetime],
+    *,
+    held_out_frac: float,
+    purge_gap_windows: int,
+    n_blocks: int,
+) -> list[tuple[datetime, datetime]]:
+    """The real-timestamp interval(s), one per block, that must be excluded from
+    fit_ar1_per_channel()'s training-only fit -- generalizes cmd_train's original single
+    `cutoff_ts = start_ts[held_start]` derivation (see its own inline comment for why the
+    boundary must come from a window's own start_ts, not index/purge_gap_windows math
+    alone -- 50%-overlapping windows can physically overlap in raw ticks) to n_blocks
+    segments. For n_blocks=1 this returns exactly one interval matching the original
+    cutoff_ts boundary (`[start_ts[held_start], end_ts[-1]]`, equivalent to the original
+    `generated_at < cutoff_ts` filter since no row's timestamp can exceed the corpus's own
+    last window's end_ts)."""
+    n = len(start_ts)
+    intervals: list[tuple[datetime, datetime]] = []
+    for seg_start, seg_end in _block_boundaries(n, n_blocks):
+        seg_n = seg_end - seg_start
+        if seg_n == 0:
+            continue
+        _purge_start, held_start = _purge_split_indices(seg_n, held_out_frac, purge_gap_windows)
+        excluded_start_idx = seg_start + held_start
+        if excluded_start_idx >= seg_end:
+            continue
+        intervals.append((start_ts[excluded_start_idx], end_ts[seg_end - 1]))
+    return intervals
+
+
 def init_weights(d_in: int, hidden_dim: int, latent_dim: int, seed: int, data_mean: np.ndarray) -> dict[str, np.ndarray]:
     """W1,b1 (d_in->hidden, ReLU), W2,b2 (hidden->latent), W3,b3 (latent->d_in).
 
@@ -1120,6 +1228,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_p.add_argument("--lr", type=float, default=DEFAULT_LR)
     train_p.add_argument("--held-out-frac", type=float, default=DEFAULT_HELD_OUT_FRAC)
     train_p.add_argument("--purge-gap-windows", type=int, default=DEFAULT_PURGE_GAP_WINDOWS)
+    train_p.add_argument(
+        "--held-out-blocks",
+        type=int,
+        default=1,
+        help=(
+            "Number of time-distributed held-out blocks (block_purged_temporal_split()). "
+            "Default 1 reproduces the original single-trailing-block methodology exactly "
+            "(v3's validated behavior, unchanged). Use >1 for a wide/non-stationary training "
+            "window, where a single trailing block can be drawn from a different regime than "
+            "train and inflate floor_ratio/ceiling_ratio for reasons unrelated to learned "
+            "structure -- confirmed live 2026-09-02 on a 3.4-day mood-arc v4 corpus (default: "
+            "%(default)s)"
+        ),
+    )
     train_p.add_argument("--bootstrap-block-size", type=int, default=DEFAULT_BOOTSTRAP_BLOCK_SIZE)
     train_p.add_argument("--bootstrap-n", type=int, default=DEFAULT_BOOTSTRAP_N)
     train_p.add_argument("--min-hours", type=float, default=DEFAULT_MIN_HOURS)
@@ -1216,6 +1338,43 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Durable root to promote into (default: {DEFAULT_MODELS_ROOT})",
     )
 
+    enrich_p = sub.add_parser(
+        "enrich-corpus",
+        help=(
+            "Join the phi-v2 audit's (docs/superpowers/specs/2026-08-21-phi-v2-design.md) "
+            "signals that are dense enough for this window (action_warrant, "
+            "heartbeat_mean_ratio, per-domain prediction-error) and are NOT already reached "
+            "via field-digester's node_vectors/capability_vectors merge, onto an existing "
+            "field_channel_corpus.v1 JSONL corpus, by last-observation-carried-forward join "
+            "on each source's real occurrence-time column. Sparser audit signals "
+            "(git/pr_lifecycle/graph_delta, dev_economics, doc_semantic_drift, "
+            "swear_frequency) are deliberately deferred -- see "
+            "orion.mood_arc.corpus_enrichment.fetch_all_series's docstring. Writes an "
+            "augmented JSONL `train` can consume unchanged -- the join adds candidate "
+            "channels, it does not change how `train` selects or gates them."
+        ),
+    )
+    enrich_p.add_argument(
+        "--corpus", type=Path, required=True, help="Existing field_channel_corpus.v1 JSONL (rotation-aware)"
+    )
+    enrich_p.add_argument("--out", type=Path, required=True, help="Output path for the enriched JSONL")
+    enrich_p.add_argument(
+        "--pg-dsn",
+        type=str,
+        default=None,
+        help="Postgres DSN to read from (default: $DATABASE_URL)",
+    )
+    enrich_p.add_argument(
+        "--lookback-hours",
+        type=float,
+        default=48.0,
+        help=(
+            "How far before the corpus's own earliest row to query each source table, so the "
+            "earliest corpus ticks can still find a real prior value to forward-fill from "
+            "instead of starting genuinely absent (default: %(default)s)"
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -1254,23 +1413,35 @@ def cmd_train(args: argparse.Namespace) -> int:
     end_ts = [e for _, _, e in triples]
     n_windows = len(windows)
 
-    _purge_start, held_start = _purge_split_indices(n_windows, args.held_out_frac, args.purge_gap_windows)
-    train_matrix, held_matrix = purged_temporal_split(
-        windows, held_out_frac=args.held_out_frac, purge_gap_windows=args.purge_gap_windows
+    train_matrix, held_matrix = block_purged_temporal_split(
+        windows,
+        held_out_frac=args.held_out_frac,
+        purge_gap_windows=args.purge_gap_windows,
+        n_blocks=args.held_out_blocks,
     )
-    # AR(1) leakage-safe cutoff: rows strictly before the FIRST held-out
-    # window's own start timestamp. Deliberately not derived from
-    # purge_gap_windows/end_ts of the last training window -- found by code
-    # review (2026-07-13) that with 50%-overlapping windows (window_size=30,
-    # stride=15), a small --purge-gap-windows override (e.g. 0) could still
-    # leave the last "training" window's end timestamp *after* the first
-    # held-out window's start (they physically overlap in raw ticks), which
-    # would leak held-out rows into fit_ar1_per_channel's training-only fit
-    # regardless of how large purge_gap_windows claims to be. Using the
-    # held-out boundary's own start_ts directly is correct for any
-    # purge_gap_windows value, including 0.
-    cutoff_ts = start_ts[held_start]
-    train_rows_for_ar1 = [r for r in rows if r.generated_at < cutoff_ts]
+    # AR(1) leakage-safe exclusion: rows inside any held-out block's own
+    # window-timestamp span. Deliberately not derived from
+    # purge_gap_windows/end_ts of the last training window alone -- found by
+    # code review (2026-07-13) that with 50%-overlapping windows
+    # (window_size=30, stride=15), a small --purge-gap-windows override
+    # (e.g. 0) could still leave a "training" window's end timestamp *after*
+    # a held-out window's start (they physically overlap in raw ticks),
+    # which would leak held-out rows into fit_ar1_per_channel's
+    # training-only fit regardless of how large purge_gap_windows claims to
+    # be. block_purge_excluded_ar1_intervals() generalizes this from a
+    # single cutoff to one interval per held-out block (--held-out-blocks),
+    # each still derived from that block's own first held-out window's
+    # start_ts, not index math alone.
+    excluded_intervals = block_purge_excluded_ar1_intervals(
+        start_ts,
+        end_ts,
+        held_out_frac=args.held_out_frac,
+        purge_gap_windows=args.purge_gap_windows,
+        n_blocks=args.held_out_blocks,
+    )
+    train_rows_for_ar1 = [
+        r for r in rows if not any(lo <= r.generated_at <= hi for lo, hi in excluded_intervals)
+    ]
 
     best_weights, training_stats = train_autoencoder(
         train_matrix,
@@ -1335,6 +1506,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         training=training_stats,
         shuffle_baseline_loss=shuffle_baseline_loss,
         purge_gap_windows=args.purge_gap_windows,
+        held_out_blocks=args.held_out_blocks,
         ar1_surrogate_loss=ar1_surrogate_loss,
         floor_ratio=gate["floor_ratio"],
         floor_pass=gate["floor_pass"],
@@ -1526,6 +1698,51 @@ def cmd_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_enrich_corpus(args: argparse.Namespace) -> int:
+    # Lazy imports: enrich-corpus is the only subcommand that touches Postgres
+    # (psycopg2, via orion.db_readonly). train/detect-anomalies/promote stay
+    # importable and runnable with no DB driver installed, same reasoning as
+    # the existing lazy scripts.fit_phi_encoder imports elsewhere in this file
+    # (see test_fit_encoder_no_scripts_dependency.py).
+    import os
+
+    from orion.db_readonly import open_readonly_connection
+    from orion.mood_arc.corpus_enrichment import enrich_corpus
+
+    dsn = args.pg_dsn or os.environ.get("DATABASE_URL")
+    if not dsn:
+        raise SystemExit("enrich-corpus: no --pg-dsn given and $DATABASE_URL is unset")
+
+    rows = _load_jsonl(args.corpus)
+    if not rows:
+        raise SystemExit(f"enrich-corpus: no rows loaded from {args.corpus}")
+
+    conn = open_readonly_connection(dsn, connect_timeout=10, statement_timeout_ms=60_000)
+    if conn is None:
+        raise SystemExit(
+            "enrich-corpus: could not open a confirmed read-only Postgres connection "
+            f"(dsn from {'--pg-dsn' if args.pg_dsn else '$DATABASE_URL'}) -- see logs above"
+        )
+    try:
+        missing = enrich_corpus(rows, conn, lookback_hours=args.lookback_hours)
+    finally:
+        conn.close()
+
+    for name in sorted(missing):
+        count = missing[name]
+        pct = 100.0 * count / len(rows)
+        flag = " <-- ALL ROWS missing, check table/column/cadence before trusting this join" if count == len(rows) else ""
+        print(f"enrich-corpus: {name}: {count}/{len(rows)} rows ({pct:.1f}%) had no value yet{flag}")
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with args.out.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(row.model_dump_json())
+            f.write("\n")
+    print(f"enrich-corpus: wrote {len(rows)} rows to {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "train":
@@ -1534,6 +1751,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_detect_anomalies(args)
     if args.command == "promote":
         return cmd_promote(args)
+    if args.command == "enrich-corpus":
+        return cmd_enrich_corpus(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

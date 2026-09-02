@@ -294,6 +294,117 @@ def test_purged_temporal_split_raises_clear_error_when_too_few_windows() -> None
         purged_temporal_split(windows, held_out_frac=0.15, purge_gap_windows=6)
 
 
+def test_block_purged_temporal_split_n_blocks_1_matches_purged_temporal_split() -> None:
+    """n_blocks=1 must be byte-identical to the original single-block function -- v3's
+    already-validated methodology must not shift under the new code path."""
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split, purged_temporal_split
+
+    n = 100
+    windows = [np.full(4, float(i)) for i in range(n)]
+
+    train_a, held_a = purged_temporal_split(windows, held_out_frac=0.15, purge_gap_windows=6)
+    train_b, held_b = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=6, n_blocks=1
+    )
+    assert np.array_equal(train_a, train_b)
+    assert np.array_equal(held_a, held_b)
+
+
+def test_block_purged_temporal_split_spreads_held_out_across_the_whole_range() -> None:
+    """The whole point: with n_blocks>1, held-out windows must come from MULTIPLE distinct
+    regions of the time range, not be concentrated at the trailing end -- the exact defect
+    that motivated this (a single trailing block can be drawn from a different regime than
+    train on a wide, non-stationary corpus)."""
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    n = 300
+    windows = [np.full(4, float(i)) for i in range(n)]
+
+    train, held = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    held_indices = sorted(int(w[0]) for w in held)
+    # Held-out indices must span at least 4 of the 5 roughly-equal-sized segments (allows
+    # for integer-rounding edge slack at a segment boundary), not sit entirely in the last
+    # one the way the n_blocks=1 case does.
+    segment_width = n / 5
+    touched_segments = {int(idx // segment_width) for idx in held_indices}
+    assert len(touched_segments) >= 4
+    # A genuinely single trailing block (the old bug this replaces) would have every held
+    # index in the top ~15% of the whole range -- assert that's NOT what happened.
+    assert min(held_indices) < n * 0.5
+
+
+def test_block_purged_temporal_split_train_excludes_every_blocks_embargo() -> None:
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    n = 300
+    windows = [np.full(4, float(i)) for i in range(n)]
+    train, held = block_purged_temporal_split(
+        windows, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    train_indices = {int(w[0]) for w in train}
+    held_indices = {int(w[0]) for w in held}
+    # No index is in both -- train and held-out are disjoint even across multiple blocks.
+    assert train_indices.isdisjoint(held_indices)
+    # Something was actually excluded as embargo (neither train nor held) -- purge_gap_windows
+    # > 0 must have a real effect, not be silently absorbed.
+    excluded = n - len(train_indices) - len(held_indices)
+    assert excluded > 0
+
+
+def test_block_purged_temporal_split_rejects_n_blocks_below_1() -> None:
+    from orion.mood_arc.fit_encoder import block_purged_temporal_split
+
+    windows = [np.full(4, float(i)) for i in range(50)]
+    with pytest.raises(ValueError, match="n_blocks"):
+        block_purged_temporal_split(windows, held_out_frac=0.15, purge_gap_windows=3, n_blocks=0)
+
+
+def test_block_purge_excluded_ar1_intervals_n_blocks_1_matches_original_cutoff() -> None:
+    """For n_blocks=1, excluding rows inside the returned interval(s) must match the
+    original single-cutoff behavior this function replaced: rows strictly before
+    start_ts[held_start] are safe for AR(1) fitting, everything from there on is not."""
+    from orion.mood_arc.fit_encoder import _purge_split_indices, block_purge_excluded_ar1_intervals
+
+    n = 100
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+
+    intervals = block_purge_excluded_ar1_intervals(
+        start_ts, end_ts, held_out_frac=0.15, purge_gap_windows=6, n_blocks=1
+    )
+    assert len(intervals) == 1
+    _purge_start, held_start = _purge_split_indices(n, 0.15, 6)
+    lo, hi = intervals[0]
+    assert lo == start_ts[held_start]
+
+    # A row exactly at the old cutoff is excluded (matches original `not (< cutoff)`).
+    at_cutoff = start_ts[held_start]
+    assert any(a <= at_cutoff <= b for a, b in intervals)
+    # A row one tick before the cutoff is NOT excluded (safe for AR1 training).
+    before_cutoff = start_ts[held_start - 1]
+    assert not any(a <= before_cutoff <= b for a, b in intervals)
+
+
+def test_block_purge_excluded_ar1_intervals_covers_every_block() -> None:
+    from orion.mood_arc.fit_encoder import block_purge_excluded_ar1_intervals
+
+    n = 300
+    base = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    start_ts = [base + timedelta(seconds=2 * i) for i in range(n)]
+    end_ts = [base + timedelta(seconds=2 * i + 60) for i in range(n)]
+
+    intervals = block_purge_excluded_ar1_intervals(
+        start_ts, end_ts, held_out_frac=0.15, purge_gap_windows=3, n_blocks=5
+    )
+    assert len(intervals) == 5
+    # Intervals must be in chronological order and non-overlapping (segments are disjoint).
+    for (lo_a, hi_a), (lo_b, hi_b) in zip(intervals, intervals[1:]):
+        assert hi_a < lo_b
+
+
 def test_purged_temporal_split_raises_on_empty_windows() -> None:
     from orion.mood_arc.fit_encoder import purged_temporal_split
 

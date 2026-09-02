@@ -242,62 +242,116 @@ def check_repo_presence(inst: Instrument, root: Path | None = None) -> tuple[boo
     return True, needle in target.read_text()
 
 
-def _python_hit_paths(pattern: str, root: Path) -> list[str]:
+def _python_hit_paths_multi(patterns: list[str], root: Path) -> dict[str, list[str]]:
     """Pure-Python fallback for `_rg_hit_count` when ripgrep is unavailable.
 
-    Slower than ripgrep but dependency-free, which is what lets this gate run on
-    a CI runner without asserting ripgrep is installed. Mirrors ripgrep's
-    defaults closely enough for this use: skips hidden directories and the few
-    heavyweight trees an absence scan never needs to read.
+    Uses os.walk with IN-PLACE pruning of `dirnames`, not `Path.rglob`. This is
+    the whole point of the function's shape, so do not "simplify" it back:
+    rglob yields every path recursively and only then lets a caller filter, so
+    it still descends into everything. Measured live 2026-09-02 inside
+    orion-athena-hub, where ripgrep is NOT installed and this path is the one
+    that actually runs: /repo holds 434,401 files including a 293 MB .git and a
+    640 MB graphify-out, and an rglob-based version took the board's page load
+    to 78 SECONDS. Pruning skips those subtrees entirely.
+
+    The host never showed it -- ripgrep exists there, and a linked worktree has
+    no graphify-out and a .git FILE rather than a directory, so the fallback
+    measured 1.0s against a tree missing exactly the two things that made the
+    container slow.
+
+    Takes ALL patterns in one walk rather than one walk per pattern: the manifest
+    has more than one absence claim, and the traversal plus file read is the
+    whole cost, so N patterns in one pass costs what one pattern used to.
+    Searches bytes rather than decoded text for the same reason -- decoding every
+    source file to find a fixed ASCII symbol name is pure overhead.
     """
-    skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "graphify-out"}
-    out: list[str] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        parts = rel.parts
-        if any(p in skip_dirs or p.startswith(".") for p in parts[:-1]):
-            continue
-        try:
-            if pattern in path.read_text(errors="ignore"):
-                out.append(str(rel))
-        except OSError:
-            continue
+    skip_dirs = {
+        ".git", "node_modules", "__pycache__", ".venv", "venv", "graphify-out",
+        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".claude", ".worktrees",
+    }
+    # An absence claim asserts a code deletion held; binaries and media cannot
+    # contain a Python symbol name and are the bulk of the bytes when a scan
+    # does wander somewhere large.
+    skip_suffixes = {
+        ".pyc", ".pyo", ".so", ".bin", ".pack", ".idx", ".png", ".jpg", ".jpeg",
+        ".gif", ".webp", ".mp3", ".mp4", ".wav", ".pdf", ".zip", ".gz", ".whl",
+        ".ttf", ".woff", ".woff2", ".ico", ".onnx", ".pt", ".npy", ".sqlite3",
+    }
+    needles = {p: p.encode("utf-8", errors="ignore") for p in patterns}
+    out: dict[str, list[str]] = {p: [] for p in patterns}
+    for dirpath, dirnames, filenames in os.walk(root):
+        # In-place mutation is what prunes the traversal; a filtered copy would
+        # not, and os.walk documents this as the supported mechanism.
+        dirnames[:] = [
+            d for d in dirnames if d not in skip_dirs and not d.startswith(".")
+        ]
+        for name in filenames:
+            if name.startswith(".") or Path(name).suffix.lower() in skip_suffixes:
+                continue
+            full = Path(dirpath) / name
+            try:
+                blob = full.read_bytes()
+            except (OSError, ValueError):
+                continue
+            for pat, needle in needles.items():
+                if needle in blob:
+                    try:
+                        out[pat].append(str(full.relative_to(root)))
+                    except ValueError:
+                        continue
     return out
 
 
-def _rg_hit_count(pattern: str, root: Path) -> int:
-    """Count non-excluded files mentioning `pattern`. 0 means the deletion held."""
-    try:
-        proc = subprocess.run(
-            ["rg", "--files-with-matches", "--fixed-strings", pattern, "."],
-            cwd=root,
-            capture_output=True,
-            text=True,
-        )
-        # rg exits 1 for "no matches" -- the passing case here, not an error.
-        if proc.returncode not in (0, 1):
-            raise RuntimeError(f"rg failed for {pattern!r}: {proc.stderr.strip()}")
-        lines = proc.stdout.splitlines()
-    except FileNotFoundError:
-        lines = _python_hit_paths(pattern, root)
+def _python_hit_paths(pattern: str, root: Path) -> list[str]:
+    """Single-pattern convenience wrapper over the batched walk."""
+    return _python_hit_paths_multi([pattern], root)[pattern]
 
-    hits = [
-        line
-        for line in lines
+
+def _apply_excludes(paths: list[str]) -> int:
+    """Count paths that are not in an excluded tree. 0 means the deletion held."""
+    return len([
+        line for line in paths
         if line.strip()
         # removeprefix, not lstrip: lstrip takes a CHARACTER SET, so `./.claude/x`
         # would strip the hidden directory's own leading dot and yield `claude/x`.
-        # Harmless today only because ripgrep skips hidden paths by default and no
-        # exclude below starts with a dot -- both of which could change. Stated
-        # rather than fixed silently: this is a latent wart, not a live bug.
         and not any(
             line.strip().removeprefix("./").startswith(x)
             for x in _ABSENCE_SCAN_EXCLUDES
         )
-    ]
-    return len(hits)
+    ])
+
+
+def absence_counts(targets: list[str], root: Path) -> dict[str, int]:
+    """Non-excluded hit count per target. 0 means that deletion still holds.
+
+    Batched deliberately. Both backends cost one repo traversal, so resolving
+    every absence claim together is what keeps this off the page-load critical
+    path -- see `_python_hit_paths_multi` for the 78s incident that made the
+    difference matter.
+    """
+    if not targets:
+        return {}
+    try:
+        out: dict[str, int] = {}
+        for target in targets:
+            proc = subprocess.run(
+                ["rg", "--files-with-matches", "--fixed-strings", target, "."],
+                cwd=root, capture_output=True, text=True,
+            )
+            # rg exits 1 for "no matches" -- the passing case, not an error.
+            if proc.returncode not in (0, 1):
+                raise RuntimeError(f"rg failed for {target!r}: {proc.stderr.strip()}")
+            out[target] = _apply_excludes(proc.stdout.splitlines())
+        return out
+    except FileNotFoundError:
+        # No ripgrep (the Hub container is like this). One walk, all targets.
+        found = _python_hit_paths_multi(targets, root)
+        return {t: _apply_excludes(found[t]) for t in targets}
+
+
+def _rg_hit_count(pattern: str, root: Path) -> int:
+    """Single-target convenience wrapper. Prefer `absence_counts` for many."""
+    return absence_counts([pattern], root)[pattern]
 
 
 def evaluate_claim(
@@ -305,6 +359,7 @@ def evaluate_claim(
     conn: Any | None,
     root: Path | None = None,
     static_only: bool = False,
+    precomputed_absence: dict[str, int] | None = None,
 ) -> ClaimResult:
     """Re-run one claim against live state and compare to its recorded value.
 
@@ -332,7 +387,11 @@ def evaluate_claim(
 
     try:
         if claim.kind == "absent_from_repo":
-            result.observed = _rg_hit_count(claim.target or "", root)
+            target = claim.target or ""
+            if precomputed_absence is not None and target in precomputed_absence:
+                result.observed = precomputed_absence[target]
+            else:
+                result.observed = _rg_hit_count(target, root)
         else:
             if conn is None:
                 result.status = "ERROR"
@@ -503,6 +562,19 @@ def build_state(
     max_age = manifest["review_max_age_days"]
     today = datetime.now(timezone.utc).date()
 
+    # One traversal for every absence claim in the manifest, rather than one
+    # per claim inside the loop below.
+    absence_targets = [
+        c.target
+        for inst in manifest["instruments"]
+        for c in inst.claims
+        if c.kind == "absent_from_repo" and c.target
+    ]
+    try:
+        precomputed_absence = absence_counts(sorted(set(absence_targets)), root)
+    except Exception:  # noqa: BLE001 -- fall back to per-claim resolution
+        precomputed_absence = None
+
     states: list[InstrumentState] = []
     for inst in manifest["instruments"]:
         state = InstrumentState(instrument=inst)
@@ -524,7 +596,11 @@ def build_state(
                 state.storage_note = f"storage read failed: {exc}"
 
         state.claims = [
-            evaluate_claim(c, conn, root, static_only=static_only) for c in inst.claims
+            evaluate_claim(
+                c, conn, root, static_only=static_only,
+                precomputed_absence=precomputed_absence,
+            )
+            for c in inst.claims
         ]
 
         if with_consumers:

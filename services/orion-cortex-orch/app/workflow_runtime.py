@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
 from orion.cognition.chat_history_compactor.constants import DEFAULT_MAX_TURNS
 from orion.cognition.chat_history_compactor.digest import (
-    assert_chat_compactor_digest_within_budget,
+    fit_chat_compactor_digest_within_budget,
     build_quiet_day_chat_digest,
     parse_chat_history_compactor_digest_json,
     stable_chat_compactor_journal_entry_id,
@@ -23,7 +23,7 @@ from orion.cognition.chat_history_compactor.window import (
 )
 from orion.cognition.github_compactor.constants import DEFAULT_LOOKBACK_DAYS
 from orion.cognition.github_compactor.digest import (
-    assert_digest_within_budget,
+    fit_digest_within_budget,
     build_quiet_day_digest,
     parse_github_compactor_digest_json,
     stable_github_compactor_journal_entry_id,
@@ -2065,10 +2065,14 @@ async def _run_github_compactor_digest(
     )
     if error:
         raise WorkflowExecutionError(error)
-    try:
-        assert_digest_within_budget(digest)
-    except ValueError as exc:
-        raise WorkflowExecutionError(str(exc)) from exc
+    digest, trimmed_fields = fit_digest_within_budget(digest)
+    if trimmed_fields:
+        logger.info(
+            "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s fields=%s",
+            correlation_id,
+            workflow_id,
+            ",".join(trimmed_fields),
+        )
     return digest
 
 
@@ -2311,11 +2315,17 @@ async def _run_chat_history_compactor_digest(
         if error:
             last_error = error
             continue
-        try:
-            assert_chat_compactor_digest_within_budget(digest)
-        except ValueError as exc:
-            # Budget is fail-loud: do not retry quick for over-budget digests.
-            raise WorkflowExecutionError(str(exc)) from exc
+        # Over-budget prose is repaired here, not retried: the "quick" route would
+        # re-run the whole digest for a formatting miss on already-valid content.
+        digest, trimmed_fields = fit_chat_compactor_digest_within_budget(digest)
+        if trimmed_fields:
+            logger.info(
+                "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s route=%s fields=%s",
+                correlation_id,
+                workflow_id,
+                route,
+                ",".join(trimmed_fields),
+            )
         return digest, route
     raise WorkflowExecutionError(last_error or "chat_compactor_digest_failed:exhausted")
 

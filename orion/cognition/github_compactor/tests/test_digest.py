@@ -12,7 +12,7 @@ from orion.cognition.github_compactor.constants import (
     JOURNAL_TITLE_MAX_CHARS,
 )
 from orion.cognition.github_compactor.digest import (
-    assert_digest_within_budget,
+    fit_digest_within_budget,
     build_quiet_day_digest,
     parse_github_compactor_digest_json,
     stable_github_compactor_journal_entry_id,
@@ -31,25 +31,52 @@ def test_github_compactor_digest_v1_rejects_empty_card_summary() -> None:
         )
 
 
-def test_assert_digest_within_budget_accepts_in_limit() -> None:
+def test_fit_digest_within_budget_returns_in_limit_digest_unchanged() -> None:
     digest = GithubCompactorDigestV1(
         card_summary="a" * CARD_SUMMARY_MAX_CHARS,
         journal_title="b" * JOURNAL_TITLE_MAX_CHARS,
         journal_body="c" * JOURNAL_BODY_MAX_CHARS,
         pr_refs=["#1"],
     )
-    assert_digest_within_budget(digest)
+    fitted, trimmed = fit_digest_within_budget(digest)
+    assert trimmed == []
+    assert fitted is digest
 
 
-def test_assert_digest_within_budget_rejects_over_limit() -> None:
+def test_fit_digest_within_budget_repairs_over_limit_instead_of_raising() -> None:
+    """An over-long card_summary must not fail the workflow.
+
+    This is the exact live failure mode: 5 `compactor_output_over_budget:card_summary`
+    failures on github_compactor_pass (2026-08-27, 2026-08-30), each discarding a
+    complete digest and feeding the scheduler's retry path.
+    """
     digest = GithubCompactorDigestV1(
         card_summary="a" * (CARD_SUMMARY_MAX_CHARS + 1),
         journal_title="title",
         journal_body="body",
+        pr_refs=["#1"],
+    )
+    fitted, trimmed = fit_digest_within_budget(digest)
+    assert trimmed == ["card_summary"]
+    assert len(fitted.card_summary) == CARD_SUMMARY_MAX_CHARS
+    # Untouched fields survive, and so does non-prose content.
+    assert fitted.journal_title == "title"
+    assert fitted.journal_body == "body"
+    assert fitted.pr_refs == ["#1"]
+
+
+def test_fit_digest_within_budget_trims_each_over_limit_field() -> None:
+    digest = GithubCompactorDigestV1(
+        card_summary="a" * (CARD_SUMMARY_MAX_CHARS + 50),
+        journal_title="b" * (JOURNAL_TITLE_MAX_CHARS + 50),
+        journal_body="c" * (JOURNAL_BODY_MAX_CHARS + 50),
         pr_refs=[],
     )
-    with pytest.raises(ValueError, match="compactor_output_over_budget"):
-        assert_digest_within_budget(digest)
+    fitted, trimmed = fit_digest_within_budget(digest)
+    assert trimmed == ["card_summary", "journal_body", "journal_title"]
+    assert len(fitted.card_summary) == CARD_SUMMARY_MAX_CHARS
+    assert len(fitted.journal_title) == JOURNAL_TITLE_MAX_CHARS
+    assert len(fitted.journal_body) == JOURNAL_BODY_MAX_CHARS
 
 
 def test_build_quiet_day_digest() -> None:

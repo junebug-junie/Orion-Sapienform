@@ -11,7 +11,7 @@ from orion.cognition.chat_history_compactor.constants import (
     JOURNAL_BODY_MAX_CHARS,
     JOURNAL_TITLE_MAX_CHARS,
 )
-from orion.cognition.compactor.budget import assert_fields_within_budget
+from orion.cognition.compactor.budget import fit_fields_within_budget
 from orion.cognition.compactor.digest import parse_compactor_digest_json
 from orion.cognition.compactor.truncate import truncate_at_word_boundary
 from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDigestV1
@@ -63,14 +63,25 @@ def trim_chat_history_compactor_input(
     return payload
 
 
-def assert_chat_compactor_digest_within_budget(digest: ChatHistoryCompactorDigestV1) -> None:
-    assert_fields_within_budget(
+def fit_chat_compactor_digest_within_budget(
+    digest: ChatHistoryCompactorDigestV1,
+) -> tuple[ChatHistoryCompactorDigestV1, list[str]]:
+    """Return the digest with over-budget prose fields trimmed to their caps.
+
+    Same contract as the GitHub compactor's ``fit_digest_within_budget``: a
+    complete digest is repaired rather than thrown away. Returns
+    ``(digest, trimmed_field_names)``.
+    """
+    fitted, trimmed = fit_fields_within_budget(
         {
             "card_summary": (digest.card_summary, CARD_SUMMARY_MAX_CHARS),
             "journal_title": (digest.journal_title or "", JOURNAL_TITLE_MAX_CHARS),
             "journal_body": (digest.journal_body or "", JOURNAL_BODY_MAX_CHARS),
         }
     )
+    if not trimmed:
+        return digest, []
+    return digest.model_copy(update=fitted), trimmed
 
 
 def build_quiet_day_chat_digest(*, window_label: str) -> ChatHistoryCompactorDigestV1:

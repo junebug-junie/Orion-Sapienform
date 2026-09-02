@@ -168,7 +168,9 @@ def test_transition_errors_are_structured(tmp_path):
 
 
 def test_attention_signals_dedupe_and_recovery(tmp_path):
-    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"))
+    # Attention pages when the retry budget is spent, not on the first failure;
+    # a 1-attempt budget makes a single failure reach that condition.
+    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"), max_dispatch_attempts=1)
     created = store.upsert_from_dispatch(_dispatch("r1", recurring=True), now_utc=datetime(2026, 3, 20, 0, 0, tzinfo=timezone.utc))
     assert created is not None
     claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 6, 0, tzinfo=timezone.utc))

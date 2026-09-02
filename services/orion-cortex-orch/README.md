@@ -57,7 +57,7 @@ Pipeline: resolve window (`orion/cognition/chat_history_compactor/window.py`) â†
 Behavior contract:
 
 - **Window bounds**: `window_mode` is `day` (yesterday, `America/Denver`, covers the full day to `time.max`) or `rolling` (default 24h). Request `lookback_hours` is capped at 14 days; unknown `window_mode` values fail loud (`chat_compactor_window_invalid`).
-- **Digest route retry**: the digest verb runs on the `chat` LLM route first, retrying once on `quick`. Over-budget digests fail loud with no retry and no persistence (`compactor_output_over_budget:<field>`).
+- **Digest route retry**: the digest verb runs on the `chat` LLM route first, retrying once on `quick`. Over-budget digests are trimmed to their cap and persisted normally rather than failing the workflow, and do not consume the `quick` retry â€” the repair is logged as `compactor_digest_trimmed_to_budget` with the correlation ID. Malformed or unparseable digest output still fails loud.
 - **Quiet windows persist nothing**: zero turns or an empty transcript writes no card and no journal stub; the result reports the skip honestly.
 - **Card persistence degrades, never discards**: one active card per `compactor_index` via `upsert_indexed_compactor_card` (enforced by the partial unique index `idx_mc_active_compactor_index`). If the card write fails for any reason, the workflow still appends the journal entry and reports `card_persist_skipped_reason` in workflow metadata.
 - **Idempotent journal**: journal entry id is a stable UUIDv5 of `workflow_id|compactor_index`, so re-runs of the same window overwrite rather than duplicate.

@@ -1095,6 +1095,8 @@ async def lifespan(app: FastAPI):
     workflow_schedule_store = WorkflowScheduleStore(
         settings.actions_workflow_schedule_store_path,
         metrics=workflow_schedule_metrics,
+        max_dispatch_attempts=settings.actions_workflow_schedule_max_dispatch_attempts,
+        retry_backoff_seconds=settings.actions_workflow_schedule_retry_backoff_seconds,
     )
     try:
         from .workflow_schedule_bootstrap import ensure_chat_history_compactor_daily_schedule

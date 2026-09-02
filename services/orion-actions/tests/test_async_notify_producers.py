@@ -268,7 +268,9 @@ def test_workflow_active_attention_calls_attention_request(monkeypatch, tmp_path
     monkeypatch.setattr(settings, "actions_async_messages_enabled", True)
     monkeypatch.setattr(settings, "actions_preserve_generic_notify_enabled", True)
 
-    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    # Attention pages when the retry budget is spent, not on the first failure;
+    # a 1-attempt budget makes a single failure reach that condition.
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"), max_dispatch_attempts=1)
     created = store.upsert_from_dispatch(_dispatch_request(request_id="req-1"), now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
     claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
     store.mark_dispatch_failed(run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, error="boom", now_utc=datetime(2026, 3, 25, 7, 1, tzinfo=timezone.utc))
@@ -291,7 +293,9 @@ def test_workflow_recovered_does_not_call_attention_request(monkeypatch, tmp_pat
     monkeypatch.setattr(settings, "actions_async_messages_enabled", True)
     monkeypatch.setattr(settings, "actions_preserve_generic_notify_enabled", True)
 
-    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    # Attention pages when the retry budget is spent, not on the first failure;
+    # a 1-attempt budget makes a single failure reach that condition.
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"), max_dispatch_attempts=1)
     created = store.upsert_from_dispatch(_dispatch_request(request_id="req-2"), now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
     claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
     store.mark_dispatch_failed(run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, error="boom", now_utc=datetime(2026, 3, 25, 7, 1, tzinfo=timezone.utc))

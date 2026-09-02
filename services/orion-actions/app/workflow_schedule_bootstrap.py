@@ -20,6 +20,14 @@ _CHAT_HISTORY_COMPACTOR_BOOTSTRAP_REQUEST_ID = "bootstrap:chat_history_compactor
 GITHUB_COMPACTOR_WORKFLOW_ID = "github_compactor_pass"
 _GITHUB_COMPACTOR_BOOTSTRAP_REQUEST_ID = "bootstrap:github_compactor_pass:daily:06:10:America/Denver"
 
+# These are unattended daily digests: a successful run is the expected case and does
+# not need to reach Juniper. "completion" notified on every terminal run, so the only
+# signal a message carried was "the scheduler is still alive" -- one ping per day per
+# compactor for a job nobody needs to act on, plus one per failure inside a retry
+# burst. Failures still notify; successes are visible in the memory card the run
+# writes and on the schedule's own health surface.
+BOOTSTRAP_NOTIFY_ON = "failure"
+
 
 def _blocks_bootstrap_seed(schedule, *, workflow_id: str, bootstrap_request_id: str) -> bool:
     """True when an existing record means bootstrap must not (re-)seed.
@@ -39,6 +47,37 @@ def _blocks_bootstrap_seed(schedule, *, workflow_id: str, bootstrap_request_id: 
         return False
     spec = schedule.execution_policy.schedule if schedule.execution_policy else None
     return spec is not None and spec.kind == "recurring"
+
+
+def _reconcile_bootstrap_notify_on(
+    store: WorkflowScheduleStore,
+    *,
+    existing: list,
+    bootstrap_request_id: str,
+    log_prefix: str,
+) -> None:
+    """Bring an already-seeded bootstrap schedule's notify_on up to date.
+
+    Bootstrap is seed-once by design, so changing `BOOTSTRAP_NOTIFY_ON` alone would
+    never reach a schedule that already exists -- and every live one already does.
+    Scoped deliberately narrow: only records this bootstrap created (matched by
+    request_id) and only still-active ones, so an operator's own schedule, a cancel,
+    or a hand-edited run time is never overwritten. Only notify_on is touched; unlike
+    a re-seed via upsert_from_dispatch this cannot reset next_run_at or resurrect a
+    cancelled record.
+    """
+    for schedule in existing:
+        if getattr(schedule, "request_id", None) != bootstrap_request_id:
+            continue
+        if schedule.state in {"cancelled", "completed"}:
+            continue
+        if store.set_notify_on(schedule_id=schedule.schedule_id, notify_on=BOOTSTRAP_NOTIFY_ON):
+            logger.info(
+                "%s_schedule_bootstrap_notify_on_reconciled schedule_id=%s notify_on=%s",
+                log_prefix,
+                schedule.schedule_id,
+                BOOTSTRAP_NOTIFY_ON,
+            )
 
 
 def _ensure_daily_schedule(
@@ -63,6 +102,12 @@ def _ensure_daily_schedule(
         if _blocks_bootstrap_seed(s, workflow_id=workflow_id, bootstrap_request_id=bootstrap_request_id)
     ]
     if existing:
+        _reconcile_bootstrap_notify_on(
+            store,
+            existing=existing,
+            bootstrap_request_id=bootstrap_request_id,
+            log_prefix=log_prefix,
+        )
         logger.info(
             "%s_schedule_bootstrap_skip existing_schedule_id=%s",
             log_prefix,
@@ -81,7 +126,7 @@ def _ensure_daily_schedule(
             minute_local=minute_local,
             label=label,
         ),
-        notify_on="completion",
+        notify_on=BOOTSTRAP_NOTIFY_ON,
         recipient_group="juniper_primary",
         requested_from_chat=False,
         policy_summary=policy_summary,

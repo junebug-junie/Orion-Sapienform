@@ -32,6 +32,8 @@ from orion.journaler.worker import (
 )
 
 from app import main as orch_main
+from orion.cognition.github_compactor.constants import CARD_SUMMARY_MAX_CHARS as GH_CARD_SUMMARY_MAX_CHARS
+from orion.cognition.chat_history_compactor.constants import CARD_SUMMARY_MAX_CHARS as CHAT_CARD_SUMMARY_MAX_CHARS
 from app.workflow_runtime import _workflow_sub_correlation_id, execute_chat_workflow
 from orion.spark.introspection_metadata import build_introspection_context
 from orion.spark.concept_induction.parity_evidence import (
@@ -2298,9 +2300,17 @@ def test_github_compactor_pass_recall_pg_unavailable_still_writes_journal(monkey
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
 
 
-def test_github_compactor_pass_over_budget_digest_fails_without_persist(monkeypatch) -> None:
+def test_github_compactor_pass_over_budget_digest_is_trimmed_and_persisted(monkeypatch) -> None:
+    """An over-long card_summary is repaired, not thrown away.
+
+    Live 2026-08-27/08-30: 5 runs raised `compactor_output_over_budget:card_summary`
+    and discarded an otherwise-complete digest, which then fed the scheduler retry
+    path. The digest has already parsed and validated by this point, so the cap is
+    enforced by trimming and the run persists normally.
+    """
     bus = DummyBus()
     card_called = {"n": 0}
+    persisted_digests = []
 
     async def _fake_call_verb_runtime(*args, **kwargs):
         req = kwargs["client_request"]
@@ -2333,6 +2343,7 @@ def test_github_compactor_pass_over_budget_digest_fails_without_persist(monkeypa
 
     async def _fake_persist_card(**kwargs):
         card_called["n"] += 1
+        persisted_digests.append(kwargs["digest"])
         return "00000000-0000-0000-0000-000000000099"
 
     monkeypatch.setattr(
@@ -2340,21 +2351,26 @@ def test_github_compactor_pass_over_budget_digest_fails_without_persist(monkeypa
         _fake_persist_card,
     )
 
-    with pytest.raises(Exception, match="compactor_output_over_budget"):
-        asyncio.run(
-            execute_chat_workflow(
-                bus=bus,
-                source=ServiceRef(name="cortex-orch"),
-                req=_req("github_compactor_pass"),
-                correlation_id="00000000-0000-0000-0000-000000000104",
-                causality_chain=[],
-                trace={},
-                call_verb_runtime=_fake_call_verb_runtime,
-            )
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("github_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000104",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
         )
+    )
 
-    assert card_called["n"] == 0
-    assert not any(ch == "orion:journal:write" for ch, _ in bus.published)
+    assert result.ok is True
+    assert card_called["n"] == 1
+    # The 801-char summary the fake verb returned is trimmed to the 800-char cap,
+    # and the rest of the digest is untouched.
+    assert len(persisted_digests[0].card_summary) == GH_CARD_SUMMARY_MAX_CHARS
+    assert persisted_digests[0].card_summary.endswith("\u2026")
+    assert persisted_digests[0].journal_title == "Title"
+    assert persisted_digests[0].pr_refs == ["#9"]
 
 
 def test_github_compactor_pass_malformed_digest_fails_without_persist(monkeypatch) -> None:
@@ -3224,9 +3240,10 @@ def test_chat_history_compactor_pass_card_persist_error_degrades(monkeypatch) ->
     ]
 
 
-def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypatch) -> None:
+def test_chat_history_compactor_pass_over_budget_is_trimmed_and_persisted(monkeypatch) -> None:
     bus = DummyBus()
     card_called = {"n": 0}
+    persisted_digests = []
     routes: list[str] = []
 
     async def _fake_call_verb_runtime(*args, **kwargs):
@@ -3277,6 +3294,7 @@ def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypat
 
     async def _fake_persist_card(**kwargs):
         card_called["n"] += 1
+        persisted_digests.append(kwargs["digest"])
         return uuid4()
 
     monkeypatch.setattr(
@@ -3284,18 +3302,23 @@ def test_chat_history_compactor_pass_over_budget_fails_without_persist(monkeypat
         _fake_persist_card,
     )
 
-    with pytest.raises(Exception, match="compactor_output_over_budget"):
-        asyncio.run(
-            execute_chat_workflow(
-                bus=bus,
-                source=ServiceRef(name="cortex-orch"),
-                req=_req("chat_history_compactor_pass"),
-                correlation_id="00000000-0000-0000-0000-000000000304",
-                causality_chain=[],
-                trace={},
-                call_verb_runtime=_fake_call_verb_runtime,
-            )
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("chat_history_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000304",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
         )
+    )
+    assert result.ok is True
+    # Repaired on the first route: an over-budget digest must not burn the "quick"
+    # retry route, which re-runs the whole digest for a formatting miss.
     assert routes == ["chat"]
-    assert card_called["n"] == 0
-    assert not any(ch == "orion:journal:write" for ch, _ in bus.published)
+    assert card_called["n"] == 1
+    assert len(persisted_digests[0].card_summary) == CHAT_CARD_SUMMARY_MAX_CHARS
+    assert persisted_digests[0].card_summary.endswith("\u2026")
+    # The journal entry is written too -- a trimmed summary is a complete run.
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)

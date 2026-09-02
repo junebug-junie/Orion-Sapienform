@@ -273,27 +273,55 @@ def _save_state(state_file: str, state: dict[str, Any]) -> None:
         raise
 
 
+SEVERITY_RANK = {"warning": 1, "critical": 2}
+
+
 def notify_alarm(args, *, reason: str, message: str, severity: str) -> None:
-    """Fire at most one Pending Attention card per unbroken alarm episode.
+    """Fire at most one Pending Attention card per alarm EPISODE, per severity.
 
-    Debounce rule copied deliberately from disk_threshold_watchdog.py, including
-    the part that is easy to get wrong: state records `notified=True` ONLY after
-    the client confirms `ok`. A card that failed to land (orion-notify down or
-    erroring -- NotifyClient returns ok=False, it does not raise) is retried on
-    the next tick instead of being debounced into permanent silence by the mere
-    fact that we noticed the alarm once.
+    Two rules, both of which have a way to go wrong that is worse than no
+    debounce at all:
 
-    A human acks these cards; nothing here auto-resolves them, so re-firing every
-    10 minutes while one is already open would be noise, not signal.
+    1. State records `notified=True` ONLY after the client confirms `ok`. A card
+       that failed to land (orion-notify down or erroring -- NotifyClient returns
+       ok=False, it does not raise) is retried on the next tick instead of being
+       debounced into permanent silence by the mere fact that we noticed once.
+
+    2. The episode is keyed on SEVERITY RANK, not on `reason`. `saturated` and
+       `headroom_low` are two readings of one incident, and at the wall which one
+       a given tick gets is close to a coin flip -- whether this tick's own
+       connection attempt happens to win a slot. Keying on `reason` made an
+       alternating run fire a card EVERY tick, indefinitely, during exactly the
+       incident this exists for (driven in review: 8 ticks, 8 cards). Ranking
+       instead means the escalation warning -> critical still fires once, and the
+       flap back down is silent.
+
+    A human acks these cards; nothing here auto-resolves them, so re-firing while
+    one is already open would be noise, not signal.
     """
     if not args.notify:
         return
+    try:
+        _notify_alarm_locked(args, reason=reason, message=message, severity=severity)
+    except Exception as exc:  # noqa: BLE001 - escalation must never mask the alarm
+        # An unwritable telemetry root used to surface as an unhandled traceback,
+        # whose Python exit status 1 is indistinguishable from EXIT_ALARM.
+        print(
+            f"  escalation failed ({exc.__class__.__name__}: {exc}); "
+            "the alarm itself is still reported",
+            file=sys.stderr,
+        )
+
+
+def _notify_alarm_locked(args, *, reason: str, message: str, severity: str) -> None:
     with _StateLock(args.state_file) as acquired:
         if not acquired:
             return
         state = _load_state(args.state_file)
-        already = state.get("reason") == reason and state.get("notified") is True
-        if already:
+        rank = SEVERITY_RANK.get(severity, 1)
+        prev_rank = int(state.get("episode_rank") or 0)
+        confirmed = state.get("notified") is True
+        if prev_rank and confirmed and rank <= prev_rank:
             return
         try:
             from orion.notify.client import NotifyClient
@@ -316,6 +344,7 @@ def notify_alarm(args, *, reason: str, message: str, severity: str) -> None:
         state.update(
             {
                 "reason": reason,
+                "episode_rank": rank,
                 "notified": ok,
                 "last_alarm_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -335,12 +364,21 @@ def clear_alarm(args) -> None:
     """
     if not args.notify:
         return
-    with _StateLock(args.state_file) as acquired:
-        if not acquired:
-            return
-        state = _load_state(args.state_file)
-        if state.get("reason") or state.get("notified"):
-            _save_state(args.state_file, {"reason": None, "notified": False})
+    try:
+        with _StateLock(args.state_file) as acquired:
+            if not acquired:
+                return
+            state = _load_state(args.state_file)
+            if state.get("episode_rank") or state.get("reason") or state.get("notified"):
+                # Keep last_alarm_at: when the previous episode ended is worth
+                # more to whoever reads this file than a tidy dict.
+                state.update({"reason": None, "episode_rank": 0, "notified": False})
+                _save_state(args.state_file, state)
+    except Exception as exc:  # noqa: BLE001 - see notify_alarm
+        print(
+            f"  could not clear escalation state ({exc.__class__.__name__}: {exc})",
+            file=sys.stderr,
+        )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -428,12 +466,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     finally:
         conn.close()
 
-    if args.gate and headroom.free_pct < args.min_free_pct:
-        print(
-            f"FAIL: only {headroom.free_pct:.0f}% of connection slots free "
-            f"(threshold {args.min_free_pct:.0f}%). {headroom.summary()}",
-            file=sys.stderr,
-        )
+    # Evaluated independently of --gate. When these were fused, a --notify run
+    # WITHOUT --gate fell through to clear_alarm() on a still-alarming reading,
+    # wiping the episode and letting the next gated tick fire a second card for
+    # the same incident. --gate now decides the exit code and nothing else.
+    alarm = headroom.free_pct < args.min_free_pct
+    if alarm:
+        if args.gate:
+            print(
+                f"FAIL: only {headroom.free_pct:.0f}% of connection slots free "
+                f"(threshold {args.min_free_pct:.0f}%). {headroom.summary()}",
+                file=sys.stderr,
+            )
         notify_alarm(
             args,
             reason="headroom_low",
@@ -449,7 +493,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             ),
             severity="warning",
         )
-        return EXIT_ALARM
+        if args.gate:
+            return EXIT_ALARM
+        return EXIT_OK
     clear_alarm(args)
     return EXIT_OK
 

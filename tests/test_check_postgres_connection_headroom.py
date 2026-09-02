@@ -384,14 +384,15 @@ def _healthy_conn():
     return _FakeConn([(300, 3, 10, 10)])
 
 
-def _run(monkeypatch, conn, recorder, state_file, *, extra=(), ok=True):
+def _run(monkeypatch, conn, recorder, state_file, *, extra=(), ok=True, gate=True):
     monkeypatch.setitem(sys.modules, "psycopg2", _fake_psycopg2(lambda *a, **k: conn))
     monkeypatch.setitem(
         sys.modules, "orion.notify.client", _notify_stub_module(recorder, ok=ok)
     )
-    return main(
-        ["--dsn", "postgresql://x/y", "--gate", "--state-file", str(state_file), *extra]
-    )
+    argv = ["--dsn", "postgresql://x/y", "--state-file", str(state_file), *extra]
+    if gate:
+        argv.insert(2, "--gate")
+    return main(argv)
 
 
 def test_no_card_fires_without_the_notify_flag(monkeypatch, tmp_path):
@@ -413,8 +414,11 @@ def test_a_low_headroom_alarm_raises_one_card(monkeypatch, tmp_path):
     call = recorder["calls"][0]
     assert call["severity"] == "warning"
     assert "headroom low" in call["message"]
-    # the reserve hazard is named when every backend is a superuser (280 of 280)
-    assert "superuser" in call["message"]
+    # The reserve hazard is named when every backend is a superuser (280 of 280).
+    # Assert the CLAUSE, not the word "superuser": headroom.summary() always
+    # emits "superuser clients={n}", so a substring check on "superuser" passes
+    # even with the whole conditional clause deleted.
+    assert "will not hold a door open" in call["message"]
 
 
 def test_a_second_tick_while_still_alarming_does_not_re_card(monkeypatch, tmp_path):
@@ -479,3 +483,96 @@ def test_saturation_cards_at_critical_severity(monkeypatch, tmp_path):
     assert rc == EXIT_ALARM
     assert len(recorder["calls"]) == 1
     assert recorder["calls"][0]["severity"] == "critical"
+
+
+def _saturated_tick(monkeypatch, recorder, state_file, *, ok=True):
+    """One tick where this script's own connection attempt lost the race."""
+
+    def connect(*a, **kw):
+        raise _PgError("FATAL:  sorry, too many clients already")
+
+    monkeypatch.setitem(sys.modules, "psycopg2", _fake_psycopg2(connect))
+    monkeypatch.setitem(
+        sys.modules, "orion.notify.client", _notify_stub_module(recorder, ok=ok)
+    )
+    return main(
+        [
+            "--dsn",
+            "postgresql://x/y",
+            "--gate",
+            "--notify",
+            "--state-file",
+            str(state_file),
+        ]
+    )
+
+
+def test_a_flapping_incident_does_not_card_every_tick(monkeypatch, tmp_path):
+    """`saturated` and `headroom_low` are one incident, not two.
+
+    At the wall, whether a given tick gets a slot is close to a coin flip, so the
+    two readings alternate. Keying the debounce on `reason` made that fire a card
+    EVERY tick, indefinitely, during exactly the incident this exists for. The
+    episode is keyed on severity rank instead.
+    """
+    recorder = {}
+    state = tmp_path / "s.json"
+    for _ in range(4):
+        _saturated_tick(monkeypatch, recorder, state)
+        _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"])
+    severities = [c["severity"] for c in recorder["calls"]]
+    assert severities == ["critical"], (
+        f"8 ticks of one incident should card once, got {severities}"
+    )
+
+
+def test_escalation_to_critical_still_fires_once(monkeypatch, tmp_path):
+    """Silencing the flap must not silence a genuine escalation."""
+    recorder = {}
+    state = tmp_path / "s.json"
+    _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"])
+    _saturated_tick(monkeypatch, recorder, state)
+    assert [c["severity"] for c in recorder["calls"]] == ["warning", "critical"]
+    # ...and does not re-fire once raised
+    _saturated_tick(monkeypatch, recorder, state)
+    _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"])
+    assert len(recorder["calls"]) == 2
+
+
+def test_notify_without_gate_does_not_wipe_a_live_alarm(monkeypatch, tmp_path):
+    """--gate decides the exit code; it must not decide whether the alarm is real.
+
+    While these were fused, a --notify run without --gate fell through to
+    clear_alarm() on a still-alarming reading, so the next gated tick raised a
+    second card for the same unbroken episode.
+    """
+    recorder = {}
+    state = tmp_path / "s.json"
+    _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"])
+    assert len(recorder["calls"]) == 1
+    rc = _run(
+        monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"], gate=False
+    )
+    assert rc == EXIT_OK, "without --gate an alarm must not change the exit code"
+    _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"])
+    assert len(recorder["calls"]) == 1, "the ungated tick wiped the episode"
+
+
+def test_escalation_failure_is_not_reported_as_an_alarm(monkeypatch, tmp_path, capsys):
+    """An unwritable state dir must not masquerade as a full database.
+
+    notify_alarm used to let this escape as an unhandled traceback, whose Python
+    exit status 1 is indistinguishable from EXIT_ALARM.
+    """
+    recorder = {}
+    unwritable = tmp_path / "nope"
+    unwritable.write_text("i am a file, not a directory")
+    rc = _run(
+        monkeypatch,
+        _healthy_conn(),
+        recorder,
+        unwritable / "s.json",
+        extra=["--notify"],
+    )
+    assert rc == EXIT_OK
+    assert recorder.get("calls", []) == []

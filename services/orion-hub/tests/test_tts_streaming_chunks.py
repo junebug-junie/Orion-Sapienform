@@ -40,13 +40,37 @@ def test_chunks_are_sentence_aligned_and_lossless():
 def test_first_chunk_is_smaller_than_later_chunks():
     """The first chunk sets time-to-first-sound, so it must be the short one."""
     text = " ".join(f"This is sentence number {i} of the reply." for i in range(20))
-    chunks = chunk_text_for_speech(text, first_chunk_chars=140, chunk_chars=280)
+    chunks = chunk_text_for_speech(text, first_chunk_chars=80, chunk_chars=280)
     assert len(chunks) >= 3
     assert len(chunks[0]) < len(chunks[1])
-    # Hand-computed: each sentence is ~42 chars, so a 140-char target closes
-    # after 4 sentences (~172) and a 280-char target after 7 (~301).
-    assert len(chunks[0]) < 200
+    # Hand-computed against the doubling ramp. Each sentence here is 39 chars
+    # ("This is sentence number 0 of the reply."), and buf_len adds len+1 per
+    # sentence, so the accumulator hits a target exactly on a sentence count.
+    # Targets ramp 80 -> 160 -> 280 (capped):
+    #   chunk 0: target 80  -> 2 sentences, 39*2 + 1 space  =  79
+    #   chunk 1: target 160 -> 4 sentences, 39*4 + 3 spaces = 159
+    # Exact values, not bounds: a chunker that silently shifted a sentence
+    # between chunks would still satisfy an inequality here.
+    assert len(chunks[0]) == 79, chunks[0]
+    assert len(chunks[1]) == 159, chunks[1]
     assert chunks[0].startswith("This is sentence number 0")
+
+
+def test_targets_double_so_the_first_chunk_can_be_short_without_starving():
+    """The ramp is load-bearing, not cosmetic.
+
+    Measured 2026-09-02: a flat pair (first=80, rest=280) starts the voice at
+    1.95s and then runs DRY for 1.77s, because a ~5s first clip cannot cover
+    the ~7s synthesis of a 280-char second chunk. Doubling closes that gap
+    while keeping the same fast start. A regression to flat targets would
+    reintroduce audible silence mid-reply, which no other test here catches.
+    """
+    text = " ".join(f"This is sentence number {i} of the reply." for i in range(24))
+    chunks = chunk_text_for_speech(text, first_chunk_chars=80, chunk_chars=280)
+    assert len(chunks) >= 4
+    # Second chunk must be ~2x the first, NOT the full 280-char cap.
+    assert len(chunks[1]) < 280
+    assert 1.5 <= len(chunks[1]) / len(chunks[0]) <= 2.5
 
 
 def test_no_chunk_exceeds_three_times_its_predecessor():
@@ -59,20 +83,20 @@ def test_no_chunk_exceeds_three_times_its_predecessor():
     voice run dry mid-reply -- the exact failure this design avoids.
     """
     text = " ".join(f"Sentence {i} of a fairly long spoken reply." for i in range(40))
-    chunks = chunk_text_for_speech(text, first_chunk_chars=140, chunk_chars=280)
+    chunks = chunk_text_for_speech(text, first_chunk_chars=80, chunk_chars=280)
     for prev, nxt in zip(chunks, chunks[1:]):
         assert len(nxt) <= 3 * len(prev), f"{len(nxt)} > 3x{len(prev)}"
 
 
 @pytest.mark.parametrize("text", ["", "   ", "\n\n"])
 def test_empty_text_yields_no_chunks(text):
-    assert chunk_text_for_speech(text, first_chunk_chars=140, chunk_chars=280) == []
+    assert chunk_text_for_speech(text, first_chunk_chars=80, chunk_chars=280) == []
 
 
 def test_single_short_sentence_is_one_chunk():
     """Short replies must not regress into extra round trips."""
     assert chunk_text_for_speech(
-        "Yes, that is done.", first_chunk_chars=140, chunk_chars=280
+        "Yes, that is done.", first_chunk_chars=80, chunk_chars=280
     ) == ["Yes, that is done."]
 
 
@@ -81,7 +105,7 @@ def test_single_short_sentence_is_one_chunk():
 class _FakeSettings:
     HUB_TTS_TIMEOUT_SEC = 180.0
     HUB_TTS_STREAM_ENABLED = True
-    HUB_TTS_STREAM_FIRST_CHUNK_CHARS = 140
+    HUB_TTS_STREAM_FIRST_CHUNK_CHARS = 80
     HUB_TTS_STREAM_CHUNK_CHARS = 280
 
 
@@ -111,7 +135,7 @@ def _drain(q):
 
 def test_each_chunk_is_queued_separately_and_in_order(monkeypatch):
     """The whole point: N audio messages, ordered, not one blob at the end."""
-    n_chunks = len(chunk_text_for_speech(LONG_REPLY, first_chunk_chars=140, chunk_chars=280))
+    n_chunks = len(chunk_text_for_speech(LONG_REPLY, first_chunk_chars=80, chunk_chars=280))
     seen = _patch(monkeypatch, results=[
         {"audio_response": f"audio{i}", "tts_source_text": "x"} for i in range(n_chunks)
     ])
@@ -149,7 +173,7 @@ def test_audio_is_queued_between_syntheses_not_batched_at_the_end(monkeypatch):
             timeline.append("queued" + item["audio_response"][1:])
             await super().put(item)
 
-    n = len(chunk_text_for_speech(LONG_REPLY, first_chunk_chars=140, chunk_chars=280))
+    n = len(chunk_text_for_speech(LONG_REPLY, first_chunk_chars=80, chunk_chars=280))
     assert n >= 3, "fixture must produce several chunks"
     asyncio.run(run_tts_remote(LONG_REPLY, object(), RecordingQueue()))
 

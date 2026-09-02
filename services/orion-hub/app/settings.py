@@ -1017,19 +1017,21 @@ class Settings(BaseSettings):
         ),
     )
     HUB_TTS_STREAM_FIRST_CHUNK_CHARS: int = Field(
-        default=140,
+        default=80,
         alias="HUB_TTS_STREAM_FIRST_CHUNK_CHARS",
         description=(
             "Target size of the FIRST spoken chunk. This alone sets how long Juniper waits "
             "for Orion's voice to start; at the measured real-time factor of ~0.33, 140 chars "
-            "is roughly 2s of synthesis. Lower starts sooner but clips prosody shorter."
+            "is about one sentence, measured at ~2.0s. Chunk targets then double up to "
+            "HUB_TTS_STREAM_CHUNK_CHARS, so lowering this alone cannot starve playback."
         ),
     )
     HUB_TTS_STREAM_CHUNK_CHARS: int = Field(
         default=280,
         alias="HUB_TTS_STREAM_CHUNK_CHARS",
         description=(
-            "Target size of every chunk after the first. Kept near 2x the first chunk: a chunk "
+            "Ceiling for the doubling chunk ramp. Each chunk targets 2x the previous one up "
+            "to this cap. A chunk "
             "must render inside the previous chunk's playback, which at RTF 0.33 holds while "
             "a chunk is under ~3x its predecessor. Raising this past that risks the voice "
             "running dry mid-reply on a slower card."

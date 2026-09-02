@@ -732,13 +732,20 @@ def chunk_text_for_speech(
        be short. A 814-char reply costs ~16s as one blob; its first
        sentence costs ~2s.
 
-    Hence: a deliberately small first chunk (fast start), then larger ones
-    (fewer per-chunk fixed costs, and longer spans for XTTS's own prosody).
-    `chunk_chars` is kept at ~2x `first_chunk_chars` rather than higher:
-    chunk k+1 must render within chunk k's playback, which at RTF 0.33
-    holds while a chunk is under ~3x its predecessor. 2x leaves margin for
-    a slower card (the P100 is being replaced with a T10 on 2026-09-04)
-    without the stream ever running dry mid-sentence.
+    Hence: a deliberately small first chunk (fast start), then a doubling
+    ramp up to `chunk_chars` (fewer per-chunk fixed costs, and longer spans
+    for XTTS's own prosody). The ramp is what makes a fast start safe --
+    chunk k+1 must finish rendering inside chunk k's playback, which at
+    RTF 0.33 holds while a chunk stays under ~3x its predecessor. Doubling
+    sits inside that bound with margin for a slower card (the P100 is being
+    replaced with a T10 on 2026-09-04).
+
+    Known limit: a single unusually long sentence lands in one chunk whole,
+    since this never splits mid-sentence. Following a short first chunk that
+    can briefly outrun playback and insert a pause. The pause is cosmetic --
+    no audio is lost or reordered -- and is still far shorter than the
+    17s of silence the single-shot path opened with, so it is not worth
+    splitting sentences on clause boundaries to chase.
 
     Splitting on sentence boundaries only, never mid-sentence: XTTS already
     splits internally on sentences and generates each independently, so
@@ -754,7 +761,14 @@ def chunk_text_for_speech(
     for sentence in sentences:
         buf.append(sentence)
         buf_len += len(sentence) + 1
-        target = first_chunk_chars if not chunks else chunk_chars
+        # Ramp the target: each chunk aims for twice the previous one, up to
+        # `chunk_chars`. A flat "small first, big rest" pair cannot win here --
+        # measured 2026-09-02, dropping the first target to 80 with the second
+        # still at 280 starts the voice at 1.95s but then runs DRY for 1.77s,
+        # because a ~5s first clip cannot cover a ~7s synthesis of the second.
+        # Doubling keeps every step inside the RTF-0.33 headroom while still
+        # letting the first chunk be one short sentence.
+        target = min(first_chunk_chars * (2 ** len(chunks)), chunk_chars)
         if buf_len >= target:
             chunks.append(" ".join(buf))
             buf, buf_len = [], 0

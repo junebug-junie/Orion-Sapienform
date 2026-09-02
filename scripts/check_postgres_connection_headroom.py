@@ -62,6 +62,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+# Make `orion.notify.client` importable however this is invoked.
+#
+# Shipped without this and the escalation path was dead on arrival: run as
+# `python scripts/check_postgres_connection_headroom.py` -- which is exactly how
+# `make postgres-headroom-watch` and therefore cron invoke it -- sys.path[0] is
+# `scripts/`, not the repo root, so the lazy `from orion.notify.client import
+# NotifyClient` in notify_alarm() raised ModuleNotFoundError and every alarm
+# reported "notify unavailable; alarm not escalated". Caught only by running the
+# real cron target against the live database; the whole unit suite was blind to
+# it, because the test module inserts the repo root itself and then monkeypatches
+# sys.modules, so the import it was standing in for could never fail there.
+#
+# Done here rather than with `PYTHONPATH=.` in the Makefile (the approach
+# disk_threshold_watchdog.py takes) because that only holds when cwd happens to
+# be the repo root. This script's whole design contract is that an operator can
+# run it from anywhere with no setup -- see connection_params() below.
+#
+# Popping scripts/ first mirrors disk_threshold_watchdog.py: leaving it on
+# sys.path[0] lets a file in scripts/ shadow a stdlib module
+# (scripts/check_scripts_dir_no_stdlib_shadow.py is the CI gate for that).
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+if sys.path and sys.path[0] == _SCRIPT_DIR:
+    sys.path.pop(0)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 EXIT_OK = 0
 EXIT_ALARM = 1
 EXIT_CANNOT_CHECK = 2

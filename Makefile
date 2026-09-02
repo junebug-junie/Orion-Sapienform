@@ -410,6 +410,13 @@ check-sql-migrations-applied-quiet:
 # every worktree -- which is where this repo does its implementation work, and
 # where a silent 127 into a cron log is the failure mode that matters most.
 postgres-headroom:
+	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose
+
+# Sentience Striving Program instrument gate. Re-runs every claim in
+# orion/sentience_striving_program/instruments.yaml against live repo + database
+# state and fails on drift. `REPORT=1` reports without failing.
+check-sentience-instruments:
+	@python scripts/check_sentience_instruments.py $(if $(REPORT),--report,)
 	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose
 
 # Cron-facing variant. Identical gate, plus --notify, which raises ONE Hub Pending

@@ -166,6 +166,7 @@ from .substrate_biometrics_routes import router as substrate_biometrics_router
 from .substrate_field_routes import router as substrate_field_router
 from .substrate_attention_routes import router as substrate_attention_router
 from .attention_loops_routes import router as attention_loops_router
+from .sentience_program_routes import router as sentience_program_router
 from .substrate_observability_routes import router as substrate_observability_router
 from .substrate_proposal_routes import router as substrate_proposal_router
 from .substrate_policy_routes import router as substrate_policy_router
@@ -188,6 +189,7 @@ router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
 router.include_router(substrate_attention_router)
 router.include_router(attention_loops_router)
+router.include_router(sentience_program_router)
 router.include_router(substrate_observability_router)
 router.include_router(substrate_proposal_router)
 router.include_router(substrate_policy_router)

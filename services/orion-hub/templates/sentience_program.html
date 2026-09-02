@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentience Striving Program — instrument board</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --edge: #262b36; --ink: #e6e9ef;
+    --dim: #9aa4b5; --faint: #6b7486;
+    --ok: #4ade80; --drift: #fbbf24; --bad: #f87171; --man: #818cf8; --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 21px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--dim); margin: 0 0 22px; max-width: 78ch; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 22px; }
+  button { background: var(--panel); color: var(--ink); border: 1px solid var(--edge);
+    border-radius: 7px; padding: 7px 13px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button[disabled] { opacity: .5; cursor: default; }
+
+  .outcomes { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 12px; margin-bottom: 26px; }
+  .oc { background: var(--panel); border: 1px solid var(--edge); border-radius: 9px; padding: 13px 15px; }
+  .oc h3 { margin: 0 0 5px; font-size: 13px; }
+  .oc .id { color: var(--accent); font-weight: 700; margin-right: 6px; }
+  .oc p { margin: 0; color: var(--dim); font-size: 12px; }
+  .oc .n { margin-top: 8px; font-size: 11px; color: var(--faint); }
+
+  .inst { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 14px; }
+  .inst.blocked { border-left: 3px solid var(--drift); }
+  .inst.broken { border-left: 3px solid var(--bad); }
+  .head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  .title { font-size: 16px; font-weight: 650; }
+  .theory { color: var(--faint); font-size: 12px; }
+  .tag { font-size: 11px; font-weight: 700; color: var(--accent);
+    border: 1px solid var(--edge); border-radius: 20px; padding: 2px 9px; white-space: nowrap; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px; margin: 13px 0; }
+  .cell { border: 1px solid var(--edge); border-radius: 7px; padding: 9px 11px; }
+  .cell .k { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); }
+  .cell .v { font-size: 14px; margin-top: 3px; }
+  .cell .note { font-size: 11px; color: var(--dim); margin-top: 4px; }
+  .capped { color: var(--drift); }
+
+  .unlock { border-left: 2px solid var(--edge); padding-left: 12px; margin: 13px 0 4px;
+    color: var(--dim); font-size: 13px; }
+  .unlock .lab { font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--faint); display: block; margin-bottom: 3px; }
+  .stale { color: var(--drift); }
+
+  .claim { border-top: 1px solid var(--edge); padding: 10px 0 2px; }
+  .claim:first-of-type { margin-top: 6px; }
+  .cst { font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px;
+    border-radius: 4px; margin-right: 8px; }
+  .HOLDS { background: rgba(74,222,128,.14); color: var(--ok); }
+  .DRIFTED { background: rgba(251,191,36,.16); color: var(--drift); }
+  .ERROR { background: rgba(248,113,113,.15); color: var(--bad); }
+  .MANUAL { background: rgba(129,140,248,.16); color: var(--man); }
+  .q { color: var(--ink); }
+  .cnote { color: var(--faint); font-size: 12px; margin-top: 5px; padding-left: 2px; }
+  .cdet { color: var(--drift); font-size: 12px; margin-top: 4px; }
+  .blocks { color: var(--drift); font-size: 11px; font-weight: 700; margin-left: 6px; }
+  code { background: #0b0d11; border: 1px solid var(--edge); border-radius: 4px;
+    padding: 1px 5px; font-size: 12px; }
+  .err { color: var(--bad); }
+  .muted { color: var(--faint); }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+  details ul { margin: 6px 0 0; padding-left: 18px; color: var(--faint); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sentience Striving Program — instrument board</h1>
+  <p class="sub">
+    Every value below is read live from the repo and the database at page load. Nothing here
+    is written prose except each instrument's <em>unlock</em> note, which is freshness-gated.
+    The same join backs <code>scripts/check_sentience_instruments.py</code>, so this page and
+    CI cannot disagree.
+  </p>
+  <div class="bar">
+    <button id="reload">Reload</button>
+    <button id="load-consumers">Resolve blast radius</button>
+    <span class="muted" id="status">loading…</span>
+  </div>
+  <div class="outcomes" id="outcomes"></div>
+  <div id="instruments"></div>
+</div>
+<script src="/static/js/sentience-program.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

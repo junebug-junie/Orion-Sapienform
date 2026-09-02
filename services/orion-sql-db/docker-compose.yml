@@ -59,15 +59,20 @@ services:
       # cost page cache (see next paragraph) to buy slots nothing has asked for.
       #
       # Memory: backend anon RSS is ~2.6MB here, so 300 backends is ~780MB. There is
-      # no OOM risk (oom_kill=0). But note the cgroup is ALREADY at 97.6% of its 16g
-      # limit (memory.current 16.77GB) -- almost entirely reclaimable page cache,
-      # which with shared_buffers at the 128MB default IS this database's cache. New
-      # backend memory comes out of that cache. The cost here is cache pressure on a
-      # 40GB database, not an availability risk.
+      # no OOM risk (oom_kill=0). But note the cgroup is ALREADY at ~98% of its 16g
+      # limit (memory.current 16.77GB) -- almost entirely reclaimable page cache.
+      # New backend memory comes out of that cache. The cost here is cache pressure
+      # on a 41GB database, not an availability risk.
+      #
+      # AMENDED 2026-09-02: this paragraph used to end "which with shared_buffers at
+      # the 128MB default IS this database's cache", naming a cost it did not fix.
+      # It is fixed below -- shared_buffers is now 4GB -- so that sentence is gone
+      # rather than left standing to contradict the block it prompted.
       #
       # Watch headroom (must pass --gate, and must use the repo venv for psycopg2):
-      #   .venv/bin/python scripts/check_postgres_connection_headroom.py --gate
-      # or `make postgres-headroom`. Exit 1 = alarm, 2 = could not check.
+      #   make postgres-headroom          (uses $(METRIC_PYTHON); worktree-safe)
+      # Exit 1 = alarm, 2 = could not check. `make postgres-headroom-watch` is the
+      # cron-facing variant that also raises a Pending Attention card.
       - -c
       - max_connections=${POSTGRES_MAX_CONNECTIONS:-300}
       - -c
@@ -78,6 +83,54 @@ services:
       - max_parallel_maintenance_workers=1
       - -c
       - vacuum_cost_delay=2ms
+      # Cache sizing. Both were left at the postgres:15 DEFAULTS until now, on a
+      # 41GB database: shared_buffers=128MB and effective_cache_size=4GB. The
+      # max_connections note above already named the first as a live cost --
+      # "with shared_buffers at the 128MB default IS this database's cache" --
+      # because everything not in those 128MB is served from kernel page cache
+      # inside the cgroup, where it competes with backend memory and is evicted
+      # by any other pressure in the same limit.
+      #
+      # Sized against `mem_limit` (POSTGRES_MEM_LIMIT, default 16g), NOT host RAM.
+      # These two numbers are coupled and nothing validates the relationship:
+      # lowering POSTGRES_MEM_LIMIT without lowering shared_buffers puts 4GB of
+      # PINNED, unswappable memory inside a smaller cap. Below ~8g, drop
+      # shared_buffers with it. The host has 503GB, but
+      # this container cannot use it; sizing to the host is the classic way to
+      # get a cgroup OOM. 4GB is the conventional 25%-of-available for a
+      # dedicated database, applied to the real ceiling. Headroom check: the live
+      # cgroup reports anon=333MB across 69 postgres processes, i.e. ~4.8MB each
+      # (the ~2.6MB figure quoted in the max_connections note above is optimistic
+      # -- re-measured 2026-09-02). At 300 backends that is ~1.4GB, so 4GB shared
+      # + ~1.4GB backends + 1GB shm_size is ~6.4GB of the 16g, leaving ~9.6GB for
+      # page cache and work memory. Counting shm_size as spent rather than as a
+      # cap errs safe. The cgroup was already sitting at ~97.6% of its
+      # limit on reclaimable page cache, so this moves cache from a generic,
+      # first-evicted pool into one Postgres manages with usage counts and a
+      # clock sweep -- strictly better hit behaviour for the same bytes.
+      #
+      # Not memory-NEUTRAL though, and the difference matters: memswap_limit
+      # equals mem_limit, so this container has zero swap, and under cgroup v2
+      # shmem pages are reclaimable only by swapping them out. The 3.9GB moved
+      # into shared_buffers therefore becomes PINNED rather than merely
+      # re-labelled. At these numbers that is comfortable (~4.3GB pinned, ~11.7GB
+      # still reclaimable) but it is a real reduction in what the kernel can take
+      # back under pressure, not a wash.
+      #
+      # effective_cache_size allocates NOTHING. It is a planner hint for how much
+      # is cached in total (shared_buffers + OS cache), and the 4GB default makes
+      # the planner systematically overprice index scans and prefer seq scans it
+      # should not. 12GB reflects what is actually reachable inside the 16g cap.
+      #
+      # work_mem is deliberately NOT raised here. It is per-sort, not per-backend,
+      # so at max_connections=300 a careless bump multiplies into real OOM risk --
+      # the one knob on this list where the cgroup cap genuinely bites.
+      #
+      # Both are postmaster-level; a `docker compose up -d` recreate is required.
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}

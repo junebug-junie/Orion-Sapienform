@@ -1,4 +1,4 @@
-.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom
+.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
 
 SERVICE ?=
 ARGS ?=
@@ -404,9 +404,11 @@ check-sql-migrations-applied-quiet:
 # Postgres connection headroom. Needs a reachable Postgres AND psycopg2, so like
 # check-sql-migrations-applied this is an operator/agent command, not a CI gate.
 # Exit 1 = alarm (saturated or below threshold); exit 2 = could not check.
-# Must use the repo venv -- system python3 has no psycopg2.
-# Cron it as:
-#   */10 * * * * make postgres-headroom
+# Must use the repo venv -- system python3 has no psycopg2. $(METRIC_PYTHON) and
+# not a bare `.venv/bin/python`: linked worktrees have no .venv of their own, so
+# the hardcoded path this target shipped with in PR #2010 died with exit 127 in
+# every worktree -- which is where this repo does its implementation work, and
+# where a silent 127 into a cron log is the failure mode that matters most.
 postgres-headroom:
 	.venv/bin/python scripts/check_postgres_connection_headroom.py --gate --verbose
 
@@ -415,3 +417,25 @@ postgres-headroom:
 # state and fails on drift. `REPORT=1` reports without failing.
 check-sentience-instruments:
 	@python scripts/check_sentience_instruments.py $(if $(REPORT),--report,)
+	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose
+
+# Cron-facing variant. Identical gate, plus --notify, which raises ONE Hub Pending
+# Attention card per alarm episode (debounced by severity rank; a send that fails
+# is retried on the next tick rather than being treated as delivered).
+#
+# Kept as a separate target on purpose: an operator running `make postgres-headroom`
+# by hand to look at the numbers must not raise a card, and the plain target is the
+# one a human reads output from.
+#
+# NOT INSTALLED BY THIS COMMIT. Between PR #2010 and 2026-09-02 nothing ran this
+# gate at all -- its schedule lived here as a comment nobody executed -- and a
+# comment claiming otherwise would reproduce that exact failure. The line below is
+# a recipe, not a record. Install it explicitly and verify with `crontab -l`:
+#
+#   3-59/10 * * * * make -C /mnt/scripts/Orion-Sapienform postgres-headroom-watch \
+#       >> /mnt/scripts/Orion-Sapienform/logs/orion-postgres-headroom.log 2>&1
+#
+# `make -C` (or a `cd` first) is required: cron starts in $$HOME, where there is no
+# Makefile. Every other entry in this crontab already uses one form or the other.
+postgres-headroom-watch:
+	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose --notify

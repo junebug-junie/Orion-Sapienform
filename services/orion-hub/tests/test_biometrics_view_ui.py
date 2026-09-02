@@ -240,7 +240,8 @@ def test_biometrics_view_js_sorts_snapshot_tiles_worst_first() -> None:
 def test_template_declares_a_color_legend_in_every_biometrics_panel() -> None:
     """A legend is mandatory once color carries meaning (dataviz rule) --
     one per surface: card preview, Athena, Circe, GPU."""
-    assert INDEX_HTML.count("text-emerald-200\">● good</span>") >= 4
+    assert INDEX_HTML.count("● good</span>") >= 4
+    assert INDEX_HTML.count("text-emerald-200") >= 4
 
 
 def test_biometrics_view_js_charts_more_than_the_original_four_channels() -> None:
@@ -295,3 +296,89 @@ def test_history_uses_one_multi_channel_request_not_one_per_channel() -> None:
     # exactly one call site building the history request in this function
     assert body.count("/api/biometrics/preview/history") == 1
     assert "channels=" in body
+
+
+# --------------------------------------------------------------------------
+# Second readability pass: chunky lines, unreadable induction, small labels
+# --------------------------------------------------------------------------
+#
+# Follow-up to the first readability pass. "Line charts are super chunky" --
+# the original sparkline set stroke-width in 100-unit viewBox coordinates
+# with no non-scaling-stroke, so at real card width (~300-400px) it rendered
+# as a visually thick, jagged line. "EWMA induction still untouched and hard
+# to interpret" -- it had no tone coloring and used bare "L"/"vol"/"spike"
+# abbreviations. "Labels and headers hard to read" -- 10px text at
+# text-gray-500 contrast.
+
+
+def test_sparkline_uses_thin_non_scaling_stroke_per_dataviz_mark_spec() -> None:
+    fn_start = BIOMETRICS_VIEW_JS.index("function sparkline(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  // --- Cognitive EKG", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    assert 'setAttribute("vector-effect", "non-scaling-stroke")' in body
+    assert 'setAttribute("stroke-width", "2")' in body
+    assert 'setAttribute("stroke-linecap", "round")' in body
+    # the old literal that produced the "chunky" look must be gone
+    assert 'setAttribute("stroke-width", "1.5")' not in BIOMETRICS_VIEW_JS
+
+
+def test_sparkline_shows_min_max_and_current_value_for_scale() -> None:
+    """A bare squiggle with no numbers isn't actually interpretable --
+    min/max/current give the shape something to read against."""
+    fn_start = BIOMETRICS_VIEW_JS.index("function sparkline(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  // --- Cognitive EKG", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    assert '"now "' in body
+    assert "fmt(min, 2)" in body
+    assert "fmt(max, 2)" in body
+
+
+def test_sparkline_has_area_fill_and_end_marker() -> None:
+    fn_start = BIOMETRICS_VIEW_JS.index("function sparkline(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  // --- Cognitive EKG", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    assert "fill-opacity" in body
+    assert '"circle"' in body
+
+
+def test_induction_tiles_are_tone_colored_and_sorted_worst_first() -> None:
+    """Regression test: the EWMA/induction section originally rendered every
+    tile in plain neutral gray with no sorting -- 'still untouched' in the
+    live feedback, unlike the snapshot tiles above it which already got
+    tone + sort in the first readability pass."""
+    fn_start = BIOMETRICS_VIEW_JS.index("async function loadNodeDetail(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  function cap(", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    ind_start = body.index("if (indEl) {")
+    ind_body = body[ind_start:]
+    assert "toneForPressure(m.level, invert)" in ind_body
+    assert ".sort(function (a, b) {" in ind_body
+    assert "TONE_RANK[a.tone] - TONE_RANK[b.tone]" in ind_body
+
+
+def test_induction_tiles_use_plain_words_not_cryptic_abbreviations() -> None:
+    """Regression test: the original tile sub-text was 'L 0.42' / 'vol 0.10 ·
+    spike 0.05' -- unexplained jargon. Must use full words now."""
+    fn_start = BIOMETRICS_VIEW_JS.index("async function loadNodeDetail(")
+    fn_end = BIOMETRICS_VIEW_JS.index("\n  function cap(", fn_start)
+    body = BIOMETRICS_VIEW_JS[fn_start:fn_end]
+    ind_start = body.index("if (indEl) {")
+    ind_body = body[ind_start:]
+    assert '"level "' in ind_body
+    assert '"volatility "' in ind_body
+    assert "spikes" in ind_body
+    # the old cryptic literal must be gone
+    assert '"L " + fmt(m.level' not in BIOMETRICS_VIEW_JS
+
+
+def test_template_explains_what_ewma_induction_measures_in_plain_language() -> None:
+    assert "Trend detail (EWMA)" in INDEX_HTML
+    assert "smoothed current value" in INDEX_HTML
+    assert "sudden jumps" in INDEX_HTML
+
+
+def test_biometrics_tile_labels_are_not_the_smallest_lowest_contrast_text() -> None:
+    """Regression test: tile labels/sub-text/legends were text-[10px]
+    text-gray-500 -- bumped to at least 11px / gray-400 for legibility."""
+    assert 'l.className = "text-[11px] uppercase tracking-wide text-gray-400 truncate";' in BIOMETRICS_VIEW_JS
+    assert 'l.className = "text-[10px] uppercase tracking-wide text-gray-500 truncate";' not in BIOMETRICS_VIEW_JS

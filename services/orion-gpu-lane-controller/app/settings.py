@@ -52,17 +52,27 @@ class Settings(BaseSettings):
     # MUST name atlas-agent explicitly. A bare `stop`/`up` with no service
     # argument would touch chat/metacog/fast too.
     AGENT_COMPOSE_RELPATH: str = "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
-    AGENT_ENV_RELPATH: str = "services/orion-llamacpp-host/.env.atlas"
+    # NOTE: the README's own quickstart says `.env.atlas` -- that is NOT
+    # what's actually deployed. Confirmed live on circe 2026-09-02: the real
+    # file every ATLAS_*/agent-lane container reads is plain `.env` in this
+    # same directory (ls'd directly; no `.env.atlas` exists there at all).
+    # Runtime truth over documented convention -- see CLAUDE.md's "Runtime
+    # truth beats config truth."
+    AGENT_ENV_RELPATH: str = "services/orion-llamacpp-host/.env"
     AGENT_COMPOSE_SERVICE: str = "atlas-agent"
     AGENT_COMPOSE_PROFILE: str = "agent-split"
 
     # GPU1 is the entire point of this lane -- fixed here rather than
     # trusted from whatever ATLAS_AGENT_CUDA_VISIBLE_DEVICES happens to
-    # already be set to in .env.atlas, since a stale/different value there
-    # would silently start the agent worker on the wrong card. Passed as an
-    # explicit process-env override at invocation time (compose variable
-    # substitution prefers real process env over --env-file), not relied on
-    # from the env file.
+    # already be set to in the env file, since a stale/different value there
+    # would silently start the agent worker on the wrong card. Confirmed
+    # live 2026-09-02: it's currently "2" there (Tesla PG500-216) -- a card
+    # shared with diffusion-host, which idles near 0 but spikes to ~25GB
+    # while actively generating, real OOM-contention risk for anything
+    # permanently resident alongside it. GPU1 (post affect-gpt eviction) has
+    # no such neighbor. Passed as an explicit process-env override at
+    # invocation time (compose variable substitution prefers real process
+    # env over --env-file), not relied on from the env file.
     AGENT_GPU1_CUDA_VISIBLE_DEVICES: str = "1"
 
     # Generous like cortex-exec's own SKILLS_DOCKER_COMPOSE_BRINGUP_*

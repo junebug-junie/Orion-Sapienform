@@ -7,7 +7,9 @@ between two lanes:
 - **`agent`** — `orion-llamacpp-host`'s `atlas-agent` worker (the LLM-gateway
   `agent` route), forced onto GPU1 via an explicit
   `ATLAS_AGENT_CUDA_VISIBLE_DEVICES` override at invocation time regardless
-  of whatever's already in `.env.atlas`
+  of whatever's already in `orion-llamacpp-host/.env` (the README there says
+  `.env.atlas`; confirmed live on circe 2026-09-02 that's not actually what's
+  deployed -- runtime truth over documented convention)
 
 ## Why this exists
 

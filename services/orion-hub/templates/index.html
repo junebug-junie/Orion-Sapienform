@@ -77,6 +77,13 @@
             role="button"
           >Curiosity</a>
           <a
+            id="sentienceProgramTabButton"
+            href="#sentience-program"
+            data-hash-target="#sentience-program"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Sentience Program</a>
+          <a
             id="memoryTabButton"
             href="#memory"
             data-hash-target="#memory"
@@ -2586,6 +2593,28 @@
             class="w-full h-full border-0 min-h-[40rem]"
             loading="lazy"
             title="Curiosity Atlas"
+          ></iframe>
+        </div>
+      </section>
+
+      <section id="sentience-program" data-panel="sentience-program" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Sentience Program</h2>
+            <p class="text-xs text-gray-400">Each instrument: what it is doing now, how far its history actually reaches and what caps it, what it affects, and which outcome it unlocks. Every value read live; claims re-checked on load. Read-only.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="sentienceProgramPanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="sentienceProgramPanelStandaloneLink" href="/sentience-program" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe
+            id="sentienceProgramPanelFrame"
+            src="/sentience-program"
+            class="w-full h-full border-0 min-h-[40rem]"
+            loading="lazy"
+            title="Sentience Program instrument board"
           ></iframe>
         </div>
       </section>

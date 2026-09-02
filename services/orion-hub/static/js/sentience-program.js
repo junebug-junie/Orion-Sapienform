@@ -205,4 +205,17 @@
   document.getElementById("reload").addEventListener("click", function () { load(false); });
   document.getElementById("load-consumers").addEventListener("click", function () { load(true); });
   load(false);
+
+  // Same activate/refresh contract Concept Atlas established and Curiosity Atlas
+  // follows, so the Hub panel shell drives this page the same way it drives its
+  // siblings rather than inventing a second convention.
+  //
+  // There is deliberately no `deactivate`: this page fetches once per load and
+  // runs no timer, so there is nothing to stop when the tab is hidden. The
+  // siblings need one because they poll; adding an empty one here would imply a
+  // background cost that does not exist.
+  window.OrionSentienceProgram = {
+    refresh: function () { load(false); },
+    activate: function () { load(false); },
+  };
 })();

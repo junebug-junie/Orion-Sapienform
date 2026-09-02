@@ -143,6 +143,29 @@ def test_http_agent_mode_never_reaches_should_use_context_exec_agent_lane():
     )
 
 
+def test_success_frames_and_chat_history_tag_the_real_mode_not_a_hardcoded_orion():
+    """Live-caught, 2026-09-02: a real HTTP Agent-mode turn against athena's
+    running Hub came back with chat_route="unified_turn_harness" (routing
+    confirmed correct) but the final frame's own "mode" field said "orion"
+    -- turn_orchestrator.py's _success_frames/_publish_unified_turn_chat_history
+    hardcoded "orion" regardless of caller, which would have permanently
+    mislabeled every persisted Agent-mode chat_history_log row too. Source
+    assertions (turn_orchestrator.py has no dedicated test module of its own
+    isolated by mode value) rather than a full execute_unified_turn mock,
+    matching this repo's existing convention for this exact function
+    (test_turn_orchestrator_ws_frames.py's own docstrings)."""
+    orch_path = HUB_ROOT.parents[1] / "orion" / "hub" / "turn_orchestrator.py"
+    source = orch_path.read_text(encoding="utf-8")
+    assert '"mode": "orion",' not in source
+    assert '"mode": mode_tag,' in source
+    assert 'mode_tag = str(payload.get("mode") or "orion").strip().lower()' in source
+    # Both _success_frames call sites inside execute_unified_turn must pass
+    # it through -- a fix that only updated the default-frame call site
+    # (the finalize_ran path) would leave the finalize_degraded_reason path
+    # still silently mislabeling degraded Agent-mode turns.
+    assert source.count("mode_tag=mode_tag,") >= 1
+
+
 def test_env_example_matches_the_new_default():
     """CLAUDE.md env parity: the checked-in .env_example must reflect the
     real intended default, not the old, now-wrong `true`."""

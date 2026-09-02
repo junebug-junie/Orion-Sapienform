@@ -428,3 +428,71 @@ def test_python_absence_fallback_matches_ripgrep():
     )
     expected = {ln.removeprefix("./") for ln in proc.stdout.splitlines() if ln.strip()}
     assert fallback == expected
+
+
+# ---------------------------------------------------------------------------
+# Absence scan -- the no-ripgrep path the Hub container actually runs
+# ---------------------------------------------------------------------------
+
+
+def test_absence_walk_prunes_heavy_directories(tmp_path):
+    """The walk must not descend into .git / graphify-out and friends.
+
+    Regression guard for a live 78-second page load: ripgrep is NOT installed in
+    orion-athena-hub, so the Python fallback is the path that runs there, and an
+    rglob-based version traversed 434,401 files including a 293MB .git and a
+    640MB graphify-out. Pruning must happen DURING traversal, not as a filter
+    afterwards.
+    """
+    from orion.sentience_striving_program.instruments import _python_hit_paths_multi
+
+    needle = "zzz_absence_probe_symbol"
+    (tmp_path / "real.py").write_text(f"def {needle}(): pass")
+    for heavy in (".git", "graphify-out", "node_modules", "__pycache__"):
+        d = tmp_path / heavy
+        d.mkdir()
+        (d / "buried.py").write_text(f"def {needle}(): pass")
+
+    found = _python_hit_paths_multi([needle], tmp_path)[needle]
+    assert found == ["real.py"], (
+        f"walk descended into a pruned directory: {sorted(found)}"
+    )
+
+
+def test_absence_walk_serves_every_pattern_in_one_pass(tmp_path):
+    """Batching is the property that keeps this off the page-load critical path."""
+    from orion.sentience_striving_program.instruments import _python_hit_paths_multi
+
+    (tmp_path / "a.py").write_text("def alpha_sym(): pass")
+    (tmp_path / "b.py").write_text("def beta_sym(): pass")
+    res = _python_hit_paths_multi(["alpha_sym", "beta_sym", "gamma_sym"], tmp_path)
+    assert res["alpha_sym"] == ["a.py"]
+    assert res["beta_sym"] == ["b.py"]
+    assert res["gamma_sym"] == []  # absent target returns empty, not missing
+
+
+def test_absence_counts_agree_with_and_without_ripgrep(tmp_path, monkeypatch):
+    """Both backends must give the same answer, or the gate depends on the host.
+
+    Asserted on a target that IS present as well as one that is absent: two
+    zeroes would agree even if a backend were broken and always found nothing.
+    """
+    import subprocess as sp
+
+    from orion.sentience_striving_program import instruments as mod
+
+    (tmp_path / "present.py").write_text("def present_sym(): pass")
+
+    with_rg = mod.absence_counts(["present_sym", "absent_sym"], tmp_path)
+
+    real_run = sp.run
+
+    def _no_rg(cmd, *a, **k):
+        if cmd and cmd[0] == "rg":
+            raise FileNotFoundError("rg")
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(mod.subprocess, "run", _no_rg)
+    without_rg = mod.absence_counts(["present_sym", "absent_sym"], tmp_path)
+
+    assert with_rg == without_rg == {"present_sym": 1, "absent_sym": 0}

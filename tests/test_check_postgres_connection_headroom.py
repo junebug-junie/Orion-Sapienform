@@ -10,6 +10,7 @@ every client backend connecting as `postgres` (a superuser), 217
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -576,3 +577,42 @@ def test_escalation_failure_is_not_reported_as_an_alarm(monkeypatch, tmp_path, c
     )
     assert rc == EXIT_OK
     assert recorder.get("calls", []) == []
+
+
+def test_the_notify_client_is_importable_when_run_as_a_script(tmp_path):
+    """Regression: the escalation path shipped dead on arrival.
+
+    Invoked as `python scripts/check_postgres_connection_headroom.py` -- exactly
+    how `make postgres-headroom-watch`, and therefore cron, invokes it --
+    sys.path[0] is `scripts/`, not the repo root. The lazy
+    `from orion.notify.client import NotifyClient` inside notify_alarm() then
+    raised ModuleNotFoundError, and every alarm printed "notify unavailable;
+    alarm not escalated" instead of raising a card. The gate ran, reported
+    correctly, and escalated nothing.
+
+    This has to be a SUBPROCESS from a foreign cwd with PYTHONPATH cleared.
+    Every other test in this file passed straight through the bug: this module
+    inserts REPO_ROOT into sys.path at import time, and then monkeypatches
+    sys.modules["orion.notify.client"] anyway, so the import being stood in for
+    could not fail no matter how broken the script's own path setup was.
+    """
+    script = REPO_ROOT / "scripts" / "check_postgres_connection_headroom.py"
+    probe = (
+        "import runpy\n"
+        # run_name != "__main__" so module-level setup executes but main() does not
+        f"runpy.run_path({str(script)!r}, run_name='_probe')\n"
+        "import orion.notify.client\n"
+        "print('NOTIFY_IMPORT_OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": ""},
+    )
+    assert "NOTIFY_IMPORT_OK" in result.stdout, (
+        "the script's own sys.path setup did not make `orion` importable, so "
+        "--notify would report 'notify unavailable' in production\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr[-900:]!r}"
+    )

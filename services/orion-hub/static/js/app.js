@@ -249,6 +249,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const debugPanelModalBackdrop = document.getElementById('debugPanelModalBackdrop');
   const debugPanelModalDialog = document.getElementById('debugPanelModalDialog');
   const debugPanelModalClose = document.getElementById('debugPanelModalClose');
+  const biometricsModalRoot = document.getElementById('biometricsModalRoot');
+  const biometricsModalBackdrop = document.getElementById('biometricsModalBackdrop');
+  const biometricsModalDialog = document.getElementById('biometricsModalDialog');
+  const biometricsModalClose = document.getElementById('biometricsModalClose');
   const memoryPanelToggle = document.getElementById('memoryPanelToggle');
   const memoryPanelCaret = document.getElementById('memoryPanelCaret');
   const memoryPanelBody = document.getElementById('memoryPanelBody');
@@ -726,8 +730,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const cocreationSignalsPanel = document.getElementById("cocreation-signals");
   const fieldAttentionTabButton = document.getElementById("fieldAttentionTabButton");
   const fieldAttentionPanel = document.getElementById("field-attention");
-  const cabinetTabButton = document.getElementById("cabinetTabButton");
-  const cabinetPanel = document.getElementById("cabinet");
+  // Cabinet is no longer a standalone top-level tab -- it's a subview inside
+  // the Biometrics modal (biometrics-view.js), which owns its own DOM lookup
+  // and activate()/deactivate() calls now.
   const reverieTabButton = document.getElementById("reverieTabButton");
   const reveriePanel = document.getElementById("reverie");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
@@ -1037,9 +1042,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "field-attention" && !fieldAttentionPanel) {
       effectiveTab = "hub";
     }
-    if (tabKey === "cabinet" && !cabinetPanel) {
-      effectiveTab = "hub";
-    }
     if (tabKey === "reverie" && !reveriePanel) {
       effectiveTab = "hub";
     }
@@ -1062,9 +1064,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const isAttentionOrgan = effectiveTab === "attention-organ";
     const isCocreationSignals = effectiveTab === "cocreation-signals";
     const isFieldAttention = effectiveTab === "field-attention";
-    const isCabinet = effectiveTab === "cabinet";
     const isReverie = effectiveTab === "reverie";
     hubTabPanel.classList.toggle("hidden", !isHub);
+    // Cognitive EKG card's Biometrics preview toggle lives on this panel --
+    // same isX ? activate() : deactivate() contract as every other lazy
+    // panel below (review finding: without this, cardPollTimer keeps
+    // firing GET /api/biometrics/preview/snapshot every 10s forever once
+    // started, even after navigating away from the hub tab).
+    if (!isHub && window.OrionBiometricsView && typeof window.OrionBiometricsView.deactivate === "function") {
+      window.OrionBiometricsView.deactivate();
+    }
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
     substratePanel.classList.toggle("hidden", !isSubstrate);
@@ -1230,17 +1239,6 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionFieldAttention.deactivate();
       }
     }
-    if (cabinetPanel) {
-      cabinetPanel.classList.toggle("hidden", !isCabinet);
-      // Same poll-only-while-visible rule as Field Attention — Nano snapshot tab.
-      if (isCabinet) {
-        if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.activate === "function") {
-          window.OrionCabinetSensors.activate();
-        }
-      } else if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.deactivate === "function") {
-        window.OrionCabinetSensors.deactivate();
-      }
-    }
     if (reveriePanel) {
       reveriePanel.classList.toggle("hidden", !isReverie);
       // No poll loop (historical browsing tool, not live telemetry) --
@@ -1305,9 +1303,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (reverieTabButton) {
       styleTabButton(reverieTabButton, isReverie);
-    }
-    if (cabinetTabButton) {
-      styleTabButton(cabinetTabButton, isCabinet);
     }
   }
 
@@ -1899,8 +1894,6 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("cocreation-signals");
     } else if (h === "#field-attention" && fieldAttentionPanel && fieldAttentionTabButton) {
       setActiveTab("field-attention");
-    } else if (h === "#cabinet" && cabinetPanel && cabinetTabButton) {
-      setActiveTab("cabinet");
     } else if (h === "#reverie" && reveriePanel && reverieTabButton) {
       setActiveTab("reverie");
     } else {
@@ -3273,9 +3266,52 @@ document.addEventListener("DOMContentLoaded", () => {
       || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(autonomyReadinessModalRoot)
       || isModalVisible(debugPanelModalRoot)
+      || isModalVisible(biometricsModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
+
+  function ensureBiometricsModalRootOnBody() {
+    if (!biometricsModalRoot || !document.body) return;
+    if (biometricsModalRoot.parentElement !== document.body) {
+      document.body.appendChild(biometricsModalRoot);
+    }
+  }
+
+  function openBiometricsModal() {
+    if (!biometricsModalRoot) return;
+    ensureBiometricsModalRootOnBody();
+    biometricsModalRoot.style.position = 'fixed';
+    biometricsModalRoot.style.inset = '0';
+    biometricsModalRoot.style.zIndex = '2147483640';
+    if (biometricsModalBackdrop) {
+      biometricsModalBackdrop.style.position = 'fixed';
+      biometricsModalBackdrop.style.inset = '0';
+      biometricsModalBackdrop.style.zIndex = '2147483640';
+    }
+    if (biometricsModalDialog) {
+      biometricsModalDialog.style.position = 'fixed';
+      biometricsModalDialog.style.zIndex = '2147483641';
+    }
+    biometricsModalRoot.classList.remove('hidden');
+    biometricsModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    if (window.OrionBiometricsView && typeof window.OrionBiometricsView.onModalOpen === 'function') {
+      window.OrionBiometricsView.onModalOpen();
+    }
+  }
+
+  function closeBiometricsModal() {
+    if (!biometricsModalRoot) return;
+    biometricsModalRoot.classList.add('hidden');
+    biometricsModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+    if (window.OrionBiometricsView && typeof window.OrionBiometricsView.onModalClose === 'function') {
+      window.OrionBiometricsView.onModalClose();
+    }
+  }
+  window.openBiometricsModal = openBiometricsModal;
+  window.closeBiometricsModal = closeBiometricsModal;
 
   function ensureChatInputExpandModalRootOnBody() {
     if (!chatInputExpandModalRoot || !document.body) return;
@@ -9985,6 +10021,20 @@ document.addEventListener("DOMContentLoaded", () => {
   if (debugPanelModalDialog) {
     debugPanelModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  if (biometricsModalClose) {
+    biometricsModalClose.addEventListener('click', closeBiometricsModal);
+  }
+  if (biometricsModalBackdrop) {
+    biometricsModalBackdrop.addEventListener('click', closeBiometricsModal);
+  }
+  if (biometricsModalRoot) {
+    biometricsModalRoot.addEventListener('click', (event) => {
+      if (event.target === biometricsModalRoot) closeBiometricsModal();
+    });
+  }
+  if (biometricsModalDialog) {
+    biometricsModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
@@ -10521,6 +10571,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (event.key === 'Escape' && debugPanelModalRoot && !debugPanelModalRoot.classList.contains('hidden')) {
       closeDebugPanelModal();
+      return;
+    }
+    if (event.key === 'Escape' && biometricsModalRoot && !biometricsModalRoot.classList.contains('hidden')) {
+      closeBiometricsModal();
       return;
     }
     if (event.key === 'Escape' && chatStanceDebugModalRoot && !chatStanceDebugModalRoot.classList.contains('hidden')) {
@@ -12624,13 +12678,6 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("field-attention");
         history.replaceState(null, "", "#field-attention");
-      });
-    }
-    if (cabinetTabButton && cabinetPanel) {
-      cabinetTabButton.addEventListener("click", (event) => {
-        event.preventDefault();
-        setActiveTab("cabinet");
-        history.replaceState(null, "", "#cabinet");
       });
     }
     applyHashToTab();

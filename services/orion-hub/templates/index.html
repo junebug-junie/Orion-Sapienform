@@ -153,13 +153,6 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Field Attention</a>
-          <a
-            id="cabinetTabButton"
-            href="#cabinet"
-            data-hash-target="#cabinet"
-            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
-            role="button"
-          >Cabinet</a>
           {{HUB_AITOWN_TAB_NAV}}
           <a
             id="selfObservabilityTabButton"
@@ -181,10 +174,27 @@
       <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
       <div class="w-full md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
-        <h2 class="text-xl font-bold text-white mb-1">Cognitive EKG</h2>
+        <div class="flex items-center justify-between mb-1">
+          <h2 id="ekgCardTitle" class="text-xl font-bold text-white">Cognitive EKG</h2>
+          <button
+            type="button"
+            id="ekgViewToggle"
+            class="px-2 py-1 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
+            title="Toggle between Substrate Brain State and a Biometrics preview"
+            aria-label="Toggle Cognitive EKG / Biometrics view"
+          >Biometrics ⇄</button>
+        </div>
 
         <div id="stateVisualizerContainer" class="w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner">
           <iframe src="/spark/ui" class="w-full h-full border-0" title="Orion Cognitive EKG"></iframe>
+        </div>
+
+        <div id="biometricsPreviewContainer" class="hidden w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner p-3 cursor-pointer" title="Click to open the full Biometrics view">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs text-gray-400">Athena + Circe host telemetry — click to inspect</span>
+            <span id="biometricsPreviewStatus" class="text-[10px] text-gray-500 italic">Loading…</span>
+          </div>
+          <div id="biometricsPreviewGrid" class="grid grid-cols-2 gap-3 text-xs"></div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
@@ -1090,99 +1100,11 @@
         <div id="fieldAttentionBottomStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
       </section>
 
-      <section id="cabinet" data-panel="cabinet" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="min-w-0">
-            <h2 class="text-xl font-bold text-white">Cabinet — Athena Nano sensors</h2>
-            <p class="text-xs text-gray-400 max-w-4xl">
-              Live host snapshot from <code class="text-gray-500">/run/orion-sensors/latest.json</code>
-              (written by <code class="text-gray-500">orion-cabinet-sensors.service</code>), served by
-              <code class="text-gray-500">GET /api/cabinet/sensors/latest</code>. Raw channels plus Hub-local
-              derived pressures. Missing sensors render as <code class="text-gray-500">absent</code>, never as
-              zero. Polls only while this tab is visible.
-            </p>
-            <p class="text-[10px] text-gray-500 max-w-4xl mt-1">
-              Pressure strip is labeled <span class="text-gray-400">activity (Hub)</span> because baselines are
-              process-local operator-debug approximations — not the live biometrics field values.
-            </p>
-          </div>
-          <div class="flex items-center gap-2 text-xs shrink-0">
-            <button type="button" id="cabinetRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
-          </div>
-        </div>
-        <div id="cabinetStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this tab to start polling.</div>
-        <div id="cabinetSources" class="text-xs text-gray-400 min-h-[1rem]"></div>
-        <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="text-sm font-semibold text-gray-100">Ambient audio</h3>
-              <p class="text-[11px] text-gray-500">
-                Live cabinet level plus Postgres biometrics-summary history at ~30s grain.
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-1" aria-label="Ambient history window">
-              <button type="button" data-cabinet-ambient-window="24h" class="px-2 py-1 rounded border border-indigo-500 bg-indigo-950/60 text-[11px] font-mono text-indigo-200">24h</button>
-              <button type="button" data-cabinet-ambient-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
-              <button type="button" data-cabinet-ambient-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
-            </div>
-          </div>
-          <div id="cabinetAmbientStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this tab to load ambient audio.</div>
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">RMS</div>
-              <div id="cabinetAmbientRms" class="mt-1 font-mono text-sm text-gray-200">—</div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">peak</div>
-              <div id="cabinetAmbientPeak" class="mt-1 font-mono text-sm text-gray-200">—</div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">age</div>
-              <div id="cabinetAmbientAge" class="mt-1 font-mono text-sm text-gray-200">—</div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">status</div>
-              <div id="cabinetAmbientLiveStatus" class="mt-1 font-mono text-sm text-gray-200">—</div>
-            </div>
-          </div>
-          <div class="grid grid-cols-1 xl:grid-cols-3 gap-3">
-            <div class="xl:col-span-2 rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">RMS</div>
-              <div id="cabinetAmbientRmsChart" class="min-h-[8rem]"></div>
-            </div>
-            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
-              <div class="text-xs font-semibold text-gray-300 mb-2">activity (0–1) · red dashes = spikes</div>
-              <div id="cabinetAmbientActivityChart" class="min-h-[8rem]"></div>
-            </div>
-          </div>
-          <p class="text-[10px] text-gray-500">
-            Charts use the biometrics summary at ~30s grain; they are not the 1 Hz live host-reader stream.
-          </p>
-        </div>
-        <div id="cabinetSensorGrid" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
-        <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="text-sm font-semibold text-gray-100">Nano sensor history</h3>
-              <p class="text-[11px] text-gray-500">
-                Postgres biometrics-summary trends at ~30s grain — all five Nano channels (env, UV/ALS, lidar, mag, IMU) plus derived activity.
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-1" aria-label="Sensor history window">
-              <button type="button" data-cabinet-sensor-window="24h" class="px-2 py-1 rounded border border-teal-500 bg-teal-950/60 text-[11px] font-mono text-teal-200">24h</button>
-              <button type="button" data-cabinet-sensor-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
-              <button type="button" data-cabinet-sensor-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
-            </div>
-          </div>
-          <div id="cabinetSensorHistoryStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this tab to load sensor history.</div>
-          <div id="cabinetSensorHistoryGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
-          <p class="text-[10px] text-gray-500">
-            Charts use biometrics summary at ~30s grain; live tiles above poll the host reader at ~1 Hz.
-            UV <em>activity</em> tracks volatility of <code class="text-gray-500">uv_raw</code> only — use ALS raw for ambient light; mag/IMU history appears after biometrics ingests merged dual-Nano snapshots.
-          </p>
-        </div>
-        <div id="cabinetPressureStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
-      </section>
+      <!-- Cabinet ("#cabinet") relocated 2026-09-02 from a standalone top-level
+           tab into the Biometrics modal's Cabinet subview (below, near
+           #biometricsModalRoot) -- see biometrics-view.js. id="cabinet" is
+           unchanged; cabinet-sensors.js binds by getElementById and does not
+           care where in the DOM this section lives. -->
 
       <section id="self-observability" data-panel="self-observability" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -2910,6 +2832,153 @@
     </div>
   </div>
 
+  <div id="biometricsModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483640;" aria-hidden="true">
+    <div id="biometricsModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483640;"></div>
+    <div id="biometricsModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[92vw] h-[92vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483641;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4 gap-4">
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="text-xs uppercase tracking-[0.24em] text-gray-300 mr-2">Biometrics</div>
+          <button type="button" id="biometricsSubtabAthena" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-700 text-gray-100 border border-gray-700">Athena</button>
+          <button type="button" id="biometricsSubtabCirce" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Circe</button>
+          <button type="button" id="biometricsSubtabGpu" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">GPU</button>
+          <button type="button" id="biometricsSubtabCabinet" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Cabinet</button>
+        </div>
+        <button
+          id="biometricsModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800 shrink-0"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="biometricsSubviewAthena" class="flex flex-col gap-4">
+          <h3 class="text-sm font-semibold text-gray-100">Athena — current snapshot</h3>
+          <div id="biometricsAthenaSnapshot" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+          <h3 class="text-sm font-semibold text-gray-100">Trended</h3>
+          <div id="biometricsAthenaHistory" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+          <h3 class="text-sm font-semibold text-gray-100">EWMA / induction</h3>
+          <div id="biometricsAthenaInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+        </div>
+        <div id="biometricsSubviewCirce" class="hidden flex-col gap-4">
+          <h3 class="text-sm font-semibold text-gray-100">Circe — current snapshot</h3>
+          <div id="biometricsCirceSnapshot" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+          <h3 class="text-sm font-semibold text-gray-100">Trended</h3>
+          <div id="biometricsCirceHistory" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+          <h3 class="text-sm font-semibold text-gray-100">EWMA / induction</h3>
+          <div id="biometricsCirceInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+        </div>
+        <div id="biometricsSubviewGpu" class="hidden flex-col gap-4">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="text-gray-400">Node:</span>
+            <button type="button" data-biometrics-gpu-node="athena" class="px-2 py-1 rounded border border-indigo-500 bg-indigo-950/60 text-[11px] font-mono text-indigo-200">athena</button>
+            <button type="button" data-biometrics-gpu-node="circe" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">circe</button>
+          </div>
+          <div id="biometricsGpuStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load GPU data.</div>
+          <div id="biometricsGpuGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+        </div>
+        <!-- Cabinet's subview panel IS #cabinet itself (no extra wrapper div) --
+             cabinet-sensors.js's poll-guard (bindElements/startPolling) checks
+             els.panel.classList.contains("hidden") directly on #cabinet, so
+             the hidden toggle for this subview must land on #cabinet, not on
+             a sibling wrapper, to keep that guard meaningful post-relocation. -->
+        <section id="cabinet" data-panel="cabinet" class="hidden w-full bg-gray-900 rounded-2xl p-1 flex flex-col gap-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div class="min-w-0">
+                <h2 class="text-xl font-bold text-white">Cabinet — Athena Nano sensors</h2>
+                <p class="text-xs text-gray-400 max-w-4xl">
+                  Live host snapshot from <code class="text-gray-500">/run/orion-sensors/latest.json</code>
+                  (written by <code class="text-gray-500">orion-cabinet-sensors.service</code>), served by
+                  <code class="text-gray-500">GET /api/cabinet/sensors/latest</code>. Raw channels plus Hub-local
+                  derived pressures. Missing sensors render as <code class="text-gray-500">absent</code>, never as
+                  zero. Polls only while this subview is visible.
+                </p>
+                <p class="text-[10px] text-gray-500 max-w-4xl mt-1">
+                  Pressure strip is labeled <span class="text-gray-400">activity (Hub)</span> because baselines are
+                  process-local operator-debug approximations — not the live biometrics field values.
+                </p>
+              </div>
+              <div class="flex items-center gap-2 text-xs shrink-0">
+                <button type="button" id="cabinetRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
+              </div>
+            </div>
+            <div id="cabinetStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this subview to start polling.</div>
+            <div id="cabinetSources" class="text-xs text-gray-400 min-h-[1rem]"></div>
+            <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-100">Ambient audio</h3>
+                  <p class="text-[11px] text-gray-500">
+                    Live cabinet level plus Postgres biometrics-summary history at ~30s grain.
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-1" aria-label="Ambient history window">
+                  <button type="button" data-cabinet-ambient-window="24h" class="px-2 py-1 rounded border border-indigo-500 bg-indigo-950/60 text-[11px] font-mono text-indigo-200">24h</button>
+                  <button type="button" data-cabinet-ambient-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
+                  <button type="button" data-cabinet-ambient-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
+                </div>
+              </div>
+              <div id="cabinetAmbientStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load ambient audio.</div>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">RMS</div>
+                  <div id="cabinetAmbientRms" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">peak</div>
+                  <div id="cabinetAmbientPeak" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">age</div>
+                  <div id="cabinetAmbientAge" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">status</div>
+                  <div id="cabinetAmbientLiveStatus" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                </div>
+              </div>
+              <div class="grid grid-cols-1 xl:grid-cols-3 gap-3">
+                <div class="xl:col-span-2 rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                  <div class="text-xs font-semibold text-gray-300 mb-2">RMS</div>
+                  <div id="cabinetAmbientRmsChart" class="min-h-[8rem]"></div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                  <div class="text-xs font-semibold text-gray-300 mb-2">activity (0–1) · red dashes = spikes</div>
+                  <div id="cabinetAmbientActivityChart" class="min-h-[8rem]"></div>
+                </div>
+              </div>
+              <p class="text-[10px] text-gray-500">
+                Charts use the biometrics summary at ~30s grain; they are not the 1 Hz live host-reader stream.
+              </p>
+            </div>
+            <div id="cabinetSensorGrid" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+            <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-100">Nano sensor history</h3>
+                  <p class="text-[11px] text-gray-500">
+                    Postgres biometrics-summary trends at ~30s grain — all five Nano channels (env, UV/ALS, lidar, mag, IMU) plus derived activity.
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-1" aria-label="Sensor history window">
+                  <button type="button" data-cabinet-sensor-window="24h" class="px-2 py-1 rounded border border-teal-500 bg-teal-950/60 text-[11px] font-mono text-teal-200">24h</button>
+                  <button type="button" data-cabinet-sensor-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
+                  <button type="button" data-cabinet-sensor-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
+                </div>
+              </div>
+              <div id="cabinetSensorHistoryStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load sensor history.</div>
+              <div id="cabinetSensorHistoryGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+              <p class="text-[10px] text-gray-500">
+                Charts use biometrics summary at ~30s grain; live tiles above poll the host reader at ~1 Hz.
+                UV <em>activity</em> tracks volatility of <code class="text-gray-500">uv_raw</code> only — use ALS raw for ambient light; mag/IMU history appears after biometrics ingests merged dual-Nano snapshots.
+              </p>
+            </div>
+            <div id="cabinetPressureStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="debugPanelModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483640;" aria-hidden="true">
     <div id="debugPanelModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483640;"></div>
     <div id="debugPanelModalDialog" class="fixed left-1/2 top-1/2 z-[121] flex w-[75vw] h-[75vh] max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483641;">
@@ -3757,6 +3826,7 @@
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <!--
     Vendored, not CDN. chat-markdown.js is the first place the Hub renders

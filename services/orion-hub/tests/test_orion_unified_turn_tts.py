@@ -203,16 +203,21 @@ def test_extra_gate_can_suppress_dispatch_even_with_everything_else_ok():
 
 def test_the_orion_lane_actually_calls_the_shared_dispatch_function():
     """The real regression-proof, replacing the substring-count check: the
-    orion branch must call the SAME `dispatch_tts_reply` the classic lane
-    calls, via source verification of an unambiguous call site, not a raw
-    count of an unrelated substring that was already >= 2 before the fix."""
+    orion/agent branch must call the SAME `dispatch_tts_reply` the classic
+    lane calls, via source verification of an unambiguous call site, not a
+    raw count of an unrelated substring that was already >= 2 before the fix.
+
+    lane=client_mode (not a hardcoded "orion" literal) since 2026-09-02:
+    Agent mode joined this same branch (see
+    test_agent_mode_shares_the_orion_fcc_branch below) and must be tagged
+    "agent" here, not silently mislabeled "orion"."""
     source = WS_PATH.read_text(encoding="utf-8")
     orion_call = "extract_unified_turn_final_text(orion_turn_frames)"
     assert orion_call in source
     idx = source.index(orion_call)
     following = source[idx : idx + 500]
     assert "dispatch_tts_reply(" in following
-    assert 'lane="orion"' in following
+    assert "lane=client_mode," in following
 
 
 def test_dispatched_task_is_strongly_referenced_then_released():

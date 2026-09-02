@@ -3145,7 +3145,17 @@ async def handle_chat_request(
         agent_claude_result["chat_route"] = CHAT_ROUTE_AGENT_CLAUDE
         return agent_claude_result
 
-    if str(payload.get("mode") or "").strip().lower() == "orion" and settings.ORION_UNIFIED_TURN_ENABLED:
+    # "agent" joined this branch 2026-09-02, same reasoning and same
+    # widened condition as websocket_handler.py's "orion"/"agent" FCC
+    # branch: Agent mode used to fall through to should_use_context_exec_
+    # agent_lane() below, which called orion-context-exec directly (zero
+    # containers deployed on athena, always failed). Review finding: an
+    # earlier version of this fix only widened the WebSocket handler's
+    # condition, silently leaving this HTTP fallback path routing "agent"
+    # through the plain cortex_client.chat() path below instead (a
+    # different, untested behavior change, not the FCC fix this PR claims)
+    # -- caught before merge, fixed here to match.
+    if str(payload.get("mode") or "").strip().lower() in ("orion", "agent") and settings.ORION_UNIFIED_TURN_ENABLED:
         if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
             return {
                 "type": "turn_error",

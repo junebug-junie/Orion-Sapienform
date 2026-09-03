@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
+from uuid import UUID
 import json
 import logging
 import re
@@ -17,6 +19,21 @@ from orion.schemas.routing_decision import RoutingDecisionRecordV1
 #: Channel + kind declared in orion/bus/channels.yaml and orion/schemas/registry.py.
 ROUTING_DECISION_CHANNEL = "orion:routing:decision"
 ROUTING_DECISION_KIND = "routing.decision.record.v1"
+
+#: Reasons the router itself composes are structured tags joined by "+"
+#: ("heuristic:engineering+routing_threshold_gate"). Anything else -- notably the
+#: LLM router's free-text `reason`, parsed out of a completion whose prompt
+#: renders the user's message -- is dropped rather than persisted.
+_SAFE_REASON_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789_:+.-")
+
+
+def _safe_routing_reason(raw: object, *, limit: int = 120) -> str:
+    text = str(raw or "").strip()
+    if not text or len(text) > limit:
+        return "unstructured"
+    if not set(text.lower()) <= _SAFE_REASON_CHARS:
+        return "unstructured"
+    return text
 from orion.cognition.verb_catalog import (
     VerbInfo,
     filter_allowed,
@@ -121,6 +138,9 @@ def _trace_autopsy_mode_for_text(text: str) -> bool:
 class DecisionRouter:
     def __init__(self, bus: OrionBusAsync):
         self.bus = bus
+        # Strong refs to detached emit tasks; asyncio only holds weak ones, so
+        # without this the GC can cancel a publish mid-flight.
+        self._emit_tasks: set[asyncio.Task] = set()
         self.settings = get_settings()
 
     def _user_text(self, req: CortexClientRequest) -> str:
@@ -287,6 +307,7 @@ class DecisionRouter:
         depth_before_gate: int,
         routing_threshold: float,
         gate_demoted: bool,
+        verb_before_gate: str | None,
         correlation_id: str,
         source: ServiceRef,
     ) -> None:
@@ -308,25 +329,56 @@ class DecisionRouter:
                 correlation_id=correlation_id,
                 session_id=getattr(req.context, "session_id", None),
                 source=str(getattr(decision, "source", "heuristic") or "heuristic"),
-                reason=str(getattr(decision, "reason", "") or ""),
+                # Only the router's own structured tags, never the model's prose.
+                # On the LLM path `reason` is free text parsed straight out of a
+                # completion whose prompt renders the user's message directly
+                # above it, so passing it through would put verbatim user content
+                # into a table documented as safe to query freely.
+                reason=_safe_routing_reason(getattr(decision, "reason", "")),
                 execution_depth_before_gate=max(0, min(8, int(depth_before_gate))),
                 execution_depth=max(0, min(8, int(decision.execution_depth))),
-                primary_verb=decision.primary_verb,
+                primary_verb=verb_before_gate,
                 decision_confidence=max(0.0, min(1.0, float(decision.confidence))),
                 routing_threshold=max(0.0, min(1.0, float(routing_threshold))),
                 gate_demoted=bool(gate_demoted),
             )
-            await self.bus.publish(
-                ROUTING_DECISION_CHANNEL,
-                BaseEnvelope(
-                    kind=ROUTING_DECISION_KIND,
-                    source=source,
-                    correlation_id=correlation_id,
-                    payload=record.model_dump(mode="json"),
-                ),
-            )
+            # BaseEnvelope.correlation_id is a UUID field. Most correlation ids
+            # here are UUID-shaped, so passing a non-UUID one through would have
+            # failed validation and dropped the record -- silently, since the
+            # whole emit is guarded. The id is a plain string on the record
+            # itself, so the envelope is never allowed to be the thing that
+            # loses it.
+            envelope_kwargs: dict[str, Any] = {
+                "kind": ROUTING_DECISION_KIND,
+                "source": source,
+                "payload": record.model_dump(mode="json"),
+            }
+            try:
+                envelope_kwargs["correlation_id"] = str(UUID(str(correlation_id)))
+            except (ValueError, AttributeError, TypeError):
+                pass
+            envelope = BaseEnvelope(**envelope_kwargs)
         except Exception as exc:  # noqa: BLE001 - observability must not break routing
-            logger.warning("routing_decision_emit_failed corr=%s err=%s", correlation_id, exc)
+            logger.warning("routing_decision_record_failed corr=%s err=%s", correlation_id, exc)
+            return
+
+        async def _publish() -> None:
+            try:
+                await asyncio.wait_for(
+                    self.bus.publish(ROUTING_DECISION_CHANNEL, envelope), timeout=5.0
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("routing_decision_emit_failed corr=%s err=%s", correlation_id, exc)
+
+        # Detached AND deadlined. Catching the exception was not enough: publish is
+        # a blocking round trip with socket_timeout=60 and one retry, so a hung
+        # Redis would have added up to ~120s to every chat turn before the except
+        # block was ever reached -- a stall, not a failure, which is harder to
+        # diagnose than an outage. Nothing reads the result, so nothing should wait
+        # on it.
+        task = asyncio.create_task(_publish())
+        self._emit_tasks.add(task)
+        task.add_done_callback(self._emit_tasks.discard)
 
     async def route(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef) -> RoutedRequest:
         prior_assistant = self._last_assistant_message(req)
@@ -354,6 +406,22 @@ class DecisionRouter:
                 "matched_options": menu_options[:6],
                 "selected_topic": selected_topic,
             }
+            # Emitted on this path too. It returns before the gate and is
+            # structurally never demoted, so omitting it would drop a whole class
+            # of turn from the denominator -- inflating the demotion rate by a
+            # factor that drifts with how often Orion happens to present menus.
+            # For a before/after threshold comparison that is a moving confound,
+            # not a constant offset.
+            await self._emit_routing_decision(
+                req=req,
+                decision=decision,
+                depth_before_gate=int(decision.execution_depth),
+                routing_threshold=float(get_chat_reflective_lane_threshold()),
+                gate_demoted=False,
+                verb_before_gate=decision.primary_verb,
+                correlation_id=correlation_id,
+                source=source,
+            )
             return RoutedRequest(request=rewritten, decision=decision, output_mode_decision=output_mode_decision)
 
         shortlist = self.build_shortlist(req)
@@ -409,6 +477,11 @@ class DecisionRouter:
             )
         routing_threshold = get_chat_reflective_lane_threshold()
         depth_before_gate = int(clamped.execution_depth)
+        # Captured before the gate: its model_copy sets primary_verb to None, so
+        # reading it afterwards makes the field structurally null on exactly the
+        # demoted turns this record exists to study -- losing what Orion would
+        # have done had the threshold been lower.
+        verb_before_gate = clamped.primary_verb
         gate_demoted = False
         if (
             int(clamped.execution_depth) >= 2
@@ -434,6 +507,7 @@ class DecisionRouter:
             depth_before_gate=depth_before_gate,
             routing_threshold=float(routing_threshold),
             gate_demoted=gate_demoted,
+            verb_before_gate=verb_before_gate,
             correlation_id=correlation_id,
             source=source,
         )

@@ -2816,6 +2816,17 @@ channels:
     stability: "experimental"
     since: "2026-07-05"
 
+  # How Orion decided to act rather than reply, and whether its own confidence
+  # gate demoted the turn. The gate previously left no trace at all, which is
+  # why a routing mutation had no evidence of routing behaviour to be judged on.
+  - name: "orion:routing:decision"
+    kind: "event"
+    schema_id: "RoutingDecisionRecordV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-03"
+
   # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
   - name: "orion:reverie:thought"
     kind: "event"

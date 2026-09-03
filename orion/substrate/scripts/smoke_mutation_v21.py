@@ -13,7 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from orion.core.schemas.substrate_mutation import MutationDecisionV1
+from orion.core.schemas.substrate_mutation import (
+    MutationDecisionV1,
+    MutationProposalV1,
+)
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 from orion.substrate import mutation_control_surface
 from orion.substrate.mutation_apply import PatchApplier
@@ -25,7 +28,7 @@ from orion.substrate.mutation_control_surface import (
     inspect_chat_reflective_lane_threshold,
     set_chat_reflective_lane_threshold,
 )
-from orion.substrate.mutation_proposals import ProposalFactory
+from orion.substrate.mutation_proposals import ProposalFactory, build_placeholder_routing_proposal
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -143,6 +146,32 @@ def _isolated_control_surface(*, seed_threshold: float):
                     os.environ[key] = value
 
 
+def _routing_smoke_proposal(*, subject_ref: str, target_value: float = 0.58) -> MutationProposalV1:
+    """A routing_threshold_patch proposal, bypassing the parked ProposalFactory.
+
+    As of 2026-09-03 `ProposalFactory.plan_for_pressure()`/`from_pressure()`
+    refuse every "routing" pressure outright (parked -- see
+    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`), so this smoke's
+    active-surface/auto-promote/apply/rollback-required demonstrations, which
+    are about the queue/decision/apply mechanics and not about the parked
+    evidence pipeline, build the proposal directly instead of going through
+    the (now dead-for-routing) detector -> pressure -> factory chain, via the
+    shared `build_placeholder_routing_proposal()` (also used by
+    test_mutation_v21.py and the orion-hub replay-inspection endpoint).
+
+    Rollback is a fixed 0.50, matching `_isolated_control_surface()`'s seed,
+    rather than a live read of the isolated surface -- no assertion in this
+    script depends on the exact rollback value, and a fixed value removes any
+    dependency on the surface having been written before this is called.
+    """
+    return build_placeholder_routing_proposal(
+        target_value=target_value,
+        rollback_value=0.50,
+        subject_ref=subject_ref,
+        source_pressure_id="pressure:smoke",
+    )
+
+
 def run_smoke(*, emit: bool = True) -> list[str]:
     lines: list[str] = []
     cycle_id = f"smoke-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
@@ -227,25 +256,14 @@ def run_smoke(*, emit: bool = True) -> list[str]:
                 )
 
         # 2) Auto promote lane with one-live-surface block before side effects.
+        # See _routing_smoke_proposal() -- the routing target is parked, so
+        # this builds the proposal directly rather than through telemetry.
         store._active_surface_by_target["routing"] = "existing-adoption"
-        routing_metrics: dict[str, dict[str, float]] = {}
-        worker.run_cycle(
-            telemetry=[
-                GraphReviewTelemetryRecordV1(
-                    invocation_surface="operator_review",
-                    execution_outcome="failed",
-                    selection_reason="smoke-routing",
-                    runtime_duration_ms=5,
-                    anchor_scope="orion",
-                    subject_ref="entity:routing",
-                    target_zone="autonomy_graph",
-                )
-            ],
-            measured_metrics_by_proposal=routing_metrics,
-        )
-        for proposal in store._proposals.values():
-            if proposal.target_surface == "routing":
-                routing_metrics[proposal.proposal_id] = {"success_rate_delta": 0.3, "latency_ms_delta": 0.0}
+        blocked_proposal = _routing_smoke_proposal(subject_ref="entity:routing")
+        store.add_proposal(blocked_proposal, priority=60)
+        routing_metrics: dict[str, dict[str, float]] = {
+            blocked_proposal.proposal_id: {"success_rate_delta": 0.3, "latency_ms_delta": 0.0}
+        }
         worker.run_cycle(telemetry=[], measured_metrics_by_proposal=routing_metrics)
         emit_line(
             {
@@ -259,23 +277,9 @@ def run_smoke(*, emit: bool = True) -> list[str]:
 
         # 3) Allow auto-promote after removing active-surface block.
         store._active_surface_by_target.pop("routing", None)
-        worker.run_cycle(
-            telemetry=[
-                GraphReviewTelemetryRecordV1(
-                    invocation_surface="operator_review",
-                    execution_outcome="failed",
-                    selection_reason="smoke-routing-allow",
-                    runtime_duration_ms=5,
-                    anchor_scope="orion",
-                    subject_ref="entity:routing-allow",
-                    target_zone="autonomy_graph",
-                )
-            ],
-            measured_metrics_by_proposal=routing_metrics,
-        )
-        for proposal in store._proposals.values():
-            if proposal.target_surface == "routing":
-                routing_metrics.setdefault(proposal.proposal_id, {"success_rate_delta": 0.3, "latency_ms_delta": 0.0})
+        allowed_proposal = _routing_smoke_proposal(subject_ref="entity:routing-allow")
+        store.add_proposal(allowed_proposal, priority=60)
+        routing_metrics[allowed_proposal.proposal_id] = {"success_rate_delta": 0.3, "latency_ms_delta": 0.0}
         worker.run_cycle(telemetry=[], measured_metrics_by_proposal=routing_metrics)
         applied = any(a.target_surface == "routing" and a.status == "applied" for a in store._adoptions.values())
         emit_line(
@@ -284,53 +288,33 @@ def run_smoke(*, emit: bool = True) -> list[str]:
                 "cycle_id": cycle_id,
                 "decision": "auto_promote",
                 "surface_key": "routing",
-                "queue_status_after": next(
-                    (store.queue_status_for_proposal(p.proposal_id) for p in store._proposals.values() if p.target_surface == "routing"),
-                    "-",
-                ),
+                "queue_status_after": store.queue_status_for_proposal(allowed_proposal.proposal_id) or "-",
                 "applied": applied,
             }
         )
 
         # 4) Rollback payload required before apply.
-        # Step 3 moved the isolated surface to 0.58. The generator now reads the
-        # live surface and refuses to propose a value already there, so reset the
-        # (throwaway) surface first -- otherwise this step has no proposal to
-        # strip a rollback from. Isolated store only; never the ambient one.
+        # Step 3 moved the isolated surface to 0.58. Reset the (throwaway)
+        # surface first so this step has a real value to read for the
+        # proposal it then strips a rollback from. Isolated store only;
+        # never the ambient one. Built directly (see _routing_smoke_proposal)
+        # rather than through the parked detector/pressure/factory chain --
+        # this step is about PatchApplier's rollback-payload requirement, not
+        # about how the proposal was generated.
         set_chat_reflective_lane_threshold(value=0.5, actor="mutation_smoke")
-        proposal = ProposalFactory(
-            routing_surface_reader=inspect_chat_reflective_lane_threshold,
-        ).from_pressure(
-            PressureAccumulator(policy=PressurePolicy(activation_threshold=0.1)).apply(
-                current=None,
-                signal=MutationDetectors().from_review_telemetry(
-                    [
-                        GraphReviewTelemetryRecordV1(
-                            invocation_surface="operator_review",
-                            execution_outcome="failed",
-                            selection_reason="smoke-payload",
-                            runtime_duration_ms=3,
-                            anchor_scope="orion",
-                            subject_ref="entity:payload",
-                            target_zone="autonomy_graph",
-                        )
-                    ]
-                )[0],
-            )
+        proposal = _routing_smoke_proposal(subject_ref="entity:payload")
+        proposal = proposal.model_copy(update={"patch": proposal.patch.model_copy(update={"rollback_payload": {}})})
+        adopt = applier.apply(proposal=proposal, decision=MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote"))
+        emit_line(
+            {
+                "event": "mutation_apply_blocked",
+                "cycle_id": cycle_id,
+                "proposal_id": proposal.proposal_id,
+                "surface_key": proposal.target_surface,
+                "blocked_reason": "rollback_payload_required",
+                "applied": bool(adopt),
+            }
         )
-        if proposal is not None:
-            proposal = proposal.model_copy(update={"patch": proposal.patch.model_copy(update={"rollback_payload": {}})})
-            adopt = applier.apply(proposal=proposal, decision=MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote"))
-            emit_line(
-                {
-                    "event": "mutation_apply_blocked",
-                    "cycle_id": cycle_id,
-                    "proposal_id": proposal.proposal_id,
-                    "surface_key": proposal.target_surface,
-                    "blocked_reason": "rollback_payload_required",
-                    "applied": bool(adopt),
-                }
-            )
 
         emit_line({"event": "mutation_smoke_complete", "cycle_id": cycle_id, "notes": ["ok=true"]})
     return lines

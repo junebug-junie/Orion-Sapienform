@@ -5,6 +5,27 @@ from typing import Iterable
 
 from orion.core.schemas.substrate_mutation import MutationSignalV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
+from orion.substrate.mutation_contracts import PARKED_TARGET_SURFACES
+
+# Single source of truth for zone -> surface, shared with _target_surface_for_zone
+# below (which is the only caller in this module) and with PARKED_TELEMETRY_ZONES.
+TARGET_SURFACE_BY_ZONE: dict[str, str] = {
+    "autonomy_graph": "routing",
+    "world_ontology": "graph_consolidation",
+    "self_relationship_graph": "prompt_profile",
+}
+_DEFAULT_TARGET_SURFACE = "recall"
+
+# Telemetry zones whose base-signal target_surface is entirely parked (see
+# mutation_contracts.PARKED_TARGET_SURFACES) -- i.e. a record in one of these
+# zones can never produce a live base or rich-routing signal, only possibly a
+# producer_pressure_event signal on a different, non-parked surface. Consumed
+# by services/orion-hub/scripts/api_routes.py's signal-intake health check so
+# it does not report a cycle "healthy" on the strength of rows that can only
+# ever resolve to a parked surface.
+PARKED_TELEMETRY_ZONES: frozenset[str] = frozenset(
+    zone for zone, surface in TARGET_SURFACE_BY_ZONE.items() if surface in PARKED_TARGET_SURFACES
+)
 
 
 class MutationDetectors:
@@ -19,16 +40,32 @@ class MutationDetectors:
             if not record.anchor_scope or not record.subject_ref or not record.target_zone:
                 continue
             target_surface = _target_surface_for_zone(record.target_zone)
+            # `_signals_from_pressure_events` can still route an individual
+            # pressure_event to a non-parked surface (e.g. a recall category)
+            # even when the record's own zone-derived surface is parked, so it
+            # always runs; only the zone-derived base/rich-routing signals,
+            # which are parked-or-not as a whole, are worth skipping early.
             pressure_event_signals = _signals_from_pressure_events(record=record, target_surface=target_surface)
             if pressure_event_signals:
                 signals.extend(pressure_event_signals)
-            signals.append(_build_base_signal(record=record, target_surface=target_surface))
-            # Rich pressure path remains routing-only in this phase.
-            if target_surface == "routing":
-                signals.extend(_build_rich_routing_signals(record=record, target_surface=target_surface))
+            if target_surface not in PARKED_TARGET_SURFACES:
+                signals.append(_build_base_signal(record=record, target_surface=target_surface))
+                # Rich pressure path remains routing-only in this phase.
+                if target_surface == "routing":
+                    signals.extend(_build_rich_routing_signals(record=record, target_surface=target_surface))
             if self.allow_cognitive_lane:
                 signals.extend(_build_cognitive_signals_from_artifacts(record=record))
-        return signals
+        # Trailing filter, kept even with the early skip above: a parked
+        # surface is parked as of 2026-09-03 because its evidence (a review-
+        # pipeline consolidation-outcome signal) has nothing to do with what
+        # it gates, and mutation_proposals.py refuses it unconditionally
+        # regardless -- so a signal for it must never reach the store or a
+        # pressure-accumulation cycle just because it arrived via
+        # `_signals_from_pressure_events`'s category-based routing instead of
+        # the zone-based path the early skip above covers. CLAUDE.md 0A: a
+        # signal excluded from one consumer but still ticking for every other
+        # one is hiding, not retired.
+        return [signal for signal in signals if signal.target_surface not in PARKED_TARGET_SURFACES]
 
 
 def _build_base_signal(*, record: GraphReviewTelemetryRecordV1, target_surface: str) -> MutationSignalV1:
@@ -147,13 +184,7 @@ def _evidence_tokens(text: str, needles: tuple[str, ...]) -> list[str]:
 
 
 def _target_surface_for_zone(zone: str) -> str:
-    if zone == "autonomy_graph":
-        return "routing"
-    if zone == "world_ontology":
-        return "graph_consolidation"
-    if zone == "self_relationship_graph":
-        return "prompt_profile"
-    return "recall"
+    return TARGET_SURFACE_BY_ZONE.get(zone, _DEFAULT_TARGET_SURFACE)
 
 
 def _signals_from_pressure_events(*, record: GraphReviewTelemetryRecordV1, target_surface: str) -> list[MutationSignalV1]:

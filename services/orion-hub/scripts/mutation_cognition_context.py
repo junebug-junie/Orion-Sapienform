@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from .autonomy_constitution import PRODUCTION_RECALL_MODE, RECALL_LIVE_APPLY_ENABLED
 from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
+from orion.substrate.mutation_proposals import ROUTING_TARGET_PARKED_REASON
 from orion.substrate.mutation_queue import SubstrateMutationStore, cognition_view_snapshot
 
 
@@ -133,10 +134,18 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
     ]
     return {
         "mutation_scope": "routing_threshold_patch_only",
-        "live_ramp_active": bool(
-            _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False)
-            and _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
-        ),
+        # 2026-09-03: chat_reflective_lane_threshold is parked at
+        # ProposalFactory.plan_for_pressure() -- every routing proposal is
+        # refused unconditionally regardless of these env flags (evidence
+        # mismatch + the 0.58 patch target sitting below the 0.61 confidence
+        # floor every heuristic routing decision can carry). live_ramp_active
+        # must say so: this context is injected into Orion's own cognition,
+        # and a self-model claiming live self-modification capability that
+        # cannot actually fire is exactly the empty-shell-cognition failure
+        # mode CLAUDE.md 0A forbids.
+        "live_ramp_active": False,
+        "routing_target_parked": True,
+        "routing_target_parked_reason": ROUTING_TARGET_PARKED_REASON,
         "routing_proposals_enabled": _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True),
         "routing_apply_enabled": bool(
             _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)

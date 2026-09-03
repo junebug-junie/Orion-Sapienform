@@ -515,7 +515,7 @@ worth knowing:
 | `HUB_CURIOSITY_INVESTIGATION_ENABLED` | `false` | the pydantic `Field` default is `False` so an absent key can never start it. `.env_example` ships `true` as the intended live value; the local `.env` currently holds it `false` |
 | `HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC` | `14400` | 4h. This is a real turn on the pipeline that serves Juniper |
 | `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` | `3` | Redis-persisted on the **local** date; a redeploy is not a licence to run again |
-| `HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC` | `1500` | budgeted from the harness's own ceilings, not copied from outreach's 300 — a too-short ceiling burns the compute *and* discards the answer |
+| `HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC` | `3500` | budgeted from the harness's own ceilings, not copied from outreach's 300 — a too-short ceiling burns the compute *and* discards the answer. This table had drifted to a stale `1500` (real value was already `2700`) before being corrected 2026-09-03 alongside the raise to `3500` |
 | `HUB_CURIOSITY_GRAPH_HOST` / `_PORT` | `127.0.0.1` / `6380` | **Hub's** address for FalkorDB; see §6 |
 | `HUB_CURIOSITY_GRAPH_ORION_USER` / `_PASSWORD` | `orion_curiosity` / *(blank)* | the credential Hub **grants**, never the one it uses. Blank ⇒ the graph half disables itself and the rest of the loop still runs |
 | `HUB_CURIOSITY_SANDBOX_HUB_URL` | `http://host.docker.internal:8080` | Hub as seen **from Orion's sandbox** |

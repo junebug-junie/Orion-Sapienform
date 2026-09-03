@@ -4776,7 +4776,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const currentSurface = selfMod.current || {};
     const currentLine = `routing threshold: ${fmtValue(currentSurface.value)}`
-      + ` (source ${currentSurface.source || '--'}${currentSurface.degraded ? ', DEGRADED' : ''})`;
+      + ` (source ${currentSurface.source_kind || '--'}${currentSurface.degraded ? ', DEGRADED' : ''})`;
     const holds = Array.isArray(selfMod.surface_holds) ? selfMod.surface_holds : [];
     const fmtHeld = (sec) => {
       if (sec === null || sec === undefined) return '--';

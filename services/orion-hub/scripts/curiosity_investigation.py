@@ -433,31 +433,33 @@ def build_investigation_journal_entry(
                 # `fcc_timeout` LABEL REFERS TO. Three nested deadlines are in
                 # play and only the innermost one ever kills a run that gets
                 # this far (all three confirmed against the live containers,
-                # 2026-09-01):
+                # 2026-09-01; raised again 2026-09-03 alongside the move to the
+                # slower `agent` lane -- see HARNESS_FCC_TIMEOUT_SEC's own
+                # comment in orion-harness-governor/.env_example):
                 #
-                #   HARNESS_FCC_TIMEOUT_SEC          1600s  governor process
-                #   HUB_HARNESS_GOVERNOR_RPC_TIMEOUT 2160s  hub
-                #   HUB_CURIOSITY_INVESTIGATION_...  2700s  hub, this clock
+                #   HARNESS_FCC_TIMEOUT_SEC          2400s  governor process
+                #   HUB_HARNESS_GOVERNOR_RPC_TIMEOUT 2960s  hub
+                #   HUB_CURIOSITY_INVESTIGATION_...  3500s  hub, this clock
                 #
-                # `fcc_timeout` is emitted by the GOVERNOR at 1600s
+                # `fcc_timeout` is emitted by the GOVERNOR at 2400s
                 # (`orion/harness/fcc_motor.py`), which then yields its partial
                 # draft as an ordinary final frame -- which is the only reason
-                # a timed-out run has a journal at all. The 2700s budget
+                # a timed-out run has a journal at all. The 3500s budget
                 # structurally cannot kill a journaled run: if it fires,
                 # `_generate` returns no text and `_investigate` bails at
                 # `empty_generation` before anything is written. So every entry
-                # carrying this number came from a turn where 2700s was slack.
+                # carrying this number came from a turn where 3500s was slack.
                 #
                 # It is therefore NOT the investigation's duration. It spans
                 # all four legs -- stance (<=400s), governor queue, the FCC
                 # turn, and the finalize chain (<=485s) -- so up to ~885s of it
                 # is provably not investigation, and the legs are not measured
                 # separately anywhere. Named in the text rather than left to
-                # position, because `in 2699s` sitting after "harness steps"
+                # position, because `in 3499s` sitting after "harness steps"
                 # reads as the harness leg and is not.
                 #
                 # What it is good for: a `grounded` run's distance from the
-                # 1600s FCC ceiling is real headroom, and until now the number
+                # 2400s FCC ceiling is real headroom, and until now the number
                 # survived only for runs that FAILED to journal (logged in the
                 # debug dict at `curiosity_investigation_no_text`) and was lost
                 # for every run that succeeded. Read it as an upper bound on
@@ -472,7 +474,7 @@ def build_investigation_journal_entry(
                 # bounds it; this is it. Reported second and only when known,
                 # so the difference between the two IS the stance+finalize
                 # overhead and nobody has to infer it. A `grounded` run's
-                # distance from HARNESS_FCC_TIMEOUT_SEC (1600s) is the real
+                # distance from HARNESS_FCC_TIMEOUT_SEC (2400s) is the real
                 # headroom figure -- the thing that decides whether the budget
                 # is genuinely too small or the turn simply never converged.
                 f", of which harness {harness_fcc_elapsed_sec:.0f}s"
@@ -1565,7 +1567,7 @@ class CuriosityInvestigation:
     ) -> None:
         # BUILD INSIDE THE TRY. The journal is the only place this turn is
         # persisted -- the unified turn runs with `no_write`, so a raise here
-        # destroys an investigation that cost up to 1600s of FCC budget, with
+        # destroys an investigation that cost up to 2400s of FCC budget, with
         # nothing to recover from. It sat outside until 2026-09-01, which was
         # survivable only because every value rendered with a bare `{}` that
         # cannot raise; `harness_elapsed_sec` is the first that formats with

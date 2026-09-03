@@ -539,11 +539,18 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     InnerStateSignal(
         signal_id="mood_arc_encoder.v1",
         schema=MoodArcEncoderManifestV1,
-        producer_service="orion.mood_arc.fit_encoder (manual CLI, not a service)",
+        producer_service="orion/mood_arc/fit_encoder.py",
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.REHEARSAL,
         cognition_consumers=(),
         notes=(
+            "producer_service is a manually-invoked CLI, not a service. "
+            "Corrected 2026-09-02: it previously read orion-spark-"
+            "introspector, which never produced this artifact and was "
+            "deleted 2026-07-28. This rationale lives here rather than "
+            "inline in producer_service because that field is a component "
+            "of every metric URI the definition lock keys on -- see "
+            "scripts/check_definition_drift.py. "
             "Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-"
             "roadmap-spec.md -- the windowed felt-state-trajectory "
             "autoencoder trained by orion/mood_arc/fit_encoder.py. A dark, "
@@ -598,11 +605,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "undecided question -- so probes.json is empty for manifests "
             "trained from this point forward until that question is "
             "resolved. "
-            "Corrected 2026-09-02: this entry's producer_service (was "
-            "'orion-spark-introspector', which never produced this "
-            "artifact and was deleted 2026-07-28 -- fixed to the real "
-            "producer, the manually-invoked fit_encoder.py CLI itself) and "
-            "prior notes text claimed 'no cognition consumer by design', full "
+            "Corrected 2026-09-02 (producer_service's own correction is in "
+            "this entry's first note above, PR #2051): prior notes text "
+            "here claimed 'no cognition consumer by design', full "
             "stop. That was wrong. orion.mood_arc.fit_encoder is imported "
             "directly, in-process, by "
             "services/orion-field-digester/app/anomaly_scorer.py, which "

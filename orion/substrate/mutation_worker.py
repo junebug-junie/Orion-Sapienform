@@ -290,10 +290,23 @@ class SubstrateAdaptationWorker:
                     if adopted_proposal is not None and adopted_proposal.source_signal_ids
                     else adoption.proposal_id
                 )
+                if adoption.status != "applied":
+                    continue
                 delta = (post_adoption_delta_by_proposal or {}).get(adoption.proposal_id)
                 if delta is None and post_adoption_delta_by_target_surface is not None:
                     delta = post_adoption_delta_by_target_surface.get(adoption.target_surface)
                 if delta is None:
+                    # No reading is "unknown", never "bad". Settle on the window
+                    # instead, so an unmeasured change keeps its result and
+                    # releases its surface rather than holding it forever.
+                    self._settle_if_window_elapsed(
+                        adoption=adoption,
+                        cycle_id=cycle_id,
+                        lineage_id=adopted_lineage_id,
+                        now=t,
+                        notes=notes,
+                        reason="window_elapsed_no_delta",
+                    )
                     continue
                 self._trace(
                     event="mutation_monitoring_checked",
@@ -324,6 +337,15 @@ class SubstrateAdaptationWorker:
                         lineage_id=adopted_lineage_id,
                         surface_key=adoption.target_surface,
                         notes=[rollback.reason],
+                    )
+                else:
+                    self._settle_if_window_elapsed(
+                        adoption=adoption,
+                        cycle_id=cycle_id,
+                        lineage_id=adopted_lineage_id,
+                        now=t,
+                        notes=notes,
+                        reason=f"window_elapsed_delta={delta:.4f}",
                     )
 
             result = {
@@ -378,6 +400,39 @@ class SubstrateAdaptationWorker:
                 engine.dispose()
             except Exception:
                 pass
+
+    def _settle_if_window_elapsed(
+        self,
+        *,
+        adoption,
+        cycle_id: str,
+        lineage_id: str,
+        now: datetime,
+        notes: list[str],
+        reason: str,
+    ) -> bool:
+        """Release a surface once its change has held for its rollback window.
+
+        ``rollback_window_sec`` was previously read by nothing at all -- it sat
+        on every adoption as documentation of an intent that had no code. This
+        is what makes it load-bearing: it is how long a change must survive
+        before the surface is handed back.
+        """
+        elapsed = (now - adoption.applied_at).total_seconds()
+        if elapsed < float(adoption.rollback_window_sec):
+            return False
+        if not self.store.record_settlement(adoption.adoption_id):
+            return False
+        notes.append(f"settled:{adoption.proposal_id}")
+        self._trace(
+            event="mutation_adoption_settled",
+            cycle_id=cycle_id,
+            proposal_id=adoption.proposal_id,
+            lineage_id=lineage_id,
+            surface_key=adoption.target_surface,
+            notes=[reason, f"elapsed_sec={elapsed:.0f}"],
+        )
+        return True
 
     def _trace(self, **fields: Any) -> None:
         if self.trace_logger is not None:

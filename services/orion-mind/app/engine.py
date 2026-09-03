@@ -760,6 +760,10 @@ def run_mind_llm_synthesis(
         max_recall_fragments=int(getattr(s, "MIND_EVIDENCE_MAX_RECALL_FRAGMENTS", 8)),
         max_projection_items=int(getattr(s, "MIND_EVIDENCE_MAX_PROJECTION_ITEMS", 16)),
         max_total_chars=int(getattr(s, "MIND_EVIDENCE_MAX_CHARS", 12_000)),
+        bus_synaptic_dsn=str(getattr(s, "RECALL_TRANSPORT_PG_DSN", "") or ""),
+        bus_synaptic_render_gate_threshold=float(
+            getattr(s, "RECALL_TRANSPORT_RENDER_GATE_THRESHOLD", 0.15)
+        ),
     )
     phases["evidence_pack_ms"] = _elapsed_ms_wall_clock(t_run_start)
 

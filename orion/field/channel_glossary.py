@@ -122,6 +122,12 @@ class FieldChannelGlossaryEntry:
     meaning: str
     self_state_dimension: str | None = None
     evidence_dimension: str | None = None
+    # Added version 2 (2026-09-03). `node` is set only on a node-qualified
+    # entry (see resolve_channel_entry()); bare channel entries leave it
+    # None. `trend_source` names where a caller finds this node's real
+    # history (not just its latest value) -- informational, never parsed.
+    node: str | None = None
+    trend_source: str | None = None
 
 
 @functools.lru_cache(maxsize=1)
@@ -142,10 +148,34 @@ def load_glossary(path: Path | None = None) -> dict[str, Any]:
             meaning=e["meaning"],
             self_state_dimension=e.get("self_state_dimension"),
             evidence_dimension=e.get("evidence_dimension"),
+            node=e.get("node"),
+            trend_source=e.get("trend_source"),
         )
         for e in raw.get("channels", [])
     )
     return {"entries": entries, "categories": dict(raw.get("categories", {}))}
+
+
+def resolve_channel_entry(
+    channel: str, node: str | None = None, *, path: Path | None = None
+) -> FieldChannelGlossaryEntry | None:
+    """Look up one glossary entry for `channel`, preferring a `node`-qualified
+    entry over the bare channel entry when both exist and `node` is given.
+
+    Absent a node-qualified entry (or `node=None`), falls back to the first
+    bare (unqualified) entry for `channel` -- byte-identical to how every
+    caller resolved a channel before version 2 added qualifiers.
+    """
+    entries = load_glossary(path)["entries"]
+    bare: FieldChannelGlossaryEntry | None = None
+    for entry in entries:
+        if entry.channel != channel:
+            continue
+        if node is not None and entry.node == node:
+            return entry
+        if entry.node is None and bare is None:
+            bare = entry
+    return bare
 
 
 def classify_channel_series(values: list[float]) -> str:

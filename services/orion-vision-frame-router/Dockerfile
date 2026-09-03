@@ -14,4 +14,13 @@ COPY orion ./orion
 COPY config/vision_frame_router.yaml /app/config/vision_frame_router.yaml
 
 ENV PYTHONPATH=/app
+# Unlike its siblings (orion-vision-host, orion-vision-retina), this
+# Dockerfile never set this. Confirmed live 2026-09-03: with it unset,
+# stdout is block-buffered against Docker's log pipe, so this service's own
+# loguru sink (a plain `print`) silently withheld its INFO-level app logs --
+# including the one line that would have confirmed a restart actually
+# resubscribed and started dispatching -- while stderr-based warnings still
+# appeared immediately. Diagnosing this redeploy required cross-checking a
+# downstream service's logs instead of this one's own.
+ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]

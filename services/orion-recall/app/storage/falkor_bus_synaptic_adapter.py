@@ -19,6 +19,48 @@ unconditional -- self-awareness of transport-layer stress isn't naturally
 every chat turn), returns [] on the common case where nothing is
 anomalous -- an empty list is the correct, honest output, not a gap to fill
 with "nothing found" filler content.
+
+**2026-09-03 (spec: docs/superpowers/specs/2026-09-03-recall-signal-
+rendering-design.md, amended twice -- see that doc's own corrections):
+publish-gap fragments stop carrying English.** This adapter no longer
+decides what counts as "unusual" -- ``text`` is now ``""`` for
+``publish_gap_zscore`` fragments; ``services/orion-mind/app/
+evidence.py``'s resolver (``recall_signal_resolver.py`` in that service)
+renders the real sentence, gated on the mesh-wide
+``bus_synaptic_prediction_error()`` fraction, not this adapter's per-edge
+``|z| > 3`` (that per-edge query answers "which channel is loudest", a
+genuinely different question -- see the spec's "Which metric, and why"
+section). NOT ``services/orion-cortex-orch/app/conversation_front.py`` --
+that function is dead code, never called from anywhere in that service
+(confirmed live 2026-09-03); the spec originally named it before that was
+caught. The causal-latency fragment (``causal_latency_zscore``) is
+UNCHANGED this pass -- still writes its own English via
+``_format_causal_anomaly_text()`` -- per the spec's own non-goal ("one signal
+at a time").
+
+**The recency filter also moved.** ``_PUBLISH_ANOMALY_QUERY`` no longer
+excludes edges older than the recency floor -- ``last_seen_epoch``/age are
+still attached to every fragment's ``meta`` so a caller that wants to filter
+old edges out of display still can, but a stale edge is no longer silently
+dropped before it gets there. The causal query's recency filter is untouched
+(non-goal: the causal path keeps its pre-existing behavior entirely).
+
+Check 3's actual liveness guard (a total bus-mirror outage must render as
+"not writing", not silence) does NOT live in this adapter -- it can't:
+``orion-substrate-runtime``'s ``_bus_synaptic_tick`` already ages edges out
+of ITS OWN query after ``bus_synaptic_max_edge_age_sec`` (1h default), so a
+dead bus-mirror makes ``bus_synaptic_prediction_error()`` compute a real,
+freshly-written, degenerate ``0.0`` forever (confirmed live in that
+function's own tick comment: "Write the node on every tick, not just when
+error > 0.0"). A per-edge Falkor liveness read in THIS adapter cannot see
+that -- it would need to reach across the service boundary into
+``orion-cortex-orch`` as a new fragment kind, for a distinction
+``orion.field.channel_glossary.classify_channel_series()`` already makes for
+free: an all-zero series classifies ``dead``, never ``quiet`` -- and the
+live baseline never reads exactly 0.0 (min 0.0035 per the spec's own
+sample), so a real ``dead`` reading cannot be confused with genuine calm.
+The resolver in ``orion-cortex-orch`` uses that verdict directly rather than
+this adapter growing a second liveness query for the same fact.
 """
 
 from __future__ import annotations
@@ -44,7 +86,6 @@ WHERE e.gap_zscore IS NOT NULL
   AND abs(e.gap_zscore) > $threshold
   AND e.count > $min_count
   AND e.last_seen_epoch IS NOT NULL
-  AND e.last_seen_epoch >= $min_last_seen_epoch
 RETURN o.organ_id AS organ_id, c.channel AS channel,
        e.gap_zscore AS zscore, e.count AS count, e.last_seen_epoch AS last_seen_epoch
 ORDER BY abs(e.gap_zscore) DESC
@@ -115,24 +156,6 @@ def _iso_from_epoch(epoch: float | None) -> str | None:
         return None
 
 
-def _format_publish_anomaly_text(row: Dict[str, Any], *, now_epoch: float) -> str:
-    zscore = float(row.get("zscore") or 0.0)
-    count = int(row.get("count") or 0)
-    last_seen = row.get("last_seen_epoch")
-    age_phrase = "unknown age"
-    if last_seen is not None:
-        try:
-            age_phrase = _format_age_phrase(max(0.0, now_epoch - float(last_seen)))
-        except (TypeError, ValueError):
-            pass
-    return (
-        f"Bus synaptic snapshot (not live traffic): channel \"{row.get('channel')}\" from "
-        f"{row.get('organ_id')} had an unusual inter-arrival gap at its last publish "
-        f"(|z|={abs(zscore):.1f} vs EWMA baseline, {count} samples, last seen {age_phrase}). "
-        f"High z here means gap surprise at that publish, not current publish rate."
-    )
-
-
 def _format_causal_anomaly_text(row: Dict[str, Any], *, now_epoch: float) -> str:
     zscore = float(row.get("zscore") or 0.0)
     count = int(row.get("count") or 0)
@@ -161,9 +184,10 @@ async def fetch_bus_synaptic_anomaly_fragments(
     a genuine statistical outlier against their own history -- not a static
     threshold, not simulated.
 
-    Only edges with ``last_seen_epoch`` within ``max_edge_age_sec`` are
-    returned so frozen z-scores on long-dead channels cannot masquerade as
-    current bus activity in unified-turn recall.
+    Publish-gap edges are no longer filtered by ``max_edge_age_sec`` (see
+    module docstring, 2026-09-03) -- age is still attached to each
+    fragment's ``meta`` for a caller that wants it. The causal-latency query
+    keeps its recency filter unchanged (non-goal this pass).
 
     Same fragment shape as every other recall source (id/source/source_ref/
     uri/text/ts/tags/score/meta) so fusion.py treats it identically, no
@@ -213,9 +237,14 @@ async def fetch_bus_synaptic_anomaly_fragments(
                 "source": "bus_synaptic_anomaly",
                 "source_ref": "falkordb",
                 "uri": frag_id,
-                "text": _format_publish_anomaly_text(row, now_epoch=now_epoch),
+                # No English here any more -- see module docstring. The
+                # resolver in orion-mind's evidence.py/recall_signal_
+                # resolver.py builds the real sentence, gated on the
+                # mesh-wide fraction, not this row's
+                # own z-score.
+                "text": "",
                 "ts": float(last_seen_epoch) if last_seen_epoch is not None else None,
-                "tags": ["bus_synaptic", "anomaly", "publish_gap", "stale_telemetry_snapshot"],
+                "tags": ["bus_synaptic", "anomaly", "publish_gap"],
                 "score": 0.5,
                 "meta": {
                     "organ_id": row.get("organ_id"),
@@ -259,4 +288,7 @@ async def fetch_bus_synaptic_anomaly_fragments(
     return out[:max_items]
 
 
-__all__ = ["fetch_bus_synaptic_anomaly_fragments", "get_bus_synaptic_falkor_client"]
+__all__ = [
+    "fetch_bus_synaptic_anomaly_fragments",
+    "get_bus_synaptic_falkor_client",
+]

@@ -74,17 +74,42 @@ def test_publish_anomaly_produces_a_real_fragment(monkeypatch) -> None:
     assert frag["source"] == "bus_synaptic_anomaly"
     assert frag["source_ref"] == "falkordb"
     assert frag["uri"] == frag["id"]
-    assert "cortex-exec" in frag["text"]
-    assert "orion:cognition:trace" in frag["text"]
-    assert "5.2" in frag["text"]
-    assert "inter-arrival gap" in frag["text"]
-    assert "not live traffic" in frag["text"]
-    assert "not current publish rate" in frag["text"]
-    assert frag["tags"] == ["bus_synaptic", "anomaly", "publish_gap", "stale_telemetry_snapshot"]
+    # No English any more (2026-09-03) -- the resolver in
+    # conversation_front.py builds the sentence now, not this adapter.
+    assert frag["text"] == ""
+    assert frag["tags"] == ["bus_synaptic", "anomaly", "publish_gap"]
+    assert frag["meta"]["organ_id"] == "cortex-exec"
+    assert frag["meta"]["channel"] == "orion:cognition:trace"
     assert frag["meta"]["zscore"] == 5.2
     assert frag["meta"]["count"] == 40
     assert frag["meta"]["signal_kind"] == "publish_gap_zscore"
     assert isinstance(frag["ts"], float)
+
+
+def test_publish_anomaly_survives_outside_the_recency_window(monkeypatch) -> None:
+    """2026-09-03: the recency filter moved out of this query -- an edge
+    older than max_edge_age_sec must still come back (with its true age in
+    meta), not be silently dropped. A total outage reading as an empty list
+    is exactly the failure the liveness axis exists to distinguish from
+    genuine calm; this query returning nothing for an OLD-but-real edge
+    would recreate that same ambiguity one level down."""
+    fake_client = _FakeFalkorClient(
+        publish_rows=[
+            {
+                "organ_id": "cortex-exec",
+                "channel": "orion:cognition:trace",
+                "zscore": 5.2,
+                "count": 40,
+                "last_seen_epoch": _recent_epoch(2 * 86400),  # 2 days old
+            }
+        ]
+    )
+    monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
+
+    out = _run(bsa.fetch_bus_synaptic_anomaly_fragments(max_edge_age_sec=3600.0))
+
+    assert len(out) == 1
+    assert out[0]["meta"]["last_seen_epoch"] < time.time() - 3600.0
 
 
 def test_causal_anomaly_produces_a_real_fragment(monkeypatch) -> None:
@@ -250,5 +275,45 @@ def test_multiple_real_anomalies_all_survive_fuse_candidates(monkeypatch) -> Non
     bundle, _ = fuse_candidates(candidates=fragments, profile=_fusion_profile(), diagnostic=True)
 
     assert len(bundle.items) == 3
+    surviving_ids = {item.id for item in bundle.items}
+    assert surviving_ids == {f["id"] for f in fragments}
+
+
+def test_publish_gap_fragment_survives_fuse_candidates_on_a_substantive_query(monkeypatch) -> None:
+    """Regression test (code review, 2026-09-03): fuse_candidates()'s
+    low_info_social filter drops any candidate whose snippet is empty --
+    unconditionally, on its own short-circuit -- and this adapter's
+    publish_gap_zscore fragments carry text="" by design (2026-09-03 patch).
+    Without fusion.py's meta.signal_kind exemption, EVERY publish_gap
+    fragment vanishes on every substantive (real-question) chat turn,
+    silently making the whole render-gate feature inert for the majority
+    query class the test above never exercised (it never sets
+    substantive_query=True)."""
+    from app.fusion import fuse_candidates
+
+    fake_client = _FakeFalkorClient(
+        publish_rows=[
+            {
+                "organ_id": "vision-edge",
+                "channel": "orion:vision:edge:health",
+                "zscore": 7.1,
+                "count": 40,
+                "last_seen_epoch": _recent_epoch(30),
+            }
+        ]
+    )
+    monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
+
+    fragments = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
+    assert fragments[0]["text"] == ""  # sanity: this is the real emptied shape
+
+    bundle, _ = fuse_candidates(
+        candidates=fragments,
+        profile=_fusion_profile(),
+        query_text="what does the drive economy look like right now",
+        substantive_query=True,
+        diagnostic=True,
+    )
+
     surviving_ids = {item.id for item in bundle.items}
     assert surviving_ids == {f["id"] for f in fragments}

@@ -169,12 +169,77 @@ def test_field_channel_feeds_dimensions_not_declared_consumers():
 
 def test_urns_are_unique_and_well_formed():
     graph = build_graph()
-    assert len(graph.nodes) >= 587
+    # Was >=587 before the node-qualified bus_synaptic prediction_error
+    # entry (2026-09-03, glossary version 2). Raised to >=588 so this test
+    # actually fails if resolve_field_channels() ever again lets a
+    # node-qualified entry collide with the bare one on a URN
+    # (build_graph()'s dict[urn, node] would silently drop the count back
+    # to 587 -- a floor equal to the old count would not catch that
+    # regression, only a raised one does).
+    assert len(graph.nodes) >= 588
     for urn, node in graph.nodes.items():
         assert urn.startswith("metric://"), urn
         assert urn == node.urn
         # surface/producer/name -- at least 3 segments after the scheme
         assert len(urn[len("metric://") :].split("/")) >= 3, urn
+
+
+def test_node_qualified_field_channel_gets_a_distinct_urn_from_the_bare_entry():
+    """bus_synaptic's qualified prediction_error entry (the real registry
+    content, 2026-09-03 glossary version 2) must not collide with the bare
+    prediction_error entry's URN."""
+    nodes = {n.name: n for n in resolve_field_channels()}
+    bus_name = "node:substrate.bus_synaptic.prediction_error"
+    assert bus_name in nodes
+    assert "prediction_error" in nodes
+    assert nodes[bus_name].urn != nodes["prediction_error"].urn
+    assert nodes["prediction_error"].urn == "metric://field_channel/orion-field-digester/prediction_error"
+    assert nodes[bus_name].meaning != nodes["prediction_error"].meaning
+    graph = build_graph()
+    assert nodes[bus_name].urn in graph.nodes
+    assert nodes["prediction_error"].urn in graph.nodes
+
+
+def test_two_node_qualified_entries_sharing_a_channel_get_distinct_urns(tmp_path, monkeypatch):
+    """Regression test for a real collision this repo shipped once (found
+    during implementation of the recall render-gate work, 2026-09-03,
+    before it reached the real glossary file): two entries sharing
+    `channel: prediction_error` but different `node:` qualifiers must
+    resolve to different URNs, not silently overwrite each other in
+    build_graph()'s dict[urn, MetricNode]. Uses a synthetic fixture rather
+    than depending on a second real orphan registry entry existing just to
+    exercise this path (CLAUDE.md 0A: a registered metric needs a real
+    consumer in the same patch, and only bus_synaptic's qualified entry has
+    one so far -- see that entry's own comment in the glossary YAML)."""
+    import orion.metrics.lineage as lineage_mod
+
+    # resolve_field_channels() computes registry_source via
+    # target.relative_to(REPO_ROOT) unconditionally, so an external tmp_path
+    # (outside the real repo tree) needs REPO_ROOT patched to match for the
+    # duration of this test.
+    monkeypatch.setattr(lineage_mod, "REPO_ROOT", tmp_path)
+    fixture = tmp_path / "field_channel_glossary.v1.yaml"
+    fixture.write_text(
+        "channels:\n"
+        "  - channel: prediction_error\n"
+        "    category: self_monitoring\n"
+        "    meaning: bare meaning\n"
+        "  - node: \"node:substrate.alpha\"\n"
+        "    channel: prediction_error\n"
+        "    category: self_monitoring\n"
+        "    meaning: alpha meaning\n"
+        "  - node: \"node:substrate.beta\"\n"
+        "    channel: prediction_error\n"
+        "    category: self_monitoring\n"
+        "    meaning: beta meaning\n"
+    )
+    nodes = {n.name: n for n in resolve_field_channels(path=fixture)}
+    assert len(nodes) == 3
+    urns = {n.urn for n in nodes.values()}
+    assert len(urns) == 3, "all three entries must resolve to distinct URNs"
+    assert nodes["prediction_error"].urn == "metric://field_channel/orion-field-digester/prediction_error"
+    assert nodes["node:substrate.alpha.prediction_error"].meaning == "alpha meaning"
+    assert nodes["node:substrate.beta.prediction_error"].meaning == "beta meaning"
 
 
 def test_scan_token_is_never_the_dimension_half_of_a_urn():

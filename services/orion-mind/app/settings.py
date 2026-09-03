@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     MIND_EVIDENCE_MAX_MESSAGES: int = Field(default=8, alias="MIND_EVIDENCE_MAX_MESSAGES")
     MIND_EVIDENCE_MAX_RECALL_FRAGMENTS: int = Field(default=8, alias="MIND_EVIDENCE_MAX_RECALL_FRAGMENTS")
     MIND_EVIDENCE_MAX_PROJECTION_ITEMS: int = Field(default=16, alias="MIND_EVIDENCE_MAX_PROJECTION_ITEMS")
+    # Postgres DSN for recall_signal_resolver.py's bus_synaptic series read
+    # (substrate_field_state). New to this service (2026-09-03) -- Mind has
+    # never had direct DB access before; empty by default and fail-open
+    # everywhere it's read, so a misconfigured/absent DSN degrades to the
+    # "not writing" render state rather than failing evidence-pack assembly.
+    RECALL_TRANSPORT_PG_DSN: str = Field(default="", alias="RECALL_TRANSPORT_PG_DSN")
+    # Gate for rendering a bus_synaptic transport fragment in the evidence
+    # pack. Deliberately equal to orion-equilibrium-service's
+    # EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD (0.15), not
+    # the lattice policy's watch_at (0.25) -- see
+    # recall_signal_resolver.py's module docstring for why.
+    RECALL_TRANSPORT_RENDER_GATE_THRESHOLD: float = Field(
+        default=0.15, alias="RECALL_TRANSPORT_RENDER_GATE_THRESHOLD"
+    )
 
     MIND_LLM_SYNTHESIS_ENABLED: bool = Field(default=False, alias="MIND_LLM_SYNTHESIS_ENABLED")
     MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="quick", alias="MIND_SEMANTIC_MODEL_ROUTE")

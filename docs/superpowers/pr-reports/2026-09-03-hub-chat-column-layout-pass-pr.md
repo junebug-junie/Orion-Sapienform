@@ -95,13 +95,17 @@ pattern.
 # Full Hub suite, this branch, in a worktree
 pytest -c services/orion-hub/pytest.ini services/orion-hub/tests -q \
   --ignore=services/orion-hub/tests/e2e -p no:randomly
-31 failed, 2055 passed, 3 skipped in 197.59s   (after review fixes)
+31 failed, 2055 passed, 3 skipped in 196.87s   (after review fixes, post-rebase)
 
-# Same suite at the merge-base (b97a8531a) in a second worktree, same env state
-31 failed, 2030 passed, 3 skipped in 298.45s
+# Same suite at the merge-base (248e36470) in a second worktree, same env state
+31 failed, 2030 passed, 3 skipped in 209.34s
 
 diff of the two FAILED sets: identical (0 lines)
 ```
+
+Re-baselined after rebasing onto `origin/main` at `248e36470` — a baseline
+expires the moment the branch moves, so both numbers above come from runs at the
+current merge-base, not the old one.
 
 The 31 failures are pre-existing and identical on both sides: they are Settings
 validation errors from the gitignored `.env` being absent in a fresh worktree,

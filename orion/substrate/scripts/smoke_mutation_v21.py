@@ -64,6 +64,12 @@ def temporary_env(name: str, value: str):
             os.environ.pop(name, None)
 
 
+# Deterministic stub: the smoke must not depend on the live control surface,
+# and 0.50 is the value the routing patch has always been written against.
+def _smoke_routing_surface() -> dict:
+    return {"value": 0.50, "raw": {"value": 0.50}, "degraded": False}
+
+
 def _fmt_trace(fields: dict[str, Any]) -> str:
     merged = {key: fields.get(key, "-") for key in TRACE_FIELDS}
     parts: list[str] = []
@@ -107,7 +113,7 @@ def run_smoke(*, emit: bool = True) -> list[str]:
             store=store,
             detectors=MutationDetectors(),
             pressure=PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2, cooldown_seconds=30)),
-            proposals=ProposalFactory(),
+            proposals=ProposalFactory(routing_surface_reader=_smoke_routing_surface),
             trial_runner=trial_runner,
             decision_engine=DecisionEngine(),
             applier=applier,
@@ -218,7 +224,7 @@ def run_smoke(*, emit: bool = True) -> list[str]:
         )
 
         # 4) Rollback payload required before apply.
-        proposal = ProposalFactory().from_pressure(
+        proposal = ProposalFactory(routing_surface_reader=_smoke_routing_surface).from_pressure(
             PressureAccumulator(policy=PressurePolicy(activation_threshold=0.1)).apply(
                 current=None,
                 signal=MutationDetectors().from_review_telemetry(

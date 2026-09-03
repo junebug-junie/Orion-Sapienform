@@ -28,7 +28,16 @@ from scripts import api_routes
 def routing_manual_fixture(monkeypatch):
     control_db = str((Path("/tmp") / f"orion-mutation-control-test-{uuid4()}.sqlite3"))
     monkeypatch.setenv("SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH", control_db)
-    mutation_control_surface._CONTROL_SURFACE_STORE = mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=control_db)
+    # monkeypatch.setattr, not a bare assignment: this global was previously
+    # left pointing at a finished test's sqlite file, so a later test in the
+    # same session read another test's control surface. Harmless while the
+    # proposal generator ignored the live surface entirely; not harmless now
+    # that it reads it to refuse no-ops.
+    monkeypatch.setattr(
+        mutation_control_surface,
+        "_CONTROL_SURFACE_STORE",
+        mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=control_db),
+    )
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="test_seed")
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret-token")
     monkeypatch.setenv("SUBSTRATE_MUTATION_MANUAL_APPLY_ENABLED", "true")

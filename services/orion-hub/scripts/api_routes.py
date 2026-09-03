@@ -4895,7 +4895,9 @@ def execute_substrate_mutation_scheduled_cycle(
             store=SUBSTRATE_MUTATION_STORE,
             detectors=MutationDetectors(allow_cognitive_lane=cognitive_proposals_enabled),
             pressure=PressureAccumulator(),
-            proposals=ProposalFactory(),
+            proposals=ProposalFactory(
+            routing_surface_reader=inspect_chat_reflective_lane_threshold,
+        ),
             trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
             decision_engine=DecisionEngine(),
             applier=applier,
@@ -5104,7 +5106,9 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             allow_cognitive_lane=_env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
         ),
         pressure=PressureAccumulator(),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(
+            routing_surface_reader=inspect_chat_reflective_lane_threshold,
+        ),
         trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
         decision_engine=DecisionEngine(),
         applier=applier,
@@ -5266,7 +5270,9 @@ def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
         if proposal.mutation_class == "routing_threshold_patch"
     ]
     routing_proposals.sort(key=lambda item: item.created_at, reverse=True)
-    proposal = routing_proposals[0] if routing_proposals else ProposalFactory().from_pressure(
+    proposal = routing_proposals[0] if routing_proposals else ProposalFactory(
+        routing_surface_reader=inspect_chat_reflective_lane_threshold,
+    ).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",

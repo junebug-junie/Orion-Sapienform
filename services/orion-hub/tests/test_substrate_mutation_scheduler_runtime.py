@@ -76,7 +76,16 @@ def _continuity_pressure_signals(strength: float) -> list[MutationSignalV1]:
 def scheduler_fixture(monkeypatch):
     control_db = str((Path("/tmp") / f"orion-mutation-control-scheduler-{uuid4()}.sqlite3"))
     monkeypatch.setenv("SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH", control_db)
-    mutation_control_surface._CONTROL_SURFACE_STORE = mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=control_db)
+    # monkeypatch.setattr, not a bare assignment: this global was previously
+    # left pointing at a finished test's sqlite file, so a later test in the
+    # same session read another test's control surface. Harmless while the
+    # proposal generator ignored the live surface entirely; not harmless now
+    # that it reads it to refuse no-ops.
+    monkeypatch.setattr(
+        mutation_control_surface,
+        "_CONTROL_SURFACE_STORE",
+        mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=control_db),
+    )
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="scheduler_seed")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", "true")
@@ -252,7 +261,16 @@ def test_scheduler_operator_gated_class_never_auto_applies(monkeypatch) -> None:
     monkeypatch.setattr(api_routes, "substrate_autonomy_runtime_supported", lambda: (True, "supported"))
     control_db = str((Path("/tmp") / f"orion-mutation-control-scheduler-prompt-{uuid4()}.sqlite3"))
     monkeypatch.setenv("SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH", control_db)
-    mutation_control_surface._CONTROL_SURFACE_STORE = mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=control_db)
+    # monkeypatch.setattr, not a bare assignment: this global was previously
+    # left pointing at a finished test's sqlite file, so a later test in the
+    # same session read another test's control surface. Harmless while the
+    # proposal generator ignored the live surface entirely; not harmless now
+    # that it reads it to refuse no-ops.
+    monkeypatch.setattr(
+        mutation_control_surface,
+        "_CONTROL_SURFACE_STORE",
+        mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=control_db),
+    )
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.44, actor="prompt_class_seed")
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", SubstrateMutationStore())
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_SURFACES", {"prompts": {"approved_profile_variant": "v1"}})

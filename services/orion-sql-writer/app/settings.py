@@ -39,6 +39,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "spark.state.snapshot.v1": "SparkTelemetrySQL",
     "cognition.trace": "CognitionTraceSQL",
     "thought.event.v1": "ThoughtDecisionSQL",
+    "routing.decision.record.v1": "RoutingDecisionSQL",
     "harness.run.v1": "HarnessTurnTraceSQL",
     "harness.verdict.molecule.v1": "HarnessTurnTraceSQL",
     "harness.turn.outcome.v1": "HarnessTurnTraceSQL",

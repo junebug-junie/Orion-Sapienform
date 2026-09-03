@@ -12,6 +12,11 @@ from jinja2 import Template
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ServiceRef
+from orion.schemas.routing_decision import RoutingDecisionRecordV1
+
+#: Channel + kind declared in orion/bus/channels.yaml and orion/schemas/registry.py.
+ROUTING_DECISION_CHANNEL = "orion:routing:decision"
+ROUTING_DECISION_KIND = "routing.decision.record.v1"
 from orion.cognition.verb_catalog import (
     VerbInfo,
     filter_allowed,
@@ -274,6 +279,55 @@ class DecisionRouter:
             timeout=5.0,
         )
 
+    async def _emit_routing_decision(
+        self,
+        *,
+        req: CortexClientRequest,
+        decision: AutoDepthDecisionV1,
+        depth_before_gate: int,
+        routing_threshold: float,
+        gate_demoted: bool,
+        correlation_id: str,
+        source: ServiceRef,
+    ) -> None:
+        """Record how this turn was routed, and whether the gate changed it.
+
+        This is the observation the threshold Orion can tune was missing. The
+        gate wrote its inputs into ``rewritten.options`` and nothing read or
+        persisted them, so there was no record of routing behaviour anywhere --
+        which is why the mutation loop ended up justifying routing changes with
+        graph-review telemetry the threshold cannot affect.
+
+        Never allowed to break a turn. This sits on the chat hot path, and a bus
+        problem must degrade observability, not routing: a failure here is
+        logged and swallowed. Losing a record is recoverable; refusing to answer
+        Juniper because a publish failed is not.
+        """
+        try:
+            record = RoutingDecisionRecordV1(
+                correlation_id=correlation_id,
+                session_id=getattr(req.context, "session_id", None),
+                source=str(getattr(decision, "source", "heuristic") or "heuristic"),
+                reason=str(getattr(decision, "reason", "") or ""),
+                execution_depth_before_gate=max(0, min(8, int(depth_before_gate))),
+                execution_depth=max(0, min(8, int(decision.execution_depth))),
+                primary_verb=decision.primary_verb,
+                decision_confidence=max(0.0, min(1.0, float(decision.confidence))),
+                routing_threshold=max(0.0, min(1.0, float(routing_threshold))),
+                gate_demoted=bool(gate_demoted),
+            )
+            await self.bus.publish(
+                ROUTING_DECISION_CHANNEL,
+                BaseEnvelope(
+                    kind=ROUTING_DECISION_KIND,
+                    source=source,
+                    correlation_id=correlation_id,
+                    payload=record.model_dump(mode="json"),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - observability must not break routing
+            logger.warning("routing_decision_emit_failed corr=%s err=%s", correlation_id, exc)
+
     async def route(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef) -> RoutedRequest:
         prior_assistant = self._last_assistant_message(req)
         menu_options = self._extract_menu_options(prior_assistant)
@@ -354,6 +408,8 @@ class DecisionRouter:
                 }
             )
         routing_threshold = get_chat_reflective_lane_threshold()
+        depth_before_gate = int(clamped.execution_depth)
+        gate_demoted = False
         if (
             int(clamped.execution_depth) >= 2
             and float(clamped.confidence) < float(routing_threshold)
@@ -370,6 +426,17 @@ class DecisionRouter:
                 "threshold": float(routing_threshold),
                 "decision_confidence": float(clamped.confidence),
             }
+            gate_demoted = True
+
+        await self._emit_routing_decision(
+            req=req,
+            decision=clamped,
+            depth_before_gate=depth_before_gate,
+            routing_threshold=float(routing_threshold),
+            gate_demoted=gate_demoted,
+            correlation_id=correlation_id,
+            source=source,
+        )
 
         rewritten.options["execution_depth"] = clamped.execution_depth
 

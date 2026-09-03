@@ -345,9 +345,17 @@ def test_append_row_leaves_channels_untouched_when_postgres_uri_unset(
 
 def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> None:
     """A transient DB failure (open_readonly_connection returning None, per
-    its own documented contract) must disable live enrichment for ONE tick
-    only, not latch _load_failed or otherwise stop buffering -- the next
-    tick's append_row() retries a fresh connection on its own."""
+    its own documented contract) must disable live enrichment without
+    latching _load_failed or otherwise stopping buffering -- once the
+    reconnect cooldown (_DB_RECONNECT_COOLDOWN_SEC) elapses, the next tick's
+    append_row() retries a fresh connection on its own. The cooldown itself
+    (added 2026-09-03, review finding: retrying a real connect on every ~2s
+    tick during a sustained outage would stall this worker's whole tick
+    loop) is simulated elapsed here by resetting the private deadline
+    directly, matching this file's existing convention for simulating time
+    passage (see test_append_row_still_buffers_during_startup_grace_period's
+    `scorer._startup_grace_sec = 0.0`) -- a real second tick landing inside
+    the cooldown window is covered by the next assert below instead."""
     import app.anomaly_scorer as anomaly_scorer_module
 
     models_root = _write_tiny_encoder(tmp_path)
@@ -371,7 +379,17 @@ def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> 
     assert scorer._load_failed is False
     assert len(scorer._buffer) == 1
     assert "action_warrant" not in scorer._buffer[0].channels
+    assert scorer._db_connect_retry_after is not None  # cooldown armed
 
+    # A real second tick landing inside the cooldown window must not even
+    # attempt a reconnect -- confirms the cooldown itself actually works,
+    # not just that a later retry eventually succeeds.
     scorer.append_row(_row(1, base=now))
-    assert len(scorer._buffer) == 2
-    assert scorer._buffer[1].channels["action_warrant"] == 0.9
+    assert call_count["n"] == 1
+    assert "action_warrant" not in scorer._buffer[1].channels
+
+    scorer._db_connect_retry_after = None  # simulate the cooldown having elapsed
+    scorer.append_row(_row(2, base=now))
+    assert len(scorer._buffer) == 3
+    assert call_count["n"] == 2
+    assert scorer._buffer[2].channels["action_warrant"] == 0.9

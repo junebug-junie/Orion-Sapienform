@@ -1717,7 +1717,16 @@ def promote_encoder(
     encoder just because someone pointed --encoder-dir at it. This is
     deliberately not re-run here -- promote does not retrain or re-score,
     it only trusts a manifest that already recorded a real gate result.
+
+    `models_root` is resolved to an absolute path before use (review
+    finding, 2026-09-03): active.json's whole purpose is to be read back by
+    a DIFFERENT process later (resolve_active_encoder_dir(), which now
+    refuses a non-absolute "path" outright) -- a relative --models-root at
+    promote time would otherwise write a pointer that resolves against
+    whatever cwd that later reader happens to have, not this process's,
+    silently landing on an unrelated directory.
     """
+    models_root = models_root.resolve()
     manifest, _weights = load_artifacts(encoder_dir)
     if manifest.floor_pass is not True:
         raise ValueError(
@@ -1805,10 +1814,16 @@ def resolve_active_encoder_dir(models_root: Path) -> Path:
 
     - FileNotFoundError if active.json itself is missing -- nothing has ever
       been promoted to this models_root via `fit_encoder.py promote`.
-    - ValueError if active.json exists but is malformed (invalid JSON, no
-      "path" key, or "path" names a directory with no manifest.json --
-      a stale pointer left over from a promoted directory that was later
-      removed).
+    - ValueError if active.json exists but is malformed (invalid JSON, not a
+      JSON object, no "path" key, "path" is non-absolute, or "path" names a
+      directory with no manifest.json -- a stale pointer left over from a
+      promoted directory that was later removed). Review finding, 2026-09-03:
+      a non-absolute "path" is refused outright rather than silently resolved
+      against whatever this process's cwd happens to be -- active.json is
+      meant to be read by a DIFFERENT process than the one that wrote it
+      (this function's whole reason to exist), so a relative path here would
+      resolve to an unrelated directory in the reader's cwd, not the
+      writer's, and do so silently.
 
     Added 2026-09-03 for services/orion-field-digester/app/anomaly_scorer.py,
     the first real consumer that needs to resolve "whatever is currently
@@ -1831,10 +1846,17 @@ def resolve_active_encoder_dir(models_root: Path) -> Path:
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"malformed active.json at {pointer_path}: {exc}") from exc
+    if not isinstance(pointer, dict):
+        raise ValueError(f"active.json at {pointer_path} is not a JSON object: {pointer!r}")
     path_str = pointer.get("path")
-    if not path_str:
+    if not path_str or not isinstance(path_str, str):
         raise ValueError(f"active.json at {pointer_path} has no 'path' key: {pointer!r}")
     resolved = Path(path_str)
+    if not resolved.is_absolute():
+        raise ValueError(
+            f"active.json at {pointer_path} has a non-absolute 'path' ({resolved}) -- "
+            f"refusing to resolve it against this process's own cwd"
+        )
     if not (resolved / "manifest.json").exists():
         raise ValueError(
             f"active.json at {pointer_path} points at {resolved}, which has no "

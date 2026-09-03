@@ -232,12 +232,19 @@ class _SequencedFakeConn:
 
 def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
     """Multiple readings per channel inside the lookback window -- only the
-    LAST (most recent) one is returned, not a series and not merged/averaged."""
+    LAST (most recent) one is returned, not a series and not merged/averaged.
+
+    action_warrant_rows below is a SINGLE row, not two -- resolve_live_enrichment()
+    calls fetch_action_warrant(..., limit=1), which queries `ORDER BY generated_at
+    DESC LIMIT 1` for real (a real DB enforces the LIMIT server-side); this fake
+    conn doesn't implement WHERE/ORDER BY/LIMIT filtering at all, it just returns
+    whatever rows were pre-set, so the fixture itself must already be "what a real
+    LIMIT 1 query would return" rather than relying on the fake to filter down to
+    it. attention_rows is NOT limited (fetch_attention_self_model() has no `limit`
+    param -- see its own docstring for why), so it still exercises the multi-row
+    latest-value-per-channel behavior directly."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
-    action_warrant_rows = [
-        (now - timedelta(minutes=10), 0.1),
-        (now - timedelta(minutes=2), 0.9),
-    ]
+    action_warrant_rows = [(now - timedelta(minutes=2), 0.9)]
     attention_rows = [
         (now - timedelta(minutes=5), "0.90", {"execution": 0.2, "chat": 0.3, "biometrics": 0.4, "bus_synaptic": 0.5}),
         (now - timedelta(minutes=1), "0.97", {"execution": 0.6, "chat": 0.7, "biometrics": 0.8, "bus_synaptic": 0.9}),

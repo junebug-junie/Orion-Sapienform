@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
@@ -26,6 +27,14 @@ logger = logging.getLogger("orion.field.digester.anomaly_scorer")
 # fall into the same run but land just past a stride boundary, without
 # holding meaningfully more history than one window actually needs.
 _BUFFER_MARGIN_ROWS = 10
+
+# Review finding (2026-09-03): a connect_timeout=5s attempt on EVERY ~2s
+# tick during a sustained-but-not-refused (network-black-holed) Postgres
+# outage would stretch this worker's whole tick cadence -- not just
+# anomaly scoring -- from ~2s to ~7s+, since append_row() runs synchronously
+# inside the awaited _tick(). This cooldown bounds a failed-connect retry to
+# once per this many seconds instead of once per tick.
+_DB_RECONNECT_COOLDOWN_SEC = 15.0
 
 
 class FieldChannelAnomalyScorer:
@@ -81,6 +90,7 @@ class FieldChannelAnomalyScorer:
         self._load_failed = False
         self._buffer: deque[FieldChannelCorpusRowV1] = deque()
         self._db_conn = None  # lazy, non-sticky -- see _fetch_live_enrichment_fields()
+        self._db_connect_retry_after: float | None = None  # time.monotonic() deadline
 
     def _ensure_loaded(self) -> bool:
         if self._load_failed:
@@ -115,27 +125,65 @@ class FieldChannelAnomalyScorer:
         """Best-effort, per-tick. Returns {} (never raises) on any failure --
         the caller falls back to build_windows()'s existing 0.0-fill for
         whichever of the 6 live-enrichment channels stay absent, same as any
-        other genuinely-missing channel."""
+        other genuinely-missing channel. Three review-caught refinements
+        (2026-09-03) on top of the plain lazy-reuse design:
+
+        - Proactively drops a connection psycopg2 has already marked
+          `.closed` (e.g. Postgres restarted between polls) before trying
+          to use it, instead of only discovering it's dead via the
+          exception it would raise on the next query -- same pattern
+          services/orion-equilibrium-service/app/attention_self_model_reader.py
+          already uses for the same lazy-reuse shape.
+        - After a query exception, only actually drops/reconnects the
+          connection if it's genuinely dead (`.closed` is now truthy). A
+          single malformed row (e.g. a bad float cast) raises the same
+          exception every tick for as long as that row stays inside the
+          lookback window otherwise -- treating that as "connection died"
+          would force a full close+reconnect on every one of those ticks
+          for no reason; the connection itself is fine, only that tick's
+          query result is unusable.
+        - A failed *connect* attempt (not a query failure -- the initial
+          open_readonly_connection() call itself returning None) starts a
+          cooldown (_DB_RECONNECT_COOLDOWN_SEC) before the next attempt,
+          rather than retrying on every single ~2s tick during a sustained
+          outage -- see that constant's own comment for why."""
         if not self._postgres_uri:
             return {}
+        if self._db_conn is not None and getattr(self._db_conn, "closed", 0):
+            self._db_conn = None
         if self._db_conn is None:
+            if (
+                self._db_connect_retry_after is not None
+                and time.monotonic() < self._db_connect_retry_after
+            ):
+                return {}
             self._db_conn = open_readonly_connection(
                 self._postgres_uri, connect_timeout=5, statement_timeout_ms=2000
             )
             if self._db_conn is None:
+                self._db_connect_retry_after = time.monotonic() + _DB_RECONNECT_COOLDOWN_SEC
                 return {}
+            self._db_connect_retry_after = None
         try:
-            return resolve_live_enrichment(
+            fields = resolve_live_enrichment(
                 self._db_conn, now=now, lookback_hours=self._live_enrichment_lookback_hours
             )
         except Exception:
             logger.warning("field_channel_anomaly_scorer_live_enrichment_failed", exc_info=True)
-            try:
-                self._db_conn.close()
-            except Exception:
-                pass
-            self._db_conn = None
+            if getattr(self._db_conn, "closed", 0):
+                self._db_conn = None
             return {}
+        if not fields:
+            # resolve_live_enrichment()'s own docstring: a fully-empty
+            # return can mean a real producer outage longer than the
+            # lookback window, not a calm tick -- worth surfacing loudly,
+            # not silently 0.0-padding every one of the 6 channels forever.
+            logger.warning(
+                "field_channel_anomaly_scorer_live_enrichment_empty now=%s lookback_hours=%.2f",
+                now.isoformat(),
+                self._live_enrichment_lookback_hours,
+            )
+        return fields
 
     def append_row(self, row: FieldChannelCorpusRowV1) -> None:
         """Called from _tick() every poll, independent of whether the JSONL

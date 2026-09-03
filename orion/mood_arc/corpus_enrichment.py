@@ -73,19 +73,35 @@ def _fetch(conn, query: str, params: tuple) -> list[tuple]:
         return cur.fetchall()
 
 
-def fetch_action_warrant(conn, since: datetime, until: datetime) -> TimeSeries:
-    """substrate_proposal_frames.proposal_frame_json->>'action_warrant', ~2.1s cadence."""
-    rows = _fetch(
-        conn,
-        """
+def fetch_action_warrant(
+    conn, since: datetime, until: datetime, *, limit: int | None = None
+) -> TimeSeries:
+    """substrate_proposal_frames.proposal_frame_json->>'action_warrant', ~2.1s cadence.
+
+    `limit` (default None -- every existing caller, unaffected): when set,
+    fetches only the `limit` MOST RECENT rows (ORDER BY ... DESC LIMIT) then
+    reverses back to this function's normal ascending-time contract before
+    returning -- for resolve_live_enrichment()'s live per-tick use, which
+    only ever wants the single latest value (review finding, 2026-09-03: an
+    unlimited ~15-minute-window query re-run every ~2s tick, at this
+    channel's own ~2.1s cadence, fetches ~428 rows just to use the newest
+    one). Every field here is single-valued per row (unlike
+    fetch_attention_self_model(), which needs a real lookback window because
+    its two field-groups can land on different rows -- limit is not offered
+    there for that reason), so limit=1 is always correct for "latest",
+    not just an approximation."""
+    query = """
         SELECT generated_at, (proposal_frame_json ->> 'action_warrant')::float8
         FROM substrate_proposal_frames
         WHERE generated_at >= %s AND generated_at <= %s
           AND (proposal_frame_json ->> 'action_warrant') IS NOT NULL
-        ORDER BY generated_at ASC
-        """,
-        (since, until),
-    )
+        ORDER BY generated_at {order}
+        """
+    if limit is None:
+        rows = _fetch(conn, query.format(order="ASC"), (since, until))
+    else:
+        rows = _fetch(conn, query.format(order="DESC") + " LIMIT %s", (since, until, limit))
+        rows = list(reversed(rows))
     return [(ts, {"action_warrant": v}) for ts, v in rows if v is not None]
 
 
@@ -312,7 +328,22 @@ def fetch_all_series(conn, since: datetime, until: datetime) -> dict[str, TimeSe
     attention_self_model contributes 5 SEPARATE entries here (one per field:
     heartbeat_mean_ratio + 4 prediction_error_{domain} channels), not one combined
     "attention_self_model" entry -- see fetch_attention_self_model()'s docstring for why."""
-    series: dict[str, TimeSeries] = {"action_warrant": fetch_action_warrant(conn, since, until)}
+    return _fetch_action_warrant_and_attention_series(conn, since, until)
+
+
+def _fetch_action_warrant_and_attention_series(
+    conn, since: datetime, until: datetime, *, action_warrant_limit: int | None = None
+) -> dict[str, TimeSeries]:
+    """Shared channel-set composition behind both fetch_all_series() (offline
+    batch, unlimited) and resolve_live_enrichment() (live per-tick,
+    action_warrant_limit=1) -- extracted (review finding, 2026-09-03) so the
+    two can't silently drift onto different channel sets if this list is
+    ever revisited (fetch_all_series()'s own docstring already flags that as
+    live, anticipated future work: re-including one of the currently-
+    deferred sparse signals)."""
+    series: dict[str, TimeSeries] = {
+        "action_warrant": fetch_action_warrant(conn, since, until, limit=action_warrant_limit)
+    }
     series.update(fetch_attention_self_model(conn, since, until))
     return series
 
@@ -396,10 +427,22 @@ def resolve_live_enrichment(
     fully-empty return (all 6 channels absent) as worth logging loudly -- it can mean
     the join found nothing at all (wrong table/column, DB unreachable, a real
     producer outage longer than the lookback), not that this tick is calm.
+
+    Uses `_fetch_action_warrant_and_attention_series()` -- the shared composition
+    behind this and `fetch_all_series()` -- with `action_warrant_limit=1`: this
+    function only ever wants the single latest value per channel, so fetching
+    action_warrant's own full ~2.1s-cadence window (up to ~428 rows at the default
+    15-minute lookback) just to discard all but the last one is pure waste (review
+    finding, 2026-09-03). `attention_self_model` is NOT limited the same way -- its
+    two field-groups can land on different rows (see that function's own docstring),
+    so it genuinely needs the real lookback window to find each field's true latest;
+    its own cadence (~30.6s) keeps that window small regardless (~29 rows at the
+    default lookback, not worth optimizing further).
     """
     since = now - timedelta(hours=lookback_hours)
-    series_by_name: dict[str, TimeSeries] = {"action_warrant": fetch_action_warrant(conn, since, now)}
-    series_by_name.update(fetch_attention_self_model(conn, since, now))
+    series_by_name = _fetch_action_warrant_and_attention_series(
+        conn, since, now, action_warrant_limit=1
+    )
     latest: dict[str, float] = {}
     for series in series_by_name.values():
         if not series:

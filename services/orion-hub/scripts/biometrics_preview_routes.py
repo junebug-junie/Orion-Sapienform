@@ -7,17 +7,23 @@ dropped or forwarded as a doomed cross-host call (see `biometrics_node_client.py
 Postgres access follows `cabinet_sensors_routes.py`'s convention (async
 `asyncpg` against `DATABASE_URL`, `timestamp::timestamptz` cast because that
 column is `text`, not native timestamp) for `/history`, since it is reading
-the same `orion_biometrics_summary` table that file already queries. `/induction`
+the same `orion_biometrics_summary` table that file already queries -- through
+a bounded module-level pool (`_pg_pool`), not a connection per request. `/induction`
 is the one route that needs a sync SQLAlchemy `Engine` because it calls the
 existing `orion.substrate.metacog_trend_signals.latest_biometrics_induction_by_node`
-helper directly rather than re-deriving that query.
+helper directly rather than re-deriving that query. That helper is blocking, so
+the route runs it in a worker thread rather than on the event loop -- see
+`_induction_engine`/`api_biometrics_preview_induction` for the incident that
+forced this.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Sequence
 
@@ -154,6 +160,73 @@ async def api_biometrics_preview_snapshot(node: str = Query(...)) -> Dict[str, A
     }
 
 
+#: Bounded, lazily-created asyncpg pool shared by every read in this module.
+#: Both history routes previously did `asyncpg.connect()` per request and
+#: closed it again -- a full TCP + auth round trip on a polled path, and
+#: unbounded concurrency against a Postgres instance with live
+#: connection-exhaustion history (PR #2010). A small pool caps this module's
+#: footprint at POOL_MAX_SIZE connections no matter how many operators have
+#: the modal open.
+_PG_POOL: Any = None
+_PG_POOL_DSN: str = ""
+#: The event loop `_PG_POOL` was created on. An asyncpg pool holds
+#: loop-bound futures, so reusing one from a different loop fails at runtime
+#: with "got Future ... attached to a different loop" -- caught by the
+#: real-Postgres tests, each of which runs its own loop. Production has a
+#: single long-lived loop and never trips this, but a module-global pool with
+#: no loop identity is a latent trap, not a test-only inconvenience.
+_PG_POOL_LOOP: Any = None
+_PG_POOL_LOCK: asyncio.Lock | None = None
+POOL_MIN_SIZE = 1
+POOL_MAX_SIZE = 4
+
+
+async def _pg_pool():
+    """Lazily create (and reuse) this module's connection pool.
+
+    Created on first use rather than in `main.py`'s lifespan so the routes
+    stay self-contained and a hub booted without DATABASE_URL still starts;
+    the lock keeps a burst of concurrent first-requests from each building
+    their own pool.
+    """
+    global _PG_POOL, _PG_POOL_DSN, _PG_POOL_LOOP, _PG_POOL_LOCK
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    import asyncpg
+
+    loop = asyncio.get_running_loop()
+    # Loop identity is checked BEFORE taking the lock: an asyncio.Lock binds
+    # to the loop that first awaits it, so a lock carried over from a dead
+    # loop is itself unusable. Reset both together.
+    if _PG_POOL_LOOP is not None and _PG_POOL_LOOP is not loop:
+        stale = _PG_POOL
+        _PG_POOL, _PG_POOL_LOOP, _PG_POOL_LOCK = None, None, None
+        if stale is not None:
+            # Cannot await close() on a pool belonging to another loop; drop
+            # the reference and say so rather than pretending it was closed.
+            logger.warning(
+                "biometrics preview pool abandoned: created on a different event loop"
+            )
+    if _PG_POOL_LOCK is None:
+        _PG_POOL_LOCK = asyncio.Lock()
+    async with _PG_POOL_LOCK:
+        if _PG_POOL is not None and _PG_POOL_DSN != database_url:
+            stale, _PG_POOL = _PG_POOL, None
+            try:
+                await stale.close()
+            except Exception:  # noqa: BLE001 -- replacing it either way
+                logger.warning("biometrics preview pool close failed on DSN change")
+        if _PG_POOL is None:
+            _PG_POOL = await asyncpg.create_pool(
+                dsn=database_url, min_size=POOL_MIN_SIZE, max_size=POOL_MAX_SIZE
+            )
+            _PG_POOL_DSN = database_url
+            _PG_POOL_LOOP = loop
+    return _PG_POOL
+
+
 async def query_channel_history_rows(
     *, node: str, channel: str, column: str, hours: int
 ) -> Sequence[Mapping[str, Any]]:
@@ -168,15 +241,9 @@ async def query_channel_history_rows(
     that proven pattern rather than re-adding a cast that only unit tests
     (which mock the DB layer) failed to catch.
     """
-    database_url = os.getenv("DATABASE_URL", "").strip()
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is not configured")
-
-    import asyncpg
-
     cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
-    connection = await asyncpg.connect(dsn=database_url)
-    try:
+    pool = await _pg_pool()
+    async with pool.acquire() as connection:
         return await connection.fetch(
             f"""
             SELECT
@@ -192,8 +259,6 @@ async def query_channel_history_rows(
             cutoff,
             channel,
         )
-    finally:
-        await connection.close()
 
 
 @router.get("/history")
@@ -243,20 +308,16 @@ async def query_multi_channel_history_rows(
     """One connection, one query, N channels -- the multi-channel sibling of
     query_channel_history_rows. Added because the modal's Trended section
     originally called /history once per channel (up to 14 concurrent
-    asyncpg.connect() calls per node-detail open, no pooling); this repo has
-    live incident history with Postgres connection exhaustion (PR #2010), so
-    N short-lived connections opening at once -- exactly when an operator is
-    trying to diagnose a problem -- is a real risk, not a theoretical one.
+    connections per node-detail open); this repo has live incident history
+    with Postgres connection exhaustion (PR #2010), so N connections opening
+    at once -- exactly when an operator is trying to diagnose a problem -- is
+    a real risk, not a theoretical one. Both this and the single-channel
+    sibling now go through `_pg_pool()`, which caps the whole module at
+    POOL_MAX_SIZE connections regardless of caller count.
 
     Same no-`::timestamptz`-cast-on-the-bound-parameter fix as
     query_channel_history_rows above -- see that function's docstring.
     """
-    database_url = os.getenv("DATABASE_URL", "").strip()
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is not configured")
-
-    import asyncpg
-
     cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
     # Channel names are validated against the fixed _CHANNEL_COLUMN whitelist
     # before reaching here (never raw user input as a SQL identifier);
@@ -267,8 +328,8 @@ async def query_multi_channel_history_rows(
         f"({column}->>'{channel}')::double precision AS c{i}"
         for i, (channel, column) in enumerate(aliases)
     )
-    connection = await asyncpg.connect(dsn=database_url)
-    try:
+    pool = await _pg_pool()
+    async with pool.acquire() as connection:
         rows = await connection.fetch(
             f"""
             SELECT
@@ -282,8 +343,6 @@ async def query_multi_channel_history_rows(
             node,
             cutoff,
         )
-    finally:
-        await connection.close()
     # Translate positional c0..cN back to channel names for the caller.
     channel_by_alias = {f"c{i}": channel for i, (channel, _column) in enumerate(aliases)}
     return [
@@ -342,7 +401,28 @@ async def api_biometrics_preview_history_multi(
     return {"ok": True, **base, "series": series, "n_raw": raw_counts}
 
 
+#: Process-wide SQLAlchemy engine for /induction, keyed by the URI it was built
+#: for. Rebuilt only if POSTGRES_URI changes under us.
+_INDUCTION_ENGINE: Any = None
+_INDUCTION_ENGINE_URI: str = ""
+
+
 def _induction_engine():
+    """Cached engine, NOT one per request.
+
+    This route is polled (the Cognitive EKG card refreshes every
+    CARD_POLL_MS, per node), so the previous `create_engine(...)` per call
+    built a fresh connection pool and opened a fresh TCP connection on every
+    poll -- pure overhead on a hot path, and needless pressure on a Postgres
+    instance with live connection-exhaustion history (PR #2010).
+
+    `statement_timeout` is set as a per-connection GUC via `connect_args`,
+    matching `services/orion-cortex-exec/app/metacog_trend_reader.py::_get_engine`
+    -- the other caller of this same helper. `latest_biometrics_induction_by_node`
+    opens its own short-lived `engine.connect()`, so there is no single
+    transaction to hang a `SET LOCAL` on.
+    """
+    global _INDUCTION_ENGINE, _INDUCTION_ENGINE_URI
     if _induction_engine_factory is not None:
         return _induction_engine_factory()
     from sqlalchemy import create_engine
@@ -350,19 +430,60 @@ def _induction_engine():
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         raise RuntimeError("POSTGRES_URI is not configured")
-    return create_engine(uri, pool_pre_ping=True)
+    if _INDUCTION_ENGINE is None or _INDUCTION_ENGINE_URI != uri:
+        timeout_ms = int(settings.BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS)
+        _INDUCTION_ENGINE = create_engine(
+            uri,
+            pool_pre_ping=True,
+            connect_args={"options": f"-c statement_timeout={timeout_ms}"},
+        )
+        _INDUCTION_ENGINE_URI = uri
+    return _INDUCTION_ENGINE
+
+
+def _induction_sync(node: str) -> dict[str, Any]:
+    """Blocking half of /induction. Runs in a worker thread, never inline."""
+    engine = _induction_engine()
+    by_node = latest_biometrics_induction_by_node(engine, [node])
+    return by_node.get(node, {})
 
 
 @router.get("/induction")
 async def api_biometrics_preview_induction(node: str = Query(...)) -> Dict[str, Any]:
+    """`latest_biometrics_induction_by_node` is a synchronous SQLAlchemy call.
+
+    Calling it inline from this `async def` blocked the hub's whole event
+    loop for the duration of the query -- confirmed live 2026-09-03: with the
+    Biometrics card polling this route, a request for a *static JS file*
+    stalled 47-60s, and four concurrent /induction calls pushed an unrelated
+    endpoint from 8ms to 1.10s (four ~250ms queries serializing on the loop).
+    That is the "tabs take 30 seconds to load" report. `asyncio.to_thread`
+    keeps the loop free; `wait_for` bounds the route even when the thread is
+    stuck before the query starts (pool checkout, TCP connect), which
+    statement_timeout alone cannot cover.
+
+    Fail-open by contract: any timeout or error renders as
+    `ok: false, metrics: {}` -- an honestly-absent reading, never a
+    zero-filled placeholder and never a 500.
+    """
     nid = _validate_node(node)
+    timeout_sec = float(settings.BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC)
+    t0 = time.perf_counter()
     try:
-        engine = _induction_engine()
-        by_node = latest_biometrics_induction_by_node(engine, [nid])
+        metrics = await asyncio.wait_for(
+            asyncio.to_thread(_induction_sync, nid), timeout=timeout_sec
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "biometrics_induction_timeout node=%s elapsed_ms=%s timeout_sec=%s",
+            nid,
+            int((time.perf_counter() - t0) * 1000),
+            timeout_sec,
+        )
+        return {"ok": False, "node": nid, "metrics": {}, "error": "induction_timeout"}
     except Exception as exc:
         logger.warning("Biometrics preview induction unavailable for %s: %s", nid, exc)
         return {"ok": False, "node": nid, "metrics": {}, "error": "induction_unavailable"}
-    metrics = by_node.get(nid, {})
     return {"ok": bool(metrics), "node": nid, "metrics": metrics}
 
 

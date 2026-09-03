@@ -148,9 +148,44 @@ def latest_biometrics_induction_by_node(
     `timestamp` on `orion_biometrics_induction` is a text column (see
     `services/orion-sql-writer/app/models/biometrics_induction.py`), not a
     native timestamp column -- confirmed live 2026-07-30 that a raw
-    `timestamp > ...` comparison errors ("operator does not exist: character
-    varying > timestamp with time zone"); every comparison here casts to
-    `timestamptz` explicitly instead.
+    `timestamp > ...` comparison against a bound timestamptz errors ("operator
+    does not exist: character varying > timestamp with time zone"), so the
+    projected `ts` still casts explicitly for the max-age filter below.
+
+    Shaped as a LATERAL "top-1 per node", not `DISTINCT ON (node)`, and two
+    separate things forced that -- both measured live 2026-09-03 against the
+    real 187k-row table, because neither is visible from the code alone:
+
+    1. The old ORDER BY cast `timestamp::timestamptz`. `varchar::timestamptz`
+       is not IMMUTABLE, so Postgres refuses to index that expression
+       (`functions in index expression must be marked IMMUTABLE`) -- the cast
+       made the ordering unindexable by construction.
+    2. Removing the cast and adding `orion_biometrics_induction_node_ts_idx`
+       was still not enough: `DISTINCT ON` has to consume its whole sorted
+       input, and Postgres has no loose/skip index scan, so it kept choosing a
+       parallel seq scan + external merge sort over all 138,927 matching rows
+       to return two. Measured 911ms and ~150MB of temp spill WITH the index
+       in place.
+
+    The LATERAL form asks for exactly what is wanted -- one `ORDER BY
+    timestamp DESC LIMIT 1` per requested node -- which the index answers in
+    two lookups: 0.47ms and 8 shared buffer hits, versus 911ms and 30,015.
+    The index is load-bearing for this shape too (281ms with index scans
+    disabled), so neither half of the fix stands alone.
+
+    Cost of getting this wrong, from pg_stat_statements before the fix: 418ms
+    mean over 36,393 calls and 11.5 TB of cumulative temp spill -- 92% of all
+    temp I/O on the instance -- once the Hub's Biometrics card began polling
+    it every 10s per node.
+
+    That is safe because the stored text sorts chronologically: every row is
+    written by orion-sql-writer through psycopg2 against a server with
+    `TimeZone=Etc/UTC` and `DateStyle=ISO`, so Postgres renders each value in
+    fixed-width `YYYY-MM-DD HH:MM:SS[.ffffff]+00` form. Verified live
+    2026-09-03 across all 187,563 rows: zero off-format values, and zero rows
+    where text ordering and timestamptz ordering disagree. Fractional seconds
+    are right-trimmed, which preserves order rather than breaking it ('+' <
+    any digit, and a shorter fraction is numerically smaller).
 
     Returns only nodes with a real row within `max_age_sec`; a missing or
     stale node is simply absent from the returned dict, not a zero-filled
@@ -162,10 +197,16 @@ def latest_biometrics_induction_by_node(
 
     query = text(
         """
-        SELECT DISTINCT ON (node) node, metrics, timestamp::timestamptz AS ts
-        FROM orion_biometrics_induction
-        WHERE node = ANY(:nodes)
-        ORDER BY node, timestamp::timestamptz DESC
+        SELECT n.node AS node, latest.metrics AS metrics,
+               latest.timestamp::timestamptz AS ts
+        FROM unnest(CAST(:nodes AS text[])) AS n(node)
+        CROSS JOIN LATERAL (
+            SELECT b.metrics, b.timestamp
+            FROM orion_biometrics_induction b
+            WHERE b.node = n.node
+            ORDER BY b.timestamp DESC
+            LIMIT 1
+        ) AS latest
         """
     )
     with engine.connect() as conn:

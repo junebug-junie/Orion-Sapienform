@@ -47,6 +47,18 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"
             )
+            # Sibling of the index above, for orion_biometrics_induction's
+            # DISTINCT ON (node) ... ORDER BY node, timestamp DESC read
+            # (orion/substrate/metacog_trend_signals.py). Without it that
+            # query parallel-seq-scans a 247MB table and external-merge-sorts
+            # it to disk to return one row per node -- 418ms mean and 11.5TB
+            # of cumulative temp spill once the Hub's Biometrics card began
+            # polling it (measured live 2026-09-03). DESC matters: it is the
+            # direction the DISTINCT ON reads.
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS orion_biometrics_induction_node_ts_idx "
+                "ON orion_biometrics_induction (node, timestamp DESC);"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )

@@ -164,3 +164,57 @@ def test_build_recent_trend_signals_cue_skips_nodes_with_no_notable_channel() ->
         induction_by_node={"athena": {"cpu": {"level": 0.1}}},
     )
     assert cue["biometrics_induction"] == {}
+
+
+# --- query shape must stay indexable ---------------------------------------
+
+
+def test_induction_query_is_a_lateral_top_1_per_node_not_distinct_on() -> None:
+    """Two independent traps, both measured live 2026-09-03, both pinned here.
+
+    1. `varchar::timestamptz` is not IMMUTABLE, so Postgres refuses to index
+       that expression -- a cast in the ORDER BY makes the ordering
+       unindexable by construction.
+    2. `DISTINCT ON (node)` must consume its entire sorted input and Postgres
+       has no loose index scan, so it kept choosing a parallel seq scan +
+       external merge sort over all 138,927 matching rows *even with the
+       index present*: 911ms and ~150MB of temp spill, versus 0.47ms for the
+       LATERAL form.
+
+    Trap 2 is why this asserts on the query SHAPE and not merely on the
+    absence of a cast: removing the cast alone left the query just as slow,
+    which is precisely the "fix" that would otherwise look correct.
+    """
+    engine = _engine_with_all_rows([])
+    latest_biometrics_induction_by_node(engine, ["athena"])
+
+    sql = " ".join(str(engine.connect().__enter__().execute.call_args[0][0]).split()).upper()
+
+    assert "DISTINCT ON" not in sql, f"DISTINCT ON cannot use the index: {sql}"
+    assert "CROSS JOIN LATERAL" in sql, sql
+    assert "LIMIT 1" in sql, "without LIMIT 1 the lateral still reads every row per node"
+
+    # The ordering the index serves. DESC is load-bearing: ASC would return
+    # the OLDEST row per node -- a wrong answer that still looks like a
+    # working query.
+    order_by = sql.split("ORDER BY", 1)
+    assert len(order_by) == 2, f"no ORDER BY in statement: {sql}"
+    clause = order_by[1]
+    assert "::TIMESTAMPTZ" not in clause, (
+        f"ORDER BY casts timestamp, which no index can serve: {clause!r}"
+    )
+    assert "B.TIMESTAMP DESC" in clause, clause
+
+
+def test_induction_query_still_casts_the_projected_timestamp() -> None:
+    """The max-age filter compares `ts` as a datetime, so the projection casts.
+
+    Pinned separately from the indexability assertions above so that "drop the
+    cast" cannot be applied wholesale to make those pass.
+    """
+    engine = _engine_with_all_rows([])
+    latest_biometrics_induction_by_node(engine, ["athena"])
+
+    sql = " ".join(str(engine.connect().__enter__().execute.call_args[0][0]).split()).upper()
+    select_list = sql.split("FROM", 1)[0]
+    assert "TIMESTAMP::TIMESTAMPTZ AS TS" in select_list, select_list

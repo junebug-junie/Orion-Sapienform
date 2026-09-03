@@ -479,6 +479,27 @@ class Settings(BaseSettings):
         default=5.0,
         alias="BIOMETRICS_NODE_CLIENT_TIMEOUT_SEC",
     )
+    # /induction runs a synchronous SQLAlchemy query (the shared
+    # latest_biometrics_induction_by_node helper) off the event loop in a
+    # worker thread. Two independent bounds, because they fail differently:
+    # the statement_timeout stops a runaway query from holding a Postgres
+    # backend (and its parallel workers) after the requester is gone, while
+    # the asyncio timeout stops the *route* from hanging on a thread that is
+    # blocked before the query even starts (pool checkout, TCP connect).
+    # Sized against the pre-index live cost of that query (418ms mean,
+    # measured 2026-09-03) plus headroom, not against its post-index cost --
+    # if the index is ever dropped the route must degrade to a logged
+    # timeout, not to a 30-second UI stall.
+    BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS: int = Field(
+        default=2000,
+        ge=1,
+        alias="BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS",
+    )
+    BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC: float = Field(
+        default=3.0,
+        gt=0,
+        alias="BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC",
+    )
     # GPU index -> Orion model-routing lane label, per node. nvidia-smi itself
     # has no lane concept -- this is a small, hand-maintained join against
     # scattered CUDA_VISIBLE_DEVICES* env keys across several services'

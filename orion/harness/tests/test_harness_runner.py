@@ -80,6 +80,73 @@ async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_runner_threads_request_mode_into_grammar_collector() -> None:
+    """The actual fix, 2026-09-03: HarnessRunRequestV1.mode (new, optional)
+    must reach HarnessGrammarCollector's own mode field, which
+    record_request_received() used to hardcode as "orion" regardless of the
+    real caller -- caught live via a real Hub Agent-mode turn's grammar
+    trace."""
+    captured: dict[str, Any] = {}
+    import orion.harness.runner as runner_module
+
+    real_collector_cls = runner_module.HarnessGrammarCollector
+
+    def _spy_collector(**kwargs: Any):
+        captured.update(kwargs)
+        return real_collector_cls(**kwargs)
+
+    thought = make_thought()
+    request = HarnessRunRequestV1(
+        correlation_id="c-agent-mode",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        mode="agent",
+    )
+    bus = AsyncMock()
+    runner = HarnessRunner(bus, fcc_runner=_mock_fcc_runner)
+
+    with patch.object(runner_module, "HarnessGrammarCollector", _spy_collector):
+        await runner.run(request)
+
+    assert captured.get("mode") == "agent"
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_defaults_grammar_collector_mode_to_orion_when_request_lacks_it() -> None:
+    """Backward compat: HarnessRunRequestV1.mode is new and optional
+    (defaults to None when the caller doesn't set it, e.g. a request built
+    by an older Hub build that predates this field) -- runner.py's
+    getattr(request, "mode", None) read must fall back to "orion", not pass
+    None straight through to the collector."""
+    captured: dict[str, Any] = {}
+    import orion.harness.runner as runner_module
+
+    real_collector_cls = runner_module.HarnessGrammarCollector
+
+    def _spy_collector(**kwargs: Any):
+        captured.update(kwargs)
+        return real_collector_cls(**kwargs)
+
+    thought = make_thought()
+    request = HarnessRunRequestV1(
+        correlation_id="c-no-mode",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    bus = AsyncMock()
+    runner = HarnessRunner(bus, fcc_runner=_mock_fcc_runner)
+
+    with patch.object(runner_module, "HarnessGrammarCollector", _spy_collector):
+        await runner.run(request)
+
+    assert captured.get("mode") == "orion"
+
+
+@pytest.mark.asyncio
 async def test_harness_runner_surfaces_fcc_served_model_from_final_metadata() -> None:
     """A "final" event's metadata.fcc_served_model (the real backend model the
     CLI's stream-json events echoed back, per fcc_motor.py's

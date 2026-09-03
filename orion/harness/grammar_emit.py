@@ -69,6 +69,12 @@ class HarnessGrammarCollector:
     code_version: str | None = None
     session_id: str | None = None
     turn_id: str | None = None
+    # "orion" or "agent" -- which Hub chat mode started this run
+    # (HarnessRunRequestV1.mode, threaded through by runner.py). Was a bare
+    # "orion" hardcoded directly into record_request_received()'s summary
+    # string until 2026-09-03, which mislabeled every real Agent-mode run's
+    # grammar trace -- caught live via Hub's own turn-trace debug endpoint.
+    mode: str = "orion"
     _atoms: dict[str, GrammarAtomV1] = field(default_factory=dict)
     # Real wall-clock moment each atom was actually recorded, keyed by
     # atom_id. Populated by _put_atom() -- same fix shape as
@@ -164,7 +170,7 @@ class HarnessGrammarCollector:
                 semantic_role="exec_request_received",
                 layer="intake",
                 dimensions=["execution", "request", "harness"],
-                summary="Harness exec received plan request for verb=orion_unified, mode=orion, steps=0",
+                summary=f"Harness exec received plan request for verb=orion_unified, mode={self.mode}, steps=0",
                 confidence=1.0,
                 salience=1.0,
                 source_event_id=self.correlation_id,

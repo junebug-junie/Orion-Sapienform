@@ -202,6 +202,16 @@ class HarnessRunRequestV1(BaseModel):
     answer_contract: AnswerContract
     repair_pressure_contract: dict[str, Any] | None = None
     fcc_model_label: str | None = None
+    # Which Hub chat mode ("orion" or "agent") initiated this run --
+    # threaded through so orion-harness-governor's own grammar trace
+    # (orion/harness/grammar_emit.py's HarnessGrammarCollector) can label
+    # itself correctly instead of always saying "mode=orion" regardless of
+    # caller. Optional/defaults to None (treated as "orion" downstream) so
+    # a Hub build that predates this field doesn't break an older-vs-newer
+    # rolling deploy against this schema, matching this model's existing
+    # attachments/recent_turns/situation_prompt_fragment convention of
+    # getattr(request, "...", None) at every read site.
+    mode: str | None = None
     attachments: list[HarnessAttachmentV1] = Field(
         default_factory=list,
         description=(

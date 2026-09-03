@@ -650,6 +650,15 @@ async def execute_unified_turn(
             history_only = history_only[:-1]
     recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
 
+    # "orion" or "agent" -- computed once here (not just at the two
+    # _success_frames call sites below) so it can also ride on
+    # HarnessRunRequestV1.mode: without this, orion-harness-governor's own
+    # grammar trace (orion/harness/grammar_emit.py) has no way to know which
+    # Hub mode started the run at all and always says "mode=orion" -- caught
+    # live 2026-09-03 via Hub's own /api/chat/turn/{corr}/trace endpoint on a
+    # real Mode: Agent turn.
+    mode_tag = str(payload.get("mode") or "orion").strip().lower()
+
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
         thought_event=thought,
@@ -667,6 +676,7 @@ async def execute_unified_turn(
         answer_contract=AnswerContract(),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
         fcc_model_label=payload.get("fcc_model_label") or DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL,
+        mode=mode_tag,
         situation_prompt_fragment=situation_prompt_fragment,
     )
     harness_bus = harness_rpc_bus or bus
@@ -725,13 +735,10 @@ async def execute_unified_turn(
     # tell backends apart. Falls back to the alias when discovery never fired
     # (e.g. the motor failed before any assistant turn).
     resolved_model_label = run.fcc_served_model or harness_req.fcc_model_label
-    # "orion" or "agent" -- both share this exact FCC path now (see
-    # websocket_handler.py/api_routes.py's `mode in ("orion", "agent")`
-    # branches); this was hardcoded "orion" until 2026-09-02, which
-    # permanently mislabeled every Agent-mode turn's final frame AND its
-    # persisted chat_history_log row (via _publish_unified_turn_chat_history's
-    # own mode_tag below) as "orion" -- caught live, verifying this exact fix.
-    mode_tag = str(payload.get("mode") or "orion").strip().lower()
+    # mode_tag computed once, above, before harness_req -- reused here for
+    # _success_frames/_publish_unified_turn_chat_history so the final frame,
+    # the persisted chat_history_log row, AND HarnessRunRequestV1.mode
+    # (consumed by orion-harness-governor's own grammar trace) all agree.
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,

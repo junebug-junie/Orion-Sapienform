@@ -74,11 +74,12 @@ def _grammar_event_ids(receipts: list[Any]) -> list[str]:
     return [r.grammar_event_id for r in receipts if getattr(r, "grammar_event_id", None)]
 
 
-def _new_harness_grammar_collector(*, correlation_id: str) -> HarnessGrammarCollector:
+def _new_harness_grammar_collector(*, correlation_id: str, mode: str = "orion") -> HarnessGrammarCollector:
     return HarnessGrammarCollector(
         node_name=settings.node_name,
         correlation_id=correlation_id,
         observed_at=datetime.now(timezone.utc),
+        mode=mode,
     )
 
 
@@ -106,8 +107,9 @@ async def _emit_refused_lifecycle_grammar(
     *,
     correlation_id: str,
     recall_debug: dict[str, Any] | None,
+    mode: str = "orion",
 ) -> None:
-    collector = _new_harness_grammar_collector(correlation_id=correlation_id)
+    collector = _new_harness_grammar_collector(correlation_id=correlation_id, mode=mode)
     collector.record_request_received()
     collector.record_plan_started(step_count=0)
     _record_recall_gate_from_debug(collector, recall_debug)
@@ -239,6 +241,7 @@ async def handle_harness_run_request(
             bus,
             correlation_id=corr,
             recall_debug=recall_debug,
+            mode=str(getattr(request, "mode", None) or "orion").strip().lower(),
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run

@@ -295,7 +295,7 @@ class HarnessRunV1(BaseModel):
     # distinguish backends sharing one route. None when discovery never fired.
     fcc_served_model: str | None = None
     # Wall time for the FCC motor leg alone, seconds. The quantity
-    # HARNESS_FCC_TIMEOUT_SEC (1600s) compares against, and therefore the one
+    # HARNESS_FCC_TIMEOUT_SEC (2400s) compares against, and therefore the one
     # that decides `grounding_status == "fcc_timeout"`. Optional because the
     # refusal/validation paths never run the motor -- absent there means "no
     # motor leg happened", NOT "it took no time".

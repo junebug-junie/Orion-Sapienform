@@ -337,6 +337,10 @@ class HarnessRunner:
             node_name=self.node_name,
             correlation_id=request.correlation_id,
             observed_at=datetime.now(timezone.utc),
+            # getattr default, not request.mode directly: HarnessRunRequestV1.mode
+            # is a new, optional field (2026-09-03) -- a request built by a Hub
+            # build that predates it must not crash this on a rolling deploy.
+            mode=str(getattr(request, "mode", None) or "orion").strip().lower(),
         )
         collector.record_request_received()
         collector.record_plan_started(step_count=0)

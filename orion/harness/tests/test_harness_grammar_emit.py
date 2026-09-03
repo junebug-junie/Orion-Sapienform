@@ -90,6 +90,33 @@ def test_compute_reasoning_present_rules() -> None:
     assert compute_harness_reasoning_present(step_count=0, reflection_ran=False, quick_lane_skipped_5b=False, grammar_receipt_count=3) is True
 
 
+def test_record_request_received_defaults_to_orion_mode() -> None:
+    """Backward-compat: a collector built without an explicit `mode` (every
+    call site before 2026-09-03, and any HarnessRunRequestV1 sender that
+    predates the new optional `mode` field) must keep saying "mode=orion",
+    not silently start saying "mode=None" or crash."""
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    c.record_request_received()
+    atom = c._atoms["exec_request_received"]
+    assert "mode=orion" in atom.summary
+
+
+def test_record_request_received_reflects_agent_mode() -> None:
+    """The actual fix, 2026-09-03: a real Hub Agent-mode turn's harness
+    grammar trace said "mode=orion" regardless of caller -- caught live via
+    Hub's own /api/chat/turn/{corr}/trace debug endpoint on a real
+    Mode: Agent turn (corr 3b96910a-b3dc-43ee-ad85-ecb443a0f9b7)."""
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED, mode="agent")
+    c.record_request_received()
+    atom = c._atoms["exec_request_received"]
+    assert "mode=agent" in atom.summary
+    assert "mode=orion" not in atom.summary
+    # verb=orion_unified is the mechanism name, not the caller's chat mode --
+    # it stays fixed regardless of mode (Agent mode deliberately reuses this
+    # exact mechanism), unlike the mode= portion just asserted above.
+    assert "verb=orion_unified" in atom.summary
+
+
 def test_build_events_include_lifecycle_roles() -> None:
     c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
     c.record_request_received()

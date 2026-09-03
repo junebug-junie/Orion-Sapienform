@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationPressureV1, MutationProposalV1
-from orion.substrate.mutation_contracts import CONTRACTS
+from orion.substrate.mutation_contracts import CONTRACTS, PARKED_TARGET_SURFACES
 from orion.substrate.recall_strategy_readiness import readiness_for_pressure
 
 
@@ -91,10 +91,15 @@ _SAME_VALUE_ABS_TOL = 1e-9
 ROUTING_TARGET_PARKED_REASON = "routing_threshold_target_parked_2026_09_03"
 
 # Parked mutation classes never reach a proposal, regardless of target_surface.
-# Keyed on mutation_class (the thing actually being parked), not on the surface
-# string that happens to map to it today -- a future surface alias pointed at
-# the same class must not bypass this by construction.
-_PARKED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch"})
+# Derived from PARKED_TARGET_SURFACES (mutation_contracts.py) -- the single
+# source of truth also consumed by mutation_detectors.py's signal filter and
+# api_routes.py's signal-intake health check -- rather than hardcoded here a
+# second time. Keyed on mutation_class (the thing actually being parked), not
+# on the surface string alone, so a future surface alias pointed at the same
+# class can't bypass this by construction.
+_PARKED_MUTATION_CLASSES: frozenset[str] = frozenset(
+    SURFACE_TO_CLASS[surface] for surface in PARKED_TARGET_SURFACES if surface in SURFACE_TO_CLASS
+)
 
 
 @dataclass(frozen=True)

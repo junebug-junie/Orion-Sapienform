@@ -148,9 +148,17 @@ def test_wrong_surface_only_is_distinguished_from_wrong_zone(scheduler_env) -> N
     assert intake["before_zone_filter"] == 0
 
 
-def test_a_satisfying_row_reports_healthy(scheduler_env) -> None:
-    """The combination no live producer emits. If this ever passes against real
-    data, the pipeline has stopped being starved."""
+def test_an_autonomy_graph_row_alone_is_not_reported_as_healthy(scheduler_env) -> None:
+    """As of 2026-09-03 "routing" (chat_reflective_lane_threshold) is parked:
+    mutation_detectors.py filters every autonomy_graph-zoned signal out of
+    from_review_telemetry() unconditionally (see PARKED_TELEMETRY_ZONES), so
+    a row that clears every filter but sits in that zone can never produce a
+    live signal any more. Formerly `test_a_satisfying_row_reports_healthy`,
+    which asserted this exact row combination was "healthy" -- reporting that
+    now would reproduce the same "unexplained zero looks fine" failure this
+    whole module exists to prevent, just one level down (after_zone_filter
+    positive, signals_processed still zero).
+    """
     base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     store = _live_shaped_store()
     store.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=20)))
@@ -158,14 +166,35 @@ def test_a_satisfying_row_reports_healthy(scheduler_env) -> None:
 
     intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
 
+    assert intake["reason"] == "matched_rows_only_in_parked_zones"
+    assert intake["starved"] is False
+    assert intake["after_zone_filter"] == 1
+    assert intake["after_zone_filter_live"] == 0
+
+
+def test_a_satisfying_row_in_a_live_zone_reports_healthy(scheduler_env, monkeypatch) -> None:
+    """The positive case for "healthy" now needs a zone that isn't parked --
+    self_relationship_graph (prompt_profile), reachable when the cognitive
+    lane is enabled. autonomy_graph alone can never produce this any more
+    (see the test above)."""
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store = _live_shaped_store()
+    store.record(_record(surface="operator_review", zone="self_relationship_graph", at=base + timedelta(minutes=20)))
+    scheduler_env(store)
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
     assert intake["reason"] == "healthy"
     assert intake["starved"] is False
     assert intake["after_zone_filter"] == 1
+    assert intake["after_zone_filter_live"] == 1
 
 
-def test_consecutive_starved_cycles_accumulates_then_resets(scheduler_env) -> None:
+def test_consecutive_starved_cycles_accumulates_then_resets(scheduler_env, monkeypatch) -> None:
     """A lifetime counter cannot tell "starved since boot" from "starved once,
     months ago". The counter must climb while starved and reset on recovery."""
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
     starved_store = _live_shaped_store()
     scheduler_env(starved_store)
 
@@ -174,10 +203,13 @@ def test_consecutive_starved_cycles_accumulates_then_resets(scheduler_env) -> No
     assert first["consecutive_starved_cycles"] == 1
     assert second["consecutive_starved_cycles"] == 2
 
+    # self_relationship_graph, not autonomy_graph: the latter is a parked zone
+    # now (see test_an_autonomy_graph_row_alone_is_not_reported_as_healthy)
+    # and could never recover this cycle to "healthy".
     starved_store.record(
         _record(
             surface="operator_review",
-            zone="autonomy_graph",
+            zone="self_relationship_graph",
             at=datetime(2026, 8, 30, 12, 30, tzinfo=timezone.utc),
         )
     )
@@ -217,7 +249,9 @@ def test_disabled_routing_proposals_is_not_reported_as_starvation(scheduler_env,
 def test_no_reason_is_unreachable(scheduler_env, monkeypatch) -> None:
     """Every reason the report can emit must be producible by some real cycle.
     A branch nothing can reach is exactly the dead scaffolding this patch exists
-    to expose."""
+    to expose. "matched_rows_only_in_parked_zones" (added 2026-09-03 alongside
+    the routing park) and "healthy" (now needing a non-parked zone -- see
+    test_a_satisfying_row_in_a_live_zone_reports_healthy) are both covered."""
     base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     seen = set()
 
@@ -232,10 +266,17 @@ def test_no_reason_is_unreachable(scheduler_env, monkeypatch) -> None:
     scheduler_env(_live_shaped_store())
     seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
 
+    parked_only = _live_shaped_store()
+    parked_only.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=20)))
+    scheduler_env(parked_only)
+    seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
     healthy = _live_shaped_store()
-    healthy.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=20)))
+    healthy.record(_record(surface="operator_review", zone="self_relationship_graph", at=base + timedelta(minutes=20)))
     scheduler_env(healthy)
     seen.add(api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"])
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "false")
 
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", "false")
     scheduler_env(_live_shaped_store())
@@ -270,6 +311,7 @@ def test_no_reason_is_unreachable(scheduler_env, monkeypatch) -> None:
         "surface_filter_rejected_all",
         "zone_filter_rejected_all",
         "limit_truncated_usable_signals",
+        "matched_rows_only_in_parked_zones",
         "healthy",
         "signals_disabled",
         "telemetry_override",
@@ -304,9 +346,14 @@ def test_a_bailing_cycle_does_not_leave_a_stale_healthy_report(scheduler_env, mo
     degrading turns every later tick into a no-op that never reaches signal
     intake; the endpoint answering "healthy, not starved" for weeks after is the
     same silent-zero failure this patch exists to remove."""
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
     healthy = _live_shaped_store()
     healthy.record(
-        _record(surface="operator_review", zone="autonomy_graph", at=datetime(2026, 8, 30, 12, 30, tzinfo=timezone.utc))
+        _record(
+            surface="operator_review",
+            zone="self_relationship_graph",
+            at=datetime(2026, 8, 30, 12, 30, tzinfo=timezone.utc),
+        )
     )
     scheduler_env(healthy)
     assert api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]["reason"] == "healthy"

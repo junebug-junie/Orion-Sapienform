@@ -20,6 +20,7 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, candidate)
 
 from orion.substrate.mutation_queue import SubstrateMutationStore
+from orion.substrate.mutation_proposals import build_placeholder_routing_proposal
 from orion.substrate import mutation_control_surface
 from scripts import api_routes
 
@@ -183,28 +184,29 @@ def test_require_review_never_applies_via_manual_route(routing_manual_fixture) -
 
 
 def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fixture) -> None:
-    """Formerly proved the one-active-mutation-per-surface invariant produces
-    `decision=hold` for a second routing proposal while one is already
-    active. Parked: no routing proposal is ever generated any more, so this
-    specific integration path can no longer reach `DecisionEngine.decide()`
-    at all -- the invariant itself is real and still covered generically at
-    the unit level (`orion/substrate/tests/test_mutation_v21.py::
-    test_store_allows_only_single_active_mutation_per_surface`, which builds
-    its proposal directly rather than through telemetry). This now proves
-    the manual endpoint stays inert with an active surface pre-set, same as
-    without one.
+    """Formerly fed routing telemetry and proved the one-active-mutation-per-
+    surface invariant produces `decision=hold`. Parked: telemetry can no
+    longer produce a routing signal at all (see `mutation_detectors.py`'s
+    filter), so this enqueues the proposal directly into the same
+    `SUBSTRATE_MUTATION_STORE` the manual endpoint reads -- bypassing the
+    parked detector/pressure/factory chain, not the invariant itself -- so
+    the endpoint's trial/decision/apply half still runs on it for real.
     """
     api_routes.SUBSTRATE_MUTATION_STORE._active_surface_by_target["routing"] = "existing-adoption"
+    proposal = build_placeholder_routing_proposal(rollback_value=0.5)
+    api_routes.SUBSTRATE_MUTATION_STORE.add_proposal(proposal, priority=60)
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
             dry_run=False,
             apply_enabled=True,
-            telemetry=routing_manual_fixture["telemetry_routing"],
+            telemetry=[],
             class_metrics=routing_manual_fixture["routing_pass_metrics"],
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
-    assert payload["summary"]["decisions_made"] == 0
+    assert any(event.get("decision") == "hold" for event in payload["trace"]["events"]), (
+        f"active-surface invariant was never exercised; events={payload['trace']['events']}"
+    )
     assert payload["summary"]["applies_completed"] == 0
     assert api_routes.SUBSTRATE_MUTATION_SURFACES["routing"]["chat_reflective_lane_threshold"] == 0.5
 

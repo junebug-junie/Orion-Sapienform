@@ -214,11 +214,21 @@ def test_routing_pressure_events_are_filtered_even_via_producer_provenance_path(
         runtime_duration_ms=0,
         anchor_scope="orion",
         subject_ref="entity:orion",
-        target_zone="autonomy_graph",
+        # world_ontology, not autonomy_graph: the record's own zone-derived
+        # surface is "graph_consolidation" (not parked), so the only way a
+        # "routing" signal can appear here is via the pressure_event's own
+        # category -- isolating the path this test is actually about, not
+        # also triggering the simpler zone-based filter at the same time.
+        target_zone="world_ontology",
         pressure_events=[event],
     )
     signals = detector.from_review_telemetry([telemetry])
-    assert signals == []
+    # The record's own zone-derived signal (graph_consolidation) is not
+    # parked and must survive -- only the routing_false_escalation pressure
+    # event's own "routing"-surfaced signal is filtered.
+    assert signals
+    assert not any(signal.target_surface == "routing" for signal in signals)
+    assert any(signal.target_surface == "graph_consolidation" for signal in signals)
 
 
 def test_cognitive_signals_can_be_derived_from_existing_artifacts() -> None:
@@ -794,11 +804,22 @@ def test_require_review_never_applies() -> None:
 
 
 def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
+    """The routing surface is parked, so a "routing" pressure can no longer
+    reach `plan_for_pressure()` via telemetry -- feeding autonomy_graph
+    telemetry here (as this test did before 2026-09-03) would produce zero
+    signals and pass vacuously, exercising nothing. The active-surface
+    invariant itself is real and still needs proving through a full worker
+    cycle, so this enqueues the proposal directly (bypassing the parked
+    detector/pressure/factory chain, same pattern as smoke_mutation_v21.py's
+    active-surface demo) and lets the worker's trial/decision/apply half run
+    normally on it.
+    """
     store = SubstrateMutationStore()
     proposal = _direct_routing_proposal()
-    assert proposal is not None
     store._active_surface_by_target[proposal.target_surface] = "existing-adoption"
+    store.add_proposal(proposal, priority=60)
     applier = PatchApplier(surfaces={proposal.target_surface: {"chat_reflective_lane_threshold": 0.5}})
+    traces: list[dict] = []
     worker = SubstrateAdaptationWorker(
         store=store,
         detectors=MutationDetectors(),
@@ -814,22 +835,14 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
         decision_engine=DecisionEngine(),
         applier=applier,
         monitor=PostAdoptionMonitor(),
+        trace_logger=traces.append,
     )
     os.environ["SUBSTRATE_MUTATION_AUTONOMY_ENABLED"] = "true"
-    result = worker.run_cycle(
-        telemetry=[
-            GraphReviewTelemetryRecordV1(
-                invocation_surface="operator_review",
-                execution_outcome="failed",
-                selection_reason="x",
-                runtime_duration_ms=12,
-                anchor_scope="orion",
-                subject_ref="entity:orion",
-                target_zone="autonomy_graph",
-            )
-        ],
-        measured_metrics_by_proposal={},
-    )
+    result = worker.run_cycle(telemetry=[], measured_metrics_by_proposal={})
+    assert any(
+        event.get("event") == "mutation_decision_recorded" and event.get("decision") == "hold"
+        for event in traces
+    ), f"active-surface invariant was never exercised -- no hold decision recorded; events={sorted({e.get('event') for e in traces})}"
     assert result["adoptions"] == 0
     assert applier.surfaces[proposal.target_surface]["chat_reflective_lane_threshold"] == 0.5
 

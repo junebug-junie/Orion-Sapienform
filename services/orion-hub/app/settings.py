@@ -649,6 +649,37 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
         default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
     )
+    # WHICH GPU LANE ORION'S OWN TIME RUNS ON. Empty means "no override": the
+    # unified turn keeps its default, which is the `harness` lane -- the SAME
+    # worker (circe-worker-1, n_parallel 1) that serves Juniper's interactive
+    # chat. Confirmed live 2026-09-03 via `GET /routes`: `chat` and `harness`
+    # are both circe-worker-1, so every curiosity run -- up to
+    # HUB_CURIOSITY_INVESTIGATION_DAILY_CAP of them a day -- held the one slot
+    # Juniper types into.
+    #
+    # HOW LONG IT ACTUALLY HELD IT: measured 657-1176s of FCC time across the
+    # six most recent completed runs. NOT the Hub-side
+    # HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC, which is only this loop's outer
+    # wait -- the binding ceiling is HARNESS_FCC_TIMEOUT_SEC in the
+    # harness-governor's env, and no literal for it belongs here (that key has
+    # a single-source gate, and the comment on TIMEOUT_SEC above already
+    # records that copies of it have drifted once).
+    #
+    # `agent` is circe-worker-agent-1 on :8015 (Qwen3.8-27B), a physically
+    # separate worker, and as of 2026-09-03 it reports n_ctx=131072 -- the same
+    # window as chat/harness, so moving here costs no context. That was NOT
+    # true when the COMPUTE lane first started resolving (PR #2062 measured
+    # 32768 there and a routed turn died on `Prompt is too long`); the value is
+    # read live per-turn by `probe_route_runtime`, not assumed, so a worker
+    # relaunched with a smaller window degrades loudly rather than silently.
+    #
+    # Route names come from `orion/llm/routes.py`, the vocabulary's single
+    # owner. An unrecognised or system-only name resolves to None there and
+    # this loop falls back to the default WITH a warning -- absent is not a
+    # guess.
+    HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE: str = Field(
+        default="agent", alias="HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE"
+    )
     # How much of Orion's own material to put in front of it. Enough to choose
     # between, few enough that the menu does not crowd out its self-model in
     # the turn's context. Sampled at RANDOM, not ranked -- any ordering would

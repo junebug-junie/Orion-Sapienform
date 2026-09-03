@@ -108,6 +108,7 @@ from orion.curiosity.worldview import (
     read_snapshot,
     read_turn_outcome,
 )
+from orion.llm.routes import fcc_model_for_route
 from orion.journaler.schemas import JournalEntryWriteV1
 
 logger = logging.getLogger("orion-hub.curiosity_investigation")
@@ -506,6 +507,25 @@ def build_investigation_journal_entry(
     )
 
 
+def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
+    """The unified-turn payload for one curiosity turn.
+
+    `no_write` because the journal entry is this loop's sole persistence path,
+    so the turn must not also land as an untagged chat row.
+
+    `fcc_model_label` is OMITTED, not set empty, when there is no lane
+    override. `_resolve_fcc_model_label` reads it with
+    `str(payload.get(...) or "").strip()`, so an empty string and an absent key
+    behave identically TODAY -- but the two mean different things, and writing
+    the one that says "no opinion" keeps this correct if that reader ever
+    stops coercing.
+    """
+    payload: dict = {"no_write": True, "source": source}
+    if fcc_model_label:
+        payload["fcc_model_label"] = fcc_model_label
+    return payload
+
+
 class CuriosityInvestigation:
     """Tick loop. Mirrors `EndogenousOutreach`'s lifecycle exactly."""
 
@@ -520,6 +540,7 @@ class CuriosityInvestigation:
         window_end_hour: int = 0,
         timeout_sec: float,
         session_id: str,
+        llm_route: str = "",
         crystallization_sample: int = DEFAULT_CRYSTALLIZATION_SAMPLE,
         relation_sample: int = DEFAULT_RELATION_SAMPLE,
         timezone_name: str = "UTC",
@@ -553,6 +574,32 @@ class CuriosityInvestigation:
         self.window_end_hour = int(window_end_hour)
         self.timeout_sec = timeout_sec
         self.session_id = session_id
+        # RESOLVED ONCE, AT CONSTRUCTION, AND LOGGED -- not per turn. A bad
+        # route name is a boot-time config error, and this loop runs at most
+        # `daily_cap` times a day inside an operator window, so a per-turn
+        # warning could take a day and a half to appear and would then be
+        # buried in the run it broke. Failing loudly here costs one line at
+        # startup and is the only place anyone is actually reading.
+        #
+        # `fcc_model_for_route` returns None for unknown, background-priority,
+        # and system-only (`harness`) names. All three mean the same thing to
+        # this loop: no override, keep the unified turn's own default. Empty is
+        # NOT a failure -- it is how an operator explicitly asks for the
+        # default -- so only a non-empty name that failed to resolve warns.
+        self.llm_route = str(llm_route or "").strip()
+        self._fcc_model_label = fcc_model_for_route(self.llm_route) if self.llm_route else None
+        if self.llm_route and not self._fcc_model_label:
+            logger.warning(
+                "curiosity_llm_route_unusable route=%r -- unknown, background, or system-only; "
+                "falling back to the unified turn's default lane",
+                self.llm_route,
+            )
+        else:
+            logger.info(
+                "curiosity_llm_route route=%r fcc_model_label=%r",
+                self.llm_route or "(default)",
+                self._fcc_model_label,
+            )
         self.crystallization_sample = crystallization_sample
         self.relation_sample = relation_sample
         self.timezone_name = timezone_name
@@ -1329,7 +1376,16 @@ class CuriosityInvestigation:
                     user_message=prompt,
                     # no_write: the journal entry below is the sole persistence
                     # path, so this does not also land as an untagged chat row.
-                    payload={"no_write": True, "source": source},
+                    # `fcc_model_label` is branch 1 of
+                    # `turn_orchestrator._resolve_fcc_model_label` -- an
+                    # explicit label wins outright, so this steers the LANE
+                    # without touching `mode`. That matters: `mode_tag` is not
+                    # cosmetic, it tags the chat_history_log row and rides into
+                    # HarnessRunRequestV1.mode, and this loop's turns are
+                    # Orion-mode turns that happen to run elsewhere, not Hub
+                    # Agent-mode turns. Omitted entirely when unresolved, so
+                    # `.get()` sees no key rather than an empty string.
+                    payload=_turn_payload(source, self._fcc_model_label),
                     continuity_messages=None,
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,
                     # THE RELAY IS PASSED, THE QUEUE IS NOT, and that pairing is

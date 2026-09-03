@@ -148,4 +148,4 @@ Expect one `mutation_adoption_settled` with `reason=window_elapsed_no_delta`, th
 
 ## PR link
 
-<pending>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2050

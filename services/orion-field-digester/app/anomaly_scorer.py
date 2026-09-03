@@ -183,6 +183,18 @@ class FieldChannelAnomalyScorer:
                 now.isoformat(),
                 self._live_enrichment_lookback_hours,
             )
+        else:
+            # DEBUG (not WARNING -- this is the normal-operation path, fires
+            # every tick): names exactly which of the 6 channels landed, so
+            # a PARTIAL failure (e.g. attention_self_model's producer down
+            # but action_warrant's still alive) is distinguishable from
+            # either total success or the total-failure case logged above.
+            # A permanently-fixed subset missing here across many ticks is
+            # itself worth investigating even though it doesn't trip the
+            # empty-result warning.
+            logger.debug(
+                "field_channel_anomaly_live_enrichment fields=%s", sorted(fields.keys())
+            )
         return fields
 
     def append_row(self, row: FieldChannelCorpusRowV1) -> None:

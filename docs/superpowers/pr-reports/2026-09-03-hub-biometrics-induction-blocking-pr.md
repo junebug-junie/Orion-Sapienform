@@ -184,18 +184,16 @@ than back to a 30-second whole-UI stall.
 ```text
 services/orion-hub/tests/test_biometrics_preview_api.py
 services/orion-hub/tests/test_biometrics_view_ui.py            63 passed
-orion/substrate/tests/test_metacog_trend_signals.py            14 passed
-services/orion-sql-writer/tests/  (full)         11 failed, 480 passed, 3 skipped
-services/orion-cortex-exec/tests/test_metacog_trend_reader.py   8 passed
-services/orion-cortex-exec/tests/test_metacog_trend_cue_prompt_render.py
-services/orion-cortex-exec/tests/test_metacog_biometrics_fleet_watts.py  16 passed
+orion/substrate/tests/test_metacog_trend_signals.py            19 passed
+services/orion-sql-writer/tests/  (full)         11 failed, 487 passed, 3 skipped
+services/orion-cortex-exec/  (3 metacog files)                 24 passed
 node --test services/orion-hub/static/js/                     113 passed, 0 failed
 ```
 
 The 11 sql-writer failures are pre-existing and environmental (docker hostnames
 like `orion-athena-sql-db` do not resolve from the host). Proven pre-existing by
 reverting only this patch's sql-writer changes: **11 failed / 477 passed** before,
-**11 failed / 480 passed** after — same failures, +3 new passing tests.
+**11 failed / 487 passed** after — same failures, +10 new passing tests.
 
 CI jobs reproduced locally:
 
@@ -252,13 +250,15 @@ database**:
   circe:  http=200 ok=True channels=14   8.6ms
 
 == canary endpoint latency while 8 concurrent /induction calls run ==
-  canary ms: min=2.21  p50=5.98  max=12.15
+  canary ms: p50=1.46  max=1.94
   (pre-fix equivalent: 4 concurrent calls -> 1,100ms)
 
 == history_multi through the bounded pool ==
   athena: ok=True  15 channels  9,780 points  239ms
   circe:  ok=True  15 channels  9,072 points  126ms
-  pool cap = 4, live pool = 1 connection (was: 1 new connection per request)
+  pool cap = 4, live = 1 connection (was: 1 new connection per request)
+  connect_timeout = 2.0s, acquire_timeout = 5.0s (were: unbounded)
+  shutdown aclose(): pool=None engine=None
 ```
 
 And the rewritten helper directly against live Postgres:
@@ -282,7 +282,156 @@ circe |2026-09-03 05:32:29.566801+00      (all three query forms agree)
 
 ## Review findings fixed
 
-(populated from the review pass — see section below)
+An adversarial review pass ran against the first commit and found real defects,
+including **two of my own new tests that could not fail**. All fixed in
+`a4e635c2d`, each re-checked by mutation.
+
+### MUST
+
+- **Finding:** `test_induction_slow_query_does_not_stall_the_loop` was vacuous.
+  It counted `await asyncio.sleep(0)` ticks and asserted the count — but a
+  fully blocked loop produces the same count, just later.
+  - **Fix:** timestamp every tick; require ≥5 to land *while* the worker thread
+    is inside the query.
+  - **Evidence:** the reviewer scored the pre-fix inline route 20/20 on the old
+    assertion. Against the rewritten test it scores
+    `only 0 loop ticks landed during the 0.25s query -- the loop was blocked`.
+
+- **Finding:** three files still described the index as backing `DISTINCT ON` —
+  the shape this same commit deleted *because it cannot use the index*.
+  - **Fix:** rewrote the docstrings in `main.py`, the out-of-band SQL file and
+    the index test to describe the LATERAL shape, and why `DISTINCT ON` cannot
+    use it.
+  - **Evidence:** `grep -rn "DISTINCT ON" scripts/sql services/orion-sql-writer`
+    returns only the explicit "not this shape, and here's why" notes.
+
+- **Finding:** the env-key rationale claimed the timeouts were sized so a
+  dropped index "degrades to a logged timeout, not a 30-second UI stall."
+  **Measurement contradicts it.** With `enable_indexscan`, `enable_bitmapscan`
+  and `enable_indexonlyscan` all off, the read completes in 163ms (1 node) /
+  422ms (3 nodes) — inside both the 2000ms statement timeout and the 3s fetch
+  timeout. A dropped index produces no timeout, no log line, no signal at all.
+  It compounds: the index was created inside a ~700-statement `engine.begin()`
+  block whose single handler swallows failures as a warning.
+  - **Fix:** corrected the rationale in `settings.py`, `.env_example` and the
+    live `.env`; moved the index out of the swallowing transaction into its own
+    block that queries `pg_indexes` afterwards and logs an **error** if absent.
+  - **Evidence:** `test_boot_verifies_the_index_actually_exists` and
+    `test_index_ddl_is_outside_the_swallowing_bootstrap_transaction`.
+
+### SHOULD
+
+- **Finding:** no `connect_timeout`. A black-holed (not refused) Postgres blocks
+  the worker thread in TCP connect for the OS default ~130s — long past the
+  route's 3s timeout, so at 10s polling the threads pile up invisibly in the
+  loop's *shared* default executor. That is the same failure class this PR
+  exists to fix, relocated.
+  - **Fix:** `connect_timeout=2` on the engine, plus `_INDUCTION_SLOTS`, a
+    4-permit semaphore capping how much of the shared executor this one route
+    can hold.
+
+- **Finding:** `pool.acquire()` had no timeout. The 14-channel history fan-out
+  against a 4-connection pool could hang forever with no error and no 500 —
+  the browser just spins. The old connection-per-request code could not do that.
+  - **Fix:** `POOL_ACQUIRE_TIMEOUT_SEC`, plus `command_timeout` on the pool.
+
+- **Finding:** `_pg_pool()` guarded its event-loop-identity swap with an
+  `asyncio.Lock`, which provides no cross-thread exclusion — and two loops on
+  two threads is precisely the situation that branch exists for. It also
+  returned the global *outside* the lock, so a concurrent swap could hand back
+  another loop's pool, or `None`.
+  - **Fix:** `threading.Lock` around the swap; the pool is captured and returned
+    from inside the async lock.
+
+- **Finding:** an abandoned pool leaked a live Postgres backend (`POOL_MIN_SIZE`
+  eagerly opens one). Wrong direction in a repo with PR #2010's history.
+  - **Fix:** `pool.terminate()` — synchronous, needs no foreign loop.
+
+- **Finding:** the cached engine was replaced without `dispose()`; neither pool
+  nor engine was ever closed at shutdown.
+  - **Fix:** `dispose()` on URI change, and a new `aclose()` called from
+    `main.py`'s shutdown handler alongside `memory_pg_pool`.
+  - **Evidence:** live run ends `aclose(): pool=None engine=None`.
+
+- **Finding:** `assert "LIMIT 1" in sql` is **True for `LIMIT 10`** — and
+  `LIMIT 10` is *worse than the original bug*, because the reader assigns
+  `out[node] = metrics` per row, so the last row wins and it would silently
+  return the **oldest** of ten.
+  - **Fix:** token-boundary regex.
+  - **Evidence:** mutating to `LIMIT 10` now fails.
+
+- **Finding:** the rewritten query had **zero real-database coverage**. Both new
+  substrate tests drove a `MagicMock` and asserted on SQL text. The entire
+  parameter contract rested on one untested `list(nodes)` call — cortex-exec
+  passes a *tuple*, which psycopg2 adapts to a composite record:
+  `ProgrammingError: cannot cast type record to text[]`. Deleting that call
+  keeps every mocked test green while cortex-exec's trend cue goes permanently
+  dark, and because that reader fails open, nothing reports it.
+  - **Fix:** a real-Postgres lane parametrised over both callers' shapes plus
+    duplicates and absent nodes, and a test that cross-checks the LATERAL
+    against an independent `MAX()` rather than against its own ordering.
+  - **Evidence:** deleting `list(nodes)` now fails.
+
+- **Finding:** `assert seen["is_main"] is False` passed against the pre-fix code
+  too — under `TestClient` the loop runs on a portal thread, so the inline call
+  was also "not the main thread". Its failure message named a bug it could
+  never detect.
+  - **Fix:** dropped; `on_loop is False` is the assertion that discriminates.
+
+### CONSIDER
+
+- **Finding:** the ordering argument reasoned from byte order (`'+' < any
+  digit`), but this database collates `en_US.utf8`, not `C`. The empirical check
+  holds; the stated *reason* was wrong for the collation in force.
+  - **Fix:** replaced the byte-order reasoning with the empirical evidence and
+    an explicit note on what a glibc collation change would do.
+
+- **Finding:** the fixed-width timestamp format is a property of the *writer
+  session's* DateStyle/TimeZone, not of the column — and nothing enforced it.
+  Setting `PGTZ` on the sql-writer container would start writing `-06` offsets,
+  silently diverging text order from chronological order.
+  - **Fix:** `test_biometrics_induction_timestamp_format.py` — a real gate, per
+    CLAUDE.md's "not a louder comment, a failing gate".
+  - **Evidence:** it caught **two defects in its own first draft** — my
+    non-UTC demonstration used
+    `(now() AT TIME ZONE 'X')::timestamptz`, which re-interprets in the session
+    zone and still renders `+00` (demonstrating nothing), and my
+    `model_dump(mode="json")` assertion was file-wide when `worker.py`
+    legitimately uses that form ~10 times for *bus* payloads. Both fixed; the
+    corrected test shows a Denver-rendered "now" sorting *below* the current
+    newest row.
+
+- **Finding:** the "281ms with index scans disabled" figure disabled only
+  `enable_indexscan`, leaving bitmap and index-only paths available.
+  - **Fix:** re-measured with all three off (163ms / 422ms) and corrected the
+    docstring. Same conclusion, honest method.
+
+- **Finding:** `test_boot_ddl_stays_non_concurrent` was case-sensitive.
+  - **Fix:** lowercased comparison.
+
+- **Finding:** **nothing ran any of the 13 `node:test` files** in
+  `services/orion-hub/static/js/` — hand-run only, which is exactly the
+  "nudge you can skip" failure the static-gates workflow exists to replace.
+  - **Fix:** added a `node --test services/orion-hub/static/js/` step to
+    `orion-static-gates.yml`.
+  - **Evidence:** exit 0 clean; exit 1 with a deliberately failing probe test.
+
+- **Finding (documented, not changed):** because `statement_timeout` (2000ms)
+  fires before `wait_for` (3.0s), a slow *query* surfaces as
+  `induction_unavailable`, so `induction_timeout` specifically means the worker
+  never reached the query. Genuinely useful; now said out loud in the docstring.
+
+### Reviewer findings that were checked and needed no change
+
+- `CROSS JOIN LATERAL` drops nodes with no rows — identical to the old
+  `WHERE node = ANY(...)`. Zero NULL `node` rows live; both forms exclude them.
+- Duplicate node names are idempotent (dict write).
+- `statement_timeout` is genuinely enforced (`pg_sleep(3)` → `QueryCanceled`).
+- cortex-exec needs no change; its default list includes decommissioned `atlas`,
+  which the LATERAL drops exactly as the old query did.
+- The reviewer's own worry that "N nodes means N scans is a regression" was
+  disproven empirically: at cortex-exec's 3-node shape the LATERAL is 422ms with
+  no temp spill versus 748ms and 206MB of external merge for `DISTINCT ON`.
 
 ## Restart required
 
@@ -325,4 +474,4 @@ bash scripts/safe_docker_build.sh orion-sql-writer up -d --build
 
 ## PR link
 
-(filled in on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2063

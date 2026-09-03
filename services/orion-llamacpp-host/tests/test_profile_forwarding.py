@@ -868,3 +868,63 @@ def test_ngram_spec_type_emits_flag_without_draft_filename(monkeypatch):
     assert "--model-draft" not in cmd
     assert _find_flag_value(cmd, "--spec-type") == "ngram-cache"
     assert _find_flag_value(cmd, "--spec-draft-n-max") == "8"
+
+
+def test_circe_agent_flex_forwards_both_chat_template_kwargs(monkeypatch):
+    """The agent lane's template kwargs reach llama-server, both of them.
+
+    `--chat-template-kwargs` takes ONE JSON object, so a second key is not a
+    second flag -- it has to ride inside the same object. That makes it quietly
+    droppable: anything that rebuilds this dict and forgets a key still emits a
+    valid flag and a healthy server. This pins both.
+
+    `reasoning_effort: xhigh` is Unsloth's documented default for Qwen3.8-27B.
+    `preserve_thinking: true` keeps the previous turn's reasoning trace in
+    context; it is branched on in this model's own chat template
+    (`preserve_thinking is undefined or preserve_thinking is true or ...`), so
+    true matches the shipped default and is set explicitly as a pin against a
+    template change. See the profile's own comment for the live evidence.
+    """
+    profile_name = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", profile_name)
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(config_path))
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile = profiles_mod.LLMProfile(name=profile_name, **raw["profiles"][profile_name])
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _bin: {"--jinja", "--reasoning", "--reasoning-format",
+                      "--chat-template-kwargs", "--no-context-shift", "--n-predict",
+                      "--temp", "--top-k", "--top-p", "--min-p", "--presence-penalty"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _bin: 10398)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    emitted = json.loads(_find_flag_value(cmd, "--chat-template-kwargs"))
+    assert emitted == {"reasoning_effort": "xhigh", "preserve_thinking": True}, emitted
+    # --jinja is required for chat_template_kwargs to be applied at all.
+    assert "--jinja" in cmd
+
+    # Unsloth's Thinking-Mode sampling for Qwen3.8-27B, pinned so a future edit
+    # cannot silently swap in the Instruct-mode numbers (0.7 / 0.80 / 1.5).
+    assert _find_flag_value(cmd, "--temp") == "1.0"
+    assert _find_flag_value(cmd, "--top-p") == "0.95"
+    assert _find_flag_value(cmd, "--top-k") == "20"
+    assert _find_flag_value(cmd, "--min-p") == "0.0"
+    assert _find_flag_value(cmd, "--presence-penalty") == "0.0"

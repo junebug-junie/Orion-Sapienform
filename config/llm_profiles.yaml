@@ -1339,6 +1339,37 @@ profiles:
       # same way muse-glimmer's boot was checked before trusting this.
       chat_template_kwargs:
         reasoning_effort: "xhigh"
+        # Unsloth's "Preserve Thinking": keep the previous turn's reasoning
+        # trace in context instead of stripping it. Real variable, not a
+        # guess -- it is branched on directly in THIS model's chat template,
+        # read live off the running server's /props:
+        #
+        #   {%- if preserve_thinking is undefined
+        #          or preserve_thinking is true
+        #          or loop.index0 > ns.last_query_index %}
+        #       ... '<think>' + reasoning_content + '</think>' + content
+        #   {%- else %}   ... content only
+        #
+        # NOTE, so nobody re-derives this: `undefined` already takes the
+        # preserve branch, so true is the DEFAULT and this line changes no
+        # behavior today. Proven on the live lane via POST /apply-template
+        # with a two-turn conversation carrying reasoning_content --
+        # unset and true render byte-identical prompts (437 chars, trace
+        # present); false renders 400 chars with the trace gone.
+        #
+        # It is set explicitly anyway, as a pin: the default lives in the
+        # model's chat template, which ships with the GGUF and can change
+        # under us on a re-quant or a template fix. Stating it here means a
+        # future default flip is a visible diff rather than a silent
+        # behavior change in Orion's continued conversations.
+        #
+        # CAVEAT worth knowing before expecting an effect: the branch only
+        # fires for prior assistant messages that actually carry a
+        # `reasoning_content` field. Whether Orion's harness path
+        # (Claude Code -> FCC -> gateway anthropic_passthrough) round-trips
+        # reasoning back on later turns is NOT established -- see the PR.
+        # If it does not, this is inert in both positions.
+        preserve_thinking: true
 
       no_context_shift: true
       # V100 is Volta -- same reasoning as muse-glimmer-30b-udq4kxl above

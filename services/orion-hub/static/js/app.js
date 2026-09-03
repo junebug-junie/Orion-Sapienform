@@ -207,6 +207,19 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusDiv = document.getElementById('status');
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
+  const chatTurnTimer = document.getElementById('chatTurnTimer');
+  const operatorToolsOpenBtn = document.getElementById('operatorToolsOpenBtn');
+  const operatorToolsModalRoot = document.getElementById('operatorToolsModalRoot');
+  const operatorToolsModalBackdrop = document.getElementById('operatorToolsModalBackdrop');
+  const operatorToolsModalDialog = document.getElementById('operatorToolsModalDialog');
+  const operatorToolsModalClose = document.getElementById('operatorToolsModalClose');
+  const chatMessageExpandModalRoot = document.getElementById('chatMessageExpandModalRoot');
+  const chatMessageExpandModalBackdrop = document.getElementById('chatMessageExpandModalBackdrop');
+  const chatMessageExpandModalDialog = document.getElementById('chatMessageExpandModalDialog');
+  const chatMessageExpandModalClose = document.getElementById('chatMessageExpandModalClose');
+  const chatMessageExpandModalCopy = document.getElementById('chatMessageExpandModalCopy');
+  const chatMessageExpandModalTitle = document.getElementById('chatMessageExpandModalTitle');
+  const chatMessageExpandModalBody = document.getElementById('chatMessageExpandModalBody');
   const chatInputExpandButton = document.getElementById('chatInputExpandButton');
   const chatInputExpandModalRoot = document.getElementById('chatInputExpandModalRoot');
   const chatInputExpandModalBackdrop = document.getElementById('chatInputExpandModalBackdrop');
@@ -492,6 +505,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
+  const attentionDismissAllBtn = document.getElementById('attentionDismissAllBtn');
+  let dismissAllAttentionInFlight = false;
+
+  function syncAttentionDismissAllDisabled() {
+    if (!attentionDismissAllBtn) return;
+    attentionDismissAllBtn.disabled =
+      dismissAllAttentionInFlight || pendingAttention.length === 0;
+  }
+  const notificationsDismissAllBtn = document.getElementById('notificationsDismissAllBtn');
   const attentionCount = document.getElementById('attentionCount');
   const worldPulseToggle = document.getElementById('worldPulseToggle');
   const worldPulseCaret = document.getElementById('worldPulseCaret');
@@ -639,7 +661,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // Visualizers
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
-  const visualizerContainer = document.getElementById('visualizerContainer');
   
   // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
   // We check for its existence to prevent crashes.
@@ -3030,11 +3051,72 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 2000);
   }
 
+  // --- Turn elapsed timer ---------------------------------------------------
+  // Wall-clock for the turn Juniper is waiting on. Started when a turn is
+  // handed to a transport, stopped when the server reports idle (WS) or the
+  // fetch settles (HTTP), and left frozen on the final elapsed afterwards --
+  // the number is most useful once the turn is over.
+  let turnTimerStartedAt = 0;
+  let turnTimerHandle = null;
+  // Which transport started the clock. A lane may only stop the clock it
+  // started: a WebSocket reconnect landing mid-HTTP-turn must not freeze that
+  // turn's timer, and must not report the reconnect gap as its duration.
+  let turnTimerOwner = null;
+
+  function paintTurnTimer() {
+    if (!chatTurnTimer) return;
+    // Formatting lives in turn-timer.js so its minute-rollover edges are
+    // unit-testable without a DOM harness. Guarded like every other optional
+    // module in this file: a cosmetic chip must not be able to throw out of
+    // updateStatusBasedOnState() and abort WebSocket frame handling.
+    const format = window.OrionTurnTimer && window.OrionTurnTimer.formatTurnElapsed;
+    if (typeof format !== 'function') return;
+    chatTurnTimer.textContent = format(Date.now() - turnTimerStartedAt);
+  }
+
+  function startTurnTimer(owner) {
+    if (!chatTurnTimer) return;
+    // Every start is a fresh turn hand-off, so the clock always restarts. The
+    // WS and HTTP lanes are the two branches of one if/else and can never both
+    // run for a single turn, so there is no "second lane joining" case to
+    // protect -- and keeping a previous turn's start time would report an
+    // elapsed time that never happened.
+    if (turnTimerHandle) window.clearInterval(turnTimerHandle);
+    turnTimerOwner = owner || null;
+    turnTimerStartedAt = Date.now();
+    chatTurnTimer.classList.remove('hidden', 'text-gray-400');
+    chatTurnTimer.classList.add('text-amber-300');
+    paintTurnTimer();
+    turnTimerHandle = window.setInterval(paintTurnTimer, 100);
+  }
+
+  function stopTurnTimer(owner, opts = {}) {
+    if (!turnTimerHandle) return;
+    if (owner && turnTimerOwner && owner !== turnTimerOwner) return;
+    window.clearInterval(turnTimerHandle);
+    turnTimerHandle = null;
+    turnTimerOwner = null;
+    if (!chatTurnTimer) return;
+    // repaint:false freezes the chip on its last painted value. Used when the
+    // socket dies mid-turn: the turn is over, and the time since is dead air,
+    // not thinking time.
+    if (opts.repaint !== false) paintTurnTimer();
+    chatTurnTimer.classList.remove('text-amber-300');
+    chatTurnTimer.classList.add('text-gray-400');
+  }
+
+  function setTurnInFlight(next, owner = 'ws') {
+    turnInFlight = Boolean(next);
+    if (turnInFlight) startTurnTimer(owner);
+    else stopTurnTimer(owner);
+    if (stopButton) stopButton.classList.toggle('hidden', !turnInFlight);
+  }
+
   function updateStatusBasedOnState() {
     if (orionState === 'idle') updateStatus('Ready.');
     else if (orionState === 'speaking') updateStatus('Speaking...');
     else if (orionState === 'processing') updateStatus('Processing...');
-    if (orionState === 'idle') turnInFlight = false;
+    if (orionState === 'idle') setTurnInFlight(false);
     if (stopButton) stopButton.classList.toggle('hidden', !turnInFlight);
   }
 
@@ -3289,6 +3371,8 @@ document.addEventListener("DOMContentLoaded", () => {
       || isModalVisible(chatStanceDebugModalRoot)
       || isModalVisible(mindRunsModal)
       || isModalVisible(chatInputExpandModalRoot)
+      || isModalVisible(chatMessageExpandModalRoot)
+      || isModalVisible(operatorToolsModalRoot)
       || isModalVisible(substrateReviewModalRoot)
       || isModalVisible(cognitiveReviewModalRoot)
       || isModalVisible(autonomyConstitutionModalRoot)
@@ -3406,6 +3490,77 @@ document.addEventListener("DOMContentLoaded", () => {
     syncChatInputFromExpandTextarea();
     closeChatInputExpandModal({ applyToInput: false, focusInput: false });
     await submitExplicitChatText(value);
+  }
+
+  // Shared positioning for the two modals added by the Hub layout pass. The
+  // older modals each inline this same style block; only new code uses the
+  // helper so this change stays a layout pass, not a refactor of all of them.
+  function positionOverlayModal(root, backdrop, dialog) {
+    if (!root) return;
+    if (document.body && root.parentElement !== document.body) document.body.appendChild(root);
+    root.style.position = 'fixed';
+    root.style.inset = '0';
+    root.style.zIndex = '2147483646';
+    if (backdrop) {
+      backdrop.style.position = 'fixed';
+      backdrop.style.inset = '0';
+      backdrop.style.zIndex = '2147483646';
+    }
+    if (dialog) {
+      dialog.style.position = 'fixed';
+      dialog.style.zIndex = '2147483647';
+    }
+  }
+
+  function openOperatorToolsModal() {
+    if (!operatorToolsModalRoot) return;
+    positionOverlayModal(operatorToolsModalRoot, operatorToolsModalBackdrop, operatorToolsModalDialog);
+    operatorToolsModalRoot.classList.remove('hidden');
+    operatorToolsModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    if (skillRunnerSelect) skillRunnerSelect.focus();
+  }
+
+  function closeOperatorToolsModal() {
+    if (!operatorToolsModalRoot) return;
+    operatorToolsModalRoot.classList.add('hidden');
+    operatorToolsModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
+  // Text of the message currently mirrored into the expand modal, so its Copy
+  // button yields the markdown source rather than space-mangled innerText.
+  let chatMessageExpandSource = '';
+
+  function openChatMessageExpandModal(sender, contentEls, mdSource) {
+    if (!chatMessageExpandModalRoot || !chatMessageExpandModalBody) return;
+    const nodes = (Array.isArray(contentEls) ? contentEls : [contentEls]).filter(Boolean);
+    if (!nodes.length) return;
+    positionOverlayModal(
+      chatMessageExpandModalRoot,
+      chatMessageExpandModalBackdrop,
+      chatMessageExpandModalDialog,
+    );
+    if (chatMessageExpandModalTitle) chatMessageExpandModalTitle.textContent = sender || 'Message';
+    chatMessageExpandSource = String(
+      mdSource || nodes.map((n) => n.textContent || '').join('\n') || '',
+    );
+    chatMessageExpandModalBody.innerHTML = '';
+    // Clone so the live transcript nodes keep their own listeners and position.
+    nodes.forEach((node) => chatMessageExpandModalBody.appendChild(node.cloneNode(true)));
+    chatMessageExpandModalRoot.classList.remove('hidden');
+    chatMessageExpandModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    if (chatMessageExpandModalClose) chatMessageExpandModalClose.focus();
+  }
+
+  function closeChatMessageExpandModal() {
+    if (!chatMessageExpandModalRoot) return;
+    chatMessageExpandModalRoot.classList.add('hidden');
+    chatMessageExpandModalRoot.setAttribute('aria-hidden', 'true');
+    if (chatMessageExpandModalBody) chatMessageExpandModalBody.innerHTML = '';
+    chatMessageExpandSource = '';
+    syncDebugModalScrollLock();
   }
 
   function openMemoryDebugModal() {
@@ -5418,6 +5573,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderPendingAttention() {
     if (!attentionList || !attentionCount) return;
     attentionCount.textContent = String(pendingAttention.length);
+    syncAttentionDismissAllDisabled();
     attentionList.innerHTML = '';
     if (pendingAttention.length === 0) {
       const empty = document.createElement('div');
@@ -6226,6 +6382,8 @@ document.addEventListener("DOMContentLoaded", () => {
         (filter === 'all' || (n.severity || '').toLowerCase() === filter)
     );
 
+    if (notificationsDismissAllBtn) notificationsDismissAllBtn.disabled = filtered.length === 0;
+
     if (filtered.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'text-xs text-gray-500 italic';
@@ -6342,6 +6500,47 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       console.warn('Failed to acknowledge attention', err);
     }
+  }
+
+  async function dismissAllPendingAttention() {
+    if (dismissAllAttentionInFlight) return;
+    const ids = pendingAttention.map((item) => item.attention_id).filter(Boolean);
+    if (!ids.length) return;
+    // Each ack re-renders on success, and renderPendingAttention() re-derives
+    // the disabled state from the remaining list -- so the FIRST ack landing
+    // would re-enable the button while the rest were still in flight, inviting
+    // a second wave racing the first. The flag outranks that bookkeeping.
+    dismissAllAttentionInFlight = true;
+    syncAttentionDismissAllDisabled();
+    try {
+      // Same per-item ack the Dismiss button uses, so the server sees no new
+      // shape; each removes itself from the list on success.
+      await Promise.allSettled(ids.map((id) => handleAttentionAck(id, 'dismissed')));
+    } finally {
+      dismissAllAttentionInFlight = false;
+      renderPendingAttention();
+    }
+  }
+
+  function dismissAllNotifications() {
+    if (!Array.isArray(notifications)) return;
+    const filter = notificationFilter ? notificationFilter.value : 'all';
+    // Scoped to what the active filter is actually showing -- dismissing rows
+    // the operator cannot see would be a surprise.
+    const targets = notifications.filter(
+      (n) =>
+        isNotificationTrayItem(n) &&
+        (filter === 'all' || (n.severity || '').toLowerCase() === filter)
+    );
+    if (!targets.length) return;
+    const doomed = new Set(targets.map(notificationIdentity));
+    notifications = notifications.filter((n) => !doomed.has(notificationIdentity(n)));
+    renderNotifications();
+    targets.forEach((n) => {
+      if (n && n.message_id && n.session_id) {
+        handleChatMessageReceipt(n.message_id, n.session_id, 'dismissed');
+      }
+    });
   }
 
   async function handleChatMessageReceipt(messageId, sessionId, receiptType) {
@@ -7371,11 +7570,33 @@ document.addEventListener("DOMContentLoaded", () => {
     const attachmentStrip = buildMessageAttachmentStrip(meta);
     if (attachmentStrip) div.appendChild(attachmentStrip);
     if (!workflowOnlyTurn) div.appendChild(body);
-    if (displayText && window.ChatMarkdown && typeof window.ChatMarkdown.buildCopyButton === 'function') {
-      const copyRow = document.createElement('div');
-      copyRow.className = 'om-msg-copy';
-      copyRow.appendChild(window.ChatMarkdown.buildCopyButton(displayText, 'Copy'));
-      headerRow.appendChild(copyRow);
+    if (displayText) {
+      // Hover-revealed per-message actions (see .om-msg-copy in style.css).
+      const msgActions = document.createElement('div');
+      msgActions.className = 'om-msg-copy flex items-center gap-1';
+      // Gate on trimmed text, not raw: a whitespace-only turn is also a
+      // workflowOnlyTurn, so `body` was never appended to the DOM and Expand
+      // would open a full-screen modal over a detached, blank node.
+      if (displayText.trim()) {
+        const expandBtn = document.createElement('button');
+        expandBtn.type = 'button';
+        expandBtn.className =
+          'rounded-md border border-gray-700 bg-gray-900/70 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-gray-500 hover:text-white';
+        expandBtn.textContent = 'Expand';
+        expandBtn.title = 'Open this message full screen';
+        expandBtn.setAttribute('aria-label', `Expand ${sender} message`);
+        // Attachments are part of the turn's content, so they come along. The
+        // header is not (the modal has its own title), and neither are the
+        // trace/feedback action rows -- cloned buttons would be dead controls.
+        expandBtn.addEventListener('click', () =>
+          openChatMessageExpandModal(sender, [attachmentStrip, body], displayText),
+        );
+        msgActions.appendChild(expandBtn);
+      }
+      if (window.ChatMarkdown && typeof window.ChatMarkdown.buildCopyButton === 'function') {
+        msgActions.appendChild(window.ChatMarkdown.buildCopyButton(displayText, 'Copy'));
+      }
+      headerRow.appendChild(msgActions);
     }
     conversationDiv.appendChild(div);
     if (sender === 'Orion') {
@@ -9319,6 +9540,47 @@ document.addEventListener("DOMContentLoaded", () => {
   if (chatInputExpandButton) {
     chatInputExpandButton.addEventListener('click', () => openChatInputExpandModal());
   }
+  if (operatorToolsOpenBtn) {
+    operatorToolsOpenBtn.addEventListener('click', () => openOperatorToolsModal());
+  }
+  if (operatorToolsModalClose) {
+    operatorToolsModalClose.addEventListener('click', () => closeOperatorToolsModal());
+  }
+  if (operatorToolsModalBackdrop) {
+    operatorToolsModalBackdrop.addEventListener('click', () => closeOperatorToolsModal());
+  }
+  if (operatorToolsModalRoot) {
+    operatorToolsModalRoot.addEventListener('click', (event) => {
+      if (event.target === operatorToolsModalRoot) closeOperatorToolsModal();
+    });
+  }
+  if (chatMessageExpandModalClose) {
+    chatMessageExpandModalClose.addEventListener('click', () => closeChatMessageExpandModal());
+  }
+  if (chatMessageExpandModalBackdrop) {
+    chatMessageExpandModalBackdrop.addEventListener('click', () => closeChatMessageExpandModal());
+  }
+  if (chatMessageExpandModalRoot) {
+    chatMessageExpandModalRoot.addEventListener('click', (event) => {
+      if (event.target === chatMessageExpandModalRoot) closeChatMessageExpandModal();
+    });
+  }
+  if (chatMessageExpandModalCopy) {
+    chatMessageExpandModalCopy.addEventListener('click', async () => {
+      if (!chatMessageExpandSource) return;
+      const ok = window.ChatMarkdown && typeof window.ChatMarkdown.writeClipboard === 'function'
+        ? await window.ChatMarkdown.writeClipboard(chatMessageExpandSource)
+        : await navigator.clipboard.writeText(chatMessageExpandSource).then(() => true, () => false);
+      chatMessageExpandModalCopy.textContent = ok ? 'Copied' : 'Failed';
+      setTimeout(() => { chatMessageExpandModalCopy.textContent = 'Copy'; }, 1400);
+    });
+  }
+  if (attentionDismissAllBtn) {
+    attentionDismissAllBtn.addEventListener('click', () => dismissAllPendingAttention());
+  }
+  if (notificationsDismissAllBtn) {
+    notificationsDismissAllBtn.addEventListener('click', () => dismissAllNotifications());
+  }
   if (chatInputExpandTextarea) {
     chatInputExpandTextarea.addEventListener('input', syncChatInputFromExpandTextarea);
     chatInputExpandTextarea.addEventListener('keydown', (event) => {
@@ -10544,6 +10806,14 @@ document.addEventListener("DOMContentLoaded", () => {
       closeChatStanceDebugModal();
       return;
     }
+    if (event.key === 'Escape' && chatMessageExpandModalRoot && !chatMessageExpandModalRoot.classList.contains('hidden')) {
+      closeChatMessageExpandModal();
+      return;
+    }
+    if (event.key === 'Escape' && operatorToolsModalRoot && !operatorToolsModalRoot.classList.contains('hidden')) {
+      closeOperatorToolsModal();
+      return;
+    }
     if (event.key === 'Escape' && chatInputExpandModalRoot && !chatInputExpandModalRoot.classList.contains('hidden')) {
       closeChatInputExpandModal();
       return;
@@ -10836,7 +11106,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // (its closing "state": "idle" frame, if any, will never arrive) — clear
         // stale client-side turn-in-flight state rather than leave the Stop button
         // stuck visible forever.
-        turnInFlight = false;
+        setTurnInFlight(false);
         activeConnectionId = null;
         if (stopButton) stopButton.classList.add('hidden');
     };
@@ -11010,6 +11280,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     socket.onclose = (e) => {
         console.warn("[WS] Closed", e.code, e.reason);
+        // The turn on this socket is over the moment it closes. Freeze the
+        // clock here rather than letting the reconnect stop it later: the gap
+        // until reconnect is dead air, and painting it would report a turn that
+        // died at 3s as having taken the length of the whole outage.
+        stopTurnTimer('ws', { repaint: false });
         updateStatus('Disconnected. Reconnecting...');
         setTimeout(setupWebSocket, 2000);
     };
@@ -11317,7 +11592,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (wsOpen && socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(payload));
         updateStatus('Sent...');
-        turnInFlight = true;
+        setTurnInFlight(true);
         if (stopButton) stopButton.classList.remove('hidden');
     } else {
         if (!window.__orionWsFallbackWarned) {
@@ -11329,6 +11604,7 @@ document.addEventListener("DOMContentLoaded", () => {
           window.__orionWsFallbackWarned = true;
         }
         updateStatus('Processing (HTTP)...');
+        startTurnTimer('http');
 
         if (!orionSessionId) await initSession();
         payload.session_id = orionSessionId;
@@ -11411,7 +11687,8 @@ document.addEventListener("DOMContentLoaded", () => {
         .catch(e => {
           appendMessage('System', `HTTP failed: ${e.message}`, 'text-red-400');
           updateStatus('HTTP error.');
-        });
+        })
+        .finally(() => { stopTurnTimer('http'); });
     }
   }
 
@@ -11672,7 +11949,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         socket.send(JSON.stringify(audioPayload));
         console.info('[voice] sent audio payload bytes=%d', audioB64.length);
-        turnInFlight = true;
+        setTurnInFlight(true);
         if (stopButton) stopButton.classList.remove('hidden');
         updateStatus(
           `Processing audio... peak=${audioMeta.peak.toFixed(5)} duration=${audioMeta.duration_sec.toFixed(2)}s`,
@@ -11940,9 +12217,15 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function setAllCanvasSizes() {
-    if (visualizerCanvas && visualizerContainer) {
-      visualizerCanvas.width = visualizerContainer.clientWidth;
-      visualizerCanvas.height = visualizerContainer.clientHeight;
+    // Size the backing store from the canvas's OWN laid-out box. Measuring the
+    // container instead counted its padding and the "Oríon's Voice" label row,
+    // so the drawing surface was taller than the space it had and the bars
+    // spilled past the card.
+    if (visualizerCanvas) {
+      const width = Math.max(0, Math.floor(visualizerCanvas.clientWidth));
+      const height = Math.max(0, Math.floor(visualizerCanvas.clientHeight));
+      if (visualizerCanvas.width !== width) visualizerCanvas.width = width;
+      if (visualizerCanvas.height !== height) visualizerCanvas.height = height;
     }
     // Note: State visualizer is now an iframe, so no canvas resize logic needed for it.
   }
@@ -11986,6 +12269,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       setAllCanvasSizes();
       window.addEventListener('resize', setAllCanvasSizes);
+      // The chat card flexes the canvas, so it also resizes on layout changes
+      // that fire no window resize (composer growing, panels opening).
+      if (visualizerCanvas && typeof ResizeObserver === 'function') {
+        new ResizeObserver(setAllCanvasSizes).observe(visualizerCanvas);
+      }
       
       // Vision UI Init
       // Carbon has no continuous video stream -- only a ~5s-interval

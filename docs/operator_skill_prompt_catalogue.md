@@ -129,8 +129,8 @@ These prompts target the **read-only** bounded SQL skill `skills.chat.discussion
 Not part of the numbered catalogue above and not dispatched through the Skill Runner `<select>` / exact-prompt
 match at all. `skills.docker.compose_service_bringup.v1` takes a per-service argument (`skill_args.service`), and
 `resolve_skill_runner_catalogue_verb()` only maps an exact prompt string to a no-args verb -- there is no
-skill_args pass-through on that dispatch path. Instead, the Hub UI's "Container bring-up" panel (bottom of the
-operator controls) POSTs directly to a small dedicated endpoint, `POST /api/debug/container-bringup`
+skill_args pass-through on that dispatch path. Instead, the Hub UI's "Container bring-up" panel (in the
+"Operator tools" modal, opened from the chat column's "Skill runner & bring-up" button) POSTs directly to a small dedicated endpoint, `POST /api/debug/container-bringup`
 (`services/orion-hub/scripts/api_routes.py`), which dispatches straight to cortex-exec via
 `CortexChatRequest(verb=..., metadata={"skill_args": {...}})` -- bypassing the catalogue/chat pipeline entirely,
 the same direct-dispatch shape `_execute_workflow_schedule_management` already uses for another metadata-carrying

@@ -22,6 +22,24 @@
   var CARD_POLL_MS = 10000; // preview tiles refresh cadence while shown
   var GPU_POLL_MS = 10000; // GPU subview refresh cadence while open
 
+  // A backgrounded tab still runs setInterval (throttled to >=1/min, not
+  // stopped), so a Hub left open in a background tab kept polling these
+  // routes forever with nobody looking. Each poll costs real work on the
+  // server -- /induction in particular reads a 187k-row table -- so skip the
+  // fetch entirely while the page is hidden and refresh once on the way
+  // back, rather than trusting the browser's throttle to be cheap enough.
+  // Pure so it can be unit-tested without a DOM (see biometrics-view.test.js).
+  // A document that does not implement the Page Visibility API at all is
+  // treated as visible -- never silently stop polling because a capability is
+  // missing; that would look identical to "the data stopped changing".
+  function shouldPoll(doc) {
+    return !doc || typeof doc.hidden !== "boolean" || doc.hidden === false;
+  }
+
+  function pageVisible() {
+    return shouldPoll(typeof document !== "undefined" ? document : null);
+  }
+
   var cardView = "brain"; // "brain" | "biometrics"
   var modalOpen = false;
   var modalSubview = "athena"; // "athena" | "circe" | "gpu" | "cabinet"
@@ -318,7 +336,9 @@
     if (cardView === "biometrics") {
       if (!loaded.cardPreview) loadCardPreview();
       if (!cardPollTimer) {
-        cardPollTimer = setInterval(loadCardPreview, CARD_POLL_MS);
+        cardPollTimer = setInterval(function () {
+          if (pageVisible()) loadCardPreview();
+        }, CARD_POLL_MS);
       }
     } else if (cardPollTimer) {
       clearInterval(cardPollTimer);
@@ -635,7 +655,7 @@
     } else if (name === "gpu") {
       if (!loaded.gpu[gpuNode]) loadGpu(gpuNode);
       gpuPollTimer = setInterval(function () {
-        loadGpu(gpuNode);
+        if (pageVisible()) loadGpu(gpuNode);
       }, GPU_POLL_MS);
     } else if (name === "cabinet") {
       if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.activate === "function") {
@@ -699,6 +719,17 @@
         setGpuNode(btn.getAttribute("data-biometrics-gpu-node"));
       });
     });
+
+    // Coming back to a tab that has been hidden for a while, the on-screen
+    // numbers are as stale as the hidden interval was long. Refresh whatever
+    // is actually showing, once -- the poll gate above deliberately skipped
+    // every tick while hidden, so without this the operator would stare at
+    // stale tiles for up to CARD_POLL_MS after returning.
+    document.addEventListener("visibilitychange", function () {
+      if (!pageVisible()) return;
+      if (cardPollTimer) loadCardPreview();
+      if (gpuPollTimer) loadGpu(gpuNode);
+    });
   }
 
   function activate() {
@@ -717,9 +748,7 @@
     }
   }
 
-  document.addEventListener("DOMContentLoaded", wireOnce);
-
-  window.OrionBiometricsView = {
+  var api = {
     activate,
     deactivate,
     openModal,
@@ -727,5 +756,18 @@
     onModalOpen,
     onModalClose,
     showModalSubview,
+    shouldPoll,
   };
+
+  // Guarded so the module can be require()d under node:test for the pure
+  // helpers above, the same way cognitive-loop-card.js is.
+  if (typeof document !== "undefined") {
+    document.addEventListener("DOMContentLoaded", wireOnce);
+  }
+  if (typeof window !== "undefined") {
+    window.OrionBiometricsView = api;
+  }
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = api;
+  }
 })();

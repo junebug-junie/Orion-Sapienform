@@ -130,3 +130,29 @@ jobs:
       # Postgres path swallows as ImportError.
       - name: Substrate control surface consumers are configured
         run: python scripts/check_control_surface_store_parity.py
+
+      # Hub frontend unit tests. These are plain `node:test` files with no DOM,
+      # no network and no service dependencies -- as static as anything else in
+      # this workflow. There are 13 of them and, until now, NOTHING ran any of
+      # them: they were hand-run only, which is exactly the "nudge you can skip"
+      # failure this whole workflow exists to replace. Found while adding
+      # biometrics-view.test.js in the Hub biometrics-poll fix (2026-09-03).
+      #
+      # Files are enumerated explicitly rather than passing a directory or a
+      # glob, because neither is portable across Node majors: `node --test
+      # <dir>` does directory discovery on Node 20 but is treated as a module
+      # path on Node 22 (`Cannot find module .../static/js`), and quoted glob
+      # patterns are the reverse -- Node 22 expands them, Node 20 does not.
+      # Caught by this very workflow on its first run: green locally on Node
+      # 20.20.2, red on the runner's 22.23.2. `find` also picks up any future
+      # test file in a subdirectory, which a single-level glob would silently
+      # skip. Node is preinstalled on ubuntu-latest, so no setup step needed.
+      - name: Hub frontend unit tests (node:test)
+        run: |
+          files=$(find services/orion-hub/static/js -name '*.test.js' | sort)
+          if [ -z "$files" ]; then
+            echo "no hub JS test files found -- discovery is broken, not the suite empty"
+            exit 1
+          fi
+          echo "$files" | sed 's/^/  /'
+          node --test $files

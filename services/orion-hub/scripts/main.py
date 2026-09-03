@@ -1088,6 +1088,12 @@ async def shutdown_event() -> None:
         except Exception as exc:
             logger.warning("memory_pg_pool_close_error error=%s", exc)
         app.state.memory_pg_pool = None
+    try:
+        from .biometrics_preview_routes import aclose as _biometrics_preview_aclose
+
+        await _biometrics_preview_aclose()
+    except Exception as exc:
+        logger.warning("biometrics_preview_close_error error=%s", exc)
     if substrate_autonomy_task is not None:
         substrate_autonomy_task.cancel()
         try:

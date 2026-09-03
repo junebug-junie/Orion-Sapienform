@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -506,3 +507,171 @@ def test_history_multi_endpoint_against_real_postgres_returns_ok_true(monkeypatc
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True, body  # was False with "history_unavailable" under the bug
+
+
+# --- /induction: off the event loop, bounded, pooled engine ----------------
+#
+# Regression cover for the 2026-09-03 incident: `/induction` called the
+# synchronous `latest_biometrics_induction_by_node` inline from an `async def`
+# route. While that query ran, the hub's event loop was blocked and served
+# nothing at all -- confirmed live, a request for a static JS file stalled
+# 47-60s and four concurrent /induction calls pushed an unrelated endpoint
+# from 8ms to 1.10s. Operator-visible symptom: "tabs take 30 seconds to load".
+
+
+def test_induction_runs_off_the_event_loop(client, monkeypatch):
+    """The blocking helper must execute on a worker thread, not the loop.
+
+    Asserted by thread identity rather than by timing: a duration-based test
+    would pass just as well against the blocking version on a fast enough
+    query, which is exactly how this shipped unnoticed. `asyncio.to_thread`
+    runs in a non-main thread; inline execution would run in the loop's
+    thread, which under TestClient is the thread the portal is driving.
+    """
+    import asyncio
+    import threading
+
+    seen: dict[str, Any] = {}
+
+    def fake_latest(engine, nodes, **kwargs):
+        seen["thread"] = threading.current_thread()
+        try:
+            asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        return {"athena": {"gpu_util": {"level": 0.4, "trend": 0.1}}}
+
+    monkeypatch.setattr(
+        biometrics_preview_routes, "latest_biometrics_induction_by_node", fake_latest
+    )
+    monkeypatch.setattr(biometrics_preview_routes, "_induction_engine_factory", lambda: object())
+
+    r = client.get("/api/biometrics/preview/induction?node=athena")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    # No running loop in the calling thread == not executing on the event loop.
+    # This is the only assertion here that discriminates: under TestClient the
+    # loop runs on a portal thread, so "not the main thread" was ALSO true of
+    # the pre-fix inline call and proved nothing.
+    assert seen["on_loop"] is False, "blocking query ran on the event loop"
+
+
+def test_induction_slow_query_does_not_stall_the_loop(client, monkeypatch):
+    """The loop must keep making progress WHILE the query is still running.
+
+    An earlier version of this test counted `await asyncio.sleep(0)` ticks and
+    asserted the count. That could not fail: if the loop were fully blocked the
+    ticks would merely happen later and still total 20. Verified by
+    reconstructing the pre-fix inline route -- it scored a clean 20/20.
+
+    So assert on WHEN, not how many. Every tick is timestamped, and the test
+    requires that ticks landed while the worker thread was inside its sleep.
+    Under the pre-fix inline call no tick can land in that window, because the
+    loop is inside the blocking call for the whole of it.
+    """
+    import asyncio
+    import threading
+    import time
+
+    QUERY_SEC = 0.25
+    entered = threading.Event()
+    window: dict[str, float] = {}
+
+    def slow_latest(engine, nodes, **kwargs):
+        window["start"] = time.perf_counter()
+        entered.set()
+        time.sleep(QUERY_SEC)
+        window["end"] = time.perf_counter()
+        return {"athena": {"gpu_util": {"level": 0.4}}}
+
+    monkeypatch.setattr(
+        biometrics_preview_routes, "latest_biometrics_induction_by_node", slow_latest
+    )
+    monkeypatch.setattr(biometrics_preview_routes, "_induction_engine_factory", lambda: object())
+    monkeypatch.setattr(
+        biometrics_preview_routes.settings, "BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC", 5.0
+    )
+
+    async def drive():
+        route = biometrics_preview_routes.api_biometrics_preview_induction
+        task = asyncio.ensure_future(route(node="athena"))
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        tick_times = []
+        while not task.done():
+            await asyncio.sleep(0.005)
+            tick_times.append(time.perf_counter())
+        return await task, tick_times
+
+    body, tick_times = asyncio.run(drive())
+    assert body["ok"] is True
+
+    start, end = window["start"], window["end"]
+    during = [t for t in tick_times if start < t < end]
+    # A blocked loop cannot schedule anything between start and end. Require
+    # several, not one, so a single boundary tick cannot carry the assertion.
+    assert len(during) >= 5, (
+        f"only {len(during)} loop ticks landed during the {QUERY_SEC}s query "
+        f"({len(tick_times)} total) -- the loop was blocked"
+    )
+
+
+def test_induction_timeout_reports_absence_not_a_crash(client, monkeypatch):
+    """Timing out renders as an honest absent reading, never a 500 or a zero."""
+    import time
+
+    def hanging_latest(engine, nodes, **kwargs):
+        time.sleep(1.0)
+        return {"athena": {"gpu_util": {"level": 0.4}}}
+
+    monkeypatch.setattr(
+        biometrics_preview_routes, "latest_biometrics_induction_by_node", hanging_latest
+    )
+    monkeypatch.setattr(biometrics_preview_routes, "_induction_engine_factory", lambda: object())
+    monkeypatch.setattr(
+        biometrics_preview_routes.settings, "BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC", 0.05
+    )
+
+    r = client.get("/api/biometrics/preview/induction?node=athena")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["metrics"] == {}
+    assert body["error"] == "induction_timeout"
+
+
+def test_induction_engine_is_built_once_with_a_statement_timeout(monkeypatch):
+    """Polled route: one engine for the process, not one per request.
+
+    Also pins the statement_timeout GUC. Without it, a query that outlives the
+    asyncio timeout keeps a Postgres backend (and its parallel workers) busy
+    after the requester has already given up -- the asyncio timeout abandons
+    the thread, it does not cancel the query.
+    """
+    built: list[dict[str, Any]] = []
+
+    class _FakeEngine:
+        pass
+
+    def fake_create_engine(uri, **kwargs):
+        built.append({"uri": uri, **kwargs})
+        return _FakeEngine()
+
+    import sqlalchemy
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", fake_create_engine)
+    monkeypatch.setattr(biometrics_preview_routes, "_induction_engine_factory", None)
+    monkeypatch.setattr(biometrics_preview_routes, "_INDUCTION_ENGINE", None)
+    monkeypatch.setattr(biometrics_preview_routes, "_INDUCTION_ENGINE_URI", "")
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    monkeypatch.setattr(
+        biometrics_preview_routes.settings, "BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS", 1234
+    )
+
+    first = biometrics_preview_routes._induction_engine()
+    second = biometrics_preview_routes._induction_engine()
+
+    assert first is second, "engine rebuilt per call on a polled route"
+    assert len(built) == 1, f"create_engine called {len(built)} times, expected 1"
+    assert "statement_timeout=1234" in built[0]["connect_args"]["options"]

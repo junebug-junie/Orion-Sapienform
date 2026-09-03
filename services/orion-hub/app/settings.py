@@ -479,6 +479,32 @@ class Settings(BaseSettings):
         default=5.0,
         alias="BIOMETRICS_NODE_CLIENT_TIMEOUT_SEC",
     )
+    # /induction runs a synchronous SQLAlchemy query (the shared
+    # latest_biometrics_induction_by_node helper) off the event loop in a
+    # worker thread. Two independent bounds, because they fail differently:
+    # the statement_timeout stops a runaway query from holding a Postgres
+    # backend (and its parallel workers) after the requester is gone, while
+    # the asyncio timeout stops the *route* from hanging on a thread that is
+    # blocked before the query even starts (pool checkout, TCP connect).
+    # These bound a HANG; they do not detect a missing index, and the
+    # earlier version of this comment wrongly claimed they did. Measured live
+    # 2026-09-03 with every index path disabled, the read still completes in
+    # 163ms (1 node) / 422ms (3 nodes) -- comfortably inside both bounds. A
+    # dropped index produces no timeout and no log line here at all; it is
+    # orion-sql-writer's boot check (app/main.py) that reports that, not
+    # these. Sized instead for the failures they DO cover: a query that
+    # outlives its usefulness, and a worker thread stuck before the query
+    # starts.
+    BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS: int = Field(
+        default=2000,
+        ge=1,
+        alias="BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS",
+    )
+    BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC: float = Field(
+        default=3.0,
+        gt=0,
+        alias="BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC",
+    )
     # GPU index -> Orion model-routing lane label, per node. nvidia-smi itself
     # has no lane concept -- this is a small, hand-maintained join against
     # scattered CUDA_VISIBLE_DEVICES* env keys across several services'

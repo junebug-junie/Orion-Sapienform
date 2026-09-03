@@ -1,0 +1,46 @@
+-- Newest-induction-row-per-node reads on orion_biometrics_induction.
+--
+-- Backs orion/substrate/metacog_trend_signals.py::latest_biometrics_induction_by_node,
+-- which is a LATERAL top-1-per-node read:
+--
+--   SELECT ... FROM unnest(CAST(:nodes AS text[])) AS n(node)
+--   CROSS JOIN LATERAL (
+--     SELECT b.metrics, b.timestamp FROM orion_biometrics_induction b
+--     WHERE b.node = n.node ORDER BY b.timestamp DESC LIMIT 1
+--   ) AS latest
+--
+-- Not DISTINCT ON. That was the original shape and it CANNOT use this index:
+-- DISTINCT ON must consume its whole sorted input and Postgres has no loose
+-- index scan, so it kept choosing a parallel seq scan + external merge sort
+-- over all 138,927 matching rows even with this index present (911ms, ~150MB
+-- temp, measured live 2026-09-03). The LATERAL form does two index lookups:
+-- 0.47ms, 8 shared buffer hits.
+--
+-- DESC is load-bearing: it is the direction the per-node LIMIT 1 scans. An ASC
+-- index returns the OLDEST row per node -- a wrong answer that still looks
+-- like a working query.
+--
+-- Losing this index does NOT raise or time out anywhere. Measured live with
+-- every index path disabled, the read still completes in 163ms (1 node) /
+-- 422ms (3 nodes), well inside the Hub's 2000ms statement_timeout. It simply
+-- sequential-scans a 247MB table six times a minute, silently. orion-sql-writer
+-- verifies presence at boot and logs an error if it is absent (app/main.py).
+--
+-- orion-sql-writer applies the same statement at boot, which is the existing
+-- convention for this service. This file exists for operators applying schema
+-- out-of-band, and for applying it CONCURRENTLY on a live instance without
+-- taking a write lock (see the commented form below).
+--
+-- Idempotent, and safe against a database where the table does not exist yet.
+--
+--   PGPASSWORD=... psql -h localhost -p 55432 -U postgres -d conjourney \
+--     -f scripts/sql/2026-09-03_biometrics_induction_node_ts_idx.sql
+
+CREATE INDEX IF NOT EXISTS orion_biometrics_induction_node_ts_idx
+    ON orion_biometrics_induction (node, timestamp DESC);
+
+-- Live-instance form -- cannot run inside a transaction block, so it is not
+-- part of the boot DDL:
+--
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS orion_biometrics_induction_node_ts_idx
+--       ON orion_biometrics_induction (node, timestamp DESC);

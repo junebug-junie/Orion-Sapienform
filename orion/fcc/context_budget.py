@@ -39,8 +39,30 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
-def max_context_tokens() -> int:
-    """Motor context ceiling; prefer harness env, then hub agent-claude env."""
+def max_context_tokens(n_ctx: int | None = None) -> int:
+    """Motor context ceiling: the live worker's own window when known, else env.
+
+    `n_ctx` is the context size the route's llama.cpp worker was actually
+    STARTED with, read off `GET /routes` (see
+    `orion.harness.fcc_motor.probe_route_runtime`). It wins over the env
+    ceiling because it is the number the upstream will actually enforce, and
+    the env value is a single process-wide constant that cannot be right for
+    more than one lane at a time: `chat`/`harness` serve 131072 while `agent`
+    serves 32768, and `HARNESS_FCC_MAX_CONTEXT_TOKENS` says 131072 for both.
+
+    That mismatch is not cosmetic. Every consumer below derives the
+    context-pressure threshold ("answer from what you have; no more tools")
+    from this number, so a 32768-token lane budgeted at 131072 would nudge at
+    ~91750 -- i.e. never, because the worker hard-fails first. Live-confirmed
+    2026-09-03 that the hard failure returns HTTP 200 with the provider error
+    as the assistant's own text, so nothing downstream would have called it a
+    failure either.
+
+    None means "not known" (older gateway, worker down, non-llamacpp backend)
+    and falls back to the env ceiling exactly as before -- never to unlimited.
+    """
+    if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx > 0:
+        return n_ctx
     for key in (
         "HARNESS_FCC_MAX_CONTEXT_TOKENS",
         "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS",
@@ -55,8 +77,8 @@ def chars_per_token_estimate() -> int:
     return max(1, _env_int("ORION_FCC_CHARS_PER_TOKEN", DEFAULT_CHARS_PER_TOKEN))
 
 
-def max_context_chars() -> int:
-    return max_context_tokens() * chars_per_token_estimate()
+def max_context_chars(n_ctx: int | None = None) -> int:
+    return max_context_tokens(n_ctx) * chars_per_token_estimate()
 
 
 def context_pressure_threshold_pct() -> float:
@@ -113,7 +135,9 @@ def orion_fcc_claude_config_dir() -> str | None:
     return str(Path(raw).expanduser()) if raw else None
 
 
-def extend_fcc_subprocess_env(env: dict[str, str], *, workspace: str | None = None) -> None:
+def extend_fcc_subprocess_env(
+    env: dict[str, str], *, workspace: str | None = None, n_ctx: int | None = None
+) -> None:
     """Ensure MCP stdio proxy and orion package resolve in claude subprocess."""
     roots: list[str] = []
     for candidate in (
@@ -132,7 +156,9 @@ def extend_fcc_subprocess_env(env: dict[str, str], *, workspace: str | None = No
         env["PYTHONPATH"] = ":".join(merged)
     env.setdefault("ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS", str(mcp_tool_result_max_chars()))
     env.setdefault("HARNESS_FCC_CONTEXT_PRESSURE_PCT", str(context_pressure_threshold_pct()))
-    env.setdefault("HARNESS_FCC_MAX_CONTEXT_TOKENS", str(max_context_tokens()))
+    # The claude subprocess autocompacts against this (HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE),
+    # so it has to be the ceiling of the lane THIS turn runs on, not the container's default.
+    env.setdefault("HARNESS_FCC_MAX_CONTEXT_TOKENS", str(max_context_tokens(n_ctx)))
     # Claude Code: custom ANTHROPIC_BASE_URL disables ToolSearch unless set explicitly.
     # Keep MCP attached; defer schema load until the model ToolSearches.
     env.setdefault("ENABLE_TOOL_SEARCH", "true")
@@ -143,8 +169,8 @@ def extend_fcc_subprocess_env(env: dict[str, str], *, workspace: str | None = No
             env["CLAUDE_CONFIG_DIR"] = config_dir
 
 
-def context_pressure_threshold_chars() -> int:
-    return int(max_context_chars() * (context_pressure_threshold_pct() / 100.0))
+def context_pressure_threshold_chars(n_ctx: int | None = None) -> int:
+    return int(max_context_chars(n_ctx) * (context_pressure_threshold_pct() / 100.0))
 
 
 def tool_result_body_text(body: Any) -> str:
@@ -200,7 +226,16 @@ def context_risk_level(
     max_chars: int | None = None,
 ) -> ContextRisk:
     ceiling = max_chars or max_context_chars()
-    warn_at = context_pressure_threshold_chars()
+    # Derive the warn line from the SAME ceiling the caller passed, not from the process
+    # default. Reading `max_chars` for the critical line and env for the warn line put the
+    # two on different lanes: on a 32768-token lane with a 131072 env default, warn_at
+    # (~91750 tokens) sat far ABOVE critical (32768), so `warn` was unreachable and the
+    # first signal a turn ever got was `critical` -- after the overrun, not before it.
+    warn_at = (
+        int(ceiling * (context_pressure_threshold_pct() / 100.0))
+        if max_chars
+        else context_pressure_threshold_chars()
+    )
     total = accumulated_chars + step_chars
     tool_max = mcp_tool_result_max_chars()
     if step_chars >= tool_max or total >= ceiling:
@@ -219,10 +254,41 @@ def is_context_overflow_text(text: str) -> bool:
     )
 
 
+def is_provider_error_envelope(text: str) -> bool:
+    """True when a reply IS an upstream error report rather than prose.
+
+    FCC does not surface an upstream failure as an HTTP error. Confirmed live
+    2026-09-03 against the `agent` lane: a request over the worker's window
+    came back **HTTP 200**, `stop_reason: "end_turn"`, with the llama.cpp 400
+    ("exceed_context_size_error") as the assistant's own text content and a
+    zero exit code. Nothing downstream had any reason to call that a failure,
+    so Orion would have spoken the provider's error aloud as its answer and the
+    turn would have been persisted as a success.
+
+    Matched on the envelope's FRAMING, not on any error word appearing
+    anywhere -- the same discipline
+    `orion.cognition.cortex_payload_extract.looks_like_error_text` documents,
+    and for a sharper reason here: Orion introspects on its own infrastructure,
+    so a genuine answer *about* a context overflow is a thing that really
+    happens and must not be destroyed. Only a reply that OPENS with the
+    provider's own envelope counts.
+    """
+    head = str(text or "").strip()[:200].lower()
+    return head.startswith("upstream provider ") and "returned http" in head
+
+
+#: Stable prefix of the operator hint, used to detect "already hinted".
+#: The hint text now varies with the lane's window, so an exact-text check
+#: stopped deduping: the motor appends a 32768 hint, then `runner.py` appends a
+#: 131072 hint to the same string, and the operator reads two contradictory
+#: window sizes in one message. Match the invariant part instead.
+CONTEXT_OVERFLOW_HINT_MARKER = "Hub: context window full"
+
+
 def context_overflow_operator_hint(*, n_ctx: int | None = None) -> str:
     ctx = int(n_ctx or max_context_tokens())
     return (
-        f"\n\n---\nHub: context window full (~{ctx} tokens on llamacpp). "
+        f"\n\n---\n{CONTEXT_OVERFLOW_HINT_MARKER} (~{ctx} tokens on llamacpp). "
         "Prefer rg/Grep before Read; use Read offset/limit on large files "
         "(orion/bus/channels.yaml is ~65KB). For GitHub: get_pull_request when a PR "
         "number is known; list_pull_requests with perPage=1 only. Raise ctx_size in "
@@ -234,9 +300,11 @@ def apply_context_overflow_hint(text: str, *, n_ctx: int | None = None) -> str:
     body = str(text or "")
     if not is_context_overflow_text(body):
         return body
-    hint = context_overflow_operator_hint(n_ctx=n_ctx)
-    if hint.strip() in body:
+    # Marker, not the whole hint: a second caller downstream resolves a
+    # different `n_ctx` and would otherwise append a contradictory duplicate.
+    if CONTEXT_OVERFLOW_HINT_MARKER in body:
         return body
+    hint = context_overflow_operator_hint(n_ctx=n_ctx)
     return f"{body.rstrip()}{hint}"
 
 

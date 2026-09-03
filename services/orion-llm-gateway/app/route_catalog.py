@@ -35,6 +35,16 @@ class RouteHealthEntry:
     last_checked_at: Optional[str]
     model: Optional[str] = None
     vision: Optional[bool] = None
+    # The context window the worker is ACTUALLY serving right now, read off the same
+    # /v1/models response `model` comes from. Published because a route's usable window is
+    # a property of the running worker, not of anything a caller can know statically:
+    # `agent` serves 32768 while `chat`/`harness` serve 131072, so a consumer that assumes
+    # one number silently overruns the other. Live-confirmed 2026-09-03 that overrunning it
+    # does NOT surface as an HTTP error -- llama.cpp's 400 comes back through FCC as a
+    # 200 whose assistant text is the error string. None when unknown (worker down, older
+    # llama.cpp, unexpected shape); a consumer must treat None as "no ceiling known" and
+    # fall back, never as unlimited.
+    n_ctx: Optional[int] = None
     # Why two routes on the same worker behave differently. Without this, `quick` and
     # `quick_background` appear in the catalog as duplicate rows pointing at one URL with no
     # visible reason -- and the Hub has no property to filter its picker on, forcing it back
@@ -52,7 +62,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _probe_model(target: RouteTarget) -> Optional[str]:
+async def _probe_model(target: RouteTarget) -> tuple[Optional[str], Optional[int]]:
     """Best-effort read of the model actually loaded behind a route.
 
     `target.model` (the route table's configured label, e.g.
@@ -73,16 +83,27 @@ async def _probe_model(target: RouteTarget) -> Optional[str]:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url)
             if response.status_code >= 400:
-                return None
+                return None, None
             payload = response.json()
     except Exception:
-        return None
+        return None, None
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, list) or not data:
-        return None
+        return None, None
     first = data[0]
-    model_id = first.get("id") if isinstance(first, dict) else None
-    return model_id if isinstance(model_id, str) and model_id.strip() else None
+    if not isinstance(first, dict):
+        return None, None
+    model_id = first.get("id")
+    model = model_id if isinstance(model_id, str) and model_id.strip() else None
+    # `meta.n_ctx` is the window the worker was actually STARTED with (llama.cpp's
+    # `--ctx-size`), which is the number a caller has to respect -- not `n_ctx_train`,
+    # the architecture's theoretical maximum, which is ~8x larger on these builds
+    # (262144 vs 32768 on the agent lane) and would licence a prompt the worker rejects.
+    meta = first.get("meta")
+    n_ctx = meta.get("n_ctx") if isinstance(meta, dict) else None
+    if not isinstance(n_ctx, int) or isinstance(n_ctx, bool) or n_ctx <= 0:
+        n_ctx = None
+    return model, n_ctx
 
 
 async def _probe_vision(target: RouteTarget) -> Optional[bool]:
@@ -142,7 +163,9 @@ def _probe_key(target: RouteTarget) -> str:
     return str(target.url or "").rstrip("/")
 
 
-async def _probe_backend(target: RouteTarget) -> tuple[str, Optional[int], Optional[str], Optional[bool]]:
+async def _probe_backend(
+    target: RouteTarget,
+) -> tuple[str, Optional[int], Optional[str], Optional[bool], Optional[int]]:
     """Health + model + vision for ONE upstream URL, concurrently.
 
     Routes are not one-to-one with workers: `quick` and
@@ -151,13 +174,14 @@ async def _probe_backend(target: RouteTarget) -> tuple[str, Optional[int], Optio
     for no new information. `refresh_route_health_cache` probes each distinct URL once and
     fans the result out.
     """
-    (status, latency_ms), model, vision = await asyncio.gather(
+    (status, latency_ms), (model, n_ctx), vision = await asyncio.gather(
         _probe_health(target), _probe_model(target), _probe_vision(target)
     )
     if status != "up":
         model = None
         vision = None
-    return status, latency_ms, model, vision
+        n_ctx = None
+    return status, latency_ms, model, vision, n_ctx
 
 
 def _definitional_priority(route_id: str) -> Optional[str]:
@@ -186,6 +210,7 @@ def _entry_from_probe(
     latency_ms: Optional[int],
     model: Optional[str],
     vision: Optional[bool],
+    n_ctx: Optional[int] = None,
 ) -> RouteHealthEntry:
     return RouteHealthEntry(
         route_id=route_id,
@@ -196,6 +221,7 @@ def _entry_from_probe(
         last_checked_at=_utc_now_iso(),
         model=model,
         vision=vision,
+        n_ctx=n_ctx,
         priority=getattr(target, "priority", None) or _definitional_priority(route_id),
         reserved_free_slots=getattr(target, "reserved_free_slots", None),
     )
@@ -262,6 +288,7 @@ def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
         "last_checked_at": entry.last_checked_at,
         "model": entry.model,
         "vision": entry.vision,
+        "n_ctx": entry.n_ctx,
         "priority": entry.priority,
         "reserved_free_slots": entry.reserved_free_slots,
     }

@@ -7,6 +7,7 @@ Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 """
 
 import asyncio
+import difflib
 import inspect
 import json
 import logging
@@ -893,6 +894,59 @@ def _should_run_metacog_uncertainty_probe() -> bool:
     return True
 
 
+# Anti-echo guard for the metacog draft prompt's one-shot example
+# (orion/cognition/prompts/log_orion_metacognition_draft.j2 <example_json>). A small,
+# low-temperature model (Qwen3 8B, temperature=0.35 on the atlas-metacog lane) shown
+# one example JSON tends to just return it instead of writing something grounded in
+# the real trigger evidence. Confirmed live 2026-09-03: 68% of all orion_metacog rows
+# (100% of trigger_kind=relational, 74% of telemetry_anomaly, 62% of transport)
+# carried the prompt's *previous* example text verbatim, across every trigger_kind and
+# every timestamp, despite each trigger's upstream evidence being genuinely distinct
+# (the gates that build TRIGGER EVIDENCE -- e.g. telemetry_anomaly_metacog_gate.py --
+# already translate real substrate signal correctly; the failure is entirely in this
+# LLM step treating the demonstration as the answer).
+#
+# Kept as constants rather than inlined in the template so this guard and the
+# template's example provably cannot drift apart:
+# test_metacog_draft_prompt_example_matches_echo_guard_constants (in
+# tests/test_metacog_two_pass_draft.py) asserts the .j2 file's <example_json>
+# summary/mantra equal these exact strings.
+_METACOG_DRAFT_EXAMPLE_SUMMARY = (
+    "Clarity band read high while novelty stayed low -- steady, not sedated."
+)
+_METACOG_DRAFT_EXAMPLE_MANTRA = "Note the calm; don't mistake it for silence."
+_METACOG_DRAFT_EXAMPLE_SUMMARY_CF = _METACOG_DRAFT_EXAMPLE_SUMMARY.strip().casefold()
+_METACOG_DRAFT_EXAMPLE_MANTRA_CF = _METACOG_DRAFT_EXAMPLE_MANTRA.strip().casefold()
+
+# A model that lightly rewords the example instead of copying it verbatim is still an
+# echo, not a real answer -- confirmed live: several of the historical boilerplate
+# variants in orion_metacog (e.g. "Observing with calm coherence, a subtle shift
+# toward clarity.") are near-paraphrases of a PRIOR version of this same example, not
+# independently generated content. difflib's ratio() is a deterministic, stdlib-only
+# similarity measure -- no fuzzy-match dependency, no LLM judge -- and 0.75 on BOTH
+# fields is empirically wide enough to catch a light reword of the example while
+# leaving distinct real content (including other genuinely calm/steady narrations)
+# well clear, per the threshold check run against real and synthetic candidates
+# during review of this patch.
+_METACOG_DRAFT_EXAMPLE_ECHO_SIMILARITY_THRESHOLD = 0.75
+
+
+def _is_metacog_draft_example_echo(patch: "MetacogDraftTextPatchV1") -> bool:
+    """True when the draft patch is an exact-or-near-duplicate echo of the prompt's
+    own one-shot example -- i.e. the model returned (or lightly reworded) the
+    demonstration, not a real answer grounded in this trigger's evidence."""
+    summary = (patch.summary or "").strip().casefold()
+    mantra = (patch.mantra or "").strip().casefold()
+    if not summary or not mantra:
+        return False
+    summary_ratio = difflib.SequenceMatcher(None, summary, _METACOG_DRAFT_EXAMPLE_SUMMARY_CF).ratio()
+    mantra_ratio = difflib.SequenceMatcher(None, mantra, _METACOG_DRAFT_EXAMPLE_MANTRA_CF).ratio()
+    return (
+        summary_ratio >= _METACOG_DRAFT_EXAMPLE_ECHO_SIMILARITY_THRESHOLD
+        and mantra_ratio >= _METACOG_DRAFT_EXAMPLE_ECHO_SIMILARITY_THRESHOLD
+    )
+
+
 def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     """
     If the LLM returns non-JSON, produce a valid baseline draft so the pipeline continues.
@@ -1323,6 +1377,13 @@ def _resolve_metacog_draft_fallback_reason(
         return "prompt_budget_exceeded"
     if draft_error == "prompt_context_overflow":
         return "prompt_context_overflow"
+    # Checked before finish_reason=="length": a short, complete JSON echo of the
+    # prompt's own example can still get reported with finish_reason="length" by
+    # some gateways whenever generation hits max_tokens, even if the content itself
+    # isn't truncated. example_echo is the more specific, more diagnostic cause and
+    # must not be masked by that.
+    if patch_error == "example_echo":
+        return "example_echo"
     if finish_reason == "length":
         return "llm_finish_reason_length"
     if draft_error == "no_json":
@@ -3288,6 +3349,13 @@ async def call_step_services(
                         except Exception as exc:
                             logger.warning("MetacogDraftService patch rejected: %s", exc)
                             patch_error = str(exc)
+                            patch_model = MetacogDraftTextPatchV1()
+                        if patch_error is None and _is_metacog_draft_example_echo(patch_model):
+                            logger.warning(
+                                "MetacogDraftService patch rejected: exact echo of prompt example (corr_id=%s)",
+                                correlation_id,
+                            )
+                            patch_error = "example_echo"
                             patch_model = MetacogDraftTextPatchV1()
                         finish_reason = _extract_llm_finish_reason(llm_res)
                         if (

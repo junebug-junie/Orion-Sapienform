@@ -65,6 +65,10 @@ ANTI-LOG CONSTRAINTS
 - summary must be 1–2 sentences only and must answer: (what am I) + (what shifted).
 - evidence array must be 2–5 items; each item <= 120 chars; keep each cue <= ~12 words.
 - do not invent external facts. Stay within provided context cues.
+- ANTI-ECHO: <example_json> below shows JSON SHAPE only, for a DIFFERENT hypothetical
+  trigger. Reusing its summary/mantra wording verbatim (or near-verbatim) is a hard
+  failure -- it will be discarded and this entry will be recorded as a fallback. Your
+  summary and mantra must be specific to THIS trigger's evidence above.
 
 PATCH CONTRACT (non-negotiable)
 - Required patch fields: summary, mantra, what_changed.summary, what_changed.evidence.
@@ -93,8 +97,8 @@ FORBIDDEN (do NOT output these keys):
 
 <example_json>
 {
-  "summary": "Calm coherence with a slight shift toward clarity.",
-  "mantra": "Hold the signal; stay true.",
+  "summary": "Clarity band read high while novelty stayed low -- steady, not sedated.",
+  "mantra": "Note the calm; don't mistake it for silence.",
   "what_changed": {
     "summary": "clarity↑, overload↓",
     "evidence": ["spark clarity band high", "novelty band low"]

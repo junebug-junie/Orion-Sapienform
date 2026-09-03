@@ -131,6 +131,20 @@ jobs:
       - name: Substrate control surface consumers are configured
         run: python scripts/check_control_surface_store_parity.py
 
+      # A synchronous DB call inside an `async def` route holds the WHOLE event
+      # loop, so every other request stalls behind it -- including static
+      # assets, which is what makes it so hard to spot: the endpoint doing the
+      # blocking is fast, and the unrelated file five requests later takes 30
+      # seconds. Per-endpoint latency checks cannot see it.
+      #
+      # Found live twice on 2026-09-03, hours apart, in code written months
+      # apart: /api/biometrics/preview/induction and /api/self-brain/frames/tail
+      # (the hub's most-polled endpoint). A third sweep with the checker
+      # following helper calls turned up 21 more across the substrate_* routes.
+      # Nothing in tests or CI could see any of it. Hence a gate.
+      - name: No blocking DB calls inside async routes
+        run: python scripts/check_async_routes_not_blocking.py
+
       # Hub frontend unit tests. These are plain `node:test` files with no DOM,
       # no network and no service dependencies -- as static as anything else in
       # this workflow. There are 13 of them and, until now, NOTHING ran any of

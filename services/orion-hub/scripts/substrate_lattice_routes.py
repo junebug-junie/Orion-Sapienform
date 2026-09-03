@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import copy
 import difflib
 import json
@@ -640,7 +642,7 @@ async def lattice_lanes() -> list[dict[str, Any]]:
 
 @router.get("/transport/latest")
 async def transport_latest() -> dict[str, Any]:
-    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
+    chain = await asyncio.to_thread(_load_transport_proof_chain, freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return chain
@@ -652,7 +654,7 @@ def _freshness_threshold() -> int:
 
 @router.get("/transport/gates")
 async def transport_gates() -> dict[str, Any]:
-    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
+    chain = await asyncio.to_thread(_load_transport_proof_chain, freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return {
@@ -668,7 +670,7 @@ class SimulateRequest(BaseModel):
 
 @router.post("/transport/simulate")
 async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
-    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
+    chain = await asyncio.to_thread(_load_transport_proof_chain, freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 

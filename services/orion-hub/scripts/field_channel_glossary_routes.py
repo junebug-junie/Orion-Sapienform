@@ -17,6 +17,7 @@ NODE_CHANNELS/CAPABILITY_CHANNELS):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any
@@ -250,6 +251,17 @@ def _regime_for(
 
 @router.get("/health")
 async def health(hours: int = Query(DEFAULT_HOURS)) -> dict[str, Any]:
+    """Off the event loop: this is synchronous SQLAlchemy plus real CPU.
+
+    Measured live 2026-09-03 at 3.06s -- it pulls up to ROW_CAP rows of
+    `field_json` JSONB and then runs build_channel_series/classify/_regime_for
+    over every known channel. Inline in an `async def` that stalled the whole
+    hub for three seconds at a time, on a panel that polls.
+    """
+    return await asyncio.to_thread(_health_sync, hours)
+
+
+def _health_sync(hours: int) -> dict[str, Any]:
     window_hours = normalize_hours(hours)
     with _engine().connect() as conn:
         # DESC + reverse (not ASC + LIMIT) so that when the window's row

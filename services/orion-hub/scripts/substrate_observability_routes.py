@@ -9,6 +9,8 @@ render partial truth instead of an error page.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -297,7 +299,7 @@ def _hub_presence_section(engine) -> dict[str, Any] | None:
 async def observability_summary() -> dict[str, Any]:
     engine = None
     try:
-        engine = _engine()
+        engine = await asyncio.to_thread(_engine)
     except Exception:
         logger.debug("observability_engine_init_failed", exc_info=True)
 
@@ -325,7 +327,7 @@ async def observability_summary() -> dict[str, Any]:
 
     hub_presence = None
     try:
-        hub_presence = _hub_presence_section(engine)
+        hub_presence = await asyncio.to_thread(_hub_presence_section, engine)
     except Exception:
         logger.debug("observability_section_failed section=hub_presence", exc_info=True)
 

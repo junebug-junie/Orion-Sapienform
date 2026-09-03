@@ -131,10 +131,13 @@ New append-only table. One row per write to any control surface.
 
 **3. Feed the monitor, and release on success**
 
-- `post_adoption_delta_by_target_surface` gets a real producer: the same pressure
-  score that justified the proposal, recomputed after the change, differenced.
-  `pressure:runtime_executed score:3.55` is the number that caused this
-  adoption; whether that pressure fell is the honest test of whether it helped.
+- **Deferred, NOT in the first changeset:** `post_adoption_delta_by_target_surface`
+  gets a real producer — the same pressure score that justified the proposal,
+  recomputed after the change, differenced. `pressure:runtime_executed
+  score:3.55` is the number that caused this adoption; whether that pressure
+  fell is the honest test of whether it helped. Until this exists **the monitor
+  remains blind**, and every settlement takes the `window_elapsed_no_delta`
+  path. The lock half of item 3 ships without it; the measurement half does not.
 - Behaviour changed: when the rollback window has elapsed and the delta says the
   change did not regress anything, the surface lock is **released and the change
   is kept**. Today only a rollback releases it.
@@ -183,17 +186,42 @@ claim that item 3 improved anything.
 
 ## Acceptance checks
 
+Status as of the first changeset (items 1 and 2). Nothing is deployed:
+`SELECT to_regclass('substrate_runtime_control_surface_history')` on the live
+`conjourney` database returns `None`.
+
 1. Every write to a control surface appends a history row carrying the real
-   previous value. Verified by changing the threshold and reading the table.
+   previous value. **Covered by test; UNVERIFIED live** — needs the deploy, then
+   a threshold change read back out of the table.
 2. An adoption's recorded rollback payload equals the value that was live
-   immediately before it. A test fails if the class default leaks through.
+   immediately before it. **Covered by test.** Applies to *future* adoptions
+   only: the existing live adoption's payload is still the hardcoded `0.5` and
+   is not retroactively corrected.
 3. `substrate_mutation_active_surface` releases without a rollback once the
    window has passed, and a subsequent proposal reaches a decision other than
-   `hold / active_surface_mutation_exists`. Verified live on the rail.
+   `hold / active_surface_mutation_exists`. **Covered by test; UNVERIFIED live.**
+   The stuck adoption's window elapsed ~20 hours ago, so it settles on the first
+   cycle after deploy.
 4. The hub panel shows, without a database query: current value, previous value,
    who changed it, when, whether the window is open, and how long the surface has
-   been held.
-5. A missing delta never causes a rollback. Explicit test.
+   been held. **NOT MET — no template, static asset, or route shipped yet.**
+5. A missing delta never causes a rollback. **Covered by test**, driven through
+   the real `run_cycle`.
+
+## Known consequences, recorded deliberately
+
+- **Rolling this back is not clean.** `MutationAdoptionV1.status` gains
+  `"settled"` under `extra="forbid"`. If a `settled` row exists and the code is
+  reverted, `_load_from_postgres` raises on the whole adoption table, the store
+  degrades to `fallback`, and the hub refuses every cycle with
+  `unsupported_store_kind:fallback` — autonomy goes fully offline rather than
+  degrading. Recovery: `UPDATE substrate_mutation_adoption SET payload_json =
+  jsonb_set(payload_json,'{status}','"rolled_back"') WHERE
+  payload_json->>'status'='settled'`.
+- **No path back to the original baseline.** After a settle chain N1→N2→N3, each
+  adoption's rollback payload captures its immediate predecessor, so undoing N3
+  restores N2. Reaching the pre-N1 value takes an operator write. This is by
+  design, but it means "roll back" means one step, not "return to normal".
 
 ## Recommended next patch
 

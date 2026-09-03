@@ -5,6 +5,7 @@ from typing import Any
 
 from orion.core.schemas.substrate_mutation import MutationAdoptionV1, MutationDecisionV1, MutationProposalV1
 from orion.substrate.mutation_control_surface import (
+    ControlSurfaceWriteError,
     get_chat_reflective_lane_threshold,
     set_chat_reflective_lane_threshold,
 )
@@ -38,12 +39,18 @@ class PatchApplier:
             # match once (2026-09-02, both 0.5) purely by coincidence.
             rollback_payload["chat_reflective_lane_threshold"] = live_threshold
             if patch_threshold is not None:
-                set_chat_reflective_lane_threshold(
-                    value=float(patch_threshold),
-                    actor="mutation_apply",
-                    proposal_id=proposal.proposal_id,
-                    decision_id=decision.decision_id,
-                )
+                try:
+                    set_chat_reflective_lane_threshold(
+                        value=float(patch_threshold),
+                        actor="mutation_apply",
+                        proposal_id=proposal.proposal_id,
+                        decision_id=decision.decision_id,
+                    )
+                except ControlSurfaceWriteError:
+                    # The live value did not move, so there is nothing to adopt.
+                    # Returning an adoption here would take the surface lock and
+                    # write a record claiming a change that never happened.
+                    return None
             proposal = proposal.model_copy(
                 update={"patch": proposal.patch.model_copy(update={"rollback_payload": rollback_payload})}
             )

@@ -35,10 +35,38 @@ def _resolve_postgres_url() -> str | None:
     return control or policy or database or None
 
 
+def _history_max_rows_per_surface() -> int:
+    """Bound the history so an append-only table cannot grow without limit.
+
+    Per surface, not overall, so a busy surface can never crowd out the record
+    of a quiet one. Generous by default: at roughly one adoption per
+    rollback_window_sec this is months of history for the routing surface.
+    """
+    raw = str(os.getenv("SUBSTRATE_CONTROL_SURFACE_HISTORY_MAX_ROWS", "1000")).strip()
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return 1000
+    return max(10, min(100000, value))
+
+
 def _resolve_sqlite_path() -> str | None:
     explicit = str(os.getenv("SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH", "")).strip()
     mutation = str(os.getenv("SUBSTRATE_MUTATION_SQL_DB_PATH", "")).strip()
     return explicit or mutation or None
+
+
+class ControlSurfaceWriteError(RuntimeError):
+    """A configured durable backend refused a control-surface write.
+
+    Raised rather than swallowed because the fallthrough below is unreachable as
+    a recovery path: ``_source_kind`` stays "postgres"/"sqlite" after a failure,
+    so ``get()`` never reads the in-memory copy again. Silently keeping going
+    meant a caller was told its write succeeded when the value had not moved --
+    and ``PatchApplier.apply`` would then mint an adoption recording a change
+    that never happened, which is the exact falsehood this history table exists
+    to prevent, inverted.
+    """
 
 
 def _decode_json(raw: Any) -> Any:
@@ -183,14 +211,10 @@ class RuntimeControlSurfaceStore:
         """
         value_payload = dict(value)
         value_payload.setdefault("updated_at", _utc_now().isoformat())
-        previous = self.get(key)
         history_row = {
             "history_id": f"control-surface-history-{uuid.uuid4()}",
             "surface_key": key,
             "actor": value_payload.get("actor"),
-            "previous_value_json": (
-                json.dumps(previous, ensure_ascii=False, sort_keys=True) if previous is not None else None
-            ),
             "new_value_json": json.dumps(value_payload, ensure_ascii=False, sort_keys=True),
         }
         if self._source_kind == "postgres" and self.postgres_url:
@@ -198,6 +222,21 @@ class RuntimeControlSurfaceStore:
                 from sqlalchemy import text
 
                 with self._engine().begin() as conn:
+                    # Read the outgoing value inside the write transaction, and
+                    # lock the row. Reading it outside (via self.get(), which
+                    # opens its own connection) let a concurrent writer land
+                    # between the read and the write, so the history could record
+                    # a previous_value that was never live at that moment -- a
+                    # lie shaped exactly like a fact, and worse than the missing
+                    # row this table replaced.
+                    prior = conn.execute(
+                        text(
+                            "SELECT value_json::text FROM substrate_runtime_control_surface "
+                            "WHERE surface_key=:surface_key FOR UPDATE"
+                        ),
+                        {"surface_key": key},
+                    ).fetchone()
+                    history_row["previous_value_json"] = prior[0] if prior else None
                     conn.execute(
                         text(
                             """
@@ -229,54 +268,116 @@ class RuntimeControlSurfaceStore:
                         ),
                         {**history_row, "changed_at": _utc_now()},
                     )
-                return
-            except Exception as exc:
-                self._last_error = str(exc)
-        if self._source_kind == "sqlite" and self.sql_db_path:
-            try:
-                with sqlite3.connect(self.sql_db_path) as conn:
                     conn.execute(
-                        """
-                        INSERT INTO substrate_runtime_control_surface(surface_key, updated_at, value_json)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(surface_key) DO UPDATE SET
-                            updated_at=excluded.updated_at,
-                            value_json=excluded.value_json
-                        """,
-                        (key, _utc_now().isoformat(), history_row["new_value_json"]),
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO substrate_runtime_control_surface_history(
-                            history_id, surface_key, changed_at, actor,
-                            previous_value_json, new_value_json
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            history_row["history_id"],
-                            key,
-                            _utc_now().isoformat(),
-                            history_row["actor"],
-                            history_row["previous_value_json"],
-                            history_row["new_value_json"],
+                        text(
+                            """
+                            DELETE FROM substrate_runtime_control_surface_history
+                            WHERE surface_key = :surface_key
+                              AND history_id NOT IN (
+                                  SELECT history_id FROM substrate_runtime_control_surface_history
+                                  WHERE surface_key = :surface_key
+                                  ORDER BY changed_at DESC
+                                  LIMIT :keep
+                              )
+                            """
                         ),
+                        {"surface_key": key, "keep": _history_max_rows_per_surface()},
                     )
-                    conn.commit()
                 return
             except Exception as exc:
                 self._last_error = str(exc)
+                raise ControlSurfaceWriteError(
+                    f"control surface write failed for {key!r}: {exc}"
+                ) from exc
+        if self._source_kind == "sqlite" and self.sql_db_path:
+            conn = sqlite3.connect(self.sql_db_path)
+            try:
+                # BEGIN IMMEDIATE takes the write lock up front, so the read
+                # below and the two writes are one transaction. sqlite3's
+                # implicit BEGIN only fires before the INSERT, which would leave
+                # the read outside -- the same non-atomic derivation the
+                # postgres branch avoids with FOR UPDATE.
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE")
+                prior = conn.execute(
+                    "SELECT value_json FROM substrate_runtime_control_surface WHERE surface_key=?",
+                    (key,),
+                ).fetchone()
+                history_row["previous_value_json"] = prior[0] if prior else None
+                conn.execute(
+                    """
+                    INSERT INTO substrate_runtime_control_surface(surface_key, updated_at, value_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(surface_key) DO UPDATE SET
+                        updated_at=excluded.updated_at,
+                        value_json=excluded.value_json
+                    """,
+                    (key, _utc_now().isoformat(), history_row["new_value_json"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO substrate_runtime_control_surface_history(
+                        history_id, surface_key, changed_at, actor,
+                        previous_value_json, new_value_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        history_row["history_id"],
+                        key,
+                        _utc_now().isoformat(),
+                        history_row["actor"],
+                        history_row["previous_value_json"],
+                        history_row["new_value_json"],
+                    ),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM substrate_runtime_control_surface_history
+                    WHERE surface_key = ?
+                      AND history_id NOT IN (
+                          SELECT history_id FROM substrate_runtime_control_surface_history
+                          WHERE surface_key = ?
+                          ORDER BY changed_at DESC
+                          LIMIT ?
+                      )
+                    """,
+                    (key, key, _history_max_rows_per_surface()),
+                )
+                conn.execute("COMMIT")
+                return
+            except Exception as exc:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                self._last_error = str(exc)
+                raise ControlSurfaceWriteError(
+                    f"control surface write failed for {key!r}: {exc}"
+                ) from exc
+            finally:
+                conn.close()
+        history_row["previous_value_json"] = (
+            json.dumps(self._memory[key], ensure_ascii=False, sort_keys=True) if key in self._memory else None
+        )
         self._memory_history.append(
             {
                 "history_id": history_row["history_id"],
                 "surface_key": key,
                 "changed_at": _utc_now().isoformat(),
                 "actor": history_row["actor"],
-                "previous_value": previous,
+                "previous_value": _decode_json(history_row["previous_value_json"]),
                 "new_value": value_payload,
             }
         )
         self._memory[key] = value_payload
+        # Per surface, matching the SQL prune. A global cap would let a busy
+        # surface evict a quiet surface's history, which is the one thing the
+        # bound is not allowed to do.
+        cap = _history_max_rows_per_surface()
+        for_key = [i for i, e in enumerate(self._memory_history) if e.get("surface_key") == key]
+        for index in reversed(for_key[:-cap] if len(for_key) > cap else []):
+            del self._memory_history[index]
 
     def history(self, key: str, *, limit: int = 50) -> list[dict[str, Any]]:
         """Most recent changes to one surface, newest first."""
@@ -412,15 +513,6 @@ def set_chat_reflective_lane_threshold(
             "updated_at": _utc_now().isoformat(),
         },
     )
-
-
-def chat_reflective_lane_threshold_history(*, limit: int = 50) -> list[dict[str, Any]]:
-    """Every recorded change to the routing threshold, newest first.
-
-    Empty until the first write after this shipped -- the history is built
-    going forward, not reconstructed. Changes made before it existed are gone.
-    """
-    return control_surface_store().history(_ROUTING_THRESHOLD_KEY, limit=limit)
 
 
 def inspect_chat_reflective_lane_threshold(default: float = 0.75) -> dict[str, Any]:

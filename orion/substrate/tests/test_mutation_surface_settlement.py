@@ -85,12 +85,95 @@ def test_a_released_surface_accepts_a_new_adoption() -> None:
     assert store.active_surface("routing") == "a-2"
 
 
-def test_settlement_is_idempotent_and_never_reopens_a_rollback() -> None:
+def test_settlement_is_idempotent_and_rejects_an_unknown_id() -> None:
     store, adoption = _adopted_store()
     assert store.record_settlement(adoption.adoption_id) is True
 
     assert store.record_settlement(adoption.adoption_id) is False
     assert store.record_settlement("no-such-adoption") is False
+
+
+def test_settlement_never_reopens_a_rolled_back_adoption() -> None:
+    """Terminal means terminal: a reverted change must not become 'kept'."""
+    from orion.core.schemas.substrate_mutation import MutationRollbackV1
+
+    store, adoption = _adopted_store()
+    store.record_rollback(
+        MutationRollbackV1(
+            adoption_id=adoption.adoption_id,
+            proposal_id=adoption.proposal_id,
+            reason="regression",
+            payload=dict(adoption.rollback_payload),
+        )
+    )
+    assert store._adoptions[adoption.adoption_id].status == "rolled_back"
+
+    assert store.record_settlement(adoption.adoption_id) is False
+    assert store._adoptions[adoption.adoption_id].status == "rolled_back"
+
+
+def test_settling_a_non_holder_leaves_the_real_holder_locked() -> None:
+    """Two applied adoptions can share a surface after a reload.
+
+    ``_recover_active_surfaces`` rebuilds the lock from every applied adoption,
+    so the holder is whichever one it saw last. Settling the other must not hand
+    away a lock it never held.
+    """
+    store = SubstrateMutationStore()
+    holder = _adoption(applied_at=datetime.now(timezone.utc) - timedelta(hours=2))
+    store.record_adoption(holder)
+    non_holder = holder.model_copy(
+        update={"adoption_id": "a-other", "proposal_id": "p-other", "status": "applied"}
+    )
+    store._adoptions["a-other"] = non_holder  # the post-reload split-brain shape
+
+    assert store.record_settlement("a-other") is True
+
+    assert store.active_surface("routing") == holder.adoption_id
+
+
+def test_worker_skips_an_already_terminal_adoption_on_a_later_cycle(monkeypatch) -> None:
+    """Without this guard a rolled-back adoption is re-rolled-back every cycle."""
+    monkeypatch.setenv("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true")
+    store, adoption = _adopted_store()
+    worker = _worker(store)
+
+    first = worker.run_cycle(
+        telemetry=[], measured_metrics_by_proposal={},
+        post_adoption_delta_by_target_surface={"routing": -0.9},
+        now=datetime.now(timezone.utc),
+    )
+    assert f"rolled_back:{adoption.proposal_id}" in first["notes"]
+
+    second = worker.run_cycle(
+        telemetry=[], measured_metrics_by_proposal={},
+        post_adoption_delta_by_target_surface={"routing": -0.9},
+        now=datetime.now(timezone.utc),
+    )
+    assert second["notes"] == []
+    assert len(store._rollbacks) == 1
+
+
+def test_a_healthy_delta_settles_rather_than_holding_the_surface(monkeypatch) -> None:
+    """Forward-looking: nothing in production supplies a delta yet.
+
+    The no-delta path at mutation_worker.py is what actually fires live today.
+    This pins the measured path so it is not silently wrong when a producer is
+    wired up for it.
+    """
+    monkeypatch.setenv("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true")
+    store, adoption = _adopted_store()
+    worker = _worker(store)
+
+    result = worker.run_cycle(
+        telemetry=[], measured_metrics_by_proposal={},
+        post_adoption_delta_by_target_surface={"routing": 0.4},  # improvement
+        now=datetime.now(timezone.utc),
+    )
+
+    assert store._rollbacks == {}
+    assert store._adoptions[adoption.adoption_id].status == "settled"
+    assert f"settled:{adoption.proposal_id}" in result["notes"]
 
 
 def test_worker_settles_only_after_the_rollback_window_has_elapsed() -> None:
@@ -107,6 +190,16 @@ def test_worker_settles_only_after_the_rollback_window_has_elapsed() -> None:
     )
     assert early is False
     assert store.active_surface("routing") == adoption.adoption_id
+
+    # Exactly at the boundary the window has elapsed, so it settles.
+    at_boundary = worker._settle_if_window_elapsed(
+        adoption=adoption, cycle_id="c", lineage_id="l",
+        now=now + timedelta(seconds=900), notes=[], reason="test",
+    )
+    assert at_boundary is True
+    assert store.active_surface("routing") is None
+    store._adoptions[adoption.adoption_id] = adoption  # reset for the late case
+    store._active_surface_by_target["routing"] = adoption.adoption_id
 
     late = worker._settle_if_window_elapsed(
         adoption=adoption, cycle_id="c", lineage_id="l",
@@ -211,3 +304,33 @@ def test_adoption_records_the_real_prior_value_not_the_class_constant(
     assert adoption is not None
     assert adoption.rollback_payload["chat_reflective_lane_threshold"] == 0.71
     assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.58
+
+
+def test_adoption_retention_never_evicts_the_surface_lock_holder(monkeypatch) -> None:
+    """Releasing the lock on success removed what was bounding this table.
+
+    A stranded lock would be unreleasable: record_settlement and record_rollback
+    both look the adoption up by id, so evicting the holder recreates the exact
+    permanent-hold bug this branch exists to fix.
+    """
+    monkeypatch.setenv("SUBSTRATE_MUTATION_RETENTION_MAX_ADOPTIONS", "50")
+    store = SubstrateMutationStore()
+    holder = _adoption(applied_at=datetime.now(timezone.utc) - timedelta(days=30))
+    store.record_adoption(holder)  # oldest, so first in line for eviction
+
+    for i in range(60):
+        extra = holder.model_copy(
+            update={
+                "adoption_id": f"a-{i}",
+                "proposal_id": f"p-{i}",
+                "target_surface": f"surface-{i}",
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        store._adoptions[extra.adoption_id] = extra
+    store._compact_artifacts()
+
+    assert len(store._adoptions) <= 50
+    assert holder.adoption_id in store._adoptions
+    assert store.active_surface("routing") == holder.adoption_id
+    assert store.record_settlement(holder.adoption_id) is True

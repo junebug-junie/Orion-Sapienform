@@ -539,13 +539,18 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     InnerStateSignal(
         signal_id="mood_arc_encoder.v1",
         schema=MoodArcEncoderManifestV1,
-        producer_service="orion/mood_arc/fit_encoder.py (manually-invoked CLI, not a service; "
-        "producer_service corrected 2026-09-02 -- previously read orion-spark-introspector, "
-        "which never produced this artifact and was deleted 2026-07-28)",
+        producer_service="orion/mood_arc/fit_encoder.py",
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.REHEARSAL,
         cognition_consumers=(),
         notes=(
+            "producer_service is a manually-invoked CLI, not a service. "
+            "Corrected 2026-09-02: it previously read orion-spark-"
+            "introspector, which never produced this artifact and was "
+            "deleted 2026-07-28. This rationale lives here rather than "
+            "inline in producer_service because that field is a component "
+            "of every metric URI the definition lock keys on -- see "
+            "scripts/check_definition_drift.py. "
             "Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-"
             "roadmap-spec.md -- the windowed felt-state-trajectory "
             "autoencoder trained by orion/mood_arc/fit_encoder.py. A dark, "

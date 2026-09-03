@@ -4,6 +4,7 @@ services:
       context: ../..
       dockerfile: services/orion-vision-frame-router/Dockerfile
     container_name: orion-${PROJECT:-dev}-vision-frame-router
+    restart: unless-stopped
     env_file:
       - .env
     environment:

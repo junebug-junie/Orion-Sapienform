@@ -17,8 +17,32 @@ class PatchApplier:
 
     surfaces: dict[str, dict[str, Any]]
 
+    @staticmethod
+    def _is_noop(*, patch: dict[str, Any], live_threshold: float) -> bool:
+        """Would writing this patch leave the surface exactly as it is?
+
+        Every key must be comparable AND already match. The contract allows
+        ``autonomy_route_threshold`` alongside the lane threshold, so judging a
+        multi-key patch on one key would skip the whole apply and silently drop
+        a real change to the other -- worse than the no-op it prevents.
+
+        Compares the value that would actually be written: the setter clamps to
+        ``[0, 1]``, so an out-of-range patch over a saturated surface writes
+        nothing while looking like a change.
+        """
+        if set(patch) - {"chat_reflective_lane_threshold"}:
+            return False
+        patch_threshold = patch.get("chat_reflective_lane_threshold")
+        if patch_threshold is None:
+            return False
+        return max(0.0, min(1.0, float(patch_threshold))) == float(live_threshold)
+
     def noop_reason(self, *, proposal: MutationProposalV1) -> str | None:
         """Why applying this proposal would change nothing, or None if it would.
+
+        Called by the worker only *after* ``apply`` has already declined, to
+        explain the refusal in the record. It re-reads the surface, which is
+        acceptable on that rare path and deliberately avoided on the common one.
 
         The routing patch value is a hardcoded constant
         (``_default_patch_for_class`` returns 0.58 for every
@@ -26,27 +50,20 @@ class PatchApplier:
         every subsequent proposal re-applies the number already live. Confirmed
         in production 2026-09-03: the first cycle after the surface lock was
         released adopted 0.58 over a live 0.58 and wrote a history row reading
-        ``0.58 -> 0.58``. Left alone that repeats every rollback window forever
-        -- an adoption, a lock, and a history row per cycle, none of which
-        change Orion's behaviour.
+        ``0.58 -> 0.58``. Left alone that repeats every rollback window forever,
+        and each adoption holds the surface lock for the whole window, blocking
+        real proposals behind a change that is not a change.
 
-        Taking the one-live-mutation-per-surface lock for a change that is not a
-        change also blocks real proposals behind it for the whole window.
-
-        Surface-specific by necessity: only the applier knows how to read a
-        given surface's live value. Surfaces it cannot compare return None
-        (apply proceeds), because "cannot tell" must not read as "no change".
+        Surfaces it cannot compare return None, because "cannot tell" must not
+        read as "no change".
         """
         if proposal.mutation_class != "routing_threshold_patch":
-            return None
-        patch_threshold = proposal.patch.patch.get("chat_reflective_lane_threshold")
-        if patch_threshold is None:
             return None
         try:
             live_threshold = get_chat_reflective_lane_threshold()
         except Exception:
             return None
-        if float(patch_threshold) == float(live_threshold):
+        if self._is_noop(patch=dict(proposal.patch.patch), live_threshold=live_threshold):
             return f"patch_is_noop:chat_reflective_lane_threshold={live_threshold}"
         return None
 
@@ -62,6 +79,14 @@ class PatchApplier:
         if proposal.mutation_class == "routing_threshold_patch":
             live_threshold = get_chat_reflective_lane_threshold()
             patch_threshold = proposal.patch.patch.get("chat_reflective_lane_threshold")
+            if self._is_noop(patch=proposal.patch.patch, live_threshold=live_threshold):
+                # Nothing to adopt. Decided here rather than in the worker so the
+                # happy path reads the control surface exactly as often as it did
+                # before -- an extra read is not free: it deterministically broke
+                # a hub test three modules away, because this suite's fixtures
+                # assign the store global by raw assignment and never restore it,
+                # so behaviour depends on when the surface is first touched.
+                return None
             rollback_payload = dict(proposal.patch.rollback_payload)
             # Overwrite, do not setdefault. The proposal already carries a
             # hardcoded fallback from _default_rollback_for_class, so setdefault

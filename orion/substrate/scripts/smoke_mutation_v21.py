@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -78,7 +79,7 @@ def _fmt_trace(fields: dict[str, Any]) -> str:
 
 @contextmanager
 def _isolated_control_surface(*, seed_threshold: float):
-    """Run the smoke against its own control surface, seeded to a known value.
+    """Run the smoke against a throwaway control surface, seeded to a known value.
 
     Two reasons, both load-bearing.
 
@@ -94,19 +95,48 @@ def _isolated_control_surface(*, seed_threshold: float):
     surface already at 0.58 the apply is a no-op and is now correctly skipped.
     Seeding a different starting value makes the assertion test the apply path
     rather than the ambient state of whatever ran before it.
+
+    Both halves are required, and this is the same shape as
+    `services/orion-cortex-orch/tests/conftest.py`'s isolation fixture.
+    Constructing the store with `sql_db_path=None, postgres_url=None` is NOT an
+    isolation request: `__post_init__` fills either slot from the ambient
+    environment, so with a `DATABASE_URL` in scope -- which orion-hub has, and
+    orion-hub owns the mutation worker -- the "isolated" store resolves to live
+    Postgres and the smoke moves Orion's real threshold. The env keys must be
+    cleared AND an explicit path passed.
     """
-    previous = mutation_control_surface._CONTROL_SURFACE_STORE
-    isolated = mutation_control_surface.RuntimeControlSurfaceStore(
-        sql_db_path=None, postgres_url=None
-    )
-    mutation_control_surface._CONTROL_SURFACE_STORE = isolated
-    try:
-        mutation_control_surface.set_chat_reflective_lane_threshold(
-            value=seed_threshold, actor="mutation_smoke"
+    previous_env = {}
+    for key in (
+        "SUBSTRATE_CONTROL_PLANE_POSTGRES_URL",
+        "SUBSTRATE_POLICY_POSTGRES_URL",
+        "DATABASE_URL",
+        "SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH",
+        "SUBSTRATE_MUTATION_SQL_DB_PATH",
+    ):
+        previous_env[key] = os.environ.pop(key, None)
+    previous_store = mutation_control_surface._CONTROL_SURFACE_STORE
+    with tempfile.TemporaryDirectory(prefix="orion-smoke-control-surface-") as tmp_dir:
+        isolated = mutation_control_surface.RuntimeControlSurfaceStore(
+            sql_db_path=str(Path(tmp_dir) / "control-surface-isolated.sqlite3")
         )
-        yield isolated
-    finally:
-        mutation_control_surface._CONTROL_SURFACE_STORE = previous
+        # Fail loudly rather than silently writing production: the whole point
+        # of this block is that the smoke cannot reach the real surface.
+        if isolated.postgres_url is not None or isolated.source_kind() != "sqlite":
+            raise RuntimeError(
+                "smoke control-surface isolation failed: "
+                f"postgres_url={isolated.postgres_url!r} source_kind={isolated.source_kind()!r}"
+            )
+        mutation_control_surface._CONTROL_SURFACE_STORE = isolated
+        try:
+            mutation_control_surface.set_chat_reflective_lane_threshold(
+                value=seed_threshold, actor="mutation_smoke"
+            )
+            yield isolated
+        finally:
+            mutation_control_surface._CONTROL_SURFACE_STORE = previous_store
+            for key, value in previous_env.items():
+                if value is not None:
+                    os.environ[key] = value
 
 
 def run_smoke(*, emit: bool = True) -> list[str]:

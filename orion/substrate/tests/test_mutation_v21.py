@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+
+import pytest
 from pathlib import Path
 
 from orion.core.schemas.substrate_mutation import (
@@ -16,6 +18,7 @@ from orion.core.schemas.substrate_mutation import (
     RecallStrategyProfileV1,
 )
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
+from orion.substrate import mutation_control_surface
 from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
@@ -27,6 +30,43 @@ from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrial
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_worker import SubstrateAdaptationWorker
 from orion.substrate.scripts.smoke_mutation_v21 import run_smoke
+
+
+@pytest.fixture(autouse=True)
+def _isolate_control_surface(tmp_path, monkeypatch):
+    """Give every test in this module its own control surface, seeded to 0.5.
+
+    These tests call ``PatchApplier.apply`` directly against the module-global
+    control surface, which resolves from the ambient environment and is written
+    by the real setter -- so one test's apply moved the starting value for every
+    later one. Invisible until ``apply`` learned to decline a patch that would
+    change nothing: four tests about lock recovery, reload continuity and
+    retention then failed, not for what they were testing but because an earlier
+    test had already moved the surface to the patch value.
+
+    Seeded to 0.5, not the patch constant 0.58, so the applies these tests
+    depend on are genuine changes. Same shape as
+    ``services/orion-cortex-orch/tests/conftest.py``.
+    """
+    for key in (
+        "SUBSTRATE_CONTROL_PLANE_POSTGRES_URL",
+        "SUBSTRATE_POLICY_POSTGRES_URL",
+        "DATABASE_URL",
+        "SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH",
+        "SUBSTRATE_MUTATION_SQL_DB_PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    previous = mutation_control_surface._CONTROL_SURFACE_STORE
+    isolated = mutation_control_surface.RuntimeControlSurfaceStore(
+        sql_db_path=str(tmp_path / "control-surface-isolated.sqlite3")
+    )
+    assert isolated.postgres_url is None and isolated.source_kind() == "sqlite"
+    mutation_control_surface._CONTROL_SURFACE_STORE = isolated
+    try:
+        mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="test_seed")
+        yield isolated
+    finally:
+        mutation_control_surface._CONTROL_SURFACE_STORE = previous
 
 
 def _routing_pressure() -> MutationPressureV1:

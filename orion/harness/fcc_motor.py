@@ -836,6 +836,33 @@ async def run_fcc_turn(
     lane_n_ctx = await probe_route_runtime(label, env=env)
     lane_n_ctx = lane_n_ctx[1]
 
+    # A lane can be too small to host this turn AT ALL, and that has to be said
+    # before spawning rather than discovered as a provider error mid-stream.
+    # Live 2026-09-03: `quick` and `metacog` serve n_ctx=4096 while `agent`
+    # serves 32768 and `chat`/`harness` serve 131072 -- and `quick` is the
+    # COMPUTE dropdown's DEFAULT, so "Mode=Agent with whatever Compute was
+    # already selected" lands on 4096 routinely. Real harness prompts measured
+    # 6.3k tokens median and 25k at the top, so that lane cannot start one.
+    #
+    # The comparison uses only values already in hand -- the prompt actually
+    # built, and the window the worker actually reported -- so there is no
+    # invented minimum-context constant to drift. Deliberately NOT a silent
+    # fallback to the default label: quietly running a different model than the
+    # operator selected is the exact class of bug this whole patch removes.
+    if lane_n_ctx and len(prompt) >= max_context_chars(lane_n_ctx):
+        yield {
+            "type": "error",
+            "error": (
+                f"selected compute lane cannot host this turn: prompt is {len(prompt)} chars "
+                f"but {model_id} serves only {lane_n_ctx} tokens "
+                f"(~{max_context_chars(lane_n_ctx)} chars). Pick a lane with a larger context window."
+            ),
+            "error_code": "fcc_lane_context_too_small",
+            "metadata": {"fcc_model_label": label, "fcc_lane_n_ctx": lane_n_ctx},
+        }
+        return
+
+
     try:
         _preflight_fcc_server(fcc_server_url)
     except RuntimeError as exc:
@@ -892,6 +919,7 @@ async def run_fcc_turn(
     budget_chars = len(prompt)
     ceiling_chars = max_context_chars(lane_n_ctx)
     pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
+
     context_nudge_sent = False
     if stream_read_limit < 65536:
         stream_read_limit = 65536

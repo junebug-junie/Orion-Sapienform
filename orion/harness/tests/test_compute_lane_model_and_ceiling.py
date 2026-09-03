@@ -184,3 +184,99 @@ def test_prose_about_an_overflow_is_not_destroyed() -> None:
 @pytest.mark.parametrize("text", ["", "   ", None, "Here is the answer you asked for."])
 def test_ordinary_replies_are_not_flagged(text: object) -> None:
     assert is_provider_error_envelope(text) is False  # type: ignore[arg-type]
+
+
+# --- a lane too small to host the turn says so, before spending anything -----
+
+async def _drive_turn(monkeypatch: pytest.MonkeyPatch, *, n_ctx: int | None, prompt: str) -> list:
+    """Run the motor far enough to reach (or pass) the lane-capacity guard.
+
+    Every resource the motor would acquire AFTER the guard is booby-trapped, so
+    a guard that fires too late fails loudly instead of silently leaking.
+    """
+    from orion.harness import fcc_motor
+
+    monkeypatch.setattr(fcc_motor, "load_fcc_env", lambda *_a, **_k: dict(FCC_ENV))
+
+    async def _probe(*_a, **_k):
+        return "Qwen3.8-27B-UD-Q4_K_XL", n_ctx
+
+    monkeypatch.setattr(fcc_motor, "probe_route_runtime", _probe)
+
+    def _boom_preflight(*_a, **_k):
+        raise AssertionError("guard must return before the FCC preflight")
+
+    def _boom_mcp(*_a, **_k):
+        raise AssertionError("guard must return before an MCP config is rendered")
+
+    monkeypatch.setattr(fcc_motor, "_preflight_fcc_server", _boom_preflight)
+    monkeypatch.setattr(fcc_motor, "_maybe_render_mcp_config", _boom_mcp)
+
+    return [
+        ev
+        async for ev in fcc_motor.run_fcc_turn(
+            prompt=prompt,
+            correlation_id="corr-guard",
+            fcc_model_label="llamacpp/agent",
+            workspace="/tmp",
+            fcc_server_url="http://fcc:8082",
+            auth_token="t",
+            claude_bin="claude",
+            timeout_sec=5.0,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_lane_too_small_fails_before_spending_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """COMPUTE defaults to `quick`, which serves n_ctx=4096 live while real
+    harness prompts run 6.3k tokens median. Mode=Agent on the already-selected
+    default lands there routinely, so it must fail immediately and legibly --
+    not as a provider error mid-stream, and not after burning a turn."""
+    events = await _drive_turn(monkeypatch, n_ctx=4096, prompt="x" * 40_000)
+
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert events[0]["error_code"] == "fcc_lane_context_too_small"
+    # The operator needs both numbers to act on it, and the lane's identity.
+    assert "4096" in events[0]["error"]
+    assert "40000" in events[0]["error"]
+    assert events[0]["metadata"]["fcc_lane_n_ctx"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_a_lane_that_fits_is_not_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard must not become a general brake: a prompt well inside the 27B's
+    32768-token window has to pass it and go on to spawn.
+
+    The prompt length is chosen to sit BETWEEN the raw token count (32768) and
+    the real character ceiling (32768 * chars-per-token). A guard that compared
+    the prompt's length in characters against a window measured in TOKENS would
+    refuse this turn, and would still look correct on any prompt outside that
+    band -- so this is the case that pins the unit conversion.
+    """
+    fits_in_chars_not_in_tokens = 50_000
+    assert 32768 < fits_in_chars_not_in_tokens < max_context_chars(32768)
+
+    with pytest.raises(AssertionError, match="before the FCC preflight"):
+        await _drive_turn(monkeypatch, n_ctx=32768, prompt="x" * fits_in_chars_not_in_tokens)
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_window_does_not_refuse_the_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """None means "not known" (older gateway, worker down, non-llamacpp backend).
+    Refusing on it would turn a missing fact into an outage.
+
+    The prompt deliberately exceeds even the env-fallback ceiling, so that a
+    guard which dropped the "is the window known" test would refuse here. A
+    shorter prompt would pass this test either way and prove nothing.
+    """
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "65536")
+    over_the_env_fallback = max_context_chars() + 1_000
+
+    with pytest.raises(AssertionError, match="before the FCC preflight"):
+        await _drive_turn(monkeypatch, n_ctx=None, prompt="x" * over_the_env_fallback)

@@ -151,6 +151,7 @@ from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrial
 from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdaptationWorker
 from orion.substrate.mutation_control_surface import (
     chat_reflective_lane_threshold_history,
+    control_surface_store,
     inspect_chat_reflective_lane_threshold,
 )
 from orion.substrate.recall_strategy_readiness import (
@@ -5505,11 +5506,23 @@ def _self_modification_panel_payload(*, now: datetime | None = None) -> Dict[str
         "surface_holds": [],
     }
     try:
+        store = control_surface_store()
         entries = chat_reflective_lane_threshold_history(limit=10)
         data["history"] = entries
         # Distinguish "no changes recorded yet" from "history is not readable".
-        # An empty list is the expected state until the first write lands.
-        data["history_available"] = True
+        # An empty list is the expected state until the first write lands, so it
+        # must not read as a fault -- but the reverse matters more: history()
+        # swallows its own backend errors and returns [], so a dropped or
+        # unreachable table is indistinguishable from a calm one unless the
+        # store is asked directly whether it is degraded. Without this check the
+        # panel renders "none recorded since history started" over a broken
+        # table, which is this repo's oldest failure mode: an absent reading
+        # displayed as a fact.
+        if store.degraded() and not entries:
+            data["history_available"] = False
+            data["history_error"] = store.last_error() or "control surface store degraded"
+        else:
+            data["history_available"] = True
         if entries:
             newest = entries[0]
             previous = (newest.get("previous_value") or {}).get("value")
@@ -5523,6 +5536,14 @@ def _self_modification_panel_payload(*, now: datetime | None = None) -> Dict[str
         data["history_error"] = str(exc)
 
     try:
+        # Same reasoning as the history block: an empty lock list is normal, but
+        # a lock list that is empty *because the store is broken* must not
+        # render as "nothing is held" -- that is precisely the 13-hour lock
+        # this panel exists to surface, made invisible again.
+        if SUBSTRATE_MUTATION_STORE.degraded():
+            data["surface_holds_error"] = (
+                SUBSTRATE_MUTATION_STORE.last_error() or "mutation store degraded"
+            )
         for row in SUBSTRATE_MUTATION_STORE.active_surfaces_snapshot():
             adoption_id = str(row.get("adoption_id") or "")
             adoption = SUBSTRATE_MUTATION_STORE._adoptions.get(adoption_id)
@@ -5542,8 +5563,6 @@ def _self_modification_panel_payload(*, now: datetime | None = None) -> Dict[str
                         "held_for_sec": round(held_for, 1),
                         "rollback_window_sec": adoption.rollback_window_sec,
                         "window_elapsed": held_for >= float(adoption.rollback_window_sec),
-                        "applied_patch": dict(adoption.applied_patch),
-                        "rollback_payload": dict(adoption.rollback_payload),
                     }
                 )
             data["surface_holds"].append(entry)

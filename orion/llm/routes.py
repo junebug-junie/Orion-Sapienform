@@ -269,4 +269,15 @@ def fcc_model_for_route(raw: object) -> Optional[str]:
     route = normalize_llm_route(raw)
     if route is None:
         return None
+    # `normalize_llm_route` refuses SYSTEM_LLM_ROUTES but deliberately ALLOWS
+    # background lanes -- it is also the override path for config-set consumers
+    # like `ACTIONS_JOURNAL_LLM_ROUTE=quick_background`, where choosing a
+    # yielding lane is the whole point. A live interactive chat turn is the
+    # opposite case: this module's own docstring says a human who picks one
+    # "buys nothing but latency". Review found `quick_background` reachable here
+    # via a raw POST /api/chat body or a stale localStorage entry predating the
+    # Hub picker's priority filter, so the refusal belongs at this seam rather
+    # than resting on the UI.
+    if route in BACKGROUND_LLM_ROUTES:
+        return None
     return f"{FCC_LLAMACPP_MODEL_PREFIX}{route}"

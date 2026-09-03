@@ -540,10 +540,19 @@ async def probe_current_served_model(
 ) -> Optional[str]:
     """Just the served-model half of `probe_route_runtime`, for the prompt.
 
-    Kept as its own name because that is what the harness prefix asks for and
-    what every existing caller and test already says; the context window is a
-    separate concern with a separate consumer (the motor's own budget), and
-    neither should have to know it is sharing one HTTP call with the other.
+    Kept as its own name because that is what the harness prefix asks for, and
+    what `HarnessRunner.served_model_probe` injects and its tests assert.
+
+    NOTE: this is a SEPARATE HTTP call from the motor's own window probe -- the
+    runner calls this before the turn to build the prompt, the motor calls
+    `probe_route_runtime` inside the turn to size its budget, so a turn now
+    makes two `GET /routes` requests rather than one. Not deduplicated
+    deliberately: a module-level TTL cache here would leak state between the
+    existing `probe_current_served_model` tests, and the cost is small and
+    bounded -- the gateway serves /routes from its own 15s health cache, the
+    call has a 2s timeout, and it fails open to None on anything at all. Revisit
+    by threading the window down from the runner if this ever shows up in turn
+    latency; do not add a hidden cache.
     """
     model, _ = await probe_route_runtime(
         fcc_model_label, env=env, gateway_url=gateway_url, timeout_sec=timeout_sec
@@ -1128,6 +1137,19 @@ async def run_fcc_turn(
     # what makes CLAUDE.md's "no empty-shell cognition" hold on this path: the reply is
     # preserved on the error frame for diagnosis rather than spoken as an answer.
     if is_provider_error_envelope(accumulated):
+        # `llm_response` on an error frame is the PARTIAL-DRAFT contract, not a
+        # diagnostic slot: `orion/harness/runner.py`'s error branch promotes any
+        # non-empty value straight into `draft_text` with verdict "partial", the
+        # governor then only aborts on an EMPTY draft
+        # (services/orion-harness-governor/app/bus_listener.py), and the finalize
+        # + voice chain would speak the provider's error envelope as Orion's
+        # answer and persist it to chat history. Putting the envelope here would
+        # have re-created, one layer up, the exact laundering this branch exists
+        # to stop -- caught in review, not by the tests, which only exercised the
+        # detector in isolation.
+        #
+        # So: leave `llm_response` empty so the motor reads as failed, and carry
+        # the text where it can be read but never spoken.
         yield {
             "type": "error",
             "error": accumulated.strip().splitlines()[0] if accumulated.strip() else "provider error",
@@ -1136,8 +1158,7 @@ async def run_fcc_turn(
                 if is_context_overflow_text(accumulated)
                 else "fcc_provider_error"
             ),
-            "metadata": metadata,
-            "llm_response": accumulated,
+            "metadata": {**metadata, "provider_error_text": accumulated},
         }
         return
 

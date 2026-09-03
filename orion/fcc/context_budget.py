@@ -277,10 +277,18 @@ def is_provider_error_envelope(text: str) -> bool:
     return head.startswith("upstream provider ") and "returned http" in head
 
 
+#: Stable prefix of the operator hint, used to detect "already hinted".
+#: The hint text now varies with the lane's window, so an exact-text check
+#: stopped deduping: the motor appends a 32768 hint, then `runner.py` appends a
+#: 131072 hint to the same string, and the operator reads two contradictory
+#: window sizes in one message. Match the invariant part instead.
+CONTEXT_OVERFLOW_HINT_MARKER = "Hub: context window full"
+
+
 def context_overflow_operator_hint(*, n_ctx: int | None = None) -> str:
     ctx = int(n_ctx or max_context_tokens())
     return (
-        f"\n\n---\nHub: context window full (~{ctx} tokens on llamacpp). "
+        f"\n\n---\n{CONTEXT_OVERFLOW_HINT_MARKER} (~{ctx} tokens on llamacpp). "
         "Prefer rg/Grep before Read; use Read offset/limit on large files "
         "(orion/bus/channels.yaml is ~65KB). For GitHub: get_pull_request when a PR "
         "number is known; list_pull_requests with perPage=1 only. Raise ctx_size in "
@@ -292,9 +300,11 @@ def apply_context_overflow_hint(text: str, *, n_ctx: int | None = None) -> str:
     body = str(text or "")
     if not is_context_overflow_text(body):
         return body
-    hint = context_overflow_operator_hint(n_ctx=n_ctx)
-    if hint.strip() in body:
+    # Marker, not the whole hint: a second caller downstream resolves a
+    # different `n_ctx` and would otherwise append a contradictory duplicate.
+    if CONTEXT_OVERFLOW_HINT_MARKER in body:
         return body
+    hint = context_overflow_operator_hint(n_ctx=n_ctx)
     return f"{body.rstrip()}{hint}"
 
 

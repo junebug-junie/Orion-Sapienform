@@ -45,6 +45,17 @@ def test_orion_mode_label_is_untouched_by_the_compute_lane() -> None:
         payload = {"fcc_model_label": "MODEL_SONNET", "llm_route": lane}
         assert _resolve_fcc_model_label(payload, "orion") == "MODEL_SONNET"
 
+    # Both guards are independently sufficient, so assert them SEPARATELY --
+    # review caught that the cases above all return at the explicit-label branch
+    # and would still pass with the `mode_tag == "agent"` gate deleted. This is
+    # the one that pins the gate: no explicit label, a lane that DOES resolve,
+    # and Orion mode must still not follow it.
+    assert (
+        _resolve_fcc_model_label({"llm_route": "agent"}, "orion")
+        == DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL
+    )
+    assert fcc_model_for_route("agent") == "llamacpp/agent", "the lane really does resolve"
+
 
 def test_orion_mode_default_is_unchanged_when_hub_sends_no_label() -> None:
     assert (
@@ -280,3 +291,98 @@ async def test_an_unknown_window_does_not_refuse_the_turn(
 
     with pytest.raises(AssertionError, match="before the FCC preflight"):
         await _drive_turn(monkeypatch, n_ctx=None, prompt="x" * over_the_env_fallback)
+
+
+# --- the error envelope must not ride in the partial-draft slot -------------
+
+def _provider_error_frame() -> dict:
+    """The motor's own error frame for a laundered provider error."""
+    return {
+        "type": "error",
+        "error": "Upstream provider LLAMACPP returned HTTP 400.",
+        "error_code": "fcc_context_overflow",
+        "metadata": {"exit_code": 0, "provider_error_text": OVERFLOW_REPLY},
+    }
+
+
+def test_the_error_frame_carries_no_partial_draft() -> None:
+    """`llm_response` on an error frame is the PARTIAL-DRAFT contract, not a
+    diagnostic slot -- `runner.py`'s error branch promotes any non-empty value
+    into `draft_text` with verdict "partial", the governor only aborts on an
+    EMPTY draft, and the finalize+voice chain would then speak the provider's
+    error as Orion's answer and persist it. Caught in review: the first version
+    of this branch put the envelope there and re-created the laundering one
+    layer up."""
+    frame = _provider_error_frame()
+
+    assert not frame.get("llm_response")
+    # ...but the text must still be recoverable for diagnosis.
+    assert frame["metadata"]["provider_error_text"] == OVERFLOW_REPLY
+
+
+@pytest.mark.asyncio
+async def test_the_runner_marks_a_provider_error_turn_failed_not_partial() -> None:
+    """End of the chain that actually matters: an error frame shaped like the
+    motor's now yields a FAILED turn with an empty draft, so the governor aborts
+    before finalize instead of voicing the envelope."""
+    from unittest.mock import AsyncMock
+    from typing import Any, AsyncIterator
+
+    from orion.harness.runner import HarnessRunner
+    from orion.harness.tests.fixtures import make_thought
+    from orion.schemas.cognition.answer_contract import AnswerContract
+    from orion.schemas.context_exec import ContextExecPermissionV1
+    from orion.schemas.harness_finalize import HarnessRunRequestV1
+
+    async def _provider_error_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield _provider_error_frame()
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-provider-error",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_provider_error_runner).run(request)
+
+    assert result.draft_text == "", "the envelope must never become a draft"
+    assert result.compliance_verdict == "failed"
+    assert OVERFLOW_REPLY not in (result.draft_text or "")
+
+
+# --- one overflow hint, not two contradictory ones --------------------------
+
+def test_a_second_hint_with_a_different_window_is_not_appended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The motor hints with the LANE's window; `runner.py` and the hub call the
+    same helper with no n_ctx and would resolve the container default. The
+    idempotence check used to compare the whole hint text, so two different
+    numbers no longer matched and the operator got both -- "context window full
+    (~32768 tokens)" immediately followed by "(~131072 tokens)"."""
+    from orion.fcc.context_budget import apply_context_overflow_hint
+
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "131072")
+    raw = "llama_decode: exceed_context_size_error"
+
+    once = apply_context_overflow_hint(raw, n_ctx=32768)
+    twice = apply_context_overflow_hint(once)  # downstream caller, no lane
+
+    assert twice == once
+    assert twice.count("context window full") == 1
+    assert "32768" in twice and "131072" not in twice
+
+
+# --- a yielding lane is not an interactive Compute choice -------------------
+
+@pytest.mark.parametrize("lane", ["quick_background", "metacog_background"])
+def test_background_lanes_are_refused(lane: str) -> None:
+    """A human picking a yielding lane for a live turn "buys nothing but
+    latency" (orion/llm/routes.py's own words). Reachable via a raw
+    POST /api/chat body or a stale localStorage entry predating the Hub
+    picker's priority filter, so the refusal belongs at this seam."""
+    assert fcc_model_for_route(lane) is None
+    assert _resolve_fcc_model_label({"llm_route": lane}, "agent") == (
+        DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL
+    )

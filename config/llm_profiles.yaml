@@ -1272,7 +1272,8 @@ profiles:
       # to 1 here anyway so this profile's own documentation isn't
       # actively wrong about which physical card it's meant for.
       device_ids: [1]
-      max_model_len: 32768
+      # Keep in lockstep with llamacpp.ctx_size below.
+      max_model_len: 131072
       max_batch_tokens: 1024
       max_concurrent_requests: 1
       gpu_memory_fraction: 0.90
@@ -1289,7 +1290,30 @@ profiles:
       # no headroom left on a 32GB card once KV cache is counted). Matches
       # what the user actually asked for ("Q16" isn't a real GGUF quant
       # level; confirmed with Juniper 2026-09-02 this was the intended one).
-      ctx_size: 32768
+      #
+      # 131072, not 32768 (raised 2026-09-03). At 32768 this lane could not
+      # host a Hub Mode=Agent turn AT ALL: measured live, a bare
+      # `claude -p "Say OK."` with no MCP config and no harness prefix already
+      # costs 11,515 input tokens, and real harness turns on the 131072 lanes
+      # measured p90 19,151 / max 25,003 -- and those grow with every tool
+      # result inside the turn. The first correctly-routed Agent turn came back
+      # "Prompt is too long" / claude exit 1 / verdict=partial.
+      #
+      # VRAM measured on circe, not estimated from the model card: GPU1 is
+      # 32768 MiB and orion-gpu-lane-controller flips it EXCLUSIVELY between
+      # affect and agent (that service's README), so this worker owns the whole
+      # card while it is up. Live nvidia-smi showed a single tenant at
+      # 18,636 MiB at ctx_size 32768; weights are 16,736 MiB (/v1/models
+      # `size`), so KV + buffers were ~1,900 MiB. KV is linear in ctx, so
+      # 131072 adds ~5.7 GiB -> ~24.3 GiB, inside the 0.90 gpu_memory_fraction
+      # cap (29.5 GiB) with ~5 GiB margin. That estimate is deliberately
+      # pessimistic: the ~1,900 MiB it scales from also contains fixed compute
+      # buffers that do NOT grow with ctx.
+      #
+      # Now matches chat/harness (both 131072), so the agent lane stops being a
+      # special case. If this ever OOMs at boot, 65536 (~20.5 GiB) is the
+      # fallback and still clears the measured turn sizes by >2x.
+      ctx_size: 131072
       n_gpu_layers: 99
       threads: 16
       n_parallel: 1

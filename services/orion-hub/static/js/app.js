@@ -4750,6 +4750,40 @@ document.addEventListener("DOMContentLoaded", () => {
       : 'No data yet';
     const recentApplies = Array.isArray(recent.applies) ? recent.applies.length : 0;
     const recentRollbacks = Array.isArray(recent.rollbacks) ? recent.rollbacks.length : 0;
+    // What Orion changed about itself, and whether a surface is stuck. Both of
+    // these previously required a Postgres query: on 2026-09-02 Orion held the
+    // routing lock for 13h while 77 proposals were refused behind it, and no
+    // hub surface showed either fact.
+    const routing = snapshot && snapshot.routing ? snapshot.routing : {};
+    const selfMod = routing.self_modification || {};
+    const lastChange = selfMod.last_change || null;
+    const fmtValue = (v) => (v === null || v === undefined ? 'unrecorded' : String(v));
+    let selfModLine;
+    if (lastChange) {
+      selfModLine = `last self-change: ${fmtValue(lastChange.previous_value)} -> ${fmtValue(lastChange.new_value)}`
+        + ` by ${lastChange.actor || '--'} at ${lastChange.changed_at || '--'}`;
+    } else if (selfMod.history_error) {
+      selfModLine = `last self-change: history unreadable (${selfMod.history_error})`;
+    } else if (selfMod.history_available) {
+      // Distinct from unreadable: the table exists and nothing has changed yet.
+      selfModLine = 'last self-change: none recorded since history started';
+    } else {
+      selfModLine = 'last self-change: unavailable';
+    }
+    const holds = Array.isArray(selfMod.surface_holds) ? selfMod.surface_holds : [];
+    const holdLine = holds.length
+      ? holds.map((h) => {
+          const mins = h.held_for_sec === null || h.held_for_sec === undefined
+            ? '--'
+            : `${Math.round(h.held_for_sec / 60)}m`;
+          // window_elapsed && still held == settlement is not running. That is
+          // the shape of the bug this panel exists to make visible.
+          const state = h.window_elapsed === true
+            ? 'OVERDUE (window elapsed, still held)'
+            : (h.window_elapsed === false ? 'within window' : 'unknown');
+          return `${h.target_surface || '--'} held ${mins} ${state}`;
+        }).join(' | ')
+      : 'none held';
     autonomyReadinessMeta.textContent = `schema ${(snapshot && snapshot.schema_version) || '--'} · generated ${(snapshot && snapshot.generated_at) || '--'}`;
     autonomyReadinessOverview.innerHTML = '';
     [
@@ -4762,6 +4796,8 @@ document.addEventListener("DOMContentLoaded", () => {
       `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${JSON.stringify(cognitive.counts_by_state || {})}`,
       `pressure: ${pressureTop}`,
       `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,
+      selfModLine,
+      `surface locks: ${holdLine}`,
     ].forEach((line) => {
       const row = document.createElement('div');
       row.className = 'autonomy-readiness-row';

@@ -4758,32 +4758,52 @@ document.addEventListener("DOMContentLoaded", () => {
     const selfMod = routing.self_modification || {};
     const lastChange = selfMod.last_change || null;
     const fmtValue = (v) => (v === null || v === undefined ? 'unrecorded' : String(v));
+    // Order matters: an unreadable history must be reported as unreadable even
+    // when it also looks empty. The store swallows its own backend errors and
+    // returns no rows, so "broken" and "calm" arrive looking identical unless
+    // the error branch is checked first.
     let selfModLine;
-    if (lastChange) {
+    if (selfMod.history_error) {
+      selfModLine = `last self-change: HISTORY UNREADABLE (${selfMod.history_error})`;
+    } else if (lastChange) {
       selfModLine = `last self-change: ${fmtValue(lastChange.previous_value)} -> ${fmtValue(lastChange.new_value)}`
         + ` by ${lastChange.actor || '--'} at ${lastChange.changed_at || '--'}`;
-    } else if (selfMod.history_error) {
-      selfModLine = `last self-change: history unreadable (${selfMod.history_error})`;
     } else if (selfMod.history_available) {
-      // Distinct from unreadable: the table exists and nothing has changed yet.
+      // Distinct from unreadable: the table is readable and nothing has changed.
       selfModLine = 'last self-change: none recorded since history started';
     } else {
       selfModLine = 'last self-change: unavailable';
     }
+    const currentSurface = selfMod.current || {};
+    const currentLine = `routing threshold: ${fmtValue(currentSurface.value)}`
+      + ` (source ${currentSurface.source || '--'}${currentSurface.degraded ? ', DEGRADED' : ''})`;
     const holds = Array.isArray(selfMod.surface_holds) ? selfMod.surface_holds : [];
-    const holdLine = holds.length
-      ? holds.map((h) => {
-          const mins = h.held_for_sec === null || h.held_for_sec === undefined
-            ? '--'
-            : `${Math.round(h.held_for_sec / 60)}m`;
-          // window_elapsed && still held == settlement is not running. That is
-          // the shape of the bug this panel exists to make visible.
-          const state = h.window_elapsed === true
-            ? 'OVERDUE (window elapsed, still held)'
-            : (h.window_elapsed === false ? 'within window' : 'unknown');
-          return `${h.target_surface || '--'} held ${mins} ${state}`;
-        }).join(' | ')
-      : 'none held';
+    const fmtHeld = (sec) => {
+      if (sec === null || sec === undefined) return '--';
+      if (sec < 90) return `${Math.round(sec)}s`;
+      if (sec < 5400) return `${Math.round(sec / 60)}m`;
+      return `${(sec / 3600).toFixed(1)}h`;
+    };
+    let holdLine;
+    if (selfMod.surface_holds_error) {
+      // An empty list because the store is broken is not "nothing is held".
+      holdLine = `LOCKS UNREADABLE (${selfMod.surface_holds_error})`;
+    } else if (holds.length) {
+      holdLine = holds.map((h) => {
+        // window_elapsed && still held == settlement is not running. That is
+        // the shape of the bug this panel exists to make visible.
+        const state = h.window_elapsed === true
+          ? 'OVERDUE (window elapsed, still held)'
+          : (h.window_elapsed === false ? 'within window' : 'unknown');
+        // held_for_sec is computed server-side at request time and this panel
+        // does not poll, so an open dashboard freezes it. held_since does not
+        // go stale, and is what to trust on a page that has been left open.
+        return `${h.target_surface || '--'} held ${fmtHeld(h.held_for_sec)}`
+          + ` since ${h.held_since || '--'} ${state}`;
+      }).join(' | ');
+    } else {
+      holdLine = 'none held';
+    }
     autonomyReadinessMeta.textContent = `schema ${(snapshot && snapshot.schema_version) || '--'} · generated ${(snapshot && snapshot.generated_at) || '--'}`;
     autonomyReadinessOverview.innerHTML = '';
     [
@@ -4796,6 +4816,7 @@ document.addEventListener("DOMContentLoaded", () => {
       `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${JSON.stringify(cognitive.counts_by_state || {})}`,
       `pressure: ${pressureTop}`,
       `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,
+      currentLine,
       selfModLine,
       `surface locks: ${holdLine}`,
     ].forEach((line) => {

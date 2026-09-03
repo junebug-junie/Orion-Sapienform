@@ -15,7 +15,16 @@
 #
 # 2026-08-16: one additional entry, tension_deviation_pressure, is NOT one of
 # the 38 raw channels above -- it is a derived scalar. See its own entry's
-# comment for why it is listed here anyway. 39 entries total in this file.
+# comment for why it is listed here anyway.
+#
+# NOTE: this header's running count (39, as of 2026-08-16) was already stale
+# before this comment -- tests/test_field_channel_glossary.py's own
+# entry-count test puts the pre-2026-09-03 baseline at 48 (7 cabinet sensor
+# channels added 2026-08-23, 2 cabinet ambient audio channels added
+# 2026-08-24, neither reflected up here). Not fixed in this patch -- flagged
+# so the next person doesn't recompute from this paragraph. Real baseline:
+# 48 entries, plus 1 node-qualified prediction_error entry added
+# 2026-09-03 (version 2, see below) -- 49 entries total in this file.
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -32,7 +41,16 @@
 # hand-maintained here -- a static verdict column is exactly what already
 # went stale once (see the README's "Decay vs. injection-interval mismatch"
 # section).
-version: 1
+#
+# 2026-09-03 (version 2): entries may optionally carry a `node:` key to
+# disambiguate a channel name that means different things on different
+# node:substrate.* domains (prediction_error being the motivating case --
+# see its node-qualified entry below). A node-qualified entry is looked up
+# first; absent one, resolution falls back to the bare channel entry, so
+# every existing bare-entry consumer is unaffected. Entries also gained an
+# optional `trend_source` field naming where a caller finds this node's real
+# history, not just its latest value.
+version: 2
 
 categories:
   physical_substrate: "Physical substrate / embodiment -- pure hardware sensor readings, nothing cognitive."
@@ -298,6 +316,30 @@ channels:
     level: [node]
     category: self_monitoring
     meaning: "How much a recent prediction (from the prediction/surprise subsystem) missed reality."
+
+  # Node-qualified prediction_error entry (added 2026-09-03, version 2). The
+  # bare entry above is genuinely ambiguous across node:substrate.* domains
+  # -- node:substrate.bus_synaptic's prediction_error is the fraction of the
+  # bus mesh running anomalous; node:substrate.vision's is camera staleness
+  # (see orion/autonomy/contrast.py's live-confirmed root-cause note on
+  # exactly this collision). Only bus_synaptic is added here, not vision:
+  # this patch's resolver (services/orion-mind/app/recall_signal_resolver.py)
+  # is the real consumer for the former; nothing in this patch consumes a
+  # vision-qualified entry yet, and CLAUDE.md 0A's metric gate (and this
+  # repo's own orphan-ratchet CI check) both refuse a registered metric with
+  # no consumer. Add node:substrate.vision's qualified entry in the same
+  # patch as whatever first reads it. A qualified entry is looked up first
+  # by (node, channel); absent one, callers fall back to the bare channel
+  # entry above, so every pre-existing consumer of the bare entry is
+  # unaffected. `trend_source` names where this node's history actually
+  # lives, for a caller that wants more than the latest value (e.g.
+  # orion.field.channel_glossary.classify_channel_series()).
+  - node: "node:substrate.bus_synaptic"
+    channel: prediction_error
+    level: [node]
+    category: infra_transport
+    meaning: "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal."
+    trend_source: "substrate_field_state.field_json -> node_vectors -> 'node:substrate.bus_synaptic' -> prediction_error"
 
   - channel: pressure
     level: [capability]

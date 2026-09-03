@@ -117,7 +117,17 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
 
     nodes: list[MetricNode] = []
     for entry in raw.get("channels", []):
-        name = entry["channel"]
+        channel = entry["channel"]
+        # Version 2 (2026-09-03): a `node:` qualifier disambiguates entries
+        # that share a channel name but mean different things per node (e.g.
+        # bus_synaptic vs. vision prediction_error). Fold it into `name` so
+        # each qualified entry gets its own URN -- without this, two
+        # qualified entries sharing `channel` would build the identical
+        # `metric://field_channel/orion-field-digester/<channel>` URN and
+        # silently overwrite each other in build_graph()'s dict[urn, node].
+        # The bare (unqualified) entry's name/URN is unchanged.
+        node_qualifier = entry.get("node")
+        name = f"{node_qualifier}.{channel}" if node_qualifier else channel
         # self_state_dimension / evidence_dimension name the dimension this
         # channel FEEDS. They are recorded as feeds_dimensions and are NOT
         # inverted into upstream anywhere -- an earlier comment here claimed

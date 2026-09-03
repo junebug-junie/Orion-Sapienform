@@ -6,6 +6,10 @@ import json
 from typing import Any
 
 from orion.mind.synthesis_v1 import MindEvidenceItemV1, MindEvidencePackV1
+from .recall_signal_resolver import (
+    partition_bus_synaptic_fragments,
+    render_bus_synaptic_digest_line,
+)
 
 _SOURCE_TAG_LABELS = frozenset(
     {
@@ -106,6 +110,8 @@ def build_evidence_pack(
     max_recall_fragments: int = 8,
     max_projection_items: int = 16,
     max_total_chars: int = 12_000,
+    bus_synaptic_dsn: str = "",
+    bus_synaptic_render_gate_threshold: float = 0.15,
 ) -> MindEvidencePackV1:
     items: list[MindEvidenceItemV1] = []
     user_text = str(snapshot.get("user_text") or "").strip()
@@ -143,7 +149,22 @@ def build_evidence_pack(
     if not recall and isinstance(snapshot.get("recall_bundle"), dict):
         recall = snapshot["recall_bundle"]
     fragments = recall.get("fragments") if isinstance(recall.get("fragments"), list) else []
-    for frag in fragments[:max_recall_fragments]:
+
+    # Resolver branch (2026-09-03, spec: docs/superpowers/specs/2026-09-03-
+    # recall-signal-rendering-design.md, amended). A fragment carrying
+    # meta.signal_kind == recall_signal_resolver.HANDLED_SIGNAL_KIND is
+    # pulled out here rather than looped below -- recall's adapter no
+    # longer writes English for it (services/orion-recall/app/storage/
+    # falkor_bus_synaptic_adapter.py, same patch: text="" for those
+    # fragments now), so the ordinary snippet-fallback loop below would
+    # otherwise just skip them silently (empty text -> _append_item no-ops).
+    # Any such fragments collapse into at most one resolved sentence, gated
+    # on live state fresh from Postgres, not on any fragment's own text.
+    # A fragment with any other signal_kind (or none, i.e. every fragment
+    # before this patch) is unaffected -- spec check 4.
+    passthrough_fragments, bus_synaptic_fragments = partition_bus_synaptic_fragments(fragments)
+
+    for frag in passthrough_fragments[:max_recall_fragments]:
         if not isinstance(frag, dict):
             continue
         snippet = str(frag.get("snippet") or frag.get("text") or frag.get("summary") or "").strip()
@@ -156,6 +177,26 @@ def build_evidence_pack(
             label=str(frag.get("source") or "recall")[:80],
             source_ref=str(frag.get("doc_id") or frag.get("id") or "") or None,
             metadata={"recall_source": frag.get("source")},
+        )
+
+    bus_synaptic_line = render_bus_synaptic_digest_line(
+        bus_synaptic_fragments,
+        dsn=bus_synaptic_dsn,
+        render_gate_threshold=bus_synaptic_render_gate_threshold,
+    )
+    if bus_synaptic_line:
+        # Not counted against max_recall_fragments -- this is Orion's own
+        # transport state, not a competing memory fragment, and collapsing
+        # however many edge-level fragments recall returned into exactly
+        # one line is the whole point of resolving them here rather than
+        # looping each one (spec: "one fragment for the whole bus, not one
+        # per channel").
+        _append_item(
+            items,
+            source_kind="bus_synaptic_transport",
+            text=bus_synaptic_line,
+            label="transport: bus_synaptic",
+            metadata={"recall_source": "bus_synaptic_anomaly"},
         )
 
     projection = facets.get("cognitive_projection")

@@ -4,3 +4,6 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 pyyaml==6.0.2
 redis[hiredis]==5.0.7
+# recall_signal_resolver.py's bus_synaptic series read (substrate_field_state).
+# New to this service (2026-09-03) -- Mind had no DB dependency before this.
+psycopg2-binary==2.9.9

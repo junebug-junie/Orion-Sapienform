@@ -9,6 +9,7 @@ from orion.field.channel_glossary import (
     _glossary_path_candidates,
     classify_channel_series,
     load_glossary,
+    resolve_channel_entry,
 )
 
 
@@ -23,11 +24,19 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     other entries before 2026-08-23 are), a derived scalar included in the
     glossary anyway for liveness observability. See that entry's own comment for why.
     + 7 cabinet sensor channels added 2026-08-23 (6 activity + staleness)
-    + 2 cabinet ambient audio channels added 2026-08-24 (activity + staleness)."""
+    + 2 cabinet ambient audio channels added 2026-08-24 (activity + staleness)
+    + 1 node-qualified prediction_error entry added 2026-09-03 (version 2,
+    node:substrate.bus_synaptic only -- see that entry's own comment for why
+    node:substrate.vision's qualified entry is deliberately NOT added yet)
+    -- this reuses channel=prediction_error, so it adds a row but not a new
+    distinct channel name; the digester's 48 raw/derived channels are
+    unchanged, only prediction_error now has a qualified variant alongside
+    its pre-existing bare entry."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 48
+    assert len(entries) == 49
     names = {e.channel for e in entries}
+    assert len(names) == 48, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -64,6 +73,50 @@ def test_load_glossary_categories_cover_all_seven_semantic_groups():
     assert len(glossary["categories"]) == 7
     used_categories = {e.category for e in glossary["entries"]}
     assert used_categories <= set(glossary["categories"].keys())
+
+
+def test_resolve_channel_entry_prefers_node_qualified_over_bare():
+    """The whole point of version 2: bus_synaptic's qualified entry must
+    describe the fraction, not the generic bare "recent prediction missed
+    reality" meaning."""
+    bus = resolve_channel_entry("prediction_error", "node:substrate.bus_synaptic")
+    bare = resolve_channel_entry("prediction_error")
+    assert bus is not None and bare is not None
+    assert bus.node == "node:substrate.bus_synaptic"
+    assert bare.node is None
+    assert bus.meaning != bare.meaning
+    assert bus.trend_source
+
+
+def test_resolve_channel_entry_falls_back_to_bare_entry():
+    # No node given at all -- must match every pre-version-2 caller's
+    # behavior byte-identically.
+    entry = resolve_channel_entry("prediction_error")
+    assert entry is not None
+    assert entry.node is None
+
+    # A node given, but no qualified entry exists for it -- falls back to
+    # bare, does not raise or return None. node:substrate.vision is
+    # deliberately still unqualified as of this patch (see that entry's own
+    # comment in the glossary YAML) -- this is the real, current case for
+    # it, not a placeholder.
+    for node in ("node:substrate.chat", "node:substrate.vision"):
+        entry = resolve_channel_entry("prediction_error", node)
+        assert entry is not None
+        assert entry.node is None
+
+
+def test_resolve_channel_entry_unknown_channel_returns_none():
+    assert resolve_channel_entry("not_a_real_channel") is None
+
+
+def test_resolve_channel_entry_ordinary_channels_are_unaffected():
+    """A channel with no node-qualified variant at all resolves exactly as
+    it always did, whether or not a node is passed."""
+    entry = resolve_channel_entry("cpu_pressure", "node:substrate.execution")
+    assert entry is not None
+    assert entry.node is None
+    assert entry.channel == "cpu_pressure"
 
 
 def test_classify_never_produced_on_empty_series():

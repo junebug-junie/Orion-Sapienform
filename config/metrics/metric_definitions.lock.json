@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 622,
+  "metric_count": 623,
   "_last_change": {
-    "base": "merge base abf4ecd44 (origin/main)",
-    "change_count": 0,
+    "base": "merge base 82f8e705c (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error"
     ]
   },
   "definitions": {
@@ -3426,6 +3426,11 @@
         "resource_pressure"
       ],
       "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error": {
+      "meaning": "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal.",
+      "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/observer_failure_pressure": {

@@ -460,7 +460,20 @@ def fuse_candidates(
             snippet = sanitized_snippet
             cand = dict(cand)
             cand["text"] = sanitized_snippet
-        if substantive_query and _is_low_info_social_candidate(snippet):
+        # Structured-signal candidates (meta.signal_kind set -- e.g.
+        # falkor_bus_synaptic_adapter.py's publish_gap_zscore fragments,
+        # 2026-09-03) are never judged on this filter. They deliberately
+        # carry text="" as of that patch -- the resolver downstream
+        # (services/orion-mind/app/recall_signal_resolver.py) builds the
+        # real sentence from live state, not from this candidate's own
+        # text -- so _is_low_info_social_candidate("") would otherwise drop
+        # every one of them unconditionally on any substantive query
+        # (its own short-circuit: empty input -> low-info), silently making
+        # the whole render-gate feature inert for the majority query class.
+        # Confirmed live during code review, not hypothetical.
+        cand_meta = cand.get("meta") if isinstance(cand.get("meta"), dict) else {}
+        is_structured_signal = bool(cand_meta.get("signal_kind"))
+        if substantive_query and not is_structured_signal and _is_low_info_social_candidate(snippet):
             drop_counts["low_info_social"] = drop_counts.get("low_info_social", 0) + 1
             if diagnostic:
                 ranking_debug.append(

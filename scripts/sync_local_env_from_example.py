@@ -96,6 +96,14 @@ NEVER_SYNC_KEYS = frozenset(
         "ILO_HOST",
         "ILO_USERNAME",
         "ILO_PASSWORD",
+        # Orion's OWN FalkorDB write credential. Identical shape to the iLO
+        # keys above: .env_example ships it empty and the live value is a real
+        # secret. Added 2026-09-03 in the same patch that put "HUB_CURIOSITY_"
+        # into SYNC_PREFIXES -- before that, no prefix matched this key, so
+        # --force structurally could not reach it and the protection was an
+        # accident of the prefix list. Now it is a decision. Flattening it
+        # would silently cost Orion write access to its own worldview graph.
+        "HUB_CURIOSITY_GRAPH_ORION_PASSWORD",
     }
 )
 
@@ -141,6 +149,12 @@ SYNC_PREFIXES = (
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
     "HUB_PROPOSAL_REVIEW_",
+    # 2026-09-03: the whole curiosity family was missing, so
+    # HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE=agent -- which moves Orion's own
+    # time OFF the worker Juniper types into -- was written to .env_example and
+    # then silently not synced, with the run reporting no changes. Every
+    # HUB_CURIOSITY_* key already in the live .env got there by hand.
+    "HUB_CURIOSITY_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",
     "HUB_AGENT_CONTEXT_EXEC_",

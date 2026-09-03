@@ -8,6 +8,7 @@ must not do that is worth pinning.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -1864,3 +1865,178 @@ def test_the_leg_is_read_off_the_frame_the_governor_sends():
     (text, debug), _ = _drive_real_generate(frames)
     assert text == "found it"
     assert debug["fcc_elapsed_sec"] == 1598.4
+
+
+# --- which GPU lane Orion's own time runs on -------------------------------
+#
+# The loop drives a real unified turn that can run for
+# HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC (2700s), up to `daily_cap` times a
+# day. Until 2026-09-03 those turns fell through to the unified turn's default
+# label, which resolves to the `harness` lane -- circe-worker-1, n_parallel 1,
+# the SAME worker serving Juniper's interactive chat. These pin the override
+# that moves them off it, and every way that override is allowed to refuse.
+
+
+def _route_loop(route):
+    """A loop constructed for its lane only. `_loop` stubs `_generate`, which
+    is exactly the seam under test here, so this builds the object directly."""
+    return CuriosityInvestigation(
+        enabled=True, tick_interval_sec=60.0, min_cooldown_sec=14400.0, daily_cap=3,
+        timeout_sec=1500.0, session_id="orion_curiosity", llm_route=route,
+        pool_provider=lambda: None, source_ref=SOURCE,
+    )
+
+
+def test_the_agent_route_resolves_to_the_agent_lanes_model() -> None:
+    """`agent` is circe-worker-agent-1 on :8015, not circe-worker-1."""
+    assert _route_loop("agent")._fcc_model_label == "llamacpp/agent"
+
+
+def test_the_shipped_env_example_names_a_route_that_actually_resolves() -> None:
+    """A configured name the vocabulary refuses would silently leave every
+    curiosity turn on the chat worker while the config file claims otherwise --
+    the exact failure this change exists to end, and one nothing else notices,
+    because falling back IS the designed behaviour for a bad name.
+
+    Reads `.env_example` -- the operator contract, and what
+    `sync_local_env_from_example.py` writes into the live `.env` -- rather than
+    restating the value, so editing it to an unroutable name fails here instead
+    of four hours later in production. `app.settings` is deliberately NOT
+    imported: it instantiates `Settings()` at module scope and needs a real
+    env.
+
+    Path comes from `__file__`, not cwd: pytest's cwd resolves against the main
+    checkout even when the test file lives in a worktree, so a cwd-relative
+    read would silently grade the wrong branch's template.
+    """
+    import pathlib
+
+    from orion.llm.routes import fcc_model_for_route
+
+    example = pathlib.Path(__file__).resolve().parents[1] / ".env_example"
+    configured = [
+        line.split("=", 1)[1].strip()
+        for line in example.read_text(encoding="utf-8").splitlines()
+        if line.startswith("HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE=")
+    ]
+    assert len(configured) == 1, f"expected exactly one key line, got {configured!r}"
+    route = configured[0]
+    # Empty is a legitimate value: "no override, keep the default lane".
+    if route:
+        assert fcc_model_for_route(route), f"shipped route {route!r} resolves to no lane"
+
+
+@pytest.mark.parametrize(
+    "route, why",
+    [
+        ("harness", "system-only: re-selecting the default lane through this path"),
+        ("quick_background", "a yielding lane buys an unattended loop nothing"),
+        ("not_a_real_lane", "unknown is not a guess"),
+        ("chat", None),  # allowed, but see the assertion below
+    ],
+)
+def test_routes_the_vocabulary_refuses_fall_back_rather_than_guess(route, why) -> None:
+    loop = _route_loop(route)
+    if why is None:
+        assert loop._fcc_model_label == "llamacpp/chat"
+    else:
+        assert loop._fcc_model_label is None, why
+
+
+def test_an_empty_route_is_a_deliberate_default_not_an_error(caplog) -> None:
+    """Empty means "no override". It must not warn, or the one legitimate way
+    to ask for the default becomes indistinguishable from a typo."""
+    with caplog.at_level(logging.WARNING, logger="scripts.curiosity_investigation"):
+        loop = _route_loop("")
+    assert loop._fcc_model_label is None
+    assert loop.llm_route == ""
+    assert caplog.records == [], f"empty route warned: {[r.message for r in caplog.records]}"
+
+
+def test_an_unusable_route_says_so_at_boot(caplog) -> None:
+    """THE WARNING IS THE PRODUCT HERE, and nothing else pins it.
+
+    Falling back to the default lane IS the designed behaviour for a name the
+    vocabulary refuses -- so a misconfigured route is silent by construction:
+    curiosity keeps running, on the wrong worker, while `.env` claims
+    otherwise. This log line is the only thing that distinguishes "operator
+    asked for the default" from "operator typo'd and got it anyway", and both
+    `.env_example` and the setting's own comment advertise it as the safety
+    property. Without this test, replacing the `logger.warning` with `pass`
+    leaves every other test green."""
+    with caplog.at_level(logging.WARNING, logger="scripts.curiosity_investigation"):
+        loop = _route_loop("not_a_real_lane")
+    assert loop._fcc_model_label is None
+    assert any(
+        "curiosity_llm_route_unusable" in r.message and "not_a_real_lane" in str(r.args)
+        for r in caplog.records
+    ), f"no usable warning emitted: {[(r.message, r.args) for r in caplog.records]}"
+
+
+def test_the_wiring_line_is_present_in_main() -> None:
+    """Deleting one line in main.py silently reverts this whole change.
+
+    Everything else here tests the loop given an `llm_route`; nothing tests
+    that production ever passes one. Drop
+    `llm_route=settings.HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE` from the
+    construction call and the constructor default ("") applies, no label
+    reaches the payload, curiosity returns to the chat worker, and every other
+    test in this file still passes -- the exact silent-fallthrough this patch
+    exists to end, one layer up.
+
+    A source assertion rather than a live construction because `main.py`
+    instantiates the app at import. Path from `__file__`, not cwd (pytest's cwd
+    resolves against the main checkout, not the worktree)."""
+    import pathlib
+
+    main_py = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "main.py"
+    source = main_py.read_text(encoding="utf-8")
+    assert "llm_route=settings.HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE" in source, (
+        "CuriosityInvestigation is no longer wired to the lane setting; "
+        "curiosity has silently fallen back to the chat worker"
+    )
+
+
+def test_the_payload_omits_the_label_entirely_when_there_is_no_override() -> None:
+    """Not an empty string. `_resolve_fcc_model_label` coerces both to falsy
+    today, so this is the difference the coercion is currently hiding."""
+    from scripts.curiosity_investigation import _turn_payload
+
+    assert _turn_payload("curiosity", None) == {"no_write": True, "source": "curiosity"}
+    assert _turn_payload("curiosity", "") == {"no_write": True, "source": "curiosity"}
+    assert _turn_payload("curiosity", "llamacpp/agent") == {
+        "no_write": True, "source": "curiosity", "fcc_model_label": "llamacpp/agent",
+    }
+
+
+def test_the_lane_actually_reaches_the_unified_turn() -> None:
+    """The load-bearing one. Everything above tests resolution; this tests that
+    the resolved label is on the payload `execute_unified_turn` is CALLED with,
+    which is the only thing that moves the GPU."""
+    import orion.hub.turn_orchestrator as orch
+
+    seen = {}
+
+    async def _fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "ok", "harness_step_count": 14}]
+
+    original = orch.execute_unified_turn
+    orch.execute_unified_turn = _fake_turn
+    try:
+        loop = _route_loop("agent")
+        loop._bus = _FakeBus()
+        loop._harness_rpc_bus = loop._bus
+        text, _debug = asyncio.run(
+            loop._generate("a prompt", correlation_id="c1", source="curiosity")
+        )
+    finally:
+        orch.execute_unified_turn = original
+
+    assert text == "ok"
+    assert seen["payload"]["fcc_model_label"] == "llamacpp/agent"
+    # mode is NOT set: these stay Orion-mode turns that run elsewhere, so
+    # `_resolve_fcc_model_label` takes its explicit-label branch and nothing
+    # downstream (chat_history_log tags, HarnessRunRequestV1.mode) shifts.
+    assert "mode" not in seen["payload"]
+    assert seen["payload"]["no_write"] is True

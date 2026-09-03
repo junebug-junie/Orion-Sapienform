@@ -524,6 +524,10 @@ async def startup_event():
                 window_end_hour=settings.HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR,
                 timeout_sec=settings.HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC,
                 session_id=settings.HUB_CURIOSITY_INVESTIGATION_SESSION_ID,
+                # Off the lane Juniper types into. See the setting's own
+                # comment in app/settings.py for why `harness` and `chat` are
+                # the same physical worker and `agent` is not.
+                llm_route=settings.HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE,
                 crystallization_sample=settings.HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE,
                 relation_sample=settings.HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,

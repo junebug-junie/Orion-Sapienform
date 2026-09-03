@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import os
 from typing import Any
@@ -152,15 +154,17 @@ def _load_receipt(receipt_id: str) -> ReductionReceiptV1 | None:
 @router.get("/biometrics-node/{node_id}/latest")
 async def biometrics_node_latest(node_id: str) -> dict[str, Any]:
     nid = node_id.strip().lower()
-    node_bio = _load_projection(
+    node_bio = await asyncio.to_thread(
+        _load_projection,
         "substrate_node_biometrics_projection",
         NODE_BIOMETRICS_PROJECTION_ID,
     )
-    pressure = _load_projection(
+    pressure = await asyncio.to_thread(
+        _load_projection,
         "substrate_active_node_pressure_projection",
         ACTIVE_NODE_PRESSURE_PROJECTION_ID,
     )
-    latest_receipt_payload = _latest_receipt_for_node(nid)
+    latest_receipt_payload = await asyncio.to_thread(_latest_receipt_for_node, nid)
     committed_state_deltas: list[dict[str, Any]] = []
     if latest_receipt_payload:
         receipt = ReductionReceiptV1.model_validate(latest_receipt_payload)
@@ -168,9 +172,9 @@ async def biometrics_node_latest(node_id: str) -> dict[str, Any]:
 
     return {
         "node_id": nid,
-        "latest_biometrics_trace": _latest_trace_for_node(nid),
+        "latest_biometrics_trace": await asyncio.to_thread(_latest_trace_for_node, nid),
         "node_biometrics_projection": (node_bio or {}).get("nodes", {}).get(nid, {}),
-        "latest_organ_emission": _latest_emission_for_node(nid) or {},
+        "latest_organ_emission": await asyncio.to_thread(_latest_emission_for_node, nid) or {},
         "latest_reduction_receipt": latest_receipt_payload or {},
         "committed_state_deltas": committed_state_deltas,
         "active_node_pressure_projection": (pressure or {}).get("nodes", {}).get(nid, {}),
@@ -180,7 +184,7 @@ async def biometrics_node_latest(node_id: str) -> dict[str, Any]:
 
 @router.get("/receipts/{receipt_id}")
 async def substrate_receipt_by_id(receipt_id: str) -> dict[str, Any]:
-    receipt = _load_receipt(receipt_id.strip())
+    receipt = await asyncio.to_thread(_load_receipt, receipt_id.strip())
     if receipt is None:
         raise HTTPException(status_code=404, detail="not_found")
     return receipt.model_dump(mode="json")
@@ -188,7 +192,8 @@ async def substrate_receipt_by_id(receipt_id: str) -> dict[str, Any]:
 
 @router.get("/biometrics/latest")
 async def biometrics_projection_latest() -> dict[str, Any]:
-    payload = _load_projection(
+    payload = await asyncio.to_thread(
+        _load_projection,
         "substrate_node_biometrics_projection",
         NODE_BIOMETRICS_PROJECTION_ID,
     )
@@ -199,7 +204,8 @@ async def biometrics_projection_latest() -> dict[str, Any]:
 
 @router.get("/node-pressure/latest")
 async def node_pressure_latest() -> dict[str, Any]:
-    payload = _load_projection(
+    payload = await asyncio.to_thread(
+        _load_projection,
         "substrate_active_node_pressure_projection",
         ACTIVE_NODE_PRESSURE_PROJECTION_ID,
     )

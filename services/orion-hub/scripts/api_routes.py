@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import ipaddress
+import time
 import threading
 from contextlib import contextmanager
 import asyncio
@@ -4812,6 +4813,8 @@ def execute_substrate_mutation_scheduled_cycle(
 ) -> Dict[str, Any]:
     tick_now = now or datetime.now(timezone.utc)
     tick_id = f"mutation-scheduler-{uuid4()}"
+    _t_cycle_start = time.monotonic()
+    _phase_sec: Dict[str, float] = {}
     interval_sec = float(str(os.getenv("SUBSTRATE_AUTONOMY_INTERVAL_SEC", "30")).strip() or "30")
     if not _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False):
         payload = {
@@ -4933,12 +4936,14 @@ def execute_substrate_mutation_scheduled_cycle(
             telemetry = []
             store_attrition = {"source": "signals_disabled"}
         else:
+            _t_signals = time.monotonic()
             telemetry, store_attrition = SUBSTRATE_REVIEW_TELEMETRY_STORE.query_with_attrition(
                 GraphReviewTelemetryQueryV1(
                     limit=worker.budget.max_signals,
                     invocation_surface="operator_review",
                 )
             )
+            _phase_sec["signal_query"] = time.monotonic() - _t_signals
         before_zone_filter = len(telemetry)
         telemetry = [item for item in telemetry if item.target_zone in allowed_zones]
         signal_intake = _mutation_signal_intake_report(
@@ -4979,6 +4984,7 @@ def execute_substrate_mutation_scheduled_cycle(
                 logger.exception("substrate_self_revision_signals_call_failed")
                 self_revision_signals = []
 
+        _t_run = time.monotonic()
         result = worker.run_cycle(
             telemetry=telemetry,
             measured_metrics_by_proposal={},
@@ -4990,9 +4996,17 @@ def execute_substrate_mutation_scheduled_cycle(
             now=tick_now,
             extra_signals=self_revision_signals,
         )
+        _phase_sec["run_cycle"] = time.monotonic() - _t_run
+        _phase_sec["total"] = time.monotonic() - _t_cycle_start
         scheduler_summary = {
             "event": "mutation_scheduler_cycle_finished",
             "tick_id": tick_id,
+            # Wall-clock per phase. This cycle was measured live 2026-09-03 at
+            # 64-91s, which is why it had to come off the event loop
+            # (main.py). Off the loop it no longer announces itself by
+            # freezing the UI, so the cost has to be reported somewhere or it
+            # simply becomes invisible -- slow, not fixed.
+            "phase_sec": {k: round(v, 2) for k, v in _phase_sec.items()},
             "status": "completed",
             "notes": list(result.get("notes") or []),
             "signals_processed": int(result.get("signals", 0)),

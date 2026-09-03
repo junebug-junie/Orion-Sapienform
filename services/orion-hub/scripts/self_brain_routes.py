@@ -7,8 +7,10 @@ the log is empty or POSTGRES_URI is unset. No writes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,16 +22,46 @@ _MAX_TAIL = 120
 _DEFAULT_RANGE_MAX = 240
 
 
+#: Process-wide engine, NOT one per request. `/frames/tail` is the hub's
+#: single most-polled endpoint -- self-brain.js refreshes it every
+#: TAIL_POLL_MS (3s), and it was measured at 163 requests in 5 minutes on
+#: 2026-09-03. Building a fresh engine (and therefore a fresh QueuePool and a
+#: fresh TCP connection) per request cost 24.6ms p50 against 1.2ms with a
+#: cached one, and the discarded engines were never disposed, so their
+#: connections lingered -- in a repo with live Postgres connection-exhaustion
+#: history (PR #2010).
+_ENGINE: Any = None
+_ENGINE_URI: str = ""
+_ENGINE_LOCK = threading.Lock()
+
+
 def _engine():
+    global _ENGINE, _ENGINE_URI
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         return None
-    try:
-        from sqlalchemy import create_engine
+    with _ENGINE_LOCK:
+        if _ENGINE is not None and _ENGINE_URI == uri:
+            return _ENGINE
+        try:
+            from sqlalchemy import create_engine
 
-        return create_engine(uri, pool_pre_ping=True)
-    except Exception:
-        return None
+            # connect_timeout: SQLAlchemy has none by default, so an
+            # unreachable-but-not-refusing Postgres blocks the worker thread
+            # on the OS TCP timeout (minutes). Same value and rationale as
+            # orion/substrate/mutation_control_surface.py::_engine.
+            stale, _ENGINE = _ENGINE, create_engine(
+                uri, pool_pre_ping=True, connect_args={"connect_timeout": 2}
+            )
+            _ENGINE_URI = uri
+            if stale is not None:
+                try:
+                    stale.dispose()
+                except Exception:
+                    pass
+            return _ENGINE
+        except Exception:
+            return None
 
 
 def _coerce(value: Any) -> dict | None:
@@ -41,8 +73,7 @@ def _coerce(value: Any) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-@router.get("/frames/tail")
-async def frames_tail(limit: int = Query(default=1, ge=1, le=_MAX_TAIL)) -> dict[str, Any]:
+def _frames_tail_sync(limit: int) -> dict[str, Any]:
     engine = _engine()
     if engine is None:
         return {"frames": [], "phase": None}
@@ -65,12 +96,33 @@ async def frames_tail(limit: int = Query(default=1, ge=1, le=_MAX_TAIL)) -> dict
     return {"frames": frames, "phase": phase}
 
 
+@router.get("/frames/tail")
+async def frames_tail(limit: int = Query(default=1, ge=1, le=_MAX_TAIL)) -> dict[str, Any]:
+    """Blocking DB work goes to a worker thread, never inline.
+
+    SQLAlchemy here is synchronous, so calling it from this `async def` held
+    the hub's event loop for the whole round trip -- and this is the most
+    polled endpoint on the hub (every 3s from self-brain.js, 163 hits in 5
+    minutes measured 2026-09-03). Same defect as
+    /api/biometrics/preview/induction; see biometrics_preview_routes.py.
+
+    Also decodes up to _MAX_TAIL frames of JSONB (`_coerce` -> json.loads),
+    which is real CPU, not just I/O -- another reason it does not belong on
+    the loop.
+    """
+    return await asyncio.to_thread(_frames_tail_sync, limit)
+
+
 @router.get("/frames/range")
 async def frames_range(
     from_: str = Query(alias="from"),
     to: str = Query(...),
     max: int = Query(default=_DEFAULT_RANGE_MAX, ge=1, le=2000),
 ) -> dict[str, Any]:
+    return await asyncio.to_thread(_frames_range_sync, from_, to, max)
+
+
+def _frames_range_sync(from_: str, to: str, max: int) -> dict[str, Any]:
     engine = _engine()
     if engine is None:
         return {"frames": []}
@@ -97,6 +149,10 @@ async def frames_range(
 
 @router.get("/window")
 async def window() -> dict[str, Any]:
+    return await asyncio.to_thread(_window_sync)
+
+
+def _window_sync() -> dict[str, Any]:
     engine = _engine()
     empty = {
         "earliest": None,

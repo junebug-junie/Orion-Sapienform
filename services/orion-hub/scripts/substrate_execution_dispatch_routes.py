@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import os
 from typing import Any
@@ -70,7 +72,7 @@ def _dispatch_status_summary(frame: ExecutionDispatchFrameV1) -> dict[str, int]:
 
 @router.get("/latest")
 async def execution_dispatch_latest() -> dict[str, Any]:
-    frame = _load_latest_dispatch_frame()
+    frame = await asyncio.to_thread(_load_latest_dispatch_frame)
     if frame is None:
         raise HTTPException(status_code=404, detail="not_found")
     payload = frame.model_dump(mode="json")

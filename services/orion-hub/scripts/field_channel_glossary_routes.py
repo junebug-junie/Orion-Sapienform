@@ -17,6 +17,8 @@ NODE_CHANNELS/CAPABILITY_CHANNELS):
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import json
 import os
 from typing import Any
@@ -42,14 +44,32 @@ ROW_CAP: int = 6000
 _engine_instance: Any = None
 
 
+#: Guards the lazy build below. These routes are all `async def` and their DB
+#: work now runs on worker threads, so the previously-impossible check-then-set
+#: race between two cold-start requests is live: both see None, both build an
+#: engine, one is silently overwritten and never disposed. That leaks a pool in
+#: a repo with real connection-exhaustion history (PR #2010).
+_CONNECT_TIMEOUT_SEC = 2
+_ENGINE_LOCK = threading.Lock()
+
+
 def _engine():
     global _engine_instance
-    if _engine_instance is None:
-        uri = os.getenv("POSTGRES_URI", "").strip()
-        if not uri:
-            raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
-        _engine_instance = create_engine(uri, pool_pre_ping=True)
-    return _engine_instance
+    with _ENGINE_LOCK:
+        if _engine_instance is None:
+            uri = os.getenv("POSTGRES_URI", "").strip()
+            if not uri:
+                raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
+            # SQLAlchemy has no default connect timeout: against a host that is
+            # unreachable-but-not-refusing this blocks on the OS TCP timeout,
+            # which can be minutes. Same rationale (and value) as
+            # orion/substrate/mutation_control_surface.py::_engine.
+            _engine_instance = create_engine(
+                uri,
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": _CONNECT_TIMEOUT_SEC},
+            )
+        return _engine_instance
 
 
 def normalize_hours(hours: int | None) -> int:
@@ -250,6 +270,17 @@ def _regime_for(
 
 @router.get("/health")
 async def health(hours: int = Query(DEFAULT_HOURS)) -> dict[str, Any]:
+    """Off the event loop: this is synchronous SQLAlchemy plus real CPU.
+
+    Measured live 2026-09-03 at 3.06s -- it pulls up to ROW_CAP rows of
+    `field_json` JSONB and then runs build_channel_series/classify/_regime_for
+    over every known channel. Inline in an `async def` that stalled the whole
+    hub for three seconds at a time, on a panel that polls.
+    """
+    return await asyncio.to_thread(_health_sync, hours)
+
+
+def _health_sync(hours: int) -> dict[str, Any]:
     window_hours = normalize_hours(hours)
     with _engine().connect() as conn:
         # DESC + reverse (not ASC + LIMIT) so that when the window's row

@@ -697,11 +697,50 @@ async def startup_event():
             interval_sec = max(1.0, float(settings.SUBSTRATE_AUTONOMY_INTERVAL_SEC))
 
             async def _run_substrate_autonomy_scheduler() -> None:
+                # execute_substrate_mutation_scheduled_cycle is a synchronous
+                # function, and it is SLOW: measured live 2026-09-03 at 64-91s
+                # per cycle against a 30s interval, i.e. ticks landing 94-121s
+                # apart. Called inline it held the event loop for ~75s of every
+                # ~105 -- roughly 70% of the hub's uptime -- so every tab, API
+                # call and static asset stalled behind Orion's self-modification
+                # cycle. Operator report: "tabs take 30 seconds to load".
+                #
+                # The decay scheduler immediately below already had this right;
+                # this loop did not. to_thread keeps the loop free without
+                # changing when the cycle runs or what it does.
+                #
+                # Wall-clock is logged per tick so the 64-91s itself stays
+                # visible now that it no longer announces itself by freezing
+                # the UI -- an off-loop slow cycle is quiet, not fixed.
                 while True:
+                    started = time.monotonic()
                     try:
-                        api_routes_runtime.execute_substrate_mutation_scheduled_cycle()
+                        # shield(): asyncio.to_thread is NOT cancellable. On
+                        # shutdown, cancelling this task would surface
+                        # CancelledError here immediately while the 64-91s
+                        # worker thread kept running -- still mutating the
+                        # store and writing Postgres -- and shutdown would go
+                        # on to close the bus and other resources underneath
+                        # it. Shield makes the cancel wait for the cycle it
+                        # cannot actually stop, which is what the old inline
+                        # call gave for free (cancellation could only land at
+                        # the sleep, after a cycle had fully finished).
+                        await asyncio.shield(
+                            asyncio.to_thread(
+                                api_routes_runtime.execute_substrate_mutation_scheduled_cycle
+                            )
+                        )
+                        logger.info(
+                            "substrate_autonomy_scheduler_tick_done elapsed_sec=%.1f interval_sec=%s",
+                            time.monotonic() - started,
+                            interval_sec,
+                        )
                     except Exception as exc:  # advisory runtime loop; never crash service startup
-                        logger.warning("substrate_autonomy_scheduler_error error=%s", exc)
+                        logger.warning(
+                            "substrate_autonomy_scheduler_error elapsed_sec=%.1f error=%s",
+                            time.monotonic() - started,
+                            exc,
+                        )
                     await asyncio.sleep(interval_sec)
 
             substrate_autonomy_task = asyncio.create_task(

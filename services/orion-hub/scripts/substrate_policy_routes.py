@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import os
 from typing import Any
@@ -50,7 +52,7 @@ def _load_latest_policy_frame() -> PolicyDecisionFrameV1 | None:
 
 @router.get("/latest")
 async def policy_latest() -> dict[str, Any]:
-    frame = _load_latest_policy_frame()
+    frame = await asyncio.to_thread(_load_latest_policy_frame)
     if frame is None:
         raise HTTPException(status_code=404, detail="not_found")
     return frame.model_dump(mode="json")

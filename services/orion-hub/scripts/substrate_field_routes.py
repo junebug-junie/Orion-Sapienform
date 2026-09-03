@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import os
 from typing import Any
@@ -102,7 +104,7 @@ def _build_capability_field_projection(state: FieldStateV1, capability_id: str) 
 
 @router.get("/latest")
 async def field_latest() -> dict[str, Any]:
-    state = _load_latest_field()
+    state = await asyncio.to_thread(_load_latest_field)
     if state is None:
         raise HTTPException(status_code=404, detail="not_found")
     return state.model_dump(mode="json")
@@ -110,7 +112,7 @@ async def field_latest() -> dict[str, Any]:
 
 @router.get("/node/{node_id}")
 async def field_node(node_id: str) -> dict[str, Any]:
-    state = _load_latest_field()
+    state = await asyncio.to_thread(_load_latest_field)
     if state is None:
         raise HTTPException(status_code=404, detail="not_found")
     return _build_node_field_projection(state, node_id)
@@ -118,7 +120,7 @@ async def field_node(node_id: str) -> dict[str, Any]:
 
 @router.get("/capability/{capability_id}")
 async def field_capability(capability_id: str) -> dict[str, Any]:
-    state = _load_latest_field()
+    state = await asyncio.to_thread(_load_latest_field)
     if state is None:
         raise HTTPException(status_code=404, detail="not_found")
     return _build_capability_field_projection(state, capability_id)

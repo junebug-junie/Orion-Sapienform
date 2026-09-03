@@ -271,34 +271,39 @@ above came from this script, run against real Postgres.
 
 `FIELD_CHANNEL_ANOMALY_ENABLED` (default `false`) turns on a periodic in-process rescoring loop (`app/anomaly_scorer.py`, `_anomaly_loop()` in `app/worker.py`) against a trained `orion/mood_arc/fit_encoder.py` encoder. Independent of `FIELD_CHANNEL_CORPUS_PATH` above: the scorer maintains its own small in-memory rolling buffer of the same per-tick `FieldChannelCorpusRowV1` rows (not the JSONL sink), so live rescoring works even with the JSONL corpus collector off.
 
-Requires a real trained artifact (`manifest.json` + `weights.npz`, written by `orion/mood_arc/fit_encoder.py train`) at `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` -- this service never trains one itself, and a missing/malformed directory fails open (scoring silently disabled, logged once) rather than crashing the tick loop. Training example (using the corpus-quality cutoff below):
+Requires a real trained artifact (`manifest.json` + `weights.npz`, written by `orion/mood_arc/fit_encoder.py train`), resolved from `FIELD_CHANNEL_ANOMALY_MODELS_ROOT/active.json` -- this service never trains or promotes one itself, and a missing/malformed `models_root` (no `active.json`, or a stale pointer) fails open (scoring silently disabled, logged once) rather than crashing the tick loop.
 
-```bash
-python orion/mood_arc/fit_encoder.py train \
-  --corpus /mnt/telemetry/field_channels/corpus/field_channels.jsonl \
-  --min-generated-at 2026-07-17T04:32:14Z \
-  --out /mnt/telemetry/models/field_channel_anomaly/v1
-```
+**Converged onto `orion/mood_arc`'s own promotion mechanism, 2026-09-03.** Before this, `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` was a literal versioned directory under a separate tree (`/mnt/telemetry/models/field_channel_anomaly/`), manually re-pointed by hand on every retrain -- disconnected from `orion/mood_arc/fit_encoder.py`'s own `promote`/`active.json` mechanism (`/mnt/telemetry/models/mood_arc/`). Two parallel "which model is active" mechanisms for the same encoder code was a real architectural gap (see `orion/mood_arc/README.md`'s "Status" note and `orion/inner_state_registry.py`'s `mood_arc_encoder.v1` entry for the full history of that disconnect and its correction). `FIELD_CHANNEL_ANOMALY_MODELS_ROOT` now points at that same shared tree -- train and promote a new version with `orion/mood_arc/fit_encoder.py train` + `promote` (see that module's own README), restart this service to pick it up, done. The old `field_channel_anomaly/` tree is retired; the table below is now a historical record of it, not a live path.
 
-Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's own `window_size` is ~30 rows / ~60s at the default 2s tick cadence, so this scores a genuinely new window each check), the most recent complete window's reconstruction loss is published on `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` (`orion:field_channel:anomaly_score`) alongside the encoder's own train-time `recon_error_p95` reference. `orion-equilibrium-service`'s `telemetry_anomaly_metacog_gate.py` is the consumer -- it applies its own threshold multiplier rather than trusting this service's `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` (informational only here), so trigger sensitivity is tunable on the equilibrium side without redeploying this service. See `services/orion-equilibrium-service/README.md`'s matching section.
+Since `v4`'s manifest also needs 6 channels (`action_warrant`, `heartbeat_mean_ratio`, `prediction_error_{execution,chat,biometrics,bus_synaptic}`) that this service's own in-process row-building (`collect_field_channel_pressures()`) never produces, `app/anomaly_scorer.py` also does its own small live Postgres lookup for those 6 fields every tick (`orion.mood_arc.corpus_enrichment.resolve_live_enrichment()`, a live "latest value in a narrow trailing window" counterpart to the offline `enrich-corpus` batch join) -- reuses `POSTGRES_URI`, no new env key. A field with nothing in the trailing window is left absent from that tick's row (never fabricated as `0.0`), same convention as the offline join; a transient DB error skips live enrichment for one tick and self-heals the next, without disabling scoring itself.
+
+Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's own `window_size` is ~30 rows / ~60s at the default 2s tick cadence, so this scores a genuinely new window each check), the most recent complete window's reconstruction loss is published on `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` (`orion:field_channel:anomaly_score`) alongside the encoder's own train-time `recon_error_p95` reference. `orion-equilibrium-service`'s `telemetry_anomaly_metacog_gate.py` is one consumer -- it applies its own threshold multiplier rather than trusting this service's `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` (informational only here), so trigger sensitivity is tunable on the equilibrium side without redeploying this service. See `services/orion-equilibrium-service/README.md`'s matching section. A second, independent consumer: this same published score feeds the Hub's main-page Cognitive EKG / Substrate Brain State viz's "Field Anomaly" region, via `orion-substrate-runtime`'s `brain_frame_producer.py` -- see `orion/mood_arc/README.md`'s "Status" note for the full chain.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `FIELD_CHANNEL_ANOMALY_ENABLED` | `false` | Master gate |
-| `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` | (empty) | Directory with `manifest.json` + `weights.npz` from a prior `train` run |
+| `FIELD_CHANNEL_ANOMALY_MODELS_ROOT` | `/mnt/telemetry/models/mood_arc` | mood_arc promotion root, resolved via its `active.json` |
 | `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` | `60` | Rescoring cadence |
 | `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Informational only -- see above |
 | `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Publish channel |
 
-**Deployed model history** (live `FIELD_CHANNEL_ANOMALY_ENCODER_DIR`, disk artifacts kept, not
-deleted, on supersession):
+**Deployed model history, `field_channel_anomaly/` tree (retired 2026-09-03, historical record
+only -- disk artifacts kept, not deleted for `v1`-`v3`; nothing here is read live any more, see
+above):**
 
 | Version | Trained against | Rows | `floor_ratio` | `ceiling_ratio` | Why superseded |
 |---|---|---|---|---|---|
 | `v1` | full corpus, no cutoff | — | — | 0.240 | Contaminated by the 2026-07-17 channel-behavior fix sprint (PRs #1108-#1113/#1115) |
 | `v2` | `--min-generated-at 2026-07-17T04:32:14Z` | 207,415 / 5 days | 0.282 (CI 0.266-0.304) | 0.189 | `catalog_drift_pressure` stuck the *entire* corpus span (PR #1248's mode=`add`→`replace` fix, second cutoff below) |
-| `v3` | `--min-generated-at 2026-07-22T08:29:48Z` | 18,377 / 10.3h | 0.210 (CI 0.174-0.231) | 0.190 | Superseded by `v4`'s clean-metrics retrain, not by a contamination finding — `v3`'s own gate result stands as valid for its corpus |
-| `v4` (current) | `--min-generated-at 2026-08-30T00:00:00Z --held-out-blocks 5`, 37 channels (phi-v2 audit's dense-enough signals added) | 150,610 / 3.4 days | 0.406 (CI 0.383-0.430) | 0.733 | n/a — current live model. First run promoted through `cmd_promote`'s real `active.json` mechanism (`v1`-`v3` were config-documented, not formally promoted). See `orion/mood_arc/README.md`'s v4 section for the full methodology story: a real regime-shift finding in the held-out split that a naive retrain would have missed, plus a block-boundary leakage bug in the first fix for it, caught by code review and fixed before promotion |
+| `v3` | `--min-generated-at 2026-07-22T08:29:48Z` | 18,377 / 10.3h | 0.210 (CI 0.174-0.231) | 0.190 | Was this tree's last live version, superseded by the convergence onto `mood_arc/`'s own `v4` above -- not by a contamination finding; `v3`'s own gate result stands as valid for its corpus |
+
+`v4` (the current live model as of 2026-09-03) never lived in this tree -- it was trained and
+promoted entirely through `orion/mood_arc/fit_encoder.py`'s own mechanism
+(`/mnt/telemetry/models/mood_arc/`, `--min-generated-at 2026-08-30T00:00:00Z --held-out-blocks 5`,
+37 channels, 150,610 rows / 3.4 days, `floor_ratio=0.406` CI `0.383-0.430`, `ceiling_ratio=0.733`).
+Full methodology story -- a real regime-shift finding in the held-out split a naive retrain would
+have missed, plus a block-boundary leakage bug in the first fix for it, caught by code review and
+fixed before promotion -- is in `orion/mood_arc/README.md`'s `v4` section, not repeated here.
 
 `v3` trained on a much smaller corpus than `v2` (10.3h of clean data vs. 5 days) — it's a
 calibration-quality run on what was available at the time, not a full-corpus retrain. Notably its
@@ -465,12 +470,15 @@ contaminated-baseline problem `v2` already hit for `catalog_drift_pressure`.
 
 **`v3` trained against exactly this cutoff** (18,377 rows / 10.3h clean
 data — much smaller than `v2`'s 207K-row/5-day corpus, since this cutoff
-had only just landed) and is the currently deployed
-`FIELD_CHANNEL_ANOMALY_ENCODER_DIR`. See "Deployed model history" above
-for the real gate results. A future retrain against a fuller corpus once
-more clean data accumulates past this cutoff would still be worthwhile
-(more data, tighter confidence intervals) but is not blocking — `v3` is a
-real, gate-passing, currently-serving model, not a placeholder. **See the
+had only just landed) and **was** the currently deployed
+`FIELD_CHANNEL_ANOMALY_ENCODER_DIR` — corrected 2026-09-03: that env var is
+retired (see "Telemetry-anomaly metacog trigger" above), and the live model
+is now `mood_arc/`'s own `v4`. See "Deployed model history" above for the
+real gate results, kept as historical record for `v1`-`v3`. A future
+retrain against a fuller corpus once more clean data accumulates past this
+cutoff would still be worthwhile (more data, tighter confidence intervals)
+for `mood_arc/`'s own corpus, but is not blocking — `v3` was a real,
+gate-passing model in its own right, not a placeholder. **See the
 fourth cutoff below, though** — `v3`'s training window predates that fix,
 so it inherited that contamination on one input channel.
 

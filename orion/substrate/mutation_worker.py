@@ -139,6 +139,16 @@ class SubstrateAdaptationWorker:
                         surface_key=pressure.target_surface,
                         notes=[f"reason={plan.refusal_reason or 'unspecified'}"],
                     )
+                    # Cool the pressure exactly as an emitted proposal would.
+                    # Without this, cooldown_until stays None and PressureAccumulator
+                    # only decays when a NEW signal arrives, so a refusal that cannot
+                    # change without an external write (surface already at target) is
+                    # re-evaluated every tick forever -- two Postgres round-trips per
+                    # tick, plus a repeated threshold-crossed/refused trace pair.
+                    # Reusing the existing cooldown rather than adding a second knob.
+                    self.store.record_pressure(
+                        self.pressure.mark_proposal_emitted(pressure, now=t)
+                    )
                     continue
                 proposal = plan.proposal
                 queue_item = self.store.add_proposal(proposal, priority=60)

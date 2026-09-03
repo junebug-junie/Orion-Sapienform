@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import os
 from pathlib import Path
 
@@ -27,6 +29,28 @@ from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrial
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_worker import SubstrateAdaptationWorker
 from orion.substrate.scripts.smoke_mutation_v21 import run_smoke
+
+
+@pytest.fixture(autouse=True)
+def _isolated_control_surface(monkeypatch, tmp_path_factory):
+    """Give every test in this module its own control surface, seeded to 0.50.
+
+    PatchApplier.apply reads the live routing threshold. That read used to only
+    RECORD a rollback value, so process-global pollution was invisible; it now
+    also decides whether an apply is a no-op, which made four tests here fail
+    depending on what an earlier test in the same session had written.
+    """
+    from orion.substrate import mutation_control_surface
+
+    db = tmp_path_factory.mktemp("control-surface") / "control.sqlite3"
+    monkeypatch.setattr(
+        mutation_control_surface,
+        "_CONTROL_SURFACE_STORE",
+        mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=str(db)),
+    )
+    mutation_control_surface.set_chat_reflective_lane_threshold(
+        value=0.50, actor="test_seed"
+    )
 
 
 def _routing_surface(value: float = 0.50, *, degraded: bool = False):

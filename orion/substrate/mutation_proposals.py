@@ -161,10 +161,14 @@ def _routing_threshold_payloads(
     `expected_effect: reduce_runtime_executed` that could not occur because
     nothing moved.
 
-    The stale rollback half was the more dangerous one: every one of those
-    adoptions armed a rollback to 0.50, a value that had not been live since
-    the day before. Rolling one back would not have undone the no-op -- it
-    would have reverted the previous real change.
+    The proposal-level rollback of 0.50 was NOT reaching adoptions, and an
+    earlier draft of this docstring wrongly said it was: commit 255f8252e
+    (2026-09-02 23:55Z, already on main) overwrites it with the live value
+    inside PatchApplier.apply, so recorded adoptions carry a real measurement.
+    Deriving it here still matters for a different consumer --
+    SubstrateTrialRunner._routing_baseline_threshold (mutation_trials.py) reads
+    the PROPOSAL's rollback as the trial baseline, so every trial was replaying
+    a 0.58 candidate against a 0.50 baseline while live was already 0.58.
 
     Refuses rather than guesses. A proposal whose rollback payload does not
     describe the state actually being replaced is worse than no proposal, so
@@ -196,6 +200,13 @@ def _routing_threshold_payloads(
     raw = snapshot.get("raw") or {}
     current = raw.get("value")
     if current is None:
+        # Distinguish "the store is down" from "this surface was never
+        # written". RuntimeControlSurfaceStore.get() swallows every exception
+        # and returns None, so the reader cannot raise -- without this branch a
+        # Postgres outage is reported to the operator as a surface that has no
+        # value, which is a different and much less alarming fact.
+        if snapshot.get("error"):
+            return {}, {}, "routing_surface_read_failed"
         return {}, {}, "routing_surface_value_missing"
     current_value = float(current)
     if math.isclose(current_value, target_value, rel_tol=0.0, abs_tol=_SAME_VALUE_ABS_TOL):
@@ -270,7 +281,11 @@ def _default_patch_for_class(mutation_class: str) -> dict[str, float | str]:
 
 def _default_rollback_for_class(mutation_class: str) -> dict[str, float | str]:
     if mutation_class == "routing_threshold_patch":
-        return {"chat_reflective_lane_threshold": 0.50}
+        # Never reaches a proposal: _routing_threshold_payloads() replaces both
+        # halves for this class, deriving the rollback from the live surface.
+        # Kept only so every class in this function has an entry; it is not a
+        # fallback the refusal path can land on.
+        return {}
     if mutation_class == "recall_weighting_patch":
         return {"semantic_weight": 0.50, "episodic_weight": 0.35, "recency_weight": 0.15}
     if mutation_class == "field_topology_weight_patch":

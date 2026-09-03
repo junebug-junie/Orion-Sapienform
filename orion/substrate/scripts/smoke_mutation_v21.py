@@ -64,10 +64,39 @@ def temporary_env(name: str, value: str):
             os.environ.pop(name, None)
 
 
-# Deterministic stub: the smoke must not depend on the live control surface,
-# and 0.50 is the value the routing patch has always been written against.
+# Deterministic stub for the PROPOSAL side. On its own this isolated nothing:
+# PatchApplier.apply in the same run_smoke still calls the real
+# get/set_chat_reflective_lane_threshold(), so with DATABASE_URL set (it is, in
+# services/orion-hub/.env) the smoke wrote 0.58 to the LIVE control surface as
+# actor "mutation_apply" -- the same class of production write as the historical
+# actor="scheduler_seed" incident. _isolated_control_surface() below closes that.
 def _smoke_routing_surface() -> dict:
     return {"value": 0.50, "raw": {"value": 0.50}, "degraded": False}
+
+
+@contextmanager
+def _isolated_control_surface():
+    """Point the process-wide control-surface store at a throwaway sqlite file.
+
+    Restores the previous store in `finally` -- a bare reassignment would leave
+    the global pointing at a deleted temp path for everything that ran after.
+    """
+    import tempfile
+    from orion.substrate import mutation_control_surface
+
+    previous = mutation_control_surface._CONTROL_SURFACE_STORE
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = str(Path(tmp) / "smoke-control-surface.sqlite3")
+        mutation_control_surface._CONTROL_SURFACE_STORE = (
+            mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=db_path)
+        )
+        try:
+            mutation_control_surface.set_chat_reflective_lane_threshold(
+                value=0.50, actor="smoke_seed"
+            )
+            yield
+        finally:
+            mutation_control_surface._CONTROL_SURFACE_STORE = previous
 
 
 def _fmt_trace(fields: dict[str, Any]) -> str:
@@ -93,7 +122,7 @@ def run_smoke(*, emit: bool = True) -> list[str]:
 
     emit_line({"event": "mutation_smoke_start", "cycle_id": cycle_id})
 
-    with temporary_env("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true"):
+    with _isolated_control_surface(), temporary_env("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true"):
         store = SubstrateMutationStore()
         applier = PatchApplier(surfaces={})
         trial_runner = SubstrateTrialRunner(

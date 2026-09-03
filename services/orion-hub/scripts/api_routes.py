@@ -4896,8 +4896,8 @@ def execute_substrate_mutation_scheduled_cycle(
             detectors=MutationDetectors(allow_cognitive_lane=cognitive_proposals_enabled),
             pressure=PressureAccumulator(),
             proposals=ProposalFactory(
-            routing_surface_reader=inspect_chat_reflective_lane_threshold,
-        ),
+                routing_surface_reader=inspect_chat_reflective_lane_threshold,
+            ),
             trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
             decision_engine=DecisionEngine(),
             applier=applier,
@@ -5001,6 +5001,23 @@ def execute_substrate_mutation_scheduled_cycle(
             "trials_executed": int(result.get("trials", 0)),
             "adoptions_completed": int(result.get("adoptions", 0)),
             "decisions_made": len([event for event in traces if event.get("event") == "mutation_decision_recorded"]),
+            # The scheduler discards `traces` (main.py calls this for effect),
+            # so a refusal traced inside the worker reaches nobody. Without
+            # these two, a generator refusing every tick reads as
+            # proposals_created: 0 with the cause nowhere -- the exact
+            # indistinguishability the refusal trace was added to remove.
+            "proposals_refused": len(
+                [event for event in traces if event.get("event") == "mutation_proposal_refused"]
+            ),
+            "proposal_refusal_reasons": sorted(
+                {
+                    note.split("reason=", 1)[1]
+                    for event in traces
+                    if event.get("event") == "mutation_proposal_refused"
+                    for note in (event.get("notes") or [])
+                    if note.startswith("reason=")
+                }
+            ),
             "applies_attempted": applier.attempted,
             "applies_blocked": applier.blocked,
             "applies_executed": applier.completed,
@@ -5210,6 +5227,20 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             "queue_status_changes": queue_status_changes,
             "trials_run": len(trial_events),
             "decisions_made": len(decision_events),
+            # Same fact in the operator-facing payload: the manual route already
+            # logs refusals via _emit_mutation_lifecycle_logs, the response did not.
+            "proposals_refused": len(
+                [event for event in traces if event.get("event") == "mutation_proposal_refused"]
+            ),
+            "proposal_refusal_reasons": sorted(
+                {
+                    note.split("reason=", 1)[1]
+                    for event in traces
+                    if event.get("event") == "mutation_proposal_refused"
+                    for note in (event.get("notes") or [])
+                    if note.startswith("reason=")
+                }
+            ),
             "applies_attempted": applier.attempted,
             "applies_blocked": applier.blocked,
             "applies_completed": applier.completed,

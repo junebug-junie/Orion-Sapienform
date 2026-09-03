@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +31,18 @@ class PatchApplier:
         if proposal.mutation_class == "routing_threshold_patch":
             live_threshold = get_chat_reflective_lane_threshold()
             patch_threshold = proposal.patch.patch.get("chat_reflective_lane_threshold")
+            # Refusing a no-op at PROPOSAL time is not enough: proposals already
+            # queued before that guard existed still arrive here, and
+            # list_due_queue() selects purely on status == "queued". Confirmed
+            # live 2026-09-03 -- one such proposal (0.58 onto a surface already
+            # at 0.58) was sitting queued while this was written, and would have
+            # become one more adoption holding a 15-minute lock on `routing` for
+            # a change that never happened. This is the single choke point every
+            # path goes through: scheduler, manual route, and the smoke.
+            if patch_threshold is not None and math.isclose(
+                float(patch_threshold), live_threshold, rel_tol=0.0, abs_tol=1e-9
+            ):
+                return None
             rollback_payload = dict(proposal.patch.rollback_payload)
             # Overwrite, do not setdefault. The proposal already carries a
             # hardcoded fallback from _default_rollback_for_class, so setdefault
@@ -47,7 +61,10 @@ class PatchApplier:
                         decision_id=decision.decision_id,
                     )
                 except ControlSurfaceWriteError:
-                    # The live value did not move, so there is nothing to adopt.
+                    # The BACKEND WRITE FAILED -- this is not, and never was, a
+                    # no-op check: ControlSurfaceWriteError is raised only when
+                    # the store's upsert throws, never when the value is
+                    # unchanged. The no-op case is the equality guard above.
                     # Returning an adoption here would take the surface lock and
                     # write a record claiming a change that never happened.
                     return None

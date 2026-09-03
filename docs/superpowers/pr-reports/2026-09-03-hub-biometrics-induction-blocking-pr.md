@@ -415,6 +415,15 @@ including **two of my own new tests that could not fail**. All fixed in
   - **Fix:** added a `node --test services/orion-hub/static/js/` step to
     `orion-static-gates.yml`.
   - **Evidence:** exit 0 clean; exit 1 with a deliberately failing probe test.
+  - **Follow-up:** the first version of this step passed a bare directory and
+    went **red on CI while green locally** — `node --test <dir>` does directory
+    discovery on Node 20 (local, 20.20.2) but is a module path on Node 22
+    (runner, 22.23.2): `Cannot find module .../static/js`. Quoted globs are the
+    reverse. Now enumerated with `find`, which is portable across both and also
+    picks up any future test file in a subdirectory that a single-level glob
+    would silently skip. Re-verified inside `node:22-slim` at the runner's exact
+    version: bare directory → exit 1, `find` form → exit 0, `find` form with a
+    failing probe → exit 1.
 
 - **Finding (documented, not changed):** because `statement_timeout` (2000ms)
   fires before `wait_for` (3.0s), a slow *query* surfaces as

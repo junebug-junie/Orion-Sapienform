@@ -47,18 +47,6 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"
             )
-            # Sibling of the index above, for orion_biometrics_induction's
-            # DISTINCT ON (node) ... ORDER BY node, timestamp DESC read
-            # (orion/substrate/metacog_trend_signals.py). Without it that
-            # query parallel-seq-scans a 247MB table and external-merge-sorts
-            # it to disk to return one row per node -- 418ms mean and 11.5TB
-            # of cumulative temp spill once the Hub's Biometrics card began
-            # polling it (measured live 2026-09-03). DESC matters: it is the
-            # direction the DISTINCT ON reads.
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS orion_biometrics_induction_node_ts_idx "
-                "ON orion_biometrics_induction (node, timestamp DESC);"
-            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )
@@ -804,6 +792,43 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
+
+    # Deliberately NOT inside the long bootstrap transaction above, and
+    # verified rather than assumed. Backs
+    # orion/substrate/metacog_trend_signals.py::latest_biometrics_induction_by_node,
+    # a LATERAL "newest row per node" read that the Hub's Biometrics card
+    # polls every 10s per node.
+    #
+    # Two reasons this cannot ride along with the block above. First, that
+    # block runs ~700 statements under one engine.begin() with a single
+    # swallowing handler, so an unrelated earlier failure rolls this index
+    # back too. Second -- and this is why the check exists at all -- losing
+    # the index does NOT surface as a timeout anywhere: measured live
+    # 2026-09-03, the read still completes in 163ms (1 node) / 422ms (3
+    # nodes) with every index path disabled, well inside the Hub's 2000ms
+    # statement_timeout. It just quietly seq-scans a 247MB table six times a
+    # minute forever. Nothing else would ever report it, so this says so.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS orion_biometrics_induction_node_ts_idx "
+                "ON orion_biometrics_induction (node, timestamp DESC);"
+            )
+        with engine.connect() as conn:
+            present = conn.exec_driver_sql(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE indexname = 'orion_biometrics_induction_node_ts_idx';"
+            ).first()
+        if present:
+            logger.info("🔎 orion_biometrics_induction_node_ts_idx present")
+        else:
+            logger.error(
+                "orion_biometrics_induction_node_ts_idx MISSING after CREATE INDEX -- "
+                "latest_biometrics_induction_by_node will silently sequential-scan "
+                "orion_biometrics_induction on every Hub biometrics poll"
+            )
+    except Exception as e:
+        logger.error("biometrics induction index migration failed: %s", e)
 
     # Deliberately NOT inside the long bootstrap transaction above (review
     # finding). That block runs ~700 statements under one engine.begin() with a

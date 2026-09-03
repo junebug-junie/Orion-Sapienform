@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import pytest
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -192,7 +195,13 @@ def test_induction_query_is_a_lateral_top_1_per_node_not_distinct_on() -> None:
 
     assert "DISTINCT ON" not in sql, f"DISTINCT ON cannot use the index: {sql}"
     assert "CROSS JOIN LATERAL" in sql, sql
-    assert "LIMIT 1" in sql, "without LIMIT 1 the lateral still reads every row per node"
+    # Token boundary, not substring: `"LIMIT 1" in "LIMIT 10"` is True, and
+    # LIMIT 10 is WORSE than the original bug -- the reader below assigns
+    # `out[node] = metrics` per row, so the LAST row wins and a silent
+    # LIMIT 10 hands back the OLDEST of ten instead of the newest.
+    assert re.search(r"\bLIMIT 1\b", sql), (
+        f"lateral must take exactly one row per node: {sql}"
+    )
 
     # The ordering the index serves. DESC is load-bearing: ASC would return
     # the OLDEST row per node -- a wrong answer that still looks like a
@@ -218,3 +227,106 @@ def test_induction_query_still_casts_the_projected_timestamp() -> None:
     sql = " ".join(str(engine.connect().__enter__().execute.call_args[0][0]).split()).upper()
     select_list = sql.split("FROM", 1)[0]
     assert "TIMESTAMP::TIMESTAMPTZ AS TS" in select_list, select_list
+
+
+# --- real-Postgres lane -----------------------------------------------------
+#
+# The two tests above drive a MagicMock and assert on SQL *text*. The two
+# things that can actually break at runtime are invisible to them: whether
+# `unnest(CAST(:nodes AS text[]))` binds at all, and whether it binds for both
+# callers' parameter shapes. The Hub passes a list; cortex-exec
+# (services/orion-cortex-exec/app/metacog_trend_reader.py) passes a tuple, and
+# psycopg2 adapts a tuple to a composite record, not an array:
+#
+#   ProgrammingError: cannot cast type record to text[]
+#
+# The single `list(nodes)` call in latest_biometrics_induction_by_node is what
+# normalises that. Delete it and every mocked test in this repo stays green
+# while cortex-exec's metacog trend cue goes permanently dark -- and because
+# that reader fails open, nothing reports it.
+
+_LOCAL_DATABASE_URL = os.getenv(
+    "ORION_TEST_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"
+)
+
+
+def _local_postgres_engine():
+    try:
+        from sqlalchemy import create_engine
+    except ImportError:
+        return None
+    try:
+        engine = create_engine(_LOCAL_DATABASE_URL, connect_args={"connect_timeout": 2})
+        with engine.connect():
+            pass
+        return engine
+    except Exception:
+        return None
+
+
+_ENGINE = _local_postgres_engine()
+
+
+@pytest.mark.skipif(_ENGINE is None, reason="local Postgres not reachable")
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        pytest.param(["athena"], id="hub-single-element-list"),
+        pytest.param(("athena", "atlas", "circe"), id="cortex-exec-tuple"),
+        pytest.param(["athena", "athena"], id="duplicate-node-names"),
+        pytest.param(["definitely-not-a-node"], id="absent-node"),
+    ],
+)
+def test_induction_query_binds_against_real_postgres(nodes) -> None:
+    """Real psycopg2 binding, real table. Rows may be empty; binding may not fail."""
+    out = latest_biometrics_induction_by_node(_ENGINE, nodes, max_age_sec=10**9)
+    assert isinstance(out, dict)
+    assert set(out).issubset({str(n) for n in nodes})
+
+
+@pytest.mark.skipif(_ENGINE is None, reason="local Postgres not reachable")
+def test_induction_query_returns_the_newest_row_per_node() -> None:
+    """The LATERAL must pick the newest row, not merely *a* row.
+
+    Cross-checked against an independent MAX() over the same table rather than
+    against the query's own ordering -- a LIMIT/ordering mistake that made the
+    query return the oldest row would otherwise agree with itself.
+    """
+    from sqlalchemy import text as _text
+
+    with _ENGINE.connect() as conn:
+        nodes = [
+            r[0]
+            for r in conn.execute(
+                _text("SELECT DISTINCT node FROM orion_biometrics_induction WHERE node IS NOT NULL LIMIT 3")
+            ).all()
+        ]
+        if not nodes:
+            pytest.skip("no biometrics induction rows to compare against")
+        expected = {
+            r[0]: r[1]
+            for r in conn.execute(
+                _text(
+                    "SELECT node, MAX(timestamp) FROM orion_biometrics_induction "
+                    "WHERE node = ANY(:nodes) GROUP BY node"
+                ),
+                {"nodes": list(nodes)},
+            ).all()
+        }
+        actual = {
+            r[0]: r[1]
+            for r in conn.execute(
+                _text(
+                    """
+                    SELECT n.node, latest.timestamp
+                    FROM unnest(CAST(:nodes AS text[])) AS n(node)
+                    CROSS JOIN LATERAL (
+                        SELECT b.timestamp FROM orion_biometrics_induction b
+                        WHERE b.node = n.node ORDER BY b.timestamp DESC LIMIT 1
+                    ) AS latest
+                    """
+                ),
+                {"nodes": list(nodes)},
+            ).all()
+        }
+    assert actual == expected, "LATERAL did not return the newest row per node"

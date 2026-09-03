@@ -486,10 +486,15 @@ class Settings(BaseSettings):
     # backend (and its parallel workers) after the requester is gone, while
     # the asyncio timeout stops the *route* from hanging on a thread that is
     # blocked before the query even starts (pool checkout, TCP connect).
-    # Sized against the pre-index live cost of that query (418ms mean,
-    # measured 2026-09-03) plus headroom, not against its post-index cost --
-    # if the index is ever dropped the route must degrade to a logged
-    # timeout, not to a 30-second UI stall.
+    # These bound a HANG; they do not detect a missing index, and the
+    # earlier version of this comment wrongly claimed they did. Measured live
+    # 2026-09-03 with every index path disabled, the read still completes in
+    # 163ms (1 node) / 422ms (3 nodes) -- comfortably inside both bounds. A
+    # dropped index produces no timeout and no log line here at all; it is
+    # orion-sql-writer's boot check (app/main.py) that reports that, not
+    # these. Sized instead for the failures they DO cover: a query that
+    # outlives its usefulness, and a worker thread stuck before the query
+    # starts.
     BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS: int = Field(
         default=2000,
         ge=1,

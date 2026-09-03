@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Sequence
@@ -177,8 +178,18 @@ _PG_POOL_DSN: str = ""
 #: no loop identity is a latent trap, not a test-only inconvenience.
 _PG_POOL_LOOP: Any = None
 _PG_POOL_LOCK: asyncio.Lock | None = None
+#: Guards the loop-identity swap across THREADS (see _pg_pool). An
+#: asyncio.Lock cannot, which is the whole point.
+_PG_POOL_SWAP_LOCK = threading.Lock()
 POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 4
+#: Every wait on this pool is bounded. Without these an unreachable-but-not-
+#: refusing Postgres, or one slow query, turns a polled route into an
+#: indefinite hang with no error and no 500 -- the browser just spins. The old
+#: connection-per-request code could not do that; a pool can.
+POOL_CONNECT_TIMEOUT_SEC = 2.0
+POOL_COMMAND_TIMEOUT_SEC = 10.0
+POOL_ACQUIRE_TIMEOUT_SEC = 5.0
 
 
 async def _pg_pool():
@@ -197,21 +208,37 @@ async def _pg_pool():
     import asyncpg
 
     loop = asyncio.get_running_loop()
-    # Loop identity is checked BEFORE taking the lock: an asyncio.Lock binds
-    # to the loop that first awaits it, so a lock carried over from a dead
-    # loop is itself unusable. Reset both together.
-    if _PG_POOL_LOOP is not None and _PG_POOL_LOOP is not loop:
-        stale = _PG_POOL
-        _PG_POOL, _PG_POOL_LOOP, _PG_POOL_LOCK = None, None, None
-        if stale is not None:
-            # Cannot await close() on a pool belonging to another loop; drop
-            # the reference and say so rather than pretending it was closed.
-            logger.warning(
-                "biometrics preview pool abandoned: created on a different event loop"
-            )
-    if _PG_POOL_LOCK is None:
-        _PG_POOL_LOCK = asyncio.Lock()
-    async with _PG_POOL_LOCK:
+    # The loop-identity swap runs under a *threading* lock, not the asyncio
+    # one. An asyncio.Lock gives no cross-thread mutual exclusion, and two
+    # event loops on two threads is precisely the situation this branch
+    # exists for -- guarding it with the asyncio lock would be guarding the
+    # race with the thing the race is about. (Live in this repo's own tests:
+    # a Starlette TestClient portal thread alongside an asyncio.run in the
+    # main thread.)
+    with _PG_POOL_SWAP_LOCK:
+        if _PG_POOL_LOOP is not None and _PG_POOL_LOOP is not loop:
+            stale = _PG_POOL
+            _PG_POOL, _PG_POOL_LOOP, _PG_POOL_LOCK = None, None, None
+            if stale is not None:
+                # close() would have to be awaited on the pool's own (foreign,
+                # possibly dead) loop. terminate() is synchronous and closes
+                # the transports outright, so the backends are actually
+                # released instead of leaked -- POOL_MIN_SIZE eagerly opens a
+                # connection, so every abandonment would otherwise strand at
+                # least one live Postgres backend, and this repo has real
+                # connection-exhaustion history (PR #2010).
+                try:
+                    stale.terminate()
+                except Exception:  # noqa: BLE001 -- best effort by definition
+                    logger.warning("biometrics preview pool terminate failed on loop change")
+                logger.warning(
+                    "biometrics preview pool discarded: created on a different event loop"
+                )
+        if _PG_POOL_LOCK is None:
+            _PG_POOL_LOCK = asyncio.Lock()
+        lock = _PG_POOL_LOCK
+
+    async with lock:
         if _PG_POOL is not None and _PG_POOL_DSN != database_url:
             stale, _PG_POOL = _PG_POOL, None
             try:
@@ -219,12 +246,45 @@ async def _pg_pool():
             except Exception:  # noqa: BLE001 -- replacing it either way
                 logger.warning("biometrics preview pool close failed on DSN change")
         if _PG_POOL is None:
-            _PG_POOL = await asyncpg.create_pool(
-                dsn=database_url, min_size=POOL_MIN_SIZE, max_size=POOL_MAX_SIZE
+            pool = await asyncpg.create_pool(
+                dsn=database_url,
+                min_size=POOL_MIN_SIZE,
+                max_size=POOL_MAX_SIZE,
+                # Bound the two waits asyncpg would otherwise leave unbounded:
+                # a black-holed (not refused) Postgres blocks TCP connect for
+                # the OS default ~130s, and a query with no command_timeout
+                # can hold a pooled connection indefinitely.
+                timeout=POOL_CONNECT_TIMEOUT_SEC,
+                command_timeout=POOL_COMMAND_TIMEOUT_SEC,
             )
-            _PG_POOL_DSN = database_url
-            _PG_POOL_LOOP = loop
-    return _PG_POOL
+            _PG_POOL, _PG_POOL_DSN, _PG_POOL_LOOP = pool, database_url, loop
+        # Read under the lock: returning the global afterwards could hand back
+        # a pool a concurrent swap had already replaced, or None.
+        return _PG_POOL
+
+
+async def aclose() -> None:
+    """Release this module's Postgres resources on hub shutdown.
+
+    Called from main.py's shutdown handler alongside memory_pg_pool, so the
+    module's pool and engine are not simply left to process exit. Best effort:
+    shutdown must not fail because a teardown did.
+    """
+    global _PG_POOL, _PG_POOL_DSN, _PG_POOL_LOOP, _INDUCTION_ENGINE, _INDUCTION_ENGINE_URI
+    pool, _PG_POOL, _PG_POOL_DSN, _PG_POOL_LOOP = _PG_POOL, None, "", None
+    if pool is not None:
+        try:
+            await pool.close()
+            logger.info("biometrics_preview_pool_closed")
+        except Exception as exc:  # noqa: BLE001 -- teardown is best effort
+            logger.warning("biometrics_preview_pool_close_error error=%s", exc)
+    engine, _INDUCTION_ENGINE, _INDUCTION_ENGINE_URI = _INDUCTION_ENGINE, None, ""
+    if engine is not None:
+        try:
+            engine.dispose()
+            logger.info("biometrics_induction_engine_disposed")
+        except Exception as exc:  # noqa: BLE001 -- teardown is best effort
+            logger.warning("biometrics_induction_engine_dispose_error error=%s", exc)
 
 
 async def query_channel_history_rows(
@@ -243,7 +303,7 @@ async def query_channel_history_rows(
     """
     cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
     pool = await _pg_pool()
-    async with pool.acquire() as connection:
+    async with pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT_SEC) as connection:
         return await connection.fetch(
             f"""
             SELECT
@@ -329,7 +389,7 @@ async def query_multi_channel_history_rows(
         for i, (channel, column) in enumerate(aliases)
     )
     pool = await _pg_pool()
-    async with pool.acquire() as connection:
+    async with pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT_SEC) as connection:
         rows = await connection.fetch(
             f"""
             SELECT
@@ -405,6 +465,14 @@ async def api_biometrics_preview_history_multi(
 #: for. Rebuilt only if POSTGRES_URI changes under us.
 _INDUCTION_ENGINE: Any = None
 _INDUCTION_ENGINE_URI: str = ""
+INDUCTION_CONNECT_TIMEOUT_SEC = 2
+#: Caps how much of the loop's *shared* default thread executor this one
+#: polled route can occupy. `asyncio.to_thread` uses that shared executor
+#: (min(32, cpu+4) workers), so an induction query that hangs past the
+#: route's own timeout -- which abandons the thread, it does not cancel it --
+#: would otherwise accumulate stuck workers and starve unrelated hub work.
+#: That is the same class of failure this route was fixed for, just moved.
+_INDUCTION_SLOTS = threading.Semaphore(4)
 
 
 def _induction_engine():
@@ -432,20 +500,41 @@ def _induction_engine():
         raise RuntimeError("POSTGRES_URI is not configured")
     if _INDUCTION_ENGINE is None or _INDUCTION_ENGINE_URI != uri:
         timeout_ms = int(settings.BIOMETRICS_INDUCTION_STATEMENT_TIMEOUT_MS)
+        stale = _INDUCTION_ENGINE
         _INDUCTION_ENGINE = create_engine(
             uri,
             pool_pre_ping=True,
-            connect_args={"options": f"-c statement_timeout={timeout_ms}"},
+            connect_args={
+                # statement_timeout bounds the query; connect_timeout bounds
+                # getting to it. Without the latter, a black-holed (not
+                # refused) Postgres blocks the worker thread in TCP connect
+                # for the OS default ~130s -- long past the route's own
+                # timeout, so the threads pile up invisibly at 10s polling.
+                "connect_timeout": INDUCTION_CONNECT_TIMEOUT_SEC,
+                "options": f"-c statement_timeout={timeout_ms}",
+            },
         )
         _INDUCTION_ENGINE_URI = uri
+        if stale is not None:
+            # Mirror _pg_pool's DSN-change handling: drop the old QueuePool's
+            # checked-in connections instead of leaving them to the GC.
+            try:
+                stale.dispose()
+            except Exception:  # noqa: BLE001 -- replacing it either way
+                logger.warning("biometrics induction engine dispose failed on URI change")
     return _INDUCTION_ENGINE
 
 
 def _induction_sync(node: str) -> dict[str, Any]:
     """Blocking half of /induction. Runs in a worker thread, never inline."""
-    engine = _induction_engine()
-    by_node = latest_biometrics_induction_by_node(engine, [node])
-    return by_node.get(node, {})
+    if not _INDUCTION_SLOTS.acquire(blocking=False):
+        raise RuntimeError("induction_busy: all induction worker slots in use")
+    try:
+        engine = _induction_engine()
+        by_node = latest_biometrics_induction_by_node(engine, [node])
+        return by_node.get(node, {})
+    finally:
+        _INDUCTION_SLOTS.release()
 
 
 @router.get("/induction")
@@ -465,6 +554,12 @@ async def api_biometrics_preview_induction(node: str = Query(...)) -> Dict[str, 
     Fail-open by contract: any timeout or error renders as
     `ok: false, metrics: {}` -- an honestly-absent reading, never a
     zero-filled placeholder and never a 500.
+
+    The two error values discriminate, because statement_timeout (2000ms)
+    fires before this wait_for (3.0s): a slow QUERY is cancelled by Postgres
+    and surfaces as `induction_unavailable`, so `induction_timeout` in the
+    logs specifically means the worker never got as far as running the query
+    -- TCP connect, pool checkout, or a saturated default thread executor.
     """
     nid = _validate_node(node)
     timeout_sec = float(settings.BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC)

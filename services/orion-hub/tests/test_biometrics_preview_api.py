@@ -535,7 +535,6 @@ def test_induction_runs_off_the_event_loop(client, monkeypatch):
 
     def fake_latest(engine, nodes, **kwargs):
         seen["thread"] = threading.current_thread()
-        seen["is_main"] = threading.current_thread() is threading.main_thread()
         try:
             asyncio.get_running_loop()
             seen["on_loop"] = True
@@ -552,21 +551,38 @@ def test_induction_runs_off_the_event_loop(client, monkeypatch):
     assert r.status_code == 200
     assert r.json()["ok"] is True
     # No running loop in the calling thread == not executing on the event loop.
+    # This is the only assertion here that discriminates: under TestClient the
+    # loop runs on a portal thread, so "not the main thread" was ALSO true of
+    # the pre-fix inline call and proved nothing.
     assert seen["on_loop"] is False, "blocking query ran on the event loop"
-    assert seen["is_main"] is False, "blocking query ran on the main thread"
 
 
 def test_induction_slow_query_does_not_stall_the_loop(client, monkeypatch):
-    """A genuinely blocking helper must not hold the loop while it sleeps."""
+    """The loop must keep making progress WHILE the query is still running.
+
+    An earlier version of this test counted `await asyncio.sleep(0)` ticks and
+    asserted the count. That could not fail: if the loop were fully blocked the
+    ticks would merely happen later and still total 20. Verified by
+    reconstructing the pre-fix inline route -- it scored a clean 20/20.
+
+    So assert on WHEN, not how many. Every tick is timestamped, and the test
+    requires that ticks landed while the worker thread was inside its sleep.
+    Under the pre-fix inline call no tick can land in that window, because the
+    loop is inside the blocking call for the whole of it.
+    """
     import asyncio
     import threading
     import time
 
-    started = threading.Event()
+    QUERY_SEC = 0.25
+    entered = threading.Event()
+    window: dict[str, float] = {}
 
     def slow_latest(engine, nodes, **kwargs):
-        started.set()
-        time.sleep(0.25)
+        window["start"] = time.perf_counter()
+        entered.set()
+        time.sleep(QUERY_SEC)
+        window["end"] = time.perf_counter()
         return {"athena": {"gpu_util": {"level": 0.4}}}
 
     monkeypatch.setattr(
@@ -580,20 +596,25 @@ def test_induction_slow_query_does_not_stall_the_loop(client, monkeypatch):
     async def drive():
         route = biometrics_preview_routes.api_biometrics_preview_induction
         task = asyncio.ensure_future(route(node="athena"))
-        # Wait for the worker to actually be inside the blocking call, then
-        # prove the loop still runs: a 0-delay sleep only resolves if the
-        # loop is free to schedule it.
-        while not started.is_set():
+        while not entered.is_set():
             await asyncio.sleep(0.001)
-        ticks = 0
-        for _ in range(20):
-            await asyncio.sleep(0)
-            ticks += 1
-        assert ticks == 20, "event loop was not schedulable during the query"
-        return await task
+        tick_times = []
+        while not task.done():
+            await asyncio.sleep(0.005)
+            tick_times.append(time.perf_counter())
+        return await task, tick_times
 
-    body = asyncio.run(drive())
+    body, tick_times = asyncio.run(drive())
     assert body["ok"] is True
+
+    start, end = window["start"], window["end"]
+    during = [t for t in tick_times if start < t < end]
+    # A blocked loop cannot schedule anything between start and end. Require
+    # several, not one, so a single boundary tick cannot carry the assertion.
+    assert len(during) >= 5, (
+        f"only {len(during)} loop ticks landed during the {QUERY_SEC}s query "
+        f"({len(tick_times)} total) -- the loop was blocked"
+    )
 
 
 def test_induction_timeout_reports_absence_not_a_crash(client, monkeypatch):

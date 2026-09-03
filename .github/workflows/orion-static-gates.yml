@@ -130,3 +130,15 @@ jobs:
       # Postgres path swallows as ImportError.
       - name: Substrate control surface consumers are configured
         run: python scripts/check_control_surface_store_parity.py
+
+      # Hub frontend unit tests. These are plain `node:test` files with no DOM,
+      # no network and no service dependencies -- as static as anything else in
+      # this workflow. There are 13 of them and, until now, NOTHING ran any of
+      # them: they were hand-run only, which is exactly the "nudge you can skip"
+      # failure this whole workflow exists to replace. Found while adding
+      # biometrics-view.test.js in the Hub biometrics-poll fix (2026-09-03).
+      #
+      # `node --test <dir>` discovers *.test.js under it. Node is preinstalled
+      # on ubuntu-latest runners, so this needs no setup step.
+      - name: Hub frontend unit tests (node:test)
+        run: node --test services/orion-hub/static/js/

@@ -146,4 +146,4 @@ scripts/safe_docker_build.sh orion-mind up -d --build
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/new/fix/recall-render-gate-and-vision-router
+https://github.com/junebug-junie/Orion-Sapienform/pull/2069

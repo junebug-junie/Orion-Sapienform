@@ -124,6 +124,32 @@ class FieldChannelGlossaryEntry:
     evidence_dimension: str | None = None
 
 
+@dataclass(frozen=True)
+class FieldChannelNodeEntry:
+    """One (node, channel) pair whose meaning differs from the bare channel.
+
+    Exists because the `node:substrate.*` domain nodes are not physical hosts
+    and each carries an unrelated reading under the same channel name.
+    `node:substrate.bus_synaptic.prediction_error` is the fraction of the bus
+    running anomalous; `node:substrate.vision.prediction_error` is how overdue
+    the camera is. One glossary entry cannot describe both.
+
+    `trend_source` names where the value's history lives, so a reader can be
+    handed a pointer instead of a bare number.
+
+    `policy_channel` names this reading's channel in
+    config/substrate-lattice/transport_lattice_policy.v1.yaml when it has one,
+    so a consumer can find the escalation rungs without hardcoding a threshold.
+    """
+
+    node: str
+    channel: str
+    category: str
+    meaning: str
+    trend_source: str | None = None
+    policy_channel: str | None = None
+
+
 @functools.lru_cache(maxsize=1)
 def load_glossary(path: Path | None = None) -> dict[str, Any]:
     """Load config/field/field_channel_glossary.v1.yaml.
@@ -145,7 +171,49 @@ def load_glossary(path: Path | None = None) -> dict[str, Any]:
         )
         for e in raw.get("channels", [])
     )
-    return {"entries": entries, "categories": dict(raw.get("categories", {}))}
+    node_entries = tuple(
+        FieldChannelNodeEntry(
+            node=e["node"],
+            channel=e["channel"],
+            category=e["category"],
+            meaning=" ".join(str(e["meaning"]).split()),
+            trend_source=(
+                " ".join(str(e["trend_source"]).split()) if e.get("trend_source") else None
+            ),
+            policy_channel=e.get("policy_channel"),
+        )
+        for e in raw.get("node_channels", [])
+    )
+    return {
+        "entries": entries,
+        "node_entries": node_entries,
+        "categories": dict(raw.get("categories", {})),
+    }
+
+
+def resolve_channel(
+    channel: str,
+    *,
+    node: str | None = None,
+    path: Path | None = None,
+) -> FieldChannelGlossaryEntry | FieldChannelNodeEntry | None:
+    """The glossary entry that describes `channel` as read on `node`.
+
+    Prefers a node-qualified entry, falls back to the bare channel entry, and
+    returns None when neither exists -- never a placeholder, so a caller cannot
+    render a confident sentence about a channel nobody has described.
+
+    Callers that pass no `node` get exactly today's behavior.
+    """
+    glossary = load_glossary(path)
+    if node:
+        for entry in glossary["node_entries"]:
+            if entry.node == node and entry.channel == channel:
+                return entry
+    for entry in glossary["entries"]:
+        if entry.channel == channel:
+            return entry
+    return None
 
 
 def classify_channel_series(values: list[float]) -> str:

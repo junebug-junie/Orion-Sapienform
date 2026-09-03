@@ -32,7 +32,7 @@
 # hand-maintained here -- a static verdict column is exactly what already
 # went stale once (see the README's "Decay vs. injection-interval mismatch"
 # section).
-version: 1
+version: 2
 
 categories:
   physical_substrate: "Physical substrate / embodiment -- pure hardware sensor readings, nothing cognitive."
@@ -380,3 +380,53 @@ channels:
     level: [field]
     category: synthesized_rollup
     meaning: "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is the expected reading once the producer has been running a while ('nothing admitted' is a real, common state) -- but a row from before the producer existed also reads 0.0 (schema default), indistinguishable in storage. Read verdicts from a window entirely after deploy."
+
+# ---------------------------------------------------------------------------
+# Node-qualified entries (added 2026-09-03).
+#
+# `channels:` above is keyed by channel name alone, which is right for the 48
+# raw digester channels: `cpu_pressure` means the same thing on every node.
+# It is wrong for the `node:substrate.*` domain nodes, which are not physical
+# hosts and each carry their own unrelated reading under the SAME channel name.
+# There is one `prediction_error` entry above -- "how much a recent prediction
+# missed reality" -- and rendering both of the nodes below through it produces
+# the same sentence for a jittery bus and a blind camera.
+#
+# Deliberately a SEPARATE list, not more rows in `channels:`. Hub's Field
+# Channel Glossary panel iterates that list keyed on `e.channel`
+# (field_channel_glossary_routes.py), so same-named rows there would render as
+# duplicates. Consumers that want disambiguation call
+# orion.field.channel_glossary.resolve_channel(channel, node=...), which
+# prefers a node-qualified entry and falls back to the bare one.
+#
+# `trend_source` is the breadcrumb: where a reader goes to see this value over
+# time, rather than being handed a bare number. It names a real, live table.
+#
+# node:substrate.perception is deliberately absent: it ships shadow-only and
+# default-off (SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED=false), and
+# an entry for a channel nothing reads is the keyword cathedral CLAUDE.md 0A
+# bans. Add it in the patch that turns it on.
+node_channels:
+  - node: "node:substrate.bus_synaptic"
+    channel: prediction_error
+    category: self_monitoring
+    meaning: >-
+      The share of the message bus that is running unusually right now: the
+      fraction of live publisher-to-channel links whose timing is off, from 0
+      (all steady) to 1 (all irregular). Resolves broad mesh events only --
+      about 15-20% of links or more -- not a single service going quiet.
+    trend_source: >-
+      substrate_field_state, field_json -> node_vectors ->
+      "node:substrate.bus_synaptic" -> prediction_error
+    policy_channel: bus_synaptic_pressure
+
+  - node: "node:substrate.vision"
+    channel: prediction_error
+    category: self_monitoring
+    meaning: >-
+      How overdue the camera feed is: whether the eye is producing frames on
+      schedule. Says nothing about what the frames contain -- a blinded eye and
+      a dark room read the same here.
+    trend_source: >-
+      substrate_field_state, field_json -> node_vectors ->
+      "node:substrate.vision" -> prediction_error

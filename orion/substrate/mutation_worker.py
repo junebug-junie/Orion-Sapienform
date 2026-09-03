@@ -234,6 +234,32 @@ class SubstrateAdaptationWorker:
                         applied=False,
                     )
                     continue
+                noop_reason = self.applier.noop_reason(proposal=proposal)
+                if noop_reason is not None:
+                    # Recorded, not silently skipped: a cycle that decided to
+                    # act and then did nothing must say so, or the pipeline
+                    # reports self-modification it did not perform.
+                    notes.append(noop_reason)
+                    self.store.record_apply_blocked(
+                        proposal_id=proposal.proposal_id,
+                        decision_id=decision.decision_id,
+                        target_surface=proposal.target_surface,
+                        reason=noop_reason,
+                        notes=[noop_reason],
+                        queue_status=self.store.queue_status_for_proposal(proposal.proposal_id),
+                    )
+                    self._trace(
+                        event="mutation_apply_blocked",
+                        cycle_id=cycle_id,
+                        queue_item_id=queue_item.queue_item_id,
+                        proposal_id=proposal.proposal_id,
+                        lineage_id=(proposal.source_signal_ids[0] if proposal.source_signal_ids else proposal.proposal_id),
+                        decision=decision.action,
+                        surface_key=proposal.target_surface,
+                        blocked_reason=noop_reason,
+                        applied=False,
+                    )
+                    continue
                 adoption = self.applier.apply(proposal=proposal, decision=decision)
                 if adoption is not None:
                     warnings = self.store.record_adoption(adoption)

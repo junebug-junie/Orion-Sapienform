@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.core.schemas.substrate_mutation import MutationDecisionV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
+from orion.substrate import mutation_control_surface
 from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
@@ -75,6 +76,39 @@ def _fmt_trace(fields: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+@contextmanager
+def _isolated_control_surface(*, seed_threshold: float):
+    """Run the smoke against its own control surface, seeded to a known value.
+
+    Two reasons, both load-bearing.
+
+    First, this script must never touch the real one. A pytest fixture writing
+    to the ambient control surface is how `value=0.5, actor="scheduler_seed"`
+    ended up on Orion's live routing threshold with 4,925 updates on it.
+    `run_smoke` already isolates its SubstrateMutationStore but was reading the
+    global control surface, so it inherited whatever the process had.
+
+    Second, the smoke asserts that an auto_promote apply happens. That is only
+    a meaningful assertion if the patch would actually change something --
+    `_default_patch_for_class` returns a constant 0.58, so against an ambient
+    surface already at 0.58 the apply is a no-op and is now correctly skipped.
+    Seeding a different starting value makes the assertion test the apply path
+    rather than the ambient state of whatever ran before it.
+    """
+    previous = mutation_control_surface._CONTROL_SURFACE_STORE
+    isolated = mutation_control_surface.RuntimeControlSurfaceStore(
+        sql_db_path=None, postgres_url=None
+    )
+    mutation_control_surface._CONTROL_SURFACE_STORE = isolated
+    try:
+        mutation_control_surface.set_chat_reflective_lane_threshold(
+            value=seed_threshold, actor="mutation_smoke"
+        )
+        yield isolated
+    finally:
+        mutation_control_surface._CONTROL_SURFACE_STORE = previous
+
+
 def run_smoke(*, emit: bool = True) -> list[str]:
     lines: list[str] = []
     cycle_id = f"smoke-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
@@ -87,7 +121,9 @@ def run_smoke(*, emit: bool = True) -> list[str]:
 
     emit_line({"event": "mutation_smoke_start", "cycle_id": cycle_id})
 
-    with temporary_env("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true"):
+    with temporary_env("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true"), _isolated_control_surface(
+        seed_threshold=0.5
+    ):
         store = SubstrateMutationStore()
         applier = PatchApplier(surfaces={})
         trial_runner = SubstrateTrialRunner(

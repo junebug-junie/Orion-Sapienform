@@ -17,6 +17,39 @@ class PatchApplier:
 
     surfaces: dict[str, dict[str, Any]]
 
+    def noop_reason(self, *, proposal: MutationProposalV1) -> str | None:
+        """Why applying this proposal would change nothing, or None if it would.
+
+        The routing patch value is a hardcoded constant
+        (``_default_patch_for_class`` returns 0.58 for every
+        ``routing_threshold_patch``), so once the surface reaches that value
+        every subsequent proposal re-applies the number already live. Confirmed
+        in production 2026-09-03: the first cycle after the surface lock was
+        released adopted 0.58 over a live 0.58 and wrote a history row reading
+        ``0.58 -> 0.58``. Left alone that repeats every rollback window forever
+        -- an adoption, a lock, and a history row per cycle, none of which
+        change Orion's behaviour.
+
+        Taking the one-live-mutation-per-surface lock for a change that is not a
+        change also blocks real proposals behind it for the whole window.
+
+        Surface-specific by necessity: only the applier knows how to read a
+        given surface's live value. Surfaces it cannot compare return None
+        (apply proceeds), because "cannot tell" must not read as "no change".
+        """
+        if proposal.mutation_class != "routing_threshold_patch":
+            return None
+        patch_threshold = proposal.patch.patch.get("chat_reflective_lane_threshold")
+        if patch_threshold is None:
+            return None
+        try:
+            live_threshold = get_chat_reflective_lane_threshold()
+        except Exception:
+            return None
+        if float(patch_threshold) == float(live_threshold):
+            return f"patch_is_noop:chat_reflective_lane_threshold={live_threshold}"
+        return None
+
     def apply(self, *, proposal: MutationProposalV1, decision: MutationDecisionV1) -> MutationAdoptionV1 | None:
         if decision.action != "auto_promote":
             return None

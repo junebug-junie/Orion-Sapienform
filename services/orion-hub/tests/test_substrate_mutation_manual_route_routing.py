@@ -69,6 +69,14 @@ def routing_manual_fixture(monkeypatch):
 
 
 def test_routing_dry_run_produces_trial_and_decision_without_side_effects(routing_manual_fixture) -> None:
+    """As of 2026-09-03 the routing surface is parked: `mutation_detectors.py`
+    filters "routing"-surfaced signals out of `from_review_telemetry()`
+    entirely (confirmed empirically -- `signals_produced: 0` for this exact
+    fixture), so nothing downstream (proposal/trial/decision) is ever
+    reached. Formerly asserted the opposite (a real trial and decision were
+    produced, just not applied because `dry_run=True`); that path is gone by
+    design, not by this dry-run flag.
+    """
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
             dry_run=True,
@@ -78,15 +86,21 @@ def test_routing_dry_run_produces_trial_and_decision_without_side_effects(routin
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
-    assert payload["summary"]["signals_produced"] >= 1
-    assert payload["summary"]["proposals_created"] >= 1
-    assert payload["summary"]["trials_run"] >= 1
-    assert payload["summary"]["decisions_made"] >= 1
+    assert payload["summary"]["signals_produced"] == 0
+    assert payload["summary"]["proposals_created"] == 0
+    assert payload["summary"]["trials_run"] == 0
+    assert payload["summary"]["decisions_made"] == 0
     assert payload["summary"]["applies_completed"] == 0
     assert api_routes.SUBSTRATE_MUTATION_SURFACES["routing"]["chat_reflective_lane_threshold"] == 0.5
 
 
-def test_routing_apply_succeeds_for_auto_promote_and_can_rollback(routing_manual_fixture) -> None:
+def test_routing_apply_never_succeeds_while_parked(routing_manual_fixture) -> None:
+    """Formerly `test_routing_apply_succeeds_for_auto_promote_and_can_rollback`,
+    which proved a full routing auto-promote -> apply -> regression -> rollback
+    lifecycle. That lifecycle can no longer start (see the dry-run test above)
+    -- this now proves the manual-apply admin endpoint can't reach it either,
+    not just the scheduled background cycle.
+    """
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
             dry_run=False,
@@ -97,14 +111,17 @@ def test_routing_apply_succeeds_for_auto_promote_and_can_rollback(routing_manual
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
-    assert payload["summary"]["applies_attempted"] >= 1
-    assert payload["summary"]["applies_completed"] >= 1
-    assert payload["summary"]["rollbacks_recorded"] >= 1
+    assert payload["summary"]["applies_attempted"] == 0
+    assert payload["summary"]["applies_completed"] == 0
+    assert payload["summary"]["rollbacks_recorded"] == 0
     assert api_routes.SUBSTRATE_MUTATION_SURFACES["routing"]["chat_reflective_lane_threshold"] == 0.5
     assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
-def test_routing_manual_apply_changes_real_live_routing_surface(routing_manual_fixture) -> None:
+def test_routing_manual_apply_does_not_change_the_live_routing_surface(routing_manual_fixture) -> None:
+    """Formerly `test_routing_manual_apply_changes_real_live_routing_surface`,
+    which proved a manual apply moved the live surface 0.5 -> 0.58. Parked:
+    it must not move at all now, from any entry point."""
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="test_before_apply")
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
@@ -116,11 +133,15 @@ def test_routing_manual_apply_changes_real_live_routing_surface(routing_manual_f
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
-    assert payload["summary"]["applies_completed"] >= 1
-    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.58
+    assert payload["summary"]["applies_completed"] == 0
+    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
-def test_routing_manual_apply_can_use_replay_metrics_without_class_metrics(routing_manual_fixture) -> None:
+def test_routing_manual_apply_with_replay_metrics_still_does_not_apply(routing_manual_fixture) -> None:
+    """Formerly `test_routing_manual_apply_can_use_replay_metrics_without_class_metrics`.
+    Omitting `class_metrics` used to fall back to replay-derived metrics and
+    still reach a real apply; parked, there is no proposal for either path to
+    feed."""
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="replay_only_before_apply")
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
@@ -131,10 +152,10 @@ def test_routing_manual_apply_can_use_replay_metrics_without_class_metrics(routi
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
-    assert payload["summary"]["trials_run"] >= 1
-    assert payload["summary"]["decisions_made"] >= 1
-    assert payload["summary"]["applies_completed"] >= 1
-    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.58
+    assert payload["summary"]["trials_run"] == 0
+    assert payload["summary"]["decisions_made"] == 0
+    assert payload["summary"]["applies_completed"] == 0
+    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
 def test_require_review_never_applies_via_manual_route(routing_manual_fixture) -> None:
@@ -162,6 +183,17 @@ def test_require_review_never_applies_via_manual_route(routing_manual_fixture) -
 
 
 def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fixture) -> None:
+    """Formerly proved the one-active-mutation-per-surface invariant produces
+    `decision=hold` for a second routing proposal while one is already
+    active. Parked: no routing proposal is ever generated any more, so this
+    specific integration path can no longer reach `DecisionEngine.decide()`
+    at all -- the invariant itself is real and still covered generically at
+    the unit level (`orion/substrate/tests/test_mutation_v21.py::
+    test_store_allows_only_single_active_mutation_per_surface`, which builds
+    its proposal directly rather than through telemetry). This now proves
+    the manual endpoint stays inert with an active surface pre-set, same as
+    without one.
+    """
     api_routes.SUBSTRATE_MUTATION_STORE._active_surface_by_target["routing"] = "existing-adoption"
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
@@ -172,12 +204,20 @@ def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fi
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
+    assert payload["summary"]["decisions_made"] == 0
     assert payload["summary"]["applies_completed"] == 0
-    assert any(event.get("decision") == "hold" for event in payload["trace"]["events"])
     assert api_routes.SUBSTRATE_MUTATION_SURFACES["routing"]["chat_reflective_lane_threshold"] == 0.5
 
 
 def test_failed_trial_blocks_apply(routing_manual_fixture) -> None:
+    """Formerly proved a failed trial (bad metrics) blocks apply for routing.
+    Parked: no trial is ever run for routing any more, so this integration
+    path can no longer reach `SubstrateTrialRunner.run_trial()` at all -- the
+    invariant itself is real and still covered generically at the unit level
+    (`orion/substrate/tests/test_mutation_v21.py`'s trial/decision tests,
+    which build their proposal directly). This now proves the manual
+    endpoint doesn't apply regardless of which metrics are supplied.
+    """
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
             dry_run=False,
@@ -187,6 +227,6 @@ def test_failed_trial_blocks_apply(routing_manual_fixture) -> None:
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
-    assert payload["summary"]["trials_run"] >= 1
+    assert payload["summary"]["trials_run"] == 0
     assert payload["summary"]["applies_completed"] == 0
 

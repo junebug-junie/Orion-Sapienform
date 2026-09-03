@@ -135,12 +135,19 @@ def test_scheduler_enabled_unsupported_store_noops_loudly(monkeypatch) -> None:
 
 
 def test_scheduler_enabled_mode_runs_single_cycle(scheduler_fixture) -> None:
+    """As of 2026-09-03 the routing surface is parked: `mutation_detectors.py`
+    filters "routing"-surfaced signals out of `from_review_telemetry()`
+    entirely, so autonomy_graph telemetry produces zero signals now. This
+    still proves the scheduler runs a real, completed cycle end-to-end --
+    the thing this test's name is actually about -- just with a count of 0
+    instead of the pre-park >=1.
+    """
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=scheduler_fixture["routing_telemetry"],
         class_metrics_override=scheduler_fixture["routing_metrics"],
     )
     assert payload["status"] == "completed"
-    assert payload["summary"]["signals_processed"] >= 1
+    assert payload["summary"]["signals_processed"] == 0
 
 
 def test_scheduler_lock_contention_blocks_second_runner(scheduler_fixture) -> None:
@@ -193,8 +200,12 @@ def test_scheduler_concurrent_attempts_do_not_duplicate_cycle(monkeypatch, sched
 
 
 def test_scheduler_apply_gating_respected_when_apply_disabled(monkeypatch, scheduler_fixture) -> None:
+    """Formerly proved a routing proposal is created then blocked from apply
+    while `SUBSTRATE_AUTONOMY_APPLY_ENABLED=false`. Parked: no routing signal
+    is ever produced from telemetry now (see mutation_detectors.py), so
+    there is nothing to attempt or block -- confirmed empirically, not
+    guessed."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "false")
-    # First tick emits proposals; second tick deterministically processes due queue items.
     api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=scheduler_fixture["routing_telemetry"],
         class_metrics_override=scheduler_fixture["routing_metrics"],
@@ -203,13 +214,17 @@ def test_scheduler_apply_gating_respected_when_apply_disabled(monkeypatch, sched
         telemetry_override=[],
         class_metrics_override=scheduler_fixture["routing_metrics"],
     )
-    assert payload["summary"]["applies_attempted"] >= 1
+    assert payload["summary"]["applies_attempted"] == 0
     assert payload["summary"]["applies_executed"] == 0
-    assert payload["summary"]["applies_blocked"] >= 1
+    assert payload["summary"]["applies_blocked"] == 0
     assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
-def test_scheduler_apply_enabled_updates_live_routing_surface(monkeypatch, scheduler_fixture) -> None:
+def test_scheduler_apply_enabled_never_updates_the_live_routing_surface(monkeypatch, scheduler_fixture) -> None:
+    """Formerly `test_scheduler_apply_enabled_updates_live_routing_surface`,
+    which proved the scheduler's full auto-promote -> apply lifecycle moved
+    the live surface 0.5 -> 0.58. Parked: it must not move at all, from the
+    scheduled cycle either."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "true")
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="before_scheduler_apply")
@@ -221,11 +236,15 @@ def test_scheduler_apply_enabled_updates_live_routing_surface(monkeypatch, sched
         telemetry_override=[],
         class_metrics_override=scheduler_fixture["routing_metrics"],
     )
-    assert payload["summary"]["applies_executed"] >= 1
-    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.58
+    assert payload["summary"]["applies_executed"] == 0
+    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
-def test_scheduler_apply_enabled_can_use_replay_metrics_without_class_override(monkeypatch, scheduler_fixture) -> None:
+def test_scheduler_apply_enabled_with_replay_metrics_still_does_not_apply(monkeypatch, scheduler_fixture) -> None:
+    """Formerly `test_scheduler_apply_enabled_can_use_replay_metrics_without_class_override`.
+    Omitting `class_metrics_override` used to fall back to replay-derived
+    metrics and still reach a real apply; parked, there is no proposal for
+    either path to feed."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "true")
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="before_scheduler_replay_only")
@@ -237,10 +256,10 @@ def test_scheduler_apply_enabled_can_use_replay_metrics_without_class_override(m
         telemetry_override=scheduler_fixture["routing_telemetry"],
         class_metrics_override={},
     )
-    assert payload["summary"]["trials_executed"] >= 1
-    assert payload["summary"]["decisions_made"] >= 1
-    assert payload["summary"]["applies_executed"] >= 1
-    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.58
+    assert payload["summary"]["trials_executed"] == 0
+    assert payload["summary"]["decisions_made"] == 0
+    assert payload["summary"]["applies_executed"] == 0
+    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
 def test_scheduler_operator_gated_class_never_auto_applies(monkeypatch) -> None:
@@ -286,6 +305,10 @@ def test_scheduler_operator_gated_class_never_auto_applies(monkeypatch) -> None:
 
 
 def test_scheduler_routing_ramp_decision_only_mode(monkeypatch, scheduler_fixture) -> None:
+    """Formerly proved trials and decisions still run in decision-only mode
+    (apply disabled) even though nothing applies. Parked: no signal, so no
+    trial or decision is ever reached -- `applies_executed == 0` was already
+    the point being made and still holds, now for a different reason."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "false")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "false")
     api_routes.execute_substrate_mutation_scheduled_cycle(
@@ -296,13 +319,17 @@ def test_scheduler_routing_ramp_decision_only_mode(monkeypatch, scheduler_fixtur
         telemetry_override=scheduler_fixture["routing_telemetry"],
         class_metrics_override={},
     )
-    assert payload["summary"]["proposals_created"] >= 0
-    assert payload["summary"]["trials_executed"] >= 1
-    assert payload["summary"]["decisions_made"] >= 1
+    assert payload["summary"]["proposals_created"] == 0
+    assert payload["summary"]["trials_executed"] == 0
+    assert payload["summary"]["decisions_made"] == 0
     assert payload["summary"]["applies_executed"] == 0
 
 
 def test_scheduler_global_apply_true_but_routing_gate_disabled_blocks_apply(monkeypatch, scheduler_fixture) -> None:
+    """Formerly proved `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED=false` blocks
+    apply even with the global apply gate on. Parked: nothing is ever
+    attempted for routing regardless of either gate, so this is now a
+    stronger version of the same guarantee."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "false")
     mutation_control_surface.set_chat_reflective_lane_threshold(value=0.5, actor="routing_gate_disabled")
@@ -314,12 +341,16 @@ def test_scheduler_global_apply_true_but_routing_gate_disabled_blocks_apply(monk
         telemetry_override=scheduler_fixture["routing_telemetry"],
         class_metrics_override={},
     )
-    assert payload["summary"]["applies_attempted"] >= 1
+    assert payload["summary"]["applies_attempted"] == 0
     assert payload["summary"]["applies_executed"] == 0
     assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 
 def test_scheduler_routing_monitoring_regression_triggers_rollback(monkeypatch, scheduler_fixture) -> None:
+    """Formerly proved a full adopt -> post-adoption-regression -> rollback
+    lifecycle for routing. Parked: adoption can never happen, so there is
+    nothing to roll back -- the live surface simply never moves, which is a
+    stronger safety property than "moves and then rolls back correctly"."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD", "-0.05")
@@ -333,8 +364,8 @@ def test_scheduler_routing_monitoring_regression_triggers_rollback(monkeypatch, 
         class_metrics_override={},
         post_adoption_delta_by_target_surface_override={"routing": -0.2},
     )
-    assert payload["summary"]["applies_executed"] >= 1
-    assert any(event.get("event") == "mutation_rollback_recorded" for event in payload["trace"])
+    assert payload["summary"]["applies_executed"] == 0
+    assert not any(event.get("event") == "mutation_rollback_recorded" for event in payload["trace"])
     assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.5
 
 

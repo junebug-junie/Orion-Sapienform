@@ -145,7 +145,11 @@ from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator
-from orion.substrate.mutation_proposals import ProposalFactory
+from orion.substrate.mutation_proposals import (
+    ROUTING_TARGET_PARKED_REASON,
+    ProposalFactory,
+    build_placeholder_routing_proposal,
+)
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -5312,24 +5316,14 @@ def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
         if proposal.mutation_class == "routing_threshold_patch"
     ]
     routing_proposals.sort(key=lambda item: item.created_at, reverse=True)
-    proposal = routing_proposals[0] if routing_proposals else ProposalFactory(
-        routing_surface_reader=inspect_chat_reflective_lane_threshold,
-    ).from_pressure(
-        MutationPressureV1(
-            anchor_scope="orion",
-            subject_ref="entity:orion",
-            target_surface="routing",
-            pressure_kind="runtime_failure",
-            pressure_score=5.0,
-            evidence_refs=["telemetry:replay_inspection_seed"],
-            source_signal_ids=["signal:replay_inspection_seed"],
-        )
+    # ProposalFactory.from_pressure() refuses every "routing" pressure now
+    # (parked -- see mutation_proposals.py's _PARKED_MUTATION_CLASSES), so it
+    # can no longer supply this fallback. This endpoint only ever needed a
+    # routing_threshold_patch-shaped carrier for `inspect_routing_replay()`,
+    # not a real evidenced proposal -- build one directly instead.
+    proposal = routing_proposals[0] if routing_proposals else build_placeholder_routing_proposal(
+        source_pressure_id="pressure:replay_inspection_seed",
     )
-    if proposal is None:
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "data": {"error": "routing_proposal_unavailable"},
-        }
     corpus = ReplayCorpusRegistry(
         corpus_by_class={"routing_threshold_patch": "replay-routing-v1"},
         baseline_metric_ref_by_class={"routing_threshold_patch": "baseline-routing-v1"},
@@ -5429,6 +5423,14 @@ def _routing_live_ramp_posture_payload() -> Dict[str, Any]:
             "last_adoption": routing_adoption.model_dump(mode="json") if routing_adoption is not None else None,
             "last_rollback": routing_rollback.model_dump(mode="json") if routing_rollback is not None else None,
             "live_surface": inspect_chat_reflective_lane_threshold(),
+            # 2026-09-03: routing_threshold_patch is parked at
+            # ProposalFactory.plan_for_pressure() -- last_decision/last_adoption/
+            # last_rollback above are frozen at whatever existed before the park
+            # and will never move again while it holds. Without this the panel
+            # reads as "quiet" rather than "permanently inert" -- CLAUDE.md 0A:
+            # no empty-shell cognition without an inspectable reason why.
+            "routing_target_parked": True,
+            "routing_target_parked_reason": ROUTING_TARGET_PARKED_REASON,
         },
     }
 

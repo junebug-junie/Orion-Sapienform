@@ -29,9 +29,20 @@ surface receives is graph-review telemetry that has nothing to do with what
 `AUTO_ROUTER_LLM_ENABLED=false` in production, the lowest confidence any
 heuristic routing decision can carry at `execution_depth >= 2` is 0.61 --
 above the hardcoded patch target of 0.58 -- so `decision_confidence <
-routing_threshold` can never fire at this target regardless of evidence.
-See `orion/substrate/mutation_proposals.py`'s `_ROUTING_TARGET_PARKED_REASON`
-and `project_routing_threshold_mutation_parked_2026-09-03.md`.
+routing_threshold` can never fire at this target regardless of evidence. Full
+trail in this change's PR description and commit message. See
+`orion/substrate/mutation_proposals.py`'s `ROUTING_TARGET_PARKED_REASON`.
+
+`mutation_detectors.py`'s `from_review_telemetry()` also now filters
+"routing"-surfaced signals out of its return value entirely (not just at the
+proposal step): a signal that can only ever be refused three steps later
+should not cost a store write and a pressure-accumulation cycle on the way
+there. That means `autonomy_graph`-zone telemetry no longer reaches
+`plan_for_pressure()` at all via the worker's normal path -- the two tests
+below that need to exercise the worker's refusal-tracing and pressure-cooling
+behavior inject a "routing" `MutationSignalV1` directly via `run_cycle`'s
+`extra_signals` param instead, proving the `plan_for_pressure()` backstop
+still works for any signal that reaches it by whatever path.
 
 The no-op-guard tests below now call `_routing_threshold_payloads()`
 directly to keep exercising that logic -- it is still correct and will be
@@ -41,7 +52,7 @@ tests assert the new park behavior instead.
 
 from __future__ import annotations
 
-from orion.core.schemas.substrate_mutation import MutationPressureV1
+from orion.core.schemas.substrate_mutation import MutationPressureV1, MutationSignalV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
@@ -49,7 +60,7 @@ from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
 from orion.substrate.mutation_proposals import (
-    _ROUTING_TARGET_PARKED_REASON,
+    ROUTING_TARGET_PARKED_REASON,
     _routing_threshold_payloads,
     ProposalFactory,
 )
@@ -98,7 +109,7 @@ def test_plan_for_pressure_refuses_every_routing_pressure() -> None:
         _routing_pressure()
     )
     assert plan.proposal is None
-    assert plan.refusal_reason == _ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
 
 
 def test_plan_for_pressure_parks_regardless_of_a_real_gap() -> None:
@@ -108,14 +119,14 @@ def test_plan_for_pressure_parks_regardless_of_a_real_gap() -> None:
         _routing_pressure()
     )
     assert plan.proposal is None
-    assert plan.refusal_reason == _ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
 
 
 def test_plan_for_pressure_parks_with_no_reader_at_all() -> None:
     """The park guard does not depend on a surface reader existing."""
     plan = ProposalFactory().plan_for_pressure(_routing_pressure())
     assert plan.proposal is None
-    assert plan.refusal_reason == _ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
 
 
 def test_plan_for_pressure_parks_even_when_the_reader_would_raise() -> None:
@@ -126,7 +137,7 @@ def test_plan_for_pressure_parks_even_when_the_reader_would_raise() -> None:
         _routing_pressure()
     )
     assert plan.proposal is None
-    assert plan.refusal_reason == _ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
 
 
 def test_non_routing_surfaces_are_unaffected_by_the_park() -> None:
@@ -243,6 +254,28 @@ def test_a_store_outage_is_named_as_an_outage_not_an_unwritten_surface() -> None
 # --- worker-level: refusal is traced and cools the pressure ----------------
 
 
+def _routing_signal() -> MutationSignalV1:
+    """A "routing"-surfaced signal, injected directly via `extra_signals`.
+
+    `mutation_detectors.py`'s `from_review_telemetry()` filters "routing"
+    signals out of its own output now, so telemetry can no longer be used to
+    get one into the worker's pressure pipeline. `extra_signals` is the
+    documented bypass for exactly this (see `mutation_worker.py`'s
+    `run_cycle`) -- proving the `plan_for_pressure()` park still refuses a
+    "routing" pressure regardless of which path produced its source signal.
+    """
+    return MutationSignalV1(
+        event_kind="runtime_failure",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        target_zone="autonomy_graph",
+        target_surface="routing",
+        strength=0.9,
+        evidence_refs=["telemetry:injected"],
+        source_ref="test:injected-routing-signal",
+    )
+
+
 def test_worker_traces_the_refusal_instead_of_skipping_silently(monkeypatch) -> None:
     """A refusal is an outcome of the cycle, not an absence of one.
 
@@ -271,32 +304,20 @@ def test_worker_traces_the_refusal_instead_of_skipping_silently(monkeypatch) -> 
         trace_logger=traces.append,
     )
     monkeypatch.setenv("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true")
-    telemetry = [
-        GraphReviewTelemetryRecordV1(
-            invocation_surface="operator_review",
-            execution_outcome="failed",
-            selection_reason="x",
-            # autonomy_graph is the zone that maps to the routing surface, and
-            # >=1200ms raises routing_runtime_degradation -- see
-            # mutation_detectors._target_surface_for_zone / _build_rich_routing_signals.
-            target_zone="autonomy_graph",
-            runtime_duration_ms=1500,
-            degraded=True,
-            anchor_scope="orion",
-            subject_ref="entity:orion",
-        )
-        for _ in range(12)
-    ]
     # Routing pressure accumulates across cycles before it activates.
     for _ in range(12):
-        worker.run_cycle(telemetry=telemetry, measured_metrics_by_proposal={})
+        worker.run_cycle(
+            telemetry=[],
+            measured_metrics_by_proposal={},
+            extra_signals=[_routing_signal()],
+        )
         if any(t.get("event") == "mutation_proposal_refused" for t in traces):
             break
 
     refusals = [t for t in traces if t.get("event") == "mutation_proposal_refused"]
     assert refusals, f"no refusal traced; events={sorted({t.get('event') for t in traces})}"
     assert any(
-        f"reason={_ROUTING_TARGET_PARKED_REASON}" in (t.get("notes") or [])
+        f"reason={ROUTING_TARGET_PARKED_REASON}" in (t.get("notes") or [])
         for t in refusals
     )
     assert not [t for t in traces if t.get("event") == "mutation_proposal_enqueued"]
@@ -333,22 +354,13 @@ def test_a_refusal_cools_the_pressure_instead_of_re_evaluating_every_tick(
         trace_logger=traces.append,
     )
     monkeypatch.setenv("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true")
-    telemetry = [
-        GraphReviewTelemetryRecordV1(
-            invocation_surface="operator_review",
-            execution_outcome="failed",
-            selection_reason="x",
-            target_zone="autonomy_graph",
-            runtime_duration_ms=1500,
-            degraded=True,
-            anchor_scope="orion",
-            subject_ref="entity:orion",
-        )
-        for _ in range(12)
-    ]
     cycles = 24
     for _ in range(cycles):
-        worker.run_cycle(telemetry=telemetry, measured_metrics_by_proposal={})
+        worker.run_cycle(
+            telemetry=[],
+            measured_metrics_by_proposal={},
+            extra_signals=[_routing_signal()],
+        )
 
     refusals = [t for t in traces if t.get("event") == "mutation_proposal_refused"]
     assert refusals, "expected at least one refusal"

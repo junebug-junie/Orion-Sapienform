@@ -23,7 +23,11 @@ from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
-from orion.substrate.mutation_proposals import _ROUTING_TARGET_PARKED_REASON, ProposalFactory
+from orion.substrate.mutation_proposals import (
+    ROUTING_TARGET_PARKED_REASON,
+    ProposalFactory,
+    build_placeholder_routing_proposal,
+)
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -89,40 +93,38 @@ def _routing_pressure() -> MutationPressureV1:
 
 
 def _direct_routing_proposal(*, target_value: float = 0.58, rollback_value: float = 0.50) -> MutationProposalV1:
-    """Build a routing_threshold_patch proposal directly, bypassing ProposalFactory.
+    """A routing_threshold_patch proposal, bypassing the parked ProposalFactory.
 
     As of 2026-09-03, `ProposalFactory.plan_for_pressure()`/`from_pressure()`
     refuse every "routing" pressure outright (parked -- see
-    mutation_proposals.py's `_ROUTING_TARGET_PARKED_REASON` and
-    `project_routing_threshold_mutation_parked_2026-09-03.md`). The tests that
+    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`). The tests that
     use this are about generic proposal -> trial -> decision -> store/apply/
     replay mechanics, not about the parked evidence pipeline, so they build
-    the proposal the factory used to build directly instead. Mirrors the
-    exact shape `_routing_threshold_payloads()` produced.
+    the proposal the factory used to build directly instead, via the shared
+    `build_placeholder_routing_proposal()` (also used by
+    smoke_mutation_v21.py and the orion-hub replay-inspection endpoint, so
+    the shape stays in one place).
     """
-    return MutationProposalV1(
-        lane="operational",
-        mutation_class="routing_threshold_patch",
-        risk_tier="low",
-        target_surface="routing",
-        anchor_scope="orion",
-        subject_ref="entity:orion",
-        rationale="pressure:runtime_failure score:8.00",
-        expected_effect="reduce_runtime_failure",
-        evidence_refs=["telemetry:1"],
-        source_signal_ids=["signal-1"],
+    return build_placeholder_routing_proposal(
+        target_value=target_value,
+        rollback_value=rollback_value,
         source_pressure_id="pressure-routing-test",
-        patch=MutationPatchV1(
-            mutation_class="routing_threshold_patch",
-            target_surface="routing",
-            target_ref="routing",
-            patch={"chat_reflective_lane_threshold": target_value},
-            rollback_payload={"chat_reflective_lane_threshold": rollback_value},
-        ),
     )
 
 
-def test_signal_to_pressure_pipeline() -> None:
+def test_signal_to_pressure_pipeline_filters_parked_routing_signals() -> None:
+    """autonomy_graph review telemetry no longer produces a "routing" signal.
+
+    Formerly `test_signal_to_pressure_pipeline`, which asserted the opposite
+    (exactly one signal, target_surface "routing", feeding a real pressure).
+    As of 2026-09-03 the routing surface is parked: this telemetry is a
+    review-pipeline consolidation-outcome signal that has nothing to do with
+    what `chat_reflective_lane_threshold` gates, and mutation_proposals.py
+    refuses every "routing" pressure unconditionally regardless -- so the
+    detector filters it here instead of spending a store write and a
+    pressure-accumulation cycle on a signal that can only ever be discarded
+    three steps later.
+    """
     detector = MutationDetectors()
     telemetry = GraphReviewTelemetryRecordV1(
         invocation_surface="operator_review",
@@ -134,13 +136,19 @@ def test_signal_to_pressure_pipeline() -> None:
         target_zone="autonomy_graph",
     )
     signals = detector.from_review_telemetry([telemetry])
-    assert len(signals) == 1
-    pressure = PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2)).apply(current=None, signal=signals[0])
-    assert pressure.pressure_score > 0
-    assert pressure.target_surface == "routing"
+    assert signals == []
 
 
-def test_routing_detector_emits_richer_runtime_social_pressure_signals() -> None:
+def test_routing_detector_no_longer_emits_runtime_social_pressure_signals() -> None:
+    """As of 2026-09-03 the routing surface is parked (see
+    mutation_detectors.py's filter at the end of `from_review_telemetry()`).
+    Formerly `test_routing_detector_emits_richer_runtime_social_pressure_signals`,
+    which asserted these kinds WERE produced. The underlying signal-building
+    functions (`_build_rich_routing_signals` etc.) are untouched and still
+    build them internally -- they are filtered from the returned list now,
+    not removed at the source, so this proves the filter, not their absence
+    from the code.
+    """
     detector = MutationDetectors()
     telemetry = GraphReviewTelemetryRecordV1(
         invocation_surface="operator_review",
@@ -155,17 +163,7 @@ def test_routing_detector_emits_richer_runtime_social_pressure_signals() -> None
         degraded=True,
     )
     signals = detector.from_review_telemetry([telemetry])
-    kinds = {item.event_kind for item in signals}
-    assert "routing_decision_mismatch" in kinds
-    assert "routing_recall_dissatisfaction" in kinds
-    assert "routing_runtime_degradation" in kinds
-    provenance_signal = next(item for item in signals if item.event_kind == "routing_decision_mismatch")
-    assert provenance_signal.target_surface == "routing"
-    assert provenance_signal.metadata["source_kind"] == "routing_mismatch_signal"
-    assert provenance_signal.metadata["derived_signal_kind"] == "routing_decision_mismatch"
-    assert provenance_signal.metadata["confidence"] == provenance_signal.strength
-    assert any(ref.startswith("telemetry:") for ref in provenance_signal.evidence_refs)
-    assert any(ref.startswith("source_kind:") for ref in provenance_signal.evidence_refs)
+    assert signals == []
 
 
 def test_routing_rich_pressure_signals_do_not_broaden_non_routing_zones() -> None:
@@ -188,7 +186,17 @@ def test_routing_rich_pressure_signals_do_not_broaden_non_routing_zones() -> Non
     assert signals[0].event_kind in {"runtime_review_churn", "runtime_executed"}
 
 
-def test_pressure_events_become_mutation_signals_with_event_provenance() -> None:
+def test_routing_pressure_events_are_filtered_even_via_producer_provenance_path() -> None:
+    """`_signals_from_pressure_events` maps a pressure_event to "routing" by
+    its own `pressure_category`, independent of the record's own
+    `target_zone` -- the trickiest of the three routing-signal-producing
+    paths to filter correctly, since a record whose zone maps elsewhere can
+    still carry a routing-categorized pressure_event. Confirms the filter in
+    `from_review_telemetry()` catches this path too, not just the simpler
+    zone-based one. Formerly
+    `test_pressure_events_become_mutation_signals_with_event_provenance`,
+    which asserted this event WAS turned into a routing-surfaced signal.
+    """
     detector = MutationDetectors()
     event = MutationPressureEvidenceV1(
         pressure_event_id="pressure-evt-1",
@@ -210,13 +218,7 @@ def test_pressure_events_become_mutation_signals_with_event_provenance() -> None
         pressure_events=[event],
     )
     signals = detector.from_review_telemetry([telemetry])
-    matched = [item for item in signals if item.metadata.get("source_kind") == "producer_pressure_event"]
-    assert len(matched) == 1
-    signal = matched[0]
-    assert signal.target_surface == "routing"
-    assert signal.metadata["pressure_event_id"] == "pressure-evt-1"
-    assert signal.metadata["source_event_id"] == "feedback-1"
-    assert any(ref == "pressure_event:pressure-evt-1" for ref in signal.evidence_refs)
+    assert signals == []
 
 
 def test_cognitive_signals_can_be_derived_from_existing_artifacts() -> None:
@@ -592,7 +594,7 @@ def test_recall_pressure_evidence_history_bounded_and_in_proposal() -> None:
 
 def test_routing_pressure_is_parked_not_turned_into_a_proposal() -> None:
     """As of 2026-09-03 the routing surface is parked (see
-    mutation_proposals.py's `_ROUTING_TARGET_PARKED_REASON`): confirmed live
+    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`): confirmed live
     that the evidence feeding it has nothing to do with what the dial gates,
     and that the hardcoded 0.58 target is below the minimum confidence
     (0.61) any heuristic routing decision can carry at execution_depth >= 2
@@ -601,7 +603,7 @@ def test_routing_pressure_is_parked_not_turned_into_a_proposal() -> None:
     `test_pressure_to_proposal`, which asserted the opposite."""
     plan = ProposalFactory(routing_surface_reader=_routing_surface()).plan_for_pressure(_routing_pressure())
     assert plan.proposal is None
-    assert plan.refusal_reason == _ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
 
 
 def test_proposal_to_trial() -> None:
@@ -1067,6 +1069,9 @@ def test_retention_compaction_preserves_active_state(tmp_path: Path, monkeypatch
 def test_targeted_signal_persistence_keeps_restart_reload_behavior(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
+    # world_ontology, not autonomy_graph: this is a generic signal-persistence
+    # test, and autonomy_graph telemetry is now filtered to zero signals (the
+    # routing surface is parked -- see mutation_detectors.py).
     signal = MutationDetectors().from_review_telemetry(
         [
             GraphReviewTelemetryRecordV1(
@@ -1076,7 +1081,7 @@ def test_targeted_signal_persistence_keeps_restart_reload_behavior(tmp_path: Pat
                 runtime_duration_ms=8,
                 anchor_scope="orion",
                 subject_ref="entity:orion",
-                target_zone="autonomy_graph",
+                target_zone="world_ontology",
             )
         ]
     )[0]

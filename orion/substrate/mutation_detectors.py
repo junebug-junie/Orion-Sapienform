@@ -28,7 +28,21 @@ class MutationDetectors:
                 signals.extend(_build_rich_routing_signals(record=record, target_surface=target_surface))
             if self.allow_cognitive_lane:
                 signals.extend(_build_cognitive_signals_from_artifacts(record=record))
-        return signals
+        # "routing" (chat_reflective_lane_threshold) is parked as of 2026-09-03:
+        # this telemetry is a review-pipeline consolidation-outcome signal that
+        # has nothing to do with what that dial gates (decision_router.route()'s
+        # execution_depth/confidence check), and mutation_proposals.py refuses
+        # every "routing" pressure unconditionally regardless. Filtering here,
+        # not just at the proposal step, means the worker never spends a
+        # store write or a pressure-accumulation cycle on a signal that can
+        # only ever be discarded three steps later -- CLAUDE.md 0A: a signal
+        # excluded from one consumer but still ticking for every other one is
+        # hiding, not retired. `_signals_from_pressure_events` can route a
+        # pressure_event to "routing" from ANY zone (it keys off
+        # `event.pressure_category`, not the record's own target_zone), so
+        # this filters the full assembled list rather than special-casing the
+        # zone == "autonomy_graph" case alone.
+        return [signal for signal in signals if signal.target_surface != "routing"]
 
 
 def _build_base_signal(*, record: GraphReviewTelemetryRecordV1, target_surface: str) -> MutationSignalV1:

@@ -15,7 +15,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.core.schemas.substrate_mutation import (
     MutationDecisionV1,
-    MutationPatchV1,
     MutationProposalV1,
 )
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
@@ -29,7 +28,7 @@ from orion.substrate.mutation_control_surface import (
     inspect_chat_reflective_lane_threshold,
     set_chat_reflective_lane_threshold,
 )
-from orion.substrate.mutation_proposals import ProposalFactory
+from orion.substrate.mutation_proposals import ProposalFactory, build_placeholder_routing_proposal
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -148,38 +147,28 @@ def _isolated_control_surface(*, seed_threshold: float):
 
 
 def _routing_smoke_proposal(*, subject_ref: str, target_value: float = 0.58) -> MutationProposalV1:
-    """Build a routing_threshold_patch proposal directly.
+    """A routing_threshold_patch proposal, bypassing the parked ProposalFactory.
 
     As of 2026-09-03 `ProposalFactory.plan_for_pressure()`/`from_pressure()`
     refuse every "routing" pressure outright (parked -- see
-    mutation_proposals.py's `_ROUTING_TARGET_PARKED_REASON`), so this smoke's
+    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`), so this smoke's
     active-surface/auto-promote/apply/rollback-required demonstrations, which
     are about the queue/decision/apply mechanics and not about the parked
     evidence pipeline, build the proposal directly instead of going through
-    the (now dead-for-routing) detector -> pressure -> factory chain. Mirrors
-    what that chain used to build, reading the live isolated surface for the
-    rollback the same way `_routing_threshold_payloads()` did.
+    the (now dead-for-routing) detector -> pressure -> factory chain, via the
+    shared `build_placeholder_routing_proposal()` (also used by
+    test_mutation_v21.py and the orion-hub replay-inspection endpoint).
+
+    Rollback is a fixed 0.50, matching `_isolated_control_surface()`'s seed,
+    rather than a live read of the isolated surface -- no assertion in this
+    script depends on the exact rollback value, and a fixed value removes any
+    dependency on the surface having been written before this is called.
     """
-    current = float(inspect_chat_reflective_lane_threshold()["raw"]["value"])
-    return MutationProposalV1(
-        mutation_class="routing_threshold_patch",
-        target_surface="routing",
-        lane="operational",
-        risk_tier="low",
-        rationale="smoke-routing",
-        anchor_scope="orion",
+    return build_placeholder_routing_proposal(
+        target_value=target_value,
+        rollback_value=0.50,
         subject_ref=subject_ref,
-        expected_effect="reduce_runtime_executed",
-        evidence_refs=["telemetry:smoke"],
-        source_signal_ids=["signal:smoke"],
         source_pressure_id="pressure:smoke",
-        patch=MutationPatchV1(
-            mutation_class="routing_threshold_patch",
-            target_surface="routing",
-            target_ref="routing",
-            patch={"chat_reflective_lane_threshold": target_value},
-            rollback_payload={"chat_reflective_lane_threshold": current},
-        ),
     )
 
 

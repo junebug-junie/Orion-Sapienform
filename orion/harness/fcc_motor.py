@@ -1103,8 +1103,11 @@ async def run_fcc_turn(
         if stderr_snippet:
             err_msg = f"{err_msg}: {stderr_snippet}"
         if is_context_overflow_text(accumulated) or is_context_overflow_text(err_msg):
-            accumulated = apply_context_overflow_hint(accumulated)
-            err_msg = apply_context_overflow_hint(err_msg)
+            # n_ctx=lane_n_ctx or the hint quotes the container default and tells the
+            # operator the wrong window. Seen live 2026-09-03: a turn that overran the
+            # agent lane's 32768 reported "context window full (~131072 tokens)".
+            accumulated = apply_context_overflow_hint(accumulated, n_ctx=lane_n_ctx)
+            err_msg = apply_context_overflow_hint(err_msg, n_ctx=lane_n_ctx)
         yield {
             "type": "error",
             "error": err_msg,

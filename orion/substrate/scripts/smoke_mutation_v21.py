@@ -21,6 +21,10 @@ from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
+from orion.substrate.mutation_control_surface import (
+    inspect_chat_reflective_lane_threshold,
+    set_chat_reflective_lane_threshold,
+)
 from orion.substrate.mutation_proposals import ProposalFactory
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
@@ -173,7 +177,12 @@ def run_smoke(*, emit: bool = True) -> list[str]:
             store=store,
             detectors=MutationDetectors(),
             pressure=PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2, cooldown_seconds=30)),
-            proposals=ProposalFactory(),
+            # Real reader, not a stub: _isolated_control_surface() below already
+            # points the store at a throwaway sqlite seeded to 0.5, so the smoke
+            # exercises the live read path without touching the ambient surface.
+            proposals=ProposalFactory(
+                routing_surface_reader=inspect_chat_reflective_lane_threshold,
+            ),
             trial_runner=trial_runner,
             decision_engine=DecisionEngine(),
             applier=applier,
@@ -284,7 +293,14 @@ def run_smoke(*, emit: bool = True) -> list[str]:
         )
 
         # 4) Rollback payload required before apply.
-        proposal = ProposalFactory().from_pressure(
+        # Step 3 moved the isolated surface to 0.58. The generator now reads the
+        # live surface and refuses to propose a value already there, so reset the
+        # (throwaway) surface first -- otherwise this step has no proposal to
+        # strip a rollback from. Isolated store only; never the ambient one.
+        set_chat_reflective_lane_threshold(value=0.5, actor="mutation_smoke")
+        proposal = ProposalFactory(
+            routing_surface_reader=inspect_chat_reflective_lane_threshold,
+        ).from_pressure(
             PressureAccumulator(policy=PressurePolicy(activation_threshold=0.1)).apply(
                 current=None,
                 signal=MutationDetectors().from_review_telemetry(

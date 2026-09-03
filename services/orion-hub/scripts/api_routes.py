@@ -4895,7 +4895,9 @@ def execute_substrate_mutation_scheduled_cycle(
             store=SUBSTRATE_MUTATION_STORE,
             detectors=MutationDetectors(allow_cognitive_lane=cognitive_proposals_enabled),
             pressure=PressureAccumulator(),
-            proposals=ProposalFactory(),
+            proposals=ProposalFactory(
+                routing_surface_reader=inspect_chat_reflective_lane_threshold,
+            ),
             trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
             decision_engine=DecisionEngine(),
             applier=applier,
@@ -4999,6 +5001,22 @@ def execute_substrate_mutation_scheduled_cycle(
             "trials_executed": int(result.get("trials", 0)),
             "adoptions_completed": int(result.get("adoptions", 0)),
             "decisions_made": len([event for event in traces if event.get("event") == "mutation_decision_recorded"]),
+            # The scheduler discards `traces` (main.py calls this for effect),
+            # so a refusal traced inside the worker reaches nobody. Distinct from
+            # PR #2058's apply-blocked counters: those record a no-op caught at
+            # adoption; these record one that was never generated.
+            "proposals_refused": len(
+                [event for event in traces if event.get("event") == "mutation_proposal_refused"]
+            ),
+            "proposal_refusal_reasons": sorted(
+                {
+                    note.split("reason=", 1)[1]
+                    for event in traces
+                    if event.get("event") == "mutation_proposal_refused"
+                    for note in (event.get("notes") or [])
+                    if note.startswith("reason=")
+                }
+            ),
             "applies_attempted": applier.attempted,
             "applies_blocked": applier.blocked,
             "applies_executed": applier.completed,
@@ -5104,7 +5122,9 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             allow_cognitive_lane=_env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
         ),
         pressure=PressureAccumulator(),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(
+            routing_surface_reader=inspect_chat_reflective_lane_threshold,
+        ),
         trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
         decision_engine=DecisionEngine(),
         applier=applier,
@@ -5206,6 +5226,18 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             "queue_status_changes": queue_status_changes,
             "trials_run": len(trial_events),
             "decisions_made": len(decision_events),
+            "proposals_refused": len(
+                [event for event in traces if event.get("event") == "mutation_proposal_refused"]
+            ),
+            "proposal_refusal_reasons": sorted(
+                {
+                    note.split("reason=", 1)[1]
+                    for event in traces
+                    if event.get("event") == "mutation_proposal_refused"
+                    for note in (event.get("notes") or [])
+                    if note.startswith("reason=")
+                }
+            ),
             "applies_attempted": applier.attempted,
             "applies_blocked": applier.blocked,
             "applies_completed": applier.completed,
@@ -5266,7 +5298,9 @@ def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
         if proposal.mutation_class == "routing_threshold_patch"
     ]
     routing_proposals.sort(key=lambda item: item.created_at, reverse=True)
-    proposal = routing_proposals[0] if routing_proposals else ProposalFactory().from_pressure(
+    proposal = routing_proposals[0] if routing_proposals else ProposalFactory(
+        routing_surface_reader=inspect_chat_reflective_lane_threshold,
+    ).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",

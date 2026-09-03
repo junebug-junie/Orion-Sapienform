@@ -45,6 +45,13 @@ from scripts.mutation_cognition_context import build_mutation_cognition_context
 FIXTURE_CANARY = HUB_ROOT / "tests" / "fixtures" / "recall_canary" / "golden_cases.json"
 
 
+def _routing_surface(value: float = 0.50, *, degraded: bool = False):
+    """Stub for ProposalFactory's live-surface reader. 0.50 is what the routing
+    patch was always implicitly written against, so pre-existing assertions
+    (patch 0.58, rollback 0.50) still hold -- now derived, not hardcoded."""
+    return lambda: {"value": value, "raw": {"value": value}, "degraded": degraded}
+
+
 def _request_with_cookie(cookie_value: str = "") -> Request:
     headers = []
     if cookie_value:
@@ -64,7 +71,7 @@ def _proposal_with_readiness(*, recommendation: str, gates: list[str]) -> tuple[
         evidence_refs=["recall_compare:a"],
         source_signal_ids=["sig-a"],
     )
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     patch = dict(proposal.patch.patch)
     patch["recall_strategy_readiness"] = {"recommendation": recommendation, "gates_blocked": list(gates)}

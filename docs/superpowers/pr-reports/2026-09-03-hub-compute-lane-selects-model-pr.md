@@ -346,3 +346,61 @@ circe-side change, see below.
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/2062
+
+
+---
+
+## CORRECTION (2026-09-03, after merge)
+
+Two claims above were wrong when written. Both are corrected here rather than
+edited in place, so the error and its cause stay visible.
+
+**1. "the turn DID route to the 27B and DID overrun its window" — WRONG.**
+
+That turn (`19947bef-…`) never reached the 27B. Its `fcc_served_model` was
+`<synthetic>`, which masked the real backend, and I inferred the 27B from the
+`Prompt is too long` draft rather than verifying it. The hub image did not
+contain the routing code at all at that point (see the next correction), so the
+turn took the unchanged default: `MODEL_SONNET` -> `llamacpp/harness` -> the
+35B. `Prompt is too long` came from that lane, not from the agent lane's 32768.
+
+The lesson is the one this repo already writes down: an absent reading must not
+be allowed to assert a cause. `<synthetic>` meant "no model recorded", and I
+read it as corroboration.
+
+**2. "no profile in config/llm_profiles.yaml matches Qwen3.8-27B-UD-Q4_K_XL" —
+WRONG, and it produced a bogus blocker.**
+
+The profile is `qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex`, present in this
+repo and in circe's checkout. My grep was case-sensitive (`Qwen3.8-27B` /
+`27B-UD`) against a lowercase key, found nothing, and I turned that into a
+stated architectural blocker instead of a failed search. `config/llm_profiles.yaml`
+is canon and always was.
+
+**Root cause of both: the hub image build was frozen.**
+`services/orion-hub/.dockerignore` excluded the entire build context with a
+bare `*`, so every `COPY` layer stayed pinned and no `orion/` change could
+reach the hub image. Every "deployed and verified" hub claim in this report is
+therefore suspect for the routing path specifically. Fixed separately; see that
+PR.
+
+**What is actually verified now, from `harness_turn_trace`, after the
+dockerignore fix and with ctx_size raised to 131072:**
+
+```text
+Mode=Agent  + Compute=Agent -> Qwen3.8-27B-UD-Q4_K_XL | completed | grounded | exit 0
+                               "17 times 23 is 391."
+Mode=Orion  + Compute=Chat  -> Qwen3.6-35B-A3B-UD-Q5_K_M | completed | grounded
+                               "12 plus 30 is 42."
+```
+
+GPU1 after the ctx raise: 24,665 MiB of 32,768 used, single tenant, no OOM --
+within ~200 MiB of the 24.3 GiB predicted in the profile comment.
+
+One Orion turn in between returned `failed` with
+`grounding_status = "RPC timeout waiting on orion:exec:result:…"`. That was a
+downstream finalize RPC, not routing: the governor logged
+`harness_motor_complete … verdict=completed grounding=grounded draft_len=17`
+with the correct draft for the same turn, and an immediate retry completed
+fully. Recorded rather than dropped, since it is a real intermittent worth
+watching.

@@ -1,3 +1,49 @@
-*
-!ai-voice-service/**
-!orion-bus/client/**
+# Build context for this image is the REPO ROOT (docker-compose.yml sets
+# `context: ../..`), not services/orion-hub/. That is what broke the previous
+# version of this file, which read:
+#
+#     *
+#     !ai-voice-service/**
+#     !orion-bus/client/**
+#
+# Those two re-includes are paths under `services/`, so they match nothing at
+# the repo root -- leaving `*` to exclude the ENTIRE context. BuildKit then
+# hashes an effectively empty context, so every `COPY` in the Dockerfile
+# (orion, services/orion-hub, requirements) stayed pinned to whatever layer was
+# cached first and NO code change could reach the image again. Confirmed live
+# 2026-09-03: `COPY orion /app/orion` reported CACHED across repeated
+# --build deploys while the running container served a copy of
+# turn_orchestrator.py hours older than the source; removing this file made the
+# same build re-run that COPY and pick the change up immediately.
+#
+# So: exclude by path, and never with a bare `*`. Anything the Dockerfile
+# COPYs must NOT be listed here.
+
+# VCS + local agent scratch
+.git
+.worktrees
+.claude/worktrees
+
+# Virtualenvs and caches (orion_dev alone is GBs)
+orion_dev
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Generated knowledge-graph artifacts (graph.json alone is ~43MB)
+graphify-out
+
+# Vendored JS trees
+**/node_modules
+services/orion-ai-town/upstream
+
+# Model weights and large local data
+**/*.gguf
+**/*.safetensors
+**/*.bin
+
+# Secrets -- never in an image layer
+**/.env

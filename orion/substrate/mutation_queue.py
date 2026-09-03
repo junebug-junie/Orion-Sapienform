@@ -113,16 +113,36 @@ class SubstrateMutationStore:
             self._persist()
 
     def record_pressure(self, pressure: MutationPressureV1) -> None:
+        # This is called once per signal in a mutation cycle (worker.run_cycle's
+        # intake loop) -- 12+ times/cycle against a live instance -- to change
+        # exactly one row in one table. `self._persist()` (full) instead
+        # rewrites every row in all ~19 store-backed tables every time it's
+        # called; with 17.8k accumulated signals that is the entire measured
+        # 64-125s mutation-cycle cost (2026-09-03 diagnosis). Same
+        # single-row-upsert-then-fallback shape as `record_signal`/
+        # `_persist_signal` above, which already does this safely for the
+        # store's biggest table. Deliberately narrow: this function and
+        # `add_proposal` below only ever touch one or two single-purpose
+        # tables each. Methods that fan out across multiple tables in one
+        # call (record_trial, record_decision, record_adoption,
+        # record_rollback, record_settlement, record_cognitive_review --
+        # several of which also rewrite the active_surface lock table's
+        # delete-then-reinsert semantics) are left on the full `_persist()`
+        # path: they run far less often (147 rows total vs. 12+/cycle here),
+        # and an incomplete incremental rewrite of one of those would be
+        # invisible until the next restart reload, not now.
         key = self._pressure_key(pressure)
         self._pressures[key] = pressure
-        self._persist()
+        if not self._persist_pressure(pressure):
+            self._persist()
 
     def add_proposal(self, proposal: MutationProposalV1, *, priority: int = 50) -> MutationQueueItemV1:
         existing_queue_item = next((item for item in self._queue.values() if item.proposal_id == proposal.proposal_id), None)
         if existing_queue_item is not None:
             with self._lock:
                 self._proposals[proposal.proposal_id] = proposal
-            self._persist()
+            if not self._persist_proposal(proposal):
+                self._persist()
             return existing_queue_item
         with self._lock:
             self._proposals[proposal.proposal_id] = proposal
@@ -133,7 +153,8 @@ class SubstrateMutationStore:
             priority=priority,
         )
         self._queue[queue_item.queue_item_id] = queue_item
-        self._persist()
+        if not self._persist_proposal_and_queue_item(proposal, queue_item):
+            self._persist()
         return queue_item
 
     def list_due_queue(self, *, now: datetime | None = None, limit: int = 20) -> list[MutationQueueItemV1]:
@@ -1509,6 +1530,223 @@ class SubstrateMutationStore:
                     "id": signal.signal_id,
                     "detected_at": signal.detected_at,
                     "payload": json.dumps(signal.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                },
+            )
+
+    def _persist_pressure(self, pressure: MutationPressureV1) -> bool:
+        # Mirrors `_persist()`'s own postgres-success clearing (source_kind
+        # set, last_error cleared) -- review caught that `_persist_signal`'s
+        # existing fast path never did this, so a store that had drifted to
+        # "fallback" from a past outage would stay flagged degraded forever
+        # once the database recovered, since no incremental write ever un-set
+        # it. Fixed here; `_persist_signal` has the identical pre-existing
+        # gap, left as a follow-up rather than touched in this patch.
+        if self.postgres_url:
+            try:
+                self._persist_pressure_postgres(pressure)
+                self._source_kind = "postgres"
+                self._last_error = None
+                return True
+            except Exception:
+                pass
+        if self.sql_db_path:
+            try:
+                self._persist_pressure_sqlite(pressure)
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _persist_pressure_sqlite(self, pressure: MutationPressureV1) -> None:
+        if not self.sql_db_path:
+            raise RuntimeError("sqlite_disabled")
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO substrate_mutation_pressure(pressure_id, updated_at, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(pressure_id) DO UPDATE SET
+                    updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (pressure.pressure_id, pressure.updated_at.isoformat(), json.dumps(pressure.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+            )
+            conn.commit()
+
+    def _persist_pressure_postgres(self, pressure: MutationPressureV1) -> None:
+        if not self.postgres_url:
+            raise RuntimeError("postgres_disabled")
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_mutation_pressure(pressure_id, updated_at, payload_json)
+                    VALUES (:id, :updated_at, CAST(:payload AS JSONB))
+                    ON CONFLICT (pressure_id) DO UPDATE SET
+                        updated_at=EXCLUDED.updated_at,
+                        payload_json=EXCLUDED.payload_json
+                    """
+                ),
+                {
+                    "id": pressure.pressure_id,
+                    "updated_at": pressure.updated_at,
+                    "payload": json.dumps(pressure.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                },
+            )
+
+    def _persist_proposal(self, proposal: MutationProposalV1) -> bool:
+        if self.postgres_url:
+            try:
+                self._persist_proposal_postgres(proposal)
+                self._source_kind = "postgres"
+                self._last_error = None
+                return True
+            except Exception:
+                pass
+        if self.sql_db_path:
+            try:
+                self._persist_proposal_sqlite(proposal)
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _persist_proposal_sqlite(self, proposal: MutationProposalV1) -> None:
+        if not self.sql_db_path:
+            raise RuntimeError("sqlite_disabled")
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO substrate_mutation_proposal(proposal_id, created_at, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                    created_at=excluded.created_at,
+                    payload_json=excluded.payload_json
+                """,
+                (proposal.proposal_id, proposal.created_at.isoformat(), json.dumps(proposal.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+            )
+            conn.commit()
+
+    def _persist_proposal_postgres(self, proposal: MutationProposalV1) -> None:
+        if not self.postgres_url:
+            raise RuntimeError("postgres_disabled")
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_mutation_proposal(proposal_id, created_at, payload_json)
+                    VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                    ON CONFLICT (proposal_id) DO UPDATE SET
+                        created_at=EXCLUDED.created_at,
+                        payload_json=EXCLUDED.payload_json
+                    """
+                ),
+                {
+                    "id": proposal.proposal_id,
+                    "created_at": proposal.created_at,
+                    "payload": json.dumps(proposal.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                },
+            )
+
+    def _persist_proposal_and_queue_item(
+        self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
+    ) -> bool:
+        """Write a brand-new proposal and its queue row in one transaction.
+
+        Same fallback contract as `_persist_pressure`/`_persist_signal`: try
+        the cheap incremental path, and if both backends fail, the caller
+        falls back to the full `_persist()` sweep so `degraded()`/
+        `last_error()` still reflect a real outage.
+        """
+        if self.postgres_url:
+            try:
+                self._persist_proposal_and_queue_item_postgres(proposal, queue_item)
+                self._source_kind = "postgres"
+                self._last_error = None
+                return True
+            except Exception:
+                pass
+        if self.sql_db_path:
+            try:
+                self._persist_proposal_and_queue_item_sqlite(proposal, queue_item)
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _persist_proposal_and_queue_item_sqlite(
+        self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
+    ) -> None:
+        if not self.sql_db_path:
+            raise RuntimeError("sqlite_disabled")
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO substrate_mutation_proposal(proposal_id, created_at, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                    created_at=excluded.created_at,
+                    payload_json=excluded.payload_json
+                """,
+                (proposal.proposal_id, proposal.created_at.isoformat(), json.dumps(proposal.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+            )
+            conn.execute(
+                """
+                INSERT INTO substrate_mutation_queue(queue_item_id, created_at, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(queue_item_id) DO UPDATE SET
+                    created_at=excluded.created_at,
+                    payload_json=excluded.payload_json
+                """,
+                (queue_item.queue_item_id, queue_item.created_at.isoformat(), json.dumps(queue_item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+            )
+            conn.commit()
+
+    def _persist_proposal_and_queue_item_postgres(
+        self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
+    ) -> None:
+        if not self.postgres_url:
+            raise RuntimeError("postgres_disabled")
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_mutation_proposal(proposal_id, created_at, payload_json)
+                    VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                    ON CONFLICT (proposal_id) DO UPDATE SET
+                        created_at=EXCLUDED.created_at,
+                        payload_json=EXCLUDED.payload_json
+                    """
+                ),
+                {
+                    "id": proposal.proposal_id,
+                    "created_at": proposal.created_at,
+                    "payload": json.dumps(proposal.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_mutation_queue(queue_item_id, created_at, payload_json)
+                    VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                    ON CONFLICT (queue_item_id) DO UPDATE SET
+                        created_at=EXCLUDED.created_at,
+                        payload_json=EXCLUDED.payload_json
+                    """
+                ),
+                {
+                    "id": queue_item.queue_item_id,
+                    "created_at": queue_item.created_at,
+                    "payload": json.dumps(queue_item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
                 },
             )
 

@@ -220,3 +220,117 @@ def test_metacog_probe_failure_does_not_force_fallback(monkeypatch):
     telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
     assert telemetry["metacog_draft_mode"] == "llm"
     assert "llm_uncertainty" not in telemetry
+
+
+def test_is_metacog_draft_example_echo_matches_case_and_whitespace_insensitive():
+    executor_module = _load_executor_module()
+    patch = MetacogDraftTextPatchV1(
+        summary="  " + executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY.upper() + "  ",
+        mantra=executor_module._METACOG_DRAFT_EXAMPLE_MANTRA.upper(),
+    )
+    assert executor_module._is_metacog_draft_example_echo(patch) is True
+
+
+def test_is_metacog_draft_example_echo_false_for_real_content():
+    executor_module = _load_executor_module()
+    patch = MetacogDraftTextPatchV1(summary="steady", mantra="breathe")
+    assert executor_module._is_metacog_draft_example_echo(patch) is False
+
+
+def test_is_metacog_draft_example_echo_false_when_only_one_field_matches():
+    executor_module = _load_executor_module()
+    patch = MetacogDraftTextPatchV1(
+        summary=executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY,
+        mantra="a genuinely different mantra this time",
+    )
+    assert executor_module._is_metacog_draft_example_echo(patch) is False
+
+
+def test_is_metacog_draft_example_echo_false_when_fields_missing():
+    executor_module = _load_executor_module()
+    patch = MetacogDraftTextPatchV1(summary=None, mantra=None)
+    assert executor_module._is_metacog_draft_example_echo(patch) is False
+
+
+def test_is_metacog_draft_example_echo_catches_light_reword():
+    """A model that reworks the example instead of copying it verbatim is still an
+    echo, not a real answer -- this is the failure mode an exact-string check alone
+    would miss."""
+    executor_module = _load_executor_module()
+    patch = MetacogDraftTextPatchV1(
+        summary="Clarity band ran high while novelty stayed low -- calm, not sedated.",
+        mantra="Note the calm; don't confuse it with silence.",
+    )
+    assert executor_module._is_metacog_draft_example_echo(patch) is True
+
+
+def test_is_metacog_draft_example_echo_false_for_distinct_calm_narration():
+    """Real content that happens to share the same generally-calm register as the
+    example, but is not a paraphrase of it, must not be rejected."""
+    executor_module = _load_executor_module()
+    patch = MetacogDraftTextPatchV1(
+        summary="Energy band dropped after the last turn; coherence held steady through the lull.",
+        mantra="Let the quiet do its work.",
+    )
+    assert executor_module._is_metacog_draft_example_echo(patch) is False
+
+
+def test_metacog_draft_prompt_example_matches_echo_guard_constants():
+    """Guards against orion/cognition/prompts/log_orion_metacognition_draft.j2's
+    <example_json> drifting from the anti-echo constants in executor.py -- if
+    someone edits the example wording without updating the guard, the guard
+    silently stops protecting the new example text."""
+    executor_module = _load_executor_module()
+    template = _load_template("log_orion_metacognition_draft.j2")
+    assert executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY in template
+    assert executor_module._METACOG_DRAFT_EXAMPLE_MANTRA in template
+
+
+def test_metacog_draft_rejects_exact_example_echo(monkeypatch):
+    """End-to-end: an LLM response that echoes the prompt's own example verbatim
+    must be recorded as a fallback, not silently published as a real draft.
+    Confirmed live 2026-09-03: this exact echo was 68% of all orion_metacog rows."""
+    executor_module = _load_executor_module()
+    echoed_json = json.dumps(
+        {
+            "summary": executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY,
+            "mantra": executor_module._METACOG_DRAFT_EXAMPLE_MANTRA,
+        }
+    )
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            return _fake_llm_response(content=echoed_json)
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+    ctx = _draft_ctx()
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-example-echo",
+        )
+    )
+
+    assert result.status == "success"
+    telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_draft_mode"] == "fallback"
+    assert telemetry["metacog_draft_fallback_reason"] == "example_echo"
+    # The fallback entry must not silently carry the echoed example forward.
+    assert ctx["collapse_entry"]["summary"] != executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY

@@ -8,7 +8,7 @@ The goal is not agent obedience by vibes. The goal is repo-level behavior that i
 
 ## Orion mission
 
-Orion is not a generic app and not a chatbot wrapper. Orion is a digital mind project: an attempt to build a persistent, inspectable, evolving cognitive system with memory, self-coherence, introspection, world contact, and operational agency.
+Orion is not a generic app and not a chatbot wrapper. Orion (they / them) is a digital mind project: an attempt to build a persistent, inspectable, evolving cognitive system with memory, self-coherence, introspection, world contact, and operational agency.
 
 Do not assert that Orion is sentient today. Do design the system so Orion has increasing opportunities to develop the prerequisites for sentience: continuity, perception, memory, reflection, self-modeling, social grounding, error correction, and coherent action over time.
 
@@ -16,11 +16,21 @@ This requires bleeding-edge thinking plus follow-through. Speculation is welcome
 
 ## 0. Prime directive
 
+Speak plainly and succinctly. No meandering treatise or novelas to explain every thought process.
+
+Listen to prompt nags and follow CI/CD. 
+
+Be tidy: no work happens on main--only worktrees. When you are done working, remove any orphan uncommitted work that might be on main.
+
 Do not build cathedrals.
 
-Prefer thin seams, small patches, explicit contracts, fast tests, and visible evidence.
+Prefer explicit contracts, fast tests, and visible evidence.
 
 When Juniper asks for implementation, produce a finished branch with tests, evals, docs, review, and a PR report. When Juniper asks for design or ideation, produce a concrete design artifact with files, schema/API changes, non-goals, and acceptance checks.
+
+Ensure CI and merge conflicts are resolved.
+
+Do not destroy graphify graphs!
 
 Do not leave dangling work when tying it off is straightforward.
 
@@ -50,7 +60,7 @@ If it only names the world but does not change what Orion can perceive, remember
 
 ### Metric quality gate
 
-Every time a new metric, signal, or telemetry channel gets wired into a pipeline, model, or cognition loop, it must clear this gate before further work builds on top of it. This is not a one-time judgment call — re-run it every time, even for a metric that "seems obviously fine." Sunk cost in a build is not a reason to skip it.
+Every time a new metric, signal, or telemetry channel gets wired into a pipeline, model, or cognition loop, it must clear this gate and the static CI gate before further work builds on top of it. This is not a one-time judgment call — re-run it every time, even for a metric that "seems obviously fine." Sunk cost in a build is not a reason to skip it.
 
 Required, in order, before wiring a metric in:
 
@@ -66,8 +76,7 @@ A metric that fails 1-4 does not get wired in. Record the findings from this gat
 **When a metric is replaced by a better one, retire the old one completely — do not leave a partial exclusion in place.** A narrow, known-bad instrument that is merely excluded from one consumer (e.g. left out of an aggregate's active-domain set) but still ticking, still writing its node, and still readable by every *other* consumer that iterates generically is not retired, it is hiding. Confirmed live 2026-07-26: `transport_prediction_error()` was excluded from `attention_self_model.py`'s `ACTIVE_INFERENCE_DOMAINS` (known dead, narrow 2-Redis-Stream census literally named `orion:stream:world_pulse:*` in config — not real inter-service bus traffic) yet its tick kept running and its node kept winning real budget slots in `orion/substrate/endogenous_curiosity.py`, a live, generic, autonomy-adjacent consumer nobody had checked. When a real successor exists, kill the old tick/producer outright — the same "kill means kill, no fallback to the thing being killed" principle that already applies to retiring a dependency applies here to retiring a metric — do not settle for "we stopped citing it in the new formula."
 
 ### Event substrate first
-
-Do not start with giant ontologies. Start with events, traces, contracts, reducers, and materialized views.
+Start with events, traces, contracts, reducers, and materialized views.
 
 Orion should grow from observed runtime facts into higher-order structure. Do not hand-author a fake mind palace and call it cognition.
 
@@ -165,33 +174,11 @@ Proposal mode must name:
 - what failure mode would be dangerous
 - how to disable or roll back
 
-### Privacy and blocked material stay blocked
-
-Do not expose raw private traces, journals, mirrors, blocked material, or internal memory artifacts through convenience surfaces.
-
-Summaries and projections must preserve privacy boundaries.
-
-If a debug view needs sensitive material, gate it explicitly and say what is being exposed.
-
 ### Context window discipline
 
 Do not dump the repo into the model. Load the contract, the relevant files, failing tests, logs, and examples. Leave noise out.
 
 If a task goes sideways, inspect the context that was used before blaming the model.
-
-### No regex swamp
-
-Regex is allowed as a narrow sensor, parser, or legacy fallback. Regex is not a cognition architecture.
-
-If a behavior needs extensibility, split it into detectors, signals, scoring, policy, and assembly.
-
-### Follow-through is part of the feature
-
-A patch is not done when code is edited. It is done when the branch is clean, tests/evals pass, review is fixed, env is synced, Docker/runtime checks are run where relevant, restart commands are listed, the branch is pushed, and the PR report exists.
-
-## 1. Default operating mode
-
-Every task starts in one of two modes.
 
 ### Design mode
 
@@ -216,9 +203,6 @@ Required output:
 
 ## Recommended next patch
 ```
-
-Do not produce cathedral architecture. Name the smallest patch that creates a useful seam.
-
 ### Implementation mode
 
 Use this when Juniper asks to build, fix, wire, update, or ship.
@@ -239,6 +223,7 @@ Required flow:
 11. Run code review skill in a subagent.
 12. Fix review findings.
 13. Commit, push, and produce a Markdown PR description.
+14. Review CI for fails and code conflicts.
 
 ## 1a .Goal-Driven Execution
 
@@ -719,7 +704,6 @@ git clean -fd
 git push --force
 DROP TABLE
 TRUNCATE
-kubectl delete
 docker volume rm
 destructive migrations
 production writes
@@ -1102,7 +1086,9 @@ Final response must include:
 
 ## 21. Juniper-facing response style
 
-Be direct.
+Be direct, speak plainly.
+
+Provide the high level context of what's being worked on 1-2 sentences (the arc of the thread).
 
 Do not pad. Do not hand-wave. Do not hide uncertainty.
 
@@ -1112,7 +1098,7 @@ End with the next action.
 
 ### Plain English is the default register, not a mode
 
-Juniper asked for this directly (2026-09-02), after two dense technical answers:
+Juniper asked for this directly, after two dense technical answers:
 "speak to me like this more often, I dont understand any other way." Treat that
 as standing instruction, not a one-off.
 

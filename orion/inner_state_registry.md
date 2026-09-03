@@ -95,8 +95,19 @@ of four composition statuses:
   `orion/mood_arc/fit_encoder.py` trains a windowed autoencoder over
   `mood_arc_corpus.v1` rows and writes a dark, disk-only
   `MoodArcEncoderManifestV1` artifact triad (`manifest.json`/`weights.npz`/
-  `probes.json`); no bus publish, no cognition consumer, same REHEARSAL
-  reasoning as its corpus sibling. That same session found the spec's
+  `probes.json`); no bus publish of its own, `REHEARSAL` for the
+  SelfStateV1-composition question this file's four statuses actually track
+  (see above). **Corrected 2026-09-02: "no cognition consumer" as written
+  here as of 2026-07-13 is no longer accurate** -- `orion.mood_arc.fit_encoder`
+  is now imported directly by `services/orion-field-digester/app/anomaly_scorer.py`
+  and feeds the Hub's main-page Cognitive EKG viz, gated behind
+  `FIELD_CHANNEL_ANOMALY_ENABLED` (default off). **Update, 2026-09-03**: that
+  consumer used to read a separately-tracked model directory, disconnected
+  from this entry's own `v4` -- converged, it now resolves this module's own
+  `active.json` directly, with live per-tick enrichment added for the
+  channels its own in-process row-building couldn't produce. Full detail
+  in `orion/inner_state_registry.py`'s `mood_arc_encoder.v1` entry and
+  `orion/mood_arc/README.md`'s "Status" note. That same session found the spec's
   original single shuffle-baseline gate too weak on its own -- this corpus's
   real autocorrelation is largely explained by a known, deliberate
   leaky-integrator decay mechanism (`BIOMETRICS_FIELD_DECAY_RATE=0.92`,

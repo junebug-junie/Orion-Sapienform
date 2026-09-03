@@ -47,8 +47,9 @@ class FieldDigesterWorker:
         self._anomaly_scorer: FieldChannelAnomalyScorer | None = None
         if self._settings.field_channel_anomaly_enabled:
             self._anomaly_scorer = FieldChannelAnomalyScorer(
-                encoder_dir=self._settings.field_channel_anomaly_encoder_dir,
+                models_root=self._settings.field_channel_anomaly_models_root,
                 threshold_multiplier=self._settings.field_channel_anomaly_threshold_multiplier,
+                postgres_uri=self._settings.postgres_uri,
                 startup_grace_sec=self._settings.field_channel_anomaly_startup_grace_sec,
             )
         self._stop = asyncio.Event()

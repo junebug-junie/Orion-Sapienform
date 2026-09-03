@@ -66,6 +66,13 @@ class SubstrateMutationStore:
     def __post_init__(self) -> None:
         self._retention_max_blocked_applies = self._env_int("SUBSTRATE_MUTATION_RETENTION_MAX_BLOCKED_APPLIES", 500, low=50, high=100000)
         self._retention_max_rollbacks = self._env_int("SUBSTRATE_MUTATION_RETENTION_MAX_ROLLBACKS", 500, low=50, high=100000)
+        # Adoptions were self-limiting only by accident: the surface lock was
+        # never released on success, so a surface could hold exactly one forever
+        # and the live table had a single row. Now that a change settles and
+        # hands the surface back, a surface can adopt roughly once per
+        # rollback_window_sec -- and every _persist() re-upserts every adoption,
+        # so unbounded growth would make each cycle progressively more expensive.
+        self._retention_max_adoptions = self._env_int("SUBSTRATE_MUTATION_RETENTION_MAX_ADOPTIONS", 500, low=50, high=100000)
         if self.postgres_url:
             try:
                 self._ensure_postgres_schema()
@@ -217,6 +224,28 @@ class SubstrateMutationStore:
         self._set_queue_status_for_proposal(adoption.proposal_id, "applied")
         self._persist()
         return []
+
+    def record_settlement(self, adoption_id: str) -> bool:
+        """Release a surface because its change survived, not because it failed.
+
+        ``record_adoption`` takes the one-live-mutation-per-surface lock and,
+        until this existed, ``record_rollback`` was the only thing that gave it
+        back. So a mutation that *succeeded* held its surface forever: on
+        2026-09-02 a single adoption blocked 77 subsequent proposals for
+        thirteen hours, every one of them decided ``hold /
+        active_surface_mutation_exists``.
+
+        Settling keeps the applied change and the adoption record. It only
+        clears the lock, so the surface can be proposed against again.
+        """
+        adoption = self._adoptions.get(adoption_id)
+        if adoption is None or adoption.status != "applied":
+            return False
+        self._adoptions[adoption_id] = adoption.model_copy(update={"status": "settled"})
+        if self._active_surface_by_target.get(adoption.target_surface) == adoption_id:
+            self._active_surface_by_target.pop(adoption.target_surface, None)
+        self._persist()
+        return True
 
     def record_rollback(self, rollback: MutationRollbackV1) -> None:
         self._rollbacks[rollback.rollback_id] = rollback
@@ -1390,6 +1419,16 @@ class SubstrateMutationStore:
             rows = sorted(self._rollbacks.values(), key=lambda row: row.created_at)
             keep = rows[-self._retention_max_rollbacks :]
             self._rollbacks = {row.rollback_id: row for row in keep}
+        if len(self._adoptions) > self._retention_max_adoptions:
+            # Never evict an adoption that still holds a surface: dropping the
+            # holder would strand the lock with nothing able to release it.
+            held = set(self._active_surface_by_target.values())
+            rows = sorted(self._adoptions.values(), key=lambda row: row.created_at)
+            evictable = [row for row in rows if row.adoption_id not in held]
+            surplus = len(self._adoptions) - self._retention_max_adoptions
+            drop = {row.adoption_id for row in evictable[:surplus]}
+            if drop:
+                self._adoptions = {k: v for k, v in self._adoptions.items() if k not in drop}
 
     def _persist_signal(self, signal: MutationSignalV1) -> bool:
         if self.postgres_url:

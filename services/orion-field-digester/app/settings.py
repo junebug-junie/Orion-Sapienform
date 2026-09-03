@@ -111,11 +111,24 @@ class Settings(BaseSettings):
     # orion/mood_arc/fit_encoder.py encoder, publishing
     # orion:field_channel:anomaly_score for orion-equilibrium-service's
     # telemetry_anomaly_metacog_gate. Off by default -- requires a real
-    # trained encoder artifact (manifest.json + weights.npz) at
-    # FIELD_CHANNEL_ANOMALY_ENCODER_DIR; this service does not train one
-    # itself. See services/orion-field-digester/README.md.
+    # trained encoder artifact (manifest.json + weights.npz) resolved from
+    # FIELD_CHANNEL_ANOMALY_MODELS_ROOT/active.json; this service does not
+    # train one itself. See services/orion-field-digester/README.md.
     field_channel_anomaly_enabled: bool = Field(False, alias="FIELD_CHANNEL_ANOMALY_ENABLED")
-    field_channel_anomaly_encoder_dir: str = Field("", alias="FIELD_CHANNEL_ANOMALY_ENCODER_DIR")
+    # 2026-09-03, renamed from FIELD_CHANNEL_ANOMALY_ENCODER_DIR (a real
+    # semantics change, not just a rename): this used to be a literal
+    # versioned artifact directory (e.g. .../field_channel_anomaly/v3),
+    # manually re-pointed by hand on every retrain. It is now a mood_arc
+    # promotion ROOT (must contain an active.json written by
+    # `orion/mood_arc/fit_encoder.py promote`), resolved via
+    # resolve_active_encoder_dir() -- converges this consumer onto
+    # orion/mood_arc's own promotion mechanism instead of a second,
+    # disconnected one (the old .../field_channel_anomaly/ tree, retired).
+    # A future `promote` needs a service restart to pick up here, not a new
+    # env value each time.
+    field_channel_anomaly_models_root: str = Field(
+        "/mnt/telemetry/models/mood_arc", alias="FIELD_CHANNEL_ANOMALY_MODELS_ROOT"
+    )
     # Encoder's own window_size is 30 rows (~60s at the default 2s tick
     # cadence); checking every 60s means each check scores a genuinely new
     # window rather than re-scoring one still mostly overlapping the last.

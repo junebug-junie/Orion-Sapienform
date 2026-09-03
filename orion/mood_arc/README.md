@@ -15,14 +15,60 @@ and the open design question blocking the rest of the roadmap — see
 `orion/mood_arc/docs/DESIGN.md`. This README is the practical "how do I run
 it" reference; the docs directory is the "why does it look like this" one.
 
-**Status: dark deployment.** Everything here is an offline, manually-invoked
-CLI. No bus publish, no service process, no container, no cognition consumer.
+**Status: dark deployment for this module's own footprint — but not
+consumer-free.** Corrected 2026-09-02: this line previously claimed "no
+cognition consumer" for the whole module. That was wrong. `fit_encoder.py`
+itself has no bus publish, service process, or container of its own — it
+remains an offline, manually-invoked CLI — but `orion.mood_arc.fit_encoder`
+is imported directly, in-process, by
+`services/orion-field-digester/app/anomaly_scorer.py`, which scores live
+corpus windows against a trained encoder and publishes
+`FieldChannelAnomalyScoreV1` on bus channel `orion:field_channel:anomaly_score`.
+That message flows through `orion-substrate-runtime`'s `brain_frame_producer.py`
+into `substrate_brain_frame_log`, read by the Hub's
+`GET /api/self-brain/frames/tail`, and rendered as the "Field Anomaly" region
+of the main-page Cognitive EKG / Substrate Brain State viz
+(`services/orion-vector-host/app/static/tissue_viz.js`). That is a real,
+live cognition consumer of this module's code and trained artifacts. Two
+caveats, both real, so this isn't overclaimed either:
+
+1. That whole path is gated by `FIELD_CHANNEL_ANOMALY_ENABLED`, which
+   defaults to `false` in both `.env_example` and `docker-compose.yml` —
+   whether it is actually running in any given live deployment is a
+   deployment-config fact this repo checkout cannot confirm on its own.
+2. **Converged 2026-09-03** (was a real gap until then): `anomaly_scorer.py`
+   used to read from its own separately-tracked model directory,
+   `/mnt/telemetry/models/field_channel_anomaly/`, disconnected from this
+   module's own `promote()` subcommand (`/mnt/telemetry/models/mood_arc/`)
+   — meaning promoting a new version here didn't move the live EKG consumer
+   onto it. Fixed: `services/orion-field-digester/app/settings.py`'s
+   `FIELD_CHANNEL_ANOMALY_MODELS_ROOT` (renamed from
+   `FIELD_CHANNEL_ANOMALY_ENCODER_DIR`, a real semantics change, not just a
+   rename) now points at this module's own `/mnt/telemetry/models/mood_arc/`
+   and resolves the active version via `resolve_active_encoder_dir()` (new,
+   reads `active.json`) every time the consumer (re)loads — a future
+   `promote()` reaches it on the next service restart, no manual re-pointing.
+   The old `field_channel_anomaly/` tree is retired; see
+   `services/orion-field-digester/README.md`'s "Telemetry-anomaly metacog
+   trigger" section for the live-verification evidence this was actually
+   confirmed working, not just wired.
+3. `v4`'s manifest also needs 6 channels (`action_warrant`,
+   `heartbeat_mean_ratio`, `prediction_error_{execution,chat,biometrics,
+   bus_synaptic}`) that `anomaly_scorer.py`'s own in-process row-building
+   never produces — those only reached a row before via the *offline batch*
+   `enrich-corpus` join. Also fixed 2026-09-03: `corpus_enrichment.py` gained
+   `resolve_live_enrichment()`, a live "latest value in a narrow trailing
+   window" counterpart to that batch join, called from `anomaly_scorer.py`
+   on every tick over its own lazily-opened, reused (not sticky on failure)
+   Postgres connection. Pointing the consumer at `v4` without this would
+   have silently zero-padded those 6 channels into a fake-calm reading —
+   see the `v4` section below for why that matters.
+
 Registered `REHEARSAL` in `orion/inner_state_registry.py` (moved from
 `orion/self_state/inner_state_registry.py` during the 2026-07-22 SelfStateV1
 module deletion — path corrected here, no behavior change)
 (`mood_arc_encoder.v1`, `mood_arc_corpus.v1`, `field_channel_corpus.v1`) —
-that status is correct and intentional, not a gap to close as part of this
-patch.
+that registry status is unaffected by the correction above.
 
 ## What's in this module
 
@@ -33,8 +79,15 @@ patch.
   `enrich-corpus` (join the phi-v2 audit's dense-enough live signals onto an
   existing corpus before training — see the `v4` section below).
 - `corpus_enrichment.py` — the Postgres-reading half of `enrich-corpus`,
-  kept separate from `fit_encoder.py` so the training/scoring/promotion path
-  stays DB-free and importable with no `psycopg2` installed.
+  kept separate from `fit_encoder.py` so *this module's own* `fit_encoder.py`
+  CLI (`train`/`detect-anomalies`/`promote`) stays DB-free and importable
+  with no `psycopg2` installed. Not DB-free module-wide any more, and by
+  design: `services/orion-field-digester/app/anomaly_scorer.py` (an
+  external consumer, not this module) imports `resolve_live_enrichment()`
+  from here directly for its own live per-tick enrichment — see the
+  "Status" note above. `psycopg2` was already a dependency of that service
+  regardless (`requirements.txt`), so this adds no new external dependency,
+  just a new internal import edge.
 - `tests/` — covers windowing, field selection/pruning, the purged temporal
   split (single- and multi-block), the two-tier gate, the AR(1) surrogate,
   the anomaly detector, and the corpus-enrichment asof/forward-fill join.
@@ -281,9 +334,15 @@ example above scores the known pre-fix period against the production
 encoder (see `docs/DESIGN.md`'s "the anomaly detector" section for the real
 result of running exactly this).
 
-**`detect-anomalies` is currently a dark deployment: a manual CLI tool
-only.** Nothing runs it automatically — no scheduled job, no bus channel, no
-live cognition consumer reads its output. Practical uses today:
+**`detect-anomalies` (this CLI subcommand specifically) is a dark deployment:
+a manual tool only.** Nothing runs *this subcommand* automatically — no
+scheduled job, no bus channel, no live consumer reads its printed/written
+output. This is narrower than it sounds: it does not mean the module has no
+live consumer at all — see the corrected "Status" note above.
+`services/orion-field-digester/app/anomaly_scorer.py` gets the same scoring
+behavior live by importing `score_windows`/`load_artifacts` directly
+in-process, not by shelling out to this CLI. Practical uses of the CLI
+subcommand itself today:
 
 1. **A pre-training QA gate** — before training on a new corpus slice, score
    it against a known-good encoder to catch contamination before wasting a
@@ -297,9 +356,18 @@ this patch does.
 
 ## `v4`: phi-v2 clean-metrics retrain (2026-09-02)
 
-`v4` is the current live model (promoted via `cmd_promote`, `/mnt/telemetry/models/mood_arc/v4`
-+ `active.json` — the first time this actually happened; `v1`-`v3` were config-documented as
-"the model to use," never formally promoted through this mechanism). It started as a request to
+`v4` is this module's current active model under its own promotion bookkeeping
+(promoted via `cmd_promote`, `/mnt/telemetry/models/mood_arc/v4` + `active.json` — the first
+time this actually happened; `v1`-`v3` were config-documented as "the model to use," never
+formally promoted through this mechanism).
+
+**Update, 2026-09-03: `services/orion-field-digester/app/anomaly_scorer.py` (the live Hub EKG
+consumer described in the "Status" note above) is now wired to this same directory and this same
+`v4`** — see that note's caveats 2 and 3 for what changed (the `FIELD_CHANNEL_ANOMALY_MODELS_ROOT`
+convergence, and the new live enrichment for the 6 channels this consumer's in-process row-building
+alone can't produce). At the time this `v4` section was first written, that consumer read a
+completely separate, disconnected directory (`/mnt/telemetry/models/field_channel_anomaly/`, only
+`v1`-`v3`) — that gap is now closed; the old directory is retired. It started as a request to
 use `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s live-audited "clean metrics" as `v3`'s
 input feature set, deliberately unsupervised (no predictive target — that's phi-v2's own
 still-open, deliberately deferred second half). What it actually took to get there is worth

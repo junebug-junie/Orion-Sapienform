@@ -12,7 +12,7 @@ from app.worker import FieldDigesterWorker
 def _make_worker(monkeypatch, *, anomaly_enabled: str = "false") -> FieldDigesterWorker:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv("FIELD_CHANNEL_ANOMALY_ENABLED", anomaly_enabled)
-    monkeypatch.setenv("FIELD_CHANNEL_ANOMALY_ENCODER_DIR", "/nonexistent/encoder")
+    monkeypatch.setenv("FIELD_CHANNEL_ANOMALY_MODELS_ROOT", "/nonexistent/models_root")
     import app.settings as settings_mod
 
     settings_mod._settings = None
@@ -22,8 +22,9 @@ def _make_worker(monkeypatch, *, anomaly_enabled: str = "false") -> FieldDigeste
     worker._anomaly_scorer = None
     if worker._settings.field_channel_anomaly_enabled:
         worker._anomaly_scorer = FieldChannelAnomalyScorer(
-            encoder_dir=worker._settings.field_channel_anomaly_encoder_dir,
+            models_root=worker._settings.field_channel_anomaly_models_root,
             threshold_multiplier=worker._settings.field_channel_anomaly_threshold_multiplier,
+            postgres_uri=worker._settings.postgres_uri,
             startup_grace_sec=worker._settings.field_channel_anomaly_startup_grace_sec,
         )
     worker._stop = MagicMock()

@@ -13,6 +13,7 @@ from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator
+from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
 from orion.substrate.mutation_proposals import ProposalFactory
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -116,9 +117,40 @@ class SubstrateAdaptationWorker:
                     )
                 if not ready:
                     continue
-                proposal = self.proposals.from_pressure(pressure)
-                if proposal is None:
+                plan = self.proposals.plan_for_pressure(pressure)
+                if plan.proposal is None:
+                    # Was a bare `continue`. A refusal is a real outcome of the
+                    # cycle -- left untraced, a generator refusing every time is
+                    # indistinguishable from one nothing ever asked. Distinct
+                    # from PR #2058's `mutation_apply_blocked`: that records a
+                    # no-op caught at ADOPTION; this one is never generated.
+                    self._trace(
+                        event="mutation_proposal_refused",
+                        cycle_id=cycle_id,
+                        pressure_id=pressure.pressure_id,
+                        lineage_id=(
+                            pressure.source_signal_ids[0]
+                            if pressure.source_signal_ids
+                            else pressure.pressure_id
+                        ),
+                        pressure_key=self.store.pressure_key_for(
+                            anchor_scope=pressure.anchor_scope,
+                            subject_ref=pressure.subject_ref,
+                            target_surface=pressure.target_surface,
+                        ),
+                        surface_key=pressure.target_surface,
+                        notes=[f"reason={plan.refusal_reason or 'unspecified'}"],
+                    )
+                    # Cool the pressure exactly as an emitted proposal would.
+                    # Without this, cooldown_until stays None and PressureAccumulator
+                    # only decays when a NEW signal arrives, so a refusal that cannot
+                    # change without an external write is re-evaluated every tick
+                    # forever, at two Postgres round-trips each.
+                    self.store.record_pressure(
+                        self.pressure.mark_proposal_emitted(pressure, now=t)
+                    )
                     continue
+                proposal = plan.proposal
                 queue_item = self.store.add_proposal(proposal, priority=60)
                 cooled = self.pressure.mark_proposal_emitted(pressure, now=t)
                 self.store.record_pressure(cooled)
@@ -484,7 +516,9 @@ def build_default_worker(*, store: SubstrateMutationStore) -> SubstrateAdaptatio
         store=store,
         detectors=MutationDetectors(),
         pressure=PressureAccumulator(),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(
+            routing_surface_reader=inspect_chat_reflective_lane_threshold,
+        ),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=corpus,

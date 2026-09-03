@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Any, Callable
 
 from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationPressureV1, MutationProposalV1
 from orion.substrate.mutation_contracts import CONTRACTS
@@ -40,15 +42,58 @@ SURFACE_TO_LANE = {
 }
 
 
+# The live routing threshold, as `inspect_chat_reflective_lane_threshold()`
+# returns it: {"value": float, "degraded": bool, ...}. Injected rather than
+# imported so this module keeps its "no I/O" shape, matching the
+# `surprise_source`/`domain_surprise_source` injection convention already used
+# in orion/autonomy/episode_fetch.py and capability_policy.py.
+RoutingSurfaceReader = Callable[[], dict[str, Any]]
+
+# Exact-equality on a float that round-trips through JSON and Postgres is not
+# safe; this is the "same value" tolerance for the no-op check. Far tighter
+# than any threshold movement the generator can propose (smallest is 0.08).
+_SAME_VALUE_ABS_TOL = 1e-9
+
+
+@dataclass(frozen=True)
+class ProposalPlan:
+    """Either a proposal, or the named reason there isn't one.
+
+    `from_pressure()` keeps returning `MutationProposalV1 | None` for its 30+
+    existing call sites. This carries the reason as well, because the worker
+    previously did a bare `continue` on None -- so every refusal was invisible,
+    and a generator refusing 100% of the time looked identical to one that was
+    never asked. CLAUDE.md 0A: an aggregate that cannot name a cause will hide
+    one.
+    """
+
+    proposal: MutationProposalV1 | None
+    refusal_reason: str | None = None
+
+
 @dataclass(frozen=True)
 class ProposalFactory:
+    # None means routing proposals are refused outright, not silently emitted
+    # against a guessed baseline -- see _routing_threshold_payloads().
+    routing_surface_reader: RoutingSurfaceReader | None = None
+
     def from_pressure(self, pressure: MutationPressureV1) -> MutationProposalV1 | None:
+        return self.plan_for_pressure(pressure).proposal
+
+    def plan_for_pressure(self, pressure: MutationPressureV1) -> ProposalPlan:
         mutation_class = SURFACE_TO_CLASS.get(pressure.target_surface)
         if mutation_class is None:
-            return None
+            return ProposalPlan(None, "unknown_target_surface")
         contract = CONTRACTS[mutation_class]
         patch_payload = _default_patch_for_class(mutation_class)
         rollback_payload = _default_rollback_for_class(mutation_class)
+        if mutation_class == "routing_threshold_patch":
+            patch_payload, rollback_payload, refusal = _routing_threshold_payloads(
+                target_value=float(patch_payload["chat_reflective_lane_threshold"]),
+                reader=self.routing_surface_reader,
+            )
+            if refusal is not None:
+                return ProposalPlan(None, refusal)
         lane = SURFACE_TO_LANE.get(pressure.target_surface, "operational")
         target_ref = contract.allowed_targets[0]
         notes: list[str] = []
@@ -77,7 +122,7 @@ class ProposalFactory:
             rollback_payload = {"draft_recommendation": "discard_shadow_recall_candidate"}
             target_ref = contract.allowed_targets[0]
             notes = recall_notes
-        return MutationProposalV1(
+        return ProposalPlan(MutationProposalV1(
             lane=lane,
             mutation_class=mutation_class,
             risk_tier=contract.risk_tier,
@@ -97,7 +142,80 @@ class ProposalFactory:
                 rollback_payload=rollback_payload,
             ),
             notes=notes,
-        )
+        ))
+
+
+def _routing_threshold_payloads(
+    *,
+    target_value: float,
+    reader: RoutingSurfaceReader | None,
+) -> tuple[dict[str, float], dict[str, float], str | None]:
+    """Build the routing patch/rollback pair from the LIVE surface value.
+
+    Both halves used to be module constants: patch to 0.58, roll back to 0.50.
+    Confirmed live 2026-09-03 -- the surface had been sitting at 0.58 since
+    2026-09-02T04:11:17, and the generator re-proposed 0.58 on top of it 5-6
+    times an hour for at least 36 hours (~190 proposals, every one identical).
+    Each burned a full proposal -> decision -> adoption cycle and took a
+    15-minute rollback lock on the `routing` surface, carrying
+    `expected_effect: reduce_runtime_executed` that could not occur because
+    nothing moved.
+
+    The proposal-level rollback of 0.50 was NOT reaching adoptions, and an
+    earlier draft of this docstring wrongly said it was: commit 255f8252e
+    (2026-09-02 23:55Z, already on main) overwrites it with the live value
+    inside PatchApplier.apply, so recorded adoptions carry a real measurement.
+    Deriving it here still matters for a different consumer --
+    SubstrateTrialRunner._routing_baseline_threshold (mutation_trials.py) reads
+    the PROPOSAL's rollback as the trial baseline, so every trial was replaying
+    a 0.58 candidate against a 0.50 baseline while live was already 0.58.
+
+    Refuses rather than guesses. A proposal whose rollback payload does not
+    describe the state actually being replaced is worse than no proposal, so
+    an absent or degraded reader is a refusal, not a fallback to the constants
+    this replaces.
+    """
+    if reader is None:
+        return {}, {}, "routing_surface_reader_absent"
+    try:
+        snapshot = reader() or {}
+    except Exception:
+        return {}, {}, "routing_surface_read_failed"
+    # Read the STORED payload, not the top-level "value".
+    # inspect_chat_reflective_lane_threshold() resolves through
+    # get_chat_reflective_lane_threshold(), which substitutes a hardcoded
+    # default (0.75) when nothing is stored -- so the top-level value cannot
+    # distinguish "the surface is at 0.75" from "there is no reading and you
+    # are looking at a default." Building a rollback payload out of a default
+    # is the exact class of bug this function exists to remove.
+    #
+    # Deliberately NOT gated on `degraded`: that flag is sticky (_last_error is
+    # never cleared) and __post_init__ sets it on the failed Postgres probe even
+    # when the sqlite fallback then succeeds -- so every non-Postgres-backed
+    # store reports degraded forever. Gating on it refused every routing
+    # proposal on any such deployment; caught by
+    # test_substrate_mutation_manual_route_routing.py against a healthy sqlite
+    # store. A read that actually failed returns no payload and is refused
+    # below on its own merits.
+    raw = snapshot.get("raw") or {}
+    current = raw.get("value")
+    if current is None:
+        # Distinguish "the store is down" from "this surface was never
+        # written". RuntimeControlSurfaceStore.get() swallows every exception
+        # and returns None, so the reader cannot raise -- without this branch a
+        # Postgres outage is reported to the operator as a surface that has no
+        # value, which is a different and much less alarming fact.
+        if snapshot.get("error"):
+            return {}, {}, "routing_surface_read_failed"
+        return {}, {}, "routing_surface_value_missing"
+    current_value = float(current)
+    if math.isclose(current_value, target_value, rel_tol=0.0, abs_tol=_SAME_VALUE_ABS_TOL):
+        return {}, {}, "routing_threshold_already_at_target"
+    return (
+        {"chat_reflective_lane_threshold": target_value},
+        {"chat_reflective_lane_threshold": current_value},
+        None,
+    )
 
 
 def _default_patch_for_class(mutation_class: str) -> dict[str, float | str]:
@@ -163,7 +281,11 @@ def _default_patch_for_class(mutation_class: str) -> dict[str, float | str]:
 
 def _default_rollback_for_class(mutation_class: str) -> dict[str, float | str]:
     if mutation_class == "routing_threshold_patch":
-        return {"chat_reflective_lane_threshold": 0.50}
+        # Never reaches a proposal: _routing_threshold_payloads() replaces both
+        # halves for this class, deriving the rollback from the live surface.
+        # Kept only so every class in this function has an entry; it is not a
+        # fallback the refusal path can land on.
+        return {}
     if mutation_class == "recall_weighting_patch":
         return {"semantic_weight": 0.50, "episodic_weight": 0.35, "recency_weight": 0.15}
     if mutation_class == "field_topology_weight_patch":

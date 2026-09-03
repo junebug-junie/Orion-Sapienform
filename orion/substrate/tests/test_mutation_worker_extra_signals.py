@@ -16,6 +16,13 @@ from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdaptationWorker
 
 
+def _routing_surface(value: float = 0.50, *, degraded: bool = False):
+    """Stub for ProposalFactory's live-surface reader. 0.50 is what the routing
+    patch was always implicitly written against, so pre-existing assertions
+    (patch 0.58, rollback 0.50) still hold -- now derived, not hardcoded."""
+    return lambda: {"value": value, "raw": {"value": value}, "degraded": degraded}
+
+
 def _continuity_pressure_signal(strength: float = 0.3) -> MutationSignalV1:
     """A literal stand-in for what orion/substrate/mutation_self_revision.py's
     prediction_error_mutation_signals() used to produce for a continuity_pressure
@@ -46,7 +53,7 @@ def _build_worker(store: SubstrateMutationStore) -> SubstrateAdaptationWorker:
         store=store,
         detectors=MutationDetectors(),
         pressure=PressureAccumulator(policy=PressurePolicy()),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(routing_surface_reader=_routing_surface()),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(corpus_by_class={}, baseline_metric_ref_by_class={}),
@@ -106,7 +113,7 @@ def test_run_cycle_extra_signals_respect_max_signals_kill_lever() -> None:
         store=store,
         detectors=MutationDetectors(),
         pressure=PressureAccumulator(policy=PressurePolicy()),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(routing_surface_reader=_routing_surface()),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(corpus_by_class={}, baseline_metric_ref_by_class={}),
@@ -137,7 +144,7 @@ def test_run_cycle_extra_signals_share_budget_with_telemetry_signals() -> None:
         store=store,
         detectors=MutationDetectors(),
         pressure=PressureAccumulator(policy=PressurePolicy()),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(routing_surface_reader=_routing_surface()),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(corpus_by_class={}, baseline_metric_ref_by_class={}),

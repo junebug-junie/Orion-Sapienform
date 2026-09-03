@@ -32,6 +32,13 @@ from orion.substrate.mutation_worker import SubstrateAdaptationWorker
 from orion.substrate.scripts.smoke_mutation_v21 import run_smoke
 
 
+def _routing_surface(value: float = 0.50, *, degraded: bool = False):
+    """Stub for ProposalFactory's live-surface reader. 0.50 is what the routing
+    patch was always implicitly written against, so pre-existing assertions
+    (patch 0.58, rollback 0.50) still hold -- now derived, not hardcoded."""
+    return lambda: {"value": value, "raw": {"value": value}, "degraded": degraded}
+
+
 @pytest.fixture(autouse=True)
 def _isolate_control_surface(tmp_path, monkeypatch):
     """Give every test in this module its own control surface, seeded to 0.5.
@@ -240,7 +247,7 @@ def test_cognitive_pressure_produces_operator_gated_proposal() -> None:
     signals = detector.from_review_telemetry([telemetry])
     cognitive_signal = next(signal for signal in signals if signal.event_kind == "stance_drift_pressure")
     pressure = PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2)).apply(current=None, signal=cognitive_signal)
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     assert proposal.lane == "cognitive"
     assert proposal.target_surface == "cognitive_stance_continuity_adjustment"
@@ -251,7 +258,7 @@ def test_cognitive_pressure_produces_operator_gated_proposal() -> None:
 
 
 def test_cognitive_lane_decisions_are_always_require_review() -> None:
-    proposal = ProposalFactory().from_pressure(
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",
@@ -288,7 +295,7 @@ def test_cognitive_proposals_never_use_prompt_profile_carrier() -> None:
         "cognitive_social_continuity_repair",
     )
     for surface in surfaces:
-        proposal = ProposalFactory().from_pressure(
+        proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
             MutationPressureV1(
                 anchor_scope="orion",
                 subject_ref="entity:orion",
@@ -306,7 +313,7 @@ def test_cognitive_proposals_never_use_prompt_profile_carrier() -> None:
 
 def test_cognitive_review_accepted_as_draft_persists_draft_not_adoption() -> None:
     store = SubstrateMutationStore()
-    proposal = ProposalFactory().from_pressure(
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",
@@ -334,7 +341,7 @@ def test_cognitive_review_accepted_as_draft_persists_draft_not_adoption() -> Non
 
 def test_cognitive_review_terminal_states_persist() -> None:
     store = SubstrateMutationStore()
-    proposal = ProposalFactory().from_pressure(
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",
@@ -389,7 +396,7 @@ def test_recall_pressure_event_becomes_recall_strategy_signal_and_proposal() -> 
     assert recall_signal.event_kind == "pressure_event:missing_exact_anchor"
     assert any(ref.startswith("recall_compare:") for ref in recall_signal.evidence_refs)
     pressure = PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2)).apply(current=None, signal=recall_signal)
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     assert proposal.mutation_class == "recall_anchor_policy_candidate"
     assert proposal.patch.patch["shadow_only_status"] == "recall_v2_shadow_only"
@@ -402,7 +409,7 @@ def test_recall_pressure_event_becomes_recall_strategy_signal_and_proposal() -> 
 
 
 def test_recall_strategy_proposal_is_always_operator_gated_and_not_applied() -> None:
-    proposal = ProposalFactory().from_pressure(
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",
@@ -434,7 +441,7 @@ def test_recall_strategy_proposal_is_always_operator_gated_and_not_applied() -> 
 
 
 def test_patch_applier_never_applies_recall_weighting_even_if_auto_promote() -> None:
-    proposal = ProposalFactory().from_pressure(
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",
@@ -515,7 +522,7 @@ def test_eval_shaped_compare_produces_recall_strategy_proposal() -> None:
     signals = detector.from_review_telemetry([telemetry])
     strat_signal = next(signal for signal in signals if signal.target_surface == "recall_strategy_profile")
     pressure = PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2)).apply(current=None, signal=strat_signal)
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     assert proposal.mutation_class == "recall_strategy_profile_candidate"
     assert proposal.patch.patch.get("v1_v2_comparison_evidence", {}).get("source") == "recall_eval_suite"
@@ -543,27 +550,27 @@ def test_recall_pressure_evidence_history_bounded_and_in_proposal() -> None:
     assert pressure is not None
     assert len(pressure.recall_evidence_history) == 8
     assert pressure.recall_evidence_history[-1]["recall_compare"]["selected_count_delta"] == 9
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     hist = proposal.patch.patch.get("contributing_recall_evidence_history")
     assert isinstance(hist, list) and len(hist) == 8
 
 
 def test_routing_threshold_proposal_class_unchanged() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     assert proposal.mutation_class == "routing_threshold_patch"
 
 
 def test_pressure_to_proposal() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     assert proposal.patch.target_surface == "routing"
     assert proposal.source_pressure_id
 
 
 def test_proposal_to_trial() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -577,7 +584,7 @@ def test_proposal_to_trial() -> None:
 
 
 def test_trial_to_decision() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -596,7 +603,7 @@ def test_trial_to_decision() -> None:
 
 
 def test_mutation_proposal_requires_evidence_and_rollback() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     assert proposal.evidence_refs
     assert proposal.patch.rollback_payload
@@ -612,7 +619,7 @@ def test_decision_engine_keeps_prompt_profile_operator_gated() -> None:
         evidence_refs=["telemetry:abc"],
         source_signal_ids=["signal-abc"],
     )
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     registry = ReplayCorpusRegistry(
         corpus_by_class={proposal.mutation_class: "corpus-v1"},
@@ -634,7 +641,7 @@ def test_decision_engine_keeps_prompt_profile_operator_gated() -> None:
 def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal1 = ProposalFactory().from_pressure(_routing_pressure())
+    proposal1 = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal1 is not None
     queue_item = store.add_proposal(proposal1)
     assert queue_item.status == "queued"
@@ -655,7 +662,7 @@ def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) ->
     assert adoption is not None
     assert store.record_adoption(adoption) == []
 
-    proposal2 = ProposalFactory().from_pressure(_routing_pressure())
+    proposal2 = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal2 is not None
     decision2 = DecisionEngine().decide(
         proposal=proposal2,
@@ -668,7 +675,7 @@ def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) ->
 
 def test_queue_item_consumed_after_trial_and_decision(tmp_path: Path) -> None:
     store = SubstrateMutationStore(sql_db_path=str(tmp_path / "mutation.sqlite3"))
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     queue_item = store.add_proposal(proposal)
     assert any(item.queue_item_id == queue_item.queue_item_id for item in store.list_due_queue(limit=10))
@@ -690,7 +697,7 @@ def test_adaptation_worker_obeys_kill_switch() -> None:
         store=store,
         detectors=MutationDetectors(),
         pressure=PressureAccumulator(policy=PressurePolicy(activation_threshold=0.2)),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(routing_surface_reader=_routing_surface()),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(corpus_by_class={}, baseline_metric_ref_by_class={}),
@@ -727,7 +734,7 @@ def test_require_review_never_applies() -> None:
         evidence_refs=["telemetry:abc"],
         source_signal_ids=["signal-abc"],
     )
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -751,7 +758,7 @@ def test_require_review_never_applies() -> None:
 
 def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
     store = SubstrateMutationStore()
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     store._active_surface_by_target[proposal.target_surface] = "existing-adoption"
     applier = PatchApplier(surfaces={proposal.target_surface: {"chat_reflective_lane_threshold": 0.5}})
@@ -759,7 +766,7 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
         store=store,
         detectors=MutationDetectors(),
         pressure=PressureAccumulator(policy=PressurePolicy(activation_threshold=0.1, cooldown_seconds=5)),
-        proposals=ProposalFactory(),
+        proposals=ProposalFactory(routing_surface_reader=_routing_surface()),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(
@@ -791,7 +798,7 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
 
 
 def test_rollback_payload_required_before_apply() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     proposal = proposal.model_copy(update={"patch": proposal.patch.model_copy(update={"rollback_payload": {}})})
     adoption = PatchApplier(surfaces={}).apply(proposal=proposal, decision=MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote"))
@@ -808,7 +815,7 @@ def test_approved_prompt_profile_variant_promotion_operator_gated_default() -> N
         evidence_refs=["telemetry:abc"],
         source_signal_ids=["signal-abc"],
     )
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -857,7 +864,7 @@ def test_smoke_script_trace_and_invariants() -> None:
 def test_restart_safe_reload_of_in_flight_mutation_state(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     queue_item = store.add_proposal(proposal)
     trial = SubstrateTrialRunner(
@@ -879,7 +886,7 @@ def test_restart_safe_reload_of_in_flight_mutation_state(tmp_path: Path) -> None
 def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -908,7 +915,7 @@ def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
 def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -939,7 +946,7 @@ def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
 def test_rollback_continuity_after_reload(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -991,7 +998,7 @@ def test_retention_compaction_preserves_active_state(tmp_path: Path, monkeypatch
     monkeypatch.setenv("SUBSTRATE_MUTATION_RETENTION_MAX_ROLLBACKS", "50")
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1044,7 +1051,7 @@ def test_targeted_signal_persistence_keeps_restart_reload_behavior(tmp_path: Pat
 
 
 def test_routing_replay_corpus_drives_trial_metrics_without_manual_injection() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1082,7 +1089,7 @@ def test_routing_replay_corpus_drives_trial_metrics_without_manual_injection() -
 
 
 def test_routing_decision_can_use_replay_derived_metrics() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1114,7 +1121,7 @@ def test_routing_decision_can_use_replay_derived_metrics() -> None:
 
 
 def test_manual_metric_injection_remains_optional_override() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1144,7 +1151,7 @@ def test_manual_metric_injection_remains_optional_override() -> None:
 
 
 def test_routing_replay_prefers_rich_runtime_artifacts_over_selected_priority() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1185,7 +1192,7 @@ def test_routing_replay_prefers_rich_runtime_artifacts_over_selected_priority() 
 
 
 def test_routing_replay_inspection_reports_corpus_composition_and_confidence() -> None:
-    proposal = ProposalFactory().from_pressure(_routing_pressure())
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),

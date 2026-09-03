@@ -19,6 +19,13 @@ from orion.substrate.recall_strategy_readiness import (
 )
 
 
+def _routing_surface(value: float = 0.50, *, degraded: bool = False):
+    """Stub for ProposalFactory's live-surface reader. 0.50 is what the routing
+    patch was always implicitly written against, so pre-existing assertions
+    (patch 0.58, rollback 0.50) still hold -- now derived, not hardcoded."""
+    return lambda: {"value": value, "raw": {"value": value}, "degraded": degraded}
+
+
 def _row(
     *,
     case_id: str,
@@ -162,7 +169,7 @@ def test_recall_proposal_payload_contains_readiness() -> None:
         recall_evidence_snapshot=snap,
         recall_evidence_history=[],
     )
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     readiness = proposal.patch.patch.get("recall_strategy_readiness")
     assert isinstance(readiness, dict)
@@ -189,7 +196,7 @@ def test_recall_lineage_contains_readiness_under_pressure_lineage() -> None:
         recall_evidence_snapshot=snap,
         recall_evidence_history=[{"failure_category": "missing_exact_anchor", "recall_compare": _row(case_id="l2", source="shadow")}],
     )
-    proposal = ProposalFactory().from_pressure(pressure)
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(pressure)
     assert proposal is not None
     store = SubstrateMutationStore()
     store.record_pressure(pressure)
@@ -208,7 +215,7 @@ def test_recall_lineage_contains_readiness_under_pressure_lineage() -> None:
 
 
 def test_recall_candidate_still_no_adoption_under_auto_promote() -> None:
-    proposal = ProposalFactory().from_pressure(
+    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(
         MutationPressureV1(
             anchor_scope="orion",
             subject_ref="entity:orion",

@@ -515,6 +515,19 @@ def set_chat_reflective_lane_threshold(
     )
 
 
+def chat_reflective_lane_threshold_history(*, limit: int = 20) -> list[dict[str, Any]]:
+    """Recorded changes to the routing threshold, newest first.
+
+    Consumed by the hub's autonomy-readiness panel, so the question "what did
+    Orion change this from?" is answerable without a database query -- which is
+    how it had to be answered on 2026-09-02.
+
+    Empty until the first write after the history table shipped. It is built
+    going forward, not reconstructed; earlier changes are not recoverable.
+    """
+    return control_surface_store().history(_ROUTING_THRESHOLD_KEY, limit=limit)
+
+
 def inspect_chat_reflective_lane_threshold(default: float = 0.75) -> dict[str, Any]:
     payload = control_surface_store().get(_ROUTING_THRESHOLD_KEY) or {}
     return {

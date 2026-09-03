@@ -204,7 +204,12 @@ Status as of the first changeset (items 1 and 2). Nothing is deployed:
    cycle after deploy.
 4. The hub panel shows, without a database query: current value, previous value,
    who changed it, when, whether the window is open, and how long the surface has
-   been held. **NOT MET — no template, static asset, or route shipped yet.**
+   been held. **Covered by test; UNVERIFIED live.** Added to the existing
+   autonomy-readiness panel (`/api/substrate/autonomy-readiness` →
+   `updateAutonomyReadinessPanel`) rather than as a new page, since that surface
+   already carries the scheduler gates and recent applies/rollbacks this belongs
+   beside. A surface reading `OVERDUE (window elapsed, still held)` is the
+   original bug made visible.
 5. A missing delta never causes a rollback. **Covered by test**, driven through
    the real `run_cycle`.
 

@@ -15,14 +15,41 @@ and the open design question blocking the rest of the roadmap — see
 `orion/mood_arc/docs/DESIGN.md`. This README is the practical "how do I run
 it" reference; the docs directory is the "why does it look like this" one.
 
-**Status: dark deployment.** Everything here is an offline, manually-invoked
-CLI. No bus publish, no service process, no container, no cognition consumer.
+**Status: dark deployment for this module's own footprint — but not
+consumer-free.** Corrected 2026-09-02: this line previously claimed "no
+cognition consumer" for the whole module. That was wrong. `fit_encoder.py`
+itself has no bus publish, service process, or container of its own — it
+remains an offline, manually-invoked CLI — but `orion.mood_arc.fit_encoder`
+is imported directly, in-process, by
+`services/orion-field-digester/app/anomaly_scorer.py`, which scores live
+corpus windows against a trained encoder and publishes
+`FieldChannelAnomalyScoreV1` on bus channel `orion:field_channel:anomaly_score`.
+That message flows through `orion-substrate-runtime`'s `brain_frame_producer.py`
+into `substrate_brain_frame_log`, read by the Hub's
+`GET /api/self-brain/frames/tail`, and rendered as the "Field Anomaly" region
+of the main-page Cognitive EKG / Substrate Brain State viz
+(`services/orion-vector-host/app/static/tissue_viz.js`). That is a real,
+live cognition consumer of this module's code and trained artifacts. Two
+caveats, both real, so this isn't overclaimed either:
+
+1. That whole path is gated by `FIELD_CHANNEL_ANOMALY_ENABLED`, which
+   defaults to `false` in both `.env_example` and `docker-compose.yml` —
+   whether it is actually running in any given live deployment is a
+   deployment-config fact this repo checkout cannot confirm on its own.
+2. `anomaly_scorer.py` reads from its own separately-tracked model
+   directory, `/mnt/telemetry/models/field_channel_anomaly/` (see
+   `services/orion-field-digester/README.md`'s "Deployed model history"),
+   which is **not** the same directory this module's own `promote()`
+   subcommand writes to (`/mnt/telemetry/models/mood_arc/`). As of this
+   writing that directory holds only `v1`/`v2`/`v3` — promoting `v4` here,
+   via this module's own bookkeeping, does not move the live EKG consumer
+   onto it. See the `v4` section below.
+
 Registered `REHEARSAL` in `orion/inner_state_registry.py` (moved from
 `orion/self_state/inner_state_registry.py` during the 2026-07-22 SelfStateV1
 module deletion — path corrected here, no behavior change)
 (`mood_arc_encoder.v1`, `mood_arc_corpus.v1`, `field_channel_corpus.v1`) —
-that status is correct and intentional, not a gap to close as part of this
-patch.
+that registry status is unaffected by the correction above.
 
 ## What's in this module
 
@@ -281,9 +308,15 @@ example above scores the known pre-fix period against the production
 encoder (see `docs/DESIGN.md`'s "the anomaly detector" section for the real
 result of running exactly this).
 
-**`detect-anomalies` is currently a dark deployment: a manual CLI tool
-only.** Nothing runs it automatically — no scheduled job, no bus channel, no
-live cognition consumer reads its output. Practical uses today:
+**`detect-anomalies` (this CLI subcommand specifically) is a dark deployment:
+a manual tool only.** Nothing runs *this subcommand* automatically — no
+scheduled job, no bus channel, no live consumer reads its printed/written
+output. This is narrower than it sounds: it does not mean the module has no
+live consumer at all — see the corrected "Status" note above.
+`services/orion-field-digester/app/anomaly_scorer.py` gets the same scoring
+behavior live by importing `score_windows`/`load_artifacts` directly
+in-process, not by shelling out to this CLI. Practical uses of the CLI
+subcommand itself today:
 
 1. **A pre-training QA gate** — before training on a new corpus slice, score
    it against a known-good encoder to catch contamination before wasting a
@@ -297,9 +330,16 @@ this patch does.
 
 ## `v4`: phi-v2 clean-metrics retrain (2026-09-02)
 
-`v4` is the current live model (promoted via `cmd_promote`, `/mnt/telemetry/models/mood_arc/v4`
-+ `active.json` — the first time this actually happened; `v1`-`v3` were config-documented as
-"the model to use," never formally promoted through this mechanism). It started as a request to
+`v4` is this module's current active model under its own promotion bookkeeping
+(promoted via `cmd_promote`, `/mnt/telemetry/models/mood_arc/v4` + `active.json` — the first
+time this actually happened; `v1`-`v3` were config-documented as "the model to use," never
+formally promoted through this mechanism). **This is a separate directory from
+`/mnt/telemetry/models/field_channel_anomaly/`, which is what
+`services/orion-field-digester/app/anomaly_scorer.py` actually reads for the live Hub EKG
+consumer described in the "Status" note above** — that directory holds only `v1`-`v3` as of
+this writing, so promoting `v4` here does not, by itself, move the live consumer onto it.
+Wiring the two together (or deciding they should stay separate) is unbuilt follow-on work, not
+something this patch does. It started as a request to
 use `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s live-audited "clean metrics" as `v3`'s
 input feature set, deliberately unsupervised (no predictive target — that's phi-v2's own
 still-open, deliberately deferred second half). What it actually took to get there is worth

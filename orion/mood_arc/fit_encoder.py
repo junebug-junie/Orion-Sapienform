@@ -11,7 +11,14 @@ its old path.
 Item 2 of docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md.
 Trains a shallow MLP autoencoder over flattened windows of a felt-state
 channel corpus. Artifacts: manifest.json, weights.npz, probes.json under
---out. Dark deployment -- disk-only, no bus publish, no cognition consumer.
+--out. Dark deployment for this script itself -- disk-only, no bus publish
+of its own. **Not consumer-free, corrected 2026-09-02**: the functions in
+this module (`load_artifacts`, `score_windows`, etc.) are imported directly
+by `services/orion-field-digester/app/anomaly_scorer.py`, which feeds the
+Hub's main-page Cognitive EKG viz -- gated behind `FIELD_CHANNEL_ANOMALY_ENABLED`
+(default off) and reading its own separately-tracked model directory, not
+whatever this script's own `promote` subcommand last activated. See
+`orion/mood_arc/README.md`'s "Status" note for the full chain and caveats.
 
 **Corpus-swap rework (2026-07-17).** This script originally trained against
 `mood_arc_corpus.v1` (`orion.schemas.telemetry.mood_arc.MoodArcCorpusRowV1`,

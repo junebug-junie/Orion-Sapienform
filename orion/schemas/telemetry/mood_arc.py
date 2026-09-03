@@ -55,8 +55,19 @@ class MoodArcCorpusRowV1(BaseModel):
 
 class MoodArcEncoderManifestV1(BaseModel):
     """Item 2's windowed felt-state-trajectory encoder manifest -- dark
-    artifact, disk-only, no cognition consumer yet (see roadmap item 2,
+    artifact, disk-only, no bus publish of its own (see roadmap item 2,
     docs/superpowers/specs/2026-07-13-felt-state-arc-roadmap-spec.md).
+
+    **Not consumer-free, corrected 2026-09-02**: the trained artifact this
+    manifest describes is loaded and scored by
+    services/orion-field-digester/app/anomaly_scorer.py (imports
+    orion.mood_arc.fit_encoder directly), which feeds the Hub's main-page
+    Cognitive EKG viz -- gated behind FIELD_CHANNEL_ANOMALY_ENABLED (default
+    off) and reading its own separately-tracked model directory
+    (/mnt/telemetry/models/field_channel_anomaly/), not whatever this
+    module's own promote() subcommand last activated
+    (/mnt/telemetry/models/mood_arc/). See orion/mood_arc/README.md's
+    "Status" note for the full chain and both caveats.
 
     2026-07-13 methodology addition (orion/mood_arc/fit_encoder.py, same
     session as this manifest's initial fields): the spec's original single

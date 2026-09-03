@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from .autonomy_constitution import PRODUCTION_RECALL_MODE, RECALL_LIVE_APPLY_ENABLED
 from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
-from orion.substrate.mutation_queue import SubstrateMutationStore
+from orion.substrate.mutation_queue import SubstrateMutationStore, cognition_view_snapshot
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
@@ -53,14 +53,26 @@ def _latest_routing_artifact(store: SubstrateMutationStore, kind: str) -> dict[s
 def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = None) -> Dict[str, Any]:
     mutation_store = store or SubstrateMutationStore()
     live_surface = inspect_chat_reflective_lane_threshold()
-    routing_trials = [row for row in mutation_store._trials.values() if row.mutation_class == "routing_threshold_patch"]
+    # ONE consistent snapshot, taken under the store's lock, instead of six
+    # separate live iterations. Two reasons, both introduced when the substrate
+    # mutation cycle moved onto a worker thread (2026-09-03):
+    #   * `sorted(store._proposals.values())` racing an insert raises
+    #     RuntimeError: dictionary changed size during iteration. This call is
+    #     on the chat path and is NOT inside a try, so that surfaces as a 500
+    #     on Orion's main chat endpoint.
+    #   * Reading the six dicts at six different instants during a cycle could
+    #     show a trial whose proposal is not yet visible. On the event loop the
+    #     reader could only ever observe a cycle boundary; the snapshot keeps
+    #     that guarantee rather than silently dropping it.
+    view = cognition_view_snapshot(mutation_store)
+    routing_trials = [row for row in view["trials"] if row.mutation_class == "routing_threshold_patch"]
     latest_trial = sorted(routing_trials, key=lambda item: item.created_at, reverse=True)[0] if routing_trials else None
     metrics = latest_trial.metrics if latest_trial is not None else {}
     active_shadow_profile = mutation_store.active_recall_shadow_profile()
     latest_recall_proposal = next(
         (
             item
-            for item in sorted(mutation_store._proposals.values(), key=lambda row: row.created_at, reverse=True)
+            for item in sorted(view["proposals"], key=lambda row: row.created_at, reverse=True)
             if str(item.mutation_class).startswith("recall_") and str(item.mutation_class).endswith("_candidate")
         ),
         None,
@@ -68,7 +80,7 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
     latest_staged_profile = next(
         (
             item
-            for item in sorted(mutation_store._recall_strategy_profiles.values(), key=lambda row: row.updated_at, reverse=True)
+            for item in sorted(view["recall_strategy_profiles"], key=lambda row: row.updated_at, reverse=True)
             if item.status in {"staged", "shadow_active"}
         ),
         None,
@@ -77,7 +89,7 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
         (
             item
             for item in sorted(
-                mutation_store._recall_shadow_eval_runs.values(),
+                view["recall_shadow_eval_runs"],
                 key=lambda row: row.completed_at,
                 reverse=True,
             )
@@ -89,7 +101,7 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
         (
             item
             for item in sorted(
-                mutation_store._recall_production_candidate_reviews.values(),
+                view["recall_production_candidate_reviews"],
                 key=lambda row: row.updated_at,
                 reverse=True,
             )
@@ -100,7 +112,7 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
     readiness = dict((active_shadow_profile.readiness_snapshot if active_shadow_profile is not None else {}))
     active_stance_notes = [
         item
-        for item in sorted(mutation_store._cognitive_stance_notes.values(), key=lambda row: row.updated_at, reverse=True)
+        for item in sorted(view["cognitive_stance_notes"], key=lambda row: row.updated_at, reverse=True)
         if item.status == "active"
     ][:8]
     bounded_notes = [

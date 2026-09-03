@@ -711,8 +711,20 @@ async def startup_event():
                 while True:
                     started = time.monotonic()
                     try:
-                        await asyncio.to_thread(
-                            api_routes_runtime.execute_substrate_mutation_scheduled_cycle
+                        # shield(): asyncio.to_thread is NOT cancellable. On
+                        # shutdown, cancelling this task would surface
+                        # CancelledError here immediately while the 64-91s
+                        # worker thread kept running -- still mutating the
+                        # store and writing Postgres -- and shutdown would go
+                        # on to close the bus and other resources underneath
+                        # it. Shield makes the cancel wait for the cycle it
+                        # cannot actually stop, which is what the old inline
+                        # call gave for free (cancellation could only land at
+                        # the sleep, after a cycle had fully finished).
+                        await asyncio.shield(
+                            asyncio.to_thread(
+                                api_routes_runtime.execute_substrate_mutation_scheduled_cycle
+                            )
                         )
                         logger.info(
                             "substrate_autonomy_scheduler_tick_done elapsed_sec=%.1f interval_sec=%s",

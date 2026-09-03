@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 import sqlite3
+import threading
 from typing import Any
 
 from orion.core.schemas.substrate_mutation import (
@@ -58,6 +59,16 @@ class SubstrateMutationStore:
     _recall_shadow_eval_runs: dict[str, RecallShadowEvalRunV1] = field(default_factory=dict, init=False)
     _recall_production_candidate_reviews: dict[str, RecallProductionCandidateReviewV1] = field(default_factory=dict, init=False)
     _recall_canary_runs: dict[str, RecallCanaryRunV1] = field(default_factory=dict, init=False)
+    #: Guards the in-memory dicts above against concurrent structural change.
+    #: These are the live working set even when Postgres-backed -- Postgres is
+    #: a mirror. Since 2026-09-03 the substrate mutation cycle runs on a worker
+    #: thread (services/orion-hub/scripts/main.py) instead of inline on the
+    #: event loop, so a writer here can now overlap a reader on the loop. An
+    #: unlocked `sorted(self._proposals.values())` racing an insert raises
+    #: RuntimeError: dictionary changed size during iteration -- which on the
+    #: chat path (mutation_cognition_context) is a 500 on Orion's main chat
+    #: endpoint. Reentrant because mutators call each other.
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _recall_canary_judgments: dict[str, RecallCanaryJudgmentRecordV1] = field(default_factory=dict, init=False)
     _recall_canary_review_artifacts: dict[str, RecallCanaryReviewArtifactV1] = field(default_factory=dict, init=False)
     _retention_max_blocked_applies: int = field(default=500, init=False)
@@ -109,10 +120,12 @@ class SubstrateMutationStore:
     def add_proposal(self, proposal: MutationProposalV1, *, priority: int = 50) -> MutationQueueItemV1:
         existing_queue_item = next((item for item in self._queue.values() if item.proposal_id == proposal.proposal_id), None)
         if existing_queue_item is not None:
-            self._proposals[proposal.proposal_id] = proposal
+            with self._lock:
+                self._proposals[proposal.proposal_id] = proposal
             self._persist()
             return existing_queue_item
-        self._proposals[proposal.proposal_id] = proposal
+        with self._lock:
+            self._proposals[proposal.proposal_id] = proposal
         queue_item = MutationQueueItemV1(
             proposal_id=proposal.proposal_id,
             mutation_class=proposal.mutation_class,
@@ -133,10 +146,12 @@ class SubstrateMutationStore:
         return self._proposals.get(proposal_id)
 
     def record_trial(self, trial: MutationTrialV1) -> None:
-        self._trials[trial.trial_id] = trial
+        with self._lock:
+            self._trials[trial.trial_id] = trial
         proposal = self._proposals.get(trial.proposal_id)
         if proposal is not None:
-            self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": "trialed"})
+            with self._lock:
+                self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": "trialed"})
         self._set_queue_status_for_proposal(trial.proposal_id, "trialed")
         self._persist()
 
@@ -152,7 +167,8 @@ class SubstrateMutationStore:
                 next_state = "trialed"
             else:
                 next_state = "rejected"
-            self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": next_state})
+            with self._lock:
+                self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": next_state})
         if decision.action == "require_review":
             self._set_queue_status_for_proposal(decision.proposal_id, "pending_review")
         elif decision.action == "auto_promote":
@@ -165,7 +181,8 @@ class SubstrateMutationStore:
         self._cognitive_reviews[review.review_id] = review
         proposal = self._proposals.get(review.proposal_id)
         if proposal is not None:
-            self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": review.state})
+            with self._lock:
+                self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": review.state})
             self._set_queue_status_for_proposal(proposal.proposal_id, review.state)
         created_draft: CognitiveDraftRecommendationV1 | None = None
         if review.state == "accepted_as_draft" and proposal is not None:
@@ -220,7 +237,8 @@ class SubstrateMutationStore:
         self._adoptions[adoption.adoption_id] = adoption
         proposal = self._proposals.get(adoption.proposal_id)
         if proposal is not None:
-            self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": "applied"})
+            with self._lock:
+                self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": "applied"})
         self._set_queue_status_for_proposal(adoption.proposal_id, "applied")
         self._persist()
         return []
@@ -255,7 +273,8 @@ class SubstrateMutationStore:
             self._active_surface_by_target.pop(adoption.target_surface, None)
         proposal = self._proposals.get(rollback.proposal_id)
         if proposal is not None:
-            self._proposals[rollback.proposal_id] = proposal.model_copy(update={"rollout_state": "rolled_back"})
+            with self._lock:
+                self._proposals[rollback.proposal_id] = proposal.model_copy(update={"rollout_state": "rolled_back"})
         self._set_queue_status_for_proposal(rollback.proposal_id, "rolled_back")
         self._persist()
 
@@ -487,7 +506,8 @@ class SubstrateMutationStore:
         return updated
 
     def record_cognitive_stance_note(self, row: CognitiveStanceNoteV1) -> CognitiveStanceNoteV1:
-        self._cognitive_stance_notes[row.stance_note_id] = row
+        with self._lock:
+            self._cognitive_stance_notes[row.stance_note_id] = row
         self._persist()
         return row
 
@@ -511,7 +531,8 @@ class SubstrateMutationStore:
         if row is None:
             return None
         updated = row.model_copy(update={"status": "archived", "updated_at": _utc_now()})
-        self._cognitive_stance_notes[stance_note_id] = updated
+        with self._lock:
+            self._cognitive_stance_notes[stance_note_id] = updated
         self._persist()
         return updated
 
@@ -534,7 +555,8 @@ class SubstrateMutationStore:
         profile: RecallStrategyProfileV1,
     ) -> RecallStrategyProfileV1:
         staged = profile.model_copy(update={"status": "staged", "updated_at": _utc_now()})
-        self._recall_strategy_profiles[staged.profile_id] = staged
+        with self._lock:
+            self._recall_strategy_profiles[staged.profile_id] = staged
         self._persist()
         return staged
 
@@ -547,9 +569,11 @@ class SubstrateMutationStore:
             if pid == profile_id:
                 continue
             if row.status == "shadow_active":
-                self._recall_strategy_profiles[pid] = row.model_copy(update={"status": "staged", "updated_at": now})
+                with self._lock:
+                    self._recall_strategy_profiles[pid] = row.model_copy(update={"status": "staged", "updated_at": now})
         activated = profile.model_copy(update={"status": "shadow_active", "updated_at": now})
-        self._recall_strategy_profiles[profile_id] = activated
+        with self._lock:
+            self._recall_strategy_profiles[profile_id] = activated
         self._persist()
         return activated
 
@@ -572,7 +596,8 @@ class SubstrateMutationStore:
         if status is not None:
             patch["status"] = status
         updated = row.model_copy(update=patch)
-        self._recall_strategy_profiles[profile_id] = updated
+        with self._lock:
+            self._recall_strategy_profiles[profile_id] = updated
         self._persist()
         return updated
 
@@ -608,7 +633,8 @@ class SubstrateMutationStore:
         }
 
     def record_recall_shadow_eval_run(self, run: RecallShadowEvalRunV1) -> RecallShadowEvalRunV1:
-        self._recall_shadow_eval_runs[run.run_id] = run
+        with self._lock:
+            self._recall_shadow_eval_runs[run.run_id] = run
         self._persist()
         return run
 
@@ -626,7 +652,8 @@ class SubstrateMutationStore:
         self,
         review: RecallProductionCandidateReviewV1,
     ) -> RecallProductionCandidateReviewV1:
-        self._recall_production_candidate_reviews[review.review_id] = review
+        with self._lock:
+            self._recall_production_candidate_reviews[review.review_id] = review
         self._persist()
         return review
 
@@ -1493,3 +1520,42 @@ class SubstrateMutationStore:
         except ValueError:
             return default
         return max(low, min(high, value))
+
+
+def cognition_view_snapshot(store: "SubstrateMutationStore") -> dict[str, list[Any]]:
+    """Consistent copies of the dicts the chat-path cognition context reads.
+
+    Two distinct guarantees, and they come from two different things -- worth
+    separating, because conflating them produced a vacuous test on the first
+    attempt:
+
+      * The `list(...)` COPY is what prevents `RuntimeError: dictionary
+        changed size during iteration`. The caller iterates these at Python
+        level (`[row for row in ... if ...]`), which yields between items and
+        so can be interrupted by a writer on the mutation-cycle thread.
+        Copying first removes the live view entirely. (Note that `list(view)`
+        is itself C-level and GIL-atomic, so the copy does not need the lock
+        to be crash-safe -- verified by removing the lock and watching the
+        race test still pass.)
+      * The LOCK is what makes all six copies come from one instant. Before
+        the mutation cycle moved off the event loop, a loop-side reader could
+        only ever observe a cycle boundary; without the lock the reader could
+        now see a trial whose proposal is not yet visible. That is a
+        consistency change nobody asked for, so it is held rather than
+        silently dropped.
+
+    Values are not deep-copied: the records are pydantic models the store
+    replaces wholesale (`model_copy(update=...)`) rather than mutating, so a
+    shallow copy of the value list is a real point-in-time view.
+    """
+    with store._lock:
+        return {
+            "trials": list(store._trials.values()),
+            "proposals": list(store._proposals.values()),
+            "recall_strategy_profiles": list(store._recall_strategy_profiles.values()),
+            "recall_shadow_eval_runs": list(store._recall_shadow_eval_runs.values()),
+            "recall_production_candidate_reviews": list(
+                store._recall_production_candidate_reviews.values()
+            ),
+            "cognitive_stance_notes": list(store._cognitive_stance_notes.values()),
+        }

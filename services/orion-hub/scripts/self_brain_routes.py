@@ -46,7 +46,13 @@ def _engine():
         try:
             from sqlalchemy import create_engine
 
-            stale, _ENGINE = _ENGINE, create_engine(uri, pool_pre_ping=True)
+            # connect_timeout: SQLAlchemy has none by default, so an
+            # unreachable-but-not-refusing Postgres blocks the worker thread
+            # on the OS TCP timeout (minutes). Same value and rationale as
+            # orion/substrate/mutation_control_surface.py::_engine.
+            stale, _ENGINE = _ENGINE, create_engine(
+                uri, pool_pre_ping=True, connect_args={"connect_timeout": 2}
+            )
             _ENGINE_URI = uri
             if stale is not None:
                 try:

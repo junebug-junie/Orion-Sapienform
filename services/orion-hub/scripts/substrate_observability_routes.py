@@ -295,6 +295,29 @@ def _hub_presence_section(engine) -> dict[str, Any] | None:
     return snapshot
 
 
+def _load_sections(engine) -> dict[str, Any]:
+    """Every observability section, on one worker thread.
+
+    Each loader failing independently is deliberate and preserved: a section
+    that errors reports None rather than taking the whole panel down.
+    """
+    out: dict[str, Any] = {}
+    for name, loader in (
+        ("attention_broadcast", _attention_broadcast_section),
+        ("curiosity", _curiosity_section),
+        ("reverie", _reverie_section),
+        ("compaction_queue", _compaction_queue_section),
+        ("compaction_delta", _compaction_delta_section),
+        ("resonance_alert", _resonance_alert_section),
+    ):
+        try:
+            out[name] = loader(engine)
+        except Exception:
+            logger.debug("observability_section_failed section=%s", name, exc_info=True)
+            out[name] = None
+    return out
+
+
 @router.get("/summary")
 async def observability_summary() -> dict[str, Any]:
     engine = None
@@ -312,18 +335,13 @@ async def observability_summary() -> dict[str, Any]:
         "resonance_alert": None,
     }
     if engine is not None:
-        for name, loader in (
-            ("attention_broadcast", _attention_broadcast_section),
-            ("curiosity", _curiosity_section),
-            ("reverie", _reverie_section),
-            ("compaction_queue", _compaction_queue_section),
-            ("compaction_delta", _compaction_delta_section),
-            ("resonance_alert", _resonance_alert_section),
-        ):
-            try:
-                sections[name] = loader(engine)
-            except Exception:
-                logger.debug("observability_section_failed section=%s", name, exc_info=True)
+        # All six in ONE dispatch, not six: each opens a real Postgres
+        # connection, and running them inline held the event loop for the sum
+        # of six round trips. The previous patch threaded `_engine()` (which
+        # is lazy and never blocks) and left these -- caught in review, and
+        # then reproduced by the checker only after it learned to follow a
+        # helper reached through a loop variable rather than by name.
+        sections.update(await asyncio.to_thread(_load_sections, engine))
 
     hub_presence = None
     try:

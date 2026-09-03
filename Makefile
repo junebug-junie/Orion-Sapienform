@@ -1,4 +1,4 @@
-.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
+.PHONY: check-async-routes-not-blocking check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
 
 SERVICE ?=
 ARGS ?=
@@ -67,6 +67,17 @@ check-inner-state-registry:
 # way. The other 13 are left alone -- out of scope, flagged in the PR.
 check-system-health-producers:
 	@python3 scripts/check_system_health_producers.py
+
+# A synchronous DB call inside an `async def` route holds the WHOLE event loop,
+# so every other request stalls behind it -- including static assets, which is
+# what makes it invisible: the endpoint doing the blocking is fast, and the
+# unrelated file five requests later takes 30 seconds. Per-endpoint latency
+# checks cannot see it; only the operator noticing slow tabs can, which is how
+# both live instances were found (2026-09-03, hours apart, in code written
+# months apart).
+# python3, not bare `python` -- see the note on check-system-health-producers.
+check-async-routes-not-blocking:
+	@python3 scripts/check_async_routes_not_blocking.py
 
 # One owner per tuned env key. Some numbers are restated in a service's
 # .env_example, its compose default, a Field(...) default, and prose deriving a

@@ -42,6 +42,8 @@ chat_history_log lookup this module doesn't otherwise need.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -264,19 +266,19 @@ async def get_fused_chat_turn_trace(correlation_id: str) -> dict[str, Any]:
     else:
         gaps.append("no_grammar_trace")
 
-    execution_run = _load_execution_run(harness_trace_id)
+    execution_run = await asyncio.to_thread(_load_execution_run, harness_trace_id)
     if execution_run is not None:
         sources["execution_run"] = execution_run
     else:
         gaps.append("no_execution_run_pressure_signal")
 
-    thought_decision = _load_thought_decision(corr)
+    thought_decision = await asyncio.to_thread(_load_thought_decision, corr)
     if thought_decision is not None:
         sources["thought_decision"] = thought_decision
     else:
         gaps.append("no_thought_decision")
 
-    harness_turn_trace = _load_harness_turn_trace(corr)
+    harness_turn_trace = await asyncio.to_thread(_load_harness_turn_trace, corr)
     if harness_turn_trace is not None:
         sources["harness_turn_trace"] = harness_turn_trace
     else:

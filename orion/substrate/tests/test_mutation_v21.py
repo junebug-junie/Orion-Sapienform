@@ -23,7 +23,7 @@ from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
-from orion.substrate.mutation_proposals import ProposalFactory
+from orion.substrate.mutation_proposals import _ROUTING_TARGET_PARKED_REASON, ProposalFactory
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -85,6 +85,40 @@ def _routing_pressure() -> MutationPressureV1:
         pressure_score=8.0,
         evidence_refs=["telemetry:1"],
         source_signal_ids=["signal-1"],
+    )
+
+
+def _direct_routing_proposal(*, target_value: float = 0.58, rollback_value: float = 0.50) -> MutationProposalV1:
+    """Build a routing_threshold_patch proposal directly, bypassing ProposalFactory.
+
+    As of 2026-09-03, `ProposalFactory.plan_for_pressure()`/`from_pressure()`
+    refuse every "routing" pressure outright (parked -- see
+    mutation_proposals.py's `_ROUTING_TARGET_PARKED_REASON` and
+    `project_routing_threshold_mutation_parked_2026-09-03.md`). The tests that
+    use this are about generic proposal -> trial -> decision -> store/apply/
+    replay mechanics, not about the parked evidence pipeline, so they build
+    the proposal the factory used to build directly instead. Mirrors the
+    exact shape `_routing_threshold_payloads()` produced.
+    """
+    return MutationProposalV1(
+        lane="operational",
+        mutation_class="routing_threshold_patch",
+        risk_tier="low",
+        target_surface="routing",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        rationale="pressure:runtime_failure score:8.00",
+        expected_effect="reduce_runtime_failure",
+        evidence_refs=["telemetry:1"],
+        source_signal_ids=["signal-1"],
+        source_pressure_id="pressure-routing-test",
+        patch=MutationPatchV1(
+            mutation_class="routing_threshold_patch",
+            target_surface="routing",
+            target_ref="routing",
+            patch={"chat_reflective_lane_threshold": target_value},
+            rollback_payload={"chat_reflective_lane_threshold": rollback_value},
+        ),
     )
 
 
@@ -556,21 +590,22 @@ def test_recall_pressure_evidence_history_bounded_and_in_proposal() -> None:
     assert isinstance(hist, list) and len(hist) == 8
 
 
-def test_routing_threshold_proposal_class_unchanged() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
-    assert proposal is not None
-    assert proposal.mutation_class == "routing_threshold_patch"
-
-
-def test_pressure_to_proposal() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
-    assert proposal is not None
-    assert proposal.patch.target_surface == "routing"
-    assert proposal.source_pressure_id
+def test_routing_pressure_is_parked_not_turned_into_a_proposal() -> None:
+    """As of 2026-09-03 the routing surface is parked (see
+    mutation_proposals.py's `_ROUTING_TARGET_PARKED_REASON`): confirmed live
+    that the evidence feeding it has nothing to do with what the dial gates,
+    and that the hardcoded 0.58 target is below the minimum confidence
+    (0.61) any heuristic routing decision can carry at execution_depth >= 2
+    with AUTO_ROUTER_LLM_ENABLED=false. Formerly
+    `test_routing_threshold_proposal_class_unchanged` /
+    `test_pressure_to_proposal`, which asserted the opposite."""
+    plan = ProposalFactory(routing_surface_reader=_routing_surface()).plan_for_pressure(_routing_pressure())
+    assert plan.proposal is None
+    assert plan.refusal_reason == _ROUTING_TARGET_PARKED_REASON
 
 
 def test_proposal_to_trial() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -584,7 +619,7 @@ def test_proposal_to_trial() -> None:
 
 
 def test_trial_to_decision() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -603,7 +638,7 @@ def test_trial_to_decision() -> None:
 
 
 def test_mutation_proposal_requires_evidence_and_rollback() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     assert proposal.evidence_refs
     assert proposal.patch.rollback_payload
@@ -641,7 +676,7 @@ def test_decision_engine_keeps_prompt_profile_operator_gated() -> None:
 def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal1 = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal1 = _direct_routing_proposal()
     assert proposal1 is not None
     queue_item = store.add_proposal(proposal1)
     assert queue_item.status == "queued"
@@ -662,7 +697,7 @@ def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) ->
     assert adoption is not None
     assert store.record_adoption(adoption) == []
 
-    proposal2 = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal2 = _direct_routing_proposal()
     assert proposal2 is not None
     decision2 = DecisionEngine().decide(
         proposal=proposal2,
@@ -675,7 +710,7 @@ def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) ->
 
 def test_queue_item_consumed_after_trial_and_decision(tmp_path: Path) -> None:
     store = SubstrateMutationStore(sql_db_path=str(tmp_path / "mutation.sqlite3"))
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     queue_item = store.add_proposal(proposal)
     assert any(item.queue_item_id == queue_item.queue_item_id for item in store.list_due_queue(limit=10))
@@ -758,7 +793,7 @@ def test_require_review_never_applies() -> None:
 
 def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
     store = SubstrateMutationStore()
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     store._active_surface_by_target[proposal.target_surface] = "existing-adoption"
     applier = PatchApplier(surfaces={proposal.target_surface: {"chat_reflective_lane_threshold": 0.5}})
@@ -798,7 +833,7 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
 
 
 def test_rollback_payload_required_before_apply() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     proposal = proposal.model_copy(update={"patch": proposal.patch.model_copy(update={"rollback_payload": {}})})
     adoption = PatchApplier(surfaces={}).apply(proposal=proposal, decision=MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote"))
@@ -864,7 +899,7 @@ def test_smoke_script_trace_and_invariants() -> None:
 def test_restart_safe_reload_of_in_flight_mutation_state(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     queue_item = store.add_proposal(proposal)
     trial = SubstrateTrialRunner(
@@ -886,7 +921,7 @@ def test_restart_safe_reload_of_in_flight_mutation_state(tmp_path: Path) -> None
 def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -915,7 +950,7 @@ def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
 def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -946,7 +981,7 @@ def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
 def test_rollback_continuity_after_reload(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -998,7 +1033,7 @@ def test_retention_compaction_preserves_active_state(tmp_path: Path, monkeypatch
     monkeypatch.setenv("SUBSTRATE_MUTATION_RETENTION_MAX_ROLLBACKS", "50")
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1051,7 +1086,7 @@ def test_targeted_signal_persistence_keeps_restart_reload_behavior(tmp_path: Pat
 
 
 def test_routing_replay_corpus_drives_trial_metrics_without_manual_injection() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1089,7 +1124,7 @@ def test_routing_replay_corpus_drives_trial_metrics_without_manual_injection() -
 
 
 def test_routing_decision_can_use_replay_derived_metrics() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1121,7 +1156,7 @@ def test_routing_decision_can_use_replay_derived_metrics() -> None:
 
 
 def test_manual_metric_injection_remains_optional_override() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1151,7 +1186,7 @@ def test_manual_metric_injection_remains_optional_override() -> None:
 
 
 def test_routing_replay_prefers_rich_runtime_artifacts_over_selected_priority() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1192,7 +1227,7 @@ def test_routing_replay_prefers_rich_runtime_artifacts_over_selected_priority() 
 
 
 def test_routing_replay_inspection_reports_corpus_composition_and_confidence() -> None:
-    proposal = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_routing_pressure())
+    proposal = _direct_routing_proposal()
     assert proposal is not None
     runner = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),

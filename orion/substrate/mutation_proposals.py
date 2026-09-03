@@ -54,6 +54,40 @@ RoutingSurfaceReader = Callable[[], dict[str, Any]]
 # than any threshold movement the generator can propose (smallest is 0.08).
 _SAME_VALUE_ABS_TOL = 1e-9
 
+# The "routing" target surface (chat_reflective_lane_threshold) is parked.
+#
+# Confirmed live 2026-09-03, after PR #2071 (orion:routing:decision /
+# RoutingDecisionRecordV1) deployed cleanly (code present in the running
+# containers, channel correctly in SQL_WRITER_SUBSCRIBE_CHANNELS, table
+# present with the expected columns):
+#
+# 1. Evidence mismatch. The signals that reach this surface come from
+#    graph-review telemetry (mutation_detectors.py's
+#    `_build_rich_routing_signals` / `_signals_from_pressure_events`) -- a
+#    review-pipeline consolidation-outcome signal that has nothing to do with
+#    what `chat_reflective_lane_threshold` actually gates
+#    (`decision_router.route()`'s execution_depth/confidence gate).
+# 2. Structural inertness. `routing_decision` had 0 rows and the
+#    `orion:routing:decision` stream had 0 entries as of the #2071 deploy --
+#    no chat turn has gone through `route()` since, so there is no live data
+#    yet to derive a real target value from. Worse: `AUTO_ROUTER_LLM_ENABLED`
+#    is `false` in the live orion-cortex-orch container, so every routing
+#    decision at `execution_depth >= 2` (the only depth the gate ever checks)
+#    comes from the hardcoded heuristic table in decision_router.py. The
+#    LOWEST confidence any of those paths can carry -- including the three
+#    that bump a lower-depth decision up to depth 2 while leaving its
+#    original confidence untouched (`acquisition_contract`,
+#    `output_mode_tool_lane`, `context_exec_investigation`) -- is 0.61
+#    (`heuristic:default`). The hardcoded patch value this module has always
+#    proposed is 0.58. 0.61 > 0.58, so `decision_confidence < routing_threshold`
+#    can never be true at this target: the "self-modification" would be
+#    structurally inert even with correct evidence.
+#
+# Re-enable condition: real `routing_decision` volume exists in Postgres AND
+# the proposed value is derived from it (not this hardcoded constant). See
+# `project_routing_threshold_mutation_parked_2026-09-03.md`.
+_ROUTING_TARGET_PARKED_REASON = "routing_threshold_target_parked_2026_09_03"
+
 
 @dataclass(frozen=True)
 class ProposalPlan:
@@ -81,6 +115,11 @@ class ProposalFactory:
         return self.plan_for_pressure(pressure).proposal
 
     def plan_for_pressure(self, pressure: MutationPressureV1) -> ProposalPlan:
+        if pressure.target_surface == "routing":
+            # See _ROUTING_TARGET_PARKED_REASON above. Checked before the
+            # surface reader is ever touched, so this fires regardless of
+            # what the live threshold value is.
+            return ProposalPlan(None, _ROUTING_TARGET_PARKED_REASON)
         mutation_class = SURFACE_TO_CLASS.get(pressure.target_surface)
         if mutation_class is None:
             return ProposalPlan(None, "unknown_target_surface")

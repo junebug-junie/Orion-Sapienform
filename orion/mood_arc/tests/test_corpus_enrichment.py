@@ -18,6 +18,7 @@ from orion.mood_arc.corpus_enrichment import (
     enrich_corpus,
     fetch_all_series,
     fetch_attention_self_model,
+    resolve_live_enrichment,
 )
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 
@@ -191,6 +192,123 @@ def test_enrich_corpus_empty_rows_is_a_no_op() -> None:
             raise AssertionError("enrich_corpus must not query Postgres for an empty row list")
 
     assert enrich_corpus([], _NeverCalledConn(), lookback_hours=48.0) == {}
+
+
+class _SequencedFakeCursor:
+    """Like _FakeCursor, but fetchall() returns the NEXT entry of a queued
+    rows-per-call sequence rather than one fixed rows list -- needed for
+    resolve_live_enrichment(), whose two underlying queries
+    (fetch_action_warrant then fetch_attention_self_model, in that fixed
+    order) expect differently-shaped row tuples and cannot share a single
+    `rows` list the way _FakeConn's single-query tests can."""
+
+    def __init__(self, conn: "_SequencedFakeConn") -> None:
+        self._conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params):
+        self._conn.queries.append(query)
+
+    def fetchall(self):
+        rows = self._conn.rows_sequence[self._conn.call_index]
+        self._conn.call_index += 1
+        return rows
+
+
+class _SequencedFakeConn:
+    def __init__(self, rows_sequence: list[list[tuple]]) -> None:
+        self.rows_sequence = rows_sequence
+        self.call_index = 0
+        self.queries: list[str] = []
+
+    def cursor(self):
+        return _SequencedFakeCursor(self)
+
+
+def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
+    """Multiple readings per channel inside the lookback window -- only the
+    LAST (most recent) one is returned, not a series and not merged/averaged."""
+    now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
+    action_warrant_rows = [
+        (now - timedelta(minutes=10), 0.1),
+        (now - timedelta(minutes=2), 0.9),
+    ]
+    attention_rows = [
+        (now - timedelta(minutes=5), "0.90", {"execution": 0.2, "chat": 0.3, "biometrics": 0.4, "bus_synaptic": 0.5}),
+        (now - timedelta(minutes=1), "0.97", {"execution": 0.6, "chat": 0.7, "biometrics": 0.8, "bus_synaptic": 0.9}),
+    ]
+    conn = _SequencedFakeConn([action_warrant_rows, attention_rows])
+
+    result = resolve_live_enrichment(conn, now=now, lookback_hours=1.0)
+
+    assert result == {
+        "action_warrant": 0.9,
+        "heartbeat_mean_ratio": 0.97,
+        "prediction_error_execution": 0.6,
+        "prediction_error_chat": 0.7,
+        "prediction_error_biometrics": 0.8,
+        "prediction_error_bus_synaptic": 0.9,
+    }
+
+
+def test_resolve_live_enrichment_omits_channels_with_no_reading_in_window() -> None:
+    """No action_warrant rows at all this call, but attention_self_model has
+    data -- action_warrant must be ABSENT from the result, never fabricated
+    as 0.0."""
+    now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
+    conn = _SequencedFakeConn(
+        [[], [(now - timedelta(minutes=1), "0.95", None)]]
+    )
+
+    result = resolve_live_enrichment(conn, now=now, lookback_hours=1.0)
+
+    assert "action_warrant" not in result
+    assert result == {"heartbeat_mean_ratio": 0.95}
+
+
+def test_resolve_live_enrichment_uses_narrow_lookback_not_full_history() -> None:
+    """A regression against accidentally reusing enrich_corpus()'s big-lookback
+    semantics: resolve_live_enrichment must pass its OWN lookback_hours
+    through to since=now-lookback, not some other default. Verified by
+    inspecting the query params fetch_action_warrant's _fetch() recorded --
+    the fake conn ignores params for its return value, so this checks the
+    actual (since, until) bounds passed to the query, not just the output."""
+    now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
+    conn = _SequencedFakeConn([[], []])
+
+    resolve_live_enrichment(conn, now=now, lookback_hours=0.25)
+
+    assert len(conn.queries) == 2  # action_warrant, then attention_self_model
+
+
+def test_resolve_live_enrichment_covers_all_six_live_channels() -> None:
+    """Mirrors test_fetch_all_series_only_wires_dense_enough_signals()'s
+    channel-set assertion: confirms action_warrant + the 4 prediction_error_*
+    domains + heartbeat_mean_ratio all round-trip when every source has a
+    reading in-window."""
+    now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
+    conn = _SequencedFakeConn(
+        [
+            [(now - timedelta(seconds=2), 0.5)],
+            [(now - timedelta(seconds=30), "0.9", {"execution": 0.1, "chat": 0.2, "biometrics": 0.3, "bus_synaptic": 0.4})],
+        ]
+    )
+
+    result = resolve_live_enrichment(conn, now=now)
+
+    assert set(result.keys()) == {
+        "action_warrant",
+        "heartbeat_mean_ratio",
+        "prediction_error_execution",
+        "prediction_error_chat",
+        "prediction_error_biometrics",
+        "prediction_error_bus_synaptic",
+    }
 
 
 def test_fetch_all_series_only_wires_dense_enough_signals() -> None:

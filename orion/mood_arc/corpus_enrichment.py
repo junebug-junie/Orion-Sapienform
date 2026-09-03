@@ -367,3 +367,43 @@ def enrich_corpus(
     until = max(r.generated_at for r in rows)
     series_by_name = fetch_all_series(conn, since, until)
     return {name: asof_forward_fill(rows, series) for name, series in series_by_name.items()}
+
+
+def resolve_live_enrichment(
+    conn, *, now: datetime, lookback_hours: float = 0.25
+) -> dict[str, float]:
+    """Live counterpart to `enrich_corpus()`, added 2026-09-03 for
+    `services/orion-field-digester/app/anomaly_scorer.py`'s per-tick scoring loop.
+    Resolves the SINGLE latest known value (not a forward-filled per-row series) for
+    each of the 6 live-enrichment channels (`action_warrant`, `heartbeat_mean_ratio`,
+    `prediction_error_{execution,chat,biometrics,bus_synaptic}`) as of `now`, over a
+    narrow trailing window -- these are the only phi-v2-audit channels the live
+    scorer's in-process row-building path (`collect_field_channel_pressures()`) does
+    not already produce; every other v4 channel (including all 5 cabinet channels)
+    reaches it the same way it reaches `field_channel_corpus.v1`, with no gap.
+
+    `lookback_hours` defaults to 15 minutes -- `action_warrant`'s real cadence is
+    ~2.1s and `attention_self_model`'s is ~30.6s (both live-confirmed in this
+    module's other docstrings and re-queried on essentially every tick here), so 15
+    minutes is ~29x margin over the slower cadence while keeping the query itself
+    cheap and index-bound. Widen only if a live producer gap longer than that is
+    actually observed -- this is a reversible keyword default, not a schema/contract
+    decision.
+
+    A channel with no reading anywhere in [now - lookback_hours, now] is left
+    ENTIRELY ABSENT from the returned dict -- never fabricated as 0.0, same
+    convention as `asof_forward_fill()`. The caller is responsible for treating a
+    fully-empty return (all 6 channels absent) as worth logging loudly -- it can mean
+    the join found nothing at all (wrong table/column, DB unreachable, a real
+    producer outage longer than the lookback), not that this tick is calm.
+    """
+    since = now - timedelta(hours=lookback_hours)
+    series_by_name: dict[str, TimeSeries] = {"action_warrant": fetch_action_warrant(conn, since, now)}
+    series_by_name.update(fetch_attention_self_model(conn, since, now))
+    latest: dict[str, float] = {}
+    for series in series_by_name.values():
+        if not series:
+            continue
+        _ts, values = series[-1]  # fetch_* queries already ORDER BY ... ASC
+        latest.update(values)
+    return latest

@@ -539,9 +539,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     InnerStateSignal(
         signal_id="mood_arc_encoder.v1",
         schema=MoodArcEncoderManifestV1,
-        producer_service="orion/mood_arc/fit_encoder.py (manually-invoked CLI, not a service; "
-        "producer_service corrected 2026-09-02 -- previously read orion-spark-introspector, "
-        "which never produced this artifact and was deleted 2026-07-28)",
+        producer_service="orion.mood_arc.fit_encoder (manual CLI, not a service)",
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.REHEARSAL,
         cognition_consumers=(),
@@ -600,8 +598,11 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "undecided question -- so probes.json is empty for manifests "
             "trained from this point forward until that question is "
             "resolved. "
-            "Corrected 2026-09-02: this entry's producer_service and prior "
-            "notes text claimed 'no cognition consumer by design', full "
+            "Corrected 2026-09-02: this entry's producer_service (was "
+            "'orion-spark-introspector', which never produced this "
+            "artifact and was deleted 2026-07-28 -- fixed to the real "
+            "producer, the manually-invoked fit_encoder.py CLI itself) and "
+            "prior notes text claimed 'no cognition consumer by design', full "
             "stop. That was wrong. orion.mood_arc.fit_encoder is imported "
             "directly, in-process, by "
             "services/orion-field-digester/app/anomaly_scorer.py, which "
@@ -617,14 +618,27 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "tracks (see the class docstring). Two live caveats: (1) that "
             "whole path is gated by FIELD_CHANNEL_ANOMALY_ENABLED, "
             "defaulting false in both .env_example and docker-compose.yml; "
-            "(2) anomaly_scorer.py reads its own separately-tracked model "
-            "directory (/mnt/telemetry/models/field_channel_anomaly/, only "
-            "v1-v3 as of this writing), not the directory this module's "
-            "own promote() subcommand writes to "
-            "(/mnt/telemetry/models/mood_arc/, which now has v4) -- "
-            "promoting a new version through this module's own bookkeeping "
-            "does not, by itself, move that live consumer onto it. Full "
-            "detail in orion/mood_arc/README.md's corrected 'Status' note "
+            "(2) CONVERGED 2026-09-03 (was a real gap until then): "
+            "anomaly_scorer.py used to read its own separately-tracked "
+            "model directory (/mnt/telemetry/models/field_channel_anomaly/, "
+            "only v1-v3), disconnected from this module's own promote() "
+            "subcommand (/mnt/telemetry/models/mood_arc/) -- promoting a "
+            "new version through this module's own bookkeeping did not, by "
+            "itself, move that live consumer onto it. Fixed: "
+            "FIELD_CHANNEL_ANOMALY_MODELS_ROOT (renamed from "
+            "FIELD_CHANNEL_ANOMALY_ENCODER_DIR, a real semantics change) "
+            "now points at this module's own models_root and resolves the "
+            "active version via the new resolve_active_encoder_dir() "
+            "(reads active.json) on every load -- a future promote() "
+            "reaches the live consumer on its next restart, no manual "
+            "re-pointing. v4's manifest also needed 6 channels "
+            "(action_warrant, heartbeat_mean_ratio, "
+            "prediction_error_{execution,chat,biometrics,bus_synaptic}) "
+            "that consumer's in-process row-building alone can't produce -- "
+            "also fixed, via corpus_enrichment.py's new "
+            "resolve_live_enrichment(), a live per-tick counterpart to the "
+            "offline enrich-corpus batch join. Full detail in "
+            "orion/mood_arc/README.md's corrected 'Status' note "
             "and its v4 section."
         ),
     ),

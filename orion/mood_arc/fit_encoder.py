@@ -16,8 +16,12 @@ of its own. **Not consumer-free, corrected 2026-09-02**: the functions in
 this module (`load_artifacts`, `score_windows`, etc.) are imported directly
 by `services/orion-field-digester/app/anomaly_scorer.py`, which feeds the
 Hub's main-page Cognitive EKG viz -- gated behind `FIELD_CHANNEL_ANOMALY_ENABLED`
-(default off) and reading its own separately-tracked model directory, not
-whatever this script's own `promote` subcommand last activated. See
+(default off). **Converged 2026-09-03**: that consumer now resolves the
+same `models_root` this script's own `promote` subcommand writes to, via
+the new `resolve_active_encoder_dir()` (reads `active.json`), rather than a
+separately-tracked directory -- plus live per-tick Postgres enrichment
+(`orion.mood_arc.corpus_enrichment.resolve_live_enrichment()`) for the
+channels its own in-process row-building alone can't produce. See
 `orion/mood_arc/README.md`'s "Status" note for the full chain and caveats.
 
 **Corpus-swap rework (2026-07-17).** This script originally trained against
@@ -1790,6 +1794,53 @@ def promote_encoder(
         "encoder_version": manifest.encoder_version,
         "previous_active": previous_active,
     }
+
+
+def resolve_active_encoder_dir(models_root: Path) -> Path:
+    """Reads models_root/active.json (written by promote_encoder(), above) and
+    returns the promoted directory it currently points at.
+
+    Fail-closed, matching promote_encoder()'s own style: never silently
+    returns a stale or guessed directory.
+
+    - FileNotFoundError if active.json itself is missing -- nothing has ever
+      been promoted to this models_root via `fit_encoder.py promote`.
+    - ValueError if active.json exists but is malformed (invalid JSON, no
+      "path" key, or "path" names a directory with no manifest.json --
+      a stale pointer left over from a promoted directory that was later
+      removed).
+
+    Added 2026-09-03 for services/orion-field-digester/app/anomaly_scorer.py,
+    the first real consumer that needs to resolve "whatever is currently
+    active" rather than hardcoding one version's literal path -- no such
+    resolver existed anywhere in the repo before this (confirmed by grep;
+    promote_encoder() itself only reads active.json to find the PREVIOUS
+    active manifest to retire it, never to answer "what's active now" for a
+    general caller). Callers that want fail-OPEN behavior (this project's
+    established convention for that specific live consumer -- see its class
+    docstring) must catch these themselves, the same way it already catches
+    load_artifacts()'s own exceptions today.
+    """
+    pointer_path = models_root / "active.json"
+    if not pointer_path.exists():
+        raise FileNotFoundError(
+            f"no active.json at {pointer_path} -- has an encoder ever been promoted "
+            f"to this models_root via `fit_encoder.py promote`?"
+        )
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"malformed active.json at {pointer_path}: {exc}") from exc
+    path_str = pointer.get("path")
+    if not path_str:
+        raise ValueError(f"active.json at {pointer_path} has no 'path' key: {pointer!r}")
+    resolved = Path(path_str)
+    if not (resolved / "manifest.json").exists():
+        raise ValueError(
+            f"active.json at {pointer_path} points at {resolved}, which has no "
+            f"manifest.json -- pointer is stale or the promoted directory was removed"
+        )
+    return resolved
 
 
 def cmd_promote(args: argparse.Namespace) -> int:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,12 +17,17 @@ _WINDOW_SIZE = 3
 
 
 def _write_tiny_encoder(tmp_path: Path, *, recon_error_p95: float = 0.01) -> Path:
+    """Returns a models_root (containing active.json + the versioned artifact
+    dir under it), not the artifact dir directly -- matches what
+    FieldChannelAnomalyScorer expects since 2026-09-03, when it moved from a
+    literal `encoder_dir` to resolving "whatever's active" via
+    resolve_active_encoder_dir()."""
     d_in = _WINDOW_SIZE * len(_FIELDS)
     weights = init_weights(d_in, hidden_dim=4, latent_dim=2, seed=0, data_mean=np.zeros(d_in))
     manifest = MoodArcEncoderManifestV1(
         encoder_id="mood-arc-encoder:test.v1",
         encoder_version="test.v1",
-        status="candidate",
+        status="active",
         architecture="mlp_shallow_v1",
         window_size=_WINDOW_SIZE,
         stride=1,
@@ -41,9 +47,21 @@ def _write_tiny_encoder(tmp_path: Path, *, recon_error_p95: float = 0.01) -> Pat
         git_sha="deadbeef",
         trained_at=datetime.now(timezone.utc),
     )
-    out_dir = tmp_path / "encoder"
-    write_artifacts(out_dir, manifest=manifest, weights=weights, probes={})
-    return out_dir
+    models_root = tmp_path / "models"
+    version_dir = models_root / "test.v1"
+    write_artifacts(version_dir, manifest=manifest, weights=weights, probes={})
+    (models_root / "active.json").write_text(
+        json.dumps(
+            {
+                "encoder_id": manifest.encoder_id,
+                "encoder_version": manifest.encoder_version,
+                "promoted_at": datetime.now(timezone.utc).isoformat(),
+                "path": str(version_dir),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return models_root
 
 
 def _row(i: int, *, base: datetime) -> FieldChannelCorpusRowV1:
@@ -54,23 +72,23 @@ def _row(i: int, *, base: datetime) -> FieldChannelCorpusRowV1:
     )
 
 
-def test_score_latest_returns_none_before_encoder_dir_configured() -> None:
-    scorer = FieldChannelAnomalyScorer(encoder_dir="", threshold_multiplier=3.0)
+def test_score_latest_returns_none_before_models_root_configured() -> None:
+    scorer = FieldChannelAnomalyScorer(models_root="", threshold_multiplier=3.0)
     scorer.append_row(_row(0, base=datetime.now(timezone.utc)))
     assert scorer.score_latest() is None
 
 
-def test_score_latest_returns_none_when_encoder_dir_does_not_exist(tmp_path: Path) -> None:
+def test_score_latest_returns_none_when_models_root_does_not_exist(tmp_path: Path) -> None:
     scorer = FieldChannelAnomalyScorer(
-        encoder_dir=str(tmp_path / "nonexistent"), threshold_multiplier=3.0
+        models_root=str(tmp_path / "nonexistent"), threshold_multiplier=3.0
     )
     scorer.append_row(_row(0, base=datetime.now(timezone.utc)))
     assert scorer.score_latest() is None
 
 
 def test_score_latest_returns_none_below_window_size(tmp_path: Path) -> None:
-    encoder_dir = _write_tiny_encoder(tmp_path)
-    scorer = FieldChannelAnomalyScorer(encoder_dir=str(encoder_dir), threshold_multiplier=3.0)
+    models_root = _write_tiny_encoder(tmp_path)
+    scorer = FieldChannelAnomalyScorer(models_root=str(models_root), threshold_multiplier=3.0)
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE - 1):
         scorer.append_row(_row(i, base=base))
@@ -78,8 +96,8 @@ def test_score_latest_returns_none_below_window_size(tmp_path: Path) -> None:
 
 
 def test_score_latest_returns_a_real_score_at_window_size(tmp_path: Path) -> None:
-    encoder_dir = _write_tiny_encoder(tmp_path)
-    scorer = FieldChannelAnomalyScorer(encoder_dir=str(encoder_dir), threshold_multiplier=3.0)
+    models_root = _write_tiny_encoder(tmp_path)
+    scorer = FieldChannelAnomalyScorer(models_root=str(models_root), threshold_multiplier=3.0)
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE):
         scorer.append_row(_row(i, base=base))
@@ -106,8 +124,8 @@ def test_buffer_gap_breaks_the_run_and_still_scores_the_latest_contiguous_window
     run before the gap is simply excluded (_build_windows_with_span's
     contract), and score_latest() should still find a complete window in
     whatever the buffer holds after the gap."""
-    encoder_dir = _write_tiny_encoder(tmp_path)
-    scorer = FieldChannelAnomalyScorer(encoder_dir=str(encoder_dir), threshold_multiplier=3.0)
+    models_root = _write_tiny_encoder(tmp_path)
+    scorer = FieldChannelAnomalyScorer(models_root=str(models_root), threshold_multiplier=3.0)
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE):
         scorer.append_row(_row(i, base=base))
@@ -122,9 +140,9 @@ def test_buffer_gap_breaks_the_run_and_still_scores_the_latest_contiguous_window
 
 
 def test_score_latest_returns_none_during_startup_grace_period(tmp_path: Path) -> None:
-    encoder_dir = _write_tiny_encoder(tmp_path)
+    models_root = _write_tiny_encoder(tmp_path)
     scorer = FieldChannelAnomalyScorer(
-        encoder_dir=str(encoder_dir), threshold_multiplier=3.0, startup_grace_sec=3600.0
+        models_root=str(models_root), threshold_multiplier=3.0, startup_grace_sec=3600.0
     )
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE):
@@ -139,9 +157,9 @@ def test_append_row_still_buffers_during_startup_grace_period(tmp_path: Path) ->
     """The grace period gates scoring, not buffering -- a real window must
     be ready the instant the grace period ends, not require waiting an
     additional window_size worth of ticks on top of it."""
-    encoder_dir = _write_tiny_encoder(tmp_path)
+    models_root = _write_tiny_encoder(tmp_path)
     scorer = FieldChannelAnomalyScorer(
-        encoder_dir=str(encoder_dir), threshold_multiplier=3.0, startup_grace_sec=3600.0
+        models_root=str(models_root), threshold_multiplier=3.0, startup_grace_sec=3600.0
     )
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE):
@@ -157,8 +175,8 @@ def test_default_startup_grace_is_zero_and_does_not_block_scoring(tmp_path: Path
     """Backward compatibility: callers that don't pass startup_grace_sec
     (e.g. existing tests, or a hypothetical future caller) get immediate
     scoring, same as before this option existed."""
-    encoder_dir = _write_tiny_encoder(tmp_path)
-    scorer = FieldChannelAnomalyScorer(encoder_dir=str(encoder_dir), threshold_multiplier=3.0)
+    models_root = _write_tiny_encoder(tmp_path)
+    scorer = FieldChannelAnomalyScorer(models_root=str(models_root), threshold_multiplier=3.0)
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE):
         scorer.append_row(_row(i, base=base))
@@ -171,8 +189,8 @@ def test_attribution_failure_does_not_break_the_core_score(tmp_path: Path, monke
     attribution is best-effort extra context."""
     import app.anomaly_scorer as anomaly_scorer_module
 
-    encoder_dir = _write_tiny_encoder(tmp_path)
-    scorer = FieldChannelAnomalyScorer(encoder_dir=str(encoder_dir), threshold_multiplier=3.0)
+    models_root = _write_tiny_encoder(tmp_path)
+    scorer = FieldChannelAnomalyScorer(models_root=str(models_root), threshold_multiplier=3.0)
     base = datetime.now(timezone.utc)
     for i in range(_WINDOW_SIZE):
         scorer.append_row(_row(i, base=base))
@@ -193,13 +211,167 @@ def test_attribution_failure_does_not_break_the_core_score(tmp_path: Path, monke
 
 
 def test_load_failure_is_sticky_and_does_not_retry_every_call(tmp_path: Path) -> None:
-    """A malformed encoder_dir (missing manifest.json) should fail once and
-    stay disabled, not re-attempt (and re-log) load on every append_row/
-    score_latest call in a hot ~2s tick loop."""
-    bad_dir = tmp_path / "bad"
-    bad_dir.mkdir()
-    scorer = FieldChannelAnomalyScorer(encoder_dir=str(bad_dir), threshold_multiplier=3.0)
+    """A models_root with no active.json (nothing was ever promoted to it)
+    should fail once and stay disabled, not re-attempt (and re-log) load on
+    every append_row/score_latest call in a hot ~2s tick loop -- unlike a
+    transient live-enrichment DB error, this is a config/deploy problem that
+    needs a human to fix, so it latches."""
+    bad_root = tmp_path / "bad"
+    bad_root.mkdir()
+    scorer = FieldChannelAnomalyScorer(models_root=str(bad_root), threshold_multiplier=3.0)
     assert scorer.score_latest() is None
     assert scorer._load_failed is True
     scorer.append_row(_row(0, base=datetime.now(timezone.utc)))
     assert len(scorer._buffer) == 0
+
+
+# --- Live enrichment (2026-09-03) --------------------------------------------
+
+
+class _FakeLiveCursor:
+    def __init__(self, conn: "_FakeLiveConn") -> None:
+        self._conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params):
+        self._conn.queries.append(query)
+
+    def fetchall(self):
+        rows = self._conn.rows_sequence[self._conn.call_index]
+        self._conn.call_index += 1
+        return rows
+
+
+class _FakeLiveConn:
+    """Same query-sequenced shape as orion/mood_arc/tests/test_corpus_enrichment.py's
+    _SequencedFakeConn -- resolve_live_enrichment() issues two queries per
+    call (action_warrant, then attention_self_model) with differently-shaped
+    row tuples, so a single fixed `rows` list (like the plain _FakeConn used
+    elsewhere) can't serve both."""
+
+    def __init__(self, rows_sequence: list[list[tuple]]) -> None:
+        self.rows_sequence = rows_sequence
+        self.call_index = 0
+        self.queries: list[str] = []
+        self.closed = False
+
+    def cursor(self):
+        return _FakeLiveCursor(self)
+
+    def close(self):
+        self.closed = True
+
+
+def test_append_row_merges_live_enrichment_fields_into_buffer(tmp_path: Path, monkeypatch) -> None:
+    """action_warrant (or any of the 5 attention_self_model fields) resolved
+    live must land in the buffered row's channels -- these aren't in
+    _FIELDS/the manifest's channel_names for this fixture, but append_row()
+    must still merge whatever resolve_live_enrichment() returns; whether a
+    channel is actually TRAINED on is select_fields()'s concern, not this
+    one's."""
+    import app.anomaly_scorer as anomaly_scorer_module
+
+    models_root = _write_tiny_encoder(tmp_path)
+    now = datetime.now(timezone.utc)
+    fake_conn = _FakeLiveConn([[(now, 0.77)], []])  # action_warrant hit, attention_self_model empty
+    monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
+
+    scorer = FieldChannelAnomalyScorer(
+        models_root=str(models_root), threshold_multiplier=3.0, postgres_uri="postgresql://fake/db"
+    )
+    scorer.append_row(_row(0, base=now))
+
+    buffered = list(scorer._buffer)
+    assert len(buffered) == 1
+    assert buffered[0].channels["action_warrant"] == 0.77
+    assert buffered[0].channels["cpu_pressure"] == 0.0  # original field untouched
+
+
+def test_append_row_does_not_mutate_the_passed_in_row(tmp_path: Path, monkeypatch) -> None:
+    """Regression test for the shared-reference risk: worker.py's _tick()
+    passes the SAME row object to the JSONL corpus sink AND this scorer --
+    append_row() must never mutate row.channels in place, only ever buffer a
+    fresh copy, or live-enrichment fields would silently leak into the
+    training corpus too."""
+    import app.anomaly_scorer as anomaly_scorer_module
+
+    models_root = _write_tiny_encoder(tmp_path)
+    now = datetime.now(timezone.utc)
+    fake_conn = _FakeLiveConn([[(now, 0.5)], []])
+    monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
+
+    scorer = FieldChannelAnomalyScorer(
+        models_root=str(models_root), threshold_multiplier=3.0, postgres_uri="postgresql://fake/db"
+    )
+    original_row = _row(0, base=now)
+    original_channels_obj = original_row.channels
+    original_channels_copy = dict(original_row.channels)
+
+    scorer.append_row(original_row)
+
+    assert original_row.channels is original_channels_obj
+    assert original_row.channels == original_channels_copy
+    assert "action_warrant" not in original_row.channels
+    # ...but the buffered copy DID get it -- confirms this isn't just "live
+    # enrichment silently did nothing".
+    assert scorer._buffer[0].channels["action_warrant"] == 0.5
+
+
+def test_append_row_leaves_channels_untouched_when_postgres_uri_unset(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Backward-compat guard: postgres_uri defaults to "" (existing callers/
+    tests that don't pass it), which must never attempt a DB call at all."""
+    import app.anomaly_scorer as anomaly_scorer_module
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("open_readonly_connection must not be called when postgres_uri is unset")
+
+    monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", _fail_if_called)
+
+    models_root = _write_tiny_encoder(tmp_path)
+    scorer = FieldChannelAnomalyScorer(models_root=str(models_root), threshold_multiplier=3.0)
+    row = _row(0, base=datetime.now(timezone.utc))
+    scorer.append_row(row)
+
+    assert len(scorer._buffer) == 1
+    assert "action_warrant" not in scorer._buffer[0].channels
+
+
+def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> None:
+    """A transient DB failure (open_readonly_connection returning None, per
+    its own documented contract) must disable live enrichment for ONE tick
+    only, not latch _load_failed or otherwise stop buffering -- the next
+    tick's append_row() retries a fresh connection on its own."""
+    import app.anomaly_scorer as anomaly_scorer_module
+
+    models_root = _write_tiny_encoder(tmp_path)
+    now = datetime.now(timezone.utc)
+    call_count = {"n": 0}
+    fake_conn = _FakeLiveConn([[(now, 0.9)], []])
+
+    def _flaky_connect(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None  # simulates open_readonly_connection's own failure contract
+        return fake_conn
+
+    monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", _flaky_connect)
+
+    scorer = FieldChannelAnomalyScorer(
+        models_root=str(models_root), threshold_multiplier=3.0, postgres_uri="postgresql://fake/db"
+    )
+
+    scorer.append_row(_row(0, base=now))
+    assert scorer._load_failed is False
+    assert len(scorer._buffer) == 1
+    assert "action_warrant" not in scorer._buffer[0].channels
+
+    scorer.append_row(_row(1, base=now))
+    assert len(scorer._buffer) == 2
+    assert scorer._buffer[1].channels["action_warrant"] == 0.9

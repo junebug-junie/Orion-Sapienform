@@ -21,7 +21,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from orion.mood_arc.fit_encoder import load_artifacts, promote_encoder, write_artifacts
+from orion.mood_arc.fit_encoder import (
+    load_artifacts,
+    promote_encoder,
+    resolve_active_encoder_dir,
+    write_artifacts,
+)
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcEncoderManifestV1
 from orion.schemas.telemetry.phi_encoder import CorpusStatsV1, TrainingStatsV1
@@ -231,3 +236,60 @@ def test_failed_promotion_leaves_previous_active_version_untouched(tmp_path: Pat
     active_pointer = json.loads((models_root / "active.json").read_text(encoding="utf-8"))
     assert active_pointer["encoder_version"] == "v1"
     assert active_pointer["path"] == str(v1_dest)
+
+
+def test_resolve_active_encoder_dir_reads_promoted_path(tmp_path: Path) -> None:
+    """The direct read-side mirror of promote_encoder(): resolving a
+    models_root must return exactly the directory the most recent promotion
+    wrote, tracking a second promotion too (not a cached/stale first read)."""
+    models_root = tmp_path / "models_root"
+    v1_dir = _fake_candidate_dir(tmp_path, encoder_version="v1", floor_pass=True)
+    result1 = promote_encoder(v1_dir, models_root=models_root)
+    assert resolve_active_encoder_dir(models_root) == Path(result1["promoted"])
+
+    v2_dir = _fake_candidate_dir(tmp_path, encoder_version="v2", floor_pass=True)
+    result2 = promote_encoder(v2_dir, models_root=models_root)
+    assert resolve_active_encoder_dir(models_root) == Path(result2["promoted"])
+
+
+def test_resolve_active_encoder_dir_raises_file_not_found_when_active_json_missing(
+    tmp_path: Path,
+) -> None:
+    """Nothing has ever been promoted to this models_root -- fail loud, not
+    a guessed/default directory."""
+    models_root = tmp_path / "models_root"
+    models_root.mkdir()
+    with pytest.raises(FileNotFoundError, match="active.json"):
+        resolve_active_encoder_dir(models_root)
+
+
+def test_resolve_active_encoder_dir_raises_value_error_on_malformed_json(tmp_path: Path) -> None:
+    models_root = tmp_path / "models_root"
+    models_root.mkdir()
+    (models_root / "active.json").write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed"):
+        resolve_active_encoder_dir(models_root)
+
+
+def test_resolve_active_encoder_dir_raises_value_error_when_path_key_missing(tmp_path: Path) -> None:
+    models_root = tmp_path / "models_root"
+    models_root.mkdir()
+    (models_root / "active.json").write_text(json.dumps({"encoder_version": "v1"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="path"):
+        resolve_active_encoder_dir(models_root)
+
+
+def test_resolve_active_encoder_dir_raises_value_error_on_stale_pointer(tmp_path: Path) -> None:
+    """active.json points at a real path, but that path's manifest.json is
+    gone -- a stale pointer left over from a promoted directory that was
+    later removed, not a directory that was ever genuinely active right now."""
+    models_root = tmp_path / "models_root"
+    models_root.mkdir()
+    stale_dir = tmp_path / "vanished"
+    stale_dir.mkdir()
+    (models_root / "active.json").write_text(
+        json.dumps({"encoder_id": "x", "encoder_version": "v1", "path": str(stale_dir)}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="manifest.json"):
+        resolve_active_encoder_dir(models_root)

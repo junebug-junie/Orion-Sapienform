@@ -149,7 +149,10 @@ from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
 from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdaptationWorker
-from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
+from orion.substrate.mutation_control_surface import (
+    chat_reflective_lane_threshold_history,
+    inspect_chat_reflective_lane_threshold,
+)
 from orion.substrate.recall_strategy_readiness import (
     compute_recall_strategy_readiness,
     default_eval_corpus_total_cases,
@@ -5480,6 +5483,75 @@ def _recommended_canary_action(*, active_shadow: dict[str, Any] | None, rollups:
     return "not_ready"
 
 
+def _self_modification_panel_payload(*, now: datetime | None = None) -> Dict[str, Any]:
+    """What Orion changed about itself, what it replaced, and who is holding a lock.
+
+    Every field here previously required a Postgres query to answer. On
+    2026-09-02 Orion changed its own routing threshold and then held the surface
+    lock for thirteen hours while 77 proposals were refused behind it; none of
+    that was visible from any hub surface, and the value it had changed *from*
+    was not recorded anywhere at all.
+
+    ``held_for_sec`` is measured against the adoption's ``applied_at``, and
+    ``window_elapsed`` says whether it is now eligible to settle. A surface
+    sitting at ``window_elapsed: true`` for a long time means settlement is not
+    running -- which is exactly the shape of the original bug.
+    """
+    t = now or datetime.now(timezone.utc)
+    data: Dict[str, Any] = {
+        "current": inspect_chat_reflective_lane_threshold(),
+        "history": [],
+        "history_available": False,
+        "surface_holds": [],
+    }
+    try:
+        entries = chat_reflective_lane_threshold_history(limit=10)
+        data["history"] = entries
+        # Distinguish "no changes recorded yet" from "history is not readable".
+        # An empty list is the expected state until the first write lands.
+        data["history_available"] = True
+        if entries:
+            newest = entries[0]
+            previous = (newest.get("previous_value") or {}).get("value")
+            data["last_change"] = {
+                "changed_at": newest.get("changed_at"),
+                "actor": newest.get("actor"),
+                "previous_value": previous,
+                "new_value": (newest.get("new_value") or {}).get("value"),
+            }
+    except Exception as exc:
+        data["history_error"] = str(exc)
+
+    try:
+        for row in SUBSTRATE_MUTATION_STORE.active_surfaces_snapshot():
+            adoption_id = str(row.get("adoption_id") or "")
+            adoption = SUBSTRATE_MUTATION_STORE._adoptions.get(adoption_id)
+            entry: Dict[str, Any] = {
+                "target_surface": row.get("target_surface"),
+                "adoption_id": adoption_id,
+                "held_since": None,
+                "held_for_sec": None,
+                "rollback_window_sec": None,
+                "window_elapsed": None,
+            }
+            if adoption is not None:
+                held_for = (t - adoption.applied_at).total_seconds()
+                entry.update(
+                    {
+                        "held_since": adoption.applied_at.isoformat(),
+                        "held_for_sec": round(held_for, 1),
+                        "rollback_window_sec": adoption.rollback_window_sec,
+                        "window_elapsed": held_for >= float(adoption.rollback_window_sec),
+                        "applied_patch": dict(adoption.applied_patch),
+                        "rollback_payload": dict(adoption.rollback_payload),
+                    }
+                )
+            data["surface_holds"].append(entry)
+    except Exception as exc:
+        data["surface_holds_error"] = str(exc)
+    return data
+
+
 def _autonomy_readiness_payload() -> Dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     warnings: list[str] = []
@@ -5591,6 +5663,7 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
         payload["routing"]["recent_applies"] = [row.model_dump(mode="json") for row in sorted(SUBSTRATE_MUTATION_STORE._adoptions.values(), key=lambda item: item.created_at, reverse=True)[:10]]
         payload["routing"]["recent_rollbacks"] = SUBSTRATE_MUTATION_STORE.recent_rollbacks(limit=10)
         payload["routing"]["recent_blocked_applies"] = SUBSTRATE_MUTATION_STORE.recent_blocked_applies(limit=10)
+        payload["routing"]["self_modification"] = _self_modification_panel_payload()
     except Exception as exc:
         warnings.append(f"routing_posture_unavailable:{exc}")
 

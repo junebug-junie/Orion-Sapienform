@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationPressureV1, MutationProposalV1
-from orion.substrate.mutation_contracts import CONTRACTS
+from orion.substrate.mutation_contracts import CONTRACTS, PARKED_TARGET_SURFACES
 from orion.substrate.recall_strategy_readiness import readiness_for_pressure
 
 
@@ -54,6 +54,53 @@ RoutingSurfaceReader = Callable[[], dict[str, Any]]
 # than any threshold movement the generator can propose (smallest is 0.08).
 _SAME_VALUE_ABS_TOL = 1e-9
 
+# The "routing" target surface (chat_reflective_lane_threshold) is parked.
+#
+# Confirmed live 2026-09-03, after PR #2071 (orion:routing:decision /
+# RoutingDecisionRecordV1) deployed cleanly (code present in the running
+# containers, channel correctly in SQL_WRITER_SUBSCRIBE_CHANNELS, table
+# present with the expected columns):
+#
+# 1. Evidence mismatch. The signals that reach this surface come from
+#    graph-review telemetry (mutation_detectors.py's
+#    `_build_rich_routing_signals` / `_signals_from_pressure_events`) -- a
+#    review-pipeline consolidation-outcome signal that has nothing to do with
+#    what `chat_reflective_lane_threshold` actually gates
+#    (`decision_router.route()`'s execution_depth/confidence gate).
+# 2. Structural inertness. `routing_decision` had 0 rows and the
+#    `orion:routing:decision` stream had 0 entries as of the #2071 deploy --
+#    no chat turn has gone through `route()` since, so there is no live data
+#    yet to derive a real target value from. Worse: `AUTO_ROUTER_LLM_ENABLED`
+#    is `false` in the live orion-cortex-orch container, so every routing
+#    decision at `execution_depth >= 2` (the only depth the gate ever checks)
+#    comes from the hardcoded heuristic table in decision_router.py. The
+#    LOWEST confidence any of those paths can carry -- including the three
+#    that bump a lower-depth decision up to depth 2 while leaving its
+#    original confidence untouched (`acquisition_contract`,
+#    `output_mode_tool_lane`, `context_exec_investigation`) -- is 0.61
+#    (`heuristic:default`). The hardcoded patch value this module has always
+#    proposed is 0.58. 0.61 > 0.58, so `decision_confidence < routing_threshold`
+#    can never be true at this target: the "self-modification" would be
+#    structurally inert even with correct evidence.
+#
+# Re-enable condition: real `routing_decision` volume exists in Postgres AND
+# the proposed value is derived from it (not this hardcoded constant). Full
+# evidence trail (deploy verification, the empty-table check, the confidence
+# enumeration) is in this change's PR description and commit message, not
+# reproduced here to avoid two copies drifting.
+ROUTING_TARGET_PARKED_REASON = "routing_threshold_target_parked_2026_09_03"
+
+# Parked mutation classes never reach a proposal, regardless of target_surface.
+# Derived from PARKED_TARGET_SURFACES (mutation_contracts.py) -- the single
+# source of truth also consumed by mutation_detectors.py's signal filter and
+# api_routes.py's signal-intake health check -- rather than hardcoded here a
+# second time. Keyed on mutation_class (the thing actually being parked), not
+# on the surface string alone, so a future surface alias pointed at the same
+# class can't bypass this by construction.
+_PARKED_MUTATION_CLASSES: frozenset[str] = frozenset(
+    SURFACE_TO_CLASS[surface] for surface in PARKED_TARGET_SURFACES if surface in SURFACE_TO_CLASS
+)
+
 
 @dataclass(frozen=True)
 class ProposalPlan:
@@ -73,8 +120,13 @@ class ProposalPlan:
 
 @dataclass(frozen=True)
 class ProposalFactory:
-    # None means routing proposals are refused outright, not silently emitted
-    # against a guessed baseline -- see _routing_threshold_payloads().
+    # As of 2026-09-03 the routing surface is parked (ROUTING_TARGET_PARKED_REASON
+    # above) and this reader is never read via plan_for_pressure() any more --
+    # _routing_threshold_payloads(), the no-op guard this field used to drive,
+    # is dormant, kept for when the park is lifted (and exercised directly by
+    # tests). Kept as a constructor field, not removed, so the many existing
+    # ProposalFactory(routing_surface_reader=...) call sites don't need to
+    # change for a park that may not be permanent.
     routing_surface_reader: RoutingSurfaceReader | None = None
 
     def from_pressure(self, pressure: MutationPressureV1) -> MutationProposalV1 | None:
@@ -84,16 +136,15 @@ class ProposalFactory:
         mutation_class = SURFACE_TO_CLASS.get(pressure.target_surface)
         if mutation_class is None:
             return ProposalPlan(None, "unknown_target_surface")
+        if mutation_class in _PARKED_MUTATION_CLASSES:
+            # See ROUTING_TARGET_PARKED_REASON above. Checked before the
+            # surface reader (or anything else class-specific) is ever
+            # touched, so this fires regardless of what the live threshold
+            # value is, and regardless of which surface routed here.
+            return ProposalPlan(None, ROUTING_TARGET_PARKED_REASON)
         contract = CONTRACTS[mutation_class]
         patch_payload = _default_patch_for_class(mutation_class)
         rollback_payload = _default_rollback_for_class(mutation_class)
-        if mutation_class == "routing_threshold_patch":
-            patch_payload, rollback_payload, refusal = _routing_threshold_payloads(
-                target_value=float(patch_payload["chat_reflective_lane_threshold"]),
-                reader=self.routing_surface_reader,
-            )
-            if refusal is not None:
-                return ProposalPlan(None, refusal)
         lane = SURFACE_TO_LANE.get(pressure.target_surface, "operational")
         target_ref = contract.allowed_targets[0]
         notes: list[str] = []
@@ -143,6 +194,57 @@ class ProposalFactory:
             ),
             notes=notes,
         ))
+
+
+def build_placeholder_routing_proposal(
+    *,
+    target_value: float | None = None,
+    rollback_value: float = 0.50,
+    subject_ref: str = "entity:orion",
+    source_pressure_id: str = "pressure-routing-placeholder",
+) -> MutationProposalV1:
+    """Build a routing_threshold_patch proposal directly, bypassing the parked
+    ProposalFactory.
+
+    `plan_for_pressure()`/`from_pressure()` refuse every "routing" pressure
+    unconditionally (see `_PARKED_MUTATION_CLASSES`). A few callers need a
+    routing_threshold_patch-shaped proposal anyway, for purposes unrelated to
+    the parked evidence pipeline: a replay-corpus inspection debug endpoint
+    (`services/orion-hub/scripts/api_routes.py`'s
+    `_routing_replay_inspection_payload`), the mutation smoke script, and
+    generic proposal/trial/decision pipeline-mechanics tests. All three used
+    to hand-build near-identical `MutationProposalV1`/`MutationPatchV1`
+    objects (or call the now-parked factory and silently get nothing back);
+    this is the one place that shape is defined, built from the same
+    `_default_patch_for_class`/`_default_rollback_for_class`/`CONTRACTS`
+    the real factory used.
+    """
+    contract = CONTRACTS["routing_threshold_patch"]
+    resolved_target = (
+        float(target_value)
+        if target_value is not None
+        else float(_default_patch_for_class("routing_threshold_patch")["chat_reflective_lane_threshold"])
+    )
+    return MutationProposalV1(
+        lane=SURFACE_TO_LANE.get("routing", "operational"),
+        mutation_class="routing_threshold_patch",
+        risk_tier=contract.risk_tier,
+        target_surface="routing",
+        anchor_scope="orion",
+        subject_ref=subject_ref,
+        rationale=f"placeholder:routing_threshold_patch target={resolved_target}",
+        expected_effect="reduce_runtime_failure",
+        evidence_refs=["telemetry:placeholder"],
+        source_signal_ids=["signal:placeholder"],
+        source_pressure_id=source_pressure_id,
+        patch=MutationPatchV1(
+            mutation_class="routing_threshold_patch",
+            target_surface="routing",
+            target_ref=contract.allowed_targets[0],
+            patch={"chat_reflective_lane_threshold": resolved_target},
+            rollback_payload={"chat_reflective_lane_threshold": float(rollback_value)},
+        ),
+    )
 
 
 def _routing_threshold_payloads(

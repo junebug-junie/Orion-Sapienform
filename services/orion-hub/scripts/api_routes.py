@@ -124,7 +124,6 @@ from orion.core.schemas.substrate_mutation import (
     RecallCanaryReviewArtifactV1,
     RecallCanaryRunV1,
     MutationPressureEvidenceV1,
-    MutationPressureV1,
     MutationSignalV1,
     RecallProductionCandidateReviewV1,
     RecallShadowEvalRunV1,
@@ -142,10 +141,14 @@ from orion.substrate.review_schedule import GraphReviewScheduler
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
 from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
-from orion.substrate.mutation_detectors import MutationDetectors
+from orion.substrate.mutation_detectors import PARKED_TELEMETRY_ZONES, MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator
-from orion.substrate.mutation_proposals import ProposalFactory
+from orion.substrate.mutation_proposals import (
+    ROUTING_TARGET_PARKED_REASON,
+    ProposalFactory,
+    build_placeholder_routing_proposal,
+)
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -4701,6 +4704,7 @@ def _mutation_signal_intake_report(
     allowed_zones: set[str],
     before_zone_filter: int,
     after_zone_filter: int,
+    after_zone_filter_live: int,
     tick_id: str,
     at: datetime,
 ) -> Dict[str, Any]:
@@ -4716,6 +4720,17 @@ def _mutation_signal_intake_report(
     `consecutive_starved_cycles` is deliberately consecutive-with-reset rather
     than a lifetime total: a lifetime counter cannot distinguish "starved since
     boot" from "starved once, months ago, fine now".
+
+    `after_zone_filter_live` (added 2026-09-03, alongside the routing park) is
+    `after_zone_filter` minus rows in `mutation_detectors.PARKED_TELEMETRY_ZONES`
+    -- zones whose only possible base signal is a parked surface. Without this
+    split, a cycle that only ever sees `autonomy_graph` rows reported
+    `reason: "healthy"` while `signals_processed` stayed 0, because
+    `after_zone_filter > 0` only proves rows existed in an accepted zone, not
+    that any of them could produce a live signal any more. Exactly the
+    "unexplained zero looks like a healthy idle cycle" failure mode this
+    function exists to prevent -- caught by code review before merge, not by
+    the incident this docstring already cites.
     """
     previous = SUBSTRATE_MUTATION_SIGNAL_INTAKE
     total_records = int(store_attrition.get("total_records") or 0)
@@ -4731,8 +4746,16 @@ def _mutation_signal_intake_report(
         # Operator turned routing proposals off. Zero signals is the configured
         # outcome, not a fault -- must never be reported as starvation.
         reason = "signals_disabled"
-    elif after_zone_filter > 0:
+    elif after_zone_filter_live > 0:
         reason = "healthy"
+    elif after_zone_filter > 0:
+        # Every zone-matched row this cycle is in a permanently parked zone
+        # (see mutation_detectors.PARKED_TELEMETRY_ZONES) -- a configured,
+        # known-permanent outcome, not starvation. Must never be conflated
+        # with "healthy" (nothing is actually being processed) or with the
+        # starvation reasons below (widening allowed_zones or raising the
+        # signal budget would not change anything).
+        reason = "matched_rows_only_in_parked_zones"
     elif total_records == 0:
         reason = "store_empty"
     elif store_attrition.get("starved"):
@@ -4769,6 +4792,7 @@ def _mutation_signal_intake_report(
         "store_matched_surface": store_matched,
         "before_zone_filter": before_zone_filter,
         "after_zone_filter": after_zone_filter,
+        "after_zone_filter_live": after_zone_filter_live,
         "usable_zone_rows_before_limit": usable_before_limit,
         "surface_histogram": store_attrition.get("surface_histogram") or {},
         "zone_histogram": store_attrition.get("zone_histogram") or {},
@@ -4946,11 +4970,20 @@ def execute_substrate_mutation_scheduled_cycle(
             _phase_sec["signal_query"] = time.monotonic() - _t_signals
         before_zone_filter = len(telemetry)
         telemetry = [item for item in telemetry if item.target_zone in allowed_zones]
+        # Rows whose zone can still produce a live signal -- i.e. not one of
+        # PARKED_TELEMETRY_ZONES (autonomy_graph, mapping only to the parked
+        # "routing" surface). Distinct from after_zone_filter=len(telemetry)
+        # so the health check below can't call a cycle "healthy" on the
+        # strength of rows that from_review_telemetry() will filter to zero.
+        after_zone_filter_live = len(
+            [item for item in telemetry if item.target_zone not in PARKED_TELEMETRY_ZONES]
+        )
         signal_intake = _mutation_signal_intake_report(
             store_attrition=store_attrition,
             allowed_zones=allowed_zones,
             before_zone_filter=before_zone_filter,
             after_zone_filter=len(telemetry),
+            after_zone_filter_live=after_zone_filter_live,
             tick_id=tick_id,
             at=tick_now,
         )
@@ -5312,24 +5345,20 @@ def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
         if proposal.mutation_class == "routing_threshold_patch"
     ]
     routing_proposals.sort(key=lambda item: item.created_at, reverse=True)
-    proposal = routing_proposals[0] if routing_proposals else ProposalFactory(
-        routing_surface_reader=inspect_chat_reflective_lane_threshold,
-    ).from_pressure(
-        MutationPressureV1(
-            anchor_scope="orion",
-            subject_ref="entity:orion",
-            target_surface="routing",
-            pressure_kind="runtime_failure",
-            pressure_score=5.0,
-            evidence_refs=["telemetry:replay_inspection_seed"],
-            source_signal_ids=["signal:replay_inspection_seed"],
-        )
+    # ProposalFactory.from_pressure() refuses every "routing" pressure now
+    # (parked -- see mutation_proposals.py's _PARKED_MUTATION_CLASSES), so it
+    # can no longer supply this fallback. This endpoint only ever needed a
+    # routing_threshold_patch-shaped carrier for `inspect_routing_replay()`,
+    # not a real evidenced proposal -- build one directly instead. Since the
+    # routing target is parked, this fallback is now the ONLY path (no new
+    # routing proposal will ever be queued), so the result is marked
+    # `synthetic_proposal` rather than presented as if it were real -- the
+    # exact "silently emitted against a guessed baseline" outcome the old
+    # (now-parked) routing_surface_reader existed to avoid.
+    used_real_proposal = bool(routing_proposals)
+    proposal = routing_proposals[0] if routing_proposals else build_placeholder_routing_proposal(
+        source_pressure_id="pressure:replay_inspection_seed",
     )
-    if proposal is None:
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "data": {"error": "routing_proposal_unavailable"},
-        }
     corpus = ReplayCorpusRegistry(
         corpus_by_class={"routing_threshold_patch": "replay-routing-v1"},
         baseline_metric_ref_by_class={"routing_threshold_patch": "baseline-routing-v1"},
@@ -5338,12 +5367,14 @@ def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
         scorer=ClassSpecificScorer(),
         corpus_registry=corpus,
     )
+    inspection = trial_runner.inspect_routing_replay(
+        proposal=proposal,
+        replay_records=telemetry,
+    )
+    inspection["synthetic_proposal"] = not used_real_proposal
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "data": trial_runner.inspect_routing_replay(
-            proposal=proposal,
-            replay_records=telemetry,
-        ),
+        "data": inspection,
     }
 
 
@@ -5429,6 +5460,14 @@ def _routing_live_ramp_posture_payload() -> Dict[str, Any]:
             "last_adoption": routing_adoption.model_dump(mode="json") if routing_adoption is not None else None,
             "last_rollback": routing_rollback.model_dump(mode="json") if routing_rollback is not None else None,
             "live_surface": inspect_chat_reflective_lane_threshold(),
+            # 2026-09-03: routing_threshold_patch is parked at
+            # ProposalFactory.plan_for_pressure() -- last_decision/last_adoption/
+            # last_rollback above are frozen at whatever existed before the park
+            # and will never move again while it holds. Without this the panel
+            # reads as "quiet" rather than "permanently inert" -- CLAUDE.md 0A:
+            # no empty-shell cognition without an inspectable reason why.
+            "routing_target_parked": True,
+            "routing_target_parked_reason": ROUTING_TARGET_PARKED_REASON,
         },
     }
 

@@ -19,6 +19,26 @@ class MutationClassContract:
     auto_promote_default: bool = False
 
 
+# Target surfaces whose mutation is parked -- proposals for them are refused
+# unconditionally and their evidence is not even collected. Single source of
+# truth: mutation_proposals.py derives its parked mutation-class set from
+# this via SURFACE_TO_CLASS, mutation_detectors.py filters signals against it
+# directly, and services/orion-hub/scripts/api_routes.py's signal-intake
+# health check uses it (via mutation_detectors.PARKED_TELEMETRY_ZONES) to
+# avoid reporting a cycle "healthy" when every matched row can only ever
+# produce a parked-surface signal. Changing this one set re-derives all three.
+#
+# "routing" (chat_reflective_lane_threshold) parked 2026-09-03: confirmed
+# live evidence mismatch (the signals this surface received describe review-
+# pipeline outcomes, not what the dial gates) and structural inertness (the
+# hardcoded 0.58 patch target sits below the 0.61 confidence floor every
+# heuristic routing decision at execution_depth >= 2 can carry, with
+# AUTO_ROUTER_LLM_ENABLED=false in production -- decision_confidence <
+# routing_threshold can never fire at this target). Full trail in this
+# change's PR description and commit message.
+PARKED_TARGET_SURFACES: frozenset[str] = frozenset({"routing"})
+
+
 CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
     "routing_threshold_patch": MutationClassContract(
         mutation_class="routing_threshold_patch",

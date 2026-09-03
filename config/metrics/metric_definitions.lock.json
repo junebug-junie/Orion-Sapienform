@@ -2,11 +2,25 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 622,
   "_last_change": {
-    "base": "merge base 686df2bd4 (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base dcf467b37 (origin/main)",
+    "change_count": 15,
+    "high_severity_count": 8,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#ar1_surrogate_loss",
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#ceiling_ratio",
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio",
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio_ci_high",
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio_ci_low",
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#max_gap_sec",
+      "high   removed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#shuffle_baseline_loss",
+      "high   renamed metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1 -> metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#ar1_surrogate_loss",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#ceiling_ratio",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#floor_ratio",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#floor_ratio_ci_high",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#floor_ratio_ci_low",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#max_gap_sec",
+      "medium added metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#shuffle_baseline_loss"
     ]
   },
   "definitions": {
@@ -3686,67 +3700,6 @@
       "notes": "scalar field on MoodArcCorpusRowV1",
       "registry_source": "orion/inner_state_registry.py"
     },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "notes": "cadence=offline_trained composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#ar1_surrogate_loss": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#ceiling_ratio": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio_ci_high": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio_ci_low": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#max_gap_sec": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#shuffle_baseline_loss": {
-      "schema_id": "MoodArcEncoderManifestV1",
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
-      ],
-      "notes": "scalar field on MoodArcEncoderManifestV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
     "metric://inner_state/orion-spark-introspector/phi_heuristic.valence": {
       "notes": "cadence=per_tick composition=composed_into_self_state",
       "registry_source": "orion/inner_state_registry.py"
@@ -3901,6 +3854,67 @@
         "metric://inner_state/orion.spark.concept_induction.drives (DELETED 2026-07-30)/drive_state.v1"
       ],
       "notes": "scalar field on DriveStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "notes": "cadence=offline_trained composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#ar1_surrogate_loss": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#ceiling_ratio": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#floor_ratio": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#floor_ratio_ci_high": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#floor_ratio_ci_low": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#max_gap_sec": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1#shuffle_baseline_loss": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion/mood_arc/fit_encoder.py/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://organ_signal/autonomy/autonomy_state#confidence": {

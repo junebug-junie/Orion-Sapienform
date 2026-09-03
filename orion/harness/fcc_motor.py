@@ -23,7 +23,9 @@ from orion.fcc.context_budget import (
     context_fill_pct,
     context_pressure_threshold_chars,
     is_context_overflow_text,
+    is_provider_error_envelope,
     max_context_chars,
+    max_context_tokens,
     measure_step_payload_chars,
     summarize_context_risk_suffix,
 )
@@ -394,7 +396,29 @@ def resolve_auth_token(env: Dict[str, str], *, override: str = "") -> str:
 
 
 def label_to_claude_model_id(label: str, env: Dict[str, str]) -> str:
+    """Resolve a turn's model selector to the string `claude --model` receives.
+
+    Two accepted shapes, checked in this order:
+
+    1. An already-resolved ``"<backend>/<route>"`` spec (``"llamacpp/agent"``) is
+       returned verbatim. This is what the FCC server itself speaks -- the
+       ``MODEL*`` values in ``~/.fcc/.env`` are exactly these strings -- so a
+       caller that already knows which gateway route it wants does not have to
+       round-trip through an env key that would have to be hand-added to a file
+       whose own header says "Managed by Free Claude Code /admin". Hub's COMPUTE
+       lane arrives this way, via `orion.llm.routes.fcc_model_for_route`.
+    2. Otherwise the label is an env KEY (``"MODEL_SONNET"``) and is looked up,
+       falling back to ``MODEL``. Unchanged: this is the path every existing
+       caller takes.
+
+    The order matters. Shape 1 must be checked FIRST, because ``env.get()`` on a
+    ``"llamacpp/agent"`` key misses and the ``or env.get("MODEL")`` fallback
+    would then silently serve `harness` -- the wrong model, with no error, which
+    is the exact failure this function is being asked to fix.
+    """
     key = str(label or DEFAULT_FCC_MODEL_LABEL).strip() or DEFAULT_FCC_MODEL_LABEL
+    if _route_key_from_fcc_env_value(key) is not None:
+        return key
     model_id = str(env.get(key) or env.get("MODEL") or "").strip()
     if not model_id:
         raise ValueError(f"FCC env missing model for label {key!r}")
@@ -424,13 +448,13 @@ def _route_key_from_fcc_env_value(raw_value: str) -> Optional[Tuple[str, str]]:
     return backend, route_key
 
 
-async def probe_current_served_model(
+async def probe_route_runtime(
     fcc_model_label: str | None,
     *,
     env: Dict[str, str] | None = None,
     gateway_url: str | None = None,
     timeout_sec: float = 2.0,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[int]]:
     """Orion capability: best-effort "what backend am I about to run on"
     read, for injecting into the harness system prompt *before* a turn
     starts.
@@ -453,18 +477,27 @@ async def probe_current_served_model(
     """
     label = str(fcc_model_label or "").strip()
     if not label:
-        return None
+        return None, None
     resolved_env = (
         env
         if env is not None
         else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
     )
-    parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    # Same two label shapes `label_to_claude_model_id` accepts, in the same
+    # order: an already-resolved "<backend>/<route>" spec is itself the answer,
+    # otherwise the label is an env key to look up. Without the first branch a
+    # COMPUTE-lane turn ("llamacpp/agent") misses the env lookup and this probe
+    # fails open to None -- costing the harness prompt its "what model am I
+    # about to run on" self-context on exactly the lane where it differs most
+    # from the default.
+    parsed = _route_key_from_fcc_env_value(label) or _route_key_from_fcc_env_value(
+        resolved_env.get(label, "")
+    )
     if parsed is None:
-        return None
+        return None, None
     backend, route_key = parsed
     if backend not in _ROUTE_PROBE_BACKENDS:
-        return None
+        return None, None
 
     url = str(
         gateway_url or os.environ.get("HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210")
@@ -473,23 +506,49 @@ async def probe_current_served_model(
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
             response = await client.get(f"{url}/routes")
             if response.status_code >= 400:
-                return None
+                return None, None
             payload = response.json()
     except Exception:
-        logger.warning("probe_current_served_model failed label=%s route=%s", label, route_key, exc_info=True)
-        return None
+        logger.warning("probe_route_runtime failed label=%s route=%s", label, route_key, exc_info=True)
+        return None, None
 
     routes = payload.get("routes") if isinstance(payload, dict) else None
     if not isinstance(routes, list):
-        return None
+        return None, None
     for route in routes:
         if not isinstance(route, dict) or route.get("id") != route_key:
             continue
+        raw_ctx = route.get("n_ctx")
+        # Absent on an older gateway that predates this field, and null whenever the
+        # worker is down or answered an unexpected shape. Both mean "no ceiling known",
+        # which callers must treat as "fall back to the configured default" -- never as
+        # unlimited.
+        n_ctx = raw_ctx if isinstance(raw_ctx, int) and not isinstance(raw_ctx, bool) and raw_ctx > 0 else None
         model = route.get("model")
         if isinstance(model, str) and model.strip():
-            return _weights_file_basename(model.strip())
-        return None
-    return None
+            return _weights_file_basename(model.strip()), n_ctx
+        return None, n_ctx
+    return None, None
+
+
+async def probe_current_served_model(
+    fcc_model_label: str | None,
+    *,
+    env: Dict[str, str] | None = None,
+    gateway_url: str | None = None,
+    timeout_sec: float = 2.0,
+) -> Optional[str]:
+    """Just the served-model half of `probe_route_runtime`, for the prompt.
+
+    Kept as its own name because that is what the harness prefix asks for and
+    what every existing caller and test already says; the context window is a
+    separate concern with a separate consumer (the motor's own budget), and
+    neither should have to know it is sharing one HTTP call with the other.
+    """
+    model, _ = await probe_route_runtime(
+        fcc_model_label, env=env, gateway_url=gateway_url, timeout_sec=timeout_sec
+    )
+    return model
 
 
 def _preflight_fcc_server(url: str, *, timeout_sec: float = 3.0) -> None:
@@ -615,9 +674,17 @@ def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
     )
 
 
-def _fcc_context_env(env: dict[str, str]) -> None:
-    """Align llamacpp context ceiling + auto-compact with hub agent-claude."""
-    max_ctx = int(os.environ.get("HARNESS_FCC_MAX_CONTEXT_TOKENS", "65536") or "65536")
+def _fcc_context_env(env: dict[str, str], *, n_ctx: Optional[int] = None) -> None:
+    """Align llamacpp context ceiling + auto-compact with hub agent-claude.
+
+    `n_ctx`, when known, is the window the route's worker is actually serving
+    and overrides the container-wide env default -- see
+    `orion.fcc.context_budget.max_context_tokens`. It matters most right here:
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW is what the claude subprocess compacts
+    against, so on the 32768-token `agent` lane an unadjusted 131072 means the
+    subprocess never compacts before the worker rejects the request.
+    """
+    max_ctx = max_context_tokens(n_ctx)
     read_max = int(os.environ.get("HARNESS_FCC_FILE_READ_MAX_TOKENS", "8192") or "8192")
     autocompact_pct = float(os.environ.get("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "70") or "70")
     if max_ctx > 0:
@@ -633,6 +700,7 @@ def _fcc_context_env(env: dict[str, str]) -> None:
     extend_fcc_subprocess_env(
         env,
         workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
+        n_ctx=n_ctx,
     )
 
 
@@ -644,6 +712,7 @@ def _build_subprocess_env(
     turn_budget_sec: Optional[float] = None,
     turn_deadline_epoch: Optional[float] = None,
     turn_step_stall_sec: Optional[float] = None,
+    n_ctx: Optional[int] = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
@@ -659,7 +728,7 @@ def _build_subprocess_env(
     # shared checkout. See scripts/hooks/session_start_agent_board.py and
     # session_stop_agent_board.py, which no-op when this is set.
     env["ORION_FCC_SUBPROCESS"] = "1"
-    _fcc_context_env(env)
+    _fcc_context_env(env, n_ctx=n_ctx)
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
         # Point the context-mode plugin's hooks + MCP server at the same
         # storage root the standalone stage would use.
@@ -760,6 +829,13 @@ async def run_fcc_turn(
         yield {"type": "error", "error": str(exc), "error_code": "fcc_bad_model_label"}
         return
 
+    # The window the lane's worker is actually serving, so every budget below is the
+    # ceiling THIS turn will really hit rather than the container's one-size default.
+    # Best-effort by construction: None (older gateway, worker down, non-llamacpp
+    # backend) falls the whole chain back to the env ceiling, exactly as before.
+    lane_n_ctx = await probe_route_runtime(label, env=env)
+    lane_n_ctx = lane_n_ctx[1]
+
     try:
         _preflight_fcc_server(fcc_server_url)
     except RuntimeError as exc:
@@ -814,7 +890,8 @@ async def run_fcc_turn(
     served_model: Optional[str] = None
     exit_code = 1
     budget_chars = len(prompt)
-    ceiling_chars = max_context_chars()
+    ceiling_chars = max_context_chars(lane_n_ctx)
+    pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
     context_nudge_sent = False
     if stream_read_limit < 65536:
         stream_read_limit = 65536
@@ -833,6 +910,7 @@ async def run_fcc_turn(
             *argv,
             cwd=workspace,
             env=_build_subprocess_env(
+                n_ctx=lane_n_ctx,
                 fcc_server_url=fcc_server_url,
                 auth_token=auth_token,
                 # Already loaded above for the model label; passed on so the
@@ -907,7 +985,7 @@ async def run_fcc_turn(
             yield {"type": "step", "step": step}
             if (
                 not context_nudge_sent
-                and budget_chars >= context_pressure_threshold_chars()
+                and budget_chars >= pressure_chars
             ):
                 fill = context_fill_pct(accumulated_chars=budget_chars, max_chars=ceiling_chars)
                 yield {
@@ -1009,7 +1087,28 @@ async def run_fcc_turn(
         return
 
     if is_context_overflow_text(accumulated):
-        accumulated = apply_context_overflow_hint(accumulated)
+        accumulated = apply_context_overflow_hint(accumulated, n_ctx=lane_n_ctx)
+
+    # A zero exit code is not evidence the turn produced cognition. FCC returns an
+    # upstream failure as a 200 whose assistant text IS the error (see
+    # `is_provider_error_envelope`), so without this the motor's happy path hands a
+    # provider error report onward as Orion's answer and every consumer -- finalize,
+    # chat history, the WS final frame -- records a success. Emitting `error` here is
+    # what makes CLAUDE.md's "no empty-shell cognition" hold on this path: the reply is
+    # preserved on the error frame for diagnosis rather than spoken as an answer.
+    if is_provider_error_envelope(accumulated):
+        yield {
+            "type": "error",
+            "error": accumulated.strip().splitlines()[0] if accumulated.strip() else "provider error",
+            "error_code": (
+                "fcc_context_overflow"
+                if is_context_overflow_text(accumulated)
+                else "fcc_provider_error"
+            ),
+            "metadata": metadata,
+            "llm_response": accumulated,
+        }
+        return
 
     yield {
         "type": "final",

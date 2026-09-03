@@ -25,6 +25,7 @@ from orion.schemas.pre_turn_appraisal import (
 )
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.substrate.appraisal.turn_window import build_turn_window
+from orion.llm.routes import fcc_model_for_route
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     is_context_overflow_text,
@@ -34,6 +35,38 @@ from orion.fcc.context_budget import (
 logger = logging.getLogger("orion.hub.turn_orchestrator")
 
 DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL = "MODEL_SONNET"
+
+
+def _resolve_fcc_model_label(payload: dict[str, Any], mode_tag: str) -> str:
+    """Which model this unified turn runs on, in strict precedence order.
+
+    1. An explicit `fcc_model_label` on the payload wins, always. Hub's
+       Mode=Orion always sends one (`applyOrionUnifiedPayloadFields` in
+       app.js), so THIS BRANCH IS ORION MODE and its behaviour is unchanged
+       by everything below -- deliberately, because Orion mode is the known-good
+       reference path.
+    2. Mode=Agent derives its model from the COMPUTE lane the operator picked.
+       The payload has always carried that lane as `llm_route`; nothing read it.
+       Confirmed live 2026-09-03: 132/132 harness turns in 7 days ran the
+       `harness` lane's model no matter what COMPUTE said, because Agent mode
+       sends no explicit label and fell straight through to the default below.
+    3. Anything else -- Agent mode with no lane, an unrecognised lane, or a
+       system-only lane that `fcc_model_for_route` refuses -- keeps today's
+       default. Absent is not a guess.
+
+    Deliberately NOT keyed on `llm_route` for every mode: COMPUTE defaults to
+    `quick` (an 8B), so letting the dropdown steer Mode=Orion would silently
+    demote the primary cognition lane the first time anyone loaded the page
+    with a default-valued dropdown.
+    """
+    explicit = str(payload.get("fcc_model_label") or "").strip()
+    if explicit:
+        return explicit
+    if mode_tag == "agent":
+        lane_model = fcc_model_for_route(payload.get("llm_route"))
+        if lane_model:
+            return lane_model
+    return DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL
 
 EmitObservationFn = Callable[..., Any]
 
@@ -675,7 +708,7 @@ async def execute_unified_turn(
         ),
         answer_contract=AnswerContract(),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
-        fcc_model_label=payload.get("fcc_model_label") or DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL,
+        fcc_model_label=_resolve_fcc_model_label(payload, mode_tag),
         mode=mode_tag,
         situation_prompt_fragment=situation_prompt_fragment,
     )

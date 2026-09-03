@@ -232,3 +232,41 @@ def normalize_llm_route(raw: object) -> Optional[str]:
     if route not in ACCEPTED_LLM_ROUTES or route in SYSTEM_LLM_ROUTES:
         return None
     return route
+
+
+#: Backend prefix the FCC server (~/.fcc/.env `MODEL*` values) uses to name an
+#: orion-llm-gateway route: `MODEL=llamacpp/harness` means "the gateway route
+#: called `harness`". `anthropic_passthrough.resolve_anthropic_route` reads the
+#: route half straight out of this shape, so it is a real wire format, not a
+#: display convention.
+FCC_LLAMACPP_MODEL_PREFIX = "llamacpp/"
+
+
+def fcc_model_for_route(raw: object) -> Optional[str]:
+    """The FCC model string that runs a turn on gateway route `raw`, or None.
+
+    WHY THIS IS HERE, AND NOT A DICT IN THE HUB
+    -------------------------------------------
+    Hub's COMPUTE dropdown and the unified turn were selecting a model on two
+    different axes that never met: the dropdown wrote `llm_route` ("agent"),
+    while `orion/hub/turn_orchestrator.py` picked its model from
+    `fcc_model_label` -- a *key* in `~/.fcc/.env` ("MODEL_SONNET") whose value
+    happens to be one of these strings. Nothing translated between them, so
+    COMPUTE was inert for every unified turn: confirmed live 2026-09-03,
+    132 of 132 harness turns over 7 days served by the `harness` lane's model
+    regardless of what the operator had selected.
+
+    This is that translation, and it lives beside `normalize_llm_route` on
+    purpose -- the route vocabulary already has exactly one owner, and the
+    reason this module exists at all is that a second copy of it drifted.
+
+    Delegating to `normalize_llm_route` also inherits its policy for free
+    rather than restating it: aliases resolve, an unknown name is None ("no
+    override", never a guess), and a `SYSTEM_LLM_ROUTES` member is refused --
+    so `harness`, the lane the FCC default already points at, can never be
+    re-selected through this path by a caller-supplied route.
+    """
+    route = normalize_llm_route(raw)
+    if route is None:
+        return None
+    return f"{FCC_LLAMACPP_MODEL_PREFIX}{route}"

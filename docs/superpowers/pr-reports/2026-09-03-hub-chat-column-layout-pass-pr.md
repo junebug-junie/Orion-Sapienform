@@ -95,7 +95,7 @@ pattern.
 # Full Hub suite, this branch, in a worktree
 pytest -c services/orion-hub/pytest.ini services/orion-hub/tests -q \
   --ignore=services/orion-hub/tests/e2e -p no:randomly
-31 failed, 2046 passed, 3 skipped in 269.32s
+31 failed, 2055 passed, 3 skipped in 197.59s   (after review fixes)
 
 # Same suite at the merge-base (b97a8531a) in a second worktree, same env state
 31 failed, 2030 passed, 3 skipped in 298.45s
@@ -107,17 +107,33 @@ The 31 failures are pre-existing and identical on both sides: they are Settings
 validation errors from the gitignored `.env` being absent in a fresh worktree,
 plus stale guards in `test_substrate_review_runtime_hub_debug.py` and
 `test_substrate_effect_*.py` that also fail in the unmodified primary checkout.
-The +16 passing is exactly the new `test_hub_ui_layout_pass.py`.
+The +25 passing is the new `test_hub_ui_layout_pass.py` (24) and
+`test_turn_timer_js.py` (1).
 
 ```text
 # New structural guards
 pytest -c services/orion-hub/pytest.ini \
   services/orion-hub/tests/test_hub_ui_layout_pass.py -q
-16 passed
+24 passed
+
+# Mutation harness over those guards -- 12 reversions attempted
+CAUGHT  delete the whole Expand button block
+CAUGHT  delete both Dismiss-all click handlers
+CAUGHT  strip flex-wrap from the OUTER toggle row
+CAUGHT  drop `hidden` from operatorToolsModalRoot
+CAUGHT  revert canvas WIDTH to the container
+CAUGHT  restore the start-timer early-return guard
+CAUGHT  remove the paintTurnTimer module guard
+CAUGHT  remove the dismiss-all in-flight flag
+CAUGHT  remove stopTurnTimer's owner check
+CAUGHT  remove the onclose freeze
+CAUGHT  remove the empty-nodes guard in the expand modal
+CAUGHT  remove max-h-56 from cognitiveLoopsList
+SURVIVING MUTATIONS: NONE
 
 # Full JS suite (was 124/0 before this patch)
 cd services/orion-hub && node --test static/js/
-tests 129 | pass 107 | fail 0 | skipped 22
+tests 131 | pass 109 | fail 0 | skipped 22
 ```
 
 Structural analysis run alongside the suites, since a template reshuffle's real
@@ -164,7 +180,105 @@ CI static gates, all 11 from .github/workflows/orion-static-gates.yml: PASS
 
 ## Review findings fixed
 
-See "Review findings" section appended below.
+Review ran in a subagent against `374dec625` and mutation-tested the suite. It
+found one real bug, four timer-lifecycle holes, and — the important one — that
+the tests were not load-bearing. Every finding below was reproduced by hand
+before being fixed.
+
+- Finding: `turn-timer.js` printed `60.0s`, the exact string its own test said
+  could never appear. It branched on `secs < 60` but rendered `toFixed(1)`, so
+  59.950s–59.999s passed the under-a-minute check and then rounded up. The
+  fixture stopped at `59949` — one millisecond below the break — so it was
+  written to the code rather than to the claim.
+  - Fix: branch on the value actually displayed, not the raw one.
+  - Evidence: `59950 -> "60.0s"` before, `-> "1m 00s"` after. The test now
+    sweeps every millisecond in 59000–61000 and 119000–121000 asserting neither
+    `60.0s` nor `1m 60s` can be produced.
+
+- Finding: **four features could be deleted outright with all 16 tests green.**
+  The suite asserted that functions were *defined* and that HTML *existed* — not
+  that any button called anything. Deleting the Expand block, deleting both
+  Dismiss-all click handlers, and stripping `flex-wrap` off the outer toggle row
+  each left the suite passing.
+  - Fix: rewrote all assertions to pin the call site inside a sliced function
+    body. 24 tests now.
+  - Evidence: 12 reversions attempted under a mutation harness, **all 12
+    caught**, including the 4 that previously slipped through.
+
+- Finding: the wrapping test anchored with `rindex("<div class=")`, which finds
+  the *inner* toggle group, not the outer row that actually overflowed.
+  - Fix: anchor on `border-t border-gray-700/80`, unique to the outer row.
+  - Evidence: stripping `flex-wrap` from the outer row is now caught.
+
+- Finding: a WebSocket reconnect stopped a clock it never started — landing
+  mid-HTTP-turn, it froze that turn's timer partway and the `.finally` then
+  no-opped.
+  - Fix: each transport owns the clock it started and may only stop that one.
+  - Evidence: `test_each_transport_owns_the_clock_it_started`; removing the
+    owner check is caught.
+
+- Finding: a WS turn outliving its socket kept counting through the entire
+  outage, then repainted on reconnect — reporting a turn that died at 3s as
+  `5m 12s`. A wrong number presented as a measurement.
+  - Fix: `socket.onclose` freezes the chip (`repaint: false`) rather than
+    letting reconnect repaint it.
+  - Evidence: `test_socket_close_freezes_the_clock...`; removing it is caught.
+
+- Finding: the `if (turnTimerHandle) return;` start guard let a turn that never
+  reached idle hand the *next* turn its accumulated elapsed, permanently. Its
+  stated justification — "a second lane joining the same turn" — describes a
+  case that cannot occur, since the two lanes are the branches of one if/else.
+  - Fix: every start restarts the clock, clearing any prior interval.
+  - Evidence: `test_a_new_turn_cannot_inherit_the_previous_turn_start_time`.
+
+- Finding: `paintTurnTimer` was the only unguarded optional-module call in
+  app.js. It is reached from `updateStatusBasedOnState` inside
+  `socket.onmessage`'s try/catch, so a missing `turn-timer.js` would have
+  silently stopped `handleTtsFields` and error rendering for the rest of the
+  frame — a cosmetic chip taking out voice output.
+  - Fix: guarded like every other optional module in the file.
+  - Evidence: `test_the_timer_chip_cannot_throw_out_of_the_websocket_frame_handler`.
+
+- Finding: Dismiss-all re-enabled its own button on the first ack while the rest
+  were still in flight, because each ack re-renders and the render re-derives
+  the disabled state from the remaining list.
+  - Fix: an in-flight flag that the re-render honours, cleared in `finally`.
+  - Evidence: `test_attention_dismiss_all_stays_disabled_until_every_ack_settles`.
+
+- Finding: Expand on a whitespace-only turn opened a full-screen modal over a
+  detached, blank node. Such a turn is also a `workflowOnlyTurn`, so its body is
+  never appended — an empty-shell UI state, which section 0A bans by name.
+  - Fix: gate the button on trimmed text; the modal refuses to open on nothing.
+    It now also clones the attachment strip, so it is the full view of the turn
+    it claims to be.
+  - Evidence: `test_expand_button_is_gated_on_trimmed_text`.
+
+- Finding: the two new Escape branches were the only ones in a ~20-branch chain
+  without a `return`, so one Escape closed two modals.
+  - Fix: added `return`.
+
+- Finding: dead code — `const visualizerContainer` lost its only use to the
+  canvas fix, and `classList.remove('line-clamp-3')` targeted a class never
+  applied to a message body.
+  - Fix: both removed.
+
+- Finding: `turn-timer.test.js` is run by no gate — not CI, not the Makefile.
+  Eleven other `.test.js` files share this, so it is a pre-existing repo gap,
+  but the commit advertised coverage nothing executed.
+  - Fix: `test_turn_timer_js.py` runs it from the Python suite. It skips
+    *loudly* when node is absent rather than passing, so a missing runtime can
+    never read as a green formatter. Not attempting the repo-wide gap here.
+
+- Finding (my own, found while fixing the above): the "modals start hidden"
+  assertion passed with `hidden` stripped, because the roots carry
+  `aria-hidden="true"` and a substring check matches it.
+  - Fix: class assertions compare tokens, not substrings.
+  - Evidence: that mutation is now caught.
+
+Checked by review and clean: no element id dropped or duplicated, the toggle
+strip's div nesting balanced in both revisions, `setTurnInFlight`'s stopButton
+toggle changes no existing behavior at any of the four replaced sites, and the
+ResizeObserver cannot feedback-loop.
 
 ## Restart required
 
@@ -194,6 +308,16 @@ browser.
   move actually has. Visual judgment — whether the voice card at `h-28` leaves
   the transcript enough room, whether the wrapped toggle strip reads well — is
   for Juniper on first load, and is a one-line class change either way.
+
+- Severity: low
+  Concern: Dismiss-all on Notifications is client-side for any row without a
+  `message_id`/`session_id` pair — it drops them from the local array, and the
+  next `loadNotifications` replaces that array wholesale. This is identical to
+  the existing per-item Dismiss, so it is not a regression, but it turns a
+  one-row surprise into a fifty-row one.
+  Mitigation: none applied; matching the existing per-item semantics was the
+  right call for this pass. Worth revisiting as its own change if the rows
+  coming back is actually annoying in practice.
 
 - Severity: low
   Concern: `containerBringupStatus` now lives inside the modal, so a bring-up

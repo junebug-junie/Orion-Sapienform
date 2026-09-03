@@ -506,6 +506,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
   const attentionDismissAllBtn = document.getElementById('attentionDismissAllBtn');
+  let dismissAllAttentionInFlight = false;
+
+  function syncAttentionDismissAllDisabled() {
+    if (!attentionDismissAllBtn) return;
+    attentionDismissAllBtn.disabled =
+      dismissAllAttentionInFlight || pendingAttention.length === 0;
+  }
   const notificationsDismissAllBtn = document.getElementById('notificationsDismissAllBtn');
   const attentionCount = document.getElementById('attentionCount');
   const worldPulseToggle = document.getElementById('worldPulseToggle');
@@ -654,7 +661,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // Visualizers
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
-  const visualizerContainer = document.getElementById('visualizerContainer');
   
   // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
   // We check for its existence to prevent crashes.
@@ -3052,21 +3058,31 @@ document.addEventListener("DOMContentLoaded", () => {
   // the number is most useful once the turn is over.
   let turnTimerStartedAt = 0;
   let turnTimerHandle = null;
+  // Which transport started the clock. A lane may only stop the clock it
+  // started: a WebSocket reconnect landing mid-HTTP-turn must not freeze that
+  // turn's timer, and must not report the reconnect gap as its duration.
+  let turnTimerOwner = null;
 
   function paintTurnTimer() {
     if (!chatTurnTimer) return;
     // Formatting lives in turn-timer.js so its minute-rollover edges are
-    // unit-testable without a DOM harness.
-    chatTurnTimer.textContent = window.OrionTurnTimer.formatTurnElapsed(
-      Date.now() - turnTimerStartedAt,
-    );
+    // unit-testable without a DOM harness. Guarded like every other optional
+    // module in this file: a cosmetic chip must not be able to throw out of
+    // updateStatusBasedOnState() and abort WebSocket frame handling.
+    const format = window.OrionTurnTimer && window.OrionTurnTimer.formatTurnElapsed;
+    if (typeof format !== 'function') return;
+    chatTurnTimer.textContent = format(Date.now() - turnTimerStartedAt);
   }
 
-  function startTurnTimer() {
+  function startTurnTimer(owner) {
     if (!chatTurnTimer) return;
-    // Already running: a second lane joining the same turn must not reset the
-    // clock out from under the elapsed time already on screen.
-    if (turnTimerHandle) return;
+    // Every start is a fresh turn hand-off, so the clock always restarts. The
+    // WS and HTTP lanes are the two branches of one if/else and can never both
+    // run for a single turn, so there is no "second lane joining" case to
+    // protect -- and keeping a previous turn's start time would report an
+    // elapsed time that never happened.
+    if (turnTimerHandle) window.clearInterval(turnTimerHandle);
+    turnTimerOwner = owner || null;
     turnTimerStartedAt = Date.now();
     chatTurnTimer.classList.remove('hidden', 'text-gray-400');
     chatTurnTimer.classList.add('text-amber-300');
@@ -3074,20 +3090,25 @@ document.addEventListener("DOMContentLoaded", () => {
     turnTimerHandle = window.setInterval(paintTurnTimer, 100);
   }
 
-  function stopTurnTimer() {
+  function stopTurnTimer(owner, opts = {}) {
     if (!turnTimerHandle) return;
+    if (owner && turnTimerOwner && owner !== turnTimerOwner) return;
     window.clearInterval(turnTimerHandle);
     turnTimerHandle = null;
+    turnTimerOwner = null;
     if (!chatTurnTimer) return;
-    paintTurnTimer();
+    // repaint:false freezes the chip on its last painted value. Used when the
+    // socket dies mid-turn: the turn is over, and the time since is dead air,
+    // not thinking time.
+    if (opts.repaint !== false) paintTurnTimer();
     chatTurnTimer.classList.remove('text-amber-300');
     chatTurnTimer.classList.add('text-gray-400');
   }
 
-  function setTurnInFlight(next) {
+  function setTurnInFlight(next, owner = 'ws') {
     turnInFlight = Boolean(next);
-    if (turnInFlight) startTurnTimer();
-    else stopTurnTimer();
+    if (turnInFlight) startTurnTimer(owner);
+    else stopTurnTimer(owner);
     if (stopButton) stopButton.classList.toggle('hidden', !turnInFlight);
   }
 
@@ -3511,22 +3532,22 @@ document.addEventListener("DOMContentLoaded", () => {
   // button yields the markdown source rather than space-mangled innerText.
   let chatMessageExpandSource = '';
 
-  function openChatMessageExpandModal(sender, bodyEl, mdSource) {
+  function openChatMessageExpandModal(sender, contentEls, mdSource) {
     if (!chatMessageExpandModalRoot || !chatMessageExpandModalBody) return;
+    const nodes = (Array.isArray(contentEls) ? contentEls : [contentEls]).filter(Boolean);
+    if (!nodes.length) return;
     positionOverlayModal(
       chatMessageExpandModalRoot,
       chatMessageExpandModalBackdrop,
       chatMessageExpandModalDialog,
     );
     if (chatMessageExpandModalTitle) chatMessageExpandModalTitle.textContent = sender || 'Message';
-    chatMessageExpandSource = String(mdSource || (bodyEl ? bodyEl.textContent : '') || '');
+    chatMessageExpandSource = String(
+      mdSource || nodes.map((n) => n.textContent || '').join('\n') || '',
+    );
     chatMessageExpandModalBody.innerHTML = '';
-    if (bodyEl) {
-      // Clone so the live transcript node keeps its own listeners and position.
-      const copy = bodyEl.cloneNode(true);
-      copy.classList.remove('line-clamp-3');
-      chatMessageExpandModalBody.appendChild(copy);
-    }
+    // Clone so the live transcript nodes keep their own listeners and position.
+    nodes.forEach((node) => chatMessageExpandModalBody.appendChild(node.cloneNode(true)));
     chatMessageExpandModalRoot.classList.remove('hidden');
     chatMessageExpandModalRoot.setAttribute('aria-hidden', 'false');
     syncDebugModalScrollLock();
@@ -5552,7 +5573,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderPendingAttention() {
     if (!attentionList || !attentionCount) return;
     attentionCount.textContent = String(pendingAttention.length);
-    if (attentionDismissAllBtn) attentionDismissAllBtn.disabled = pendingAttention.length === 0;
+    syncAttentionDismissAllDisabled();
     attentionList.innerHTML = '';
     if (pendingAttention.length === 0) {
       const empty = document.createElement('div');
@@ -6482,13 +6503,23 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function dismissAllPendingAttention() {
+    if (dismissAllAttentionInFlight) return;
     const ids = pendingAttention.map((item) => item.attention_id).filter(Boolean);
     if (!ids.length) return;
-    if (attentionDismissAllBtn) attentionDismissAllBtn.disabled = true;
-    // Same per-item ack the Dismiss button uses, so the server sees no new
-    // shape; each removes itself from the list on success.
-    await Promise.allSettled(ids.map((id) => handleAttentionAck(id, 'dismissed')));
-    renderPendingAttention();
+    // Each ack re-renders on success, and renderPendingAttention() re-derives
+    // the disabled state from the remaining list -- so the FIRST ack landing
+    // would re-enable the button while the rest were still in flight, inviting
+    // a second wave racing the first. The flag outranks that bookkeeping.
+    dismissAllAttentionInFlight = true;
+    syncAttentionDismissAllDisabled();
+    try {
+      // Same per-item ack the Dismiss button uses, so the server sees no new
+      // shape; each removes itself from the list on success.
+      await Promise.allSettled(ids.map((id) => handleAttentionAck(id, 'dismissed')));
+    } finally {
+      dismissAllAttentionInFlight = false;
+      renderPendingAttention();
+    }
   }
 
   function dismissAllNotifications() {
@@ -7543,17 +7574,25 @@ document.addEventListener("DOMContentLoaded", () => {
       // Hover-revealed per-message actions (see .om-msg-copy in style.css).
       const msgActions = document.createElement('div');
       msgActions.className = 'om-msg-copy flex items-center gap-1';
-      const expandBtn = document.createElement('button');
-      expandBtn.type = 'button';
-      expandBtn.className =
-        'rounded-md border border-gray-700 bg-gray-900/70 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-gray-500 hover:text-white';
-      expandBtn.textContent = 'Expand';
-      expandBtn.title = 'Open this message full screen';
-      expandBtn.setAttribute('aria-label', `Expand ${sender} message`);
-      expandBtn.addEventListener('click', () =>
-        openChatMessageExpandModal(sender, body, displayText),
-      );
-      msgActions.appendChild(expandBtn);
+      // Gate on trimmed text, not raw: a whitespace-only turn is also a
+      // workflowOnlyTurn, so `body` was never appended to the DOM and Expand
+      // would open a full-screen modal over a detached, blank node.
+      if (displayText.trim()) {
+        const expandBtn = document.createElement('button');
+        expandBtn.type = 'button';
+        expandBtn.className =
+          'rounded-md border border-gray-700 bg-gray-900/70 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-gray-500 hover:text-white';
+        expandBtn.textContent = 'Expand';
+        expandBtn.title = 'Open this message full screen';
+        expandBtn.setAttribute('aria-label', `Expand ${sender} message`);
+        // Attachments are part of the turn's content, so they come along. The
+        // header is not (the modal has its own title), and neither are the
+        // trace/feedback action rows -- cloned buttons would be dead controls.
+        expandBtn.addEventListener('click', () =>
+          openChatMessageExpandModal(sender, [attachmentStrip, body], displayText),
+        );
+        msgActions.appendChild(expandBtn);
+      }
       if (window.ChatMarkdown && typeof window.ChatMarkdown.buildCopyButton === 'function') {
         msgActions.appendChild(window.ChatMarkdown.buildCopyButton(displayText, 'Copy'));
       }
@@ -10769,9 +10808,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (event.key === 'Escape' && chatMessageExpandModalRoot && !chatMessageExpandModalRoot.classList.contains('hidden')) {
       closeChatMessageExpandModal();
+      return;
     }
     if (event.key === 'Escape' && operatorToolsModalRoot && !operatorToolsModalRoot.classList.contains('hidden')) {
       closeOperatorToolsModal();
+      return;
     }
     if (event.key === 'Escape' && chatInputExpandModalRoot && !chatInputExpandModalRoot.classList.contains('hidden')) {
       closeChatInputExpandModal();
@@ -11239,6 +11280,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     socket.onclose = (e) => {
         console.warn("[WS] Closed", e.code, e.reason);
+        // The turn on this socket is over the moment it closes. Freeze the
+        // clock here rather than letting the reconnect stop it later: the gap
+        // until reconnect is dead air, and painting it would report a turn that
+        // died at 3s as having taken the length of the whole outage.
+        stopTurnTimer('ws', { repaint: false });
         updateStatus('Disconnected. Reconnecting...');
         setTimeout(setupWebSocket, 2000);
     };
@@ -11558,7 +11604,7 @@ document.addEventListener("DOMContentLoaded", () => {
           window.__orionWsFallbackWarned = true;
         }
         updateStatus('Processing (HTTP)...');
-        startTurnTimer();
+        startTurnTimer('http');
 
         if (!orionSessionId) await initSession();
         payload.session_id = orionSessionId;
@@ -11642,7 +11688,7 @@ document.addEventListener("DOMContentLoaded", () => {
           appendMessage('System', `HTTP failed: ${e.message}`, 'text-red-400');
           updateStatus('HTTP error.');
         })
-        .finally(() => { stopTurnTimer(); });
+        .finally(() => { stopTurnTimer('http'); });
     }
   }
 

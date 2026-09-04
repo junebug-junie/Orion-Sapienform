@@ -194,8 +194,21 @@ async def drift_daemon_loop() -> None:
         try:
             bands = _parse_drift_bands(settings.topic_foundry_drift_bands)
             if not bands:
-                logger.warning("No usable drift bands parsed from %r", settings.topic_foundry_drift_bands)
-            models = list_models()
+                # A malformed/empty TOPIC_FOUNDRY_DRIFT_BANDS used to be
+                # impossible pre-band-system (window_hours was a typed int
+                # with a baked-in default) -- fall back to the single
+                # pre-band-system default rather than silently checking
+                # nothing every tick forever.
+                logger.warning(
+                    "No usable drift bands parsed from %r -- falling back to single 24h daily band",
+                    settings.topic_foundry_drift_bands,
+                )
+                bands = [("daily", settings.topic_foundry_drift_window_hours)]
+            # list_models() is a synchronous psycopg2 call, same blocking
+            # concern as run_drift_check below -- offload it too so a slow
+            # DB round trip at the top of a tick can't stall this process's
+            # event loop either.
+            models = await asyncio.to_thread(list_models)
             active_names = [row["name"] for row in models if row.get("stage") == "active"]
             for name in active_names:
                 for label, hours in bands:

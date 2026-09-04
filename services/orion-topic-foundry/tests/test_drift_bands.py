@@ -112,3 +112,29 @@ class TestDriftDaemonLoopChecksEveryBand:
             ("model-a", "daily", 24),
             ("model-a", "weekly", 168),
         ]
+
+    @pytest.mark.asyncio
+    async def test_malformed_bands_falls_back_to_single_daily_band_instead_of_checking_nothing(self, monkeypatch):
+        """A typo'd/empty TOPIC_FOUNDRY_DRIFT_BANDS used to be impossible
+        (window_hours was a typed int) -- must not silently run zero checks
+        forever now that it's a free-text field."""
+        import app.services.drift as drift_mod
+
+        monkeypatch.setattr(drift_mod.settings, "topic_foundry_drift_bands", "totally broken, no colons")
+        monkeypatch.setattr(drift_mod.settings, "topic_foundry_drift_window_hours", 24)
+        monkeypatch.setattr(
+            "app.storage.repository.list_models",
+            lambda: [{"name": "model-a", "stage": "active"}],
+        )
+        seen = []
+        monkeypatch.setattr(drift_mod, "run_drift_check", lambda **kwargs: seen.append(kwargs))
+
+        async def fake_sleep(_seconds):
+            raise StopAsyncIteration
+
+        monkeypatch.setattr(drift_mod, "_sleep", fake_sleep)
+
+        with pytest.raises(StopAsyncIteration):
+            await drift_daemon_loop()
+
+        assert [(c["model_name"], c["window_label"], c["window_hours"]) for c in seen] == [("model-a", "daily", 24)]

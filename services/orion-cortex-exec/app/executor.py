@@ -2106,6 +2106,27 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
       until this fix. Exact same "fat prompts exceed quick/fast ctx" failure
       shape already named above for harness_finalize_reflect/orion_voice_
       finalize, just never given the same treatment.
+
+      SECOND occurrence, 2026-09-04, different root cause, identical symptom:
+      the hardcoded "chat" route here has no fallback if the DEEP-lane worker
+      is simply down. During the Qwen3.8-Flash-Next IQ4_XS live test
+      (config/llm_profiles.yaml's qwen3.8-flash-next-udiq4xs-3xv100-32gb-
+      circe-flagship, evicting GPUs 0+1+3 for a 3-GPU deployment), circe:8011
+      (the chat/harness 35B) was intentionally stopped to free GPUs 0/3.
+      Every stance_react call then failed the exact same way -- gateway
+      logged "llamacpp error: [Errno 111] Connection refused" for
+      route=chat served_by=circe-worker-1, surfaced by bus_listener.py as
+      the same "stance_react exec result missing thought payload" deferred
+      turn -- because this mapping does not know or care whether "chat" is
+      actually up. Workaround applied same day (operator-side, no code
+      change): services/orion-llm-gateway/.env's LLM_GATEWAY_ROUTE_TABLE_JSON
+      temporarily points "chat" and "harness" at circe:8015 (wherever the
+      live worker actually is) instead of the dead :8011 -- see that file's
+      TEMP comment for the revert. Not fixed here: this function still has
+      no way to route around a lane that is configured but not actually
+      serving; a real fix would need either a route-health check before
+      dispatch or a documented "chat lane down" turn-level failure mode
+      distinct from a malformed-payload one.
     - chat_general stance brief: FAST lane ("quick")
     - chat_general final response: DEEP lane ("chat")
     - chat_quick single-pass: FAST lane ("quick")

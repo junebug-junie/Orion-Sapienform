@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -156,6 +156,120 @@ def test_list_current_by_normalized_flags_possible_duplicate_candidate(repo):
             normalize_title("Totally Different Title"), 42.0, "https://classifieds.ksl.com/search/cat/Computers"
         )
         assert not any(m["external_listing_id"] == external_id for m in no_matches)
+    finally:
+        import psycopg2
+
+        conn = psycopg2.connect(_pg_dsn())
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM exo_exploration_listings_current WHERE external_listing_id = %s",
+                    (external_id,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def test_mark_not_seen_since_crawl_then_mark_expired_is_a_real_two_stage_lifecycle(repo):
+    """Review finding, 2026-09-04: `mark_expired` used to UPDATE
+    is_currently_listed=FALSE and DELETE the same rows (both on
+    `expires_at <= NOW()`) inside one transaction that only commits at the
+    end -- no reader could ever observe a persisted FALSE row before it was
+    gone. This proves the real, now-separate lifecycle: a row not touched
+    by a later crawl goes inactive but stays queryable, then is deleted only
+    once genuinely past its retention window.
+    """
+    external_id = f"test-{uuid.uuid4().hex[:12]}"
+    # A synthetic, uniquely-namespaced category rather than a real KSL
+    # category URL -- this table also holds real production rows from the
+    # live crawler (this service runs in Docker against the same DB this
+    # test connects to), and mark_not_seen_since_crawl's WHERE clause
+    # matches on source_category, so reusing a real category would also
+    # flip every real row in it. Confirmed live: first version of this test
+    # used the real Computers category URL and asserted `changed == 1`; it
+    # actually returned 12, having just flipped 12 real live listings.
+    category = f"https://test.invalid/category/{uuid.uuid4().hex[:8]}"
+    try:
+        first_seen = datetime.now(timezone.utc)
+        repo.upsert_current(
+            external_listing_id=external_id,
+            source="ksl",
+            source_category=category,
+            url=f"https://classifieds.ksl.com/listing/{external_id}",
+            title="Lifecycle Test GPU",
+            price=100.0,
+            price_raw="$100.00",
+            description=None,
+            posted_or_renewed_at=None,
+            interest_score=1.0,
+            interest_reasons=["keyword:'gpu' matched title/description (+1)"],
+            possible_duplicate_of=None,
+            retention_days=14,
+            seen_at=first_seen,
+        )
+        row = repo.get_current(external_id)
+        assert row["is_currently_listed"] is True
+
+        # A later crawl of the same category that did NOT see this listing
+        # again (it fell off KSL) -- started_at is after first_seen, so this
+        # row's last_seen_at predates it.
+        later_crawl_started_at = first_seen + timedelta(seconds=1)
+        changed = repo.mark_not_seen_since_crawl(category, later_crawl_started_at)
+        assert changed == 1
+
+        row_after = repo.get_current(external_id)
+        # The real assertion this bug broke: the row is STILL READABLE, and
+        # its inactive state is now genuinely persisted and observable --
+        # not deleted in the same breath it was marked.
+        assert row_after is not None
+        assert row_after["is_currently_listed"] is False
+
+        inactive_finds = repo.list_finds(category=category, status="inactive")
+        assert any(f["external_listing_id"] == external_id for f in inactive_finds)
+
+        # mark_expired must NOT delete it yet -- expires_at is 14 days out,
+        # only is_currently_listed changed, not retention.
+        repo.mark_expired(retention_days=14)
+        assert repo.get_current(external_id) is not None
+    finally:
+        import psycopg2
+
+        conn = psycopg2.connect(_pg_dsn())
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM exo_exploration_listings_current WHERE external_listing_id = %s",
+                    (external_id,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def test_mark_expired_deletes_rows_past_retention_regardless_of_listed_state(repo):
+    external_id = f"test-{uuid.uuid4().hex[:12]}"
+    try:
+        long_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        repo.upsert_current(
+            external_listing_id=external_id,
+            source="ksl",
+            source_category="https://classifieds.ksl.com/search/cat/Computers",
+            url=f"https://classifieds.ksl.com/listing/{external_id}",
+            title="Expired Test Widget",
+            price=10.0,
+            price_raw="$10.00",
+            description=None,
+            posted_or_renewed_at=None,
+            interest_score=0.0,
+            interest_reasons=[],
+            possible_duplicate_of=None,
+            retention_days=14,
+            seen_at=long_ago,  # expires_at = long_ago + 14 days, already past
+        )
+        assert repo.get_current(external_id) is not None
+        repo.mark_expired(retention_days=14)
+        assert repo.get_current(external_id) is None
     finally:
         import psycopg2
 

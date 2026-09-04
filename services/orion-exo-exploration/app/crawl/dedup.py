@@ -51,10 +51,19 @@ def normalize_title(title: str) -> str:
 
 
 def content_hash(*, external_listing_id: str, title: str, price_raw: str | None, description: str | None) -> str:
-    """A stable hash of the fields that matter for "did this listing change
-    since we last saw it" -- used only to decide whether an observed-row
-    insert is worth writing, never as the dedup key itself (that is always
-    `external_listing_id`).
+    """A stable fingerprint of the fields that matter for "did this listing
+    change since we last saw it," stored on every observed row
+    (`raw_content_hash`) for later inspection/dedup tooling.
+
+    Review finding, 2026-09-04: an earlier version of this docstring claimed
+    this hash is "used only to decide whether an observed-row insert is
+    worth writing" -- that gating does not exist. `app/crawl/daemon.py`
+    calls `insert_observed` unconditionally for every candidate on every
+    crawl; nothing reads or compares `raw_content_hash` before that call.
+    `listings_observed` is genuinely append-only by design (one row per
+    observation, not deduped), so that is not itself a bug -- the bug was
+    this docstring describing behavior the code does not have. Never used
+    as the dedup key itself; that is always `external_listing_id`.
     """
     parts = [external_listing_id, title, price_raw or "", description or ""]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()

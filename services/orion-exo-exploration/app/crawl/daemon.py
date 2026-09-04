@@ -46,7 +46,15 @@ def run_crawl() -> dict:
     categories_crawled: list[str] = []
     listings_seen = 0
     new_listings = 0
-    errors = 0
+    # Review finding, 2026-09-04: a whole-category fetch failure and a
+    # single routine per-listing 403 (a listing removed between the category
+    # fetch and its detail fetch is normal churn, not a run-level problem)
+    # used to be counted together, so any one detail-fetch hiccup downgraded
+    # a run where every category succeeded to status="partial". Tracked
+    # separately now; only category_errors affects `status`. `errors` in
+    # crawl_runs stays the combined total for visibility.
+    category_errors = 0
+    listing_errors = 0
     detail_fetches_done = 0
 
     for category_url in _category_urls():
@@ -55,7 +63,7 @@ def run_crawl() -> dict:
             category_html = ksl_adapter.fetch_category_html(category_url)
         except Exception as exc:  # noqa: BLE001 -- one bad category must not kill the run
             logger.warning("exo_exploration_category_fetch_failed url=%s err=%s", category_url, exc)
-            errors += 1
+            category_errors += 1
             continue
 
         categories_crawled.append(category_url)
@@ -90,80 +98,118 @@ def run_crawl() -> dict:
                     logger.warning(
                         "exo_exploration_detail_fetch_failed url=%s err=%s", candidate.url, exc
                     )
-                    errors += 1
+                    listing_errors += 1
 
-            existing_before = repository.get_current(candidate.external_listing_id)
-            if existing_before is None:
-                new_listings += 1
+            # Review finding, 2026-09-04: these DB writes used to be
+            # unguarded -- a transient Postgres error here would raise out
+            # of run_crawl() before finish_crawl_run() ever ran, leaving
+            # this crawl_runs row stuck at status="running" with no
+            # finished_at forever. One bad candidate must not orphan the
+            # whole run's own bookkeeping.
+            try:
+                existing_before = repository.get_current(candidate.external_listing_id)
+                if existing_before is None:
+                    new_listings += 1
 
-            possible_duplicate_of = None
-            if existing_before is None:
-                dupes = repository.list_current_by_normalized(
-                    normalize_title(candidate.title), candidate.price, category_url
-                )
-                dupes = [d for d in dupes if d["external_listing_id"] != candidate.external_listing_id]
-                if dupes:
-                    possible_duplicate_of = dupes[0]["external_listing_id"]
-                    logger.info(
-                        "exo_exploration_possible_duplicate new_id=%s existing_id=%s title=%r",
-                        candidate.external_listing_id, possible_duplicate_of, candidate.title,
+                possible_duplicate_of = None
+                if existing_before is None:
+                    dupes = repository.list_current_by_normalized(
+                        normalize_title(candidate.title), candidate.price, category_url
                     )
+                    dupes = [d for d in dupes if d["external_listing_id"] != candidate.external_listing_id]
+                    if dupes:
+                        possible_duplicate_of = dupes[0]["external_listing_id"]
+                        logger.info(
+                            "exo_exploration_possible_duplicate new_id=%s existing_id=%s title=%r",
+                            candidate.external_listing_id, possible_duplicate_of, candidate.title,
+                        )
 
-            repository.insert_observed(
-                source="ksl",
-                source_category=category_url,
-                external_listing_id=candidate.external_listing_id,
-                url=candidate.url,
-                title=candidate.title,
-                price=candidate.price,
-                price_raw=candidate.price_raw,
-                description=description,
-                posted_or_renewed_at=posted_at,
-                raw_content_hash=content_hash(
+                repository.insert_observed(
+                    source="ksl",
+                    source_category=category_url,
                     external_listing_id=candidate.external_listing_id,
+                    url=candidate.url,
                     title=candidate.title,
+                    price=candidate.price,
                     price_raw=candidate.price_raw,
                     description=description,
-                ),
-                crawl_id=crawl_id,
+                    posted_or_renewed_at=posted_at,
+                    raw_content_hash=content_hash(
+                        external_listing_id=candidate.external_listing_id,
+                        title=candidate.title,
+                        price_raw=candidate.price_raw,
+                        description=description,
+                    ),
+                    crawl_id=crawl_id,
+                )
+                repository.upsert_current(
+                    external_listing_id=candidate.external_listing_id,
+                    source="ksl",
+                    source_category=category_url,
+                    url=candidate.url,
+                    title=candidate.title,
+                    price=candidate.price,
+                    price_raw=candidate.price_raw,
+                    description=description,
+                    posted_or_renewed_at=posted_at,
+                    interest_score=final_score,
+                    interest_reasons=final_reasons,
+                    possible_duplicate_of=possible_duplicate_of,
+                    retention_days=settings.exo_exploration_retention_days,
+                )
+            except Exception as exc:  # noqa: BLE001 -- keep the crawl going
+                logger.warning(
+                    "exo_exploration_persist_failed external_listing_id=%s err=%s",
+                    candidate.external_listing_id, exc,
+                )
+                listing_errors += 1
+
+        # The real "went off KSL" transition for this category -- any
+        # current row here whose last_seen_at predates this crawl's own
+        # started_at was not touched above, i.e. it no longer appeared on
+        # the category page. Only run for a category that was actually
+        # fetched successfully (this line is unreached otherwise), so a
+        # category-fetch failure can never be mistaken for real delisting.
+        try:
+            repository.mark_not_seen_since_crawl(category_url, started_at)
+        except Exception as exc:  # noqa: BLE001 -- keep the crawl going
+            logger.warning(
+                "exo_exploration_mark_not_seen_failed category=%s err=%s", category_url, exc
             )
-            repository.upsert_current(
-                external_listing_id=candidate.external_listing_id,
-                source="ksl",
-                source_category=category_url,
-                url=candidate.url,
-                title=candidate.title,
-                price=candidate.price,
-                price_raw=candidate.price_raw,
-                description=description,
-                posted_or_renewed_at=posted_at,
-                interest_score=final_score,
-                interest_reasons=final_reasons,
-                possible_duplicate_of=possible_duplicate_of,
-                retention_days=settings.exo_exploration_retention_days,
-            )
+            listing_errors += 1
 
     finished_at = datetime.now(timezone.utc)
-    status = "success" if errors == 0 else ("partial" if categories_crawled else "failed")
+    total_errors = category_errors + listing_errors
+    # Status reflects whether the crawl itself succeeded at the category
+    # level -- a routine per-listing 403 (a listing pulled between the
+    # category fetch and its own detail fetch) must not downgrade a run
+    # where every configured category was actually reached.
+    if category_errors == 0:
+        status = "success"
+    elif categories_crawled:
+        status = "partial"
+    else:
+        status = "failed"
     repository.finish_crawl_run(
         crawl_id,
         finished_at=finished_at,
         categories_crawled=categories_crawled,
         listings_seen=listings_seen,
         new_listings=new_listings,
-        errors=errors,
+        errors=total_errors,
         status=status,
     )
     logger.info(
-        "exo_exploration_crawl_finished crawl_id=%s status=%s listings_seen=%d new_listings=%d errors=%d",
-        crawl_id, status, listings_seen, new_listings, errors,
+        "exo_exploration_crawl_finished crawl_id=%s status=%s listings_seen=%d new_listings=%d "
+        "category_errors=%d listing_errors=%d",
+        crawl_id, status, listings_seen, new_listings, category_errors, listing_errors,
     )
     return {
         "crawl_id": str(crawl_id),
         "status": status,
         "listings_seen": listings_seen,
         "new_listings": new_listings,
-        "errors": errors,
+        "errors": total_errors,
     }
 
 

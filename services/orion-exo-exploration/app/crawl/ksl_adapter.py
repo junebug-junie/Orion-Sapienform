@@ -50,9 +50,17 @@ _DESCRIPTION_P_RE = re.compile(r'<p class="mb-4 last-of-type:mb-0">(.*?)</p>', r
 _POSTED_RE = re.compile(r'aria-label="Posted ([^"]*)"')
 _TAG_RE = re.compile(r"<[^>]+>")
 
-# How far past each card's opening tag to look for its price -- generous
-# enough for the real markup's card body, tight enough to never bleed into
-# the next card.
+# Fallback cap on how far past a card's opening tag to look for its price,
+# used only for the LAST card on a page (which has no next-card boundary to
+# stop at). Review finding, 2026-09-04: this used to be the only bound, with
+# a comment claiming it was "tight enough to never bleed into the next
+# card" -- measured against the real captured fixture, consecutive real
+# cards are only 2206-2751 chars apart, well under this constant, so any
+# card missing a Price aria-label (this crawl has not observed one, but
+# nothing guarantees it) would have picked up the NEXT card's price.
+# parse_category_page now bounds every non-last card's search window by the
+# next card's own start position instead of trusting this constant to be
+# large enough.
 _PRICE_LOOKAHEAD_CHARS = 3000
 _DESCRIPTION_LOOKAHEAD_CHARS = 4000
 
@@ -83,7 +91,8 @@ def parse_price(price_raw: str) -> Optional[float]:
 
 def parse_category_page(html: str, *, category_url: str) -> list[KslCandidate]:
     candidates: list[KslCandidate] = []
-    for match in _CARD_RE.finditer(html):
+    matches = list(_CARD_RE.finditer(html))
+    for idx, match in enumerate(matches):
         href = match.group("href")
         listing_id = match.group("item_id")
         parsed_id = external_listing_id_from_url(href)
@@ -98,7 +107,13 @@ def parse_category_page(html: str, *, category_url: str) -> list[KslCandidate]:
         title = html_module.unescape(match.group("title")).strip()
         if not title or not listing_id:
             continue
-        window = html[match.end(): match.end() + _PRICE_LOOKAHEAD_CHARS]
+        # Bound the search window by the NEXT card's own start position
+        # (falling back to the fixed cap only for the last card on the
+        # page) so a card with no Price aria-label can never pick up the
+        # following card's price instead of correctly reporting none.
+        next_start = matches[idx + 1].start() if idx + 1 < len(matches) else match.end() + _PRICE_LOOKAHEAD_CHARS
+        window_end = min(next_start, match.end() + _PRICE_LOOKAHEAD_CHARS)
+        window = html[match.end(): window_end]
         price_match = _PRICE_RE.search(window)
         price_raw = price_match.group(1).strip() if price_match else ""
         price = parse_price(price_raw) if price_raw else None

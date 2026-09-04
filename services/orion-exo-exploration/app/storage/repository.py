@@ -280,16 +280,47 @@ def list_finds(
             return cur.fetchall() or []
 
 
-def mark_expired(retention_days: int) -> int:
-    """Rows past 14 days since last_seen_at: flip is_currently_listed off and
-    delete once fully past expires_at. Returns the number of rows deleted.
+def mark_not_seen_since_crawl(source_category: str, crawl_started_at: datetime) -> int:
+    """The real "went off KSL" transition -- called once per successfully
+    crawled category, right after that category's candidates are processed
+    (app/crawl/daemon.py::run_crawl). Any current row in this category whose
+    last_seen_at is older than THIS crawl's own start time was not touched
+    by it, i.e. it no longer appeared on the category page.
+
+    Review finding, confirmed live 2026-09-04: `mark_expired` used to set
+    `is_currently_listed = FALSE` and then DELETE the same rows
+    (`expires_at <= NOW()`) inside one transaction that only commits at the
+    end -- no reader could ever observe a persisted FALSE row, so the
+    "no longer listed" badge and the `status=inactive` filter in
+    routers/finds.py were dead code paths. This function is the real
+    lifecycle transition; `mark_expired` below now only ever deletes.
     """
     with pg_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE exo_exploration_listings_current SET is_currently_listed = FALSE "
-                "WHERE expires_at <= NOW() AND is_currently_listed = TRUE"
+                """
+                UPDATE exo_exploration_listings_current
+                SET is_currently_listed = FALSE
+                WHERE source_category = %s
+                  AND last_seen_at < %s
+                  AND is_currently_listed = TRUE
+                """,
+                (source_category, crawl_started_at),
             )
+            return cur.rowcount
+
+
+def mark_expired(retention_days: int) -> int:
+    """Rows past 14 days since last_seen_at: delete both the current row and
+    its observed history. Returns the number of rows deleted.
+
+    Does NOT touch is_currently_listed -- see mark_not_seen_since_crawl for
+    that transition. A row reaching this function's DELETE has already had
+    every chance to be read as "no longer listed" for up to
+    `retention_days` days; this is pure cleanup, not a lifecycle change.
+    """
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM exo_exploration_listings_current WHERE expires_at <= NOW()"
             )

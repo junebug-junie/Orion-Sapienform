@@ -56,6 +56,36 @@ def test_parse_price_variants():
     assert parse_price("Call for quote") is None
 
 
+def test_price_window_does_not_bleed_into_next_card():
+    """Review finding, 2026-09-04: the price search window used to be a flat
+    3000-char lookahead with a comment claiming that was "tight enough to
+    never bleed into the next card" -- real captured cards are only
+    2206-2751 chars apart, well under that constant. A card missing its own
+    Price aria-label (this crawl has never observed one, but nothing
+    guarantees it) would silently pick up the NEXT card's price instead of
+    correctly reporting none. Built from two real cards' real spacing
+    (~2300 chars of real filler between them), first card's price div
+    deliberately stripped out.
+    """
+    real_html = _fixture_html()
+    first = 'aria-label="No Price Card" data-item-id="11111111" href="https://classifieds.ksl.com/listing/11111111"'
+    # ~2300 chars of real filler (borrowed from the real fixture) between
+    # the two cards, matching the real observed gap -- NOT the price div
+    # itself, which is deliberately omitted from the first card.
+    filler = real_html[500:2800].replace('aria-label="Price', 'data-not-a-price-label="Price')
+    second = (
+        'aria-label="Second Card" data-item-id="22222222" '
+        'href="https://classifieds.ksl.com/listing/22222222"'
+        '</div></div><div aria-label="Price $250.00">$250.00</div>'
+    )
+    html = f"<a class=\"group\" {first}>{filler}<a class=\"group\" {second}"
+    candidates = parse_category_page(html, category_url="https://classifieds.ksl.com/search/cat/Electronics")
+    by_id = {c.external_listing_id: c for c in candidates}
+    assert by_id["11111111"].price_raw == ""
+    assert by_id["11111111"].price is None
+    assert by_id["22222222"].price == 250.0
+
+
 def test_parse_detail_description_extracts_seller_text():
     html = (
         '<div><h2 class="text-lg font-semibold undefined">Description</h2>'

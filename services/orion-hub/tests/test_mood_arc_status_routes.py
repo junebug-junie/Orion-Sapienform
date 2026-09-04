@@ -126,6 +126,45 @@ def test_phi_v2_inventory_confirms_producer_is_dead() -> None:
         assert signal["last_note"]  # non-empty, not fabricated
 
 
+def test_producer_service_exists_requires_a_docker_compose_file_not_just_a_directory(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression test: confirmed live (2026-09-04 docker smoke test) that
+    services/orion-spark-introspector/ still physically exists on disk in
+    the deployed checkout (app/, tests/, train/, a gitignored .env) even
+    though it was fully deleted from git 2026-07-28 -- a bare
+    `producer_dir.is_dir()` check reported "producer present" for a
+    service this repo's own git history says is dead. Every real service
+    has its own docker-compose.yml; the leftover has none."""
+    fake_repo = tmp_path
+    (fake_repo / "services" / "orion-spark-introspector").mkdir(parents=True)
+    # Leftover debris, no docker-compose.yml -- must read as absent.
+    (fake_repo / "services" / "orion-spark-introspector" / "app").mkdir()
+    (fake_repo / "docs" / "superpowers" / "specs").mkdir(parents=True)
+
+    monkeypatch.setattr(mood_arc_status_routes, "resolve_repo_root", lambda: fake_repo)
+    resp = _client().get("/api/mood-arc-status/phi-v2-inventory")
+    body = resp.json()
+    for signal in body["legacy_signals"]:
+        assert signal["producer_service_exists"] is False
+
+
+def test_producer_service_exists_true_when_docker_compose_file_present(
+    tmp_path, monkeypatch
+) -> None:
+    fake_repo = tmp_path
+    svc_dir = fake_repo / "services" / "orion-spark-introspector"
+    svc_dir.mkdir(parents=True)
+    (svc_dir / "docker-compose.yml").write_text("services: {}\n")
+    (fake_repo / "docs" / "superpowers" / "specs").mkdir(parents=True)
+
+    monkeypatch.setattr(mood_arc_status_routes, "resolve_repo_root", lambda: fake_repo)
+    resp = _client().get("/api/mood-arc-status/phi-v2-inventory")
+    body = resp.json()
+    for signal in body["legacy_signals"]:
+        assert signal["producer_service_exists"] is True
+
+
 def test_phi_v2_inventory_names_the_design_doc() -> None:
     resp = _client().get("/api/mood-arc-status/phi-v2-inventory")
     body = resp.json()["design_doc"]

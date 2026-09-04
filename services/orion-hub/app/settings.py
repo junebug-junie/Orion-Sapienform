@@ -77,6 +77,19 @@ class Settings(BaseSettings):
         default=10.0,
         alias="WORLD_PULSE_PROXY_TIMEOUT_SEC",
     )
+    # --- Field digester (mood-arc/field-anomaly operator status) ---
+    # Same-host service, same pattern as TOPIC_FOUNDRY_BASE_URL/
+    # WORLD_PULSE_BASE_URL above -- the container-DNS default here is a
+    # best-effort fallback, not the live value; .env_example sets the real
+    # 127.0.0.1 + published-port form for the host-network dev deployment.
+    FIELD_DIGESTER_BASE_URL: str = Field(
+        default="http://orion-field-digester:8116",
+        alias="FIELD_DIGESTER_BASE_URL",
+    )
+    FIELD_DIGESTER_CLIENT_TIMEOUT_SEC: float = Field(
+        default=5.0,
+        alias="FIELD_DIGESTER_CLIENT_TIMEOUT_SEC",
+    )
     # --- Proposal review API (Pending Decisions attention + review actions) ---
     HUB_PROPOSAL_REVIEW_ENABLED: bool = Field(default=False, alias="HUB_PROPOSAL_REVIEW_ENABLED")
     HUB_PROPOSAL_REVIEW_API_URL: str = Field(

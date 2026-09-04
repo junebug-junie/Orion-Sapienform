@@ -254,6 +254,13 @@ SYNC_PREFIXES = (
     "REASONING_ACTIVITY_",
     # Corpus hygiene: execution_trajectory projection cap (orion-substrate-runtime)
     "EXECUTION_TRAJECTORY_",
+    # Hub client for orion-field-digester's /health (mood-arc-status operator
+    # page, 2026-09-04) -- found via a code-review pass that these two new
+    # keys were silently unsynced, same known blind spot HUB_CURIOSITY_'s own
+    # comment above documents (a new prefix outside this tuple is
+    # invisible to `should_sync_key()`, missing-key or not, despite this
+    # module's own docstring claiming missing keys are "always" auto-added).
+    "FIELD_DIGESTER_",
 )
 
 SYNC_EXACT = frozenset(

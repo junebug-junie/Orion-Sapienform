@@ -184,6 +184,7 @@ from .substrate_consolidation_routes import router as substrate_consolidation_ro
 from .substrate_lattice_routes import router as substrate_lattice_router
 from .self_brain_routes import router as self_brain_router
 from .field_channel_glossary_routes import router as field_channel_glossary_router
+from .mood_arc_status_routes import router as mood_arc_status_router
 from .bus_synaptic_graph_routes import router as bus_synaptic_graph_router
 from .attention_organ_routes import router as attention_organ_router
 from .cocreation_signals_routes import router as cocreation_signals_router
@@ -208,6 +209,7 @@ router.include_router(substrate_consolidation_router)
 router.include_router(substrate_lattice_router)
 router.include_router(self_brain_router)
 router.include_router(field_channel_glossary_router)
+router.include_router(mood_arc_status_router)
 router.include_router(bus_synaptic_graph_router)
 router.include_router(attention_organ_router)
 router.include_router(cocreation_signals_router)

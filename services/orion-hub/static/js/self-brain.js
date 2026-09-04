@@ -9,6 +9,14 @@ const DIMENSIONS = [
   { key: "lane", label: "Lanes" },
   { key: "self_state", label: "Self-state" },
   { key: "honesty_metrics", label: "Prediction Confidence" },
+  // Added 2026-09-04: field_anomaly (mood-arc encoder reconstruction error,
+  // orion-field-digester) has been a real region on every brain frame since
+  // 2026-07-21 (services/orion-substrate-runtime/app/brain_frame_producer.py
+  // ::_field_anomaly_regions), but had no rail entry here -- so the region
+  // this whole mood_arc/field-digester consumer was built to feed was never
+  // actually selectable in this UI. lattice_layer has the same gap and is
+  // left alone here; out of scope for this patch, noted for a follow-up.
+  { key: "field_anomaly", label: "Field Anomaly" },
   { key: "spotlight", label: "Spotlight" },
 ];
 
@@ -18,6 +26,8 @@ const state = {
   frames: [],        // ascending; realtime tail buffer or loaded range
   pollTimer: null,
   window: null,
+  hitboxes: [],       // [{cx, cy, radius, region}], rebuilt every drawBrain()
+  provenance: null,   // {dimension: {producer_service, urn, upstream}}, fetched once
 };
 
 function _get(path) {
@@ -137,6 +147,7 @@ function drawBrain() {
   const canvas = document.getElementById("brainCanvas");
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  state.hitboxes = [];
   const frame = state.frames[state.frames.length - 1];
   if (!frame) { setStatus("no frames"); return; }
 
@@ -174,6 +185,10 @@ function drawBrain() {
     const ageTxt = r.stale ? " (held)" : "";
     ctx.fillStyle = "#94a3b8";
     ctx.fillText(`${(r.intensity * 100) | 0}%${ageTxt}`, cx, cy + 4);
+    // Generous click target (>= the label below the circle), not just the
+    // drawn circle itself -- a thin ring around a low-intensity region is a
+    // frustrating click target otherwise.
+    state.hitboxes.push({ cx, cy, radius: Math.max(radius, Math.min(cw, chh) * 0.4), region: r });
   });
 
   setStatus(`${frame.phase} · tick ${frame.tick_seq} · ${regions.length} regions`);
@@ -271,6 +286,92 @@ function drawEkg() {
   });
 }
 
+function fmtDetailValue(v) {
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(4);
+  return String(v);
+}
+
+function showRegionDetail(region) {
+  const panel = document.getElementById("regionDetail");
+  document.getElementById("regionDetailTitle").textContent = region.label || region.region_id;
+  const body = document.getElementById("regionDetailBody");
+  body.innerHTML = "";
+
+  const addRow = (k, v) => {
+    const row = document.createElement("div");
+    row.innerHTML = `<span class="text-gray-500">${k}:</span> <span class="text-gray-100 font-mono">${v}</span>`;
+    body.appendChild(row);
+  };
+
+  addRow("region_id", region.region_id);
+  addRow("state", region.state);
+  addRow("intensity", fmtDetailValue(region.intensity));
+  addRow("node_count", region.node_count);
+  addRow("as_of", region.as_of || "—");
+  addRow("stale", region.stale ? "yes (held)" : "no");
+
+  const detail = region.detail || {};
+  const detailKeys = Object.keys(detail);
+  if (detailKeys.length) {
+    const hdr = document.createElement("div");
+    hdr.className = "text-[10px] uppercase tracking-wide text-gray-500 mt-2";
+    hdr.textContent = "Detail";
+    body.appendChild(hdr);
+    detailKeys.forEach((k) => addRow(k, fmtDetailValue(detail[k])));
+  }
+
+  const prov = state.provenance ? state.provenance[region.dimension] : null;
+  const provHdr = document.createElement("div");
+  provHdr.className = "text-[10px] uppercase tracking-wide text-gray-500 mt-2";
+  provHdr.textContent = "Provenance";
+  body.appendChild(provHdr);
+  if (prov) {
+    addRow("producer_service", prov.producer_service);
+    addRow("urn", prov.urn);
+    if (prov.upstream && prov.upstream.length) addRow("upstream", prov.upstream.join(", "));
+  } else {
+    const row = document.createElement("div");
+    row.className = "text-gray-500";
+    row.textContent = "unavailable (provenance lookup not loaded)";
+    body.appendChild(row);
+  }
+
+  panel.classList.remove("hidden");
+}
+
+function hideRegionDetail() {
+  document.getElementById("regionDetail").classList.add("hidden");
+}
+
+// Pure (no DOM): nearest hitbox containing (x, y), or null. Extracted so it
+// is unit-testable under `node --test` without a canvas/DOM harness, same
+// rationale as this dir's cognitive-loop-card.test.js (see README.md).
+function hitTestRegion(hitboxes, x, y) {
+  let hit = null;
+  let hitDist = Infinity;
+  for (const box of hitboxes || []) {
+    const d = Math.hypot(x - box.cx, y - box.cy);
+    if (d <= box.radius && d < hitDist) { hit = box; hitDist = d; }
+  }
+  return hit;
+}
+
+function onBrainCanvasClick(e) {
+  const canvas = document.getElementById("brainCanvas");
+  const rect = canvas.getBoundingClientRect();
+  // Canvas backing size (720x440) vs. its CSS-scaled displayed size can
+  // differ (class="w-full") -- without this scale correction, hit-testing
+  // against state.hitboxes (recorded in backing-canvas coordinates) would be
+  // wrong on any width other than exactly 720px.
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+
+  const hit = hitTestRegion(state.hitboxes, x, y);
+  if (hit) showRegionDetail(hit.region); else hideRegionDetail();
+}
+
 function render() { drawBrain(); drawEkg(); }
 
 function pushTailFrames(frames) {
@@ -339,6 +440,7 @@ function buildDimRail() {
       state.dim = d.key;
       [...rail.children].forEach((c) => c.classList.toggle("bg-indigo-800", c.dataset.key === d.key));
       if (d.key === "spotlight") startSpotlightPulse(); else stopSpotlightPulse();
+      hideRegionDetail();
       render();
     });
     rail.appendChild(btn);
@@ -350,9 +452,26 @@ async function init() {
   buildDimRail();
   document.getElementById("liveBtn").addEventListener("click", goLive);
   document.getElementById("scrubber").addEventListener("input", onScrub);
+  document.getElementById("brainCanvas").addEventListener("click", onBrainCanvasClick);
+  document.getElementById("regionDetailClose").addEventListener("click", hideRegionDetail);
   try { state.window = await _get("/api/self-brain/window"); } catch (e) { /* empty ok */ }
+  // Static, one-time fetch (see self_brain_routes.py::region_provenance's own
+  // comment) -- a failure here degrades the detail panel's "Provenance"
+  // section to "unavailable", not the whole page.
+  try { state.provenance = await _get("/api/self-brain/region-provenance"); } catch (e) { /* degrades gracefully */ }
   await pollTail();
   state.pollTimer = setInterval(pollTail, TAIL_POLL_MS);
 }
 
-document.addEventListener("DOMContentLoaded", init);
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", init);
+}
+
+// node:test entry point only -- this file is otherwise a plain script (no
+// module system) loaded directly by self-brain.html, unlike
+// workflow-schedule-ui.js's full IIFE+export pattern. Only the two pure
+// helpers added 2026-09-04 are exported; everything else here still touches
+// `document`/canvas directly and is not meant to run outside a browser.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { hitTestRegion, fmtDetailValue };
+}

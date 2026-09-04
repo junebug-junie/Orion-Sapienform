@@ -14,13 +14,13 @@ requires_gpu: false
 requires_memory: false
 recall_profile: null
 # Both timeouts here are deliberately LARGER than self_study.py's own
-# SELF_STUDY_REFLECT_TIMEOUT_SEC (115s / 115000ms client-side RPC wait) --
+# SELF_STUDY_REFLECT_TIMEOUT_SEC (240s / 240000ms client-side RPC wait) --
 # see that key's .env_example comment. The client giving up first produces a
 # clean, catchable TimeoutError on the caller's side; the orchestrator's step
 # timeout firing first would instead kill the step out from under an
 # in-flight RPC wait, which self_study.py cannot distinguish from any other
 # RPC failure but which is a worse failure mode to induce on purpose.
-timeout_ms: 130000
+timeout_ms: 260000
 max_recursion_depth: 0
 steps:
   - name: draft_self_study_reflection
@@ -31,4 +31,4 @@ steps:
     prompt_template: self_study_reflect_prompt.j2
     requires_gpu: false
     requires_memory: false
-    timeout_ms: 130000
+    timeout_ms: 260000

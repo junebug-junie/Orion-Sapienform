@@ -219,7 +219,13 @@ SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH = os.getenv("SELF_STUDY_STRUCTURAL_MASS_
 # verb-based default) rather than guessing, same contract normalize_llm_route
 # already documents.
 SELF_STUDY_REFLECT_LLM_ROUTE = os.getenv("SELF_STUDY_REFLECT_LLM_ROUTE", "agent")
-SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "115"))
+# 240s, not the original 115s (2026-09-04, same day as PR #2080): live-
+# confirmed the agent-route reasoning model needs real wall-clock time to
+# write its reasoning before the answer, not just tokens -- a real call
+# completed normally (not truncated) in ~121s once given the token budget
+# to finish (see PR #2085's max_tokens fix). See self_study.reflect.yaml's
+# own comment for why its verb/step timeout stays larger than this.
+SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "240"))
 
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (

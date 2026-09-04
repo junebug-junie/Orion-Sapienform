@@ -149,6 +149,9 @@ SYNC_PREFIXES = (
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
     "HUB_PROPOSAL_REVIEW_",
+    # Exo Exploration (KSL classifieds tech/compute finds) Hub tab, 2026-09-04.
+    "HUB_EXO_EXPLORATION_",
+    "EXO_EXPLORATION_",
     # 2026-09-03: the whole curiosity family was missing, so
     # HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE=agent -- which moves Orion's own
     # time OFF the worker Juniper types into -- was written to .env_example and
@@ -365,6 +368,7 @@ DEFAULT_SERVICES = (
     "orion-embodiment",
     "orion-signals",
     "orion-whisper-tts",
+    "orion-exo-exploration",
 )
 
 

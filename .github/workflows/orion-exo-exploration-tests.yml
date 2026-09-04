@@ -1,0 +1,77 @@
+# Workflow: orion-exo-exploration unit tests + Postgres upsert integration test.
+#
+# Unit tests (dedup, interest scoring, KSL adapter HTML parsing -- all
+# offline, no network, no DB) run on every PR/push touching this service.
+# The integration job additionally exercises the real
+# `ON CONFLICT ... DO UPDATE` upsert path against Postgres on GitHub Actions,
+# mirroring orion-sql-writer-tests.yml's postgres: service-container pattern.
+
+name: orion-exo-exploration-tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-exo-exploration/**"
+      - ".github/workflows/orion-exo-exploration-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-exo-exploration/**"
+      - ".github/workflows/orion-exo-exploration-tests.yml"
+
+jobs:
+  exo-exploration-unit:
+    name: Exo Exploration — unit tests + eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-exo-exploration/requirements.txt
+          python -m pip install pytest
+      - name: Run unit tests (no DB, no network)
+        run: |
+          PYTHONPATH=services/orion-exo-exploration python -m pytest -q -m "not integration" \
+            services/orion-exo-exploration/tests
+      - name: Run interest scoring eval (precision/recall floor)
+        run: |
+          python services/orion-exo-exploration/evals/run_interest_scoring_eval.py
+
+  exo-exploration-integration:
+    name: Exo Exploration — Postgres upsert integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: conjourney
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RUN_INTEGRATION: "1"
+      EXO_EXPLORATION_PG_DSN: postgresql://postgres:postgres@localhost:5432/conjourney
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-exo-exploration/requirements.txt
+          python -m pip install pytest
+      - name: Run Postgres upsert integration tests
+        run: |
+          PYTHONPATH=services/orion-exo-exploration python -m pytest -q -m integration \
+            services/orion-exo-exploration/tests/test_dedup_upsert_pg.py

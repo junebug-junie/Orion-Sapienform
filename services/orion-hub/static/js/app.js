@@ -755,6 +755,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // and activate()/deactivate() calls now.
   const reverieTabButton = document.getElementById("reverieTabButton");
   const reveriePanel = document.getElementById("reverie");
+  const exoExplorationTabButton = document.getElementById("exoExplorationTabButton");
+  const exoExplorationPanel = document.getElementById("exo-exploration");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
@@ -1074,6 +1076,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "reverie" && !reveriePanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "exo-exploration" && !exoExplorationPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -1096,6 +1101,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isCocreationSignals = effectiveTab === "cocreation-signals";
     const isFieldAttention = effectiveTab === "field-attention";
     const isReverie = effectiveTab === "reverie";
+    const isExoExploration = effectiveTab === "exo-exploration";
     hubTabPanel.classList.toggle("hidden", !isHub);
     // Cognitive EKG card's Biometrics preview toggle lives on this panel --
     // same isX ? activate() : deactivate() contract as every other lazy
@@ -1309,6 +1315,18 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionReverie.deactivate();
       }
     }
+    if (exoExplorationPanel) {
+      exoExplorationPanel.classList.toggle("hidden", !isExoExploration);
+      // Same lifecycle contract as Reverie, above: fetch on activate, stop
+      // polling on deactivate. See static/js/exo-exploration.js.
+      if (isExoExploration) {
+        if (window.OrionExoExploration && typeof window.OrionExoExploration.activate === "function") {
+          window.OrionExoExploration.activate();
+        }
+      } else if (window.OrionExoExploration && typeof window.OrionExoExploration.deactivate === "function") {
+        window.OrionExoExploration.deactivate();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -1366,6 +1384,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (reverieTabButton) {
       styleTabButton(reverieTabButton, isReverie);
+    }
+    if (exoExplorationTabButton) {
+      styleTabButton(exoExplorationTabButton, isExoExploration);
     }
   }
 
@@ -1963,6 +1984,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("field-attention");
     } else if (h === "#reverie" && reveriePanel && reverieTabButton) {
       setActiveTab("reverie");
+    } else if (h === "#exo-exploration" && exoExplorationPanel && exoExplorationTabButton) {
+      setActiveTab("exo-exploration");
     } else {
       if (
         h === "#pressure"
@@ -1983,6 +2006,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#field-attention"
         || h === "#cabinet"
         || h === "#reverie"
+        || h === "#exo-exploration"
       ) {
         history.replaceState(null, "", "#hub");
       }
@@ -13043,6 +13067,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("reverie");
         history.replaceState(null, "", "#reverie");
+      });
+    }
+    if (exoExplorationTabButton && exoExplorationPanel) {
+      exoExplorationTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("exo-exploration");
+        history.replaceState(null, "", "#exo-exploration");
       });
     }
     if (cocreationSignalsTabButton && cocreationSignalsPanel) {

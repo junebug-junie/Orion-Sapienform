@@ -1199,3 +1199,64 @@ async def run_visual_chain_worker(stop_event: asyncio.Event | None = None) -> No
     finally:
         with suppress(Exception):
             await bus.close()
+
+
+async def run_visual_chain_watchdog(stop_event: asyncio.Event | None = None) -> None:
+    """Independent staleness check for the visual-chain worker above.
+
+    Deliberately a SEPARATE asyncio task, not something called from inside
+    `run_visual_chain_worker`'s own loop: a worker that has wedged (confirmed
+    live 2026-09-04, 24+ hours silent, zero errors) can never call anything
+    about its own staleness -- the only place this is observable from is
+    outside it, by asking Postgres directly how old the newest
+    `reverie_visual_chain` row is. Mirrors `run_visual_chain_worker`'s own
+    run-then-sleep shape (module docstring) and
+    `orion-field-digester/app/worker.py`'s `_health_loop`.
+
+    Default-off unless BOTH `visual_chain_enabled` AND `orion_bus_enabled` --
+    matching `run_visual_chain_worker`'s own two-flag guard exactly (review
+    finding: an earlier version of this function checked only the first flag,
+    so `ORION_VISUAL_CHAIN_ENABLED=true` with the bus off -- where the worker
+    legitimately never produces a row, by design -- would eventually cross
+    the staleness threshold and fire a permanent false attention request for
+    a pipeline that was never supposed to run in that config).
+    """
+    if not settings.visual_chain_enabled:
+        logger.info("visual chain disabled; watchdog not started")
+        return
+    if not settings.orion_bus_enabled:
+        logger.info("bus disabled; visual chain watchdog not started")
+        return
+
+    from .store import visual_chain_age_minutes
+    from .visual_chain_health_monitor import check_visual_chain_staleness
+
+    logger.info(
+        "visual chain watchdog started interval=%ss threshold_min=%s",
+        settings.visual_chain_watchdog_check_interval_sec,
+        settings.visual_chain_staleness_threshold_min,
+    )
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        try:
+            age_min = await asyncio.to_thread(visual_chain_age_minutes)
+            # Review finding: check_visual_chain_staleness makes synchronous
+            # requests.get/post calls to orion-notify (up to ~20s across
+            # both) -- calling it inline would block this whole process's
+            # event loop (FastAPI, the bus worker, reverie's own loop) for
+            # that window, worst-cased exactly when orion-notify itself is
+            # slow during the incident being alerted on. to_thread here for
+            # the same reason it's already used for the DB read above.
+            await asyncio.to_thread(check_visual_chain_staleness, age_min)
+        except Exception:
+            logger.exception("visual_chain_watchdog_tick_failed")
+        try:
+            if stop_event is not None:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=settings.visual_chain_watchdog_check_interval_sec
+                )
+                break
+            await asyncio.sleep(settings.visual_chain_watchdog_check_interval_sec)
+        except asyncio.TimeoutError:
+            continue

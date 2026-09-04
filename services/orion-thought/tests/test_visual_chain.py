@@ -1301,3 +1301,107 @@ async def test_run_visual_chain_once_skips_interpretation_when_no_slot_available
     assert chain is not None
     assert client.calls == []
     assert chain.chain_json["context_slot_interpreted"] is None
+
+
+# --- run_visual_chain_watchdog (2026-09-04 wedge fix) -----------------------
+# Independent of run_visual_chain_once/run_visual_chain_worker above: this
+# loop must keep checking staleness even when the worker itself is fully
+# wedged, since a wedged worker can never report on its own staleness.
+
+
+@pytest.mark.asyncio
+async def test_watchdog_noop_when_visual_chain_disabled(monkeypatch):
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", False)
+    calls = []
+    monkeypatch.setattr(
+        "app.store.visual_chain_age_minutes", lambda: calls.append("called") or 0.0
+    )
+
+    await visual_chain.run_visual_chain_watchdog()
+
+    assert calls == []  # returned before ever touching the DB
+
+
+@pytest.mark.asyncio
+async def test_watchdog_noop_when_bus_disabled(monkeypatch):
+    """visual_chain_enabled=true with the bus off is the config where the
+    worker legitimately never produces a row (run_visual_chain_worker's own
+    guard) -- the watchdog must not eventually false-alarm for that."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", True)
+    monkeypatch.setattr(visual_chain.settings, "orion_bus_enabled", False)
+    calls = []
+    monkeypatch.setattr(
+        "app.store.visual_chain_age_minutes", lambda: calls.append("called") or 0.0
+    )
+
+    await visual_chain.run_visual_chain_watchdog()
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reports_db_age_to_health_check_each_tick(monkeypatch):
+    import asyncio
+
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", True)
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_watchdog_check_interval_sec", 0.01)
+
+    stop_event = asyncio.Event()
+    ages = iter([12.0, 90.0])
+    reported = []
+
+    def _fake_age():
+        return next(ages)
+
+    def _fake_check(age_min):
+        reported.append(age_min)
+        if len(reported) >= 2:
+            stop_event.set()
+
+    monkeypatch.setattr("app.store.visual_chain_age_minutes", _fake_age)
+    monkeypatch.setattr(
+        "app.visual_chain_health_monitor.check_visual_chain_staleness", _fake_check
+    )
+
+    await visual_chain.run_visual_chain_watchdog(stop_event)
+
+    assert reported == [12.0, 90.0]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tick_failure_does_not_kill_the_loop(monkeypatch):
+    """One bad tick (DB read raises past store.py's own never-raises
+    discipline, or the health-check call itself blows up) must not end the
+    loop -- that would recreate exactly the silent-forever wedge this
+    watchdog exists to catch."""
+    import asyncio
+
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", True)
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_watchdog_check_interval_sec", 0.01)
+
+    stop_event = asyncio.Event()
+    calls = {"n": 0}
+
+    def _fake_age():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        stop_event.set()
+        return 5.0
+
+    monkeypatch.setattr("app.store.visual_chain_age_minutes", _fake_age)
+    monkeypatch.setattr(
+        "app.visual_chain_health_monitor.check_visual_chain_staleness", lambda age_min: None
+    )
+
+    await visual_chain.run_visual_chain_watchdog(stop_event)
+
+    assert calls["n"] == 2  # survived the first tick's exception and ran again

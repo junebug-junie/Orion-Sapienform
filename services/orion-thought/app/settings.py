@@ -286,6 +286,23 @@ class ThoughtSettings(BaseSettings):
     visual_chain_run_deadline_sec: float = Field(
         300.0, alias="ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC"
     )
+    # Watchdog for the failure mode visual_chain_run_deadline_sec above cannot
+    # catch: the worker's own asyncio task wedged before ever reaching the
+    # single-flight lock (confirmed live 2026-09-04, 24+ hours silent, zero
+    # errors). ~4.5x the 600s tick cadence (visual_chain_interval_sec above) --
+    # enough slack for a couple of legitimate thermal_refused cycles in a row
+    # without false-alarming, still catches a real wedge well under an hour in.
+    visual_chain_staleness_threshold_min: float = Field(
+        45.0, alias="ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN", gt=0
+    )
+    # How often the watchdog re-checks reverie_visual_chain's newest row age.
+    # 600s (not field-digester's own 900s precedent -- review finding, fixed:
+    # that comment previously named 900s but this field's default was always
+    # 600) matches visual_chain_interval_sec's own tick cadence directly above
+    # -- cheap single query, no reason to poll faster than the thing it watches.
+    visual_chain_watchdog_check_interval_sec: float = Field(
+        600.0, alias="ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC", gt=0
+    )
     # Patch 8 (visual_chain.py module docstring, design doc §22): the LLM interpretation step
     # between the selected context-seed and the diffusion prompt. Default ON -- this is the
     # actual fix for "how does this translate into fluffy cloud??", not an experiment to

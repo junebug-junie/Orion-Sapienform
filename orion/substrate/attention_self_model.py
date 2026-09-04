@@ -69,10 +69,18 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
+from typing import get_args
 
-from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_frame import (
+    VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY,
+    AttentionBroadcastProjectionV1,
+    AttentionFrameV1,
+    VoluntaryOverrideAbsentReasonV1,
+)
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
+
+_ABSENT_REASON_VALUES = frozenset(get_args(VoluntaryOverrideAbsentReasonV1))
 
 # 2x the live ORION_ATTENTION_BROADCAST_INTERVAL_SEC default (30s, confirmed
 # live 2026-07-18 via `docker exec orion-athena-substrate-runtime env`) —
@@ -247,6 +255,90 @@ def _heartbeat_h1_fields(
         f"{heartbeat_h1.get('tick_count', '?')})"
     )
     return float(mean_ratio), verdict, basis, std_ratio, bulk_depth
+
+
+def _read_override_absent_reason(
+    frame: AttentionFrameV1,
+) -> VoluntaryOverrideAbsentReasonV1 | None:
+    """Read the producer's reason out of `frame.debug`, or None.
+
+    `debug` is an untyped dict (see `VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY` for
+    why the value travels there rather than as a typed frame field), so the
+    value is validated against the Literal here, at the one read site, before
+    it reaches a typed model. An unrecognised value reads as None -- absence,
+    never an invented cause.
+    """
+    value = frame.debug.get(VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY)
+    if value in _ABSENT_REASON_VALUES:
+        return value  # type: ignore[return-value]
+    return None
+
+
+def describe_override_absence(model: AttentionSelfModelV1) -> str:
+    """One plain sentence naming why no voluntary override was recorded.
+
+    Replaces the previous hardcoded tail "no active goal override at this
+    tick", which asserted a cause (*no active goal*) that the reducer had
+    never checked -- it was true only for one of five real exits and was
+    emitted for all of them. That string was on 19,408 of 19,408 rows.
+
+    Returns a fragment, not a full sentence: the caller supplies the subject.
+    The ``None`` tail is for rows written before 2026-09-04, which carry no
+    reason at all. Absence of a reason is reported as absence, never a cause.
+
+    **Reachability, precisely (code review 2026-09-04).** The one live caller
+    sits inside the reducer's ``bottom_up_salience`` branch, whose condition is
+    equivalent to the gate that populates these fields -- so the
+    ``broadcast_lane_unreadable`` arm is never reached *from that caller*. It is
+    kept, and tested, because this is a pure function over a stored row and the
+    stored value is genuinely live: anything rendering a persisted
+    ``AttentionSelfModelV1`` (a board, a query, a future consumer) will hit it.
+    The arm is unreachable from today's caller, not unreachable in principle --
+    and it must not be deleted on a "dead code" reading of the former.
+    """
+    reason = model.voluntary_override_absent_reason
+    if reason == "top_down_disabled":
+        return "top-down attention is switched off, so no goal could compete."
+    if reason == "no_active_goal":
+        return "no goal was active, so nothing competed with salience."
+    if reason == "no_open_loops":
+        return "no open loops were available to compete."
+    if reason == "bias_did_not_flip_winner":
+        effort = model.top_down_effort_used
+        bias = model.top_down_bias_max
+        # The two numbers separate "the goal was irrelevant to everything"
+        # from "the goal pushed and still lost" -- the reason string alone
+        # merges them, and they mean different things about Orion.
+        if bias is not None and bias <= 0.0:
+            return (
+                "a goal was active but was relevant to none of the "
+                f"{model.open_loop_count} competing loops, so salience was "
+                "unopposed."
+            )
+        return (
+            f"a goal was active and pushed (max bias {bias}, effort "
+            f"{effort}) across {model.open_loop_count} loops, but did not "
+            "change the winner."
+        )
+    if reason == "winner_had_no_action":
+        return (
+            "a goal DID flip the winner, but that loop had no action to "
+            "enact, so the override was refused."
+        )
+    if reason == "combiner_error":
+        return (
+            "the top-down combiner raised and its error was swallowed -- "
+            "this absence is a defect, not a quiet tick."
+        )
+    if reason == "broadcast_lane_unreadable":
+        return (
+            "the broadcast lane was absent or stale, so no override reason "
+            "is available for this tick."
+        )
+    return (
+        "this frame predates override-reason recording, so why no override "
+        "occurred is unrecoverable."
+    )
 
 
 def reduce_attention_self_model(
@@ -474,6 +566,28 @@ def reduce_attention_self_model(
         and broadcast.frame is not None
     ):
         override = broadcast.frame.voluntary_override
+        # Same gate as the override read above, deliberately. A stale frame's
+        # absent-reason describes a question asked at some earlier tick;
+        # reporting it here would let an absent reading assert a cause for
+        # *this* tick. When the lane is unreadable we say exactly that and
+        # leave the three numbers None rather than carrying stale ones.
+        _frame = broadcast.frame
+        model.voluntary_override_absent_reason = _read_override_absent_reason(_frame)
+        model.top_down_effort_used = _round_or_none(_frame.effort_budget_used)
+        model.open_loop_count = len(_frame.open_loops)
+        # NOT `default=0.0`: with no loops, no relevance was ever measured, and
+        # 0.0 would assert a reading that never happened -- the same "absent
+        # reading asserting a fact" this patch exists to stop (code review
+        # 2026-09-04). Deliberately unrounded, unlike its siblings: a real bias
+        # of 0.00004 rounds to 0.0 and would flip `describe_override_absence`
+        # into claiming the goal was relevant to nothing.
+        model.top_down_bias_max = (
+            max((loop.top_down_bias for loop in _frame.open_loops), default=None)
+            if _frame.open_loops
+            else None
+        )
+    else:
+        model.voluntary_override_absent_reason = "broadcast_lane_unreadable"
 
     if override is not None:
         model.attention_reason = "top_down_override"
@@ -494,7 +608,7 @@ def reduce_attention_self_model(
         model.confidence_basis = "broadcast.coalition_stability_score (fresh, bottom-up)"
         model.reason_narrative = (
             f"Pure bottom-up dispatch: '{model.broadcast_selected_open_loop_id}' "
-            f"selected by salience alone; no active goal override at this tick."
+            f"selected by salience alone; {describe_override_absence(model)}"
         )
     elif model.field_lane_present or prediction_error_by_domain or prediction_error_trend_by_domain:
         model.attention_reason = "field_salience_only"

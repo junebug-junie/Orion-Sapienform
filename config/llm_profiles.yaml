@@ -1501,16 +1501,28 @@ profiles:
       # not actually implement that cross-model borrowing path, despite
       # advertising --spec-type draft-mtp in --help. Using the self-contained
       # (non-shared) MTP head instead, which carries its own full tensor set.
-      draft_filename: "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
+      # DEAD END, live-tested 2026-09-04 -- MTP does not work at all on this
+      # build, commented out rather than removed so the next attempt doesn't
+      # re-derive this from scratch. Both companion files were tried:
+      #   - shared (mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf): fatal,
+      #     "check_tensor_dims: tensor 'token_embd.weight' not found" --
+      #     this build advertises --spec-type draft-mtp in --help but does
+      #     not actually implement the cross-model tensor borrowing the
+      #     shared variant depends on.
+      #   - non-shared (mtp-Qwen3.8-Flash-Next-Q8_0.gguf): ALSO fatal, a
+      #     DIFFERENT missing tensor ("output_hc_norm.weight" -- likely a
+      #     hyper-connection-residual norm specific to this architecture's
+      #     MTP head), same "llama_server: exiting due to model loading
+      #     error" crash.
+      # Both are real server crashes (container restart-looped), not a
+      # graceful "ran without the speedup" degrade. This is commit 1d8de7c1
+      # of rmonsurate/llama.cpp@qwen4exp-mtp specifically -- PR #27836 is
+      # still a draft upstream; a later commit on that branch may fix this,
+      # but re-verify before trying again rather than assuming it's fixed.
+      # draft_filename: "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
       # draft_repo_id defaults to hf_repo_id above when unset.
-      spec_type: "draft-mtp"
-      # 2, not Unsloth's docs example of 5: a real community benchmark
-      # (r/LocalLLaMA thread linked in this session) found 2 is "a good
-      # default" and higher values draft more tokens per step but get
-      # accepted less often -- start conservative, raise only after
-      # measuring acceptance rate on THIS hardware, not assumed from a
-      # different GPU class's numbers.
-      spec_draft_n_max: 2
+      # spec_type: "draft-mtp"
+      # spec_draft_n_max: 2
 
       # CORRECTED 2026-09-04: the original version of this card assumed a
       # separate PLE/n-gram GGUF existed in this repo for --model-ngram (per

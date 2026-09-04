@@ -130,7 +130,16 @@ def test_root_tests_skipped() -> None:
 
 
 def test_sample_pull_diff() -> None:
-    """User example: orion/curiosity, services/orion-actions, root tests."""
+    """User example: orion/curiosity, services/orion-actions, root tests.
+
+    orion-cortex-exec joined the expected set 2026-08-30 (pre-existing,
+    unrelated to any later change) when
+    services/orion-cortex-exec/tests/test_situation_curiosity_reverie_context.py
+    started importing orion.curiosity directly -- a real, correct
+    attribution (that test genuinely imports the changed package), not
+    scope creep from the classifier. This assertion had gone stale
+    against the real repo since then; caught 2026-09-04 while verifying
+    an unrelated rebuild-tooling change against ROOT."""
     payload = _resolve(
         [
             "orion/curiosity/worldview.py",
@@ -140,7 +149,7 @@ def test_sample_pull_diff() -> None:
         ROOT,
     )
     services = set(payload["services"])
-    assert services == {"orion-actions", "orion-hub", "orion-harness-governor"}
+    assert services == {"orion-actions", "orion-cortex-exec", "orion-hub", "orion-harness-governor"}
 
 
 def test_unmapped_script_skipped(mini_repo: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 import pytest
 from pathlib import Path
@@ -1021,6 +1022,128 @@ def test_rollback_continuity_after_reload(tmp_path: Path) -> None:
     reloaded = SubstrateMutationStore(sql_db_path=str(db))
     assert reloaded.active_surface("routing") is None
     assert any(item["rollback_id"] == rollback.rollback_id for item in reloaded.recent_rollbacks(limit=10))
+
+
+def test_record_rollback_refuses_on_non_applied_adoption() -> None:
+    """Real-stakes gate: rollback is refused once an adoption is no longer
+    "applied" -- already rolled back, in this test. Before this guard the
+    store trusted every caller's own discipline and enforced nothing itself.
+    """
+    store = SubstrateMutationStore()
+    proposal = _direct_routing_proposal()
+    assert proposal is not None
+    store.add_proposal(proposal)
+    decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote")
+    adoption = PatchApplier(surfaces={"routing": {"chat_reflective_lane_threshold": 0.5}}).apply(proposal=proposal, decision=decision)
+    assert adoption is not None
+    assert store.record_adoption(adoption) == []
+
+    first_rollback = PostAdoptionMonitor().build_rollback(adoption=adoption, reason="first")
+    assert store.record_rollback(first_rollback) is True
+
+    # Same adoption_id, second attempt -- adoption is now "rolled_back" in the
+    # store (the local `adoption` variable is untouched, so this looks like a
+    # legitimate second call from a caller that doesn't track store state).
+    second_rollback = PostAdoptionMonitor().build_rollback(adoption=adoption, reason="second")
+    assert store.record_rollback(second_rollback) is False
+    assert len(store.recent_rollbacks(limit=10)) == 1
+
+
+def test_rollback_cooldown_blocks_readoption_scaled_by_risk_tier() -> None:
+    """Real-stakes gate: a rolled-back "high" risk_tier mutation cools its
+    target_surface down for rollback_window_sec * 8 (see
+    _ROLLBACK_COOLDOWN_MULTIPLIER), not zero. A "low" risk_tier rollback on a
+    different surface, checked in the same test, is not blocked at the same
+    elapsed time -- the multiplier is real, not a flat cooldown.
+    """
+    store = SubstrateMutationStore()
+    high = _direct_routing_proposal().model_copy(update={"risk_tier": "high"})
+    store.add_proposal(high)
+    decision = MutationDecisionV1(proposal_id=high.proposal_id, action="auto_promote")
+    high_adoption = PatchApplier(surfaces={"routing": {"chat_reflective_lane_threshold": 0.5}}).apply(proposal=high, decision=decision)
+    assert high_adoption is not None
+    high_adoption = high_adoption.model_copy(update={"rollback_window_sec": 100})
+    assert store.record_adoption(high_adoption) == []
+    rollback = PostAdoptionMonitor().build_rollback(adoption=high_adoption, reason="regression")
+    assert store.record_rollback(rollback) is True
+
+    retry = high.model_copy(update={"proposal_id": "substrate-mutation-proposal-retry"})
+    store.add_proposal(retry)
+    retry_adoption = high_adoption.model_copy(
+        update={"adoption_id": "substrate-mutation-adoption-retry", "proposal_id": retry.proposal_id, "status": "applied"}
+    )
+    # Still well inside 100s * 8.0 = 800s of the rollback (created_at ~= now).
+    assert store.record_adoption(retry_adoption) == ["target_surface_in_rollback_cooldown"]
+
+    # Backdate the rollback past its cooldown and retry the same adoption.
+    store._rollbacks[rollback.rollback_id] = rollback.model_copy(
+        update={"created_at": rollback.created_at - timedelta(seconds=900)}
+    )
+    assert store.record_adoption(retry_adoption) == []
+
+
+def test_surface_reliability_cold_start_then_computed() -> None:
+    """Real-stakes gate: surface_reliability() is None until
+    SURFACE_RELIABILITY_MIN_SAMPLES resolved adoptions exist (cold start, not
+    a fabricated mid-range number), then a Laplace-smoothed settled ratio that
+    a rollback -- not just its patch -- keeps moving after the patch itself
+    is undone.
+    """
+    store = SubstrateMutationStore()
+    assert store.surface_reliability("routing") is None
+
+    outcomes = ["settled", "settled", "rolled_back"]
+    for i, outcome in enumerate(outcomes):
+        # Distinct target_value per iteration -- PatchApplier declines a patch
+        # that would change nothing against the live control surface, and the
+        # prior iteration's real apply already moved it (settling keeps an
+        # applied value; it doesn't revert it).
+        proposal = _direct_routing_proposal(target_value=0.58 + i * 0.01).model_copy(
+            update={"proposal_id": f"substrate-mutation-proposal-rel-{i}"}
+        )
+        store.add_proposal(proposal)
+        decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote")
+        adoption = PatchApplier(surfaces={"routing": {"chat_reflective_lane_threshold": 0.5}}).apply(proposal=proposal, decision=decision)
+        assert adoption is not None
+        adoption = adoption.model_copy(update={"adoption_id": f"substrate-mutation-adoption-rel-{i}"})
+        assert store.record_adoption(adoption) == []
+        if i < 2:
+            assert store.surface_reliability("routing") is None  # still below MIN_SAMPLES
+        if outcome == "settled":
+            assert store.record_settlement(adoption.adoption_id) is True
+        else:
+            rollback = PostAdoptionMonitor().build_rollback(adoption=adoption, reason="third")
+            assert store.record_rollback(rollback) is True
+
+    # 2 settled, 1 rolled_back -> (2+1)/(2+1+2) = 0.6
+    assert store.surface_reliability("routing") == pytest.approx(0.6)
+
+
+def test_proposal_factory_refuses_below_reliability_floor() -> None:
+    """Real-stakes gate: being wrong costs this surface's future proposals,
+    not just the one rolled-back action. None (cold start, or no reader
+    wired) is not treated as a failing reliability -- only a real low read
+    refuses.
+    """
+    pressure = MutationPressureV1(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        target_surface="graph_consolidation",
+        pressure_kind="runtime_drift",
+        pressure_score=6.0,
+        evidence_refs=["telemetry:x"],
+        source_signal_ids=["signal-x"],
+    )
+    unreliable = ProposalFactory(surface_reliability_reader=lambda _surface: 0.1)
+    plan = unreliable.plan_for_pressure(pressure)
+    assert plan.proposal is None
+    assert plan.refusal_reason == "target_surface_reliability_below_floor"
+
+    cold_start = ProposalFactory(surface_reliability_reader=lambda _surface: None)
+    assert cold_start.plan_for_pressure(pressure).proposal is not None
+
+    no_reader = ProposalFactory()
+    assert no_reader.plan_for_pressure(pressure).proposal is not None
 
 
 def test_blocked_apply_attribution_persists_with_reason_and_context(tmp_path: Path) -> None:

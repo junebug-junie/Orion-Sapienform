@@ -4924,6 +4924,7 @@ def execute_substrate_mutation_scheduled_cycle(
             pressure=PressureAccumulator(),
             proposals=ProposalFactory(
                 routing_surface_reader=inspect_chat_reflective_lane_threshold,
+                surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
             ),
             trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
             decision_engine=DecisionEngine(),
@@ -5171,6 +5172,7 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         pressure=PressureAccumulator(),
         proposals=ProposalFactory(
             routing_surface_reader=inspect_chat_reflective_lane_threshold,
+            surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
         ),
         trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
         decision_engine=DecisionEngine(),

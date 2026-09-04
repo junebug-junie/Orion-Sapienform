@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
@@ -33,6 +33,32 @@ from orion.substrate.recall_strategy_readiness import readiness_for_pressure
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# 2026-09-04 (real-stakes gate, docs/superpowers/specs/2026-09-04-orion-
+# emergent-choice-seams-brainstorm.md): a rolled-back mutation used to be a
+# free retry -- the surface lock released the moment record_rollback() ran,
+# so the same target_surface was eligible for a fresh proposal on the very
+# next cycle regardless of what just went wrong. This multiplies the SAME
+# rollback_window_sec the adoption already carried, rather than a fresh
+# constant, so the penalty tracks whatever window that specific adoption
+# declared for itself -- and scales with the risk_tier the proposal itself
+# declared, so claiming "high" risk and being wrong costs more downtime than
+# claiming "low" risk and being wrong. Disclosed, uncalibrated first-cut
+# values -- same convention as every other first-cut constant in this
+# codebase (see orion/proposals/scoring.py's DIMENSION_PRECISION_MIN_VARIANCE
+# comments) -- revisit against real post-deploy cooldown/re-proposal data.
+_ROLLBACK_COOLDOWN_MULTIPLIER: dict[str, float] = {
+    "low": 1.0,
+    "medium": 3.0,
+    "high": 8.0,
+}
+
+# Below this many resolved (settled + rolled_back) adoptions on a surface,
+# surface_reliability() returns None rather than a noisy ratio -- same "don't
+# report a fabricated mid-range confidence during cold start" discipline as
+# orion/proposals/scoring.py::dimension_confidence().
+SURFACE_RELIABILITY_MIN_SAMPLES = 3
 
 
 @dataclass
@@ -251,6 +277,9 @@ class SubstrateMutationStore:
                 return []
             return ["duplicate_adoption_for_proposal"]
         target_surface = adoption.target_surface
+        cooldown_until = self.rollback_cooldown_until(target_surface)
+        if cooldown_until is not None and _utc_now() < cooldown_until:
+            return ["target_surface_in_rollback_cooldown"]
         existing = self._active_surface_by_target.get(target_surface)
         if existing and existing != adoption.adoption_id:
             return ["active_mutation_exists_for_target_surface"]
@@ -286,18 +315,81 @@ class SubstrateMutationStore:
         self._persist()
         return True
 
-    def record_rollback(self, rollback: MutationRollbackV1) -> None:
-        self._rollbacks[rollback.rollback_id] = rollback
+    def record_rollback(self, rollback: MutationRollbackV1) -> bool:
+        """Roll back an adoption. Returns False, and changes nothing, if the
+        adoption is not currently "applied" -- already rolled back, already
+        settled, or unknown.
+
+        Before this guard, the store trusted every caller to only ever call
+        this on a live "applied" adoption (true of the one real caller,
+        mutation_worker.py's monitoring loop, which already skips non-applied
+        adoptions) but enforced nothing itself. A settled adoption has no
+        `undone` path by design (docs/superpowers/specs/2026-09-04-orion-
+        emergent-choice-seams-brainstorm.md): once a change survives its
+        rollback_window_sec, it is kept, not merely eligible to be kept.
+        Defense in depth for any future caller (an operator endpoint, a bug)
+        that doesn't share the worker loop's discipline.
+        """
         adoption = self._adoptions.get(rollback.adoption_id)
-        if adoption is not None:
-            self._adoptions[rollback.adoption_id] = adoption.model_copy(update={"status": "rolled_back"})
-            self._active_surface_by_target.pop(adoption.target_surface, None)
+        if adoption is None or adoption.status != "applied":
+            return False
+        self._rollbacks[rollback.rollback_id] = rollback
+        self._adoptions[rollback.adoption_id] = adoption.model_copy(update={"status": "rolled_back"})
+        self._active_surface_by_target.pop(adoption.target_surface, None)
         proposal = self._proposals.get(rollback.proposal_id)
         if proposal is not None:
             with self._lock:
                 self._proposals[rollback.proposal_id] = proposal.model_copy(update={"rollout_state": "rolled_back"})
         self._set_queue_status_for_proposal(rollback.proposal_id, "rolled_back")
         self._persist()
+        return True
+
+    def rollback_cooldown_until(self, target_surface: str) -> datetime | None:
+        """When `target_surface` next becomes eligible for a new adoption,
+        given its most recent rollback -- or None if it has never been rolled
+        back (or the relevant records can no longer be resolved; an
+        unresolvable lookup fails open rather than becoming a permanent lock).
+
+        Derived entirely from already-persisted rollback/adoption/proposal
+        records -- no new schema, no new persistence path. Cheap to remove:
+        deleting this method and its one call site in record_adoption()
+        reverts to the prior free-retry behavior with no data loss elsewhere.
+        """
+        with self._lock:
+            candidates = [
+                r
+                for r in self._rollbacks.values()
+                if (a := self._adoptions.get(r.adoption_id)) is not None and a.target_surface == target_surface
+            ]
+            if not candidates:
+                return None
+            latest = max(candidates, key=lambda r: r.created_at)
+            adoption = self._adoptions.get(latest.adoption_id)
+            proposal = self._proposals.get(latest.proposal_id)
+            if adoption is None or proposal is None:
+                return None
+            multiplier = _ROLLBACK_COOLDOWN_MULTIPLIER.get(proposal.risk_tier, 1.0)
+            return latest.created_at + timedelta(seconds=adoption.rollback_window_sec * multiplier)
+
+    def surface_reliability(self, target_surface: str) -> float | None:
+        """Laplace-smoothed settled/(settled+rolled_back) ratio over this
+        surface's resolved adoptions -- None below SURFACE_RELIABILITY_MIN_SAMPLES
+        (cold start: too few outcomes to be a real read, not a report of
+        perfect or zero reliability).
+
+        Being wrong here is not erased by a rollback undoing the action --
+        the rollback undoes the PATCH; it does not undo the fact that this
+        surface's last proposal was wrong, which is what this method reports.
+        """
+        with self._lock:
+            resolved = [
+                a for a in self._adoptions.values() if a.target_surface == target_surface and a.status in ("settled", "rolled_back")
+            ]
+            if len(resolved) < SURFACE_RELIABILITY_MIN_SAMPLES:
+                return None
+            settled = sum(1 for a in resolved if a.status == "settled")
+            rolled_back = len(resolved) - settled
+            return (settled + 1) / (settled + rolled_back + 2)
 
     def record_apply_blocked(
         self,

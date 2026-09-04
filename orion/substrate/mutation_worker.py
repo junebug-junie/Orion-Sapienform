@@ -518,6 +518,7 @@ def build_default_worker(*, store: SubstrateMutationStore) -> SubstrateAdaptatio
         pressure=PressureAccumulator(),
         proposals=ProposalFactory(
             routing_surface_reader=inspect_chat_reflective_lane_threshold,
+            surface_reliability_reader=store.surface_reliability,
         ),
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),

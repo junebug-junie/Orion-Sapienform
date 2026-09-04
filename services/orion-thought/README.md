@@ -254,25 +254,40 @@ byte-identical to today's stance behavior.
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
 orchestration Patch 1.5 (`services/orion-diffusion-host`'s real model wiring)
-was a prerequisite for. **Live** (`ORION_VISUAL_CHAIN_ENABLED=true`, enabled
-2026-08-25 per Juniper after a live smoke verified the full loop: real file
-on disk, real `reverie_visual_chain`/`reverie_visual_artifact` rows,
-correct FK, honest `description=null` rather than a fabricated caption).
+was a prerequisite for. Enabled 2026-08-25 per Juniper after a live smoke
+verified the full loop: real file on disk, real
+`reverie_visual_chain`/`reverie_visual_artifact` rows, correct FK, honest
+`description=null` rather than a fabricated caption.
 
-On a slow, capacity-gated cadence (`ORION_VISUAL_CHAIN_INTERVAL_SEC`, default
-600s — slower than the text chain's ~90s, per design doc §4): generate an
-image from `orion-diffusion-host` (circe, `POST /generate`), store it
-content-addressed (`orion.reverie.visual_storage`), hand it to
-`orion-vision-host`'s existing `caption_frame` task (via
-`orion-percept-store` — no vision-host code change needed, no new task_type;
-`caption_frame` + `percept_sha256` already captions any image), and persist
-both a `reverie_visual_chain` row and a `reverie_visual_artifact` row. The
-caption becomes `prior_description`, which the *next* run's prompt is built
-from — the enforced continuity column design doc §2 exists specifically to
-avoid repeating the text chain's dead `next_focus`/`drift` fields (nothing
-ever read them). One run = one step (`step_index=0` always); the "chain" here
-is the sequence of runs over time, not a multi-step ladder like the text
-chain's — there is no coalition/pressure signal to climb.
+**The fixed-cadence cron itself is now OFF by default** (`ORION_VISUAL_CHAIN_ENABLED=false`,
+retired 2026-08-30 — see `.env_example`'s own comment on that key): a 600s
+timer is not a decision, since it spends real GPU watts on circe whether or
+not making an image is the best use of them, with nothing weighing it against
+the alternatives. The identical generate → store → caption → persist body
+(`run_visual_chain_once` below) is still very much live, just reached
+on-demand instead: `orion-cortex-exec`'s `skills.imagination.render_scene.v1`
+verb (`app/verb_adapters.py`) calls `orion-thought`'s
+`POST /visual-chain/run-once` whenever `orion/autonomy/allocator.py`'s
+motor allocator scores it as worth the motor-seconds against every other
+candidate action, and the ambient thermal gate can still refuse it. Setting
+`ORION_VISUAL_CHAIN_ENABLED=true` restores the old blind timer alongside the
+on-demand path (they share the same single-flight lock, so they can't double
+up), which is a real override of the 2026-08-30 decision, not a bug fix.
+
+On whichever cadence actually triggers a run (timer, if re-enabled, or the
+on-demand dispatch above): generate an image from `orion-diffusion-host`
+(circe, `POST /generate`), store it content-addressed
+(`orion.reverie.visual_storage`), hand it to `orion-vision-host`'s existing
+`caption_frame` task (via `orion-percept-store` — no vision-host code
+change needed, no new task_type; `caption_frame` + `percept_sha256` already
+captions any image), and persist both a `reverie_visual_chain` row and a
+`reverie_visual_artifact` row. The caption becomes `prior_description`, which
+the *next* run's prompt is built from — the enforced continuity column
+design doc §2 exists specifically to avoid repeating the text chain's dead
+`next_focus`/`drift` fields (nothing ever read them). One run = one step
+(`step_index=0` always); the "chain" here is the sequence of runs over time,
+not a multi-step ladder like the text chain's — there is no coalition/pressure
+signal to climb.
 
 **Patch 2 scope (shipped 2026-08-25):** the mechanical loop and the
 `prior_description` wiring only — `build_visual_prompt` was deliberately the
@@ -516,3 +531,37 @@ selected slot visits context → self_study → memory → context in order
 direct coverage of `_log_prompt_token_budget` with a fake tokenizer: warns
 when over budget, silent when within it, checks both SDXL encoders, never
 raises when the pipe has no tokenizer at all.
+
+### Visual chain wedge fix + staleness watchdog (2026-09-04)
+
+Live-confirmed: the single-flight lock in `run_visual_chain_once` wedged for
+24+ hours with zero errors logged anywhere — a stuck Postgres call run via
+`asyncio.to_thread` can never be cancelled, only abandoned, so it permanently
+occupied one worker in the process's shared thread pool. `store.py`'s shared
+engine now sets `statement_timeout`/`connect_timeout` (matching the pattern
+`_get_expectation_read_engine` already used for the former), closing that off.
+
+Same edge-triggered `orion-notify` pattern as the resonance monitor above,
+in a new `app/visual_chain_health_monitor.py`, but run from an *independent*
+asyncio task (`run_visual_chain_watchdog`, mirroring
+`orion-field-digester/app/worker.py`'s `_health_loop` shape) rather than
+being called from inside a completed tick — the whole point being that a
+wedged worker can never report on its own staleness. Fires `severity="critical"`
+(immediate email, per `orion-notify`'s own convention for non-self-healing
+failures) if `reverie_visual_chain`'s newest row is older than
+`ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN` (default 45min). Guarded by
+both `visual_chain_enabled` and `orion_bus_enabled`, matching the worker's
+own guard, so a deployment that never runs this pipeline at all doesn't get
+a permanent false alarm.
+
+**This watchdog assumes *something* triggers a run at least every ~45
+minutes.** That assumption held under the old fixed-cadence cron; it does
+not automatically hold under the on-demand `express`-dispatch path above,
+where `render_scene` legitimately may not win the motor-seconds competition
+for a long stretch if nothing scores as worth doing — confirmed live
+2026-09-04: `orion-execution-dispatch-runtime` refused every candidate
+action, of every kind, for 8000+ consecutive ticks, tracing back to the
+same upstream attention/signal starvation reverie's text chain was
+independently found to be hitting. Worth revisiting whether this watchdog's
+"staleness" threshold makes sense once that upstream problem is understood,
+rather than assuming a wedge every time render_scene goes quiet for a while.

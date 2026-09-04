@@ -1158,6 +1158,7 @@ async def _call_self_study_reflect_llm(
     source: ServiceRef,
     snapshot: SelfSnapshotV1,
     concepts: Sequence[SelfInducedConceptV1],
+    correlation_id: str,
 ) -> list[dict[str, Any]] | None:
     """The real Layer 3 LLM call: one CortexClientRequest round trip through
     cortex-orch, same public contract journal.compose and every other
@@ -1212,12 +1213,20 @@ async def _call_self_study_reflect_llm(
                 metadata={"self_study_reflect_input": _self_study_reflect_input(snapshot, concepts)},
             ),
         )
-        correlation_id = uuid4()
-        reply_channel = f"orion:cortex:result:self-study-reflect:{correlation_id}"
+        # Deterministically derived from the CALLER's correlation_id (not a
+        # fresh uuid4()) so this RPC's own correlation_id is traceable back
+        # to the run_self_concept_reflect invocation that triggered it in
+        # logs/telemetry -- same "namespaced uuid5 derivation" convention
+        # curiosity_investigation.py uses for its own second-turn (outreach)
+        # correlation_id, and the same _as_envelope_correlation_id() this
+        # file already uses elsewhere for coercing a raw id into envelope
+        # shape.
+        rpc_correlation_id = _as_envelope_correlation_id(f"self-study-reflect:{correlation_id}")
+        reply_channel = f"orion:cortex:result:self-study-reflect:{rpc_correlation_id}"
         envelope = BaseEnvelope(
             kind="cortex.orch.request",
             source=source,
-            correlation_id=correlation_id,
+            correlation_id=rpc_correlation_id,
             reply_to=reply_channel,
             payload=request.model_dump(mode="json"),
         )
@@ -1229,17 +1238,17 @@ async def _call_self_study_reflect_llm(
         )
         decoded = bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
-            logger.warning("self_study_reflect_llm_decode_failed corr=%s err=%s", correlation_id, decoded.error)
+            logger.warning("self_study_reflect_llm_decode_failed corr=%s err=%s", rpc_correlation_id, decoded.error)
             return None
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
     except Exception as exc:  # noqa: BLE001 -- any failure (construction, RPC, decode) degrades to "no reflection", never a crash
-        logger.warning("self_study_reflect_llm_call_failed err=%s", exc)
+        logger.warning("self_study_reflect_llm_call_failed corr=%s err=%s", correlation_id, exc)
         return None
 
     if not payload.get("ok", False):
         logger.warning(
             "self_study_reflect_llm_not_ok corr=%s status=%s error=%s",
-            correlation_id,
+            rpc_correlation_id,
             payload.get("status"),
             payload.get("error"),
         )
@@ -1247,18 +1256,18 @@ async def _call_self_study_reflect_llm(
 
     text = extract_cortex_payload_text(payload)
     if not text:
-        logger.warning("self_study_reflect_llm_empty_text corr=%s", correlation_id)
+        logger.warning("self_study_reflect_llm_empty_text corr=%s", rpc_correlation_id)
         return None
 
     try:
         parsed = json.loads(_strip_self_study_reflect_text(text))
     except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("self_study_reflect_llm_unparseable corr=%s err=%s", correlation_id, exc)
+        logger.warning("self_study_reflect_llm_unparseable corr=%s err=%s", rpc_correlation_id, exc)
         return None
 
     findings = parsed.get("findings") if isinstance(parsed, dict) else None
     if not isinstance(findings, list):
-        logger.warning("self_study_reflect_llm_bad_shape corr=%s", correlation_id)
+        logger.warning("self_study_reflect_llm_bad_shape corr=%s", rpc_correlation_id)
         return None
     return [item for item in findings if isinstance(item, dict)]
 
@@ -1344,6 +1353,7 @@ async def reflect_self_concepts(
     source: ServiceRef,
     snapshot: SelfSnapshotV1,
     concepts: Sequence[SelfInducedConceptV1],
+    correlation_id: str | None = None,
 ) -> ReflectSelfConceptsOutcome:
     """Layer 3: real reflective findings from a real LLM call, replacing the
     six hardcoded template branches this function used to hold. Caches into
@@ -1354,13 +1364,24 @@ async def reflect_self_concepts(
     success, empty findings list), which DOES cache -- collapsing "failed"
     into "found nothing" would let an infra outage read as a completed,
     calm reflection pass, indistinguishable from the real thing to every
-    downstream reader of the cache."""
+    downstream reader of the cache.
+
+    `correlation_id` is the CALLER's own correlation_id (e.g.
+    run_self_concept_reflect's), threaded through so the RPC this makes is
+    traceable back to the operation that triggered it rather than showing up
+    in logs under an unrelated, freshly-minted id. Optional and defaulted
+    (rather than required) so callers that genuinely have no outer
+    correlation_id of their own -- tests, ad hoc harness runs -- don't need
+    to invent one."""
     validation_summary = validate_phase2a_induction(snapshot, concepts)
     if not validation_summary:
         raise ValueError("phase2a_validation_missing")
+    correlation_id = correlation_id or str(uuid4())
 
     raw_findings = (
-        await _call_self_study_reflect_llm(bus=bus, source=source, snapshot=snapshot, concepts=concepts)
+        await _call_self_study_reflect_llm(
+            bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id
+        )
         if bus is not None
         else None
     )
@@ -2686,7 +2707,9 @@ async def run_self_concept_reflect(*, bus: Any | None, source: ServiceRef, corre
     snapshot = build_self_snapshot()
     concepts = induce_self_concepts(snapshot)
     validation_summary = validate_phase2a_induction(snapshot, concepts)
-    outcome = await reflect_self_concepts(bus=bus, source=source, snapshot=snapshot, concepts=concepts)
+    outcome = await reflect_self_concepts(
+        bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id
+    )
     findings = outcome.findings
     if outcome.llm_call_failed:
         # A real LLM attempt did not complete -- publishing a "0 findings"

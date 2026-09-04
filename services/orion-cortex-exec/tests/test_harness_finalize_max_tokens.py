@@ -64,6 +64,36 @@ def test_stance_react_uses_general_max_tokens_budget(monkeypatch) -> None:
     assert src == "settings.llm_chat_general_max_tokens_stance_react"
 
 
+def test_self_study_reflect_uses_general_max_tokens_budget(monkeypatch) -> None:
+    """Regression, 2026-09-04: self_study.reflect (Layer 3 real reflection,
+    PR #2080) was missing from this mapping too -- same disease as its six
+    siblings above, discovered the same way: live-confirmed
+    corr=871934fd-4095-55b6-82b0-a8784eda8998 hit payload_max_tokens=512
+    (this function's own un-special-cased default), completion_tokens=512,
+    finish_reason=length -- the agent-route reasoning model (Qwen3-27B)
+    spent its entire budget on reasoning_content (2417 chars) and never
+    wrote a single character of the strict-JSON findings answer, so
+    self_study.py's own json.loads() found nothing to parse. Same fix, same
+    settings field as its six siblings."""
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(
+        executor_mod,
+        "settings",
+        SimpleNamespace(
+            llm_chat_general_max_tokens=8000,
+            llm_chat_max_tokens_default=512,
+            llm_dream_max_tokens=32768,
+            llm_chat_quick_max_tokens=384,
+            llm_memory_graph_suggest_max_tokens=4096,
+        ),
+    )
+    step = _step(verb_name="self_study.reflect", step_name="draft_self_study_reflection")
+    eff, _req, src = _resolve_llm_chat_max_tokens(step, {})
+    assert eff == 8000
+    assert src == "settings.llm_chat_general_max_tokens_self_study_reflect"
+
+
 def test_orion_voice_finalize_uses_general_max_tokens_budget(monkeypatch) -> None:
     import app.executor as executor_mod
 

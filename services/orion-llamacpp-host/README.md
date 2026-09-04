@@ -371,6 +371,37 @@ Operator caveats:
 - Do not change `HARNESS_FCC_MAX_CONTEXT_TOKENS` / Hub agent-claude budgets just to free VRAM for draft without an explicit follow-up.
 - MTP / `--spec-type draft-mtp` is out of scope for this profile contract.
 
+## PLE / n-gram table (Qwen3.8-Flash-Next and similar hybrid architectures)
+
+Optional profile fields under `llamacpp:`, added for `ggml-org/llama.cpp#27742`
+(the "qwen4exp" architecture, merged 2026-08-27, ~build b10666):
+
+- `hf_ngram_filename` / `ngram_filename` — the architecture's separate PLE/n-gram
+  table GGUF, under `model_root` (`--model-ngram`)
+- `hf_ngram_repo_id` / `ngram_repo_id` — HF repo for download; defaults to main
+  `hf_repo_id` when omitted
+- `ngram_load_mode` — `"resident"` (keep the table in RAM) or `"read"` (read rows
+  on demand, e.g. via mmap; lower RAM, slower) (`--ngram-load-mode`)
+
+Behavior:
+
+- Unset `ngram_filename` → no `--model-ngram`/`--ngram-load-mode` emitted, same as
+  today.
+- Set `ngram_filename` → wrapper ensures the GGUF (same HF-download path as
+  `draft_filename`/`mmproj_filename`) and emits `--model-ngram` (plus
+  `--ngram-load-mode` if set), gated on the binary actually advertising
+  `--model-ngram` in `--help`. This check fails **closed**, unlike most flags in
+  this file: guessing wrong here risks the host trying to load an
+  incompatible-architecture GGUF, not just silently dropping an optional flag.
+- If the binary's `--help` lacks `--model-ngram`, the host logs an error, omits
+  it, and still launches the main model (the ngram table simply never loads —
+  see `config/llm_profiles.yaml`'s `qwen3.8-flash-next-*` card for why that is
+  not a safe silent fallback for this architecture specifically).
+
+Independent of the speculative-decoding fields above — this is a second required
+model file for one architecture family, not a drafter, so it is not gated by
+`spec_type`.
+
 ---
 
 ## GPU pinning model

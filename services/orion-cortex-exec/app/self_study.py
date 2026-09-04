@@ -10,7 +10,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, NamedTuple, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import requests
@@ -18,8 +18,15 @@ import yaml
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.journaler.schemas import JournalEntryWriteV1
+from orion.llm.routes import normalize_llm_route
+from orion.schemas.cortex.contracts import (
+    CortexClientContext,
+    CortexClientRequest,
+    RecallDirective,
+)
 from orion.schemas.rdf import RdfWriteRequest
 from orion.structural_mass.graph_delta import graph_structural_delta
 from orion.structural_mass.snapshot_history import (
@@ -85,6 +92,15 @@ ORION = Namespace("http://conjourney.net/orion#")
 SELF = Namespace("http://conjourney.net/orion/self#")
 RDF_ENQUEUE_CHANNEL = "orion:rdf:enqueue"
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
+# Same public intake channel orion-actions and every other external-ish
+# CortexClientRequest caller uses (settings.cortex_request_channel there) --
+# self_study.py round-trips through cortex-orch like any other client rather
+# than reaching into cortex-exec's own executor.py internals, even though
+# both live in this service. That keeps the LLM call on the one reviewed,
+# tested public contract (CortexClientRequest -> orch -> ... -> CortexClientResult)
+# instead of a second, undocumented in-process path.
+CORTEX_ORCH_REQUEST_CHANNEL = os.getenv("CORTEX_REQUEST_CHANNEL", "orion:cortex:request")
+SELF_STUDY_REFLECT_VERB = "self_study.reflect"
 SELF_GRAPH = "orion:self"
 SELF_INDUCED_GRAPH = "orion:self:induced"
 SELF_REFLECTIVE_GRAPH = "orion:self:reflective"
@@ -151,6 +167,29 @@ _STRUCTURAL_DELTA_STATE_LOCK = threading.Lock()
 _STRUCTURAL_DELTA_RESULT_CACHE: "OrderedDict[str, list[SelfInducedConceptV1]]" = OrderedDict()
 _STRUCTURAL_DELTA_RESULT_CACHE_MAX = 8
 
+# The most recent REAL reflection (see reflect_self_concepts() below), keyed
+# by snapshot_id, same shape as _STRUCTURAL_DELTA_RESULT_CACHE. Written only
+# by reflect_self_concepts() when it actually gets a bus and a real LLM
+# result. _retrieve_self_study_in_process() reads this instead of calling
+# reflect_self_concepts() itself, so a synchronous, mode-scoped retrieval
+# call can never block on an LLM turn -- a cache miss means "no reflection
+# has run yet for this snapshot," not "trigger one now."
+#
+# KNOWN LIMITATION, same as _STRUCTURAL_DELTA_RESULT_CACHE above: this is
+# process-local, in-memory state. If cortex-exec ever runs multiple workers/
+# replicas, a reflection produced on one worker is invisible to a retrieval
+# request landing on another -- that worker reports "no reflective findings
+# cached yet" even though a real reflection just ran successfully elsewhere
+# for the identical (content-addressed) snapshot_id. Not fixed here: PR 3 of
+# this rebuild (docs/superpowers/specs/2026-09-03-orion-endogenous-self-
+# model-and-journal-design.md) replaces this with the durable
+# `self_concept_history` table, which is the real fix for this class of
+# problem -- adding cross-worker durability to this in-memory cache now
+# would be throwaway work.
+_REFLECTION_STATE_LOCK = threading.Lock()
+_REFLECTION_RESULT_CACHE: "OrderedDict[str, list[SelfReflectiveFindingV1]]" = OrderedDict()
+_REFLECTION_RESULT_CACHE_MAX = 8
+
 # Read-only mount of orion-self-study-enrichment's cache volume (see that
 # service's docker-compose.yml `self_study_enrichment_data` volume and
 # services/orion-cortex-exec/docker-compose.yml's mount of the same volume).
@@ -170,6 +209,17 @@ SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR = os.getenv(
 # _structural_delta_concepts() falls back to today's in-process-only
 # behavior (cold start every process restart), not a crash.
 SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH = os.getenv("SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH")
+
+# Layer 3 real reflection. Resolved with normalize_llm_route() at call time
+# (not cached at import time -- reflect_self_concepts() runs rarely, on
+# demand, so re-validating per call costs nothing and there is no long-lived
+# object to resolve it once for, unlike CuriosityInvestigation.__init__).
+# `agent` matches curiosity investigation's own lane per the design doc;
+# an unrecognised override falls back to no override (the executor's own
+# verb-based default) rather than guessing, same contract normalize_llm_route
+# already documents.
+SELF_STUDY_REFLECT_LLM_ROUTE = os.getenv("SELF_STUDY_REFLECT_LLM_ROUTE", "agent")
+SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "115"))
 
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
@@ -1074,122 +1124,294 @@ def validate_phase2a_induction(snapshot: SelfSnapshotV1, concepts: Sequence[Self
     )
 
 
-def reflect_self_concepts(snapshot: SelfSnapshotV1, concepts: Sequence[SelfInducedConceptV1]) -> list[SelfReflectiveFindingV1]:
+_SELF_STUDY_REFLECT_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
+_SELF_STUDY_REFLECT_THINK_BLOCK_RE = re.compile(r"<think>\s*.*?\s*</think>", flags=re.IGNORECASE | re.DOTALL)
+
+
+def _strip_self_study_reflect_text(text: str) -> str:
+    """Same fence/think-tag stripping discipline orion.journaler.worker uses
+    to parse structured LLM output -- a small local copy rather than a
+    cross-import of that module's private regexes, since journal drafting and
+    self-study reflection are unrelated producers with no shared caller."""
+    stripped = _SELF_STUDY_REFLECT_THINK_BLOCK_RE.sub(" ", text).strip()
+    match = _SELF_STUDY_REFLECT_JSON_FENCE_RE.search(stripped)
+    return match.group(1).strip() if match else stripped
+
+
+def _self_study_reflect_input(snapshot: SelfSnapshotV1, concepts: Sequence[SelfInducedConceptV1]) -> dict[str, Any]:
+    by_kind: dict[str, int] = {}
+    for concept in concepts:
+        by_kind[concept.concept_kind] = by_kind.get(concept.concept_kind, 0) + 1
+    return {
+        "snapshot_id": snapshot.snapshot_id,
+        "counts_by_kind": dict(sorted(by_kind.items())),
+        "concepts": [
+            {"concept_kind": concept.concept_kind, "label": concept.label, "description": concept.description}
+            for concept in concepts
+        ],
+    }
+
+
+async def _call_self_study_reflect_llm(
+    *,
+    bus: Any,
+    source: ServiceRef,
+    snapshot: SelfSnapshotV1,
+    concepts: Sequence[SelfInducedConceptV1],
+    correlation_id: str,
+) -> list[dict[str, Any]] | None:
+    """The real Layer 3 LLM call: one CortexClientRequest round trip through
+    cortex-orch, same public contract journal.compose and every other
+    external CortexClientRequest caller (e.g. orion-actions's `_run_journal`)
+    already use -- not a reach into this service's own executor.py internals.
+
+    This DOES loop back through cortex-orch into this same cortex-exec
+    process (cortex-orch dispatches self_study.reflect's LLMGatewayService
+    step onto this service's own orion:exec:request:LLMGatewayService
+    channel) -- not a new pattern this function introduces:
+    bound_capability_exec.execute_bound_capability(), called from this
+    service's own supervisor.py mid-verb-dispatch, already does the exact
+    same self-referential round trip. Both rely on
+    settings.exec_concurrent_handlers staying enabled (the documented
+    default -- see test_exec_concurrent_handlers.py); with it disabled this
+    call could not be served by this same process and would time out at
+    SELF_STUDY_REFLECT_TIMEOUT_SEC. An existing, shared risk, not one this
+    patch newly creates.
+
+    Returns a list of raw finding dicts on success, or None on ANY failure
+    (bad input, RPC error/timeout, non-ok result, empty/unparseable text,
+    wrong JSON shape). Never raises and never fabricates a result -- same
+    "produce nothing on failure" discipline `_structural_delta_concepts`
+    already documents for this file. Caller (`reflect_self_concepts`) is
+    responsible for checking `bus is not None` first; this assumes a real
+    bus."""
+    try:
+        llm_route = normalize_llm_route(SELF_STUDY_REFLECT_LLM_ROUTE)
+        if SELF_STUDY_REFLECT_LLM_ROUTE and not llm_route:
+            logger.warning(
+                "self_study_reflect_llm_route_unusable route=%r -- falling back to the verb's own default lane",
+                SELF_STUDY_REFLECT_LLM_ROUTE,
+            )
+
+        request = CortexClientRequest(
+            mode="brain",
+            route_intent="none",
+            verb=SELF_STUDY_REFLECT_VERB,
+            options={
+                "policy_dispatch_only": True,
+                **({"llm_route": llm_route} if llm_route else {}),
+            },
+            recall=RecallDirective(enabled=False, required=False),
+            context=CortexClientContext(
+                messages=[
+                    LLMMessage(
+                        role="user",
+                        content=f"Reflect on self-study snapshot {snapshot.snapshot_id}.",
+                    )
+                ],
+                raw_user_text=f"Reflect on self-study snapshot {snapshot.snapshot_id}.",
+                metadata={"self_study_reflect_input": _self_study_reflect_input(snapshot, concepts)},
+            ),
+        )
+        # Deterministically derived from the CALLER's correlation_id (not a
+        # fresh uuid4()) so this RPC's own correlation_id is traceable back
+        # to the run_self_concept_reflect invocation that triggered it in
+        # logs/telemetry -- same "namespaced uuid5 derivation" convention
+        # curiosity_investigation.py uses for its own second-turn (outreach)
+        # correlation_id, and the same _as_envelope_correlation_id() this
+        # file already uses elsewhere for coercing a raw id into envelope
+        # shape.
+        rpc_correlation_id = _as_envelope_correlation_id(f"self-study-reflect:{correlation_id}")
+        reply_channel = f"orion:cortex:result:self-study-reflect:{rpc_correlation_id}"
+        envelope = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=source,
+            correlation_id=rpc_correlation_id,
+            reply_to=reply_channel,
+            payload=request.model_dump(mode="json"),
+        )
+        msg = await bus.rpc_request(
+            CORTEX_ORCH_REQUEST_CHANNEL,
+            envelope,
+            reply_channel=reply_channel,
+            timeout_sec=SELF_STUDY_REFLECT_TIMEOUT_SEC,
+        )
+        decoded = bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            logger.warning("self_study_reflect_llm_decode_failed corr=%s err=%s", rpc_correlation_id, decoded.error)
+            return None
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+    except Exception as exc:  # noqa: BLE001 -- any failure (construction, RPC, decode) degrades to "no reflection", never a crash
+        logger.warning("self_study_reflect_llm_call_failed corr=%s err=%s", correlation_id, exc)
+        return None
+
+    if not payload.get("ok", False):
+        logger.warning(
+            "self_study_reflect_llm_not_ok corr=%s status=%s error=%s",
+            rpc_correlation_id,
+            payload.get("status"),
+            payload.get("error"),
+        )
+        return None
+
+    text = extract_cortex_payload_text(payload)
+    if not text:
+        logger.warning("self_study_reflect_llm_empty_text corr=%s", rpc_correlation_id)
+        return None
+
+    try:
+        parsed = json.loads(_strip_self_study_reflect_text(text))
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("self_study_reflect_llm_unparseable corr=%s err=%s", rpc_correlation_id, exc)
+        return None
+
+    findings = parsed.get("findings") if isinstance(parsed, dict) else None
+    if not isinstance(findings, list):
+        logger.warning("self_study_reflect_llm_bad_shape corr=%s", rpc_correlation_id)
+        return None
+    return [item for item in findings if isinstance(item, dict)]
+
+
+def _finding_from_llm_item(
+    *,
+    snapshot: SelfSnapshotV1,
+    concept_by_kind: dict[str, SelfInducedConceptV1],
+    raw: dict[str, Any],
+) -> SelfReflectiveFindingV1 | None:
+    """Builds one real, evidence-backed finding from one model-authored item,
+    or None if the item doesn't hold up. The model supplies reflection_kind/
+    title/description/confidence/salience/recommendation/follow_up_question
+    and which concept_kinds it's about; everything evidentiary (reflection_id,
+    evidence, concept_refs) is computed here from the real snapshot/concepts,
+    same trust-boundary discipline _validate_authoritative_snapshot and
+    validate_phase2a_induction already enforce elsewhere in this file --
+    the model is never trusted as a source of evidence, only of prose."""
+    reflection_kind = raw.get("reflection_kind")
+    title = raw.get("title")
+    description = raw.get("description")
+    concept_kinds = raw.get("concept_kinds")
+    if not isinstance(reflection_kind, str) or not isinstance(title, str) or not isinstance(description, str):
+        return None
+    if not title.strip() or not description.strip():
+        return None
+    if not isinstance(concept_kinds, list) or not concept_kinds:
+        return None
+    grounding = [concept_by_kind[kind] for kind in concept_kinds if isinstance(kind, str) and kind in concept_by_kind]
+    if not grounding:
+        # Model named concept_kinds not actually present in this snapshot.
+        # Never fabricate a concept_ref -- drop the finding.
+        return None
+    try:
+        confidence = min(1.0, max(0.0, float(raw.get("confidence", 0.0))))
+        salience = min(1.0, max(0.0, float(raw.get("salience", 0.0))))
+    except (TypeError, ValueError):
+        return None
+    recommendation = raw.get("recommendation")
+    follow_up_question = raw.get("follow_up_question")
+    try:
+        return _reflection(
+            snapshot=snapshot,
+            reflection_kind=reflection_kind,
+            title=title.strip(),
+            description=description.strip(),
+            concepts=grounding,
+            confidence=confidence,
+            salience=salience,
+            recommendation=recommendation if isinstance(recommendation, str) and recommendation.strip() else None,
+            follow_up_question=(
+                follow_up_question if isinstance(follow_up_question, str) and follow_up_question.strip() else None
+            ),
+        )
+    except Exception:
+        # Most likely reflection_kind failed SelfReflectionKind's Literal
+        # validation. One bad model-authored item must not sink the whole
+        # reflection pass.
+        logger.warning("self_study_reflect_finding_rejected kind=%r title=%r", reflection_kind, title)
+        return None
+
+
+class ReflectSelfConceptsOutcome(NamedTuple):
+    """Result of one reflect_self_concepts() call.
+
+    `llm_call_failed` is True only when a REAL LLM attempt (`bus is not
+    None`) did not complete successfully -- distinct from `findings == []`,
+    which can also mean "no bus configured" or "a real, successful call that
+    genuinely found nothing." A caller that must not publish/journal a
+    failed attempt as if it were a completed reflection (see
+    run_self_concept_reflect) checks this flag directly rather than
+    inferring it from an empty findings list or from cache presence, which
+    can go stale (an earlier successful call's cache entry for the same
+    content-addressed snapshot_id would otherwise mask a later failure)."""
+
+    findings: list[SelfReflectiveFindingV1]
+    llm_call_failed: bool
+
+
+async def reflect_self_concepts(
+    *,
+    bus: Any | None,
+    source: ServiceRef,
+    snapshot: SelfSnapshotV1,
+    concepts: Sequence[SelfInducedConceptV1],
+    correlation_id: str | None = None,
+) -> ReflectSelfConceptsOutcome:
+    """Layer 3: real reflective findings from a real LLM call, replacing the
+    six hardcoded template branches this function used to hold. Caches into
+    _REFLECTION_RESULT_CACHE ONLY on a genuine, successful LLM round trip --
+    never on `bus is None` (never attempted) and never on an RPC/decode/
+    parse failure (attempted but failed). Both of those must stay
+    distinguishable from "attempted and genuinely found nothing" (real
+    success, empty findings list), which DOES cache -- collapsing "failed"
+    into "found nothing" would let an infra outage read as a completed,
+    calm reflection pass, indistinguishable from the real thing to every
+    downstream reader of the cache.
+
+    `correlation_id` is the CALLER's own correlation_id (e.g.
+    run_self_concept_reflect's), threaded through so the RPC this makes is
+    traceable back to the operation that triggered it rather than showing up
+    in logs under an unrelated, freshly-minted id. Optional and defaulted
+    (rather than required) so callers that genuinely have no outer
+    correlation_id of their own -- tests, ad hoc harness runs -- don't need
+    to invent one."""
     validation_summary = validate_phase2a_induction(snapshot, concepts)
     if not validation_summary:
         raise ValueError("phase2a_validation_missing")
+    correlation_id = correlation_id or str(uuid4())
+
+    raw_findings = (
+        await _call_self_study_reflect_llm(
+            bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id
+        )
+        if bus is not None
+        else None
+    )
+    llm_call_failed = bus is not None and raw_findings is None
 
     concept_by_kind = {concept.concept_kind: concept for concept in concepts}
     findings: list[SelfReflectiveFindingV1] = []
-
-    graph_concept = concept_by_kind.get("graph_surface")
-    journal_concept = concept_by_kind.get("journaling_surface")
-    if graph_concept and journal_concept:
-        findings.append(
-            _reflection(
-                snapshot=snapshot,
-                reflection_kind="tension",
-                title="Graph and journal lanes need ongoing trust separation",
-                description="Self-study spans authoritative graph publication and non-authoritative journal publication, so reflective outputs should stay on separate sinks and never re-enter factual grounding lanes.",
-                concepts=[graph_concept, journal_concept],
-                confidence=0.79,
-                salience=0.84,
-                recommendation="Keep reflective writeback on its own graph and journal source kind rather than reusing authoritative paths.",
-            )
-        )
-
-    service_cluster = concept_by_kind.get("service_cluster")
-    runtime_boundary = concept_by_kind.get("runtime_boundary")
-    if service_cluster and runtime_boundary:
-        findings.append(
-            _reflection(
-                snapshot=snapshot,
-                reflection_kind="architecture_observation",
-                title="Self-study is coordinated across multiple runtime surfaces",
-                description="The current self-study lane is not local to a single module: it depends on cortex-exec, write channels, and adjacent services, which makes provenance discipline more important than richer narration.",
-                concepts=[runtime_boundary, service_cluster],
-                confidence=0.74,
-                salience=0.68,
-                recommendation="Favor compact typed outputs over broad narrative summaries when adding new self-study phases.",
-            )
-        )
-
-    recall_concept = concept_by_kind.get("recall_surface")
-    if recall_concept:
-        findings.append(
-            _reflection(
-                snapshot=snapshot,
-                reflection_kind="seam_risk",
-                title="Reflective retrieval should stay out of factual recall by default",
-                description="The current recall surface cleanly isolates authoritative self-study material. Adding reflective retrieval later would need a dedicated profile rather than broadening self.factual.v1.",
-                concepts=[recall_concept],
-                confidence=0.86,
-                salience=0.81,
-                follow_up_question="If reflective recall is added later, what profile and tag boundaries keep it separate from delivery/debug grounding?",
-            )
-        )
-
-    topology_concept = concept_by_kind.get("bus_topology_pattern")
-    if topology_concept:
-        findings.append(
-            _reflection(
-                snapshot=snapshot,
-                reflection_kind="candidate_skill_idea",
-                title="Future drift checking could compare static and runtime surfaces",
-                description="Current self-study is strong on repo-visible structure, but it may miss runtime-only drift that does not appear in static files or channel declarations.",
-                concepts=[topology_concept],
-                confidence=0.63,
-                salience=0.59,
-                recommendation="A later skill could compare runtime-observed channels and services against repo-extracted self-study surfaces without promoting the result into authoritative truth.",
-            )
-        )
-
-    structural_concept = concept_by_kind.get("structural_mass")
-    semantic_enrichment_concepts = sorted(
-        (concept for concept in concepts if concept.concept_kind == "semantic_enrichment"),
-        key=lambda concept: concept.label,
-    )
-    if structural_concept and semantic_enrichment_concepts:
-        # structural_mass is a repo-wide delta (orion.structural_mass.
-        # graph_delta), not cluster-scoped, so this pairs it with the first
-        # (alphabetically) real cluster-level enrichment narrative rather
-        # than pretending a specific per-cluster structural match exists --
-        # see the PR report's idempotency-tension note for why this pairing
-        # is looser than a strict "same cluster" match would be.
-        enrichment_concept = semantic_enrichment_concepts[0]
-        findings.append(
-            _reflection(
-                snapshot=snapshot,
-                reflection_kind="architecture_observation",
-                title="Structural delta and a cached enrichment narrative both point at real change",
-                description=(
-                    f"{structural_concept.description} Separately, a cached semantic-enrichment pass "
-                    f"already explains one affected cluster ({enrichment_concept.label}): "
-                    f"{enrichment_concept.description}"
-                ),
-                concepts=[structural_concept, enrichment_concept],
-                confidence=round(min(structural_concept.confidence, enrichment_concept.confidence), 2),
-                salience=0.7,
-                recommendation="Read the structural delta and the cluster narrative together when reviewing what changed and why, rather than treating them as separate signals.",
-            )
-        )
-
-    if not findings and concepts:
-        findings.append(
-            _reflection(
-                snapshot=snapshot,
-                reflection_kind="blind_spot",
-                title="Current self-study is intentionally conservative",
-                description="The present self-study lane prioritizes trusted repo structure, which limits coverage of dynamic behavior but protects factual grounding from looser interpretation.",
-                concepts=[concepts[0]],
-                confidence=0.6,
-                salience=0.45,
-                recommendation="Add runtime comparison only behind a separate reflective lane if stronger dynamic coverage becomes necessary.",
-            )
-        )
-
+    for raw in raw_findings or []:
+        finding = _finding_from_llm_item(snapshot=snapshot, concept_by_kind=concept_by_kind, raw=raw)
+        if finding is not None:
+            findings.append(finding)
     findings.sort(key=lambda item: (item.reflection_kind, item.title))
-    return findings
+
+    if bus is not None and not llm_call_failed:
+        with _REFLECTION_STATE_LOCK:
+            _REFLECTION_RESULT_CACHE[snapshot.snapshot_id] = findings
+            if len(_REFLECTION_RESULT_CACHE) > _REFLECTION_RESULT_CACHE_MAX:
+                _REFLECTION_RESULT_CACHE.popitem(last=False)
+
+    return ReflectSelfConceptsOutcome(findings=findings, llm_call_failed=llm_call_failed)
+
+
+def _cached_reflection_findings(snapshot_id: str) -> list[SelfReflectiveFindingV1] | None:
+    """None means "reflect_self_concepts has never run for this snapshot" --
+    distinct from `[]`, which means it ran and genuinely found nothing.
+    Read-only consumer for _retrieve_self_study_in_process(); never triggers
+    a fresh LLM call itself."""
+    with _REFLECTION_STATE_LOCK:
+        cached = _REFLECTION_RESULT_CACHE.get(snapshot_id)
+        return list(cached) if cached is not None else None
 
 
 def build_self_reflection_summary(findings: Sequence[SelfReflectiveFindingV1]) -> str:
@@ -1779,7 +2001,17 @@ def _build_retrieval_result(
 def _retrieve_self_study_in_process(request: SelfStudyRetrieveRequestV1) -> SelfStudyRetrieveResultV1:
     snapshot = build_self_snapshot()
     concepts = induce_self_concepts(snapshot)
-    findings = reflect_self_concepts(snapshot, concepts)
+    # Reads the last REAL reflection for this snapshot rather than calling
+    # reflect_self_concepts() here -- that function now makes a real LLM
+    # call, and this is a synchronous, mode-scoped read path with live
+    # consumers (self_study_harness.py's consumer scenarios). snapshot_id is
+    # a content digest of repo state (see _canonical_snapshot_payload), not a
+    # timestamp, so a snapshot built here matches a prior
+    # run_self_concept_reflect() snapshot as long as the repo hasn't changed
+    # in between -- same idempotency property validate_phase2a_induction
+    # already relies on for induce_self_concepts().
+    cached_findings = _cached_reflection_findings(snapshot.snapshot_id)
+    findings = cached_findings or []
 
     allowed_trust_tiers = set(_mode_allowed_trust_tiers(request.retrieval_mode))
     allowed_record_types = set(_mode_allowed_record_types(request.retrieval_mode))
@@ -1797,6 +2029,11 @@ def _retrieve_self_study_in_process(request: SelfStudyRetrieveRequestV1) -> Self
         "Self-study retrieval is explicit and mode-scoped; it does not widen self.factual.v1.",
         "Fallback retrieval uses in-process self-study records and preserves trust tiers rather than flattening them.",
     ]
+    if "reflection" in allowed_record_types and cached_findings is None:
+        notes.append(
+            "No reflective findings cached yet for this snapshot; run self_concept_reflect to produce a real "
+            "reflection before retrieving it."
+        )
     return _build_retrieval_result(
         request=request,
         records=records,
@@ -2470,14 +2707,47 @@ async def run_self_concept_reflect(*, bus: Any | None, source: ServiceRef, corre
     snapshot = build_self_snapshot()
     concepts = induce_self_concepts(snapshot)
     validation_summary = validate_phase2a_induction(snapshot, concepts)
-    findings = reflect_self_concepts(snapshot, concepts)
-    graph_status, journal_status, journal_entry = await publish_self_reflection_artifacts(
-        bus=bus,
-        source=source,
-        snapshot=snapshot,
-        findings=findings,
-        correlation_id=correlation_id,
+    outcome = await reflect_self_concepts(
+        bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id
     )
+    findings = outcome.findings
+    if outcome.llm_call_failed:
+        # A real LLM attempt did not complete -- publishing a "0 findings"
+        # journal entry here would misrepresent an infra failure as a
+        # completed reflection pass that genuinely found nothing (CLAUDE.md
+        # 0A's no-empty-shell-cognition rule, verbatim). `findings` is always
+        # `[]` on this path (see ReflectSelfConceptsOutcome). Build the
+        # journal entry (the result object's journal_entry field is
+        # required) but never publish it.
+        journal_entry = build_self_reflection_journal_entry(
+            snapshot=snapshot, findings=findings, correlation_id=correlation_id
+        )
+        graph_status = SelfWritebackStatusV1(
+            target="graph",
+            status="skipped",
+            authoritative=False,
+            channel=RDF_ENQUEUE_CHANNEL,
+            graph=SELF_REFLECTIVE_GRAPH,
+            idempotency_key=snapshot.snapshot_id,
+            detail="reflection_llm_call_failed",
+        )
+        journal_status = SelfWritebackStatusV1(
+            target="journal",
+            status="skipped",
+            authoritative=False,
+            channel=JOURNAL_WRITE_CHANNEL,
+            idempotency_key=snapshot.snapshot_id,
+            append_only=True,
+            detail="reflection_llm_call_failed",
+        )
+    else:
+        graph_status, journal_status, journal_entry = await publish_self_reflection_artifacts(
+            bus=bus,
+            source=source,
+            snapshot=snapshot,
+            findings=findings,
+            correlation_id=correlation_id,
+        )
     return SelfConceptReflectResultV1(
         run_id=snapshot.run_id,
         source_snapshot_id=snapshot.snapshot_id,

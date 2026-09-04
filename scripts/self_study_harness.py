@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
 from app.self_study_harness import render_self_study_harness, run_self_study_harness
+from orion.core.bus.async_service import OrionBusAsync
 
 
 def main() -> int:
@@ -44,14 +46,37 @@ def main() -> int:
         default=1,
         help="Repeat a narrow reflective retrieval flow N times to detect drift.",
     )
+    parser.add_argument(
+        "--bus-url",
+        default=os.getenv("ORION_BUS_URL"),
+        help=(
+            "Optional Redis bus URL. Without one (the default), Layer 3 "
+            "reflection makes no real LLM call and the reflective-tier "
+            "scenarios (reflection, reflective_retrieval, reflective_consumer) "
+            "report their boundary checks as failed -- honestly, not as a "
+            "harness bug: there is no LLM access to produce that content. "
+            "Pass a real bus (or set ORION_BUS_URL) for a genuine end-to-end "
+            "eval run through cortex-orch."
+        ),
+    )
     args = parser.parse_args()
 
-    result = asyncio.run(
-        run_self_study_harness(
-            include_degraded=not args.skip_degraded,
-            soak_iterations=max(1, args.soak_iterations),
-        )
-    )
+    async def _run():
+        bus = None
+        if args.bus_url:
+            bus = OrionBusAsync(url=args.bus_url)
+            await bus.connect()
+        try:
+            return await run_self_study_harness(
+                bus=bus,
+                include_degraded=not args.skip_degraded,
+                soak_iterations=max(1, args.soak_iterations),
+            )
+        finally:
+            if bus is not None:
+                await bus.close()
+
+    result = asyncio.run(_run())
     rendered_json = result.model_dump_json(indent=2)
 
     if args.json_out:

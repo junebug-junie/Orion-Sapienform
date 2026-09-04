@@ -96,7 +96,7 @@ channels:
   - name: "orion:cortex:request"
     kind: "request"
     schema_id: "CortexClientRequest"
-    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation"]
+    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation", "orion-cortex-exec"]
     consumer_services: ["orion-cortex-orch"]
     single_consumer: true
     stability: "experimental"

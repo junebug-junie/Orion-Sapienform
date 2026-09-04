@@ -314,6 +314,73 @@ def resolve_bus_channels(path: Path | None = None) -> list[MetricNode]:
 
 
 # --------------------------------------------------------------------------
+# brain regions (Self tab's Self-Observability EKG -- orion/schemas/brain_frame.py)
+# --------------------------------------------------------------------------
+
+SUBSTRATE_RUNTIME = "orion-substrate-runtime"
+
+# BrainRegionV1.dimension's full Literal set (orion/schemas/brain_frame.py) --
+# a closed, small enumeration, so a static table here is complete, not an
+# approximation of something larger. Producer is the service that actually
+# COMPUTES the region's value inside assemble_brain_frame()
+# (services/orion-substrate-runtime/app/brain_frame_producer.py), which for
+# 5 of the 6 dimensions is the same service that owns the whole brain-frame
+# tick. `field_anomaly` is the one exception: its true producer is
+# orion-field-digester's mood-arc encoder (app/anomaly_scorer.py), relayed
+# onto the bus and merely cached/assembled by substrate-runtime -- see its
+# `upstream` link to the real bus_channel node in resolve_brain_regions()
+# below.
+_BRAIN_REGION_PRODUCERS: dict[str, str] = {
+    "node_kind": SUBSTRATE_RUNTIME,
+    "lane": SUBSTRATE_RUNTIME,
+    "self_state": SUBSTRATE_RUNTIME,
+    "lattice_layer": SUBSTRATE_RUNTIME,
+    "honesty_metrics": SUBSTRATE_RUNTIME,
+    "field_anomaly": FIELD_DIGESTER,
+}
+
+
+def resolve_brain_regions() -> list[MetricNode]:
+    """Project BrainRegionV1.dimension.
+
+    Added 2026-09-04 to close a real gap: this URN space already covered
+    field channels, inner-state signals, organ signals, and bus channels,
+    but nothing named which service backs an EKG *region* -- the Self tab's
+    Self-Observability panel had no way to answer "what produced this bar"
+    for any of its 6 dimensions.
+
+    `declared_consumers` names `orion-hub` (resolves to `services/orion-hub/`
+    via the bare-service-name form `_resolve_consumer_path()` already
+    supports) rather than a dotted Python callable: the real consumer is
+    `static/js/self-brain.js`, and this repo's AST-based consumer scan
+    (`orion.metrics.consumers`) covers Python only -- the bare-service form
+    is the honest way to say "the Hub renders this" without fabricating a
+    module path that doesn't exist.
+    """
+    source = "orion/schemas/brain_frame.py"
+    nodes: list[MetricNode] = []
+    for dimension, producer in _BRAIN_REGION_PRODUCERS.items():
+        upstream: tuple[str, ...] = ()
+        if dimension == "field_anomaly":
+            upstream = (
+                _urn("bus_channel", FIELD_DIGESTER, "orion:field_channel:anomaly_score"),
+            )
+        nodes.append(
+            MetricNode(
+                urn=_urn("brain_region", producer, dimension),
+                surface="brain_region",
+                producer_service=producer,
+                name=dimension,
+                registry_source=source,
+                declared_consumers=("orion-hub",),
+                upstream=upstream,
+                notes="Self tab / Self-Observability EKG region dimension",
+            )
+        )
+    return nodes
+
+
+# --------------------------------------------------------------------------
 # graph
 # --------------------------------------------------------------------------
 
@@ -364,6 +431,7 @@ def build_graph() -> MetricGraph:
         resolve_inner_state,
         resolve_organ_signals,
         resolve_bus_channels,
+        resolve_brain_regions,
     ):
         for node in resolver():
             graph.nodes.setdefault(node.urn, node)

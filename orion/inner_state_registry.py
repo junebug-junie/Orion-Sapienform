@@ -344,7 +344,19 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "as unearned valence swings; fixed via _PHI_PREV_VALENCE_SOURCE "
             "tracking that suppresses turn_effect's valence delta specifically "
             "on a source-swap tick (worker.py), plus a valence_source field on "
-            "SparkStateSnapshotV1.metadata for observability."
+            "SparkStateSnapshotV1.metadata for observability.\n\n"
+            "RETIRED 2026-09-04 (correction, not a new event): the above note is "
+            "dated 2026-07-22 and never says so, but orion-spark-introspector "
+            "(producer_service, and the owner of _get_phi_stats()/"
+            "_agency_valence_proxy()) was deleted outright 2026-07-28 -- the "
+            "'still feeds the Hub EKG websocket panel' claim above did not "
+            "survive that; confirmed live 2026-09-04 that no Hub template or "
+            "JS references _get_phi_stats/phi_band/phi_heuristic any more "
+            "either, so there is no dead panel still rendering stale output, "
+            "just an absent producer. composition_status is left COMPOSED "
+            "(matching field_attention_frame.v1's own precedent above: this "
+            "registry's four statuses track SelfStateV1/cognition composition, "
+            "not liveness -- prose carries retirement, not the enum)."
         ),
     ),
     InnerStateSignal(

@@ -393,3 +393,100 @@ def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> 
     assert len(scorer._buffer) == 3
     assert call_count["n"] == 2
     assert scorer._buffer[2].channels["action_warrant"] == 0.9
+
+
+# --- status() (2026-09-04, operator visibility) ------------------------------
+
+
+def test_status_before_models_root_configured() -> None:
+    """No models_root at all: enabled stays True (the scorer itself is
+    wired in, per FIELD_CHANNEL_ANOMALY_ENABLED), but nothing encoder-shaped
+    has loaded yet -- absence must read as absence, not a fabricated version
+    string."""
+    scorer = FieldChannelAnomalyScorer(models_root="", threshold_multiplier=3.0)
+    status = scorer.status()
+    assert status["enabled"] is True
+    assert status["load_failed"] is False
+    assert "encoder_version" not in status
+    assert status["last_live_enrichment_fields"] is None
+    assert status["live_enrichment_configured"] is False
+
+
+def test_status_reports_load_failure(tmp_path: Path) -> None:
+    bad_root = tmp_path / "bad"
+    bad_root.mkdir()
+    scorer = FieldChannelAnomalyScorer(models_root=str(bad_root), threshold_multiplier=3.0)
+    scorer.score_latest()  # triggers _ensure_loaded(), which fails and latches
+    status = scorer.status()
+    assert status["load_failed"] is True
+    assert "encoder_version" not in status
+
+
+def test_status_reports_loaded_encoder_and_live_enrichment_field_names(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """After a real load + a live-enrichment fetch, status() must name the
+    actual encoder_version/channels and exactly which of the live-enrichment
+    fields landed on the last tick -- values, not just presence, since
+    that's the whole point of an operator status check."""
+    import app.anomaly_scorer as anomaly_scorer_module
+
+    models_root = _write_tiny_encoder(tmp_path)
+    now = datetime.now(timezone.utc)
+    fake_conn = _FakeLiveConn([[(now, 0.42)], []])  # action_warrant hit, attention_self_model empty
+    monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
+
+    scorer = FieldChannelAnomalyScorer(
+        models_root=str(models_root), threshold_multiplier=3.0, postgres_uri="postgresql://fake/db"
+    )
+    scorer.append_row(_row(0, base=now))
+
+    status = scorer.status()
+    assert status["encoder_id"] == "mood-arc-encoder:test.v1"
+    assert status["encoder_version"] == "test.v1"
+    assert status["window_size"] == _WINDOW_SIZE
+    assert status["channels"] == list(_FIELDS)
+    assert status["live_enrichment_configured"] is True
+    assert status["last_live_enrichment_fields"] == ["action_warrant"]
+    assert status["last_live_enrichment_at"] is not None
+    assert status["last_live_enrichment_attempt_at"] == status["last_live_enrichment_at"]
+    assert status["last_live_enrichment_error"] is None
+
+
+def test_status_distinguishes_a_stale_success_from_a_live_outage(tmp_path, monkeypatch) -> None:
+    """Review finding (2026-09-04): last_live_enrichment_fields/_at only ever
+    updated on success, so during a sustained outage they kept showing the
+    last-healthy snapshot forever -- indistinguishable from "still healthy"
+    on an operator status page. last_live_enrichment_attempt_at/_error must
+    move on a failed tick even while the success fields stay frozen at
+    whatever they were before the outage started."""
+    import app.anomaly_scorer as anomaly_scorer_module
+
+    models_root = _write_tiny_encoder(tmp_path)
+    now = datetime.now(timezone.utc)
+    fake_conn = _FakeLiveConn([[(now, 0.42)], []])
+    monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
+
+    scorer = FieldChannelAnomalyScorer(
+        models_root=str(models_root), threshold_multiplier=3.0, postgres_uri="postgresql://fake/db"
+    )
+    scorer.append_row(_row(0, base=now))
+    healthy_status = scorer.status()
+    assert healthy_status["last_live_enrichment_error"] is None
+
+    # Outage starts: every subsequent query raises.
+    def _raise(*a, **k):
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr(anomaly_scorer_module, "resolve_live_enrichment", _raise)
+    later = now + timedelta(seconds=2)
+    scorer.append_row(_row(1, base=later))
+
+    status = scorer.status()
+    # Frozen at the pre-outage snapshot -- must NOT silently advance.
+    assert status["last_live_enrichment_at"] == healthy_status["last_live_enrichment_at"]
+    assert status["last_live_enrichment_fields"] == healthy_status["last_live_enrichment_fields"]
+    # ...but the attempt/error fields DO move, proving there's a way to tell
+    # "healthy 2 seconds ago" apart from "still healthy right now".
+    assert status["last_live_enrichment_attempt_at"] != healthy_status["last_live_enrichment_attempt_at"]
+    assert status["last_live_enrichment_error"] == "RuntimeError: connection reset by peer"

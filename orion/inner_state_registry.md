@@ -66,7 +66,16 @@ of four composition statuses:
   `COMPOSED` the same day (`fix/valence-probe-readout`, PR #985) via a
   probe-weighted readout, `_agency_valence_proxy()`. Left here as the
   standing example of why `shadow_reason` claims need re-checking against
-  real artifacts, not just cited from memory.
+  real artifacts, not just cited from memory. **Correction, 2026-09-04**:
+  `phi_heuristic.valence`'s own registry entry stayed `COMPOSED` after this
+  flip, but its notes (dated 2026-07-22) never caught up to
+  `orion-spark-introspector` (its `producer_service`, and the owner of
+  `_agency_valence_proxy()` itself) being deleted outright 2026-07-28 --
+  found stale while building a Hub operator page that reads this registry
+  directly. `composition_status` is intentionally left `COMPOSED`, matching
+  `field_attention_frame.v1`'s own precedent above (this file's four
+  statuses track composition, not liveness); the retirement is recorded in
+  the entry's own notes instead, same convention.
 - `DUPLICATE` -- an unresolved overlap with another entry (`duplicate_of`),
   e.g. `drive_state.v1`/`autonomy_state_v2` -- same 6-drive taxonomy, two
   independent reducers, not yet reconciled (traffic-gated decision, on

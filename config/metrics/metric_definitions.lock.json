@@ -1,15 +1,65 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 624,
+  "metric_count": 630,
   "_last_change": {
-    "base": "merge base 09650b1a1 (origin/main)",
-    "change_count": 0,
+    "base": "merge base 22ec1c82f (origin/main)",
+    "change_count": 6,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://brain_region/orion-field-digester/field_anomaly",
+      "medium added metric://brain_region/orion-substrate-runtime/honesty_metrics",
+      "medium added metric://brain_region/orion-substrate-runtime/lane",
+      "medium added metric://brain_region/orion-substrate-runtime/lattice_layer",
+      "medium added metric://brain_region/orion-substrate-runtime/node_kind",
+      "medium added metric://brain_region/orion-substrate-runtime/self_state"
     ]
   },
   "definitions": {
+    "metric://brain_region/orion-field-digester/field_anomaly": {
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "upstream": [
+        "metric://bus_channel/orion-field-digester/orion:field_channel:anomaly_score"
+      ],
+      "notes": "Self tab / Self-Observability EKG region dimension",
+      "registry_source": "orion/schemas/brain_frame.py"
+    },
+    "metric://brain_region/orion-substrate-runtime/honesty_metrics": {
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "Self tab / Self-Observability EKG region dimension",
+      "registry_source": "orion/schemas/brain_frame.py"
+    },
+    "metric://brain_region/orion-substrate-runtime/lane": {
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "Self tab / Self-Observability EKG region dimension",
+      "registry_source": "orion/schemas/brain_frame.py"
+    },
+    "metric://brain_region/orion-substrate-runtime/lattice_layer": {
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "Self tab / Self-Observability EKG region dimension",
+      "registry_source": "orion/schemas/brain_frame.py"
+    },
+    "metric://brain_region/orion-substrate-runtime/node_kind": {
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "Self tab / Self-Observability EKG region dimension",
+      "registry_source": "orion/schemas/brain_frame.py"
+    },
+    "metric://brain_region/orion-substrate-runtime/self_state": {
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "Self tab / Self-Observability EKG region dimension",
+      "registry_source": "orion/schemas/brain_frame.py"
+    },
     "metric://bus_channel/*/orion:actions:trigger:journal.v1": {
       "schema_id": "JournalTriggerV1",
       "all_producers": [

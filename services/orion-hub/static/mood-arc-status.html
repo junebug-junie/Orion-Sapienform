@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mood Arc / Field Anomaly Status</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-200 min-h-screen">
+  <div id="masRoot" class="p-3 md:p-4 max-w-[100vw] space-y-4">
+    <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
+      Read-only operator status. "Live now" is fetched from orion-field-digester's own <code>/health</code> on
+      every load -- a snapshot, not a history (see the Self tab's Self-Observability EKG, dimension
+      <code>field_anomaly</code>, for the recent trend).
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400">
+      <span>Last loaded: <span id="masLastLoaded" class="text-gray-200">&mdash;</span></span>
+      <button type="button" id="masRefresh" class="rounded border border-gray-600 bg-gray-800 px-2 py-1 text-gray-200 hover:bg-gray-700">Refresh</button>
+      <label class="inline-flex items-center gap-1.5 cursor-pointer">
+        <input type="checkbox" id="masAutoRefresh" class="rounded border-gray-600" />
+        <span>Auto-refresh (30s)</span>
+      </label>
+    </div>
+
+    <div id="masError" class="hidden rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100/90"></div>
+
+    <section>
+      <h2 class="text-sm font-semibold text-gray-200 mb-2">Live now &mdash; mood-arc encoder / field anomaly</h2>
+      <div id="masLiveCard" class="rounded-xl border border-gray-800 bg-gray-900/40 p-4 text-sm"></div>
+    </section>
+
+    <section>
+      <h2 class="text-sm font-semibold text-gray-200 mb-2">phi-v2</h2>
+      <div class="rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-2 text-xs text-gray-400 mb-2">
+        Not implemented. This is the current state of its two dead legacy signals and its (unbuilt) successor
+        design, not a progress tracker.
+      </div>
+      <div id="masPhiCard" class="space-y-2"></div>
+    </section>
+  </div>
+
+  <script>
+    const state = { live: null, phi: null };
+    let autoRefreshTimer = null;
+
+    function fmtBool(v) {
+      if (v === null || v === undefined) return "—";
+      return v ? "yes" : "no";
+    }
+
+    async function loadAll() {
+      const errEl = document.getElementById("masError");
+      errEl.classList.add("hidden");
+      try {
+        const [liveResp, phiResp] = await Promise.all([
+          fetch("/api/mood-arc-status/live"),
+          fetch("/api/mood-arc-status/phi-v2-inventory"),
+        ]);
+        if (!liveResp.ok) throw new Error(`live ${liveResp.status}`);
+        if (!phiResp.ok) throw new Error(`phi-v2-inventory ${phiResp.status}`);
+        state.live = await liveResp.json();
+        state.phi = await phiResp.json();
+        document.getElementById("masLastLoaded").textContent = new Date().toLocaleTimeString();
+        render();
+      } catch (err) {
+        errEl.textContent = `Failed to load: ${err.message || err}`;
+        errEl.classList.remove("hidden");
+      }
+    }
+
+    function render() {
+      renderLive();
+      renderPhi();
+    }
+
+    function renderLive() {
+      const el = document.getElementById("masLiveCard");
+      const live = state.live || {};
+      if (!live.reachable) {
+        el.innerHTML = `
+          <div class="text-rose-300 font-semibold mb-1">orion-field-digester unreachable</div>
+          <div class="text-gray-500 text-xs">${live.error || "no detail"}</div>
+        `;
+        return;
+      }
+      if (live.enabled === false) {
+        el.innerHTML = `<div class="text-gray-400">Field-channel anomaly scoring is disabled on this instance.</div>`;
+        return;
+      }
+      const fields = live.last_live_enrichment_fields;
+      const fieldsLabel = fields === null || fields === undefined
+        ? "never fetched yet"
+        : (fields.length ? fields.join(", ") : "empty (fetched, nothing landed)");
+      el.innerHTML = `
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Encoder</div>
+            <div class="font-mono text-gray-100">${live.encoder_id || "—"}</div></div>
+          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Version</div>
+            <div class="font-mono text-gray-100">${live.encoder_version || "—"}</div></div>
+          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Window size</div>
+            <div class="text-gray-100">${live.window_size ?? "—"}</div></div>
+          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Load failed</div>
+            <div class="text-gray-100">${fmtBool(live.load_failed)}</div></div>
+          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Live enrichment configured</div>
+            <div class="text-gray-100">${fmtBool(live.live_enrichment_configured)}</div></div>
+          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Last enrichment fetch</div>
+            <div class="text-gray-100">${live.last_live_enrichment_at || "never"}</div></div>
+        </div>
+        <div class="mt-3">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Live-enrichment fields landed (last tick)</div>
+          <div class="text-gray-200 font-mono text-xs mt-1">${fieldsLabel}</div>
+        </div>
+        <div class="mt-3">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Model channels (${(live.channels || []).length})</div>
+          <div class="text-gray-400 font-mono text-xs mt-1">${(live.channels || []).join(", ") || "—"}</div>
+        </div>
+      `;
+    }
+
+    function renderPhi() {
+      const el = document.getElementById("masPhiCard");
+      el.innerHTML = "";
+      const phi = state.phi || {};
+
+      for (const sig of phi.legacy_signals || []) {
+        const card = document.createElement("div");
+        card.className = "rounded-xl border border-gray-800 bg-gray-900/40 p-3 text-sm";
+        const deadBadge = sig.producer_service_exists
+          ? `<span class="inline-block rounded border px-2 py-0.5 text-[10px] bg-emerald-500/15 text-emerald-300 border-emerald-500/40">producer present</span>`
+          : `<span class="inline-block rounded border px-2 py-0.5 text-[10px] bg-rose-500/15 text-rose-300 border-rose-500/40">producer deleted</span>`;
+        card.innerHTML = `
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-mono text-gray-100">${sig.signal_id}</span>
+            ${deadBadge}
+            <span class="text-gray-500 text-xs ml-auto">composition_status: ${sig.composition_status || "—"}</span>
+          </div>
+          <div class="text-gray-500 text-xs">producer_service: <span class="font-mono">${sig.producer_service || "—"}</span></div>
+          <div class="text-gray-400 text-xs mt-1">${sig.last_note || ""}</div>
+        `;
+        el.appendChild(card);
+      }
+
+      const doc = phi.design_doc || {};
+      const docCard = document.createElement("div");
+      docCard.className = "rounded-xl border border-gray-700 bg-gray-800/30 p-3 text-sm";
+      docCard.innerHTML = `
+        <div class="text-gray-100 font-mono text-xs">${doc.path || "—"}</div>
+        <div class="text-gray-400 text-xs mt-1">${doc.status || "no status line found"}</div>
+        <div class="text-gray-500 text-xs mt-1">Manual fit_phi_encoder.py CLI present: ${fmtBool(phi.manual_cli_exists)}</div>
+      `;
+      el.appendChild(docCard);
+    }
+
+    function setAutoRefresh(enabled) {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      if (enabled) {
+        autoRefreshTimer = setInterval(loadAll, 30000);
+      }
+    }
+
+    document.getElementById("masRefresh").addEventListener("click", loadAll);
+    document.getElementById("masAutoRefresh").addEventListener("change", (e) => setAutoRefresh(e.target.checked));
+
+    loadAll();
+  </script>
+</body>
+</html>

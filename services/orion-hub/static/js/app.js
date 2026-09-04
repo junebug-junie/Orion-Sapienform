@@ -765,6 +765,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const fieldChannelGlossaryTabButton = document.getElementById("fieldChannelGlossaryTabButton");
   const fieldChannelGlossaryPanelEl = document.getElementById("field-channel-glossary");
   const fieldChannelGlossaryFrame = document.getElementById("fieldChannelGlossaryFrame");
+  const moodArcStatusTabButton = document.getElementById("moodArcStatusTabButton");
+  const moodArcStatusPanelEl = document.getElementById("mood-arc-status");
+  const moodArcStatusFrame = document.getElementById("moodArcStatusFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -1052,6 +1055,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "field-channel-glossary" && !fieldChannelGlossaryPanelEl) {
       effectiveTab = "hub";
     }
+    if (tabKey === "mood-arc-status" && !moodArcStatusPanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -1086,6 +1092,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isPressure = effectiveTab === "pressure";
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
     const isFieldChannelGlossary = effectiveTab === "field-channel-glossary";
+    const isMoodArcStatus = effectiveTab === "mood-arc-status";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
@@ -1238,6 +1245,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const currentSrc = fieldChannelGlossaryFrame.getAttribute("src");
       fieldChannelGlossaryFrame.setAttribute("src", currentSrc);
     }
+    if (moodArcStatusPanelEl) {
+      moodArcStatusPanelEl.classList.toggle("hidden", !isMoodArcStatus);
+    }
+    if (moodArcStatusFrame && isMoodArcStatus) {
+      const currentSrc = moodArcStatusFrame.getAttribute("src");
+      moodArcStatusFrame.setAttribute("src", currentSrc);
+    }
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
@@ -1349,6 +1363,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (fieldChannelGlossaryTabButton) {
       styleTabButton(fieldChannelGlossaryTabButton, isFieldChannelGlossary);
+    }
+    if (moodArcStatusTabButton) {
+      styleTabButton(moodArcStatusTabButton, isMoodArcStatus);
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
@@ -1947,6 +1964,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("substrate-lattice");
     } else if (h === "#field-channel-glossary" && fieldChannelGlossaryPanelEl && fieldChannelGlossaryTabButton) {
       setActiveTab("field-channel-glossary");
+    } else if (h === "#mood-arc-status" && moodArcStatusPanelEl && moodArcStatusTabButton) {
+      setActiveTab("mood-arc-status");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -1972,6 +1991,7 @@ document.addEventListener("DOMContentLoaded", () => {
         h === "#pressure"
         || h === "#substrate-lattice"
         || h === "#field-channel-glossary"
+        || h === "#mood-arc-status"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -13012,6 +13032,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("field-channel-glossary");
         history.replaceState(null, "", "#field-channel-glossary");
+      });
+    }
+    if (moodArcStatusTabButton && moodArcStatusPanelEl) {
+      moodArcStatusTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("mood-arc-status");
+        history.replaceState(null, "", "#mood-arc-status");
       });
     }
     if (collapseMirrorTabButton && collapseMirrorPanel) {

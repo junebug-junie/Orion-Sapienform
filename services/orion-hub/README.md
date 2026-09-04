@@ -924,6 +924,19 @@ by four independent signal dimensions emitted from `orion-substrate-runtime`:
 | Lanes | Health | reducers | Lane freshness (lag) + backlog status |
 | Self-state | Field signals | field digester | 13-dim projection from active inference |
 | Prediction Confidence | Error confidence | active inference | Model's own certainty: 0.0–1.0, **no transform** |
+| Field Anomaly | Reconstruction error | orion-field-digester (mood-arc encoder) | mood_arc v4 encoder's `recon_loss` vs. its own trained threshold |
+
+**Field Anomaly dimension (added 2026-09-04):** this region existed on every brain frame since
+2026-07-21 (`services/orion-substrate-runtime/app/brain_frame_producer.py::_field_anomaly_regions`)
+but had no rail button, so it was never actually selectable in this UI despite being the whole
+reason `orion.mood_arc.fit_encoder`'s live consumer (`services/orion-field-digester/app/
+anomaly_scorer.py`) was built — see `orion/mood_arc/README.md`'s "Status" note and the Mood Arc
+Status tab above. `lattice_layer` has the same gap and is still absent from the rail.
+
+**Region detail panel (added 2026-09-04):** click any region on the Brain map to open a panel with
+its raw `detail`/`as_of`/`node_count`/`state` fields (already flowing on every poll response but
+previously unused) plus provenance (which service produces it) from
+`GET /api/self-brain/region-provenance`.
 
 **Display:** Two canvas views per dimension:
 1. **Brain map** (top): regions as colored circles, size/color = intensity + state (firing/steady/starving)
@@ -939,6 +952,8 @@ not a synthetic signal.
 - `GET /api/self-brain/frames/tail?limit=N` — last N frames (ascending order)
 - `GET /api/self-brain/frames/range?from=ISO&to=ISO&max=N` — frames in timestamp range
 - `GET /api/self-brain/window` — earliest/latest timestamps + frame count + server time
+- `GET /api/self-brain/region-provenance` — static, `{dimension: {producer_service, urn, upstream}}`
+  for the region detail panel above (2026-09-04)
 
 **Data dependency:** reads Postgres `substrate_brain_frame_log` (24-hour retention, 5s cadence).
 Requires `POSTGRES_URI` from `orion-substrate-runtime` service. Degrades to empty frame list if
@@ -1961,6 +1976,36 @@ previously had zero doc surface here at all.
 `world_pulse`'s one Redis Stream, never general bus/transport health) — if this tab is showing
 those new names and you were expecting the old ones, that's this rename, not a bug. See the
 field-digester README's sixth training-data cutoff entry for the full mechanism.
+
+## Mood Arc Status tab
+
+`#mood-arc-status` panel (`templates/index.html`), backed by `/static/mood-arc-status.html` in an
+iframe. Added 2026-09-04 so the mood_arc v4 / field-channel-anomaly convergence (see
+`orion/mood_arc/README.md`'s "Status" note and `services/orion-field-digester/app/anomaly_scorer.py`)
+has an actual operator-visible surface instead of only `docker logs`. Two sections: which encoder
+is live and whether its 6 live-enrichment fields are landing, and phi-v2's current (unimplemented)
+state.
+
+- **`GET /api/mood-arc-status/live`** (`scripts/mood_arc_status_routes.py`): relays
+  orion-field-digester's own `/health` (`FieldChannelAnomalyScorer.status()`,
+  `services/orion-field-digester/app/anomaly_scorer.py`) via `scripts/field_digester_client.py` —
+  `FIELD_DIGESTER_BASE_URL`/`FIELD_DIGESTER_CLIENT_TIMEOUT_SEC` (see `.env_example`). Reports
+  `encoder_id`/`encoder_version`/`window_size`/`channels`, `load_failed`,
+  `live_enrichment_configured`, and both `last_live_enrichment_at`/`last_live_enrichment_fields`
+  (last SUCCESSFUL fetch) and `last_live_enrichment_attempt_at`/`last_live_enrichment_error` (last
+  attempt regardless of outcome) — the two pairs are deliberately separate so a sustained live-
+  enrichment outage doesn't read as "still healthy" just because the last success is still shown.
+  `reachable: false` (with `error`) when field-digester itself can't be reached — never a 500.
+- **`GET /api/mood-arc-status/phi-v2-inventory`**: honest current-state snapshot, not a progress
+  tracker — the two dead legacy `orion/inner_state_registry.py` entries (`phi_heuristic.valence`,
+  `phi_intrinsic_reward.v1`; both `producer_service_exists: false`, `orion-spark-introspector` was
+  deleted 2026-07-28) plus whether `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s
+  successor pieces (`scripts/fit_phi_encoder.py`) exist on disk. phi-v2 itself is not implemented.
+- **`GET /api/self-brain/region-provenance`** (`scripts/self_brain_routes.py`): which service
+  actually backs each of `BrainRegionV1.dimension`'s 6 values (`orion.metrics.lineage
+  ::resolve_brain_regions()`), for the Self tab's Self-Observability EKG region-click detail panel
+  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 5 name
+  `orion-substrate-runtime`. Static (6 entries, computed once via `lru_cache`), not per-tick.
 
 ## Cabinet tab
 

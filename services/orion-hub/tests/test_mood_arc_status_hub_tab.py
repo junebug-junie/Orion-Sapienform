@@ -45,8 +45,10 @@ def test_mood_arc_status_static_page_has_root_ids() -> None:
         'id="masLiveCard"',
         'id="masPhiCard"',
         'id="masAutoRefresh"',
-        'id="masInferenceCanvas"',
+        'id="masReconCanvas"',
+        'id="masChannelCanvas"',
         'id="masTriggerCanvas"',
+        'id="masTooltip"',
     ]:
         assert needle in html, f"Missing: {needle}"
 

@@ -326,6 +326,53 @@ def test_main_blocks_on_unclean_verdict_for_a_new_reference(capsys):
     assert "confidence" in err
 
 
+def test_main_checks_every_node_sharing_a_name_not_just_one(capsys):
+    """Regression for the name-collision finding (2026-09-04): two distinct
+    MetricNodes (different metric_field, different urn) can share the same
+    `.name` -- repair_pressure's `level` and `confidence` are the real
+    example. A dict keyed by bare name would silently keep only one of them,
+    so a diff referencing the token could get checked against the WRONG
+    node's liveness. Both must be checked; a dead one blocks even though its
+    same-named sibling is live."""
+    live_node = mock.Mock()
+    live_node.name = "repair_pressure"
+    live_node.urn = "metric://organ_signal/graph_cognition/repair_pressure#confidence"
+    live_node.metric_field = "confidence"
+
+    dead_node = mock.Mock()
+    dead_node.name = "repair_pressure"
+    dead_node.urn = "metric://organ_signal/graph_cognition/repair_pressure#level"
+    dead_node.metric_field = "level"
+
+    live_outcome = mock.Mock(verdict="live", detail="n=51 over 48h", sample_count=51)
+    dead_outcome = mock.Mock(verdict="dead", detail="n=0 over 48h", sample_count=0)
+
+    def _fake_liveness(node, _conn):
+        return dead_outcome if node is dead_node else live_outcome
+
+    fake_graph = mock.Mock()
+    fake_graph.nodes = {live_node.urn: live_node, dead_node.urn: dead_node}
+
+    with mock.patch.object(mod, "_staged_files", return_value=["orion/x.py"]), \
+         mock.patch.object(
+             mod, "find_new_token_references",
+             return_value={"repair_pressure": [("orion/x.py", 12)]},
+         ), \
+         mock.patch("orion.metrics.lineage.build_graph", return_value=fake_graph), \
+         mock.patch("orion.metrics.liveness.has_registered_source", return_value=True), \
+         mock.patch("orion.metrics.liveness.open_readonly_connection", return_value=mock.Mock()), \
+         mock.patch("orion.metrics.liveness.liveness_for_node", side_effect=_fake_liveness), \
+         mock.patch("orion.field.channel_glossary.CLEAN_VERDICTS", frozenset({"live", "quiet"})):
+        rc = mod.main([])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "BLOCK" in err
+    # The dead sibling's verdict must appear -- not silently shadowed by the
+    # live one that a name-keyed-by-bare-string dict would have kept instead.
+    assert "dead" in err
+
+
 def test_main_passes_on_clean_verdict(capsys):
     fake_node = mock.Mock()
     fake_node.name = "confidence"

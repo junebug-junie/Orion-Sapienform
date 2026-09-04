@@ -334,7 +334,21 @@ def main(argv: list[str] | None = None) -> int:
     # failure points -- this closes that for good rather than one symptom
     # at a time.
     try:
-        registered_by_name = {n.name: n for n in graph.nodes.values() if has_registered_source(n)}
+        # A dict keyed by bare `.name` would silently collapse multiple
+        # nodes onto one entry the moment two registered metrics share a
+        # name -- confirmed live 2026-09-04: repair_pressure's `level` and
+        # `confidence` are two distinct MetricNodes (different `.metric_field`,
+        # different URNs) that both have `.name == "repair_pressure"`. A
+        # single-node dict would check only whichever one won the
+        # comprehension for BOTH, regardless of which dimension a commit
+        # actually references -- wrong in either direction (a healthy
+        # dimension's reference gets checked against a dead sibling's
+        # verdict, or vice versa). Keyed by list instead: every node sharing
+        # a name is checked, and the block loop below unions their results.
+        registered_by_name: dict[str, list] = {}
+        for n in graph.nodes.values():
+            if has_registered_source(n):
+                registered_by_name.setdefault(n.name, []).append(n)
         if not registered_by_name:
             _emit([], args.json)
             return 0
@@ -363,23 +377,23 @@ def main(argv: list[str] | None = None) -> int:
     blocked: list[dict] = []
     try:
         for token in sorted(hits):
-            node = registered_by_name.get(token)
-            if node is None:
-                continue
-            try:
-                outcome = liveness_for_node(node, conn)
-            except Exception as exc:
-                print(f"check_metric_dead_wiring: {token}: liveness query failed ({exc}) -- not blocking", file=sys.stderr)
-                continue
-            if outcome is None:
-                continue
-            if outcome.verdict not in CLEAN_VERDICTS:
-                blocked.append({
-                    "token": token,
-                    "verdict": outcome.verdict,
-                    "detail": outcome.detail,
-                    "sites": [f"{f}:{l}" for f, l in hits[token]],
-                })
+            for node in registered_by_name.get(token, []):
+                try:
+                    outcome = liveness_for_node(node, conn)
+                except Exception as exc:
+                    print(f"check_metric_dead_wiring: {token}: liveness query failed ({exc}) -- not blocking", file=sys.stderr)
+                    continue
+                if outcome is None:
+                    continue
+                if outcome.verdict not in CLEAN_VERDICTS:
+                    blocked.append({
+                        "token": token,
+                        "urn": node.urn,
+                        "metric_field": node.metric_field,
+                        "verdict": outcome.verdict,
+                        "detail": outcome.detail,
+                        "sites": [f"{f}:{l}" for f, l in hits[token]],
+                    })
     finally:
         try:
             conn.close()

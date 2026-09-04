@@ -3,7 +3,25 @@ computed liveness for metrics beyond field channels.
 
 Deliberately narrow. The design doc scoped phase 5 as a per-surface decision
 ("where does the live sample come from") too big to solve generically in one
-pass, and left it deferred. This resolves exactly two candidates.
+pass, and left it deferred. This resolves exactly three candidates.
+
+**Added 2026-09-04**: `organ_signal/graph_cognition/repair_pressure#level` and
+`#confidence` -- found while auditing metacog's `relational` trigger
+(services/orion-equilibrium-service/app/repair_pressure_metacog_gate.py),
+which reads this same signal but had never had its liveness checked; the
+registry entry (`orion/signals/registry.py`'s `graph_cognition` organ, kind
+`repair_pressure`, service `orion-cortex-exec`, `bus_channels` including
+`orion:metacog:trace`) matches the gate's own evidence source. Its other 10
+canonical dimensions (coherence, tension, goal_pressure, specificity_demand,
+trust_rupture, coherence_gap, repetition_failure, operational_block,
+explicit_repair_command, assistant_accountability_demand) are NOT wired here
+-- only `level`/`confidence` were confirmed to exist as real flat columns on
+the backing table (`repair_pressure_appraisal_log`); the rest may live only
+inside that table's `evidence` JSONB blob or not be durably persisted at all,
+neither confirmed nor built out in this pass. `level` is queried gated on
+`confidence > 0` -- see `_REPAIR_PRESSURE_CONFIDENCE_GATE`'s comment for why
+(a prior, already-documented floor-domination finding on this exact column,
+re-verified live rather than trusted from the old doc alone).
 
 **Correction 2026-08-20** (code review): an earlier version of this
 docstring claimed "25 of 48 [inner_state URNs] have retired producers ... see
@@ -24,8 +42,9 @@ real, verified accounting for all 15 signals:
   `orion/inner_state_registry.py`'s notes on each); `chat_stance_disposition`
   (categorical, not a numeric series); `biometrics_cluster.v1` (registry
   flags it `DUPLICATE_OF field_state.v1`).
-- **Built here (2):** `attention_self_model.v1`, `l7_l11_ladder` -- see below
-  for why these two specifically.
+- **Built here (3):** `attention_self_model.v1`, `l7_l11_ladder`,
+  `organ_signal/graph_cognition/repair_pressure` (added 2026-09-04, see
+  above and below) -- see below for why these specifically.
 - **Not investigated in this pass (6):** `field_state.v1`,
   `field_attention_frame.v1`, `attention_broadcast_projection.v1`,
   `mood_arc_encoder.v1`, `phi_heuristic.valence`, `phi_intrinsic_reward.v1`.
@@ -47,6 +66,14 @@ Why these two:
   downstream consumes it cognitively (see the R6 section above -- this was
   found only after a direct challenge to an earlier "no cognition consumer
   means nothing at stake" misreading).
+- `organ_signal/graph_cognition/repair_pressure#level`/`#confidence` -- a
+  flat (non-JSONB) two-column table, `repair_pressure_appraisal_log`,
+  sampled by the new `FlatColumnSource`. Cadence confirmed live 2026-09-04:
+  460 total rows since 2026-07-24, 23 in the trailing 24h (~1/hour) -- an
+  order of magnitude sparser than `attention_self_model.v1`'s ~30s cadence,
+  so this uses a 48h window (matching the ladder's own slow-stage precedent)
+  rather than 1h, to give `classify_channel_series` enough points to be
+  meaningful.
 
 Cadences confirmed live 2026-08-19 (500 most-recent rows, avg inter-row gap):
     substrate_proposal_frames         2.12s
@@ -339,6 +366,44 @@ class LivenessOutcome:
     truncated: bool = False
 
 
+def _fetch_ordered_desc(conn, query: str, params: tuple) -> tuple[list[float], bool]:
+    """Shared DESC+LIMIT+reverse+truncation-detection contract for every
+    scalar-series source below. Extracted 2026-09-04 (review finding): before
+    this, `ScalarFieldSource.fetch` and the (then-new) `FlatColumnSource.fetch`
+    each hand-rolled an identical copy of this logic -- exactly the kind of
+    duplication this module's own `_resolve_source_kind` docstring already
+    warns drifts apart silently (that was a real two-independent-copies bug
+    found by review 2026-08-20; this is the same failure mode, caught before
+    shipping this time).
+
+    Returns `(values, truncated)`. `truncated=True` means the window had MORE
+    than MAX_ROWS matching rows and this only covers the most recent MAX_ROWS
+    of them -- see `LivenessOutcome.truncated`'s docstring for why that
+    distinction matters and matches the precedent this mirrors
+    (`measure_attention_self_model_confidence_baseline.py`'s
+    `fetch_self_model_rows`).
+
+    `query` must already be built with `ORDER BY <ts> DESC LIMIT %s` as its
+    final clause, with `MAX_ROWS + 1` as the last element of `params` -- DESC
+    + LIMIT, then reverse to ASC in Python: if a window ever yields more than
+    MAX_ROWS, this keeps the MOST RECENT rows (the ones that actually matter
+    for "did this just go dead"), not the oldest. An ASC-ordered LIMIT would
+    silently do the opposite. LIMIT MAX_ROWS + 1, not MAX_ROWS: `len(rows) >=
+    MAX_ROWS` cannot tell "exactly MAX_ROWS matching rows (complete)" apart
+    from "more than MAX_ROWS (truncated)" when the fetch itself is capped at
+    MAX_ROWS -- found by review 2026-08-20. Fetching one extra row makes the
+    count unambiguous; the extra row is dropped before returning.
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+    truncated = len(rows) > MAX_ROWS
+    rows = rows[:MAX_ROWS]
+    values = [r[0] for r in rows if r[0] is not None]
+    values.reverse()
+    return values, truncated
+
+
 @dataclass(frozen=True)
 class ScalarFieldSource:
     """One JSONB scalar field, sampled ordered by a timestamp column."""
@@ -349,25 +414,7 @@ class ScalarFieldSource:
     window_hours: float
 
     def fetch(self, conn, field: str) -> tuple[list[float], bool]:
-        """Returns `(values, truncated)`. `truncated=True` means the window
-        had MORE than MAX_ROWS matching rows and this only covers the most
-        recent MAX_ROWS of them (the DESC+LIMIT below, reversed to ASC) --
-        see `LivenessOutcome.truncated`'s docstring for why that distinction
-        matters and matches the precedent this mirrors
-        (`measure_attention_self_model_confidence_baseline.py`'s
-        `fetch_self_model_rows`).
-        """
-        # DESC + LIMIT, then reverse to ASC in Python -- if a window ever
-        # yields more than MAX_ROWS, this keeps the MOST RECENT rows (the
-        # ones that actually matter for "did this just go dead"), not the
-        # oldest. An ASC-ordered LIMIT would silently do the opposite.
-        #
-        # LIMIT MAX_ROWS + 1, not MAX_ROWS: `len(rows) >= MAX_ROWS` cannot
-        # tell "exactly MAX_ROWS matching rows (complete)" apart from "more
-        # than MAX_ROWS (truncated)" when the fetch itself is capped at
-        # MAX_ROWS -- found by review 2026-08-20. Fetching one extra row
-        # makes the count unambiguous; the extra row is dropped before
-        # returning.
+        """Returns `(values, truncated)` -- see `_fetch_ordered_desc`."""
         query = f"""
             SELECT ({self.json_column} ->> %s)::float8 AS v
             FROM {self.table}
@@ -376,14 +423,43 @@ class ScalarFieldSource:
             ORDER BY {self.ts_column} DESC
             LIMIT %s
         """
-        with conn.cursor() as cur:
-            cur.execute(query, (field, self.window_hours, field, MAX_ROWS + 1))
-            rows = cur.fetchall()
-        truncated = len(rows) > MAX_ROWS
-        rows = rows[:MAX_ROWS]
-        values = [r[0] for r in rows if r[0] is not None]
-        values.reverse()
-        return values, truncated
+        return _fetch_ordered_desc(conn, query, (field, self.window_hours, field, MAX_ROWS + 1))
+
+
+@dataclass(frozen=True)
+class FlatColumnSource:
+    """One plain (non-JSONB) numeric column, sampled ordered by a timestamp
+    column -- the flat-table counterpart to `ScalarFieldSource`. Added for
+    `repair_pressure_appraisal_log`, whose `level`/`confidence` are real
+    `double precision` columns, not a JSONB blob to extract from. Kept as a
+    separate class rather than overloading `ScalarFieldSource` (which always
+    does `(json_column ->> field)::float8`) so the query for a genuinely
+    flat table stays a plain column read, not a cast dressed as a workaround.
+    """
+
+    table: str
+    ts_column: str
+    window_hours: float
+
+    def fetch(self, conn, column: str, *, extra_where: str = "") -> tuple[list[float], bool]:
+        """Returns `(values, truncated)` -- see `_fetch_ordered_desc`.
+
+        `extra_where`, if given, must be a complete `AND ...` clause (no
+        params of its own -- callers needing a parameterized extra condition
+        would need a different signature; not needed yet). Added for
+        `repair_pressure`'s `level` field: see
+        `_REPAIR_PRESSURE_CONFIDENCE_GATE`.
+        """
+        query = f"""
+            SELECT {column}::float8 AS v
+            FROM {self.table}
+            WHERE {self.ts_column} >= now() - (%s * interval '1 hour')
+              AND {column} IS NOT NULL
+              {extra_where}
+            ORDER BY {self.ts_column} DESC
+            LIMIT %s
+        """
+        return _fetch_ordered_desc(conn, query, (self.window_hours, MAX_ROWS + 1))
 
 
 @dataclass(frozen=True)
@@ -506,12 +582,72 @@ def _ladder_liveness(conn) -> LivenessOutcome:
 
 
 # --------------------------------------------------------------------------
+# organ_signal/graph_cognition/repair_pressure -- flat scalar columns
+# --------------------------------------------------------------------------
+
+_REPAIR_PRESSURE_SOURCE = FlatColumnSource(
+    table="repair_pressure_appraisal_log",
+    ts_column="inserted_at",  # NOT created_at -- that column is a plain
+    # varchar (string) on this table, not a real timestamptz; inserted_at is
+    # the one real timestamp column a `>= now() - interval` filter can use.
+    window_hours=48.0,  # ~1/hour live cadence (see module docstring) -> a 1h
+    # window would often see 0-2 samples, too sparse for classify_channel_
+    # series to say anything meaningful. 48h matches the ladder's own
+    # slow-stage precedent.
+)
+
+_REPAIR_PRESSURE_SURFACE = "organ_signal"
+_REPAIR_PRESSURE_NAME = "repair_pressure"  # MetricNode.name == the organ
+# signal_kind (see resolve_organ_signals()); confirmed unique across
+# orion/signals/registry.py -- exactly one organ (graph_cognition) declares
+# a "repair_pressure" signal_kind (see
+# test_repair_pressure_signal_kind_is_unique_across_organ_registry, which
+# fails loudly the moment a second one is added, so this match stays sound
+# without needing to also check producer_service/organ identity here).
+_REPAIR_PRESSURE_FIELDS = frozenset({"level", "confidence"})
+
+# `level` read ungated is contaminated: `scripts/analysis/measure_metacog_
+# trend_baseline.py` (2026-07-30) found it FLOOR_DOMINATED by the appraiser's
+# own `confidence == 0.0` "no evidence" default, and `orion/metacog/
+# trend_reducer.py` states outright "confidence-gating is the caller's job,
+# not this module's" -- this liveness check is exactly such a caller, so it
+# gates the same way. Re-verified live 2026-09-04 (not just cited): in a
+# trailing-48h sample, confidence==0.0 was 27.5% of rows (14/51) -- much
+# improved from the original 76.9% after the 2026-07-30 confidence-formula
+# fix in repair_pressure_v2.py, but still nonzero, and gated (confidence>0)
+# level reads 37 rows spanning 0.087-0.343 -- real, non-degenerate variance,
+# not floor noise. `confidence` itself is NOT gated -- gating confidence on
+# its own value would be circular, and how often the appraiser has zero
+# confidence is itself real information about its liveness, not noise to
+# filter out.
+_REPAIR_PRESSURE_CONFIDENCE_GATE = "AND confidence > 0"
+
+
+def _repair_pressure_liveness(conn, field: str) -> LivenessOutcome:
+    extra_where = _REPAIR_PRESSURE_CONFIDENCE_GATE if field == "level" else ""
+    values, truncated = _REPAIR_PRESSURE_SOURCE.fetch(conn, field, extra_where=extra_where)
+    verdict = classify_channel_series(values)
+    detail = (
+        f"n={len(values)} over {_REPAIR_PRESSURE_SOURCE.window_hours:g}h from "
+        f"{_REPAIR_PRESSURE_SOURCE.table}.{field}"
+    )
+    if extra_where:
+        detail += " [confidence>0 gated -- ungated level is floor-dominated by the zero-confidence default]"
+    if truncated:
+        detail += " [TRUNCATED -- window exceeded MAX_ROWS, verdict covers only the most recent rows]"
+    return LivenessOutcome(
+        verdict=verdict, sample_count=len(values), detail=detail, truncated=truncated
+    )
+
+
+# --------------------------------------------------------------------------
 # public dispatch
 # --------------------------------------------------------------------------
 
 
 _KIND_ATTENTION_SELF_MODEL = "attention_self_model"
 _KIND_LADDER = "ladder"
+_KIND_REPAIR_PRESSURE = "repair_pressure"
 
 
 def _resolve_source_kind(node: MetricNode) -> str | None:
@@ -527,6 +663,12 @@ def _resolve_source_kind(node: MetricNode) -> str | None:
         return _KIND_ATTENTION_SELF_MODEL
     if node.name == "l7_l11_ladder" and node.metric_field is None:
         return _KIND_LADDER
+    if (
+        node.surface == _REPAIR_PRESSURE_SURFACE
+        and node.name == _REPAIR_PRESSURE_NAME
+        and node.metric_field in _REPAIR_PRESSURE_FIELDS
+    ):
+        return _KIND_REPAIR_PRESSURE
     return None
 
 
@@ -545,6 +687,8 @@ def liveness_for_node(node: MetricNode, conn) -> LivenessOutcome | None:
         return _attention_self_model_liveness(conn, node.metric_field)
     if kind == _KIND_LADDER:
         return _ladder_liveness(conn)
+    if kind == _KIND_REPAIR_PRESSURE:
+        return _repair_pressure_liveness(conn, node.metric_field)
     return None
 
 

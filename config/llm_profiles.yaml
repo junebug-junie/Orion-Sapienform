@@ -1492,13 +1492,16 @@ profiles:
       # (commit 1d8de7c1), NOT any official ghcr.io/ggml-org/llama.cpp tag --
       # confirmed live by --help on the custom build advertising
       # --spec-type draft-mtp, which stock server-cuda-b10666 does not.
-      # "shared" variant reuses this model's own token embedding/output
-      # projection (saves ~1.3GB VRAM/RAM vs the non-shared MTP head) --
-      # Unsloth's own worked example pairs UD-Q4_K_XL with
-      # mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf; using the same MTP head here
-      # even though the main weights are IQ4_XS (the draft head is small and
-      # architecture-generic, not tied to the main quant level).
-      draft_filename: "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+      # CORRECTED, live-tested 2026-09-04: the "shared" variant
+      # (mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf) FAILS to load on the
+      # rmonsurate/llama.cpp@qwen4exp-mtp build (commit 1d8de7c1) used here --
+      # "check_tensor_dims: tensor 'token_embd.weight' not found", server
+      # exits entirely. "Shared" deliberately omits that tensor to borrow it
+      # from the main model at load time (saves ~1.3GB), but this build does
+      # not actually implement that cross-model borrowing path, despite
+      # advertising --spec-type draft-mtp in --help. Using the self-contained
+      # (non-shared) MTP head instead, which carries its own full tensor set.
+      draft_filename: "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
       # draft_repo_id defaults to hf_repo_id above when unset.
       spec_type: "draft-mtp"
       # 2, not Unsloth's docs example of 5: a real community benchmark

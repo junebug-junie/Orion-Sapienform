@@ -42,6 +42,33 @@ def _require_hdbscan_predict() -> None:
         raise RuntimeError("hdbscan dependency is required for Topic Foundry drift prediction")
 
 
+def _parse_drift_bands(spec: str) -> List[Tuple[str, int]]:
+    """Parse "label:hours,label:hours,..." into [(label, hours), ...].
+
+    Malformed entries are skipped with a warning rather than raising --
+    a typo in one band shouldn't take the whole daemon tick down. Returns
+    [] for an empty/all-malformed spec; callers must treat that as "nothing
+    to check this tick", not an error.
+    """
+    bands: List[Tuple[str, int]] = []
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        label, _, hours_str = chunk.partition(":")
+        label = label.strip()
+        try:
+            hours = int(hours_str.strip())
+        except ValueError:
+            logger.warning("Skipping malformed drift band %r", chunk)
+            continue
+        if not label or hours <= 0:
+            logger.warning("Skipping malformed drift band %r", chunk)
+            continue
+        bands.append((label, hours))
+    return bands
+
+
 def run_drift_check(
     *,
     model_name: str,
@@ -49,6 +76,7 @@ def run_drift_check(
     window_hours: Optional[int],
     threshold_js: Optional[float],
     threshold_outlier: Optional[float],
+    window_label: str = "custom",
 ) -> Tuple[UUID, str]:
     model_row = fetch_active_model_by_name(model_name)
     if not model_row:
@@ -101,6 +129,7 @@ def run_drift_check(
         threshold_outlier=threshold_outlier,
         topic_shares=topic_shares,
         created_at=utc_now(),
+        window_label=window_label,
     )
 
     if _is_drift_alert(js_divergence, outlier_delta, threshold_js, threshold_outlier):
@@ -116,6 +145,7 @@ def run_drift_check(
             threshold_js=threshold_js,
             threshold_outlier=threshold_outlier,
             created_at=utc_now(),
+            window_label=window_label,
         )
         get_bus_publisher().publish_drift_alert(payload)
         create_event(
@@ -149,29 +179,65 @@ def fetch_drift_records(model_name: str, *, limit: int) -> List[DriftRecord]:
             top_topic_share_delta=(row.get("topic_shares") or {}).get("top_topic_share_delta"),
             topic_shares=row["topic_shares"],
             created_at=row["created_at"],
+            window_label=row.get("window_label"),
         )
         for row in rows
     ]
 
 
 async def drift_daemon_loop() -> None:
+    import asyncio
+
     from app.storage.repository import list_models
 
     while True:
         try:
-            models = list_models()
+            bands = _parse_drift_bands(settings.topic_foundry_drift_bands)
+            if not bands:
+                # A malformed/empty TOPIC_FOUNDRY_DRIFT_BANDS used to be
+                # impossible pre-band-system (window_hours was a typed int
+                # with a baked-in default) -- fall back to the single
+                # pre-band-system default rather than silently checking
+                # nothing every tick forever.
+                logger.warning(
+                    "No usable drift bands parsed from %r -- falling back to single 24h daily band",
+                    settings.topic_foundry_drift_bands,
+                )
+                bands = [("daily", settings.topic_foundry_drift_window_hours)]
+            # list_models() is a synchronous psycopg2 call, same blocking
+            # concern as run_drift_check below -- offload it too so a slow
+            # DB round trip at the top of a tick can't stall this process's
+            # event loop either.
+            models = await asyncio.to_thread(list_models)
             active_names = [row["name"] for row in models if row.get("stage") == "active"]
             for name in active_names:
-                try:
-                    run_drift_check(
-                        model_name=name,
-                        window_days=None,
-                        window_hours=settings.topic_foundry_drift_window_hours,
-                        threshold_js=None,
-                        threshold_outlier=None,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Drift check failed model=%s error=%s", name, exc)
+                for label, hours in bands:
+                    try:
+                        # run_drift_check is synchronous (blocking HTTP to the
+                        # embedder, joblib loads, HDBSCAN predict) with no
+                        # internal awaits. Called directly, it monopolizes
+                        # this process's single asyncio event loop for the
+                        # full duration of every band x model in one tick --
+                        # confirmed live: 2 models x 3 bands left the service
+                        # refusing all HTTP connections (including its own
+                        # health check) for 2+ minutes on the first tick
+                        # after this multi-band change landed. to_thread runs
+                        # it on a worker thread so the event loop -- and
+                        # every other request this service serves -- stays
+                        # responsive while a check is in flight.
+                        await asyncio.to_thread(
+                            run_drift_check,
+                            model_name=name,
+                            window_days=None,
+                            window_hours=hours,
+                            threshold_js=None,
+                            threshold_outlier=None,
+                            window_label=label,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Drift check failed model=%s band=%s hours=%s error=%s", name, label, hours, exc
+                        )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Drift daemon iteration failed error=%s", exc)
         await _sleep(settings.topic_foundry_drift_poll_seconds)

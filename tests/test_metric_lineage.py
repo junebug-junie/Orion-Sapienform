@@ -26,6 +26,7 @@ from orion.metrics.consumers import (
 )
 from orion.metrics.lineage import (
     build_graph,
+    resolve_brain_regions,
     resolve_bus_channels,
     resolve_field_channels,
     resolve_inner_state,
@@ -257,6 +258,47 @@ def test_organ_signal_urn_carries_dimension_field():
     assert nodes[urn].name == "gpu_load"
     assert nodes[urn].metric_field == "level"
     assert nodes[urn].producer_service == "orion-biometrics"
+
+
+def test_brain_region_resolver_covers_all_six_dimensions():
+    """BrainRegionV1.dimension's full Literal set, no more no less -- a
+    closed enumeration, so this is an exact-equality check, not a floor."""
+    nodes = {n.name: n for n in resolve_brain_regions()}
+    assert set(nodes) == {
+        "node_kind",
+        "lane",
+        "self_state",
+        "lattice_layer",
+        "honesty_metrics",
+        "field_anomaly",
+    }
+    assert nodes["field_anomaly"].producer_service == "orion-field-digester"
+    assert nodes["lane"].producer_service == "orion-substrate-runtime"
+
+
+def test_brain_region_field_anomaly_links_to_the_real_bus_channel():
+    """field_anomaly's upstream must point at a URN that actually exists in
+    the graph (test_no_dangling_upstream_urns already enforces this
+    generically; this asserts the specific link is the right one, not just
+    that it's non-dangling)."""
+    nodes = {n.name: n for n in resolve_brain_regions()}
+    assert nodes["field_anomaly"].upstream == (
+        "metric://bus_channel/orion-field-digester/orion:field_channel:anomaly_score",
+    )
+    graph = build_graph()
+    assert nodes["field_anomaly"].upstream[0] in graph.nodes
+
+
+def test_brain_regions_are_not_orphaned_by_the_gate():
+    """declared_consumers=("orion-hub",) must resolve to a real path -- if
+    services/orion-hub/ ever moved, this and the gate's own check would both
+    catch it."""
+    from orion.metrics.gate import _resolve_consumer_path
+
+    for node in resolve_brain_regions():
+        assert node.declared_consumers == ("orion-hub",)
+        path = _resolve_consumer_path("orion-hub", REPO_ROOT)
+        assert path is not None and path.exists()
 
 
 def test_field_channel_meaning_comes_from_glossary():

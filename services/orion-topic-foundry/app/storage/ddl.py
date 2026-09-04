@@ -134,11 +134,13 @@ CREATE TABLE IF NOT EXISTS topic_foundry_drift (
     threshold_js DOUBLE PRECISION,
     threshold_outlier DOUBLE PRECISION,
     topic_shares JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    window_label TEXT
 );
 
 CREATE INDEX IF NOT EXISTS ix_topic_foundry_drift_model_id ON topic_foundry_drift (model_id);
 CREATE INDEX IF NOT EXISTS ix_topic_foundry_drift_created_at ON topic_foundry_drift (created_at);
+CREATE INDEX IF NOT EXISTS ix_topic_foundry_drift_window_label ON topic_foundry_drift (window_label);
 """
 
 EVENTS_DDL = """

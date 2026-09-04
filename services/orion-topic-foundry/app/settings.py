@@ -141,6 +141,16 @@ class Settings(BaseSettings):
         24,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS"),
     )
+    # Bands the daemon checks every tick, "label:hours" pairs, comma-separated.
+    # Superset of topic_foundry_drift_window_hours above (kept for backward
+    # compat with the manual /drift/run default and any existing callers) --
+    # daily alone was too noisy on a sparse, bursty personal chat corpus, so
+    # wider bands smooth over days with little/no conversation. Parsed by
+    # _parse_drift_bands() in app/services/drift.py.
+    topic_foundry_drift_bands: str = Field(
+        "daily:24,weekly:168,monthly:720",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_DRIFT_BANDS"),
+    )
     topic_foundry_introspect_schemas: str = Field(
         "public",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_INTROSPECT_SCHEMAS"),

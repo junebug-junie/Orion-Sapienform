@@ -6,6 +6,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from orion.db_readonly import open_readonly_connection
 from orion.mood_arc.corpus_enrichment import resolve_live_enrichment
@@ -91,6 +92,25 @@ class FieldChannelAnomalyScorer:
         self._buffer: deque[FieldChannelCorpusRowV1] = deque()
         self._db_conn = None  # lazy, non-sticky -- see _fetch_live_enrichment_fields()
         self._db_connect_retry_after: float | None = None  # time.monotonic() deadline
+        # Last _fetch_live_enrichment_fields() result, remembered for status()
+        # -- previously this was only ever visible as a per-tick DEBUG log
+        # line (see that method), so there was no way to check "is live
+        # enrichment actually landing" without tailing logs. None means
+        # "never fetched yet" (e.g. postgres_uri unset, or no tick since
+        # startup); an empty dict is a real, distinct state (fetched, got
+        # nothing back) -- same "absence must read as absence" convention
+        # as the rest of this class.
+        self._last_live_enrichment_fields: dict[str, float] | None = None
+        self._last_live_enrichment_at: datetime | None = None
+        # Review finding (2026-09-04): the two fields above only update on
+        # the SUCCESS path, so during a sustained outage they keep showing
+        # the last-healthy timestamp/fields forever -- indistinguishable
+        # from "currently fine" on an operator status page. These track the
+        # most recent real attempt (connect or query, not the "not
+        # configured"/"still in cooldown" fast-paths, which are not
+        # attempts) regardless of outcome, and the error from it if any.
+        self._last_live_enrichment_attempt_at: datetime | None = None
+        self._last_live_enrichment_error: str | None = None
 
     def _ensure_loaded(self) -> bool:
         if self._load_failed:
@@ -157,22 +177,27 @@ class FieldChannelAnomalyScorer:
                 and time.monotonic() < self._db_connect_retry_after
             ):
                 return {}
+            self._last_live_enrichment_attempt_at = now
             self._db_conn = open_readonly_connection(
                 self._postgres_uri, connect_timeout=5, statement_timeout_ms=2000
             )
             if self._db_conn is None:
                 self._db_connect_retry_after = time.monotonic() + _DB_RECONNECT_COOLDOWN_SEC
+                self._last_live_enrichment_error = "connect failed"
                 return {}
             self._db_connect_retry_after = None
+        self._last_live_enrichment_attempt_at = now
         try:
             fields = resolve_live_enrichment(
                 self._db_conn, now=now, lookback_hours=self._live_enrichment_lookback_hours
             )
-        except Exception:
+        except Exception as exc:
             logger.warning("field_channel_anomaly_scorer_live_enrichment_failed", exc_info=True)
             if getattr(self._db_conn, "closed", 0):
                 self._db_conn = None
+            self._last_live_enrichment_error = f"{type(exc).__name__}: {exc}"[:200]
             return {}
+        self._last_live_enrichment_error = None
         if not fields:
             # resolve_live_enrichment()'s own docstring: a fully-empty
             # return can mean a real producer outage longer than the
@@ -195,7 +220,55 @@ class FieldChannelAnomalyScorer:
             logger.debug(
                 "field_channel_anomaly_live_enrichment fields=%s", sorted(fields.keys())
             )
+        self._last_live_enrichment_fields = fields
+        self._last_live_enrichment_at = now
         return fields
+
+    def status(self) -> dict[str, Any]:
+        """Plain-dict snapshot of this scorer's runtime state, for a health
+        endpoint / operator page to poll -- never raises, matches this
+        class's existing fail-open shape rather than propagating an error
+        into a request handler over what is fundamentally a status check.
+
+        Deliberately reports only field NAMES from the last live-enrichment
+        fetch, not their values -- this is a coverage check ("is the
+        producer landing"), not a metrics dump; the actual values already
+        flow through the normal scoring/bus path for anyone who needs them.
+        """
+        info: dict[str, Any] = {
+            "enabled": True,
+            "models_root": self._models_root,
+            "load_failed": self._load_failed,
+            "live_enrichment_configured": bool(self._postgres_uri),
+            "last_live_enrichment_fields": (
+                sorted(self._last_live_enrichment_fields.keys())
+                if self._last_live_enrichment_fields is not None
+                else None
+            ),
+            "last_live_enrichment_at": (
+                self._last_live_enrichment_at.isoformat()
+                if self._last_live_enrichment_at is not None
+                else None
+            ),
+            # Review finding (2026-09-04): the two fields above only ever
+            # update on success, so they cannot distinguish "currently
+            # healthy" from "was healthy before a still-ongoing outage".
+            # These two track the most recent real attempt regardless of
+            # outcome -- compare last_live_enrichment_attempt_at against
+            # last_live_enrichment_at to tell them apart.
+            "last_live_enrichment_attempt_at": (
+                self._last_live_enrichment_attempt_at.isoformat()
+                if self._last_live_enrichment_attempt_at is not None
+                else None
+            ),
+            "last_live_enrichment_error": self._last_live_enrichment_error,
+        }
+        if self._manifest is not None:
+            info["encoder_id"] = self._manifest.encoder_id
+            info["encoder_version"] = self._manifest.encoder_version
+            info["window_size"] = self._manifest.window_size
+            info["channels"] = list(self._manifest.channel_names)
+        return info
 
     def append_row(self, row: FieldChannelCorpusRowV1) -> None:
         """Called from _tick() every poll, independent of whether the JSONL

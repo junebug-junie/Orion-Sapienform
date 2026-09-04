@@ -12,6 +12,7 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -20,6 +21,29 @@ router = APIRouter(prefix="/api/self-brain", tags=["self-brain"])
 
 _MAX_TAIL = 120
 _DEFAULT_RANGE_MAX = 240
+
+
+#: Static, small (6 entries, BrainRegionV1.dimension's whole Literal set) --
+#: no reason to hit orion.metrics.lineage.build_graph() (which resolves ~630
+#: nodes across the whole repo) on every page load for this. lru_cache(1)
+#: builds it once, lazily, on first request -- not at import time, since a
+#: module-level orion.metrics.lineage import here would run that resolution
+#: on every Hub cold start whether this endpoint is ever hit or not. Tests
+#: reset it via `_region_provenance.cache_clear()` (a real public method,
+#: unlike poking a private module global directly -- review finding,
+#: 2026-09-04).
+@lru_cache(maxsize=1)
+def _region_provenance() -> dict[str, dict[str, Any]]:
+    from orion.metrics.lineage import resolve_brain_regions
+
+    return {
+        node.name: {
+            "producer_service": node.producer_service,
+            "urn": node.urn,
+            "upstream": list(node.upstream),
+        }
+        for node in resolve_brain_regions()
+    }
 
 
 #: Process-wide engine, NOT one per request. `/frames/tail` is the hub's
@@ -192,3 +216,12 @@ def _window_sync() -> dict[str, Any]:
         "phase": (phase_row["phase"] if phase_row else None),
         "server_now": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/region-provenance")
+async def region_provenance() -> dict[str, Any]:
+    """Which service backs each of the 6 BrainRegionV1.dimension values --
+    for the region detail panel's "what produced this" affordance. Static
+    (see _region_provenance()'s own comment), so no worker-thread/DB dance
+    needed here unlike every other route in this file."""
+    return _region_provenance()

@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mood Arc / Field Anomaly Status</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* Reference palette (dataviz skill), dark-only -- this page's existing
+       convention (self-brain.html, field-channel-glossary.html) never
+       switches modes, so only the dark steps are declared. */
+    .viz {
+      --surface:    #1a1a19;
+      --ink:        #ffffff;
+      --ink-2:      #c3c2b7;
+      --ink-muted:  #898781;
+      --grid:       #2c2c2a;
+      --axis:       #383835;
+      --series-recon:   #3987e5; /* categorical slot 1, dark step */
+      --series-channel: #199e70; /* categorical slot 3 (aqua), dark step */
+      --ref-threshold:  #898781; /* muted ink, not a peer series -- a limit line */
+      --status-critical: #d03b3b; /* fixed status palette, clears 3:1 on dark */
+    }
+    body { font-family: Inter, system-ui, sans-serif; }
+    .chart-tooltip {
+      position: fixed;
+      pointer-events: none;
+      z-index: 20;
+      font-size: 11px;
+      line-height: 1.5;
+      background: #0d0d0d;
+      border: 1px solid var(--axis, #383835);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: var(--ink-2, #c3c2b7);
+      white-space: nowrap;
+    }
+    .chart-tooltip .tv { color: var(--ink, #fff); font-weight: 600; }
+    .legend-key { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 4px; }
+    .legend-key.dashed { background: none; border-top: 2px dashed var(--ref-threshold); height: 0; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-200 min-h-screen viz">
+  <div id="masRoot" class="p-3 md:p-4 max-w-[100vw] space-y-3">
+    <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400">
+      <span id="masEncoderLine" class="text-gray-300"></span>
+      <span class="ml-auto">Last loaded: <span id="masLastLoaded" class="text-gray-200">&mdash;</span></span>
+      <label class="inline-flex items-center gap-1 ml-2">
+        <span>Window</span>
+        <select id="masMinutes" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-gray-200">
+          <option value="15">15m</option>
+          <option value="30" selected>30m</option>
+          <option value="60">1h</option>
+          <option value="180">3h</option>
+        </select>
+      </label>
+      <button type="button" id="masRefresh" class="rounded border border-gray-600 bg-gray-800 px-2 py-1 text-gray-200 hover:bg-gray-700">Refresh</button>
+      <label class="inline-flex items-center gap-1.5 cursor-pointer">
+        <input type="checkbox" id="masAutoRefresh" checked class="rounded border-gray-600" />
+        <span>Auto-refresh (15s)</span>
+      </label>
+    </div>
+
+    <div id="masError" class="hidden rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100/90"></div>
+
+    <div class="rounded-lg border border-gray-800 bg-gray-900/30 px-3 py-2 text-xs text-gray-500">
+      Three panels below share one time axis (oldest &rarr; newest, left to right). Hover any panel for exact
+      values at that moment. Each panel keeps its own Y-axis on purpose &mdash; <code>recon_loss</code> and
+      <code>failure_pressure</code> are different units, so one shared scale would invent a correlation that
+      isn't really there. Line up a rise in panel 1 against panel 2 by eye, at the same X position.
+    </div>
+
+    <section class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
+      <div class="flex items-baseline justify-between mb-1">
+        <h2 class="text-sm font-semibold text-gray-100">1. Reconstruction error vs. its own threshold</h2>
+        <div class="text-[11px] text-gray-400" id="masLegendRecon">
+          <span class="legend-key" style="background:var(--series-recon)"></span>recon_loss
+          <span class="legend-key dashed ml-3"></span>threshold
+        </div>
+      </div>
+      <div class="text-[11px] text-gray-500 mb-1">How wrong the encoder's own prediction is right now, against the line it must cross to count as anomalous.</div>
+      <div class="relative">
+        <canvas id="masReconCanvas" width="960" height="160" class="w-full block"></canvas>
+      </div>
+      <div id="masReconEmpty" class="hidden text-center text-gray-500 text-xs py-8">No inference history in this window.</div>
+    </section>
+
+    <section class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
+      <div class="flex items-baseline justify-between mb-1">
+        <h2 class="text-sm font-semibold text-gray-100">2. <span id="masChannelName">failure_pressure</span> (the raw input channel driving it)</h2>
+      </div>
+      <div class="text-[11px] text-gray-500 mb-1">Real value of the one system metric confirmed (from actual trigger data) to be the dominant driver of panel 1 right now.</div>
+      <div class="relative">
+        <canvas id="masChannelCanvas" width="960" height="120" class="w-full block"></canvas>
+      </div>
+      <div id="masChannelEmpty" class="hidden text-center text-gray-500 text-xs py-8">No raw-channel history in this window.</div>
+    </section>
+
+    <section class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
+      <div class="flex items-baseline justify-between mb-1">
+        <h2 class="text-sm font-semibold text-gray-100">3. Downstream effect &mdash; telemetry_anomaly triggers actually fired</h2>
+        <div class="text-[11px] text-gray-400">
+          <span class="legend-key" style="background:var(--status-critical); border-radius:50%; width:8px; height:8px;"></span>trigger fired
+        </div>
+      </div>
+      <div class="text-[11px] text-gray-500 mb-1">Real firings in orion-equilibrium-service, same time axis as above. Dot height = how far <code>recon_loss</code> overshot <code>threshold</code> at the moment it fired &mdash; not decoration, a real number.</div>
+      <div class="relative">
+        <canvas id="masTriggerCanvas" width="960" height="110" class="w-full block"></canvas>
+      </div>
+      <div id="masTriggerEmpty" class="hidden text-center text-gray-500 text-xs py-8">No telemetry_anomaly triggers fired in this window.</div>
+    </section>
+
+    <section>
+      <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">encoder status</div>
+      <div id="masLiveCard" class="text-xs text-gray-400"></div>
+    </section>
+
+    <section>
+      <h2 class="text-sm font-semibold text-gray-200 mb-2">phi-v2</h2>
+      <div class="rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-2 text-xs text-gray-400 mb-2">
+        Not implemented. This is the current state of its two dead legacy signals and its (unbuilt) successor
+        design, not a progress tracker.
+      </div>
+      <div id="masPhiCard" class="space-y-2"></div>
+    </section>
+  </div>
+
+  <div id="masTooltip" class="chart-tooltip hidden"></div>
+
+  <script>
+    const state = { live: null, phi: null, trace: null, triggers: null };
+    let autoRefreshTimer = null;
+
+    function fmtBool(v) {
+      if (v === null || v === undefined) return "—";
+      return v ? "yes" : "no";
+    }
+
+    function minutesParam() {
+      return Number(document.getElementById("masMinutes").value) || 30;
+    }
+
+    async function loadAll() {
+      const errEl = document.getElementById("masError");
+      errEl.classList.add("hidden");
+      const minutes = minutesParam();
+      try {
+        const [liveResp, phiResp, traceResp, triggersResp] = await Promise.all([
+          fetch("/api/mood-arc-status/live"),
+          fetch("/api/mood-arc-status/phi-v2-inventory"),
+          fetch(`/api/mood-arc-status/inference-trace?minutes=${minutes}`),
+          fetch(`/api/mood-arc-status/downstream-triggers?minutes=${minutes}`),
+        ]);
+        if (!liveResp.ok) throw new Error(`live ${liveResp.status}`);
+        if (!phiResp.ok) throw new Error(`phi-v2-inventory ${phiResp.status}`);
+        if (!traceResp.ok) throw new Error(`inference-trace ${traceResp.status}`);
+        if (!triggersResp.ok) throw new Error(`downstream-triggers ${triggersResp.status}`);
+        state.live = await liveResp.json();
+        state.phi = await phiResp.json();
+        state.trace = await traceResp.json();
+        state.triggers = await triggersResp.json();
+        document.getElementById("masLastLoaded").textContent = new Date().toLocaleTimeString();
+        document.getElementById("masChannelName").textContent = state.trace.channel || "raw channel";
+        render();
+      } catch (err) {
+        errEl.textContent = `Failed to load: ${err.message || err}`;
+        errEl.classList.remove("hidden");
+      }
+    }
+
+    function render() {
+      renderEncoderLine();
+      renderReconChart();
+      renderChannelChart();
+      renderTriggerChart();
+      renderLive();
+      renderPhi();
+    }
+
+    function renderEncoderLine() {
+      const live = state.live || {};
+      const el = document.getElementById("masEncoderLine");
+      if (!live.reachable) {
+        el.innerHTML = `<span class="text-rose-400">orion-field-digester unreachable</span>`;
+        return;
+      }
+      if (live.enabled === false) {
+        el.textContent = "field-channel anomaly scoring disabled";
+        return;
+      }
+      const errBit = live.last_live_enrichment_error
+        ? ` <span class="text-rose-400">last enrichment attempt failed: ${live.last_live_enrichment_error}</span>`
+        : "";
+      el.innerHTML = `<span class="font-mono text-gray-100">${live.encoder_id || "—"}</span> (window ${live.window_size ?? "—"})${errBit}`;
+    }
+
+    // ================= shared chart primitives =================
+    // Plain canvas, matching this repo's self-brain.js convention -- but
+    // unlike that file, every chart here draws real gridlines, real tick
+    // labels, and a real hover tooltip. See docs/dataviz skill notes in the
+    // PR description for why panels are separate rather than one overlay.
+
+    const PAD = { left: 46, right: 8, top: 8, bottom: 20 };
+
+    function parseT(iso) {
+      const ms = Date.parse(iso);
+      return Number.isFinite(ms) ? ms : null;
+    }
+
+    function timeDomain(seriesArrays) {
+      let min = Infinity, max = -Infinity;
+      for (const arr of seriesArrays) {
+        for (const p of arr) {
+          const t = parseT(p.t);
+          if (t === null) continue;
+          if (t < min) min = t;
+          if (t > max) max = t;
+        }
+      }
+      if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return null;
+      return [min, max];
+    }
+
+    function sharedDomain() {
+      const trace = state.trace || { points: [], channel_points: [] };
+      const triggers = (state.triggers && state.triggers.triggers) || [];
+      return timeDomain([trace.points || [], trace.channel_points || [], triggers]);
+    }
+
+    // "Nice" tick step so axis labels are round numbers, not floating-point noise.
+    function niceStep(span, targetTicks) {
+      const raw = span / targetTicks;
+      const mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+      const norm = raw / mag;
+      const step = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+      return step * mag;
+    }
+
+    function yTicks(lo, hi, count) {
+      if (lo === hi) { lo -= 1; hi += 1; }
+      const step = niceStep(hi - lo, count) || 1;
+      const start = Math.ceil(lo / step) * step;
+      const out = [];
+      for (let v = start; v <= hi + 1e-9; v += step) out.push(v);
+      return out;
+    }
+
+    function fmtAxisNum(v) {
+      if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1) + "k";
+      if (Math.abs(v) < 0.01 && v !== 0) return v.toExponential(1);
+      return Number(v.toFixed(4)).toString();
+    }
+
+    function plotRect(canvas) {
+      return {
+        x0: PAD.left, y0: PAD.top,
+        x1: canvas.width - PAD.right, y1: canvas.height - PAD.bottom,
+        w: canvas.width - PAD.left - PAD.right,
+        h: canvas.height - PAD.top - PAD.bottom,
+      };
+    }
+
+    function xFor(t, domain, rect) {
+      const [min, max] = domain;
+      return rect.x0 + ((t - min) / (max - min)) * rect.w;
+    }
+
+    function yFor(v, lo, hi, rect) {
+      const span = (hi - lo) || 1;
+      return rect.y0 + rect.h - ((v - lo) / span) * rect.h;
+    }
+
+    // Draws the shared chrome (gridlines, Y ticks, X ticks on the last
+    // panel only -- small-multiples convention: one shared time axis at
+    // the bottom, not repeated on every panel).
+    function drawChrome(ctx, canvas, domain, yLo, yHi, opts) {
+      const rect = plotRect(canvas);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = "10px Inter, system-ui, sans-serif";
+
+      const ticks = yTicks(yLo, yHi, 4);
+      ctx.strokeStyle = "#2c2c2a"; // --grid
+      ctx.lineWidth = 1;
+      ctx.fillStyle = "#898781"; // --ink-muted
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (const t of ticks) {
+        const y = yFor(t, yLo, yHi, rect);
+        ctx.beginPath();
+        ctx.moveTo(rect.x0, Math.round(y) + 0.5);
+        ctx.lineTo(rect.x1, Math.round(y) + 0.5);
+        ctx.stroke();
+        ctx.fillText(fmtAxisNum(t), rect.x0 - 6, y);
+      }
+
+      // baseline / left axis
+      ctx.strokeStyle = "#383835"; // --axis
+      ctx.beginPath();
+      ctx.moveTo(rect.x0 + 0.5, rect.y0);
+      ctx.lineTo(rect.x0 + 0.5, rect.y1);
+      ctx.stroke();
+
+      if (opts && opts.showXAxis && domain) {
+        const [min, max] = domain;
+        const span = max - min;
+        const stepMs = niceStep(span, 5);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        for (let t = Math.ceil(min / stepMs) * stepMs; t <= max; t += stepMs) {
+          const x = xFor(t, domain, rect);
+          ctx.fillText(new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), x, rect.y1 + 4);
+        }
+      }
+      return rect;
+    }
+
+    function drawLine(ctx, arr, key, domain, yLo, yHi, rect, color, dashed) {
+      const pts = arr.filter((p) => parseT(p.t) !== null && typeof p[key] === "number");
+      if (pts.length < 2) return;
+      ctx.beginPath();
+      ctx.setLineDash(dashed ? [4, 3] : []);
+      pts.forEach((p, i) => {
+        const x = xFor(parseT(p.t), domain, rect);
+        const y = yFor(p[key], yLo, yHi, rect);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    function minMax(arr, key) {
+      const vals = arr.map((p) => p[key]).filter((v) => typeof v === "number");
+      if (!vals.length) return [0, 1];
+      return [Math.min(...vals), Math.max(...vals)];
+    }
+
+    // Shared hover: crosshair + one tooltip per panel, keyed by nearest
+    // timestamp in that panel's own series (per-chart, not a cross-panel
+    // synced crosshair -- see PR notes for the scope call).
+    function attachHover(canvas, domain, seriesGetters) {
+      const tooltip = document.getElementById("masTooltip");
+      canvas.addEventListener("mousemove", (e) => {
+        if (!domain) return;
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const px = (e.clientX - rect.left) * scaleX;
+        const prect = plotRect(canvas);
+        if (px < prect.x0 || px > prect.x1) { tooltip.classList.add("hidden"); return; }
+        const [min, max] = domain;
+        const t = min + ((px - prect.x0) / prect.w) * (max - min);
+
+        const rows = [];
+        for (const g of seriesGetters) {
+          const nearest = g.nearest(t);
+          if (nearest) rows.push(`<div><span class="legend-key" style="background:${g.color}"></span>${g.label}: <span class="tv">${g.format(nearest.value)}</span></div>`);
+        }
+        if (!rows.length) { tooltip.classList.add("hidden"); return; }
+        tooltip.innerHTML = `<div class="text-gray-400 mb-0.5">${new Date(t).toLocaleTimeString()}</div>${rows.join("")}`;
+        tooltip.style.left = `${e.clientX + 14}px`;
+        tooltip.style.top = `${e.clientY + 14}px`;
+        tooltip.classList.remove("hidden");
+      });
+      canvas.addEventListener("mouseleave", () => tooltip.classList.add("hidden"));
+    }
+
+    function nearestPoint(arr, key, t) {
+      let best = null, bestDist = Infinity;
+      for (const p of arr) {
+        const pt = parseT(p.t);
+        if (pt === null || typeof p[key] !== "number") continue;
+        const d = Math.abs(pt - t);
+        if (d < bestDist) { bestDist = d; best = { value: p[key] }; }
+      }
+      return best;
+    }
+
+    // ================= panel renderers =================
+
+    function renderReconChart() {
+      const canvas = document.getElementById("masReconCanvas");
+      const ctx = canvas.getContext("2d");
+      const trace = state.trace || { points: [] };
+      const points = trace.points || [];
+      document.getElementById("masReconEmpty").classList.toggle("hidden", points.length > 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!points.length) return;
+
+      const domain = sharedDomain();
+      if (!domain) return;
+      const [reconLo, reconHi] = minMax(points, "recon_loss");
+      const [threshLo, threshHi] = minMax(points, "threshold");
+      const yLo = Math.min(reconLo, threshLo, 0);
+      const yHi = Math.max(reconHi, threshHi) * 1.1 || 0.01;
+
+      const rect = drawChrome(ctx, canvas, domain, yLo, yHi, { showXAxis: false });
+      drawLine(ctx, points, "threshold", domain, yLo, yHi, rect, "#898781", true);
+      drawLine(ctx, points, "recon_loss", domain, yLo, yHi, rect, "#3987e5", false);
+
+      // Anomalous ticks -- surface ring (2px gap) so they read as distinct
+      // markers even where they sit on the line itself.
+      for (const p of points) {
+        if (!p.anomalous || typeof p.recon_loss !== "number") continue;
+        const t = parseT(p.t);
+        if (t === null) continue;
+        const x = xFor(t, domain, rect);
+        const y = yFor(p.recon_loss, yLo, yHi, rect);
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#1a1a19";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = "#d03b3b";
+        ctx.fill();
+      }
+
+      attachHover(canvas, domain, [
+        { label: "recon_loss", color: "#3987e5", format: (v) => v.toFixed(5), nearest: (t) => nearestPoint(points, "recon_loss", t) },
+        { label: "threshold", color: "#898781", format: (v) => v.toFixed(5), nearest: (t) => nearestPoint(points, "threshold", t) },
+      ]);
+    }
+
+    function renderChannelChart() {
+      const canvas = document.getElementById("masChannelCanvas");
+      const ctx = canvas.getContext("2d");
+      const trace = state.trace || { channel_points: [] };
+      const points = trace.channel_points || [];
+      document.getElementById("masChannelEmpty").classList.toggle("hidden", points.length > 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!points.length) return;
+
+      const domain = sharedDomain();
+      if (!domain) return;
+      const [lo, hi] = minMax(points, "value");
+      const yLo = Math.min(lo, 0);
+      const yHi = Math.max(hi * 1.1, 0.01);
+
+      const rect = drawChrome(ctx, canvas, domain, yLo, yHi, { showXAxis: false });
+      drawLine(ctx, points, "value", domain, yLo, yHi, rect, "#199e70", false);
+
+      attachHover(canvas, domain, [
+        { label: trace.channel || "value", color: "#199e70", format: (v) => v.toFixed(3), nearest: (t) => nearestPoint(points, "value", t) },
+      ]);
+    }
+
+    function renderTriggerChart() {
+      const canvas = document.getElementById("masTriggerCanvas");
+      const ctx = canvas.getContext("2d");
+      const triggers = (state.triggers && state.triggers.triggers) || [];
+      document.getElementById("masTriggerEmpty").classList.toggle("hidden", triggers.length > 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const domain = sharedDomain();
+      if (!domain) return;
+
+      const withOvershoot = triggers
+        .map((t) => ({ ...t, overshoot: (typeof t.recon_loss === "number" && typeof t.threshold === "number") ? t.recon_loss - t.threshold : null }))
+        .filter((t) => t.overshoot !== null);
+
+      const [lo, hi] = withOvershoot.length ? minMax(withOvershoot, "overshoot") : [0, 1];
+      const yLo = 0;
+      const yHi = Math.max(hi * 1.15, 0.001);
+
+      const rect = drawChrome(ctx, canvas, domain, yLo, yHi, { showXAxis: true });
+
+      for (const trig of withOvershoot) {
+        const t = parseT(trig.t);
+        if (t === null) continue;
+        const x = xFor(t, domain, rect);
+        const y = yFor(trig.overshoot, yLo, yHi, rect);
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#1a1a19"; // surface ring
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = "#d03b3b"; // status critical
+        ctx.fill();
+      }
+
+      attachHover(canvas, domain, [
+        {
+          label: "overshoot (recon_loss − threshold)",
+          color: "#d03b3b",
+          format: (v) => v.toFixed(5),
+          nearest: (t) => {
+            let best = null, bestDist = Infinity;
+            for (const trig of withOvershoot) {
+              const pt = parseT(trig.t);
+              if (pt === null) continue;
+              const d = Math.abs(pt - t);
+              if (d < bestDist) { bestDist = d; best = { value: trig.overshoot, top_channel: trig.top_channel }; }
+            }
+            return best;
+          },
+        },
+      ]);
+    }
+
+    // ---- non-chart panels ----
+
+    function renderLive() {
+      const el = document.getElementById("masLiveCard");
+      const live = state.live || {};
+      if (!live.reachable || live.enabled === false) { el.textContent = ""; return; }
+      const fields = live.last_live_enrichment_fields;
+      const fieldsLabel = fields === null || fields === undefined
+        ? "never fetched yet"
+        : (fields.length ? fields.join(", ") : "empty (fetched, nothing landed)");
+      el.innerHTML = `
+        live-enrichment fields (last tick): <span class="font-mono text-gray-300">${fieldsLabel}</span>
+        &middot; last enrichment fetch: ${live.last_live_enrichment_at || "never"}
+        &middot; load_failed: ${fmtBool(live.load_failed)}
+      `;
+    }
+
+    function renderPhi() {
+      const el = document.getElementById("masPhiCard");
+      el.innerHTML = "";
+      const phi = state.phi || {};
+
+      for (const sig of phi.legacy_signals || []) {
+        const card = document.createElement("div");
+        card.className = "rounded-xl border border-gray-800 bg-gray-900/40 p-3 text-sm";
+        const deadBadge = sig.producer_service_exists
+          ? `<span class="inline-block rounded border px-2 py-0.5 text-[10px] bg-emerald-500/15 text-emerald-300 border-emerald-500/40">producer present</span>`
+          : `<span class="inline-block rounded border px-2 py-0.5 text-[10px] bg-rose-500/15 text-rose-300 border-rose-500/40">producer deleted</span>`;
+        card.innerHTML = `
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-mono text-gray-100">${sig.signal_id}</span>
+            ${deadBadge}
+            <span class="text-gray-500 text-xs ml-auto">composition_status: ${sig.composition_status || "—"}</span>
+          </div>
+          <div class="text-gray-500 text-xs">producer_service: <span class="font-mono">${sig.producer_service || "—"}</span></div>
+          <div class="text-gray-400 text-xs mt-1">${sig.last_note || ""}</div>
+        `;
+        el.appendChild(card);
+      }
+
+      const doc = phi.design_doc || {};
+      const docCard = document.createElement("div");
+      docCard.className = "rounded-xl border border-gray-700 bg-gray-800/30 p-3 text-sm";
+      docCard.innerHTML = `
+        <div class="text-gray-100 font-mono text-xs">${doc.path || "—"}</div>
+        <div class="text-gray-400 text-xs mt-1">${doc.status || "no status line found"}</div>
+        <div class="text-gray-500 text-xs mt-1">Manual fit_phi_encoder.py CLI present: ${fmtBool(phi.manual_cli_exists)}</div>
+      `;
+      el.appendChild(docCard);
+    }
+
+    function setAutoRefresh(enabled) {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      if (enabled) {
+        autoRefreshTimer = setInterval(loadAll, 15000);
+      }
+    }
+
+    document.getElementById("masRefresh").addEventListener("click", loadAll);
+    document.getElementById("masAutoRefresh").addEventListener("change", (e) => setAutoRefresh(e.target.checked));
+    document.getElementById("masMinutes").addEventListener("change", loadAll);
+
+    loadAll();
+    setAutoRefresh(true);
+  </script>
+</body>
+</html>

@@ -67,5 +67,10 @@ app = FastAPI(title="orion-field-digester", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": get_settings().service_name}
+async def health() -> dict[str, object]:
+    payload: dict[str, object] = {"status": "ok", "service": get_settings().service_name}
+    if worker._anomaly_scorer is not None:
+        payload["field_channel_anomaly"] = worker._anomaly_scorer.status()
+    else:
+        payload["field_channel_anomaly"] = {"enabled": False}
+    return payload

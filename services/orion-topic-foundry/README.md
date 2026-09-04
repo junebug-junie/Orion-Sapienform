@@ -33,8 +33,30 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 - `GET /topics?run_id=...&limit=200&offset=0` — list topic clusters for a run.
 - `GET /topics/{topic_id}/segments?run_id=...&limit=200` — list segments for a topic.
 - `GET /topics/{topic_id}/keywords?run_id=...` — list topic keywords.
-- `POST /drift/run` — run a drift check against the active model.
-- `GET /drift?model_name=...` — list drift records (includes thresholds, deltas, and topic share snapshots).
+- `POST /drift/run` — run a drift check against the active model. `window_label` (optional,
+  defaults to `"custom"`) tags the resulting row/alert.
+- `GET /drift?model_name=...` — list drift records (includes thresholds, deltas, topic share
+  snapshots, and each record's `window_label`).
+
+### Drift bands
+
+`TOPIC_FOUNDRY_DRIFT_DAEMON=true` runs a background loop (`drift_daemon_loop`,
+`TOPIC_FOUNDRY_DRIFT_POLL_SECONDS` cadence, default 900s) that checks every *active*
+model against `TOPIC_FOUNDRY_DRIFT_BANDS` -- `label:hours` pairs, comma-separated,
+default `daily:24,weekly:168,monthly:720`. Added 2026-09-04: a single 24h window was
+too noisy against a sparse, bursty personal chat corpus (real days with zero
+messages, others with a lot), so wider bands smooth over that while daily stays
+available for anyone who wants the twitchier signal. Each band writes its own
+`topic_foundry_drift` row, distinguished by `window_label` (a real column, not
+inferred from `window_end - window_start`).
+
+`run_drift_check()` is synchronous (blocking HTTP to the embedder, joblib loads,
+HDBSCAN predict) with no internal awaits -- the daemon loop runs it via
+`asyncio.to_thread()` so a tick (now up to `len(bands) x active_model_count` checks)
+doesn't block this process's event loop, and therefore doesn't block `/health` or any
+other request this service serves while a tick is in flight. Confirmed live: without
+the thread offload, a 2-model x 3-band first tick left the service refusing all HTTP
+connections for 2+ minutes.
 - `GET /edges?run_id=...` — list KG edges for a run.
 - `GET /kg/edges?run_id=...&q=...&predicate=...&limit=...&offset=...` — list KG edges with filters.
 - `GET /events?limit=...&offset=...&kind=...` — list recent run/enrich/drift alert events.

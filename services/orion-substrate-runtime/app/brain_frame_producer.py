@@ -244,6 +244,18 @@ def _field_anomaly_regions(field_anomaly: Any | None, now: datetime) -> list[Bra
     anomalous = bool(getattr(field_anomaly, "anomalous", False))
     state_val = "firing" if anomalous else ("steady" if intensity > 0.1 else "starving")
 
+    # threshold/anomalous added 2026-09-04 for the Hub's Mood Arc Status
+    # "inference in action" cockpit chart -- recon_loss alone (the original
+    # field here) can't be plotted against the actual firing boundary
+    # without also persisting the encoder's own live threshold, and
+    # `anomalous` as 0.0/1.0 lets the frontend mark real firing ticks
+    # without re-deriving the comparison itself (float, matching this dict's
+    # existing dict[str, float] contract -- no schema change).
+    threshold = getattr(field_anomaly, "threshold", None)
+    detail: dict[str, float] = {"recon_loss": float(recon_loss), "anomalous": 1.0 if anomalous else 0.0}
+    if threshold is not None:
+        detail["threshold"] = float(threshold)
+
     return [
         BrainRegionV1(
             dimension="field_anomaly",
@@ -254,7 +266,7 @@ def _field_anomaly_regions(field_anomaly: Any | None, now: datetime) -> list[Bra
             node_count=1,
             as_of=now,
             stale=False,
-            detail={"recon_loss": float(recon_loss)},
+            detail=detail,
         )
     ]
 

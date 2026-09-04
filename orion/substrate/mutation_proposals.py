@@ -128,6 +128,20 @@ class ProposalFactory:
     # ProposalFactory(routing_surface_reader=...) call sites don't need to
     # change for a park that may not be permanent.
     routing_surface_reader: RoutingSurfaceReader | None = None
+    # 2026-09-04 (real-stakes gate): target_surface -> float | None, typically
+    # SubstrateMutationStore.surface_reliability. None (not a callable, or the
+    # callable returns None for this surface) means "no opinion" -- cold
+    # start or the reader was never wired -- and the check below is skipped
+    # entirely rather than treated as a failing reliability. A plain callable,
+    # not a store reference, so this frozen dataclass stays composable/
+    # testable the same way routing_surface_reader already is.
+    surface_reliability_reader: Callable[[str], float | None] | None = None
+    # Disclosed, uncalibrated first-cut floor -- same mid-pack convention
+    # config/proposals/proposal_policy.v1.yaml already uses for base_priority
+    # (e.g. inspect_attended_target's 0.34). Revisit against real post-deploy
+    # reliability data once any surface has enough resolved adoptions to
+    # produce one.
+    reliability_floor: float = 0.34
 
     def from_pressure(self, pressure: MutationPressureV1) -> MutationProposalV1 | None:
         return self.plan_for_pressure(pressure).proposal
@@ -142,6 +156,14 @@ class ProposalFactory:
             # touched, so this fires regardless of what the live threshold
             # value is, and regardless of which surface routed here.
             return ProposalPlan(None, ROUTING_TARGET_PARKED_REASON)
+        if self.surface_reliability_reader is not None:
+            reliability = self.surface_reliability_reader(pressure.target_surface)
+            if reliability is not None and reliability < self.reliability_floor:
+                # Being wrong on this surface costs future proposals, not
+                # just the one rolled-back action -- see surface_reliability()
+                # in mutation_queue.py. Recovers as settlements accumulate;
+                # not a permanent ban.
+                return ProposalPlan(None, "target_surface_reliability_below_floor")
         contract = CONTRACTS[mutation_class]
         patch_payload = _default_patch_for_class(mutation_class)
         rollback_payload = _default_rollback_for_class(mutation_class)

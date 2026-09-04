@@ -347,7 +347,8 @@ def test_expectation_read_engine_has_statement_timeout():
     with patch("sqlalchemy.create_engine", side_effect=_fake_create_engine):
         store._get_expectation_read_engine()
     assert created.get("connect_args") == {
-        "options": f"-c statement_timeout={store._EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS}"
+        "options": f"-c statement_timeout={store._EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS}",
+        "connect_timeout": store._EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC,
     }
     assert store._EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS == 1500
     store._expectation_read_engine = None

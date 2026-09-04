@@ -441,6 +441,8 @@ Flags:
 |---------|---------|------|
 | `ORION_VISUAL_CHAIN_ENABLED` | `true` | Master switch |
 | `ORION_VISUAL_CHAIN_INTERVAL_SEC` | `600` | Trigger cadence (real cadence is `max(this, run duration)`) |
+| `ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN` | `45` | Watchdog threshold (2026-09-04): if the newest `reverie_visual_chain` row is older than this, fire an orion-notify `critical` attention request (email + Hub attention item) -- catches the worker wedging before ever reaching the run-deadline/single-flight lock below, which a live 24h+ silent wedge with zero errors proved possible |
+| `ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC` | `600` | How often the watchdog re-checks that staleness, independently of the worker's own loop |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
 | `ORION_VISUAL_CHAIN_STORAGE_DIR` | `/mnt/storage-lukewarm/orion/reverie-visual` | Content-addressed image store |

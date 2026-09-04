@@ -978,3 +978,126 @@ def test_load_latest_memory_crystallization_never_raises_on_db_failure() -> None
         assert store.load_latest_memory_crystallization() is None
     finally:
         monkeypatch.undo()
+
+
+# --- _get_engine: statement_timeout/connect_timeout (2026-09-04 wedge fix) ---
+# A single stuck DB call run via asyncio.to_thread can never be cancelled by
+# Python, only abandoned -- it permanently occupies one worker in the
+# process-wide thread pool. Confirmed live: this is how persist_reverie_
+# visual_chain wedged visual_chain.py's worker for 24+ hours with zero errors
+# logged. These constants/connect_args must actually reach create_engine().
+
+
+def test_get_engine_sets_statement_timeout_and_connect_timeout() -> None:
+    store = _fresh_store()
+    captured = {}
+
+    class _FakeEngine:
+        pass
+
+    def _fake_create_engine(*_args, **kwargs):
+        captured.update(kwargs)
+        return _FakeEngine()
+
+    import sqlalchemy
+
+    original = sqlalchemy.create_engine
+    sqlalchemy.create_engine = _fake_create_engine
+    try:
+        store._get_engine()
+    finally:
+        sqlalchemy.create_engine = original
+
+    connect_args = captured.get("connect_args") or {}
+    assert connect_args.get("connect_timeout") == store._ENGINE_CONNECT_TIMEOUT_SEC
+    assert (
+        f"statement_timeout={store._ENGINE_STATEMENT_TIMEOUT_MS}"
+        in connect_args.get("options", "")
+    )
+
+
+def test_get_expectation_read_engine_sets_connect_timeout_too() -> None:
+    """Review finding: this engine already set statement_timeout but not
+    connect_timeout (a stuck TCP handshake before any query runs isn't
+    bounded by a GUC statement_timeout)."""
+    store = _fresh_store()
+    captured = {}
+
+    class _FakeEngine:
+        pass
+
+    def _fake_create_engine(*_args, **kwargs):
+        captured.update(kwargs)
+        return _FakeEngine()
+
+    import sqlalchemy
+
+    original = sqlalchemy.create_engine
+    sqlalchemy.create_engine = _fake_create_engine
+    try:
+        store._get_expectation_read_engine()
+    finally:
+        sqlalchemy.create_engine = original
+
+    connect_args = captured.get("connect_args") or {}
+    assert connect_args.get("connect_timeout") == store._EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC
+
+
+# --- visual_chain_age_minutes ---
+
+
+def _age_row_result(value):
+    class _FakeResult:
+        def first(self):
+            return None if value is None else (value,)
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt, _params=None):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_visual_chain_age_minutes_returns_value() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _age_row_result(12.5))
+    try:
+        assert store.visual_chain_age_minutes() == 12.5
+    finally:
+        monkeypatch.undo()
+
+
+def test_visual_chain_age_minutes_none_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _age_row_result(None))
+    try:
+        assert store.visual_chain_age_minutes() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_visual_chain_age_minutes_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.visual_chain_age_minutes() is None
+    finally:
+        monkeypatch.undo()

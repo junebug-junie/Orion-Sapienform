@@ -34,6 +34,21 @@ _engine = None
 # is the first caller that makes this race reachable in practice.
 _engine_lock = threading.Lock()
 
+# This engine backs every persist_*/load_* function in this module (visual
+# chain, reverie thought, reverie chain, expectations writes, etc. -- ~12
+# call sites as of this comment). Without these, a single stuck query or a
+# stuck TCP handshake, run via asyncio.to_thread by any caller, can never be
+# cancelled by Python -- only abandoned -- and permanently occupies one
+# worker in the process-wide thread pool. Confirmed live 2026-09-04: this is
+# exactly how `persist_reverie_visual_chain` wedged `visual_chain.py`'s
+# worker for 24+ hours with zero errors logged anywhere (the abandoned
+# thread never raised, it just never returned). `_get_expectation_read_engine`
+# below and `vision_reader.py`'s engine already set `statement_timeout` this
+# same way; `connect_timeout` closes the other half (a stuck TCP handshake,
+# before any statement even runs) that neither of those two set either.
+_ENGINE_STATEMENT_TIMEOUT_MS = 10_000  # 10s -- comfortably under visual_chain's 300s run deadline
+_ENGINE_CONNECT_TIMEOUT_SEC = 5
+
 
 def _database_url() -> str:
     # Direct DSN — deliberately NOT via orion.substrate.felt_state_reader, whose
@@ -52,7 +67,14 @@ def _get_engine():
             if _engine is None:  # re-check: another thread may have won the race
                 from sqlalchemy import create_engine
 
-                _engine = create_engine(_database_url(), pool_pre_ping=True)
+                _engine = create_engine(
+                    _database_url(),
+                    pool_pre_ping=True,
+                    connect_args={
+                        "options": f"-c statement_timeout={_ENGINE_STATEMENT_TIMEOUT_MS}",
+                        "connect_timeout": _ENGINE_CONNECT_TIMEOUT_SEC,
+                    },
+                )
     return _engine
 
 
@@ -153,7 +175,12 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
 # requirements: statement_timeout only takes effect on first-use engine
 # construction for a given DSN, so sharing one would silently let whichever
 # caller constructs it first decide the GUC for both.
+# Review finding (2026-09-04, same pass that added _ENGINE_CONNECT_TIMEOUT_SEC
+# to _get_engine() above): this engine already bounded query execution but not
+# a stuck TCP handshake before any query runs. Same value as _get_engine()'s --
+# not a per-caller tuning knob, just closing the other half of the same gap.
 _EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS = 1500
+_EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC = 5
 _expectation_read_engine = None
 _expectation_read_engine_url: str | None = None
 
@@ -168,7 +195,8 @@ def _get_expectation_read_engine():
             url,
             pool_pre_ping=True,
             connect_args={
-                "options": f"-c statement_timeout={_EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS}"
+                "options": f"-c statement_timeout={_EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS}",
+                "connect_timeout": _EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC,
             },
         )
         _expectation_read_engine_url = url
@@ -428,6 +456,35 @@ def persist_reverie_visual_artifact(artifact) -> bool:
     except Exception as exc:
         logger.warning("visual artifact persist failed sha256=%s err=%s", artifact.sha256, exc)
         return False
+
+
+def visual_chain_age_minutes() -> float | None:
+    """Minutes since the newest `reverie_visual_chain` row, or None if the
+    table is empty (never observed in practice -- not the same as "stale").
+
+    Read-only counterpart to `visual_chain_health_monitor.py`'s staleness
+    check: that module decides what to DO with this number (fire an
+    attention request or not), this function only reports it. Never raises --
+    a DB read failure degrades to None, same discipline as every other
+    function in this file, and the caller treats None as "no data to judge,"
+    not as "definitely stale."
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT EXTRACT(EPOCH FROM (now() - max(created_at))) / 60.0 "
+                    "FROM reverie_visual_chain"
+                )
+            ).first()
+        age = row[0] if row else None
+        return None if age is None else float(age)
+    except Exception as exc:
+        logger.warning("visual_chain_age_minutes query failed err=%s", exc)
+        return None
 
 
 def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:

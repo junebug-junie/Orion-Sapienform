@@ -106,7 +106,15 @@ class TestVoluntaryOverridePresent:
         assert model.attention_reason == "bottom_up_salience"
         assert model.voluntary_override is None
         assert "Pure bottom-up dispatch" in model.reason_narrative
-        assert "no active goal override" in model.reason_narrative
+        # 2026-09-04: this asserted "no active goal override" until that string
+        # was found to be a cause the reducer had never checked -- emitted on
+        # every bottom-up row (19,408 of 19,408 live) while being true for only
+        # one of five real exits. `_broadcast()` builds a frame carrying no
+        # recorded reason, exactly like every frame written before that patch,
+        # so the honest narration is that the cause is unrecoverable rather
+        # than a guess at which exit ran.
+        assert "no active goal override" not in model.reason_narrative
+        assert "unrecoverable" in model.reason_narrative
 
 
 class TestCadenceMismatch:

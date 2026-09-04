@@ -48,6 +48,7 @@ class TopicFoundryDriftAlertV1(BaseModel):
     threshold_js: Optional[float] = None
     threshold_outlier: Optional[float] = None
     created_at: datetime
+    window_label: Optional[str] = None
 
 
 # KgEdgeIngestItemV1 / KgEdgeIngestV1 (bus envelope for the retired

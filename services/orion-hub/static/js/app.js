@@ -13822,7 +13822,7 @@ document.addEventListener("DOMContentLoaded", () => {
     tsDriftTableBody.innerHTML = "";
     if (!records || records.length === 0) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="py-3 text-gray-500" colspan="6">No drift records found.</td>';
+      row.innerHTML = '<td class="py-3 text-gray-500" colspan="7">No drift records found.</td>';
       tsDriftTableBody.appendChild(row);
       return;
     }
@@ -13830,6 +13830,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const row = document.createElement("tr");
       row.className = "hover:bg-gray-800/40";
       const created = record.created_at || "--";
+      const band = record.window_label || "--";
       const js = record.js_divergence ?? "--";
       const outlierPct = record.outlier_pct !== undefined && record.outlier_pct !== null ? `${(record.outlier_pct * 100).toFixed(1)}%` : "--";
       const outlierDelta = record.outlier_pct_delta !== undefined && record.outlier_pct_delta !== null ? `${(record.outlier_pct_delta * 100).toFixed(1)}%` : "--";
@@ -13838,6 +13839,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const thresholdOutlier = record.threshold_outlier ?? "--";
       row.innerHTML = `
         <td class="py-2 pr-3">${created}</td>
+        <td class="py-2 pr-3">${band}</td>
         <td class="py-2 pr-3">${js}</td>
         <td class="py-2 pr-3">${outlierPct}</td>
         <td class="py-2 pr-3">${outlierDelta}</td>

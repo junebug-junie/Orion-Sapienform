@@ -21,6 +21,7 @@ def run_drift_endpoint(payload: DriftRunRequest) -> DriftRunResponse:
             window_hours=payload.window_hours,
             threshold_js=payload.threshold_js,
             threshold_outlier=payload.threshold_outlier,
+            window_label=payload.window_label if payload.window_label is not None else "custom",
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

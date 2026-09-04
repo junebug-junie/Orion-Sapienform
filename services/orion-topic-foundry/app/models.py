@@ -396,6 +396,7 @@ class DriftRunRequest(BaseModel):
     window_hours: Optional[int] = None
     threshold_js: Optional[float] = None
     threshold_outlier: Optional[float] = None
+    window_label: Optional[str] = None
 
 
 class DriftRunResponse(BaseModel):
@@ -436,6 +437,7 @@ class DriftRecord(BaseModel):
     top_topic_share_delta: Optional[float] = None
     topic_shares: Dict[str, Any]
     created_at: datetime
+    window_label: Optional[str] = None
 
 
 class DriftListResponse(BaseModel):

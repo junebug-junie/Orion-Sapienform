@@ -12,26 +12,54 @@
 </head>
 <body class="bg-gray-950 text-gray-200 min-h-screen">
   <div id="masRoot" class="p-3 md:p-4 max-w-[100vw] space-y-4">
-    <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
-      Read-only operator status. "Live now" is fetched from orion-field-digester's own <code>/health</code> on
-      every load -- a snapshot, not a history (see the Self tab's Self-Observability EKG, dimension
-      <code>field_anomaly</code>, for the recent trend).
-    </div>
-
     <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400">
-      <span>Last loaded: <span id="masLastLoaded" class="text-gray-200">&mdash;</span></span>
+      <span id="masEncoderLine" class="text-gray-300"></span>
+      <span class="ml-auto">Last loaded: <span id="masLastLoaded" class="text-gray-200">&mdash;</span></span>
+      <label class="inline-flex items-center gap-1 ml-2">
+        <span>Window</span>
+        <select id="masMinutes" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-gray-200">
+          <option value="15">15m</option>
+          <option value="30" selected>30m</option>
+          <option value="60">1h</option>
+          <option value="180">3h</option>
+        </select>
+      </label>
       <button type="button" id="masRefresh" class="rounded border border-gray-600 bg-gray-800 px-2 py-1 text-gray-200 hover:bg-gray-700">Refresh</button>
       <label class="inline-flex items-center gap-1.5 cursor-pointer">
-        <input type="checkbox" id="masAutoRefresh" class="rounded border-gray-600" />
-        <span>Auto-refresh (30s)</span>
+        <input type="checkbox" id="masAutoRefresh" checked class="rounded border-gray-600" />
+        <span>Auto-refresh (15s)</span>
       </label>
     </div>
 
     <div id="masError" class="hidden rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100/90"></div>
 
+    <section class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
+      <div class="flex items-baseline justify-between mb-1">
+        <h2 class="text-sm font-semibold text-gray-100">Inference in action</h2>
+        <div class="text-[11px] text-gray-500">
+          <span class="text-rose-400">■</span> recon_loss
+          <span class="text-gray-500 ml-2">┄</span> threshold
+          <span class="text-sky-400 ml-2">■</span> failure_pressure (raw input channel)
+          <span class="text-amber-300 ml-2">●</span> anomalous tick
+        </div>
+      </div>
+      <canvas id="masInferenceCanvas" width="960" height="220" class="w-full"></canvas>
+      <div id="masInferenceEmpty" class="hidden text-center text-gray-500 text-xs py-8">No inference history in this window.</div>
+    </section>
+
+    <section class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
+      <div class="flex items-baseline justify-between mb-1">
+        <h2 class="text-sm font-semibold text-gray-100">Downstream effect &mdash; telemetry_anomaly metacog triggers</h2>
+        <div class="text-[11px] text-gray-500">real fires in orion-equilibrium-service, same timeline as above</div>
+      </div>
+      <canvas id="masTriggerCanvas" width="960" height="90" class="w-full"></canvas>
+      <div id="masTriggerEmpty" class="hidden text-center text-gray-500 text-xs py-4">No telemetry_anomaly triggers fired in this window.</div>
+      <div id="masTriggerDetail" class="mt-1 text-[11px] text-gray-400 font-mono min-h-[1.2em]"></div>
+    </section>
+
     <section>
-      <h2 class="text-sm font-semibold text-gray-200 mb-2">Live now &mdash; mood-arc encoder / field anomaly</h2>
-      <div id="masLiveCard" class="rounded-xl border border-gray-800 bg-gray-900/40 p-4 text-sm"></div>
+      <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">encoder status</div>
+      <div id="masLiveCard" class="text-xs text-gray-400"></div>
     </section>
 
     <section>
@@ -45,7 +73,7 @@
   </div>
 
   <script>
-    const state = { live: null, phi: null };
+    const state = { live: null, phi: null, trace: null, triggers: null };
     let autoRefreshTimer = null;
 
     function fmtBool(v) {
@@ -53,18 +81,29 @@
       return v ? "yes" : "no";
     }
 
+    function minutesParam() {
+      return Number(document.getElementById("masMinutes").value) || 30;
+    }
+
     async function loadAll() {
       const errEl = document.getElementById("masError");
       errEl.classList.add("hidden");
+      const minutes = minutesParam();
       try {
-        const [liveResp, phiResp] = await Promise.all([
+        const [liveResp, phiResp, traceResp, triggersResp] = await Promise.all([
           fetch("/api/mood-arc-status/live"),
           fetch("/api/mood-arc-status/phi-v2-inventory"),
+          fetch(`/api/mood-arc-status/inference-trace?minutes=${minutes}`),
+          fetch(`/api/mood-arc-status/downstream-triggers?minutes=${minutes}`),
         ]);
         if (!liveResp.ok) throw new Error(`live ${liveResp.status}`);
         if (!phiResp.ok) throw new Error(`phi-v2-inventory ${phiResp.status}`);
+        if (!traceResp.ok) throw new Error(`inference-trace ${traceResp.status}`);
+        if (!triggersResp.ok) throw new Error(`downstream-triggers ${triggersResp.status}`);
         state.live = await liveResp.json();
         state.phi = await phiResp.json();
+        state.trace = await traceResp.json();
+        state.triggers = await triggersResp.json();
         document.getElementById("masLastLoaded").textContent = new Date().toLocaleTimeString();
         render();
       } catch (err) {
@@ -74,51 +113,184 @@
     }
 
     function render() {
+      renderEncoderLine();
+      renderInferenceChart();
+      renderTriggerChart();
       renderLive();
       renderPhi();
     }
 
-    function renderLive() {
-      const el = document.getElementById("masLiveCard");
+    function renderEncoderLine() {
       const live = state.live || {};
+      const el = document.getElementById("masEncoderLine");
       if (!live.reachable) {
-        el.innerHTML = `
-          <div class="text-rose-300 font-semibold mb-1">orion-field-digester unreachable</div>
-          <div class="text-gray-500 text-xs">${live.error || "no detail"}</div>
-        `;
+        el.innerHTML = `<span class="text-rose-400">orion-field-digester unreachable</span>`;
         return;
       }
       if (live.enabled === false) {
-        el.innerHTML = `<div class="text-gray-400">Field-channel anomaly scoring is disabled on this instance.</div>`;
+        el.textContent = "field-channel anomaly scoring disabled";
         return;
       }
+      const errBit = live.last_live_enrichment_error
+        ? ` <span class="text-rose-400">last enrichment attempt failed: ${live.last_live_enrichment_error}</span>`
+        : "";
+      el.innerHTML = `<span class="font-mono text-gray-100">${live.encoder_id || "—"}</span> (window ${live.window_size ?? "—"})${errBit}`;
+    }
+
+    // ---- shared chart helpers (plain canvas, no library -- same convention as self-brain.js's EKG) ----
+
+    function parseT(iso) {
+      const ms = Date.parse(iso);
+      return Number.isFinite(ms) ? ms : null;
+    }
+
+    function timeDomain(seriesArrays) {
+      let min = Infinity, max = -Infinity;
+      for (const arr of seriesArrays) {
+        for (const p of arr) {
+          const t = parseT(p.t);
+          if (t === null) continue;
+          if (t < min) min = t;
+          if (t > max) max = t;
+        }
+      }
+      if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return null;
+      return [min, max];
+    }
+
+    function xFor(t, domain, width) {
+      const [min, max] = domain;
+      return ((t - min) / (max - min)) * width;
+    }
+
+    function renderInferenceChart() {
+      const canvas = document.getElementById("masInferenceCanvas");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const trace = state.trace || { points: [], channel_points: [] };
+      const points = trace.points || [];
+      const channelPoints = trace.channel_points || [];
+      document.getElementById("masInferenceEmpty").classList.toggle("hidden", points.length > 0);
+      if (!points.length) return;
+
+      const domain = timeDomain([points, channelPoints]);
+      if (!domain) return;
+      const w = canvas.width, h = canvas.height, padTop = 8, padBottom = 8;
+      const plotH = h - padTop - padBottom;
+
+      // Local min-max normalization per series -- different units (recon_loss
+      // is ~1e-2, failure_pressure is 0..1), so absolute values on one axis
+      // would flatten one line to noise. What matters here is SHAPE
+      // correlation: does the raw channel move when recon_loss moves.
+      function normalized(arr, key) {
+        const vals = arr.map((p) => p[key]).filter((v) => typeof v === "number");
+        if (!vals.length) return null;
+        const lo = Math.min(...vals), hi = Math.max(...vals);
+        const span = hi - lo || 1;
+        return { lo, hi, span };
+      }
+
+      function drawLine(arr, key, color, dashed, norm) {
+        if (!arr.length || !norm) return;
+        ctx.beginPath();
+        ctx.setLineDash(dashed ? [4, 3] : []);
+        let started = false;
+        for (const p of arr) {
+          const t = parseT(p.t);
+          const v = p[key];
+          if (t === null || typeof v !== "number") continue;
+          const x = xFor(t, domain, w);
+          const y = padTop + plotH - ((v - norm.lo) / norm.span) * plotH;
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      const reconNorm = normalized(points, "recon_loss");
+      drawLine(points, "recon_loss", "#fb7185", false, reconNorm);
+      drawLine(points, "threshold", "#94a3b8", true, reconNorm);
+      drawLine(channelPoints, "value", "#38bdf8", false, normalized(channelPoints, "value"));
+
+      // Anomalous ticks as dots, drawn against the recon_loss line's own y.
+      if (reconNorm) {
+        for (const p of points) {
+          if (!p.anomalous) continue;
+          const t = parseT(p.t);
+          if (t === null || typeof p.recon_loss !== "number") continue;
+          const x = xFor(t, domain, w);
+          const y = padTop + plotH - ((p.recon_loss - reconNorm.lo) / reconNorm.span) * plotH;
+          ctx.beginPath();
+          ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = "#fbbf24";
+          ctx.fill();
+        }
+      }
+    }
+
+    function renderTriggerChart() {
+      const canvas = document.getElementById("masTriggerCanvas");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const triggers = (state.triggers && state.triggers.triggers) || [];
+      document.getElementById("masTriggerEmpty").classList.toggle("hidden", triggers.length > 0);
+      const detailEl = document.getElementById("masTriggerDetail");
+      if (!triggers.length) { detailEl.textContent = ""; return; }
+
+      // Shares the SAME window as the chart above, not its own domain --
+      // that's the whole point (visually align "crossed threshold" with
+      // "trigger fired"), so recompute from the inference trace's own points
+      // when available, falling back to the triggers' own span.
+      const tracePoints = (state.trace && state.trace.points) || [];
+      const domain = timeDomain([tracePoints.length ? tracePoints : triggers, triggers]);
+      if (!domain) return;
+      const w = canvas.width, h = canvas.height, midY = h / 2;
+
+      ctx.strokeStyle = "#374151";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, midY);
+      ctx.lineTo(w, midY);
+      ctx.stroke();
+
+      let lines = [];
+      for (const trig of triggers) {
+        const t = parseT(trig.t);
+        if (t === null) continue;
+        const x = xFor(t, domain, w);
+        ctx.beginPath();
+        ctx.arc(x, midY, 4, 0, Math.PI * 2);
+        ctx.fillStyle = trig.deviation_direction === "elevated" ? "#f87171" : "#a78bfa";
+        ctx.fill();
+        const when = new Date(trig.t).toLocaleTimeString();
+        lines.push(`${when} recon_loss=${fmtNum(trig.recon_loss)} threshold=${fmtNum(trig.threshold)} top=${trig.top_channel || "—"}`);
+      }
+      // Most recent 3, newest first -- a full transcript belongs in Postgres,
+      // not this panel.
+      detailEl.textContent = lines.slice(-3).reverse().join("  |  ");
+    }
+
+    function fmtNum(v) {
+      if (typeof v !== "number") return "—";
+      return v.toFixed(4);
+    }
+
+    // ---- non-chart panels ----
+
+    function renderLive() {
+      const el = document.getElementById("masLiveCard");
+      const live = state.live || {};
+      if (!live.reachable || live.enabled === false) { el.textContent = ""; return; }
       const fields = live.last_live_enrichment_fields;
       const fieldsLabel = fields === null || fields === undefined
         ? "never fetched yet"
         : (fields.length ? fields.join(", ") : "empty (fetched, nothing landed)");
       el.innerHTML = `
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Encoder</div>
-            <div class="font-mono text-gray-100">${live.encoder_id || "—"}</div></div>
-          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Version</div>
-            <div class="font-mono text-gray-100">${live.encoder_version || "—"}</div></div>
-          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Window size</div>
-            <div class="text-gray-100">${live.window_size ?? "—"}</div></div>
-          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Load failed</div>
-            <div class="text-gray-100">${fmtBool(live.load_failed)}</div></div>
-          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Live enrichment configured</div>
-            <div class="text-gray-100">${fmtBool(live.live_enrichment_configured)}</div></div>
-          <div><div class="text-[10px] uppercase tracking-wide text-gray-500">Last enrichment fetch</div>
-            <div class="text-gray-100">${live.last_live_enrichment_at || "never"}</div></div>
-        </div>
-        <div class="mt-3">
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Live-enrichment fields landed (last tick)</div>
-          <div class="text-gray-200 font-mono text-xs mt-1">${fieldsLabel}</div>
-        </div>
-        <div class="mt-3">
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Model channels (${(live.channels || []).length})</div>
-          <div class="text-gray-400 font-mono text-xs mt-1">${(live.channels || []).join(", ") || "—"}</div>
-        </div>
+        live-enrichment fields (last tick): <span class="font-mono text-gray-300">${fieldsLabel}</span>
+        &middot; last enrichment fetch: ${live.last_live_enrichment_at || "never"}
+        &middot; load_failed: ${fmtBool(live.load_failed)}
       `;
     }
 
@@ -162,14 +334,16 @@
         autoRefreshTimer = null;
       }
       if (enabled) {
-        autoRefreshTimer = setInterval(loadAll, 30000);
+        autoRefreshTimer = setInterval(loadAll, 15000);
       }
     }
 
     document.getElementById("masRefresh").addEventListener("click", loadAll);
     document.getElementById("masAutoRefresh").addEventListener("change", (e) => setAutoRefresh(e.target.checked));
+    document.getElementById("masMinutes").addEventListener("change", loadAll);
 
     loadAll();
+    setAutoRefresh(true);
   </script>
 </body>
 </html>

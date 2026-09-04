@@ -45,11 +45,15 @@ def test_mood_arc_status_static_page_has_root_ids() -> None:
         'id="masLiveCard"',
         'id="masPhiCard"',
         'id="masAutoRefresh"',
+        'id="masInferenceCanvas"',
+        'id="masTriggerCanvas"',
     ]:
         assert needle in html, f"Missing: {needle}"
 
 
-def test_mood_arc_status_static_page_fetches_both_endpoints() -> None:
+def test_mood_arc_status_static_page_fetches_all_four_endpoints() -> None:
     html = MOOD_ARC_STATUS_STATIC.read_text(encoding="utf-8")
     assert "/api/mood-arc-status/live" in html
     assert "/api/mood-arc-status/phi-v2-inventory" in html
+    assert "/api/mood-arc-status/inference-trace" in html
+    assert "/api/mood-arc-status/downstream-triggers" in html

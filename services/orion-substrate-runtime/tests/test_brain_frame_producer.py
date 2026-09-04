@@ -367,10 +367,10 @@ def test_honesty_regions_included_in_frame():
     assert honesty["honesty:confidence"].intensity == 0.8
 
 
-def _field_anomaly(recon_loss, anomalous=True):
+def _field_anomaly(recon_loss, anomalous=True, threshold=None):
     from types import SimpleNamespace
 
-    return SimpleNamespace(recon_loss=recon_loss, anomalous=anomalous)
+    return SimpleNamespace(recon_loss=recon_loss, anomalous=anomalous, threshold=threshold)
 
 
 def test_field_anomaly_regions_with_none_input():
@@ -443,3 +443,45 @@ def test_field_anomaly_regions_included_in_frame():
     fa = {r.region_id: r for r in frame.regions if r.dimension == "field_anomaly"}
     assert len(fa) == 1
     assert fa["field_anomaly:reconstruction"].detail["recon_loss"] == 0.01
+
+
+def test_field_anomaly_regions_detail_carries_threshold_and_anomalous_flag():
+    """Added 2026-09-04 for the Hub's Mood Arc Status inference-trace chart --
+    recon_loss alone can't be plotted against the actual firing boundary
+    without the encoder's own live threshold persisted alongside it."""
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    regions = _field_anomaly_regions(
+        _field_anomaly(0.02, anomalous=True, threshold=0.014), now
+    )
+    detail = regions[0].detail
+    assert detail["recon_loss"] == 0.02
+    assert detail["threshold"] == 0.014
+    assert detail["anomalous"] == 1.0
+
+
+def test_field_anomaly_regions_anomalous_flag_encodes_as_zero_when_false():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    regions = _field_anomaly_regions(_field_anomaly(0.001, anomalous=False), now)
+    assert regions[0].detail["anomalous"] == 0.0
+
+
+def test_field_anomaly_regions_omits_threshold_key_when_absent():
+    """A producer that hasn't set `threshold` (older fixture shape, or a
+    genuine absence) must not fabricate one -- the key stays out of `detail`
+    entirely rather than defaulting to 0.0, which would be indistinguishable
+    from a real zero threshold."""
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import _field_anomaly_regions
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    regions = _field_anomaly_regions(_field_anomaly(0.01, threshold=None), now)
+    assert "threshold" not in regions[0].detail

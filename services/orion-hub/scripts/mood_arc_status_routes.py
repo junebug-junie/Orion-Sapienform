@@ -1,6 +1,6 @@
 """Read-only Hub API for the Mood Arc / Field Anomaly operator page.
 
-Two views:
+Four views:
 
 - GET /live: relays orion-field-digester's own `/health` status for its
   mood-arc encoder + live-enrichment coverage (app/anomaly_scorer.py
@@ -13,20 +13,71 @@ Two views:
   the design doc's real (but unwired) successor pieces exist on disk. No
   progress bar, no fabricated completion percentage: phi-v2 itself is not
   implemented, and this says so plainly rather than implying otherwise.
+- GET /inference-trace: the actual cockpit data -- recon_loss vs. the
+  encoder's own live threshold over a real window, PLUS one real raw input
+  channel's own trace over the same window, so the two can be plotted on
+  one timeline and you can SEE the correlation, not just a stat tile.
+  Reuses `substrate_brain_frame_log` (recon_loss/threshold/anomalous,
+  already persisted by `_field_anomaly_regions()`) and
+  `orion.field.pressure.collect_field_channel_pressures()` (the same merge
+  every other field-pressure consumer reads) directly against
+  `substrate_field_state` -- no new tables, no new schema.
+- GET /downstream-triggers: real `telemetry_anomaly` metacog-trigger firings
+  from `orion-equilibrium-service` (Postgres `metacog_trigger`, written by
+  orion-sql-writer) in the same window -- the actual causal effect of this
+  signal, not a claim about what it's "wired to". Confirmed live 2026-09-04:
+  123 real fires in the preceding 24h.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from scripts.field_digester_client import FieldDigesterClientError, fetch_health
 from scripts.service_logs import resolve_repo_root
 
 router = APIRouter(prefix="/api/mood-arc-status", tags=["mood-arc-status"])
+
+# The one raw input channel to overlay against recon_loss on the inference
+# trace chart. Not configurable/generic (yet) -- deliberately picked from
+# real data, not guessed: `top_channels` on the 3 most recent live
+# telemetry_anomaly fires (2026-09-04) all named failure_pressure as the
+# dominant driver (`docker exec ... metacog_trigger.upstream->>'top_channels'`).
+# If that stops being true, this constant is the one place to change it, not
+# a reason to build a full N-channel picker for a first cut.
+_CORRELATED_CHANNEL = "failure_pressure"
+
+_TRACE_ENGINE: Any = None
+_TRACE_ENGINE_LOCK = threading.Lock()
+
+
+def _trace_engine():
+    """Own lazy-cached engine, same pattern (and same PR #2010
+    connection-exhaustion rationale) as field_channel_glossary_routes.py/
+    self_brain_routes.py -- not shared with either since this module has no
+    existing engine to reuse and each of those two is already scoped to its
+    own panel's polling cadence."""
+    global _TRACE_ENGINE
+    import os
+
+    uri = os.getenv("POSTGRES_URI", "").strip()
+    if not uri:
+        return None
+    with _TRACE_ENGINE_LOCK:
+        if _TRACE_ENGINE is None:
+            from sqlalchemy import create_engine
+
+            _TRACE_ENGINE = create_engine(
+                uri, pool_pre_ping=True, connect_args={"connect_timeout": 2}
+            )
+        return _TRACE_ENGINE
 
 # `Path(__file__).resolve().parents[N]` breaks inside the Hub's own Docker
 # image -- confirmed live (2026-09-04 docker up smoke test): the Dockerfile
@@ -141,3 +192,153 @@ async def phi_v2_inventory() -> dict[str, Any]:
         },
         "manual_cli_exists": _phi_encoder_cli().exists(),
     }
+
+
+_MAX_TRACE_MINUTES = 180
+_DEFAULT_TRACE_MINUTES = 30
+
+
+@router.get("/inference-trace")
+async def inference_trace(
+    minutes: int = Query(default=_DEFAULT_TRACE_MINUTES, ge=1, le=_MAX_TRACE_MINUTES),
+) -> dict[str, Any]:
+    """Off the event loop: real synchronous SQLAlchemy + JSON decode over
+    up to 180 minutes of ticks, same rationale as self_brain_routes.py's
+    /frames/tail (measured 3s inline there before it was moved to a
+    worker thread)."""
+    return await asyncio.to_thread(_inference_trace_sync, minutes)
+
+
+def _inference_trace_sync(minutes: int) -> dict[str, Any]:
+    empty = {"minutes": minutes, "points": [], "channel": _CORRELATED_CHANNEL, "channel_points": []}
+    engine = _trace_engine()
+    if engine is None:
+        return empty
+    from sqlalchemy import text
+
+    points: list[dict[str, Any]] = []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT frame_json FROM substrate_brain_frame_log "
+                    "WHERE generated_at >= NOW() - (:minutes * INTERVAL '1 minute') "
+                    "ORDER BY generated_at ASC"
+                ),
+                {"minutes": minutes},
+            )
+            for (frame_json,) in rows:
+                frame = frame_json if isinstance(frame_json, dict) else json.loads(frame_json)
+                for region in frame.get("regions", []):
+                    if region.get("region_id") != "field_anomaly:reconstruction":
+                        continue
+                    detail = region.get("detail") or {}
+                    if "recon_loss" not in detail:
+                        continue
+                    points.append(
+                        {
+                            "t": region.get("as_of"),
+                            "recon_loss": detail["recon_loss"],
+                            "threshold": detail.get("threshold"),
+                            "anomalous": bool(detail.get("anomalous")),
+                        }
+                    )
+    except Exception:
+        return empty
+
+    channel_points = _correlated_channel_series_sync(engine, minutes)
+    return {
+        "minutes": minutes,
+        "points": points,
+        "channel": _CORRELATED_CHANNEL,
+        "channel_points": channel_points,
+    }
+
+
+def _correlated_channel_series_sync(engine: Any, minutes: int) -> list[dict[str, Any]]:
+    """One raw channel's own value over the window, pulled from
+    substrate_field_state via the SAME merge function every other
+    field-pressure consumer reads (orion.field.pressure
+    ::collect_field_channel_pressures) -- not a re-derivation of channel
+    polarity/merge logic, and not the full 38-channel glossary machinery
+    field_channel_glossary_routes.py's build_channel_series() runs (that
+    exists to classify EVERY known channel; this needs exactly one)."""
+    from sqlalchemy import text
+
+    from orion.field.pressure import collect_field_channel_pressures
+    from orion.schemas.field_state import FieldStateV1
+
+    out: list[dict[str, Any]] = []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT field_json, generated_at FROM substrate_field_state "
+                    "WHERE generated_at >= NOW() - (:minutes * INTERVAL '1 minute') "
+                    "ORDER BY generated_at ASC"
+                ),
+                {"minutes": minutes},
+            )
+            for field_json, generated_at in rows:
+                payload = field_json if isinstance(field_json, dict) else json.loads(field_json)
+                try:
+                    state = FieldStateV1.model_validate(payload)
+                except Exception:  # noqa: BLE001 - skip unparsable historical rows
+                    continue
+                merged, _ = collect_field_channel_pressures(state)
+                if _CORRELATED_CHANNEL not in merged:
+                    continue
+                out.append(
+                    {
+                        "t": generated_at.isoformat() if hasattr(generated_at, "isoformat") else generated_at,
+                        "value": float(merged[_CORRELATED_CHANNEL]),
+                    }
+                )
+    except Exception:
+        return []
+    return out
+
+
+@router.get("/downstream-triggers")
+async def downstream_triggers(
+    minutes: int = Query(default=_DEFAULT_TRACE_MINUTES, ge=1, le=_MAX_TRACE_MINUTES),
+) -> dict[str, Any]:
+    return await asyncio.to_thread(_downstream_triggers_sync, minutes)
+
+
+def _downstream_triggers_sync(minutes: int) -> dict[str, Any]:
+    empty = {"minutes": minutes, "triggers": []}
+    engine = _trace_engine()
+    if engine is None:
+        return empty
+    from sqlalchemy import text
+
+    triggers: list[dict[str, Any]] = []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT timestamp, upstream FROM metacog_trigger "
+                    "WHERE trigger_kind = 'telemetry_anomaly' "
+                    "AND timestamp >= NOW() - (:minutes * INTERVAL '1 minute') "
+                    "ORDER BY timestamp ASC"
+                ),
+                {"minutes": minutes},
+            )
+            for timestamp, upstream in rows:
+                up = upstream if isinstance(upstream, dict) else (json.loads(upstream) if upstream else {})
+                top_channels = up.get("top_channels") or []
+                triggers.append(
+                    {
+                        "t": timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp,
+                        "recon_loss": up.get("recon_loss"),
+                        "threshold": up.get("threshold"),
+                        "deviation_direction": up.get("deviation_direction"),
+                        # "channel=mse" strings as fit_encoder.top_channel_attribution
+                        # produces them -- passed through as-is, not re-parsed.
+                        "top_channel": top_channels[0] if top_channels else None,
+                    }
+                )
+    except Exception:
+        return empty
+    return {"minutes": minutes, "triggers": triggers}

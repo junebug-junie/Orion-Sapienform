@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -192,3 +194,139 @@ def test_phi_v2_inventory_checks_manual_cli_exists() -> None:
 )
 def test_first_sentences(text: str, count: int, expected: str) -> None:
     assert mood_arc_status_routes._first_sentences(text, count) == expected
+
+
+# ------------------------------------------------- /inference-trace, /downstream-triggers
+
+
+def _field_state_row(failure_pressure: float) -> dict:
+    return {
+        "schema_version": "field.state.v1",
+        "generated_at": "2026-09-04T00:00:00+00:00",
+        "tick_id": "tick-test",
+        "node_vectors": {
+            "node:athena": {
+                "availability": 1.0,
+                "failure_pressure": failure_pressure,
+                "expected_offline_suppression": 1.0,
+                "stream_backlog_health": 1.0,
+                "delivery_confidence": 1.0,
+            }
+        },
+        "capability_vectors": {},
+        "edges": [],
+        "recent_perturbations": [],
+    }
+
+
+def _fake_engine_two_queries(first_rows: list[tuple], second_rows: list[tuple]) -> MagicMock:
+    """side_effect, not return_value -- _inference_trace_sync() issues two
+    DIFFERENT queries (brain_frame_log, then field_state) against the same
+    connection, so a single fixed return_value would serve both incorrectly."""
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.side_effect = [first_rows, second_rows]
+    return fake_engine
+
+
+def test_inference_trace_returns_recon_loss_and_correlated_channel(monkeypatch) -> None:
+    frame = {
+        "regions": [
+            {
+                "region_id": "field_anomaly:reconstruction",
+                "as_of": "2026-09-04T00:00:00+00:00",
+                "detail": {"recon_loss": 0.021, "threshold": 0.0143, "anomalous": 1.0},
+            },
+            {"region_id": "lane:biometrics", "as_of": "2026-09-04T00:00:00+00:00", "detail": {}},
+        ]
+    }
+    import datetime as dt
+
+    frame_rows = [(json.dumps(frame),)]
+    channel_rows = [(json.dumps(_field_state_row(0.6)), dt.datetime(2026, 9, 4, tzinfo=dt.timezone.utc))]
+    fake_engine = _fake_engine_two_queries(frame_rows, channel_rows)
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    with patch.object(mood_arc_status_routes, "_trace_engine", return_value=fake_engine):
+        resp = _client().get("/api/mood-arc-status/inference-trace?minutes=10")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["points"] == [
+        {"t": "2026-09-04T00:00:00+00:00", "recon_loss": 0.021, "threshold": 0.0143, "anomalous": True}
+    ]
+    assert body["channel"] == "failure_pressure"
+    assert len(body["channel_points"]) == 1
+    assert body["channel_points"][0]["value"] == pytest.approx(0.6)
+
+
+def test_inference_trace_skips_regions_that_are_not_field_anomaly(monkeypatch) -> None:
+    frame = {"regions": [{"region_id": "lane:biometrics", "detail": {"backlog": 3.0}}]}
+    fake_engine = _fake_engine_two_queries([(json.dumps(frame),)], [])
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    with patch.object(mood_arc_status_routes, "_trace_engine", return_value=fake_engine):
+        resp = _client().get("/api/mood-arc-status/inference-trace")
+
+    assert resp.json()["points"] == []
+
+
+def test_inference_trace_degrades_to_empty_without_postgres_uri(monkeypatch) -> None:
+    monkeypatch.delenv("POSTGRES_URI", raising=False)
+    resp = _client().get("/api/mood-arc-status/inference-trace")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["points"] == []
+    assert body["channel_points"] == []
+
+
+def test_downstream_triggers_returns_real_firings(monkeypatch) -> None:
+    import datetime as dt
+
+    upstream = {
+        "recon_loss": 0.0214,
+        "threshold": 0.0144,
+        "deviation_direction": "elevated",
+        "top_channels": ["failure_pressure=0.598", "gpu_pressure=0.057"],
+    }
+    rows = [(dt.datetime(2026, 9, 4, 19, 29, tzinfo=dt.timezone.utc), json.dumps(upstream))]
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value = rows
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    with patch.object(mood_arc_status_routes, "_trace_engine", return_value=fake_engine):
+        resp = _client().get("/api/mood-arc-status/downstream-triggers?minutes=60")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["triggers"] == [
+        {
+            "t": "2026-09-04T19:29:00+00:00",
+            "recon_loss": 0.0214,
+            "threshold": 0.0144,
+            "deviation_direction": "elevated",
+            "top_channel": "failure_pressure=0.598",
+        }
+    ]
+
+
+def test_downstream_triggers_handles_a_row_with_no_top_channels(monkeypatch) -> None:
+    import datetime as dt
+
+    rows = [(dt.datetime(2026, 9, 4, tzinfo=dt.timezone.utc), json.dumps({"recon_loss": 0.02}))]
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value = rows
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    with patch.object(mood_arc_status_routes, "_trace_engine", return_value=fake_engine):
+        resp = _client().get("/api/mood-arc-status/downstream-triggers")
+
+    assert resp.json()["triggers"][0]["top_channel"] is None

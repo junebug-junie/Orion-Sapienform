@@ -16,6 +16,7 @@ from orion.metrics.liveness import (
     CONNECT_TIMEOUT_SECONDS,
     DEFAULT_POSTGRES_URI,
     STATEMENT_TIMEOUT_MS,
+    FlatColumnSource,
     LivenessOutcome,
     ScalarFieldSource,
     ThroughputSource,
@@ -35,10 +36,18 @@ class _FakeNode:
     """Minimal stand-in for orion.metrics.lineage.MetricNode -- only the
     fields liveness_for_node()/has_registered_source() actually read."""
 
-    def __init__(self, *, name: str, schema_id: str | None = None, metric_field: str | None = None):
+    def __init__(
+        self,
+        *,
+        name: str,
+        schema_id: str | None = None,
+        metric_field: str | None = None,
+        surface: str | None = None,
+    ):
         self.name = name
         self.schema_id = schema_id
         self.metric_field = metric_field
+        self.surface = surface
 
 
 class _FakeCursor:
@@ -216,6 +225,52 @@ def test_scalar_field_source_reports_truncated_when_over_max_rows():
     assert len(values) == 50_000  # the extra fetched row is dropped
 
 
+# ------------------------------------------------------------- FlatColumnSource
+
+
+def test_flat_column_source_filters_none_and_builds_query():
+    # Same DESC-then-reverse-to-ASC contract as ScalarFieldSource, but no
+    # JSONB extraction -- a plain column read.
+    source = FlatColumnSource(table="t", ts_column="ts", window_hours=48.0)
+    cur = _FakeCursor(fetchall_result=[(0.3,), (None,), (0.1,)])
+    conn = _FakeConn([cur])
+    values, truncated = source.fetch(conn, "level")
+    assert values == [0.1, 0.3]
+    assert truncated is False
+    query, params = cur.executed[0]
+    assert "t" in query and "ts" in query and "level" in query and "DESC" in query
+    assert "->>" not in query  # not a JSONB extraction
+    assert params == (48.0, 50_001)
+
+
+def test_flat_column_source_extra_where_is_appended_to_query():
+    source = FlatColumnSource(table="t", ts_column="ts", window_hours=48.0)
+    cur = _FakeCursor(fetchall_result=[(0.1,)])
+    conn = _FakeConn([cur])
+    source.fetch(conn, "level", extra_where="AND confidence > 0")
+    query, params = cur.executed[0]
+    assert "AND confidence > 0" in query
+    assert params == (48.0, 50_001)  # extra_where carries no params of its own
+
+
+def test_flat_column_source_no_extra_where_by_default():
+    source = FlatColumnSource(table="t", ts_column="ts", window_hours=48.0)
+    cur = _FakeCursor(fetchall_result=[(0.1,)])
+    conn = _FakeConn([cur])
+    source.fetch(conn, "confidence")
+    query, _params = cur.executed[0]
+    assert "confidence > 0" not in query
+
+
+def test_flat_column_source_reports_truncated_when_over_max_rows():
+    source = FlatColumnSource(table="t", ts_column="ts", window_hours=48.0)
+    cur = _FakeCursor(fetchall_result=[(1.0,)] * 50_001)
+    conn = _FakeConn([cur])
+    values, truncated = source.fetch(conn, "confidence")
+    assert truncated is True
+    assert len(values) == 50_000
+
+
 # ------------------------------------------------------------- ThroughputSource
 
 
@@ -280,6 +335,28 @@ def test_resolve_source_kind_none_for_unrelated_node():
     assert _resolve_source_kind(node) is None
 
 
+def test_resolve_source_kind_repair_pressure_level_and_confidence():
+    for field in ("level", "confidence"):
+        node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field=field)
+        assert _resolve_source_kind(node) == "repair_pressure"
+
+
+def test_resolve_source_kind_repair_pressure_none_for_uncovered_dimension():
+    """Only level/confidence are wired -- the other 10 canonical dimensions
+    (coherence, tension, etc.) were never confirmed to exist as real columns
+    on the backing table, so they must stay NOT_COMPUTED, not guessed."""
+    node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="trust_rupture")
+    assert _resolve_source_kind(node) is None
+
+
+def test_resolve_source_kind_repair_pressure_none_for_wrong_surface():
+    """Same name/field, wrong surface -- must not match. Guards against a
+    future organ_signal-shaped name collision with an unrelated inner_state
+    or field_channel node."""
+    node = _FakeNode(name="repair_pressure", surface="inner_state", metric_field="level")
+    assert _resolve_source_kind(node) is None
+
+
 def test_has_registered_source_and_liveness_for_node_agree_on_every_kind():
     """Regression for the routing-drift finding: has_registered_source() and
     liveness_for_node() both delegate to _resolve_source_kind() now, so they
@@ -291,6 +368,8 @@ def test_has_registered_source_and_liveness_for_node_agree_on_every_kind():
         _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None),
         _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None),
         _FakeNode(name="attention_self_model.v1", schema_id=None, metric_field=None),
+        _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="level"),
+        _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="trust_rupture"),
     ]
     for node in nodes:
         assert has_registered_source(node) == (_resolve_source_kind(node) is not None)
@@ -311,6 +390,16 @@ def test_has_registered_source_true_for_ladder_signal_node():
 
 def test_has_registered_source_false_for_unrelated_node():
     node = _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None)
+    assert has_registered_source(node) is False
+
+
+def test_has_registered_source_true_for_repair_pressure_level():
+    node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="level")
+    assert has_registered_source(node) is True
+
+
+def test_has_registered_source_false_for_repair_pressure_uncovered_dimension():
+    node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="coherence")
     assert has_registered_source(node) is False
 
 
@@ -386,6 +475,49 @@ def test_liveness_for_node_returns_none_for_unregistered_node():
     node = _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None)
     conn = _FakeConn([])
     assert liveness_for_node(node, conn) is None
+
+
+def test_liveness_for_node_computes_repair_pressure_field():
+    """confidence is NOT gated -- how often the appraiser has zero
+    confidence is itself real liveness information, not noise to filter."""
+    node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="confidence")
+    cur = _FakeCursor(fetchall_result=[(0.65,), (0.087,), (0.194,)])
+    conn = _FakeConn([cur])
+    outcome = liveness_for_node(node, conn)
+    assert isinstance(outcome, LivenessOutcome)
+    assert outcome.verdict == "live"
+    assert outcome.sample_count == 3
+    assert "repair_pressure_appraisal_log.confidence" in outcome.detail
+    query, _params = cur.executed[0]
+    assert "confidence > 0" not in query
+
+
+def test_liveness_for_node_repair_pressure_level_is_confidence_gated():
+    """Regression for the floor-domination finding (scripts/analysis/
+    measure_metacog_trend_baseline.py, 2026-07-30): `level` read ungated is
+    contaminated by the appraiser's confidence==0.0 default. The query must
+    carry the confidence>0 gate; without this test a future edit could drop
+    it silently and reintroduce the exact contamination that finding
+    documents."""
+    node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="level")
+    cur = _FakeCursor(fetchall_result=[(0.12,), (0.19,)])
+    conn = _FakeConn([cur])
+    outcome = liveness_for_node(node, conn)
+    query, _params = cur.executed[0]
+    assert "confidence > 0" in query
+    assert "gated" in outcome.detail
+
+
+def test_liveness_for_node_repair_pressure_dead_when_all_zero():
+    """A real, plausible failure mode for this signal: even among
+    confidence-gated (trustworthy) readings, level never actually
+    elevates -- the appraiser fires with real evidence but never detects a
+    rupture."""
+    node = _FakeNode(name="repair_pressure", surface="organ_signal", metric_field="level")
+    cur = _FakeCursor(fetchall_result=[(0.0,), (0.0,), (0.0,)])
+    conn = _FakeConn([cur])
+    outcome = liveness_for_node(node, conn)
+    assert outcome.verdict == "dead"
 
 
 def test_liveness_for_node_ladder_sample_count_is_real_row_sum_not_bucket_count():
@@ -465,3 +597,29 @@ def test_classify_unbounded_series_still_detects_never_produced():
 
 def test_statement_timeout_ms_is_a_positive_bound():
     assert STATEMENT_TIMEOUT_MS > 0
+
+
+# --------------------------------------------------- repair_pressure invariant
+
+
+def test_repair_pressure_signal_kind_is_unique_across_organ_registry():
+    """`_resolve_source_kind`'s repair_pressure branch disambiguates only by
+    (surface, name, metric_field) -- no check against producer_service or
+    organ identity -- relying on this invariant: exactly one organ in
+    ORGAN_REGISTRY declares a "repair_pressure" signal_kind (confirmed
+    2026-09-04). If a second organ ever adds one, this fails loudly instead
+    of silently routing that organ's liveness queries to
+    repair_pressure_appraisal_log -- the wrong table entirely."""
+    from orion.signals.registry import ORGAN_REGISTRY
+
+    organs_with_repair_pressure = [
+        organ_id
+        for organ_id, entry in ORGAN_REGISTRY.items()
+        if "repair_pressure" in entry.signal_kinds
+    ]
+    assert organs_with_repair_pressure == ["graph_cognition"], (
+        "a second organ now declares a 'repair_pressure' signal_kind -- "
+        "orion.metrics.liveness._resolve_source_kind's repair_pressure branch "
+        "must be updated to also check producer_service/organ identity "
+        "before this can be trusted again"
+    )

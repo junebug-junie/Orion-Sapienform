@@ -183,10 +183,21 @@ async def _run_consumer_scenario(
 async def run_self_study_harness(
     *,
     source: ServiceRef | None = None,
+    bus: Any = None,
     retrieve_runner: RetrieveRunner = run_self_retrieve,
     include_degraded: bool = True,
     soak_iterations: int = 1,
 ) -> SelfStudyHarnessResultV1:
+    """`bus=None` (the default, e.g. the offline CLI) means Layer 3 reflection
+    makes no real LLM call, so the reflective-tier scenarios below (reflection,
+    reflective_retrieval, reflective_consumer) legitimately fail their
+    boundary checks -- that's an honest result, not a harness bug, and is the
+    expected shape for a run with no LLM access. Pass a real (or fake-with-
+    canned-reply, for tests) bus to exercise those scenarios end to end: the
+    "reflection" scenario runs before the retrieval/consumer scenarios below
+    and, when it gets a real bus, populates self_study.py's process-local
+    reflection cache -- which the later retrieval scenarios then read (they
+    never trigger their own LLM call; see _retrieve_self_study_in_process)."""
     source_ref = source or _default_source()
     timestamp = _utc_now()
     run_id = f"self-study-harness-{uuid4()}"
@@ -229,7 +240,7 @@ async def run_self_study_harness(
         )
     )
 
-    reflection_result = await run_self_concept_reflect(bus=None, source=source_ref, correlation_id=f"{run_id}:reflect")
+    reflection_result = await run_self_concept_reflect(bus=bus, source=source_ref, correlation_id=f"{run_id}:reflect")
     reflection_violations: list[str] = []
     if not reflection_result.findings:
         reflection_violations.append("no_reflective_findings")

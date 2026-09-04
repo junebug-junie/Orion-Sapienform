@@ -37,6 +37,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
+from orion.core.bus.codec import OrionCodec  # noqa: E402
 from orion.core.verbs.base import VerbContext  # noqa: E402
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest  # noqa: E402
 
@@ -93,6 +94,39 @@ class _FakeBus:
         if self.fail_channel == channel:
             raise RuntimeError(f"publish_failed:{channel}")
         self.published.append((channel, envelope))
+
+
+class _FakeReflectBus(_FakeBus):
+    """Adds the RPC round trip reflect_self_concepts() now makes, on top of
+    _FakeBus's existing publish(). `findings_payload` is what the fake
+    LLMGatewayService step "returns" -- a list of raw finding dicts, same
+    shape self_study_reflect_prompt.j2 asks the model for. `rpc_error=True`
+    simulates an unreachable/failing cortex-orch (RPC raises)."""
+
+    def __init__(self, *, findings_payload: list[dict] | None = None, rpc_error: bool = False) -> None:
+        super().__init__()
+        self.codec = OrionCodec()
+        self._findings_payload = findings_payload if findings_payload is not None else []
+        self._rpc_error = rpc_error
+        self.rpc_calls: list[tuple[str, str]] = []
+
+    async def rpc_request(self, request_channel: str, envelope: BaseEnvelope, *, reply_channel: str, timeout_sec: float) -> dict:
+        self.rpc_calls.append((request_channel, reply_channel))
+        if self._rpc_error:
+            raise TimeoutError("fake_rpc_timeout")
+        result_envelope = BaseEnvelope(
+            kind="cortex.orch.result",
+            source=ServiceRef(name="orion-cortex-orch"),
+            correlation_id=envelope.correlation_id,
+            payload={
+                "ok": True,
+                "mode": "brain",
+                "verb": "self_study.reflect",
+                "status": "success",
+                "final_text": json.dumps({"findings": self._findings_payload}),
+            },
+        )
+        return {"data": self.codec.encode(result_envelope)}
 
 
 def _request(verb_name: str = "self_repo_inspect", *, extra: dict | None = None) -> PlanExecutionRequest:
@@ -431,7 +465,24 @@ def test_reflect_self_concepts_does_not_crash_on_a_real_structural_delta(monkeyp
     )
 
     # This must not raise concept_idempotency_mismatch.
-    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    structural_concept = next(c for c in concepts if c.concept_kind == "structural_mass")
+    bus = _FakeReflectBus(
+        findings_payload=[
+            {
+                "reflection_kind": "architecture_observation",
+                "title": "Structural delta is real",
+                "description": "The graph moved since the last observation.",
+                "concept_kinds": [structural_concept.concept_kind],
+                "confidence": 0.7,
+                "salience": 0.6,
+            }
+        ]
+    )
+    findings = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    ).findings
     assert findings
 
 
@@ -566,8 +617,25 @@ def test_self_concept_induce_verb_graph_write_is_retired():
 def test_reflect_self_concepts_returns_reflective_findings_with_evidence_and_concept_refs():
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
+    bus = _FakeReflectBus(
+        findings_payload=[
+            {
+                "reflection_kind": kind,
+                "title": f"Finding for {concept.concept_kind}",
+                "description": f"About {concept.label}.",
+                "concept_kinds": [concept.concept_kind],
+                "confidence": 0.7,
+                "salience": 0.6,
+            }
+            for kind, concept in zip(("tension", "seam_risk"), concepts)
+        ]
+    )
 
-    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    findings = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    ).findings
 
     assert findings
     assert all(finding.trust_tier == "reflective" for finding in findings)
@@ -577,60 +645,167 @@ def test_reflect_self_concepts_returns_reflective_findings_with_evidence_and_con
     assert all(ref.trust_tier == "induced" for finding in findings for ref in finding.concept_refs)
 
 
-def test_reflect_self_concepts_pairs_structural_delta_with_enrichment_narrative(monkeypatch, tmp_path):
-    # induce_self_concepts()'s Phase 2A validation re-runs induction and
-    # requires byte-identical concept ids on repeat -- so instead of hand-
-    # building a structural_mass concept that only the *first* call would
-    # see, monkeypatch the two Layer 2 source functions themselves to be
-    # deterministic. That way the real induce_self_concepts() pipeline (and
-    # its internal repeat-call idempotency check) exercises the actual
-    # pairing branch in reflect_self_concepts() end to end.
-    cache_dir = tmp_path / "cache" / "self_study_enrichment"
-    entry_dir = cache_dir / "ab"
-    entry_dir.mkdir(parents=True)
-    (entry_dir / "entry.json").write_text(
-        json.dumps(
-            {
-                "summary": "structural_mass computes real git/graph deltas rather than fabricating a zero delta.",
-                "touched_paths": ["orion/structural_mass/graph_delta.py"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(self_study, "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR", str(cache_dir))
-
-    def fake_structural_delta_concepts(snapshot):
-        module_item = next(item for item in snapshot.modules if item.name == "orion.structural_mass")
-        return [
-            self_study._concept(
-                snapshot=snapshot,
-                concept_kind="structural_mass",
-                label="repo-wide structural mass delta",
-                description="graphify's on-disk structural snapshot moved: node_count_delta=+3.",
-                evidence_items=[module_item],
-                inferred_from=["structural_mass_delta"],
-            )
-        ]
-
-    monkeypatch.setattr(self_study, "_structural_delta_concepts", fake_structural_delta_concepts)
-
+def test_self_study_reflect_input_surfaces_every_concept_for_joint_consideration():
+    # The old hardcoded reflect_self_concepts() guaranteed a specific finding
+    # whenever a structural_mass concept AND a semantic_enrichment concept
+    # co-occurred in one snapshot. That deterministic pairing is gone by
+    # design -- whether to connect two concepts is now the model's real
+    # judgment call, not code's. What code can and must still guarantee: the
+    # model actually SEES every concept in the same call, so it COULD make
+    # that connection. This is the boundary of what's testable without a
+    # real or canned LLM opinion baked into a gate test.
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
-    assert any(c.concept_kind == "structural_mass" for c in concepts)
-    assert any(c.concept_kind == "semantic_enrichment" for c in concepts)
+    assert len(concepts) >= 2, "fixture needs at least two real concepts to prove joint visibility"
 
-    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    reflect_input = self_study._self_study_reflect_input(snapshot, concepts)
 
-    paired = [f for f in findings if f.title == "Structural delta and a cached enrichment narrative both point at real change"]
-    assert len(paired) == 1
-    assert any(ref.concept_kind == "structural_mass" for ref in paired[0].concept_refs)
-    assert any(ref.concept_kind == "semantic_enrichment" for ref in paired[0].concept_refs)
+    assert reflect_input["snapshot_id"] == snapshot.snapshot_id
+    input_kinds = {item["concept_kind"] for item in reflect_input["concepts"]}
+    assert input_kinds == {concept.concept_kind for concept in concepts}
+    assert reflect_input["counts_by_kind"]
+    assert sum(reflect_input["counts_by_kind"].values()) == len(concepts)
+    for item, concept in zip(reflect_input["concepts"], concepts):
+        assert item["label"] == concept.label
+        assert item["description"] == concept.description
+
+
+def test_reflect_self_concepts_no_bus_returns_empty_without_caching():
+    # No hardcoded template fallback any more: no bus means no LLM call, and
+    # reflect_self_concepts() must not fabricate a result -- same "produce
+    # nothing on failure" discipline _structural_delta_concepts follows.
+    # It also must NOT write to the reflection cache, since "no bus" means
+    # "never attempted," not "attempted and found nothing" -- the cache-
+    # reading retrieval path depends on that distinction.
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    concepts = self_study.induce_self_concepts(snapshot)
+    self_study._REFLECTION_RESULT_CACHE.pop(snapshot.snapshot_id, None)
+
+    outcome = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=None, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    )
+
+    assert outcome.findings == []
+    # bus=None is "never attempted", not "attempted and failed".
+    assert outcome.llm_call_failed is False
+    assert snapshot.snapshot_id not in self_study._REFLECTION_RESULT_CACHE
+
+
+def test_reflect_self_concepts_rpc_failure_returns_empty_and_does_not_raise():
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    concepts = self_study.induce_self_concepts(snapshot)
+    self_study._REFLECTION_RESULT_CACHE.pop(snapshot.snapshot_id, None)
+    bus = _FakeReflectBus(rpc_error=True)
+
+    outcome = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    )
+
+    assert outcome.findings == []
+    # A real attempt that FAILED must be flagged and must NOT cache -- caching
+    # `[]` here would be indistinguishable from a genuine "reflected, found
+    # nothing" success, letting an RPC/infra outage read as a calm reflection.
+    assert outcome.llm_call_failed is True
+    assert snapshot.snapshot_id not in self_study._REFLECTION_RESULT_CACHE
+
+
+def test_reflect_self_concepts_drops_findings_naming_unknown_concept_kinds():
+    # The model can be wrong about which concepts it's citing. Never trust it
+    # as a source of evidence -- a finding naming a concept_kind absent from
+    # THIS snapshot's real concepts must be dropped, not kept with a
+    # fabricated concept_ref.
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    concepts = self_study.induce_self_concepts(snapshot)
+    bus = _FakeReflectBus(
+        findings_payload=[
+            {
+                "reflection_kind": "tension",
+                "title": "Fabricated finding",
+                "description": "Cites a concept_kind that does not exist in this snapshot.",
+                "concept_kinds": ["this_concept_kind_does_not_exist"],
+                "confidence": 0.9,
+                "salience": 0.9,
+            }
+        ]
+    )
+
+    outcome = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    )
+
+    # A real, successful call that filtered every finding out -- not a
+    # failure. Findings dropped for bad grounding still counts as the LLM
+    # call having succeeded.
+    assert outcome.findings == []
+    assert outcome.llm_call_failed is False
+
+
+def test_reflect_self_concepts_real_llm_finding_carries_real_evidence_and_concept_refs():
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    concepts = self_study.induce_self_concepts(snapshot)
+    target_concept = concepts[0]
+    bus = _FakeReflectBus(
+        findings_payload=[
+            {
+                "reflection_kind": "growth_area",
+                "title": "Real finding",
+                "description": "Grounded in a real concept from this snapshot.",
+                "concept_kinds": [target_concept.concept_kind],
+                "confidence": 1.4,  # out-of-range on purpose -- must clamp, not reject
+                "salience": -0.2,
+                "recommendation": "  ",  # blank after strip -- must become None, not ""
+            }
+        ]
+    )
+
+    outcome = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    )
+    findings = outcome.findings
+
+    assert outcome.llm_call_failed is False
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.trust_tier == "reflective"
+    assert finding.confidence == 1.0
+    assert finding.salience == 0.0
+    assert finding.recommendation is None
+    assert finding.evidence
+    assert all(ref.trust_tier == "authoritative" for ref in finding.evidence)
+    assert finding.concept_refs
+    assert all(ref.trust_tier == "induced" for ref in finding.concept_refs)
+    assert self_study._REFLECTION_RESULT_CACHE.get(snapshot.snapshot_id) == findings
 
 
 def test_reflective_rdf_request_uses_separate_graph_and_never_authoritative():
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
-    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    target_concept = concepts[0]
+    bus = _FakeReflectBus(
+        findings_payload=[
+            {
+                "reflection_kind": "tension",
+                "title": "Real finding",
+                "description": "Grounded in a real concept.",
+                "concept_kinds": [target_concept.concept_kind],
+                "confidence": 0.7,
+                "salience": 0.6,
+            }
+        ]
+    )
+    findings = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    ).findings
 
     req = self_study.build_self_reflection_rdf_request(
         source_snapshot=snapshot,
@@ -648,7 +823,12 @@ def test_reflective_rdf_request_uses_separate_graph_and_never_authoritative():
 def test_reflective_journal_payload_is_compact_and_marked_reflective():
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
-    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    bus = _FakeReflectBus()  # empty findings_payload -- entry format holds even for zero findings
+    findings = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    ).findings
 
     journal = self_study.build_self_reflection_journal_entry(
         snapshot=snapshot,
@@ -665,7 +845,15 @@ def test_reflective_journal_payload_is_compact_and_marked_reflective():
 def test_publish_reflection_gracefully_skips_without_bus():
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
-    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    # bus=None: reflect_self_concepts() makes no LLM call and produces no
+    # findings at all now, on top of publish_self_reflection_artifacts()
+    # below also degrading gracefully with an empty list.
+    findings = asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=None, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    ).findings
+    assert findings == []
 
     graph_status, journal_status, journal_entry = asyncio.run(
         self_study.publish_self_reflection_artifacts(
@@ -685,7 +873,13 @@ def test_publish_reflection_gracefully_skips_without_bus():
 
 
 def test_self_concept_reflect_verb_graph_write_retired_journal_still_written():
-    bus = _FakeBus()
+    # _FakeReflectBus, not plain _FakeBus: reflection now makes a real LLM
+    # call over the bus, so exercising "journal still written" needs a bus
+    # that can actually complete that call. (A bus that can publish() but
+    # not rpc_request() -- plain _FakeBus -- is now a genuine reflection
+    # FAILURE, covered separately by test_reflect_self_concepts_rpc_failure_*
+    # and the run_self_concept_reflect failure-path behavior it exercises.)
+    bus = _FakeReflectBus()
     ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="orion-cortex-exec"), "correlation_id": "corr-reflect-2"})
 
     out, effects = asyncio.run(verb_adapters.SelfConceptReflectVerb().execute(ctx, _request("self_concept_reflect")))
@@ -702,6 +896,26 @@ def test_self_concept_reflect_verb_graph_write_retired_journal_still_written():
     assert result["journal_entry"]["source_kind"] == "self_reflection"
     assert all(finding["trust_tier"] == "reflective" for finding in result["findings"])
     assert [channel for channel, _ in bus.published] == ["orion:journal:write"]
+
+
+def test_run_self_concept_reflect_skips_publish_when_llm_call_genuinely_fails():
+    # The empty-shell-cognition fix: a real LLM attempt that FAILS must not
+    # be published as a completed "0 findings" reflection -- that would
+    # misrepresent an infra failure as calm, finished cognition.
+    bus = _FakeReflectBus(rpc_error=True)
+
+    result = asyncio.run(
+        self_study.run_self_concept_reflect(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), correlation_id="corr-reflect-fail"
+        )
+    )
+
+    assert result.findings == []
+    assert result.graph_write.status == "skipped"
+    assert result.graph_write.detail == "reflection_llm_call_failed"
+    assert result.journal_write.status == "skipped"
+    assert result.journal_write.detail == "reflection_llm_call_failed"
+    assert bus.published == []  # nothing was published to the journal channel
 
 
 def test_self_retrieve_factual_mode_returns_authoritative_records_only():
@@ -737,7 +951,39 @@ def test_self_retrieve_conceptual_mode_preserves_authoritative_and_induced_disti
     assert all(item.record_type in {"fact", "concept"} for group in result.groups for item in group.items)
 
 
+def _prime_reflection_cache_for_current_repo_state(*, reflection_kind: str = "tension") -> None:
+    """Runs a real (fake-bus-backed) reflection pass and leaves its result in
+    _REFLECTION_RESULT_CACHE, keyed on the CURRENT repo's snapshot_id.
+    snapshot_id is a content digest (observed_at/run_id excluded -- see
+    _canonical_snapshot_payload), so this matches whatever snapshot
+    _retrieve_self_study_in_process() builds internally next, as long as
+    repo content doesn't change mid-test. Mirrors how retrieval now actually
+    gets reflective content: a real reflect_self_concepts() run first, then
+    a cache read -- never a synchronous LLM call inside retrieval itself."""
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    concepts = self_study.induce_self_concepts(snapshot)
+    target_concept = concepts[0]
+    bus = _FakeReflectBus(
+        findings_payload=[
+            {
+                "reflection_kind": reflection_kind,
+                "title": "Primed finding for retrieval tests",
+                "description": f"About {target_concept.label}.",
+                "concept_kinds": [target_concept.concept_kind],
+                "confidence": 0.7,
+                "salience": 0.6,
+            }
+        ]
+    )
+    asyncio.run(
+        self_study.reflect_self_concepts(
+            bus=bus, source=ServiceRef(name="orion-cortex-exec"), snapshot=snapshot, concepts=concepts
+        )
+    )
+
+
 def test_self_retrieve_reflective_mode_returns_all_three_trust_tiers():
+    _prime_reflection_cache_for_current_repo_state()
     request = self_study.SelfStudyRetrieveRequestV1.model_validate(
         {
             "retrieval_mode": "reflective",
@@ -753,7 +999,28 @@ def test_self_retrieve_reflective_mode_returns_all_three_trust_tiers():
     assert any(item.record_type == "reflection" for group in result.groups for item in group.items)
 
 
+def test_self_retrieve_reflective_mode_notes_a_missing_cache_instead_of_computing_one():
+    # No reflect_self_concepts() call has primed the cache for this exact
+    # snapshot -- retrieval must say so plainly rather than silently
+    # returning zero reflections indistinguishable from "reflection ran and
+    # found nothing," and it must NOT trigger an LLM call to fill the gap.
+    snapshot_probe = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    self_study._REFLECTION_RESULT_CACHE.pop(snapshot_probe.snapshot_id, None)
+    request = self_study.SelfStudyRetrieveRequestV1.model_validate(
+        {
+            "retrieval_mode": "reflective",
+            "filters": {"limit": 30},
+        }
+    )
+
+    result = self_study.retrieve_self_study(request)
+
+    assert result.counts.reflections == 0
+    assert any("No reflective findings cached yet" in note for note in result.notes)
+
+
 def test_self_retrieve_filters_by_kind_and_preserves_provenance_fields():
+    _prime_reflection_cache_for_current_repo_state(reflection_kind="seam_risk")
     request = self_study.SelfStudyRetrieveRequestV1.model_validate(
         {
             "retrieval_mode": "reflective",

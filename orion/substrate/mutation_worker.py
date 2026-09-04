@@ -266,6 +266,37 @@ class SubstrateAdaptationWorker:
                         applied=False,
                     )
                     continue
+                # Real-stakes gate (2026-09-04): re-check rollback cooldown
+                # before apply, same reason as the active_surface re-check
+                # above -- record_adoption()'s own cooldown refusal runs AFTER
+                # applier.apply() already wrote the live control surface, so
+                # without this pre-check a cooled-down surface would still get
+                # its live value overwritten by an adoption that is then
+                # rejected and never applier.rollback()'d, silently defeating
+                # the whole point of the cooldown.
+                cooldown_until = self.store.rollback_cooldown_until(proposal.target_surface)
+                if cooldown_until is not None and t < cooldown_until:
+                    notes.append("target_surface_in_rollback_cooldown")
+                    self.store.record_apply_blocked(
+                        proposal_id=proposal.proposal_id,
+                        decision_id=decision.decision_id,
+                        target_surface=proposal.target_surface,
+                        reason="target_surface_in_rollback_cooldown",
+                        notes=["target_surface_in_rollback_cooldown"],
+                        queue_status=self.store.queue_status_for_proposal(proposal.proposal_id),
+                    )
+                    self._trace(
+                        event="mutation_apply_blocked",
+                        cycle_id=cycle_id,
+                        queue_item_id=queue_item.queue_item_id,
+                        proposal_id=proposal.proposal_id,
+                        lineage_id=(proposal.source_signal_ids[0] if proposal.source_signal_ids else proposal.proposal_id),
+                        decision=decision.action,
+                        surface_key=proposal.target_surface,
+                        blocked_reason="target_surface_in_rollback_cooldown",
+                        applied=False,
+                    )
+                    continue
                 adoption = self.applier.apply(proposal=proposal, decision=decision)
                 if adoption is None:
                     noop_reason = self.applier.noop_reason(proposal=proposal)

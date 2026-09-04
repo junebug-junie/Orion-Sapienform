@@ -58,6 +58,45 @@ _ROLLBACK_COOLDOWN_MULTIPLIER: dict[str, float] = {
 # surface_reliability() returns None rather than a noisy ratio -- same "don't
 # report a fabricated mid-range confidence during cold start" discipline as
 # orion/proposals/scoring.py::dimension_confidence().
+#
+# CLAUDE.md 0A metric-quality gate, run before this was wired into
+# ProposalFactory.plan_for_pressure() (2026-09-04):
+#   1. Provenance: reads MutationAdoptionV1.status, set only by
+#      record_settlement() ("settled") and record_rollback() ("rolled_back")
+#      in this same file -- both real, already-exercised code paths, not
+#      assumed.
+#   2. Independence: NOT fully independent of the other signals already
+#      feeding DecisionEngine.decide() (active_surface_exists,
+#      has_replay_and_baseline) -- a surface that fails trials will tend to
+#      also accumulate rollbacks, so these correlate in practice. They are
+#      not the same measurement, though: active_surface_exists is a
+#      real-time lock state, has_replay_and_baseline is about trial data
+#      availability, and this is a retrospective outcome ratio over resolved
+#      adoptions -- a different pipeline stage, not a relabeling of either
+#      existing signal. Flagged as a real, only-partial independence, not
+#      claimed clean.
+#   3. Theory anchor: Laplace's rule of succession (the (settled+1)/
+#      (settled+rolled_back+2) smoothing below) -- a track record of past
+#      resolved outcomes is the standard prior for a future one, same
+#      family of justification as this file's precision-weighted signals
+#      elsewhere in the repo.
+#   4. Live-data sanity, checked 2026-09-04 against real Postgres
+#      (substrate_mutation_adoption): 6 real rows, all target_surface
+#      "routing", all status "settled". Not degenerate -- above
+#      SURFACE_RELIABILITY_MIN_SAMPLES and yields a real, non-trivial value
+#      (7/8 = 0.875, comfortably above the 0.34 floor). Every OTHER surface
+#      has zero resolved adoptions -- cold start (None) is the honest,
+#      universal live state outside "routing" today. Caveat: "routing" is
+#      currently parked (mutation_proposals.py's _PARKED_MUTATION_CLASSES),
+#      so this reader is not actually exercised as a live gating decision
+#      yet -- the number is real, but nothing is currently deciding off it.
+#   5. Existing mechanism: searched -- no existing per-surface historical
+#      reliability tracking anywhere in orion/substrate/ before this.
+#   6. Reversibility: no new schema, no new persisted state -- both
+#      rollback_cooldown_until() and surface_reliability() are pure
+#      functions over already-persisted records. Deleting them and their 3
+#      call sites (record_adoption(), mutation_worker.py's pre-apply check,
+#      ProposalFactory.plan_for_pressure()) fully reverts this.
 SURFACE_RELIABILITY_MIN_SAMPLES = 3
 
 
@@ -271,23 +310,31 @@ class SubstrateMutationStore:
         return created_draft
 
     def record_adoption(self, adoption: MutationAdoptionV1) -> list[str]:
-        existing_adoption = next((item for item in self._adoptions.values() if item.proposal_id == adoption.proposal_id), None)
-        if existing_adoption is not None:
-            if existing_adoption.adoption_id == adoption.adoption_id:
-                return []
-            return ["duplicate_adoption_for_proposal"]
-        target_surface = adoption.target_surface
-        cooldown_until = self.rollback_cooldown_until(target_surface)
-        if cooldown_until is not None and _utc_now() < cooldown_until:
-            return ["target_surface_in_rollback_cooldown"]
-        existing = self._active_surface_by_target.get(target_surface)
-        if existing and existing != adoption.adoption_id:
-            return ["active_mutation_exists_for_target_surface"]
-        self._active_surface_by_target[target_surface] = adoption.adoption_id
-        self._adoptions[adoption.adoption_id] = adoption
-        proposal = self._proposals.get(adoption.proposal_id)
-        if proposal is not None:
-            with self._lock:
+        # 2026-09-04 review finding: the duplicate/cooldown/active-surface
+        # checks used to run unlocked, then write unlocked -- a real race
+        # once the mutation cycle moved to a worker thread (2026-09-03, see
+        # this class's own _lock comment above). Two concurrent adoptions for
+        # the same target_surface could both observe "no lock held" and both
+        # write, silently holding the surface twice. _lock is reentrant
+        # (RLock), so the nested acquisition inside rollback_cooldown_until()
+        # below is safe.
+        with self._lock:
+            existing_adoption = next((item for item in self._adoptions.values() if item.proposal_id == adoption.proposal_id), None)
+            if existing_adoption is not None:
+                if existing_adoption.adoption_id == adoption.adoption_id:
+                    return []
+                return ["duplicate_adoption_for_proposal"]
+            target_surface = adoption.target_surface
+            cooldown_until = self.rollback_cooldown_until(target_surface)
+            if cooldown_until is not None and _utc_now() < cooldown_until:
+                return ["target_surface_in_rollback_cooldown"]
+            existing = self._active_surface_by_target.get(target_surface)
+            if existing and existing != adoption.adoption_id:
+                return ["active_mutation_exists_for_target_surface"]
+            self._active_surface_by_target[target_surface] = adoption.adoption_id
+            self._adoptions[adoption.adoption_id] = adoption
+            proposal = self._proposals.get(adoption.proposal_id)
+            if proposal is not None:
                 self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": "applied"})
         self._set_queue_status_for_proposal(adoption.proposal_id, "applied")
         self._persist()
@@ -1562,7 +1609,15 @@ class SubstrateMutationStore:
         if len(self._adoptions) > self._retention_max_adoptions:
             # Never evict an adoption that still holds a surface: dropping the
             # holder would strand the lock with nothing able to release it.
-            held = set(self._active_surface_by_target.values())
+            # 2026-09-04 review finding: also never evict an adoption still
+            # referenced by a RETAINED rollback record (rollbacks have their
+            # own, separate retention above). rollback_cooldown_until() joins
+            # a rollback back to its adoption to resolve target_surface and
+            # rollback_window_sec -- dropping the adoption first would make
+            # that lookup fail and the cooldown fail open (by design, an
+            # unresolvable lookup does not become a permanent lock) on a
+            # surface that should still be cooling down.
+            held = set(self._active_surface_by_target.values()) | {r.adoption_id for r in self._rollbacks.values()}
             rows = sorted(self._adoptions.values(), key=lambda row: row.created_at)
             evictable = [row for row in rows if row.adoption_id not in held]
             surplus = len(self._adoptions) - self._retention_max_adoptions

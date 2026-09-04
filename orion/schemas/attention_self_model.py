@@ -5,7 +5,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from orion.schemas.attention_frame import VoluntaryOverrideV1
+from orion.schemas.attention_frame import (
+    VoluntaryOverrideAbsentReasonV1,
+    VoluntaryOverrideV1,
+)
 
 
 def _utc_now() -> datetime:
@@ -92,6 +95,30 @@ class AttentionSelfModelV1(BaseModel):
     attention_reason: AttentionReasonV1 = "no_data"
     voluntary_override: VoluntaryOverrideV1 | None = None
     reason_narrative: str = ""
+
+    # --- Why NOT: the four facts that make a missing override diagnosable ---
+    #
+    # Added 2026-09-04. `attention_reason` had been `bottom_up_salience` on
+    # 19,408 of 19,408 rows across seven days, and the row recorded that no
+    # override happened while recording nothing about which of five real exits
+    # produced that -- so the result could be observed but never root-caused
+    # (CLAUDE.md Sec 0A, and the standing "never let an absent reading assert a
+    # cause" rule). Each field answers a different question; none is derivable
+    # from the others:
+    #
+    #   voluntary_override_absent_reason -> which branch stopped it
+    #   top_down_effort_used             -> how much top-down effort was spent
+    #   top_down_bias_max                -> was the goal relevant to ANY loop
+    #   open_loop_count                  -> was there a real competition at all
+    #
+    # The middle two separate the two ways `bias_did_not_flip_winner` happens:
+    # a goal that was irrelevant to everything (bias_max 0.0) versus a goal
+    # that pushed and still lost (bias_max > 0). Reading only the reason
+    # string would merge them.
+    voluntary_override_absent_reason: VoluntaryOverrideAbsentReasonV1 | None = None
+    top_down_effort_used: float | None = Field(default=None, ge=0.0)
+    top_down_bias_max: float | None = Field(default=None, ge=0.0, le=1.0)
+    open_loop_count: int | None = Field(default=None, ge=0)
 
     # --- How confident, derived from a real signal, never invented ---------
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)

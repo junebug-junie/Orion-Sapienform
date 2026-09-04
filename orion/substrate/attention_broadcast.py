@@ -245,10 +245,20 @@ def _apply_voluntary_attention(
     """Layer top-down goal bias onto the bottom-up frame (spec Step 2).
 
     Default-off and never-raises: when the flag is off or there is no active goal,
-    the frame is returned byte-identical to bottom-up selection. When an active
-    goal flips the winner, fill each loop's top_down_bias/combined_salience,
-    re-point ``selected_action`` to the combined winner, and record the
+    selection is unchanged from bottom-up. When an active goal flips the winner,
+    fill each loop's top_down_bias/combined_salience, re-point
+    ``selected_action`` to the combined winner, and record the
     ``voluntary_override`` trace.
+
+    **2026-09-04:** every exit now also records
+    ``frame.voluntary_override_absent_reason``, so a frame without an override
+    says *which* branch produced that. This function is therefore no longer
+    byte-identical to its input on the no-op paths -- it sets exactly that one
+    field and nothing else. The previous wording ("returned byte-identical")
+    is retained here only to name what changed. The first three exits below are
+    mutually indistinguishable downstream (all leave ``effort_budget_used`` at
+    0.0 with no per-loop bias), which is why the reason is recorded here rather
+    than inferred by a reader.
     """
     try:
         from orion.substrate.attention.top_down import (
@@ -259,6 +269,7 @@ def _apply_voluntary_attention(
         from orion.substrate.attention.goal_context import get_active_goal
 
         if not top_down_enabled():
+            frame.voluntary_override_absent_reason = "top_down_disabled"
             return frame
         # 2026-07-31: the `salience_v2_enabled()` gate that used to sit here
         # was removed. Its stated rationale ("with salience_v2 OFF,
@@ -271,7 +282,15 @@ def _apply_voluntary_attention(
         # own justification is gone would be exactly the kind of zombie
         # gate this program's kill-means-kill discipline exists to remove.
         goal = get_active_goal()
-        if goal is None or not frame.open_loops:
+        # Split from a single `goal is None or not frame.open_loops` guard on
+        # 2026-09-04: collapsed, the two cases were indistinguishable in the
+        # record, and they mean very different things -- "Orion wanted nothing"
+        # versus "there was nothing to want".
+        if goal is None:
+            frame.voluntary_override_absent_reason = "no_active_goal"
+            return frame
+        if not frame.open_loops:
+            frame.voluntary_override_absent_reason = "no_open_loops"
             return frame
         bottom_up = {loop.id: float(loop.salience) for loop in frame.open_loops}
         result = TopDownBiasCombiner(TopDownConfig.from_env()).apply(
@@ -284,7 +303,12 @@ def _apply_voluntary_attention(
                 loop.top_down_bias = score.top_down_bias
                 loop.combined_salience = score.combined_salience
         frame.effort_budget_used = result.effort_used
-        if result.override is not None:
+        if result.override is None:
+            # The combiner ran and top-down bias did not change the winner
+            # (top_down.py Rule 6). Distinct from the guards above: a goal WAS
+            # present and effort WAS spent; bottom-up simply still won.
+            frame.voluntary_override_absent_reason = "bias_did_not_flip_winner"
+        else:
             # Only record the override when the winner actually has an action to
             # re-point to — otherwise the frame would claim an override it can't
             # enact (chosen_loop_id disagreeing with selected_action).
@@ -293,12 +317,23 @@ def _apply_voluntary_attention(
                  if getattr(a, "open_loop_id", None) == result.winner_loop_id),
                 None,
             )
-            if winner_action is not None:
+            if winner_action is None:
+                frame.voluntary_override_absent_reason = "winner_had_no_action"
+            else:
                 frame.voluntary_override = result.override
                 frame.selected_action = winner_action
+                # Explicit: the two fields are mutually exclusive, and this is
+                # the only path that sets an override. Leaving a stale reason
+                # here would make a successful override look refused.
+                frame.voluntary_override_absent_reason = None
         return frame
     except Exception:
         logger.warning("voluntary_attention_apply_failed", exc_info=True)
+        # A swallowed defect must not read as a normal quiet tick. Plain
+        # setattr on a declared pydantic field (no validate_assignment on this
+        # model), so this cannot itself raise and break the never-raises
+        # contract this handler exists to keep.
+        frame.voluntary_override_absent_reason = "combiner_error"
         return frame
 
 

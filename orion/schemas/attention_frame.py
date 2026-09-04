@@ -212,6 +212,45 @@ class AttentionSignalV1(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     provenance: dict[str, Any] = Field(default_factory=dict)
 
+# Why no `voluntary_override` was recorded on a frame. Every value below maps
+# 1:1 to a real exit in `orion/substrate/attention_broadcast.py::
+# _apply_voluntary_attention` -- this is a record of which branch ran, not a
+# taxonomy invented on top of one. Added 2026-09-04 because the stored
+# self-model said an override had not happened and nothing said *why*: the
+# `bottom_up_salience` branch had won 19,408 of 19,408 ticks over seven days
+# and the cause was unrecoverable, only guessable (CLAUDE.md Sec 0A --
+# "an aggregate that cannot name a cause will hide one").
+#
+# The first three exits are indistinguishable from the frame alone -- all
+# leave `effort_budget_used` at 0.0 with no per-loop bias set -- which is
+# exactly why the reason has to be recorded at the site that knows it rather
+# than derived downstream.
+VoluntaryOverrideAbsentReasonV1 = Literal[
+    # ORION_ATTENTION_TOPDOWN_ENABLED is off; the combiner never ran.
+    "top_down_disabled",
+    # `get_active_goal()` returned None -- nothing to bias toward.
+    "no_active_goal",
+    # The frame carried no open loops; there was no competition to bias.
+    "no_open_loops",
+    # The combiner ran and top-down bias did NOT change the winner
+    # (top_down.py Rule 6). Bottom-up would have chosen the same loop.
+    "bias_did_not_flip_winner",
+    # Top-down DID flip the winner, but that loop had no candidate action to
+    # re-point to, so the frame refused to claim an override it cannot enact.
+    "winner_had_no_action",
+    # `_apply_voluntary_attention` raised and was swallowed by its own
+    # never-raises guard. Distinct from every value above: this is a defect
+    # signal, not a normal outcome.
+    "combiner_error",
+    # Reducer-only. Never set on a frame: the frame is the thing being read.
+    # Set by `reduce_attention_self_model()` when the broadcast lane was
+    # absent, stale, or carried no frame, so no producer-side reason exists
+    # to report. Kept in this one Literal so a consumer has a single field to
+    # switch on rather than two half-answers.
+    "broadcast_lane_unreadable",
+]
+
+
 class AttentionFrameV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -229,6 +268,11 @@ class AttentionFrameV1(BaseModel):
     # Voluntary attention (additive). Set when top-down goal bias flipped the
     # winner; None when selection was pure bottom-up (default -> current behavior).
     voluntary_override: VoluntaryOverrideV1 | None = None
+    # Mutually exclusive with `voluntary_override`: exactly one of the two is
+    # set on any frame the combiner touched. None here alongside a None
+    # override means this frame predates the field (2026-09-04) -- absence of
+    # a reason is NOT itself a reason, and must not be read as one.
+    voluntary_override_absent_reason: VoluntaryOverrideAbsentReasonV1 | None = None
     effort_budget_used: float = Field(default=0.0, ge=0.0)
     debug: dict[str, Any] = Field(default_factory=dict)
 

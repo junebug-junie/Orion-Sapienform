@@ -765,6 +765,7 @@ def insert_drift_record(
     threshold_outlier: Optional[float],
     topic_shares: Dict[str, Any],
     created_at: datetime,
+    window_label: Optional[str] = None,
 ) -> None:
     with pg_conn() as conn:
         with conn.cursor() as cur:
@@ -772,8 +773,8 @@ def insert_drift_record(
                 """
                 INSERT INTO topic_foundry_drift (
                     drift_id, model_id, window_start, window_end, js_divergence, outlier_pct,
-                    threshold_js, threshold_outlier, topic_shares, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    threshold_js, threshold_outlier, topic_shares, created_at, window_label
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(drift_id),
@@ -786,6 +787,7 @@ def insert_drift_record(
                     threshold_outlier,
                     Json(topic_shares),
                     created_at,
+                    window_label,
                 ),
             )
 

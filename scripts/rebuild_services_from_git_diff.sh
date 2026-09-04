@@ -77,6 +77,29 @@ if [ "$PY_RC" -ne 0 ]; then
     exit "$PY_RC"
 fi
 
+# cortex-exec and cortex-orch are coupled at runtime, not just by the
+# import-graph classifier above: cortex-exec's self_study.py round-trips
+# CortexClientRequest calls through cortex-orch (verb resolution + verb
+# activation live there), so a cortex-exec change can require an orch
+# rebuild even when the affected-services classifier -- which walks .py
+# import statements -- doesn't happen to attribute the changed path to
+# orch (verb YAML/prompt-template changes under orion/cognition/ are the
+# concrete case: they carry no Python import statement of their own to
+# scan). Confirmed live 2026-09-04: a cortex-exec-only rebuild shipped a
+# new verb, orch's stale image never learned about it, and the verb
+# resolved as inactive on the live bus until orch was rebuilt by hand.
+# So: whenever cortex-exec is rebuilt, always rebuild cortex-orch too,
+# regardless of what the classifier attributed to orch on its own.
+CORTEX_EXEC_SVC="orion-cortex-exec"
+CORTEX_ORCH_SVC="orion-cortex-orch"
+if printf '%s\n' $SERVICES | grep -qx "$CORTEX_EXEC_SVC" 2>/dev/null; then
+    if ! printf '%s\n' $SERVICES | grep -qx "$CORTEX_ORCH_SVC" 2>/dev/null; then
+        echo "rebuild_services_from_git_diff.sh: $CORTEX_EXEC_SVC is affected -- adding $CORTEX_ORCH_SVC (coupled at runtime, see script comment)"
+        SERVICES="$SERVICES
+$CORTEX_ORCH_SVC"
+    fi
+fi
+
 if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     echo "rebuild_services_from_git_diff.sh: no affected services to rebuild on this host"
     echo "rebuild_services_from_git_diff.sh: (see rebuild_affected_services stderr above for host filter details)"

@@ -30,6 +30,12 @@ _SEED_KEYWORDS: list[str] = [
     "ultrawide monitor", "thinkpad", "docking station",
 ]
 
+# Documents which category URLs this crawl covers. These rows are
+# informational only -- `category_url` set, `keyword` NULL, `weight=0` --
+# and `rules_from_rows()` (app/crawl/interest.py) deliberately skips any row
+# with no keyword, so they never contribute to a score. Reviewed 2026-09-04:
+# without this comment, a `weight=0` row reads as a broken/dead rule rather
+# than the scope-documentation row it is.
 _SEED_CATEGORIES: list[str] = [
     "https://classifieds.ksl.com/search/cat/Electronics",
     "https://classifieds.ksl.com/search/cat/Computers",

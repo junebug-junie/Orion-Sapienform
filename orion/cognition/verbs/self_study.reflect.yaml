@@ -1,0 +1,34 @@
+name: self_study.reflect
+label: Self-Study Reflect
+description: >-
+  Given already-induced self-study concepts (Layer 2), write real reflective
+  findings about them as strict structured output. No tool selection, no
+  agentic planning -- this is the LLM half of self_study.py's Layer 3, called
+  from reflect_self_concepts() rather than from a chat turn.
+personality_file: orion/cognition/personality/orion_identity.yaml
+category: reflective
+priority: normal
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+recall_profile: null
+# Both timeouts here are deliberately LARGER than self_study.py's own
+# SELF_STUDY_REFLECT_TIMEOUT_SEC (115s / 115000ms client-side RPC wait) --
+# see that key's .env_example comment. The client giving up first produces a
+# clean, catchable TimeoutError on the caller's side; the orchestrator's step
+# timeout firing first would instead kill the step out from under an
+# in-flight RPC wait, which self_study.py cannot distinguish from any other
+# RPC failure but which is a worse failure mode to induce on purpose.
+timeout_ms: 130000
+max_recursion_depth: 0
+steps:
+  - name: draft_self_study_reflection
+    description: Draft reflective findings over induced self-study concepts as strict JSON; no tool selection or agentic planning.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: self_study_reflect_prompt.j2
+    requires_gpu: false
+    requires_memory: false
+    timeout_ms: 130000

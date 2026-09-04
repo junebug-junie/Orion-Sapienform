@@ -89,8 +89,12 @@
     <section class="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
       <div class="flex items-baseline justify-between mb-1">
         <h2 class="text-sm font-semibold text-gray-100">2. <span id="masChannelName">failure_pressure</span> (the raw input channel driving it)</h2>
+        <div class="text-[11px] text-gray-500">
+          <span class="legend-key" style="background:var(--series-channel); opacity:0.45"></span>raw
+          <span class="legend-key ml-3" style="background:var(--series-channel)"></span>30s avg
+        </div>
       </div>
-      <div class="text-[11px] text-gray-500 mb-1">Real value of the one system metric confirmed (from actual trigger data) to be the dominant driver of panel 1 right now.</div>
+      <div class="text-[11px] text-gray-500 mb-1">Real value of the one system metric confirmed (from actual trigger data) to be the dominant driver of panel 1 right now. This signal genuinely jumps between extremes tick-to-tick &mdash; the faint line is every real value, the bold line is a 30-second trailing average so the trend is readable.</div>
       <div class="relative">
         <canvas id="masChannelCanvas" width="960" height="120" class="w-full block"></canvas>
       </div>
@@ -425,6 +429,32 @@
       ]);
     }
 
+    // Trailing rolling average by wall-clock window, not by point count --
+    // channel_points isn't evenly spaced (substrate_field_state's real write
+    // cadence jitters), so a fixed N-point window would cover a different
+    // real time span depending on local tick density. Points are already
+    // ORDER BY generated_at ASC, so a simple two-pointer sliding window over
+    // the sorted array is enough; no need for a heavier structure at this
+    // series' real size (hundreds of points per load).
+    function rollingAverage(points, key, windowMs) {
+      const out = [];
+      let sum = 0, start = 0;
+      for (let i = 0; i < points.length; i++) {
+        const ti = parseT(points[i].t);
+        if (ti === null || typeof points[i][key] !== "number") continue;
+        sum += points[i][key];
+        while (start < i) {
+          const ts = parseT(points[start].t);
+          if (ts !== null && ti - ts <= windowMs) break;
+          sum -= (typeof points[start][key] === "number") ? points[start][key] : 0;
+          start++;
+        }
+        const count = i - start + 1;
+        out.push({ t: points[i].t, value: sum / count });
+      }
+      return out;
+    }
+
     function renderChannelChart() {
       const canvas = document.getElementById("masChannelCanvas");
       const ctx = canvas.getContext("2d");
@@ -439,12 +469,17 @@
       const [lo, hi] = minMax(points, "value");
       const yLo = Math.min(lo, 0);
       const yHi = Math.max(hi * 1.1, 0.01);
+      const smoothed = rollingAverage(points, "value", 30000);
 
       const rect = drawChrome(ctx, canvas, domain, yLo, yHi, { showXAxis: false });
+      ctx.globalAlpha = 0.45;
       drawLine(ctx, points, "value", domain, yLo, yHi, rect, "#199e70", false);
+      ctx.globalAlpha = 1;
+      drawLine(ctx, smoothed, "value", domain, yLo, yHi, rect, "#199e70", false);
 
       attachHover(canvas, domain, [
-        { label: trace.channel || "value", color: "#199e70", format: (v) => v.toFixed(3), nearest: (t) => nearestPoint(points, "value", t) },
+        { label: `${trace.channel || "value"} (30s avg)`, color: "#199e70", format: (v) => v.toFixed(3), nearest: (t) => nearestPoint(smoothed, "value", t) },
+        { label: `${trace.channel || "value"} (raw)`, color: "#199e70", format: (v) => v.toFixed(3), nearest: (t) => nearestPoint(points, "value", t) },
       ]);
     }
 

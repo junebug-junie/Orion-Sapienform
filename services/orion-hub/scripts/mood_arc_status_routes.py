@@ -35,6 +35,7 @@ import asyncio
 import json
 import re
 import threading
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,24 @@ from scripts.field_digester_client import FieldDigesterClientError, fetch_health
 from scripts.service_logs import resolve_repo_root
 
 router = APIRouter(prefix="/api/mood-arc-status", tags=["mood-arc-status"])
+
+
+def _iso_utc(dt: Any) -> Any:
+    """Real bug, confirmed live 2026-09-04: `metacog_trigger.timestamp` is
+    Postgres `timestamp WITHOUT time zone` (unlike substrate_brain_frame_log/
+    substrate_field_state's `timestamptz` columns) but stores real UTC
+    instants. SQLAlchemy returns that as a naive `datetime`, and naive
+    `.isoformat()` produces a string with NO offset ("...T20:42:09.843730",
+    no "Z", no "+00:00"). Per the JS Date spec, `Date.parse()` on an
+    offset-less string is parsed as the BROWSER'S LOCAL time, not UTC -- so
+    every trigger dot landed hours away from its real position, blowing the
+    shared chart time-domain out to cover that fake gap and crushing the
+    other two panels' real data into a sliver. Attach UTC explicitly before
+    serializing anything that might be naive; a no-op for values that
+    already carry a real offset."""
+    if hasattr(dt, "tzinfo") and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat() if hasattr(dt, "isoformat") else dt
 
 # The one raw input channel to overlay against recon_loss on the inference
 # trace chart. Not configurable/generic (yet) -- deliberately picked from
@@ -290,7 +309,7 @@ def _correlated_channel_series_sync(engine: Any, minutes: int) -> list[dict[str,
                     continue
                 out.append(
                     {
-                        "t": generated_at.isoformat() if hasattr(generated_at, "isoformat") else generated_at,
+                        "t": _iso_utc(generated_at),
                         "value": float(merged[_CORRELATED_CHANNEL]),
                     }
                 )
@@ -330,7 +349,7 @@ def _downstream_triggers_sync(minutes: int) -> dict[str, Any]:
                 top_channels = up.get("top_channels") or []
                 triggers.append(
                     {
-                        "t": timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp,
+                        "t": _iso_utc(timestamp),
                         "recon_loss": up.get("recon_loss"),
                         "threshold": up.get("threshold"),
                         "deviation_direction": up.get("deviation_direction"),

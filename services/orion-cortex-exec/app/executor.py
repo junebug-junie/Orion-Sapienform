@@ -449,6 +449,19 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "stance_react":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_stance_react"
 
+    # self_study.reflect (Layer 3 real reflection, PR #2080): same disease as the
+    # six verbs above -- strict JSON output, and the agent-route model (Qwen3-27B)
+    # is a reasoning model that emits substantial reasoning_content before its
+    # real answer. Live-confirmed 2026-09-04, corr=871934fd-4095-55b6-82b0-
+    # a8784eda8998: payload_max_tokens=512 (this function's own un-special-cased
+    # default), completion_tokens=512, finish_reason=length, reasoning_content
+    # alone ran 2417 chars ("We need answer user's request... Need produce
+    # STRICT JSON only...") -- the model spent its entire budget thinking and
+    # never wrote a single character of the actual answer. Same fix as its six
+    # siblings above, not a bespoke budget.
+    if step.verb_name == "self_study.reflect" and step.step_name == "draft_self_study_reflection":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_self_study_reflect"
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 

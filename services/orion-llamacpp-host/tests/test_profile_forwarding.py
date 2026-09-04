@@ -870,6 +870,181 @@ def test_ngram_spec_type_emits_flag_without_draft_filename(monkeypatch):
     assert _find_flag_value(cmd, "--spec-draft-n-max") == "8"
 
 
+def test_ngram_fields_emit_model_ngram_and_load_mode_flags(monkeypatch):
+    """Qwen3.8-Flash-Next's PLE/n-gram table (--model-ngram / --ngram-load-mode,
+    ggml-org/llama.cpp#27742) is a second required GGUF, independent of the
+    draft_*/spec_type speculative-decoding machinery -- pin that it emits on
+    its own with no draft_filename set."""
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-ngram-fields",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            ngram_filename="target-ngram.gguf",
+            ngram_load_mode="resident",
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=20,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_ngram_file",
+        lambda _cfg: "/models/gguf/target-ngram.gguf",
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--model-ngram", "--ngram-load-mode", "--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10666)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert _find_flag_value(cmd, "--model-ngram") == "/models/gguf/target-ngram.gguf"
+    assert _find_flag_value(cmd, "--ngram-load-mode") == "resident"
+    assert "--model-draft" not in cmd
+    assert "--spec-type" not in cmd
+
+
+def test_ngram_unset_emits_no_ngram_flags(monkeypatch):
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-ngram-unset",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=20,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--model-ngram", "--ngram-load-mode", "--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10666)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    ensure_calls: list[object] = []
+
+    def _unexpected_ensure(cfg):
+        ensure_calls.append(cfg)
+        raise AssertionError("_ensure_ngram_file must not run when ngram_filename is unset")
+
+    monkeypatch.setattr(main, "_ensure_ngram_file", _unexpected_ensure)
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert "--model-ngram" not in cmd
+    assert "--ngram-load-mode" not in cmd
+    assert ensure_calls == []
+
+
+def test_ngram_requested_but_flag_unsupported_omits_it_without_crash(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-ngram-unsupported",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            ngram_filename="target-ngram.gguf",
+            ngram_load_mode="resident",
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=20,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_ngram_file",
+        lambda _cfg: "/models/gguf/target-ngram.gguf",
+    )
+    # Probe succeeded but --model-ngram absent (build predates ggml-org/llama.cpp#27742).
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    with caplog.at_level(logging.ERROR):
+        cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert cmd[0].endswith("llama-server") or "llama-server" in cmd[0]
+    assert "-m" in cmd
+    assert "--model-ngram" not in cmd
+    assert "--ngram-load-mode" not in cmd
+    assert any(
+        "model-ngram" in rec.message.lower()
+        for rec in caplog.records
+        if rec.levelno >= logging.ERROR
+    )
+
+
 def test_circe_agent_flex_forwards_both_chat_template_kwargs(monkeypatch):
     """The agent lane's template kwargs reach llama-server, both of them.
 

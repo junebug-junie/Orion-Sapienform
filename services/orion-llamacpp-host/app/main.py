@@ -170,6 +170,26 @@ def _ensure_draft_file(cfg: LlamaCppConfig) -> Optional[str]:
     return str(draft_path)
 
 
+def _ensure_ngram_file(cfg: LlamaCppConfig) -> Optional[str]:
+    """Ensure the PLE/n-gram table GGUF exists; return concrete path for --model-ngram."""
+    if not cfg.ngram_filename:
+        return None
+
+    repo_id = cfg.ngram_repo_id or cfg.repo_id
+    if not repo_id:
+        raise FileNotFoundError(
+            "Profile requests ngram_filename but no ngram_repo_id or repo_id is configured"
+        )
+
+    ngram_path = _ensure_hf_gguf_file(
+        model_root=cfg.model_root,
+        repo_id=repo_id,
+        filename=cfg.ngram_filename,
+        label="ngram table",
+    )
+    return str(ngram_path)
+
+
 def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str, str]]:
     """
     Returns: (model_path, runtime_cfg, env)
@@ -499,6 +519,31 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                         "omitting draft speculative decoding.",
                         cfg.draft_filename,
                     )
+
+    # Qwen3.8-Flash-Next / "qwen4exp" PLE/n-gram table (--model-ngram, ggml-org/llama.cpp#27742).
+    # Independent of the draft-model block above -- this is a second required file for one
+    # architecture, not a drafter, and the flag is not gated by any spec_type value.
+    if cfg.ngram_filename:
+        if not _flag_confirmed_supported(supported_flags, "--model-ngram"):
+            logger.error(
+                "Profile requested ngram_filename=%s but this llama-server does not advertise "
+                "--model-ngram in --help; omitting it and launching the main model only -- this "
+                "architecture's PLE/n-gram table will NOT be loaded. Upgrade LLAMACPP_IMAGE_TAG "
+                "past the qwen4exp merge (ggml-org/llama.cpp#27742, ~b10666) or unset ngram_filename.",
+                cfg.ngram_filename,
+            )
+        else:
+            ngram_path = _ensure_ngram_file(cfg)
+            if ngram_path is None:
+                logger.error(
+                    "Profile requested ngram_filename=%s but ngram path resolved to None; "
+                    "omitting --model-ngram.",
+                    cfg.ngram_filename,
+                )
+            else:
+                append_flag("--model-ngram", ngram_path)
+                if cfg.ngram_load_mode is not None:
+                    append_flag("--ngram-load-mode", cfg.ngram_load_mode)
 
     if cfg.chat_template_kwargs is not None and "--chat-template-kwargs" not in cmd:
         logger.error(

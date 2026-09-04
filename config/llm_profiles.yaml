@@ -1430,3 +1430,169 @@ profiles:
         LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe's agent worker .env --
         confirm this doesn't silently affect the chat worker if they share
         one env; same caveat as muse-glimmer above).
+
+  qwen3.8-flash-next-udq4kxl-3xv100-32gb-circe-flagship:
+    display_name: "Qwen3.8-Flash-Next – UD-Q4_K_XL (llama.cpp, 3x V100 32GB, Circe flagship, NOT YET DEPLOYABLE)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.8-flash-next-ud-q4_k_xl"
+
+    supports_tools: true
+    # Unconfirmed for this specific architecture -- inherited from every other
+    # Qwen3.x chat-template profile in this file, not independently verified
+    # against Qwen3.8-Flash-Next's actual template. Confirm on first boot.
+    supports_embeddings: false
+    # No mmproj artifact located in the HF repo's UD-Q4_K_XL folder (4 weight
+    # shards only). Unsloth's own doc page labels the architecture "hybrid MoE
+    # multimodal", but that line reads like shared template boilerplate, not a
+    # confirmed capability of this GGUF. Leave false until an mmproj file is
+    # actually found and confirmed, same policy as the agent-flex card above.
+    supports_vision: false
+
+    gpu:
+      # NOT CURRENTLY FREE. Juniper named GPUs 0/1/3 (the three 32GB V100s) as
+      # the target and asked for this documented even though they collide with
+      # two live lanes today (confirmed live via `ssh circe@circe` + nvidia-smi,
+      # 2026-09-04): GPU0+GPU3 jointly carry the chat/harness 35B
+      # (qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition, tensor_split 3,1),
+      # and GPU1 is orion-gpu-lane-controller's exclusive affect/agent-flex
+      # flip (~24.9GB resident at check time). Deploying this profile as
+      # written means evicting or timesharing both of those lanes -- an
+      # operator decision, not something this card resolves. Do not flip this
+      # live without that decision being made explicit.
+      num_gpus: 3
+      tensor_parallel_size: 1
+      device_ids: [0, 1, 3]
+
+      # THE MATH DOES NOT CLOSE EVEN IF ALL THREE CARDS WERE FREED: 3x32GB =
+      # 96GB total VRAM, but Unsloth's own table gives UD-Q4_K_XL as ~111.3GB
+      # on disk -- BEFORE any KV cache. Full GPU residency (n_gpu_layers: 99,
+      # the pattern every other profile in this file uses) will not fit on
+      # this card set regardless of the lane-eviction question above. This is
+      # consistent with the model's own design: Unsloth's docs describe it as
+      # built to run mostly from system RAM ("no GPU VRAM required" for the
+      # 1-bit quant), with a separate --model-ngram table intentionally kept
+      # off GPU (see llamacpp.ngram_load_mode below). A workable n_gpu_layers
+      # value requires a real, live-measured tuning pass -- see llamacpp
+      # block below for the placeholder and escalation path.
+      max_model_len: 32768
+      max_batch_tokens: 512
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.8-Flash-Next-GGUF"
+      # 4-shard split GGUF -- main.py's _shard_filenames_for_download() expands
+      # the remaining 00002-00004 shards automatically from this first-shard
+      # path, same mechanism qwen3-coder-next-* uses above. Confirmed live via
+      # the HF repo's own file listing (2026-09-03/04 fetch), not guessed.
+      hf_filename: "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+
+      # UNVERIFIED, real gap: this architecture's PLE/n-gram table ships as a
+      # SEPARATE GGUF loaded via --model-ngram (see ngram_load_mode below), but
+      # its filename/path within this HF repo was not located from the sources
+      # fetched while writing this card (docs page + HF API file listing both
+      # came back empty for "ngram"/"PLE" in a path). Do NOT guess a filename
+      # here -- list the actual repo tree on circe (or via `hf_hub_download`
+      # dry-run) before first boot and fill this in for real.
+      # ngram_filename: "<TBD -- list the repo tree first>"
+      # ngram_repo_id defaults to hf_repo_id above when unset.
+      # ngram_load_mode: "resident"   # or "read" (mmap, less RAM, slower) -- pick after RAM check below.
+
+      host: "0.0.0.0"
+      port: 8080
+
+      # UNVERIFIED starting point, NOT a tuned value -- see the VRAM-math note
+      # in gpu: above. Every other profile in this file that sets 99 does so
+      # because the whole model fits; this one almost certainly does not.
+      # Start low and raise while watching `nvidia-smi` VRAM headroom on a real
+      # boot; there is no substitute for that measurement here.
+      n_gpu_layers: 20
+      threads: 24
+      n_parallel: 1
+      batch_size: 512
+
+      # 32768, not the model's native 262144: (1) this card set's real VRAM
+      # budget is unresolved (see gpu: above), and (2) the llama.cpp PR that
+      # added this architecture (ggml-org/llama.cpp#27742) itself records a
+      # CUDA abort at the full native ctx (ggml-cuda/norm.cu, invalid argument)
+      # with a practical ceiling around 261,888 -- so native ctx is not simply
+      # available even once VRAM is sorted. Raise only after both are checked
+      # live, not from this table.
+      ctx_size: 32768
+
+      # Confirmed applicable to THIS model specifically (Unsloth's own docs
+      # give `--chat-template-kwargs '{"reasoning_effort":"medium"}'` as the
+      # worked CLI example for Qwen3.8-Flash-Next) -- same mechanism as the
+      # 27B agent-flex card above, xhigh is Unsloth's documented default.
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        reasoning_effort: "xhigh"
+
+      no_context_shift: true
+      # V100 is Volta (sm_70). Whether this brand-new architecture even runs
+      # on Volta at all is UNVERIFIED -- nothing in the sources fetched while
+      # writing this card confirms or denies it. Off by default for the same
+      # reason every other V100 profile in this file is off (Volta flash-attn
+      # regression), but this specific architecture was not itself bench-tested.
+      flash_attn: "off"
+
+      # Unsloth's Thinking-Mode sampling (fetched from unsloth.ai/docs/models/
+      # qwen3.8-next, 2026-09-03/04) -- matches reasoning_effort=xhigh above.
+      # Their separately documented Instruct/Non-Thinking set (temp 0.7,
+      # top_p 0.80, presence_penalty 1.5) is the pair to switch to if
+      # reasoning_effort is ever changed to "none" -- do not mix the two.
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+    notes: |
+      NOT YET DEPLOYABLE -- documentation-only card, written at Juniper's request
+      2026-09-04 before any of the following are resolved. Do not point
+      ATLAS_*_PROFILE_NAME at this profile until all of these are addressed:
+
+      1. GPU collision: device_ids [0,1,3] are Circe's three 32GB V100s, and
+         ALL THREE are already live (chat lane on 0+3, affect/agent-flex
+         flipping on 1 -- confirmed via nvidia-smi 2026-09-04). This card does
+         not decide which lane(s) get evicted or timeshared; that is Juniper's
+         call.
+      2. VRAM does not close even if freed: UD-Q4_K_XL is ~111.3GB on disk
+         (Unsloth's own quant table) against 96GB of total VRAM across these
+         three cards, before KV cache. Meaningful CPU/RAM residency is
+         mandatory, not optional -- matches the model's own design intent
+         (PLE/n-gram table is meant to stay off GPU).
+      3. Host plumbing gap (fixed in this same changeset): orion-llamacpp-host's
+         LlamaCppConfig had no field for --model-ngram / --ngram-load-mode
+         before this PR. Added: llamacpp.ngram_filename / ngram_repo_id /
+         ngram_load_mode, wired into app/main.py's build_llama_server_cmd_and_env.
+         Still needed before boot: the actual ngram GGUF filename (not located
+         while writing this card -- see llamacpp.ngram_filename comment above)
+         and a real RAM sizing pass against Circe's 251GB total / ~71GB free
+         (live-checked 2026-09-04; Unsloth's own doc quotes 96-114GB RAM for
+         this quant run mostly-CPU, which is close to Circe's total, not its free).
+      4. llama.cpp build: the qwen4exp/PLE architecture merged
+         ggml-org/llama.cpp#27742 on 2026-08-27 (~build b10666). Circe's
+         current default LLAMACPP_IMAGE_TAG is server-cuda-b8740, and no
+         profile in this file has ever required newer than b10398 -- this is a
+         real image bump, not a config toggle, and (per the agent-flex card's
+         own caveat above) may affect other workers sharing the same env file.
+      5. Volta support unverified: nothing found while researching this card
+         confirms the new architecture runs on sm_70 (V100) at all.
+      6. Total param count is DISPUTED between sources fetched 2026-09-03/04:
+         Unsloth's docs page says 125B total; the model's own HF card says
+         177B total / 6B active per token. Neither number is used anywhere in
+         this profile's runtime knobs, but do not repeat either as settled
+         fact without checking the model's own config.json on first download.
+         GPT-sourced claims of an exact "51B" PLE/n-gram table size could not
+         be corroborated in any primary source and are NOT carried into this
+         card.
+
+      Escalation order once boot is attempted: if OOM, lower n_gpu_layers
+      first (this profile is CPU/RAM-heavy by design, unlike every other
+      profile in this file), then ctx_size, before touching quant level.

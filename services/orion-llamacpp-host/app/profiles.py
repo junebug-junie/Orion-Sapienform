@@ -55,6 +55,27 @@ class LlamaCppConfig(BaseModel):
         validation_alias=AliasChoices("draft_repo_id", "hf_draft_repo_id"),
         description="HF repo for draft GGUF; defaults to repo_id when omitted",
     )
+    # Qwen3.8-Flash-Next / "qwen4exp" architecture (ggml-org/llama.cpp#27742, merged
+    # 2026-08-27): the model's PLE/n-gram embedding table ships as a GGUF file separate
+    # from the main weights and is loaded via --model-ngram, kept off GPU VRAM by design
+    # (random-access lookup table, not compute). Independent of the draft_*/spec_type
+    # speculative-decoding fields above -- this is a second required model file for one
+    # specific architecture, not a drafter.
+    ngram_filename: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("ngram_filename", "hf_ngram_filename"),
+        description="PLE/n-gram table GGUF filename for llama-server (--model-ngram)",
+    )
+    ngram_repo_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("ngram_repo_id", "hf_ngram_repo_id"),
+        description="HF repo for the ngram table GGUF; defaults to repo_id when omitted",
+    )
+    ngram_load_mode: Optional[Literal["resident", "read"]] = Field(
+        default=None,
+        description="llama-server --ngram-load-mode: 'resident' keeps the table in RAM, "
+        "'read' reads rows on demand (e.g. via mmap from SSD)",
+    )
     n_gpu_layers_draft: Optional[int] = Field(
         default=None,
         description="Draft model GPU offload layers (--n-gpu-layers-draft)",

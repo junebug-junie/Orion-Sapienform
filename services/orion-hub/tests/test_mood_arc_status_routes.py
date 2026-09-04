@@ -291,7 +291,13 @@ def test_downstream_triggers_returns_real_firings(monkeypatch) -> None:
         "deviation_direction": "elevated",
         "top_channels": ["failure_pressure=0.598", "gpu_pressure=0.057"],
     }
-    rows = [(dt.datetime(2026, 9, 4, 19, 29, tzinfo=dt.timezone.utc), json.dumps(upstream))]
+    # NAIVE datetime (no tzinfo) -- matches the real column type. Regression
+    # test (2026-09-04): `metacog_trigger.timestamp` is Postgres `timestamp
+    # WITHOUT time zone`, so SQLAlchemy really does hand back a naive
+    # datetime here; a tz-aware fixture (as this test used before) can't
+    # catch the bug where a naive `.isoformat()` produced an offset-less
+    # string that the browser's `Date.parse()` then read as LOCAL time.
+    rows = [(dt.datetime(2026, 9, 4, 19, 29), json.dumps(upstream))]
     fake_engine = MagicMock()
     conn = MagicMock()
     fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
@@ -304,6 +310,7 @@ def test_downstream_triggers_returns_real_firings(monkeypatch) -> None:
 
     assert resp.status_code == 200
     body = resp.json()
+    # Must carry a real UTC offset -- "+00:00", not a bare offset-less string.
     assert body["triggers"] == [
         {
             "t": "2026-09-04T19:29:00+00:00",
@@ -318,7 +325,7 @@ def test_downstream_triggers_returns_real_firings(monkeypatch) -> None:
 def test_downstream_triggers_handles_a_row_with_no_top_channels(monkeypatch) -> None:
     import datetime as dt
 
-    rows = [(dt.datetime(2026, 9, 4, tzinfo=dt.timezone.utc), json.dumps({"recon_loss": 0.02}))]
+    rows = [(dt.datetime(2026, 9, 4), json.dumps({"recon_loss": 0.02}))]
     fake_engine = MagicMock()
     conn = MagicMock()
     fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
@@ -330,3 +337,29 @@ def test_downstream_triggers_handles_a_row_with_no_top_channels(monkeypatch) -> 
         resp = _client().get("/api/mood-arc-status/downstream-triggers")
 
     assert resp.json()["triggers"][0]["top_channel"] is None
+
+
+# --------------------------------------------------------------- _iso_utc
+
+
+def test_iso_utc_stamps_utc_on_a_naive_datetime() -> None:
+    """The actual regression: a naive datetime (Postgres `timestamp WITHOUT
+    time zone`, e.g. metacog_trigger.timestamp) must come out with a real
+    UTC offset, not a bare string a browser's Date.parse() would misread
+    as local time."""
+    import datetime as dt
+
+    naive = dt.datetime(2026, 9, 4, 20, 42, 9, 843730)
+    assert mood_arc_status_routes._iso_utc(naive) == "2026-09-04T20:42:09.843730+00:00"
+
+
+def test_iso_utc_leaves_an_already_aware_datetime_alone() -> None:
+    import datetime as dt
+
+    aware = dt.datetime(2026, 9, 4, 20, 42, 9, tzinfo=dt.timezone.utc)
+    assert mood_arc_status_routes._iso_utc(aware) == "2026-09-04T20:42:09+00:00"
+
+
+def test_iso_utc_passes_through_a_non_datetime_value() -> None:
+    assert mood_arc_status_routes._iso_utc(None) is None
+    assert mood_arc_status_routes._iso_utc("already-a-string") == "already-a-string"

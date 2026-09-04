@@ -69,10 +69,18 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
+from typing import get_args
 
-from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_frame import (
+    VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY,
+    AttentionBroadcastProjectionV1,
+    AttentionFrameV1,
+    VoluntaryOverrideAbsentReasonV1,
+)
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
+
+_ABSENT_REASON_VALUES = frozenset(get_args(VoluntaryOverrideAbsentReasonV1))
 
 # 2x the live ORION_ATTENTION_BROADCAST_INTERVAL_SEC default (30s, confirmed
 # live 2026-07-18 via `docker exec orion-athena-substrate-runtime env`) —
@@ -249,6 +257,23 @@ def _heartbeat_h1_fields(
     return float(mean_ratio), verdict, basis, std_ratio, bulk_depth
 
 
+def _read_override_absent_reason(
+    frame: AttentionFrameV1,
+) -> VoluntaryOverrideAbsentReasonV1 | None:
+    """Read the producer's reason out of `frame.debug`, or None.
+
+    `debug` is an untyped dict (see `VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY` for
+    why the value travels there rather than as a typed frame field), so the
+    value is validated against the Literal here, at the one read site, before
+    it reaches a typed model. An unrecognised value reads as None -- absence,
+    never an invented cause.
+    """
+    value = frame.debug.get(VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY)
+    if value in _ABSENT_REASON_VALUES:
+        return value  # type: ignore[return-value]
+    return None
+
+
 def describe_override_absence(model: AttentionSelfModelV1) -> str:
     """One plain sentence naming why no voluntary override was recorded.
 
@@ -258,9 +283,18 @@ def describe_override_absence(model: AttentionSelfModelV1) -> str:
     emitted for all of them. That string was on 19,408 of 19,408 rows.
 
     Returns a fragment, not a full sentence: the caller supplies the subject.
-    Every branch is reachable from a real producer exit; the ``None`` tail is
-    for frames written before 2026-09-04, which carry no reason at all.
-    Absence of a reason is reported as absence, never as a cause.
+    The ``None`` tail is for rows written before 2026-09-04, which carry no
+    reason at all. Absence of a reason is reported as absence, never a cause.
+
+    **Reachability, precisely (code review 2026-09-04).** The one live caller
+    sits inside the reducer's ``bottom_up_salience`` branch, whose condition is
+    equivalent to the gate that populates these fields -- so the
+    ``broadcast_lane_unreadable`` arm is never reached *from that caller*. It is
+    kept, and tested, because this is a pure function over a stored row and the
+    stored value is genuinely live: anything rendering a persisted
+    ``AttentionSelfModelV1`` (a board, a query, a future consumer) will hit it.
+    The arm is unreachable from today's caller, not unreachable in principle --
+    and it must not be deleted on a "dead code" reading of the former.
     """
     reason = model.voluntary_override_absent_reason
     if reason == "top_down_disabled":
@@ -538,11 +572,19 @@ def reduce_attention_self_model(
         # *this* tick. When the lane is unreadable we say exactly that and
         # leave the three numbers None rather than carrying stale ones.
         _frame = broadcast.frame
-        model.voluntary_override_absent_reason = _frame.voluntary_override_absent_reason
+        model.voluntary_override_absent_reason = _read_override_absent_reason(_frame)
         model.top_down_effort_used = _round_or_none(_frame.effort_budget_used)
         model.open_loop_count = len(_frame.open_loops)
-        model.top_down_bias_max = _round_or_none(
-            max((loop.top_down_bias for loop in _frame.open_loops), default=0.0)
+        # NOT `default=0.0`: with no loops, no relevance was ever measured, and
+        # 0.0 would assert a reading that never happened -- the same "absent
+        # reading asserting a fact" this patch exists to stop (code review
+        # 2026-09-04). Deliberately unrounded, unlike its siblings: a real bias
+        # of 0.00004 rounds to 0.0 and would flip `describe_override_absence`
+        # into claiming the goal was relevant to nothing.
+        model.top_down_bias_max = (
+            max((loop.top_down_bias for loop in _frame.open_loops), default=None)
+            if _frame.open_loops
+            else None
         )
     else:
         model.voluntary_override_absent_reason = "broadcast_lane_unreadable"

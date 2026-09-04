@@ -105,6 +105,16 @@ class TopDownResult:
     override: Optional[VoluntaryOverrideV1]
     effort_used: float
     winner_loop_id: Optional[str]   # argmax by RAW combined (s + gain*applied_bias)
+    # True when Rule 8 below swallowed an exception and this result is a
+    # fallback, not a real competition outcome. Added 2026-09-04 (code review):
+    # the fallback is `_pure_bottom_up`, which returns a POPULATED per_loop with
+    # every bias at 0.0 and a real winner -- byte-identical to a legitimate
+    # "the goal was relevant to nothing" outcome. Without this flag a caller
+    # cannot tell a crash from a calm tick, and the caller that records *why*
+    # no override fired would confidently attribute the crash to goal
+    # irrelevance. Rule 8 keeps the never-raise contract; this keeps the
+    # never-raise contract from lying.
+    failed: bool = False
 
 
 def relevance(goal: GoalContext, loop: OpenLoopV1) -> float:
@@ -260,12 +270,20 @@ class TopDownBiasCombiner:
                 winner_loop_id=winner_combined,
             )
         except Exception:
-            # Rule 8: never raise. Fall back to pure bottom-up.
+            # Rule 8: never raise. Fall back to pure bottom-up, but say so --
+            # see TopDownResult.failed. Both fallbacks are marked, including the
+            # inner one: a caller must never read either as a real outcome.
             try:
-                return self._pure_bottom_up(list(loops or []), bottom_up or {})
+                fallback = self._pure_bottom_up(list(loops or []), bottom_up or {})
+                fallback.failed = True
+                return fallback
             except Exception:
                 return TopDownResult(
-                    per_loop={}, override=None, effort_used=0.0, winner_loop_id=None
+                    per_loop={},
+                    override=None,
+                    effort_used=0.0,
+                    winner_loop_id=None,
+                    failed=True,
                 )
 
     def _argmax_combined(

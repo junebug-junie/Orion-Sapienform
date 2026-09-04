@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.schemas.attention_frame import (
+    VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY,
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     CuriosityCandidateActionV1,
@@ -53,6 +54,11 @@ def _frame(*loops: OpenLoopV1, actions: list[CuriosityCandidateActionV1] | None 
     )
 
 
+def _reason(frame: AttentionFrameV1) -> str | None:
+    """The producer's reason, read where it actually lives."""
+    return frame.debug.get(VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY)
+
+
 def _enable(monkeypatch: pytest.MonkeyPatch, *, goal: GoalContext | None) -> None:
     """Patch the two module attributes `_apply_voluntary_attention` imports.
 
@@ -78,17 +84,17 @@ class TestProducerExits:
         monkeypatch.setattr(top_down_mod, "top_down_enabled", lambda: False)
         frame = _apply_voluntary_attention(_frame(_loop("loop-a", salience=0.4)))
         assert frame.voluntary_override is None
-        assert frame.voluntary_override_absent_reason == "top_down_disabled"
+        assert _reason(frame) == "top_down_disabled"
 
     def test_no_goal_records_no_active_goal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable(monkeypatch, goal=None)
         frame = _apply_voluntary_attention(_frame(_loop("loop-a", salience=0.4)))
-        assert frame.voluntary_override_absent_reason == "no_active_goal"
+        assert _reason(frame) == "no_active_goal"
 
     def test_no_loops_records_no_open_loops(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
         frame = _apply_voluntary_attention(_frame())
-        assert frame.voluntary_override_absent_reason == "no_open_loops"
+        assert _reason(frame) == "no_open_loops"
 
     def test_no_goal_and_no_loops_are_not_the_same_reason(
         self, monkeypatch: pytest.MonkeyPatch
@@ -100,7 +106,7 @@ class TestProducerExits:
         no_goal = _apply_voluntary_attention(_frame(_loop("loop-a", salience=0.4)))
         _enable(monkeypatch, goal=GoalContext(priority=1.0))
         no_loops = _apply_voluntary_attention(_frame())
-        assert no_goal.voluntary_override_absent_reason != no_loops.voluntary_override_absent_reason
+        assert _reason(no_goal) != _reason(no_loops)
 
     def test_bias_that_does_not_flip_the_winner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
@@ -110,7 +116,7 @@ class TestProducerExits:
             _frame(_loop("loop-a", salience=0.50, concept_value=1.0), _loop("loop-b", salience=0.30))
         )
         assert frame.voluntary_override is None
-        assert frame.voluntary_override_absent_reason == "bias_did_not_flip_winner"
+        assert _reason(frame) == "bias_did_not_flip_winner"
         assert frame.effort_budget_used > 0.0, "a goal really did run the combiner"
 
     def test_flip_without_a_candidate_action_is_refused(
@@ -119,26 +125,63 @@ class TestProducerExits:
         _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
         frame = _apply_voluntary_attention(_frame(*_flipping_loops()))
         assert frame.voluntary_override is None
-        assert frame.voluntary_override_absent_reason == "winner_had_no_action"
+        assert _reason(frame) == "winner_had_no_action"
 
     def test_successful_override_sets_no_reason(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
         action = CuriosityCandidateActionV1(action_type="watch", open_loop_id="loop-a")
         frame = _apply_voluntary_attention(_frame(*_flipping_loops(), actions=[action]))
         assert frame.voluntary_override is not None, "fixture must actually flip the winner"
-        assert frame.voluntary_override_absent_reason is None
+        assert _reason(frame) is None
         assert frame.selected_action is action
 
-    def test_swallowed_exception_is_not_a_quiet_tick(
+    def test_a_crash_INSIDE_the_combiner_is_not_goal_irrelevance(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The never-raises guard must not make a defect look like calm."""
+        """The combiner's own never-raise guard (top_down.py Rule 8) falls back
+        to `_pure_bottom_up`, which returns a POPULATED result with every bias
+        0.0 and a real winner -- byte-identical to a legitimate "the goal was
+        relevant to nothing" outcome. Before `TopDownResult.failed`, a crash in
+        here was recorded as `bias_did_not_flip_winner` and narrated as a
+        confident claim about goal quality. Found by code review 2026-09-04."""
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+
+        def _boom(goal: object, loop: object) -> float:
+            raise RuntimeError("relevance exploded")
+
+        monkeypatch.setattr(top_down_mod, "relevance", _boom)
+        frame = _apply_voluntary_attention(
+            _frame(_loop("loop-a", salience=0.5, concept_value=1.0), _loop("loop-b", salience=0.3))
+        )
+        assert _reason(frame) == "combiner_error"
+        assert _reason(frame) != "bias_did_not_flip_winner"
+
+    def test_success_clears_a_reason_the_caller_already_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`frame.debug` is caller-supplied and survives, so clearing on the
+        success path is load-bearing rather than defensive. Deleting the clear
+        must fail this test -- an earlier version asserted only against the
+        schema default and could not fail at all (code review 2026-09-04)."""
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+        action = CuriosityCandidateActionV1(action_type="watch", open_loop_id="loop-a")
+        frame = _frame(*_flipping_loops(), actions=[action])
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "no_active_goal"
+        result = _apply_voluntary_attention(frame)
+        assert result.voluntary_override is not None
+        assert _reason(result) is None, "a fired override must claim no absence"
+
+    def test_swallowed_exception_outside_the_combiner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half of the never-raises surface: an exception raised
+        outside `TopDownBiasCombiner.apply` (here, from `top_down_enabled`)."""
         def _boom() -> bool:
             raise RuntimeError("combiner exploded")
 
         monkeypatch.setattr(top_down_mod, "top_down_enabled", _boom)
         frame = _apply_voluntary_attention(_frame(_loop("loop-a", salience=0.4)))
-        assert frame.voluntary_override_absent_reason == "combiner_error"
+        assert _reason(frame) == "combiner_error"
 
 
 class TestReducerSurfacesTheCause:
@@ -154,7 +197,7 @@ class TestReducerSurfacesTheCause:
 
     def test_reason_and_three_numbers_reach_the_self_model(self) -> None:
         frame = _frame(_loop("loop-a", salience=0.5), _loop("loop-b", salience=0.2))
-        frame.voluntary_override_absent_reason = "bias_did_not_flip_winner"
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "bias_did_not_flip_winner"
         frame.effort_budget_used = 0.42
         frame.open_loops[0].top_down_bias = 0.7
         model = reduce_attention_self_model(self._projection(frame), None, now=NOW)
@@ -175,7 +218,7 @@ class TestReducerSurfacesTheCause:
         it here would let an absent reading assert a cause for this tick."""
         stale_at = NOW - timedelta(hours=3)
         frame = _frame(_loop("loop-a", salience=0.5))
-        frame.voluntary_override_absent_reason = "no_active_goal"
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "no_active_goal"
         frame.effort_budget_used = 0.9
         model = reduce_attention_self_model(
             self._projection(frame, generated_at=stale_at), None, now=NOW
@@ -183,9 +226,33 @@ class TestReducerSurfacesTheCause:
         assert model.voluntary_override_absent_reason == "broadcast_lane_unreadable"
         assert model.top_down_effort_used is None
 
+    def test_no_loops_reports_no_measurement_not_a_zero(self) -> None:
+        """A fresh lane carrying zero loops took no relevance measurement.
+        `max(default=0.0)` would assert a reading that never happened, and an
+        aggregate filtering `top_down_bias_max == 0` would then count empty
+        ticks as "the goal was irrelevant". Code review 2026-09-04: this path
+        had no test, and mutating the default to 1.0 changed nothing."""
+        frame = _frame()
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "no_open_loops"
+        model = reduce_attention_self_model(self._projection(frame), None, now=NOW)
+        assert model.open_loop_count == 0
+        assert model.top_down_bias_max is None, "no loops means no measurement, not zero"
+
+    def test_a_faint_bias_is_not_reported_as_no_relevance(self) -> None:
+        """`top_down_bias_max` is stored unrounded. Rounded to 4 places a real
+        bias of 0.00004 becomes 0.0, flipping the narrative into claiming the
+        goal was relevant to nothing -- false, and it is the sentence Orion
+        reads back about themselves."""
+        frame = _frame(_loop("loop-a", salience=0.5))
+        frame.open_loops[0].top_down_bias = 0.00004
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "bias_did_not_flip_winner"
+        model = reduce_attention_self_model(self._projection(frame), None, now=NOW)
+        assert model.top_down_bias_max == pytest.approx(0.00004)
+        assert "relevant to none" not in model.reason_narrative
+
     def test_narrative_names_the_real_reason(self) -> None:
         frame = _frame(_loop("loop-a", salience=0.5))
-        frame.voluntary_override_absent_reason = "top_down_disabled"
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "top_down_disabled"
         model = reduce_attention_self_model(self._projection(frame), None, now=NOW)
         assert model.attention_reason == "bottom_up_salience"
         assert "switched off" in model.reason_narrative
@@ -195,7 +262,7 @@ class TestReducerSurfacesTheCause:
         this tick" on every bottom-up row -- asserting a cause the reducer had
         never checked, true for only one of five exits."""
         frame = _frame(_loop("loop-a", salience=0.5))
-        frame.voluntary_override_absent_reason = "bias_did_not_flip_winner"
+        frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "bias_did_not_flip_winner"
         frame.open_loops[0].top_down_bias = 0.8
         model = reduce_attention_self_model(self._projection(frame), None, now=NOW)
         assert "no active goal override at this tick" not in model.reason_narrative

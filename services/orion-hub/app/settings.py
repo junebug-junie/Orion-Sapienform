@@ -77,6 +77,15 @@ class Settings(BaseSettings):
         default=10.0,
         alias="WORLD_PULSE_PROXY_TIMEOUT_SEC",
     )
+    # --- Exo Exploration (KSL classifieds tech/compute finds) tab ---
+    HUB_EXO_EXPLORATION_BASE_URL: str = Field(
+        default="http://orion-exo-exploration:8622",
+        alias="HUB_EXO_EXPLORATION_BASE_URL",
+    )
+    HUB_EXO_EXPLORATION_TIMEOUT_SEC: float = Field(
+        default=10.0,
+        alias="HUB_EXO_EXPLORATION_TIMEOUT_SEC",
+    )
     # --- Proposal review API (Pending Decisions attention + review actions) ---
     HUB_PROPOSAL_REVIEW_ENABLED: bool = Field(default=False, alias="HUB_PROPOSAL_REVIEW_ENABLED")
     HUB_PROPOSAL_REVIEW_API_URL: str = Field(

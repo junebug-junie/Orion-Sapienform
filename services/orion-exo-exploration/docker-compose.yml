@@ -1,0 +1,40 @@
+services:
+  exo-exploration:
+    build:
+      context: ../..
+      dockerfile: services/orion-exo-exploration/Dockerfile
+    container_name: orion-${NODE_NAME}-exo-exploration
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - PORT=${PORT}
+      - EXO_EXPLORATION_PG_DSN=${EXO_EXPLORATION_PG_DSN}
+      - EXO_EXPLORATION_CRAWL_INTERVAL_SECONDS=${EXO_EXPLORATION_CRAWL_INTERVAL_SECONDS:-86400}
+      - EXO_EXPLORATION_RETENTION_SWEEP_INTERVAL_SECONDS=${EXO_EXPLORATION_RETENTION_SWEEP_INTERVAL_SECONDS:-3600}
+      - EXO_EXPLORATION_RETENTION_DAYS=${EXO_EXPLORATION_RETENTION_DAYS:-14}
+      - EXO_EXPLORATION_DAEMON_ENABLED=${EXO_EXPLORATION_DAEMON_ENABLED:-true}
+      - EXO_EXPLORATION_CRAWL_RUN_AT_STARTUP=${EXO_EXPLORATION_CRAWL_RUN_AT_STARTUP:-true}
+      - EXO_EXPLORATION_CATEGORIES=${EXO_EXPLORATION_CATEGORIES}
+      - EXO_EXPLORATION_USER_AGENT=${EXO_EXPLORATION_USER_AGENT}
+      - EXO_EXPLORATION_FETCH_TIMEOUT_SECONDS=${EXO_EXPLORATION_FETCH_TIMEOUT_SECONDS:-20}
+      - EXO_EXPLORATION_REQUEST_DELAY_SECONDS=${EXO_EXPLORATION_REQUEST_DELAY_SECONDS:-1.5}
+      - EXO_EXPLORATION_MAX_DETAIL_FETCHES_PER_RUN=${EXO_EXPLORATION_MAX_DETAIL_FETCHES_PER_RUN:-60}
+    env_file:
+      - .env
+    ports:
+      - "${HOST_PORT:-8622}:${PORT}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/healthz"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

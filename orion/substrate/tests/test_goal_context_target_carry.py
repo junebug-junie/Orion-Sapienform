@@ -97,3 +97,64 @@ def test_cleared_goal_pushes_on_nothing():
     """No held goal -> no bias anywhere. Deliberate: absence must not fabricate."""
     store = GoalContextStore()
     assert store.current() is None
+
+
+def test_relevance_joins_a_real_substrate_node():
+    """Pin the join through the REAL producer chain, not hand-built loops.
+
+    Every other test in this area constructs `source_refs` by hand, so all of
+    them would keep passing if the producer stopped putting the node id there.
+    That is the exact silent-constant failure this whole patch exists to undo:
+    if `evidence_refs` is ever reordered, prefixed, normalized, or reduced to
+    turn ids, `relevance()` returns 0.0 for every loop, override becomes
+    impossible again, and the only outward symptom is `top_down_bias_max`
+    quietly going to 0.0.
+
+    So this walks the actual path:
+        substrate node -> substrate_pressure_signals -> build_open_loops
+                       -> relevance(goal, loop)
+    """
+    from types import SimpleNamespace
+
+    from orion.substrate.attention.scoring import build_open_loops, merge_signals
+    from orion.substrate.attention_broadcast import substrate_pressure_signals
+
+    def _node(node_id: str, label: str, pressure: float):
+        return SimpleNamespace(
+            node_id=node_id,
+            label=label,
+            metadata={"dynamic_pressure": pressure, "prediction_error": pressure},
+            signals=None,
+        )
+
+    wanted = "node:substrate.execution"
+    nodes = [
+        _node(wanted, "Execution prediction error", 0.30),
+        _node("node:substrate.chat", "Chat prediction error", 0.90),
+    ]
+
+    signals = substrate_pressure_signals(nodes, min_salience=0.05, limit=24)
+    loops = build_open_loops(
+        signals=merge_signals(signals, limit=15),
+        ctx={}, inputs={}, belief_lineage=[],
+        direct_turn=False, generic_reversal=False, stale_thread_active=False,
+        max_open=5,
+    )
+    assert len(loops) == 2, "both nodes should clear the threshold"
+
+    # The producer must have carried the node id through to source_refs.
+    by_ref = {ref: loop for loop in loops for ref in loop.source_refs}
+    assert wanted in by_ref, (
+        "substrate_pressure_signals -> build_open_loops dropped the node id "
+        f"from source_refs; got {[l.source_refs for l in loops]}"
+    )
+
+    store = GoalContextStore()
+    store.update_from_goal(_goal(wanted))
+    goal = store.current()
+    assert goal is not None
+
+    on_target = by_ref[wanted]
+    off_target = next(l for l in loops if wanted not in l.source_refs)
+    assert relevance(goal, on_target) == 1.0
+    assert relevance(goal, off_target) == 0.0

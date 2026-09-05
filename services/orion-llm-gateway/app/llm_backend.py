@@ -275,6 +275,25 @@ def _resolve_http_read_timeout_sec(body: Optional[ChatBody]) -> float:
     return max(30.0, min(v, 900.0))
 
 
+def resolve_caller_budget_sec(body: Optional[ChatBody]) -> float:
+    """How long the CALLER will wait, for admission purposes -- the raw
+    options['gateway_read_timeout_sec'] when given (floor 1s, cap 900s), else the
+    same default `_resolve_http_read_timeout_sec` uses. Deliberately not floored at
+    30s like the HTTP read: that floor protects the upstream client from a
+    misconfigured tiny timeout, but an 8s caller (memory-consolidation classify)
+    is gone at 8s, and queueing its request for 30s generates into the void."""
+    opts = getattr(body, "options", None) or {}
+    raw = opts.get("gateway_read_timeout_sec")
+    if raw is not None:
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = None
+        if v is not None and v > 0:
+            return max(1.0, min(v, 900.0))
+    return _resolve_http_read_timeout_sec(None)
+
+
 def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:
     """
     Returns an HTTP client using configured timeouts; optional ChatBody can

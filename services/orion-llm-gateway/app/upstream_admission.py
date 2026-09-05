@@ -35,6 +35,7 @@ counts.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -92,10 +93,11 @@ class UpstreamAdmission:
         return {key: lane.public() for key, lane in sorted(self._lanes.items())}
 
     def executor_workers(self, upstream_count: int, *, headroom: int = 4) -> int:
-        """Threads the default executor needs so every lane can be full at once.
+        """Threads the chat pool needs so every lane can be full at once.
 
-        `headroom` covers the chassis' own `to_thread` use (heartbeat details) so a
-        fully loaded gateway still heartbeats.
+        `headroom` absorbs the transient over-hold a cancelled handler leaves behind
+        (its thread runs on until the upstream read ends -- see `release_when_done`),
+        so a lane at its cap plus a couple of orphaned threads still does not queue.
         """
         return max(1, int(upstream_count)) * self.max_inflight + max(0, int(headroom))
 
@@ -109,6 +111,7 @@ class _Admission:
         self._lane = lane
         self._max_wait_s = max(0.0, float(max_wait_s))
         self._holding = False
+        self._deferred = False
         self.waited_s = 0.0
         # Exact, like priority_admission's queued flag: whether the acquire had to block.
         # A monotonic delta is never exactly 0, so "waited > 0" would log every request.
@@ -138,11 +141,29 @@ class _Admission:
             lane.longest_wait_s = self.waited_s
         return True
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    def release(self) -> None:
+        """Idempotent. Give the permit back and drop the in-flight count."""
         if self._holding:
             self._holding = False
             self._lane.inflight -= 1
             self._lane.sem.release()
+
+    def release_when_done(self, future: "concurrent.futures.Future[Any]", loop: asyncio.AbstractEventLoop) -> None:
+        """Tie the permit to the executor thread, not to the awaiting task.
+
+        Cancelling the handler (Rabbit reconnect/shutdown cancels every in-flight
+        handler) cannot stop a thread that has already started; releasing in
+        `__aexit__` would then let a lane hold up to 2x its cap in real threads while
+        the gauge said otherwise. The permit is released from the thread's own done
+        callback instead, marshalled back onto the loop because the counters are
+        loop-owned.
+        """
+        self._deferred = True
+        future.add_done_callback(lambda _f: loop.call_soon_threadsafe(self.release))
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if not self._deferred:
+            self.release()
 
 
 _gate: Optional[UpstreamAdmission] = None

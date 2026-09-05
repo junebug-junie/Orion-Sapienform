@@ -205,18 +205,26 @@ hold, both in that one module and enforced from `main.py`'s `_dispatch_chat`:
    prints `executor sized workers=...`). Waiting for a permit happens on an asyncio
    semaphore, off the pool, so a deep queue on one lane costs no threads and a request
    for any other lane always finds one.
-2. **No work for callers that already left.** A request waits for its lane's permit at
-   most for its own read-timeout budget (`options.gateway_read_timeout_sec`, else
-   `READ_TIMEOUT_SEC`). Past that it is returned immediately with
+2. **No work for callers that already left.** One deadline for the whole stay, from the
+   caller's own stated wait (`options.gateway_read_timeout_sec`, raw -- an 8s caller
+   gets 8s, not the HTTP client's 30s floor; else `READ_TIMEOUT_SEC`). The background
+   gate and the lane permit are each bounded by what is left of it, and what is left
+   after admission becomes the upstream read timeout (floored at 30s for the HTTP
+   client), so a request that queued for most of its budget is not then given the
+   whole budget again to generate. Past the deadline it is returned immediately with
    `raw.error = "gateway_overloaded"` (same shape as `llm_route_unavailable`, with
-   `raw.details.{route,upstream,served_by,waited_s,budget_s,lane}`) and logged as
+   `raw.details.{stage,route,upstream,served_by,waited_s,budget_s,lane}`; `stage` is
+   `background_queue`, `upstream_queue`, or `budget_exhausted`) and logged as
    `gateway_overloaded correlation_id=...`. The GPU no longer spends minutes generating
    replies whose RPC timed out long ago -- which is what turned a busy lane into a
    20-minute backlog.
 
-Gate order for a `priority: background` route: slack wait first (holding nothing),
-then the lane permit. The reverse would let a request that is itself waiting for room
-hold a permit a foreground request on the same upstream needs.
+Gate order for a `priority: background` route: slack wait first (holding only the
+route's background permit, never a lane permit), then the lane permit. The reverse
+would let a request that is itself waiting for room hold a permit a foreground request
+on the same upstream needs. The lane permit is released when the executor thread
+finishes, not when the awaiting handler ends: a cancelled handler (Rabbit reconnect)
+cannot stop a running thread, and the gauge must count the thread, not the task.
 
 Live depth is on `GET /admission` under `"upstreams"`, one entry per URL:
 `{max_inflight, inflight, waiting, admitted, shed, longest_wait_s, last_shed_age_s}`.
@@ -396,20 +404,21 @@ is unreachable, or the upstream is permanently busy past
 anyway with a logged warning -- a background caller never gets its request
 silently dropped.
 
-Two entry points, two implementations in `priority_admission.py` (same
-contract, different concurrency model -- see that module's docstring for
-why): `handle_chat_completions_post` (`openai_passthrough.py`, async, used by
-AI Town's native Convex `chatCompletion()` calls) awaits `wait_for_slack` via
-the `background_admission` context manager, which also caps concurrent
-background dispatches per route key with an `asyncio.Semaphore`
-(`LLM_GATEWAY_BACKGROUND_CONCURRENCY`, default 1) so a burst can't itself
-claim more slots than intended even when nominally free. `run_llm_chat`
-(`llm_backend.py`, sync -- dispatched via `asyncio.to_thread`, used by
-orion-cortex-exec's bus-native RPC path) calls `wait_for_slack_sync` directly,
-with no concurrency cap: its only caller in that context (orion-embodiment's
-speech path) is bounded to ~1, rarely 2, concurrent calls in practice (one
-`active_conversation` at a time), not a strictly serialized guarantee, but
-nowhere near the burst the async path's cap exists for.
+Two entry points, one implementation (since 2026-09-05): both
+`handle_chat_completions_post` (`openai_passthrough.py`, AI Town's native Convex
+`chatCompletion()` calls, `via="http"`) and `main.py`'s `_dispatch_chat` (the bus
+intake: orion-cortex-exec's RPC path, orion-embodiment's speech, `via="bus"`) go
+through the `background_admission` context manager on the event loop, which
+awaits `wait_for_slack` and caps concurrent background dispatches per route key
+with one shared `asyncio.Semaphore` (`LLM_GATEWAY_BACKGROUND_CONCURRENCY`,
+default 1). Consequence worth knowing: the cap is per route key across BOTH
+entry points, so one AI Town NPC line and one Orion `quick_background` step
+contend for the same single permit. Before this the bus path called a blocking
+`wait_for_slack_sync` from inside its executor thread with no cap at all; that
+function is deleted. On the bus path the wait for this permit is bounded by the
+caller's own budget (see "Per-upstream isolation" above) and sheds with
+`gateway_overloaded` stage `background_queue` past it; the HTTP passthrough has
+no such deadline and waits as long as the client does.
 
 Plain routes (no `priority` field) are completely unaffected on both paths --
 the gate is never invoked for them, zero added latency, zero behavior change.

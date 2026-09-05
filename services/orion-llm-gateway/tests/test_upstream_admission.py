@@ -130,12 +130,14 @@ def _two_lanes(monkeypatch: pytest.MonkeyPatch):
     _load_route_targets.cache_clear()
     monkeypatch.setattr(settings, "llm_gateway_upstream_max_inflight", 2)
     ua.reset_upstream_admission_for_tests()
+    gw_main.reset_executor_for_tests()
     try:
         yield
     finally:
         settings.llm_route_table_json = original
         _load_route_targets.cache_clear()
         ua.reset_upstream_admission_for_tests()
+        gw_main.reset_executor_for_tests()
 
 
 def _body(route: str) -> ChatBody:
@@ -147,9 +149,6 @@ async def test_a_flood_on_quick_does_not_delay_chat(_two_lanes) -> None:
     """The incident shape. 12 slow `quick` requests against a cap of 2 (so 10 queue), one
     `chat` request arriving last. Before this fix all 13 shared one executor FIFO and chat
     waited behind every quick. Now chat must complete in well under one quick's duration."""
-    loop = asyncio.get_running_loop()
-    gw_main.configure_executor(loop, ua.get_upstream_admission())
-
     def fake_run(body: ChatBody, plan=None) -> Dict[str, Any]:
         if plan.route == "quick":
             time.sleep(0.3)
@@ -184,7 +183,7 @@ async def test_a_request_past_its_own_budget_is_shed_not_generated(_two_lanes, c
         return {"text": "ok", "raw": {}, "route": plan.route}
 
     with patch.object(gw_main, "run_llm_chat", fake_run), \
-         patch.object(gw_main, "_resolve_http_read_timeout_sec", lambda body: 0.05):
+         patch.object(gw_main, "resolve_caller_budget_sec", lambda body: 0.05):
         tasks = [
             asyncio.create_task(gw_main._dispatch_chat(_body("quick"), correlation_id=f"q{i}"))
             for i in range(4)
@@ -197,6 +196,7 @@ async def test_a_request_past_its_own_budget_is_shed_not_generated(_two_lanes, c
     assert calls["n"] == 2, "a shed request must never reach run_llm_chat"
     details = shed[0]["raw"]["details"]
     assert details["upstream"] == QUICK and details["route"] == "quick"
+    assert details["stage"] == "upstream_queue"
     assert details["served_by"] == "fast"
     assert details["waited_s"] >= 0.04 and details["budget_s"] == 0.05
     assert details["lane"]["max_inflight"] == 2
@@ -255,11 +255,138 @@ async def test_admission_endpoint_exposes_lane_depth(_two_lanes) -> None:
 
 
 @pytest.mark.asyncio
-async def test_configure_executor_replaces_the_cpu_bound_default(_two_lanes) -> None:
+async def test_configure_executor_builds_a_dedicated_pool_sized_from_the_route_table(_two_lanes) -> None:
     loop = asyncio.get_running_loop()
     workers = gw_main.configure_executor(loop, ua.get_upstream_admission())
     # two distinct upstreams (quick and quick_background share one) x cap 2 + headroom 4
     assert workers == 2 * 2 + 4
-    executor = loop._default_executor  # noqa: SLF001 -- asserting what asyncio.to_thread will use
-    assert isinstance(executor, ThreadPoolExecutor)
-    assert executor._max_workers == workers  # noqa: SLF001
+    pool = gw_main._chat_executor
+    assert isinstance(pool, ThreadPoolExecutor)
+    assert pool._max_workers == workers  # noqa: SLF001
+    assert loop._default_executor is not pool, "the chassis heartbeat keeps the stock default executor"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_plain_routes_never_enter_the_background_gate(_two_lanes) -> None:
+    """The negative half of the gate-order test: `quick`/`chat` must not touch
+    background_admission at all (its /slots poll, its per-route semaphore)."""
+    def fake_run(body: ChatBody, plan=None) -> Dict[str, Any]:
+        return {"text": "ok", "raw": {}, "route": plan.route}
+
+    with patch.object(gw_main, "run_llm_chat", fake_run), \
+         patch.object(gw_main, "background_admission") as bg:
+        for route in ("quick", "chat"):
+            out = await gw_main._dispatch_chat(_body(route), correlation_id=route)
+            assert out["text"] == "ok"
+    bg.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_background_request_stuck_on_its_route_permit_is_shed_at_budget(_two_lanes, monkeypatch) -> None:
+    """Review finding: the background route's own concurrency semaphore is a queue too,
+    and it must obey the caller's deadline like every other wait. Hold the
+    `quick_background` permit, send a request with a tiny budget, and it must come back
+    `gateway_overloaded` stage=background_queue without ever polling /slots or running."""
+    from app import priority_admission as pa
+
+    monkeypatch.setattr(pa, "_free_slot_count", pytest.fail)  # must never be reached
+    sem = pa._semaphore_for("quick_background", 1)
+    await sem.acquire()
+    try:
+        with patch.object(gw_main, "run_llm_chat") as run, \
+             patch.object(gw_main, "resolve_caller_budget_sec", lambda body: 0.05):
+            out = await gw_main._dispatch_chat(_body("quick_background"), correlation_id="bg")
+    finally:
+        sem.release()
+    run.assert_not_called()
+    assert out["raw"]["error"] == "gateway_overloaded"
+    assert out["raw"]["details"]["stage"] == "background_queue"
+    assert out["raw"]["details"]["waited_s"] >= 0.04
+
+
+@pytest.mark.asyncio
+async def test_an_8s_caller_gets_an_8s_queue_budget_not_the_30s_read_floor() -> None:
+    from app.llm_backend import _resolve_http_read_timeout_sec, resolve_caller_budget_sec
+
+    eight = ChatBody(route="quick", messages=[{"role": "user", "content": "x"}],
+                     options={"gateway_read_timeout_sec": 8.0})
+    assert resolve_caller_budget_sec(eight) == 8.0
+    assert _resolve_http_read_timeout_sec(eight) == 30.0, "the HTTP client floor is unchanged"
+    none = ChatBody(route="quick", messages=[{"role": "user", "content": "x"}])
+    assert resolve_caller_budget_sec(none) == _resolve_http_read_timeout_sec(none)
+    junk = ChatBody(route="quick", messages=[{"role": "user", "content": "x"}],
+                    options={"gateway_read_timeout_sec": "nope"})
+    assert resolve_caller_budget_sec(junk) == _resolve_http_read_timeout_sec(junk)
+    assert resolve_caller_budget_sec(ChatBody(route="quick", messages=[], options={"gateway_read_timeout_sec": -4})) > 0
+
+
+@pytest.mark.asyncio
+async def test_time_spent_queueing_comes_out_of_the_read_timeout(_two_lanes) -> None:
+    """Review finding: a request that waited 390s of a 393s budget used to be dispatched
+    with a fresh 393s read. The read timeout handed to run_llm_chat must be what is left."""
+    seen: list[float] = []
+
+    def fake_run(body: ChatBody, plan=None) -> Dict[str, Any]:
+        seen.append(float(body.options["gateway_read_timeout_sec"]))
+        assert plan.body is body
+        time.sleep(0.15)
+        return {"text": "ok", "raw": {}, "route": plan.route}
+
+    with patch.object(gw_main, "run_llm_chat", fake_run), \
+         patch.object(gw_main, "resolve_caller_budget_sec", lambda body: 1.0):
+        # cap is 2: the third request queues behind two 0.15s generations
+        tasks = [asyncio.create_task(gw_main._dispatch_chat(_body("quick"), correlation_id=f"q{i}")) for i in range(3)]
+        await asyncio.gather(*tasks)
+    assert len(seen) == 3
+    assert max(seen) <= 1.0
+    assert min(seen) <= 0.9, f"the queued request must have had its wait deducted: {seen}"
+
+
+@pytest.mark.asyncio
+async def test_a_permit_admitted_with_nothing_left_is_shed_before_dispatch(_two_lanes) -> None:
+    """Edge of the deadline: admitted (lane free) but the budget already expired while
+    waiting elsewhere. `asyncio.timeout(0)` does not fire on an uncontended acquire, so
+    this needs its own check after admission."""
+    with patch.object(gw_main, "run_llm_chat") as run, \
+         patch.object(gw_main, "resolve_caller_budget_sec", lambda body: 0.0):
+        out = await gw_main._dispatch_chat(_body("quick"), correlation_id="late")
+    run.assert_not_called()
+    assert out["raw"]["details"]["stage"] == "budget_exhausted"
+    assert ua.get_upstream_admission().snapshot()[QUICK]["inflight"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_handler_keeps_its_permit_until_the_thread_finishes(_two_lanes) -> None:
+    """Review finding: Rabbit cancels every in-flight handler on reconnect. Cancelling the
+    await cannot stop the thread, so releasing the permit on cancel let a lane run 2x its
+    cap in real threads while the gauge said otherwise."""
+    import threading
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def fake_run(body: ChatBody, plan=None) -> Dict[str, Any]:
+        started.set()
+        time.sleep(0.2)
+        finished.set()
+        return {"text": "ok", "raw": {}, "route": plan.route}
+
+    gate = ua.get_upstream_admission()
+    with patch.object(gw_main, "run_llm_chat", fake_run):
+        task = asyncio.create_task(gw_main._dispatch_chat(_body("quick"), correlation_id="c"))
+        await asyncio.to_thread(started.wait, 1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert gate.snapshot()[QUICK]["inflight"] == 1, "thread still running: permit must still be held"
+        await asyncio.to_thread(finished.wait, 1.0)
+        await asyncio.sleep(0.05)  # let the done-callback land on the loop
+    assert gate.snapshot()[QUICK]["inflight"] == 0
+    assert gate.lane(QUICK).sem._value == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unconfigured_route_never_takes_a_permit_or_a_thread(_two_lanes) -> None:
+    out = await gw_main._dispatch_chat(_body("nope"), correlation_id="x")
+    assert out["raw"]["error"] == "route_not_configured"
+    assert ua.get_upstream_admission().snapshot() == {}

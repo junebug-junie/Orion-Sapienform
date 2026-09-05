@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from orion.core.schemas.substrate_mutation import MutationAdoptionV1, MutationDecisionV1, MutationProposalV1
+from orion.substrate.mutation_contracts import RETIRED_MUTATION_CLASSES
 from orion.substrate.mutation_control_surface import (
     ControlSurfaceWriteError,
     get_chat_reflective_lane_threshold,
@@ -69,6 +70,16 @@ class PatchApplier:
 
     def apply(self, *, proposal: MutationProposalV1, decision: MutationDecisionV1) -> MutationAdoptionV1 | None:
         if decision.action != "auto_promote":
+            return None
+        if proposal.mutation_class in RETIRED_MUTATION_CLASSES:
+            # Defense in depth alongside DecisionEngine.decide()'s early
+            # reject: refuses even a hand-built MutationDecisionV1 with
+            # action="auto_promote" passed straight to apply() (a debug
+            # tool, a test, a replayed historical decision), not just one
+            # that went through decide() itself. See
+            # mutation_contracts.py's RETIRED_MUTATION_CLASSES docstring --
+            # without this, this method's own live write below (routing's
+            # branch) would still execute for real.
             return None
         if not proposal.patch.rollback_payload:
             return None

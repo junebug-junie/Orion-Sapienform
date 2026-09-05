@@ -58,9 +58,7 @@ class MutationDetectors:
             # a whole, is worth skipping early.
             zone_has_no_live_surface = record.target_zone in _RETIRED_TELEMETRY_ZONES
             target_surface = None if zone_has_no_live_surface else _target_surface_for_zone(record.target_zone)
-            pressure_event_signals = _signals_from_pressure_events(
-                record=record, target_surface=target_surface or _DEFAULT_TARGET_SURFACE
-            )
+            pressure_event_signals = _signals_from_pressure_events(record=record)
             if pressure_event_signals:
                 signals.extend(pressure_event_signals)
             if target_surface is not None and target_surface not in PARKED_TARGET_SURFACES:
@@ -120,35 +118,40 @@ def _target_surface_for_zone(zone: str) -> str:
     return TARGET_SURFACE_BY_ZONE.get(zone, _DEFAULT_TARGET_SURFACE)
 
 
-def _signals_from_pressure_events(*, record: GraphReviewTelemetryRecordV1, target_surface: str) -> list[MutationSignalV1]:
-    if not record.pressure_events:
-        return []
-    # These categories used to map to the "routing" surface (retired
-    # 2026-09-05, see mutation_contracts.py/mutation_proposals.py) --
-    # there is no live surface to redirect them to, so they now fall
-    # through the `if not mapped_surface: continue` guard below instead of
-    # spending a store write on a signal that would only be refused three
-    # steps later at plan_for_pressure().
-    _retired_pressure_categories = {
+# These categories used to map to the "routing" surface (retired 2026-09-05,
+# see mutation_contracts.py/mutation_proposals.py) -- there is no live
+# surface to redirect them to, so they now fall through
+# `_signals_from_pressure_events`'s `if not mapped_surface: continue` guard
+# instead of spending a store write on a signal that would only be refused
+# three steps later at plan_for_pressure(). Module-scoped like
+# TARGET_SURFACE_BY_ZONE above, not rebuilt per call/per record.
+_RETIRED_PRESSURE_CATEGORIES: frozenset[str] = frozenset(
+    {
         "routing_false_escalation",
         "routing_false_downgrade",
         "response_truncation_or_length_finish",
         "runtime_degradation_or_timeout",
         "social_addressedness_gap",
     }
-    recall_surface_by_category = {
-        "recall_miss_or_dissatisfaction": "recall_strategy_profile",
-        "unsupported_memory_claim": "recall_strategy_profile",
-        "irrelevant_semantic_neighbor": "recall_graph_expansion_policy",
-        "missing_exact_anchor": "recall_anchor_policy",
-        "stale_memory_selected": "recall_page_index_profile",
-    }
+)
+_RECALL_SURFACE_BY_CATEGORY: dict[str, str] = {
+    "recall_miss_or_dissatisfaction": "recall_strategy_profile",
+    "unsupported_memory_claim": "recall_strategy_profile",
+    "irrelevant_semantic_neighbor": "recall_graph_expansion_policy",
+    "missing_exact_anchor": "recall_anchor_policy",
+    "stale_memory_selected": "recall_page_index_profile",
+}
+
+
+def _signals_from_pressure_events(*, record: GraphReviewTelemetryRecordV1) -> list[MutationSignalV1]:
+    if not record.pressure_events:
+        return []
     signals: list[MutationSignalV1] = []
     for event in record.pressure_events:
         category = str(event.pressure_category)
-        if category in _retired_pressure_categories:
+        if category in _RETIRED_PRESSURE_CATEGORIES:
             continue
-        mapped_surface = recall_surface_by_category.get(category)
+        mapped_surface = _RECALL_SURFACE_BY_CATEGORY.get(category)
         mapped_zone = "concept_graph"
         if not mapped_surface:
             continue

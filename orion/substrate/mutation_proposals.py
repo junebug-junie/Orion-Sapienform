@@ -29,6 +29,13 @@ SURFACE_TO_CLASS = {
 }
 
 SURFACE_TO_LANE = {
+    # "routing" has no mutation_class in SURFACE_TO_CLASS any more (retired
+    # 2026-09-05) so plan_for_pressure() never looks this up for it -- kept
+    # only because build_placeholder_routing_proposal() below reads it via
+    # SURFACE_TO_LANE.get("routing", "operational") for the historical
+    # placeholder's lane. Explicit, not left to that .get() call's default
+    # to happen to match.
+    "routing": "operational",
     "recall": "operational",
     "recall_strategy_profile": "operational",
     "recall_anchor_policy": "operational",

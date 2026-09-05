@@ -5,14 +5,9 @@ from datetime import datetime
 from typing import Any, Dict
 
 from .autonomy_constitution import PRODUCTION_RECALL_MODE, RECALL_LIVE_APPLY_ENABLED
+from orion.substrate.mutation_contracts import ROUTING_TARGET_RETIRED_REASON
 from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
 from orion.substrate.mutation_queue import SubstrateMutationStore, cognition_view_snapshot
-
-# routing's own reason, not mutation_proposals.py's generic
-# _PARKED_SURFACE_REASON (that mechanism is for a surface that's still
-# registered but refused; "routing" is fully gone from SURFACE_TO_CLASS as
-# of 2026-09-05, one step further than parked).
-_ROUTING_RETIRED_REASON = "routing_target_retired_2026_09_05"
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
@@ -154,7 +149,7 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
         "live_ramp_active": False,
         "routing_target_parked": True,  # kept for existing consumers; still true
         "routing_target_retired": True,
-        "routing_target_parked_reason": _ROUTING_RETIRED_REASON,
+        "routing_target_parked_reason": ROUTING_TARGET_RETIRED_REASON,
         "routing_proposals_enabled": _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True),
         "routing_apply_enabled": bool(
             _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)

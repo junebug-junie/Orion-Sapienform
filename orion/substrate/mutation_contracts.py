@@ -35,6 +35,33 @@ class MutationClassContract:
 # parked -- an empty set is the correct, expected state, not a placeholder.
 PARKED_TARGET_SURFACES: frozenset[str] = frozenset()
 
+# Mutation classes that must never be decided/auto-promoted/applied for
+# real, no matter how a proposal for them reached the store. This is a
+# DIFFERENT gate than PARKED_TARGET_SURFACES above: that one only stops
+# `plan_for_pressure()` (mutation_proposals.py) from ever CREATING a new
+# "routing" proposal through the normal detector -> pressure -> factory
+# path. It does nothing for a proposal that reaches the store any other
+# way -- a hand-built one from `build_placeholder_routing_proposal()`
+# (kept alive for historical inspection, see CONTRACTS below), a replayed
+# historical row, or a direct `SubstrateMutationStore.add_proposal()` call.
+# Review-confirmed 2026-09-05: without this, `mutation_decision.py`'s
+# `DecisionPolicy.auto_promote_allowlist` and `mutation_apply.py`'s
+# `PatchApplier.apply()` would both still happily decide and *actually
+# write* `chat_reflective_lane_threshold` for a `routing_threshold_patch`
+# proposal that bypassed proposal-creation-time refusal -- the "no surface
+# currently has live apply" claim this change makes elsewhere was not
+# backed by a real code-level gate until this set existed. Checked in both
+# `DecisionEngine.decide()` and `PatchApplier.apply()` (defense in depth,
+# same pattern PR #2088 already used for the rollback-cooldown gate).
+RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch"})
+
+# Single shared reason string for "routing" specifically, for the Hub
+# endpoints/injected-cognition-context callers that report on it
+# (services/orion-hub/scripts/api_routes.py, mutation_cognition_context.py).
+# One canonical constant so the two API responses describing the same
+# retired surface can't independently drift.
+ROUTING_TARGET_RETIRED_REASON = "routing_target_retired_2026_09_05"
+
 
 CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
     "routing_threshold_patch": MutationClassContract(
@@ -47,9 +74,9 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         # display (ClassSpecificScorer.evaluate(), SubstrateTrialRunner,
         # the orion-hub replay-inspection endpoint) -- deleting the entry
         # broke those with a bare KeyError, confirmed live by this
-        # change's own test run. The actual "no NEW proposal" enforcement
-        # is `SURFACE_TO_CLASS` (mutation_proposals.py) no longer mapping
-        # "routing" to this class at all, not this contract's absence.
+        # change's own test run. The actual "can this ever be decided/
+        # applied for real again" gate is `RETIRED_MUTATION_CLASSES` above,
+        # not this contract's presence or absence.
         mutation_class="routing_threshold_patch",
         allowed_targets=("routing",),
         allowed_fields=("chat_reflective_lane_threshold", "autonomy_route_threshold"),

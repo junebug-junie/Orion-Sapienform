@@ -1,12 +1,16 @@
 # Platform Review: Cortex Routing Surface Area and Wiring Map
 
 > **Outcome (2026-09-05):** Option B below is what shipped
-> (`_should_auto_route()` in `services/orion-cortex-orch/app/main.py`).
-> Confirmed live: every real producer in the map below hardcodes its `mode`
-> (`brain`/`agent`) -- none ever send `mode=auto`/`route_intent=auto`, so
-> `DecisionRouter.route()` is never actually invoked in production. The
+> (`_should_auto_route()` in `services/orion-cortex-orch/app/main.py`). Every
+> real producer in the map below hardcodes its `mode` (`brain`/`agent`) in
+> its own source, confirmed by reading each one directly; live container
+> logs across 22 real chat turns the same day showed
+> `auto_depth_gate ... should_auto=False reason=intent_none` on every single
+> one, with zero occurrences of `should_auto=True` -- so
+> `DecisionRouter.route()` is not actually invoked in production. The
 > self-modification target it fed (`routing_threshold_patch`) was retired
-> 2026-09-05. See this change's PR description.
+> 2026-09-05. Full trail (the exact log lines, the source read for each
+> producer) is in this change's PR description, not reproduced here.
 
 ## 1) Routing Surface Area Map
 

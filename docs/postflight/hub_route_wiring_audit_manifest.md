@@ -1,14 +1,18 @@
 # Hub Route Wiring Audit Manifest
 
 > **Stale as of 2026-09-05.** This is a point-in-time audit; treat the
-> verdicts below as history, not current state. Confirmed live: the current
-> Hub UI's mode selector only offers `orion`/`quick`/`story`/`agent` -- no
-> `auto` option -- and `DecisionRouter.route()` (referenced below) is never
-> invoked by any of those, so the "Hub Auto" path described in this doc is
-> not reachable from the UI today, whatever its status was when this audit
-> was written. `routing_threshold_patch`, the self-modification target this
-> router fed, was separately retired 2026-09-05. See this change's PR
-> description for the full trail.
+> verdicts below as history, not current state. Read directly: the current
+> Hub UI's mode selector (`services/orion-hub/templates/index.html`,
+> `static/js/app.js`) only offers `orion`/`quick`/`story`/`agent` -- no
+> `auto` option -- and `DecisionRouter.route()` (referenced below) is only
+> ever called when `mode`/`route_intent` is `auto`
+> (`_should_auto_route()`, `services/orion-cortex-orch/app/main.py`), so the
+> "Hub Auto" path described in this doc is not reachable from the UI today,
+> whatever its status was when this audit was written.
+> `routing_threshold_patch`, the self-modification target this router fed,
+> was separately retired 2026-09-05. Full trail, including live log
+> confirmation that no real traffic ever sets `mode=auto`, is in this
+> change's PR description.
 
 ## Verdict
 

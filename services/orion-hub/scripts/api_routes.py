@@ -144,16 +144,11 @@ from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import PARKED_TELEMETRY_ZONES, MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator
+from orion.substrate.mutation_contracts import ROUTING_TARGET_RETIRED_REASON
 from orion.substrate.mutation_proposals import (
     ProposalFactory,
     build_placeholder_routing_proposal,
 )
-
-# routing's own retirement reason -- mutation_proposals.py's
-# _PARKED_SURFACE_REASON is the generic mechanism for a surface that's still
-# registered but refused; "routing" is fully gone from SURFACE_TO_CLASS as
-# of 2026-09-05, one step further than parked.
-_ROUTING_RETIRED_REASON = "routing_target_retired_2026_09_05"
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -5480,7 +5475,7 @@ def _routing_live_ramp_posture_payload() -> Dict[str, Any]:
             "status": "retired",
             "routing_target_parked": True,  # kept for existing consumers; still true
             "routing_target_retired": True,
-            "routing_target_parked_reason": _ROUTING_RETIRED_REASON,
+            "routing_target_parked_reason": ROUTING_TARGET_RETIRED_REASON,
         },
     }
 
@@ -5610,7 +5605,7 @@ def _self_modification_panel_payload(*, now: datetime | None = None) -> Dict[str
         # already-persisted data -- just frozen, since nothing can write to
         # this surface again.
         "retired": True,
-        "retired_reason": _ROUTING_RETIRED_REASON,
+        "retired_reason": ROUTING_TARGET_RETIRED_REASON,
     }
     try:
         store = control_surface_store()

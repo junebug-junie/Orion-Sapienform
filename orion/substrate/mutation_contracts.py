@@ -28,19 +28,55 @@ class MutationClassContract:
 # avoid reporting a cycle "healthy" when every matched row can only ever
 # produce a parked-surface signal. Changing this one set re-derives all three.
 #
-# "routing" (chat_reflective_lane_threshold) parked 2026-09-03: confirmed
-# live evidence mismatch (the signals this surface received describe review-
-# pipeline outcomes, not what the dial gates) and structural inertness (the
-# hardcoded 0.58 patch target sits below the 0.61 confidence floor every
-# heuristic routing decision at execution_depth >= 2 can carry, with
-# AUTO_ROUTER_LLM_ENABLED=false in production -- decision_confidence <
-# routing_threshold can never fire at this target). Full trail in this
-# change's PR description and commit message.
-PARKED_TARGET_SURFACES: frozenset[str] = frozenset({"routing"})
+# "routing" (chat_reflective_lane_threshold) was parked here 2026-09-03, then
+# retired outright 2026-09-05 once live traffic confirmed it wasn't just
+# under-evidenced but structurally unreachable (see mutation_proposals.py's
+# retirement note, and this change's PR description). Nothing is currently
+# parked -- an empty set is the correct, expected state, not a placeholder.
+PARKED_TARGET_SURFACES: frozenset[str] = frozenset()
+
+# Mutation classes that must never be decided/auto-promoted/applied for
+# real, no matter how a proposal for them reached the store. This is a
+# DIFFERENT gate than PARKED_TARGET_SURFACES above: that one only stops
+# `plan_for_pressure()` (mutation_proposals.py) from ever CREATING a new
+# "routing" proposal through the normal detector -> pressure -> factory
+# path. It does nothing for a proposal that reaches the store any other
+# way -- a hand-built one from `build_placeholder_routing_proposal()`
+# (kept alive for historical inspection, see CONTRACTS below), a replayed
+# historical row, or a direct `SubstrateMutationStore.add_proposal()` call.
+# Review-confirmed 2026-09-05: without this, `mutation_decision.py`'s
+# `DecisionPolicy.auto_promote_allowlist` and `mutation_apply.py`'s
+# `PatchApplier.apply()` would both still happily decide and *actually
+# write* `chat_reflective_lane_threshold` for a `routing_threshold_patch`
+# proposal that bypassed proposal-creation-time refusal -- the "no surface
+# currently has live apply" claim this change makes elsewhere was not
+# backed by a real code-level gate until this set existed. Checked in both
+# `DecisionEngine.decide()` and `PatchApplier.apply()` (defense in depth,
+# same pattern PR #2088 already used for the rollback-cooldown gate).
+RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch"})
+
+# Single shared reason string for "routing" specifically, for the Hub
+# endpoints/injected-cognition-context callers that report on it
+# (services/orion-hub/scripts/api_routes.py, mutation_cognition_context.py).
+# One canonical constant so the two API responses describing the same
+# retired surface can't independently drift.
+ROUTING_TARGET_RETIRED_REASON = "routing_target_retired_2026_09_05"
 
 
 CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
     "routing_threshold_patch": MutationClassContract(
+        # Retired 2026-09-05 (was parked 2026-09-03) -- confirmed
+        # unreachable, see PARKED_TARGET_SURFACES' comment above and this
+        # change's PR description. Kept here, unlike a merely-parked class,
+        # because this dict defines a mutation_class's *shape* (fields,
+        # bounds, evaluation_metrics), which the 147 historical proposal
+        # rows already in Postgres still need for scoring/trial-replay/
+        # display (ClassSpecificScorer.evaluate(), SubstrateTrialRunner,
+        # the orion-hub replay-inspection endpoint) -- deleting the entry
+        # broke those with a bare KeyError, confirmed live by this
+        # change's own test run. The actual "can this ever be decided/
+        # applied for real again" gate is `RETIRED_MUTATION_CLASSES` above,
+        # not this contract's presence or absence.
         mutation_class="routing_threshold_patch",
         allowed_targets=("routing",),
         allowed_fields=("chat_reflective_lane_threshold", "autonomy_route_threshold"),

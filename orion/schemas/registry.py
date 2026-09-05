@@ -583,7 +583,6 @@ from orion.schemas.reverie import (
     SpontaneousThoughtV1,
 )
 from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
-from orion.schemas.routing_decision import RoutingDecisionRecordV1
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
     GroundingCapsuleV1,
@@ -1343,7 +1342,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
-    "RoutingDecisionRecordV1": RoutingDecisionRecordV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
     "GroundingCapsuleV1": GroundingCapsuleV1,
     "SpontaneousThoughtV1": SpontaneousThoughtV1,
@@ -1483,10 +1481,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ThoughtEventV1": SchemaRegistration(
         model=ThoughtEventV1,
         kind="thought.event.v1",
-    ),
-    "RoutingDecisionRecordV1": SchemaRegistration(
-        model=RoutingDecisionRecordV1,
-        kind="routing.decision.record.v1",
     ),
     "ThoughtDecisionRecordV1": SchemaRegistration(
         model=ThoughtDecisionRecordV1,

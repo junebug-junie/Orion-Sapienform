@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.core.schemas.substrate_mutation import (
     MutationDecisionV1,
+    MutationPatchV1,
     MutationProposalV1,
 )
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
@@ -147,15 +148,15 @@ def _isolated_control_surface(*, seed_threshold: float):
 
 
 def _routing_smoke_proposal(*, subject_ref: str, target_value: float = 0.58) -> MutationProposalV1:
-    """A routing_threshold_patch proposal, bypassing the parked ProposalFactory.
+    """A routing_threshold_patch proposal, bypassing the retired ProposalFactory path.
 
-    As of 2026-09-03 `ProposalFactory.plan_for_pressure()`/`from_pressure()`
-    refuse every "routing" pressure outright (parked -- see
-    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`), so this smoke's
+    "routing" was parked 2026-09-03, then retired outright 2026-09-05 --
+    `ProposalFactory.plan_for_pressure()`/`from_pressure()` no longer even
+    recognize it as a target_surface, so this smoke's
     active-surface/auto-promote/apply/rollback-required demonstrations, which
-    are about the queue/decision/apply mechanics and not about the parked
-    evidence pipeline, build the proposal directly instead of going through
-    the (now dead-for-routing) detector -> pressure -> factory chain, via the
+    are about the queue/decision/apply mechanics and not about the (now-gone)
+    live evidence pipeline, build the proposal directly instead of going
+    through the (now dead-for-routing) detector -> pressure -> factory chain, via the
     shared `build_placeholder_routing_proposal()` (also used by
     test_mutation_v21.py and the orion-hub replay-inspection endpoint).
 
@@ -169,6 +170,38 @@ def _routing_smoke_proposal(*, subject_ref: str, target_value: float = 0.58) -> 
         rollback_value=0.50,
         subject_ref=subject_ref,
         source_pressure_id="pressure:smoke",
+    )
+
+
+def _graph_consolidation_smoke_proposal(*, subject_ref: str, target_value: int = 96) -> MutationProposalV1:
+    """A graph_consolidation_param_patch proposal, appliable for real.
+
+    Steps 2/3 below need a live end-to-end apply through the real worker
+    cycle to demonstrate the active-surface lock actually releasing --
+    `_routing_smoke_proposal()` can no longer do that (`routing_threshold_patch`
+    is retired 2026-09-05, RETIRED_MUTATION_CLASSES; PatchApplier.apply()
+    refuses it unconditionally now, active-surface-locked or not). This is
+    the remaining auto-promotable class apply() does not special-case away.
+    """
+    return MutationProposalV1(
+        lane="operational",
+        mutation_class="graph_consolidation_param_patch",
+        risk_tier="medium",
+        target_surface="graph_consolidation",
+        anchor_scope="orion",
+        subject_ref=subject_ref,
+        rationale=f"smoke:graph_consolidation_param_patch target={target_value}",
+        expected_effect="reduce_runtime_failure",
+        evidence_refs=["telemetry:smoke"],
+        source_signal_ids=["signal:smoke"],
+        source_pressure_id="pressure:smoke",
+        patch=MutationPatchV1(
+            mutation_class="graph_consolidation_param_patch",
+            target_surface="graph_consolidation",
+            target_ref="graph_consolidation",
+            patch={"query_limit_nodes": target_value},
+            rollback_payload={"query_limit_nodes": 64},
+        ),
     )
 
 
@@ -193,11 +226,11 @@ def run_smoke(*, emit: bool = True) -> list[str]:
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(
                 corpus_by_class={
-                    "routing_threshold_patch": "corpus-routing",
+                    "graph_consolidation_param_patch": "corpus-graph-consolidation",
                     "approved_prompt_profile_variant_promotion": "corpus-prompt",
                 },
                 baseline_metric_ref_by_class={
-                    "routing_threshold_patch": "baseline-routing",
+                    "graph_consolidation_param_patch": "baseline-graph-consolidation",
                     "approved_prompt_profile_variant_promotion": "baseline-prompt",
                 },
             ),
@@ -256,53 +289,57 @@ def run_smoke(*, emit: bool = True) -> list[str]:
                 )
 
         # 2) Auto promote lane with one-live-surface block before side effects.
-        # See _routing_smoke_proposal() -- the routing target is parked, so
-        # this builds the proposal directly rather than through telemetry.
-        store._active_surface_by_target["routing"] = "existing-adoption"
-        blocked_proposal = _routing_smoke_proposal(subject_ref="entity:routing")
+        # Was "routing" -- retired 2026-09-05 (RETIRED_MUTATION_CLASSES),
+        # PatchApplier.apply() now refuses it unconditionally, active-surface
+        # block or not, which would make step 3 below (release the block,
+        # confirm a real apply happens) demonstrate nothing. Switched to
+        # "graph_consolidation", the remaining auto-promotable class apply()
+        # does not special-case away. Built directly (see
+        # _graph_consolidation_smoke_proposal) rather than through the
+        # detector -> pressure -> factory chain -- this step is about the
+        # active-surface lock, not about how the proposal was generated.
+        store._active_surface_by_target["graph_consolidation"] = "existing-adoption"
+        blocked_proposal = _graph_consolidation_smoke_proposal(subject_ref="entity:graph-consolidation")
         store.add_proposal(blocked_proposal, priority=60)
-        routing_metrics: dict[str, dict[str, float]] = {
-            blocked_proposal.proposal_id: {"success_rate_delta": 0.3, "latency_ms_delta": 0.0}
+        graph_consolidation_metrics: dict[str, dict[str, float]] = {
+            blocked_proposal.proposal_id: {"queue_resolution_delta": 0.3, "requeue_rate_delta": 0.0}
         }
-        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=routing_metrics)
+        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=graph_consolidation_metrics)
         emit_line(
             {
                 "event": "mutation_apply_blocked",
                 "cycle_id": cycle_id,
-                "surface_key": "routing",
+                "surface_key": "graph_consolidation",
                 "blocked_reason": "active_surface",
                 "applied": False,
             }
         )
 
         # 3) Allow auto-promote after removing active-surface block.
-        store._active_surface_by_target.pop("routing", None)
-        allowed_proposal = _routing_smoke_proposal(subject_ref="entity:routing-allow")
+        store._active_surface_by_target.pop("graph_consolidation", None)
+        allowed_proposal = _graph_consolidation_smoke_proposal(subject_ref="entity:graph-consolidation-allow")
         store.add_proposal(allowed_proposal, priority=60)
-        routing_metrics[allowed_proposal.proposal_id] = {"success_rate_delta": 0.3, "latency_ms_delta": 0.0}
-        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=routing_metrics)
-        applied = any(a.target_surface == "routing" and a.status == "applied" for a in store._adoptions.values())
+        graph_consolidation_metrics[allowed_proposal.proposal_id] = {"queue_resolution_delta": 0.3, "requeue_rate_delta": 0.0}
+        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=graph_consolidation_metrics)
+        applied = any(a.target_surface == "graph_consolidation" and a.status == "applied" for a in store._adoptions.values())
         emit_line(
             {
                 "event": "mutation_decision_recorded",
                 "cycle_id": cycle_id,
                 "decision": "auto_promote",
-                "surface_key": "routing",
+                "surface_key": "graph_consolidation",
                 "queue_status_after": store.queue_status_for_proposal(allowed_proposal.proposal_id) or "-",
                 "applied": applied,
             }
         )
 
         # 4) Rollback payload required before apply.
-        # Step 3 moved the isolated surface to 0.58. Reset the (throwaway)
-        # surface first so this step has a real value to read for the
-        # proposal it then strips a rollback from. Isolated store only;
-        # never the ambient one. Built directly (see _routing_smoke_proposal)
-        # rather than through the parked detector/pressure/factory chain --
-        # this step is about PatchApplier's rollback-payload requirement, not
-        # about how the proposal was generated.
-        set_chat_reflective_lane_threshold(value=0.5, actor="mutation_smoke")
-        proposal = _routing_smoke_proposal(subject_ref="entity:payload")
+        # Also switched off "routing" (see step 2's note) -- this step is
+        # about PatchApplier's rollback-payload requirement, which needs no
+        # control-surface value at all on the generic apply path
+        # "graph_consolidation" now takes, so the isolated-control-surface
+        # setup this step used to depend on is no longer needed here.
+        proposal = _graph_consolidation_smoke_proposal(subject_ref="entity:payload")
         proposal = proposal.model_copy(update={"patch": proposal.patch.model_copy(update={"rollback_payload": {}})})
         adopt = applier.apply(proposal=proposal, decision=MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote"))
         emit_line(

@@ -10,7 +10,10 @@ from orion.substrate.recall_strategy_readiness import readiness_for_pressure
 
 
 SURFACE_TO_CLASS = {
-    "routing": "routing_threshold_patch",
+    # "routing" retired 2026-09-05 -- see the note above `ProposalFactory`
+    # and this change's PR description. No mutation_class maps to it any
+    # more, so plan_for_pressure() refuses it via "unknown_target_surface"
+    # before ever reaching the (now generic) parked-class check below.
     "recall": "recall_strategy_profile_candidate",
     "recall_strategy_profile": "recall_strategy_profile_candidate",
     "recall_anchor_policy": "recall_anchor_policy_candidate",
@@ -26,6 +29,12 @@ SURFACE_TO_CLASS = {
 }
 
 SURFACE_TO_LANE = {
+    # "routing" has no mutation_class in SURFACE_TO_CLASS any more (retired
+    # 2026-09-05) so plan_for_pressure() never looks this up for it -- kept
+    # only because build_placeholder_routing_proposal() below reads it via
+    # SURFACE_TO_LANE.get("routing", "operational") for the historical
+    # placeholder's lane. Explicit, not left to that .get() call's default
+    # to happen to match.
     "routing": "operational",
     "recall": "operational",
     "recall_strategy_profile": "operational",
@@ -54,41 +63,22 @@ RoutingSurfaceReader = Callable[[], dict[str, Any]]
 # than any threshold movement the generator can propose (smallest is 0.08).
 _SAME_VALUE_ABS_TOL = 1e-9
 
-# The "routing" target surface (chat_reflective_lane_threshold) is parked.
+# The "routing" target surface (chat_reflective_lane_threshold) was parked
+# here 2026-09-03 (evidence mismatch + structural inertness -- the target
+# value could never beat the real confidence floor even with correct
+# evidence) and retired outright 2026-09-05 once live traffic confirmed the
+# decision path it was meant to tune is itself unreachable from any current
+# Hub UI mode. Full trail: this change's PR description and the prior
+# park's PR (#2077). `build_placeholder_routing_proposal()` below still
+# builds a `routing_threshold_patch`-shaped object for inspecting the 147
+# real historical proposals already in Postgres -- that's history, not the
+# live capability, and stays.
 #
-# Confirmed live 2026-09-03, after PR #2071 (orion:routing:decision /
-# RoutingDecisionRecordV1) deployed cleanly (code present in the running
-# containers, channel correctly in SQL_WRITER_SUBSCRIBE_CHANNELS, table
-# present with the expected columns):
-#
-# 1. Evidence mismatch. The signals that reach this surface come from
-#    graph-review telemetry (mutation_detectors.py's
-#    `_build_rich_routing_signals` / `_signals_from_pressure_events`) -- a
-#    review-pipeline consolidation-outcome signal that has nothing to do with
-#    what `chat_reflective_lane_threshold` actually gates
-#    (`decision_router.route()`'s execution_depth/confidence gate).
-# 2. Structural inertness. `routing_decision` had 0 rows and the
-#    `orion:routing:decision` stream had 0 entries as of the #2071 deploy --
-#    no chat turn has gone through `route()` since, so there is no live data
-#    yet to derive a real target value from. Worse: `AUTO_ROUTER_LLM_ENABLED`
-#    is `false` in the live orion-cortex-orch container, so every routing
-#    decision at `execution_depth >= 2` (the only depth the gate ever checks)
-#    comes from the hardcoded heuristic table in decision_router.py. The
-#    LOWEST confidence any of those paths can carry -- including the three
-#    that bump a lower-depth decision up to depth 2 while leaving its
-#    original confidence untouched (`acquisition_contract`,
-#    `output_mode_tool_lane`, `context_exec_investigation`) -- is 0.61
-#    (`heuristic:default`). The hardcoded patch value this module has always
-#    proposed is 0.58. 0.61 > 0.58, so `decision_confidence < routing_threshold`
-#    can never be true at this target: the "self-modification" would be
-#    structurally inert even with correct evidence.
-#
-# Re-enable condition: real `routing_decision` volume exists in Postgres AND
-# the proposed value is derived from it (not this hardcoded constant). Full
-# evidence trail (deploy verification, the empty-table check, the confidence
-# enumeration) is in this change's PR description and commit message, not
-# reproduced here to avoid two copies drifting.
-ROUTING_TARGET_PARKED_REASON = "routing_threshold_target_parked_2026_09_03"
+# Generic reason string for whatever surface is parked next -- not
+# routing-specific. Kept as a mechanism (PARKED_TARGET_SURFACES is currently
+# empty, see mutation_contracts.py) so a future park doesn't need to
+# reinvent this branch.
+_PARKED_SURFACE_REASON = "target_surface_parked"
 
 # Parked mutation classes never reach a proposal, regardless of target_surface.
 # Derived from PARKED_TARGET_SURFACES (mutation_contracts.py) -- the single
@@ -120,13 +110,17 @@ class ProposalPlan:
 
 @dataclass(frozen=True)
 class ProposalFactory:
-    # As of 2026-09-03 the routing surface is parked (ROUTING_TARGET_PARKED_REASON
-    # above) and this reader is never read via plan_for_pressure() any more --
-    # _routing_threshold_payloads(), the no-op guard this field used to drive,
-    # is dormant, kept for when the park is lifted (and exercised directly by
-    # tests). Kept as a constructor field, not removed, so the many existing
-    # ProposalFactory(routing_surface_reader=...) call sites don't need to
-    # change for a park that may not be permanent.
+    # The routing surface was parked 2026-09-03, then retired outright
+    # 2026-09-05 (see the note above `SURFACE_TO_CLASS`) -- "routing" no
+    # longer maps to any mutation_class, so this reader is never read via
+    # plan_for_pressure() at all now, not just parked-and-skipped.
+    # _routing_threshold_payloads(), the no-op guard this field used to
+    # drive, is dead code by the same measure, kept only because it's
+    # exercised directly by its own unit tests as a documented historical
+    # artifact. Kept as a constructor field, not removed, so the many
+    # existing ProposalFactory(routing_surface_reader=...) call sites (real
+    # production wiring in mutation_worker.py/api_routes.py, and test
+    # fixtures) don't need to change for a field that does nothing.
     routing_surface_reader: RoutingSurfaceReader | None = None
     # 2026-09-04 (real-stakes gate): target_surface -> float | None, typically
     # SubstrateMutationStore.surface_reliability. None (not a callable, or the
@@ -151,11 +145,11 @@ class ProposalFactory:
         if mutation_class is None:
             return ProposalPlan(None, "unknown_target_surface")
         if mutation_class in _PARKED_MUTATION_CLASSES:
-            # See ROUTING_TARGET_PARKED_REASON above. Checked before the
-            # surface reader (or anything else class-specific) is ever
-            # touched, so this fires regardless of what the live threshold
-            # value is, and regardless of which surface routed here.
-            return ProposalPlan(None, ROUTING_TARGET_PARKED_REASON)
+            # See _PARKED_SURFACE_REASON above. Checked before the surface
+            # reader (or anything else class-specific) is ever touched, so
+            # this fires regardless of what the live threshold value is, and
+            # regardless of which surface routed here.
+            return ProposalPlan(None, _PARKED_SURFACE_REASON)
         if self.surface_reliability_reader is not None:
             reliability = self.surface_reliability_reader(pressure.target_surface)
             if reliability is not None and reliability < self.reliability_floor:
@@ -225,21 +219,21 @@ def build_placeholder_routing_proposal(
     subject_ref: str = "entity:orion",
     source_pressure_id: str = "pressure-routing-placeholder",
 ) -> MutationProposalV1:
-    """Build a routing_threshold_patch proposal directly, bypassing the parked
-    ProposalFactory.
+    """Build a routing_threshold_patch-shaped proposal directly.
 
-    `plan_for_pressure()`/`from_pressure()` refuse every "routing" pressure
-    unconditionally (see `_PARKED_MUTATION_CLASSES`). A few callers need a
-    routing_threshold_patch-shaped proposal anyway, for purposes unrelated to
-    the parked evidence pipeline: a replay-corpus inspection debug endpoint
+    "routing" was parked 2026-09-03 and retired outright 2026-09-05 --
+    `plan_for_pressure()`/`from_pressure()` no longer even recognize it as a
+    target_surface (see `SURFACE_TO_CLASS`), so nothing can ever build a NEW
+    routing proposal through the normal pipeline again. This function is not
+    that pipeline: it exists purely to give a `routing_threshold_patch`
+    shape to callers inspecting the 147 real historical proposals already in
+    Postgres -- a replay-corpus debug endpoint
     (`services/orion-hub/scripts/api_routes.py`'s
     `_routing_replay_inspection_payload`), the mutation smoke script, and
-    generic proposal/trial/decision pipeline-mechanics tests. All three used
-    to hand-build near-identical `MutationProposalV1`/`MutationPatchV1`
-    objects (or call the now-parked factory and silently get nothing back);
-    this is the one place that shape is defined, built from the same
-    `_default_patch_for_class`/`_default_rollback_for_class`/`CONTRACTS`
-    the real factory used.
+    generic proposal/trial/decision pipeline-mechanics tests that use this
+    shape as their concrete example. `CONTRACTS["routing_threshold_patch"]`
+    is kept (retired, not deleted) specifically so this and
+    `ClassSpecificScorer.evaluate()` keep resolving a real shape for it.
     """
     contract = CONTRACTS["routing_threshold_patch"]
     resolved_target = (

@@ -2836,16 +2836,15 @@ channels:
     stability: "experimental"
     since: "2026-07-05"
 
-  # How Orion decided to act rather than reply, and whether its own confidence
-  # gate demoted the turn. The gate previously left no trace at all, which is
-  # why a routing mutation had no evidence of routing behaviour to be judged on.
-  - name: "orion:routing:decision"
-    kind: "event"
-    schema_id: "RoutingDecisionRecordV1"
-    producer_services: ["orion-cortex-orch"]
-    consumer_services: ["orion-sql-writer"]
-    stability: "experimental"
-    since: "2026-09-03"
+  # Channel "orion:routing:decision" retired 2026-09-05: built (2026-09-03)
+  # to give the mutation loop's "routing" self-modification target real
+  # evidence, but that target was itself retired the same day the channel
+  # would have gone live -- decision_router.route() (the only producer)
+  # confirmed unreachable from any current Hub UI mode, so the channel never
+  # carried a single event. Removed along with RoutingDecisionRecordV1 and
+  # the routing_decision Postgres table's producer/consumer wiring (the
+  # table itself is left in place, orphaned, per this change's PR
+  # description).
 
   # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
   - name: "orion:reverie:thought"

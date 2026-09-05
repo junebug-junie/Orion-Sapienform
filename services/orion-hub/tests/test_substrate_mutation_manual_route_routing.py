@@ -20,7 +20,6 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, candidate)
 
 from orion.substrate.mutation_queue import SubstrateMutationStore
-from orion.substrate.mutation_proposals import build_placeholder_routing_proposal
 from orion.substrate import mutation_control_surface
 from scripts import api_routes
 
@@ -185,22 +184,49 @@ def test_require_review_never_applies_via_manual_route(routing_manual_fixture) -
 
 def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fixture) -> None:
     """Formerly fed routing telemetry and proved the one-active-mutation-per-
-    surface invariant produces `decision=hold`. Parked: telemetry can no
-    longer produce a routing signal at all (see `mutation_detectors.py`'s
-    filter), so this enqueues the proposal directly into the same
+    surface invariant produces `decision=hold`. First parked (telemetry could
+    no longer produce a routing signal, see `mutation_detectors.py`'s
+    filter), then retired outright 2026-09-05: `routing_threshold_patch` is
+    now rejected unconditionally before the active-surface check ever runs
+    (`RETIRED_MUTATION_CLASSES`, review-confirmed live in this same change --
+    this test itself is what caught the gap), so it can no longer exercise
+    this invariant at all. Switched to `graph_consolidation_param_patch`,
+    the remaining auto-promotable class the manual endpoint's apply path
+    does not special-case away, enqueued directly into the same
     `SUBSTRATE_MUTATION_STORE` the manual endpoint reads -- bypassing the
-    parked detector/pressure/factory chain, not the invariant itself -- so
-    the endpoint's trial/decision/apply half still runs on it for real.
+    detector/pressure/factory chain, not the invariant itself -- so the
+    endpoint's trial/decision/apply half still runs on it for real.
     """
-    api_routes.SUBSTRATE_MUTATION_STORE._active_surface_by_target["routing"] = "existing-adoption"
-    proposal = build_placeholder_routing_proposal(rollback_value=0.5)
+    from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationProposalV1
+
+    api_routes.SUBSTRATE_MUTATION_STORE._active_surface_by_target["graph_consolidation"] = "existing-adoption"
+    proposal = MutationProposalV1(
+        lane="operational",
+        mutation_class="graph_consolidation_param_patch",
+        risk_tier="medium",
+        target_surface="graph_consolidation",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        rationale="test:one_live_surface_invariant",
+        expected_effect="reduce_runtime_failure",
+        evidence_refs=["telemetry:placeholder"],
+        source_signal_ids=["signal:placeholder"],
+        source_pressure_id="pressure-graph-consolidation-test",
+        patch=MutationPatchV1(
+            mutation_class="graph_consolidation_param_patch",
+            target_surface="graph_consolidation",
+            target_ref="graph_consolidation",
+            patch={"query_limit_nodes": 96},
+            rollback_payload={"query_limit_nodes": 64},
+        ),
+    )
     api_routes.SUBSTRATE_MUTATION_STORE.add_proposal(proposal, priority=60)
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
             dry_run=False,
             apply_enabled=True,
             telemetry=[],
-            class_metrics=routing_manual_fixture["routing_pass_metrics"],
+            class_metrics={"graph_consolidation_param_patch": {"queue_resolution_delta": 0.2, "requeue_rate_delta": 0.0}},
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )

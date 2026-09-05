@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Iterable
 
 from orion.core.schemas.substrate_mutation import MutationSignalV1
@@ -10,11 +9,22 @@ from orion.substrate.mutation_contracts import PARKED_TARGET_SURFACES
 # Single source of truth for zone -> surface, shared with _target_surface_for_zone
 # below (which is the only caller in this module) and with PARKED_TELEMETRY_ZONES.
 TARGET_SURFACE_BY_ZONE: dict[str, str] = {
-    "autonomy_graph": "routing",
     "world_ontology": "graph_consolidation",
     "self_relationship_graph": "prompt_profile",
 }
 _DEFAULT_TARGET_SURFACE = "recall"
+
+# "autonomy_graph" zone retired 2026-09-05 along with the "routing" surface
+# it existed solely to feed (see mutation_contracts.py's note on
+# PARKED_TARGET_SURFACES and mutation_proposals.py's SURFACE_TO_CLASS).
+# Unlike a parked surface (still a real, known target, just refused), this
+# zone now has no live target at all -- falling through to
+# _DEFAULT_TARGET_SURFACE would mislabel autonomy-graph telemetry as a
+# recall signal, so it is skipped explicitly instead, same as
+# _build_rich_routing_signals() (removed) used to be skipped for parked
+# surfaces: no store write, no pressure-accumulation cycle, for a signal
+# with nowhere to go.
+_RETIRED_TELEMETRY_ZONES: frozenset[str] = frozenset({"autonomy_graph"})
 
 # Telemetry zones whose base-signal target_surface is entirely parked (see
 # mutation_contracts.PARKED_TARGET_SURFACES) -- i.e. a record in one of these
@@ -22,10 +32,12 @@ _DEFAULT_TARGET_SURFACE = "recall"
 # producer_pressure_event signal on a different, non-parked surface. Consumed
 # by services/orion-hub/scripts/api_routes.py's signal-intake health check so
 # it does not report a cycle "healthy" on the strength of rows that can only
-# ever resolve to a parked surface.
+# ever resolve to a parked surface. Currently always empty (nothing is
+# parked as of 2026-09-05) -- kept as the mechanism for whatever is parked
+# next, not routing-specific.
 PARKED_TELEMETRY_ZONES: frozenset[str] = frozenset(
     zone for zone, surface in TARGET_SURFACE_BY_ZONE.items() if surface in PARKED_TARGET_SURFACES
-)
+) | _RETIRED_TELEMETRY_ZONES
 
 
 class MutationDetectors:
@@ -39,20 +51,18 @@ class MutationDetectors:
         for record in records:
             if not record.anchor_scope or not record.subject_ref or not record.target_zone:
                 continue
-            target_surface = _target_surface_for_zone(record.target_zone)
             # `_signals_from_pressure_events` can still route an individual
             # pressure_event to a non-parked surface (e.g. a recall category)
-            # even when the record's own zone-derived surface is parked, so it
-            # always runs; only the zone-derived base/rich-routing signals,
-            # which are parked-or-not as a whole, are worth skipping early.
-            pressure_event_signals = _signals_from_pressure_events(record=record, target_surface=target_surface)
+            # even for a retired/parked zone, so it always runs; only the
+            # zone-derived base signal, which is retired-or-parked-or-not as
+            # a whole, is worth skipping early.
+            zone_has_no_live_surface = record.target_zone in _RETIRED_TELEMETRY_ZONES
+            target_surface = None if zone_has_no_live_surface else _target_surface_for_zone(record.target_zone)
+            pressure_event_signals = _signals_from_pressure_events(record=record)
             if pressure_event_signals:
                 signals.extend(pressure_event_signals)
-            if target_surface not in PARKED_TARGET_SURFACES:
+            if target_surface is not None and target_surface not in PARKED_TARGET_SURFACES:
                 signals.append(_build_base_signal(record=record, target_surface=target_surface))
-                # Rich pressure path remains routing-only in this phase.
-                if target_surface == "routing":
-                    signals.extend(_build_rich_routing_signals(record=record, target_surface=target_surface))
             if self.allow_cognitive_lane:
                 signals.extend(_build_cognitive_signals_from_artifacts(record=record))
         # Trailing filter, kept even with the early skip above: a parked
@@ -100,119 +110,49 @@ def _build_base_signal(*, record: GraphReviewTelemetryRecordV1, target_surface: 
     )
 
 
-def _build_rich_routing_signals(*, record: GraphReviewTelemetryRecordV1, target_surface: str) -> list[MutationSignalV1]:
-    joined_notes = " ".join(str(item or "").lower() for item in record.notes)
-    joined_outcomes = " ".join(str(item or "").lower() for item in record.consolidation_outcomes)
-    selection_reason = str(record.selection_reason or "").lower()
-    payload = f"{joined_notes} {joined_outcomes} {selection_reason}"
-    rows: list[tuple[str, float, str, list[str]]] = []
-    if _contains_any(payload, ("false_escalation", "operator_correction:downgrade", "false_downgrade", "operator_correction:escalate")):
-        rows.append(
-            (
-                "routing_decision_mismatch",
-                0.78,
-                "routing_mismatch_signal",
-                _evidence_tokens(payload, ("false_escalation", "false_downgrade", "operator_correction:downgrade", "operator_correction:escalate")),
-            )
-        )
-    if _contains_any(payload, ("recall_miss", "missing_recall", "not_helpful", "dissatisfied", "dissatisfaction")):
-        rows.append(
-            (
-                "routing_recall_dissatisfaction",
-                0.62,
-                "recall_dissatisfaction_signal",
-                _evidence_tokens(payload, ("recall_miss", "missing_recall", "not_helpful", "dissatisfied", "dissatisfaction")),
-            )
-        )
-    if record.degraded or record.runtime_duration_ms >= 1200 or _contains_any(payload, ("truncated", "finish_reason:length", "timeout")):
-        rows.append(
-            (
-                "routing_runtime_degradation",
-                0.68,
-                "runtime_degradation_signal",
-                _evidence_tokens(payload, ("truncated", "finish_reason:length", "timeout")),
-            )
-        )
-    if _contains_any(payload, ("not_addressed", "addressed_only", "peer_targeted_elsewhere", "self_message_loop")):
-        rows.append(
-            (
-                "routing_social_addressedness_gap",
-                0.58,
-                "social_addressedness_signal",
-                _evidence_tokens(payload, ("not_addressed", "addressed_only", "peer_targeted_elsewhere", "self_message_loop")),
-            )
-        )
-    signals: list[MutationSignalV1] = []
-    for event_kind, strength, source_kind, evidence_tokens in rows:
-        evidence_refs = [
-            f"telemetry:{record.telemetry_id}",
-            f"source_kind:{source_kind}",
-            f"selection_reason:{(record.selection_reason or '')[:120]}",
-        ]
-        evidence_refs.extend(f"signal_hint:{item}" for item in evidence_tokens[:4])
-        signals.append(
-            MutationSignalV1(
-                event_kind=event_kind,
-                anchor_scope=record.anchor_scope or "orion",
-                subject_ref=record.subject_ref or "entity:orion",
-                target_zone=record.target_zone or "autonomy_graph",
-                target_surface=target_surface,
-                strength=strength,
-                evidence_refs=evidence_refs[:32],
-                source_ref=f"review-telemetry:{record.telemetry_id}",
-                metadata={
-                    "source_kind": source_kind,
-                    "derived_signal_kind": event_kind,
-                    "confidence": strength,
-                    "telemetry_id": record.telemetry_id,
-                },
-            )
-        )
-    return signals
-
-
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
-
-
-def _evidence_tokens(text: str, needles: tuple[str, ...]) -> list[str]:
-    found = [needle for needle in needles if needle in text]
-    if found:
-        return found
-    matches = re.findall(r"(?:operator_correction:[a-z_]+|false_[a-z_]+|recall_[a-z_]+|not_addressed|timeout|truncated)", text)
-    return list(dict.fromkeys(matches))[:6]
 
 
 def _target_surface_for_zone(zone: str) -> str:
     return TARGET_SURFACE_BY_ZONE.get(zone, _DEFAULT_TARGET_SURFACE)
 
 
-def _signals_from_pressure_events(*, record: GraphReviewTelemetryRecordV1, target_surface: str) -> list[MutationSignalV1]:
-    if not record.pressure_events:
-        return []
-    routing_categories = {
+# These categories used to map to the "routing" surface (retired 2026-09-05,
+# see mutation_contracts.py/mutation_proposals.py) -- there is no live
+# surface to redirect them to, so they now fall through
+# `_signals_from_pressure_events`'s `if not mapped_surface: continue` guard
+# instead of spending a store write on a signal that would only be refused
+# three steps later at plan_for_pressure(). Module-scoped like
+# TARGET_SURFACE_BY_ZONE above, not rebuilt per call/per record.
+_RETIRED_PRESSURE_CATEGORIES: frozenset[str] = frozenset(
+    {
         "routing_false_escalation",
         "routing_false_downgrade",
         "response_truncation_or_length_finish",
         "runtime_degradation_or_timeout",
         "social_addressedness_gap",
     }
-    recall_surface_by_category = {
-        "recall_miss_or_dissatisfaction": "recall_strategy_profile",
-        "unsupported_memory_claim": "recall_strategy_profile",
-        "irrelevant_semantic_neighbor": "recall_graph_expansion_policy",
-        "missing_exact_anchor": "recall_anchor_policy",
-        "stale_memory_selected": "recall_page_index_profile",
-    }
+)
+_RECALL_SURFACE_BY_CATEGORY: dict[str, str] = {
+    "recall_miss_or_dissatisfaction": "recall_strategy_profile",
+    "unsupported_memory_claim": "recall_strategy_profile",
+    "irrelevant_semantic_neighbor": "recall_graph_expansion_policy",
+    "missing_exact_anchor": "recall_anchor_policy",
+    "stale_memory_selected": "recall_page_index_profile",
+}
+
+
+def _signals_from_pressure_events(*, record: GraphReviewTelemetryRecordV1) -> list[MutationSignalV1]:
+    if not record.pressure_events:
+        return []
     signals: list[MutationSignalV1] = []
     for event in record.pressure_events:
         category = str(event.pressure_category)
-        if category in routing_categories:
-            mapped_surface = "routing"
-            mapped_zone = "autonomy_graph"
-        else:
-            mapped_surface = recall_surface_by_category.get(category)
-            mapped_zone = "concept_graph"
+        if category in _RETIRED_PRESSURE_CATEGORIES:
+            continue
+        mapped_surface = _RECALL_SURFACE_BY_CATEGORY.get(category)
+        mapped_zone = "concept_graph"
         if not mapped_surface:
             continue
         event_kind = f"pressure_event:{event.pressure_category}"

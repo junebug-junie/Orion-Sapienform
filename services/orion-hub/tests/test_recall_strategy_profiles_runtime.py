@@ -445,6 +445,10 @@ def test_recall_profile_posture_appears_in_mutation_cognition_context() -> None:
     assert ctx["latest_production_candidate_review_status"] == "draft"
     assert ctx["recall_live_apply_enabled"] is False
     assert "live_surface" in ctx
+    # routing_threshold_patch retired 2026-09-05 -- this is the value Orion's
+    # own cognition context actually gets now, not a fixture's guess at it.
+    assert ctx["mutation_scope"] is None
+    assert ctx["routing_target_retired"] is True
 
 
 def test_recall_canary_query_judgment_and_review_artifact_flow(monkeypatch) -> None:

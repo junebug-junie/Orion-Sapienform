@@ -10,7 +10,20 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-timeout_ms: 120000
+# RAISED 2026-09-05 (was 120000 -> 115s effective gateway read timeout,
+# services/orion-cortex-exec/app/executor.py's
+# gateway_read_timeout_sec = max(45, min(effective_timeout - 5, 900))):
+# live-confirmed twice tonight, once against Qwen3.8-Flash-Next IQ4_XS
+# (114.55s of a 115s budget) and once against Qwen3.8-27B BF16 full
+# precision on the same agent-lane worker -- both timed out at exactly
+# this ceiling. Same shape as self_study.py's SELF_STUDY_REFLECT_TIMEOUT_SEC
+# fix (2026-09-04, PR #2080/#2085): the reasoning model genuinely needs more
+# wall-clock time to finish thinking before answering, not more tokens.
+# 240000 (240s) matches that same precedent's value -- comfortably under
+# orion-thought's own 360s overall RPC ceiling
+# (STANCE_REACT_TIMEOUT_SEC, services/orion-thought/app/settings.py), which
+# does not need to change.
+timeout_ms: 240000
 
 services:
   - LLMGatewayService

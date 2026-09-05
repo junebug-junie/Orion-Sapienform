@@ -14,17 +14,26 @@ from orion.substrate.attention_broadcast import _apply_voluntary_attention
 from orion.substrate.attention import goal_context as gc
 
 
+_GOAL_TARGET = "node:substrate.execution"
+
+
 def _loop(id: str, salience: float, **rel) -> OpenLoopV1:
     return OpenLoopV1(id=id, description=f"loop {id}", salience=salience, **rel)
 
 
 def _frame() -> AttentionFrameV1:
-    # loop A: high bottom-up, no goal relevance. loop B: low bottom-up, high
-    # concept_value (relevance()'s signal since Wave 2b removed the
-    # drive_origin -> per-drive relevance-field mapping).
+    # loop A: high bottom-up, NOT the goal's target. loop B: low bottom-up, but
+    # sitting on the node _goal() targets -- so only B is relevant.
+    #
+    # Steered by source_refs since 2026-09-05: relevance() joins
+    # GoalContext.target_id to OpenLoopV1.source_refs. It previously read
+    # loop.concept_value and ignored the goal entirely; setting concept_value
+    # here now makes BOTH loops equally (ir)relevant, no override can fire, and
+    # this file -- the only end-to-end wiring test of the feature -- goes red.
+    # The node id must stay in sync with _goal()'s field_target_id default.
     loops = [
-        _loop("A", 0.80, concept_value=0.0),
-        _loop("B", 0.30, concept_value=0.95),
+        _loop("A", 0.80, source_refs=["node:substrate.unrelated"]),
+        _loop("B", 0.30, source_refs=[_GOAL_TARGET]),
     ]
     actions = [
         CuriosityCandidateActionV1(action_type="watch", open_loop_id="A", score=0.80),
@@ -33,7 +42,7 @@ def _frame() -> AttentionFrameV1:
     return AttentionFrameV1(open_loops=loops, candidate_actions=actions, selected_action=actions[0])
 
 
-def _goal(field_target_id="node:substrate.execution", priority=0.9, status="proposed") -> FieldGoalProvenanceV1:
+def _goal(field_target_id=_GOAL_TARGET, priority=0.9, status="proposed") -> FieldGoalProvenanceV1:
     return FieldGoalProvenanceV1(
         artifact_id="goal-1", subject="attention", model_layer="field_attention",
         entity_id=field_target_id, kind="memory.field_goals.proposed.v1",

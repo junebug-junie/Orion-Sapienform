@@ -20,27 +20,43 @@ from orion.substrate.attention.top_down import (
 )
 
 
-def _candidates(n: int) -> list[OpenLoopV1]:
-    # One dominant bottom-up loop + n aligned low-salience loops (concept_value
-    # is relevance()'s signal since Wave 2b removed per-drive field selection).
-    loops = [OpenLoopV1(id="dom", description="dominant", salience=0.75, concept_value=0.0)]
+# The node the goal points at. relevance() joins GoalContext.target_id to
+# OpenLoopV1.source_refs (2026-09-05); before that it read loop.concept_value
+# and ignored the goal entirely, which made override impossible.
+_GOAL_TARGET = "node:substrate.wanted"
+
+
+def _candidates(n: int, dominant_salience: float = 0.75) -> list[OpenLoopV1]:
+    # One dominant bottom-up loop pointing at a DIFFERENT node + n low-salience
+    # loops that are on the goal's target.
+    loops = [OpenLoopV1(id="dom", description="dominant", salience=dominant_salience,
+                        source_refs=["node:substrate.other"])]
     for i in range(n):
         loops.append(OpenLoopV1(id=f"g{i}", description=f"goal-aligned {i}",
-                                salience=0.30, concept_value=0.9))
+                                salience=0.30, source_refs=[_GOAL_TARGET]))
     return loops
 
 
-def _override_rate(*, priority: float, effort_max: float, trials: int = 20) -> float:
+# How loud the bottom-up winner is, swept per trial. The combiner is fully
+# deterministic, so repeating one identical scenario N times can only ever
+# yield a rate of exactly 0.0 or 1.0 -- a boolean wearing a rate's clothes.
+# Sweeping the thing the goal has to overcome makes the rate a real quantity:
+# the fraction of bottom-up strengths at which a goal of this priority still
+# wins. That is what "override rate rises with priority" is actually claiming.
+_DOMINANT_SALIENCE_SWEEP = [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95]
+
+
+def _override_rate(*, priority: float, effort_max: float) -> float:
     combiner = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=effort_max))
-    goal = GoalContext(priority=priority, goal_artifact_id="g")
+    goal = GoalContext(priority=priority, goal_artifact_id="g", target_id=_GOAL_TARGET)
     overrides = 0
-    for _ in range(trials):
-        loops = _candidates(3)
+    for dominant_salience in _DOMINANT_SALIENCE_SWEEP:
+        loops = _candidates(3, dominant_salience=dominant_salience)
         bottom_up = {l.id: l.salience for l in loops}
         res = combiner.apply(goal=goal, loops=loops, bottom_up=bottom_up, agency_readiness=1.0)
         if res.override is not None:
             overrides += 1
-    return overrides / trials
+    return overrides / len(_DOMINANT_SALIENCE_SWEEP)
 
 
 def run() -> int:
@@ -50,10 +66,12 @@ def run() -> int:
 
     # (c) strong bottom-up beats weak bias
     combiner = TopDownBiasCombiner(TopDownConfig())
-    strong = [OpenLoopV1(id="dom", description="d", salience=0.98, concept_value=0.0),
-              OpenLoopV1(id="g0", description="g", salience=0.30, concept_value=0.9)]
-    strong_res = combiner.apply(goal=GoalContext(priority=0.3), loops=strong,
-                                bottom_up={"dom": 0.98, "g0": 0.30})
+    strong = [OpenLoopV1(id="dom", description="d", salience=0.98,
+                         source_refs=["node:substrate.other"]),
+              OpenLoopV1(id="g0", description="g", salience=0.30,
+                         source_refs=[_GOAL_TARGET])]
+    strong_res = combiner.apply(goal=GoalContext(priority=0.3, target_id=_GOAL_TARGET),
+                                loops=strong, bottom_up={"dom": 0.98, "g0": 0.30})
     # (d) no goal -> no override
     none_res = combiner.apply(goal=None, loops=strong, bottom_up={"dom": 0.98, "g0": 0.30})
 

@@ -114,6 +114,10 @@ async def _llm_classify(
             "purpose": "classify",
             "skip_spark_candidate_publish": True,
             "chat_template_kwargs": {"enable_thinking": False},
+            # Tell the gateway how long this RPC actually waits, or it defaults to its
+            # own READ_TIMEOUT_SEC (700s) and keeps generating long after we gave up --
+            # one of the two callers behind the 2026-09-05 gateway backlog.
+            "gateway_read_timeout_sec": float(settings.MEMORY_CLASSIFY_TIMEOUT_SEC),
         },
     )
     env = BaseEnvelope(

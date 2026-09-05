@@ -101,9 +101,10 @@ class AdmissionRecord:
 class AdmissionLedger:
     """Thread-safe bounded ledger. One instance per gateway process.
 
-    Thread-safe rather than asyncio-safe on purpose: `wait_for_slack` (async, used by the
-    OpenAI passthrough) and `wait_for_slack_sync` (blocking, used by `run_llm_chat` under
-    `asyncio.to_thread`) both record here, and the sync one genuinely runs on a worker thread.
+    Thread-safe rather than asyncio-safe on purpose. Every recorder now runs on the event
+    loop (`wait_for_slack` via `background_admission`, from both the OpenAI passthrough and
+    main.py's bus dispatch since 2026-09-05), but the lock is kept: it costs nothing and the
+    ledger must not become the reason a future thread-side recorder corrupts it.
     """
 
     def __init__(self, *, max_records: int = _MAX_RECORDS) -> None:

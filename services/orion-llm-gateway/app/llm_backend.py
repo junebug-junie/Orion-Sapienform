@@ -22,6 +22,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from . import ctx_overflow
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
 from .settings import settings
+from .upstream_admission import LEGACY_UPSTREAM
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload
@@ -272,6 +273,25 @@ def _resolve_http_read_timeout_sec(body: Optional[ChatBody]) -> float:
     except (TypeError, ValueError):
         return max(30.0, min(default, 900.0))
     return max(30.0, min(v, 900.0))
+
+
+def resolve_caller_budget_sec(body: Optional[ChatBody]) -> float:
+    """How long the CALLER will wait, for admission purposes -- the raw
+    options['gateway_read_timeout_sec'] when given (floor 1s, cap 900s), else the
+    same default `_resolve_http_read_timeout_sec` uses. Deliberately not floored at
+    30s like the HTTP read: that floor protects the upstream client from a
+    misconfigured tiny timeout, but an 8s caller (memory-consolidation classify)
+    is gone at 8s, and queueing its request for 30s generates into the void."""
+    opts = getattr(body, "options", None) or {}
+    raw = opts.get("gateway_read_timeout_sec")
+    if raw is not None:
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = None
+        if v is not None and v > 0:
+            return max(1.0, min(v, 900.0))
+    return _resolve_http_read_timeout_sec(None)
 
 
 def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:
@@ -1387,7 +1407,31 @@ def _served_model(result: Dict[str, Any], requested_model: str) -> str:
     return served if isinstance(served, str) and served.strip() else requested_model
 
 
-def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
+@dataclass(frozen=True)
+class ChatDispatchPlan:
+    """Where a chat request is going, decided before any thread is taken.
+
+    main.py computes this on the event loop so it can gate admission per upstream
+    (upstream_admission.py) and per background lane (priority_admission.py) without
+    holding an executor thread, then hands the same plan to run_llm_chat so routing
+    is decided exactly once. `error` is the early-return result when lane routing
+    rejects the request outright.
+    """
+
+    body: ChatBody
+    route: str
+    route_target: Optional[RouteTarget] = None
+    has_route_table: bool = False
+    route_source: str = "default"
+    error: Optional[Dict[str, Any]] = None
+
+    @property
+    def upstream(self) -> str:
+        return self.route_target.url if self.route_target else LEGACY_UPSTREAM
+
+
+def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
+    """Lane routing (when enabled) plus route-table resolution. Cheap, no I/O."""
     route_table = get_route_targets()
     lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False)) and bool(route_table)
     if lane_routing:
@@ -1434,7 +1478,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 decision.route_status,
                 decision.reason,
             )
-            return {
+            return ChatDispatchPlan(body=body, route=str(body.route or ""), error={
                 "text": "",
                 "content": "",
                 "spark_meta": {},
@@ -1453,10 +1497,34 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 },
                 "route": body.route,
                 "served_by": None,
-            }
+            })
         body = body.model_copy(update={"route": decision.route_table_key})
 
     route, route_target, has_route_table, route_source = _resolve_route(body)
+    return ChatDispatchPlan(
+        body=body,
+        route=route,
+        route_target=route_target,
+        has_route_table=has_route_table,
+        route_source=route_source,
+    )
+
+
+def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dict[str, Any]:
+    """Blocking: resolves the profile/model and calls the upstream. Runs on an executor
+    thread; admission (per-upstream cap, background slack) has already happened on the
+    event loop in main.py, which is why there is no wait here any more."""
+    if plan is None:
+        plan = plan_llm_chat(body)
+    if plan.error is not None:
+        return dict(plan.error)
+    body = plan.body
+    route, route_target, has_route_table, route_source = (
+        plan.route,
+        plan.route_target,
+        plan.has_route_table,
+        plan.route_source,
+    )
     effective_profile_name = body.profile_name
     if (
         route in METACOG_LLM_ROUTES
@@ -1478,25 +1546,6 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             "raw": {"error": "route_not_configured", "route": route},
             "route": route,
         }
-
-    if route_target and route_target.priority == "background":
-        # Deferred import: priority_admission.py imports RouteTarget from this
-        # module, so a top-level import here would be circular.
-        from .priority_admission import wait_for_slack_sync
-
-        wait_for_slack_sync(
-            route_target,
-            poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
-            max_wait_sec=settings.llm_gateway_background_max_wait_sec,
-            # ROADMAP A5: the ledger is keyed by route so a deferral can be attributed to a
-            # lane. This is the bus path, and as of 2026-08-19 it carries 100% of live
-            # background traffic (openai_passthrough logged zero background requests in 4h).
-            route_key=str(route or ""),
-            # This path is orion-cortex-exec's bus RPC and orion-embodiment's speech -- Orion.
-            # The OpenAI passthrough on the same route key is AI Town's NPC dialogue, which is
-            # not. The cue makes a first-person claim, so it must be able to tell them apart.
-            via="bus",
-        )
 
     route_url: Optional[str] = None
     served_by: Optional[str] = None

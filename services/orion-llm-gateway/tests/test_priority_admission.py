@@ -239,64 +239,6 @@ class TestBackgroundAdmissionReleasesOnFailure:
             await asyncio.wait_for(_try_acquire(), timeout=1.0)
 
 
-class TestFreeSlotCountSync:
-    def test_counts_idle_slots(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        slots = [
-            {"id": 0, "is_processing": False},
-            {"id": 1, "is_processing": True},
-            {"id": 2, "is_processing": False},
-        ]
-        mock_response = httpx.Response(
-            200, json=slots, request=httpx.Request("GET", "http://quick:8013/slots")
-        )
-        monkeypatch.setattr(httpx, "get", lambda url, **kwargs: mock_response)
-        assert priority_admission._free_slot_count_sync("http://quick:8013") == 2
-
-    def test_returns_none_when_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _raise(url: str, **kwargs: Any) -> None:
-            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
-
-        monkeypatch.setattr(httpx, "get", _raise)
-        assert priority_admission._free_slot_count_sync("http://quick:8013") is None
-
-
-class TestWaitForSlackSync:
-    def test_returns_true_immediately_when_slack_already_available(self) -> None:
-        with patch.object(priority_admission, "_free_slot_count_sync", return_value=3):
-            ok = priority_admission.wait_for_slack_sync(
-                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0
-            )
-        assert ok is True
-
-    def test_polls_until_slack_frees_up(self) -> None:
-        calls = {"n": 0}
-
-        def _sequence(base_url: str, **kwargs: Any) -> Optional[int]:
-            calls["n"] += 1
-            return 0 if calls["n"] < 3 else 2
-
-        with patch.object(priority_admission, "_free_slot_count_sync", _sequence):
-            ok = priority_admission.wait_for_slack_sync(
-                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0
-            )
-        assert ok is True
-        assert calls["n"] == 3
-
-    def test_times_out_and_returns_false_when_permanently_busy(self) -> None:
-        with patch.object(priority_admission, "_free_slot_count_sync", return_value=0):
-            ok = priority_admission.wait_for_slack_sync(
-                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=0.05
-            )
-        assert ok is False
-
-    def test_returns_false_immediately_when_slots_unreachable(self) -> None:
-        with patch.object(priority_admission, "_free_slot_count_sync", return_value=None):
-            ok = priority_admission.wait_for_slack_sync(
-                _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=5.0
-            )
-        assert ok is False
-
-
 class TestAdmissionIsRecordedInTheLedger:
     """ROADMAP A5: every admission decision must reach the ledger, not just the log.
 
@@ -357,17 +299,19 @@ class TestAdmissionIsRecordedInTheLedger:
         snap = _fresh_ledger.snapshot(window_s=600.0)
         assert (snap["deferrals"], snap["timeouts"]) == (1, 1)
 
-    def test_sync_path_records_too(self, _fresh_ledger, monkeypatch):
-        """run_llm_chat's blocking path carries 100% of live background traffic (2026-08-19),
-        so a ledger wired only to the async path would record nothing at all in production."""
-        monkeypatch.setattr(
-            priority_admission, "_free_slot_count_sync", lambda url, **kw: 4
-        )
-        assert priority_admission.wait_for_slack_sync(
-            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
-            route_key="quick_background",
-        ) is True
-        assert _fresh_ledger.snapshot(window_s=600.0)["checked"] == 1
+    @pytest.mark.asyncio
+    async def test_bus_path_records_as_via_bus(self, _fresh_ledger, monkeypatch):
+        """The bus path (run_llm_chat's caller in main.py) carries 100% of live background
+        traffic (2026-08-19). Since 2026-09-05 it uses this same context manager with
+        via="bus" -- the deleted blocking variant used to be the only thing recording it."""
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        async with priority_admission.background_admission(
+            "quick_background", _target(reserved_free_slots=2),
+            concurrency=1, poll_interval_sec=0.01, max_wait_sec=1.0, via="bus",
+        ):
+            pass
+        assert _fresh_ledger.snapshot(window_s=600.0, via="bus")["checked"] == 1
+        assert _fresh_ledger.snapshot(window_s=600.0, via="http")["checked"] == 0
 
     @pytest.mark.asyncio
     async def test_background_admission_passes_its_route_key_through(self, _fresh_ledger, monkeypatch):
@@ -462,15 +406,11 @@ class TestSemaphoreQueueIsRecorded:
         """`quick_background` carries AI Town's NPC dialogue (http) and Orion's own work (bus).
         The cue makes a first-person claim, so the ledger must keep them apart."""
         monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
-        monkeypatch.setattr(priority_admission, "_free_slot_count_sync", lambda url, **kw: 4)
-        async with priority_admission.background_admission(
-            "quick_background", _target(reserved_free_slots=2),
-            concurrency=1, poll_interval_sec=0.01, max_wait_sec=1.0,
-        ):
-            pass
-        priority_admission.wait_for_slack_sync(
-            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
-            route_key="quick_background", via="bus",
-        )
+        for via in ("http", "bus"):
+            async with priority_admission.background_admission(
+                "quick_background", _target(reserved_free_slots=2),
+                concurrency=1, poll_interval_sec=0.01, max_wait_sec=1.0, via=via,
+            ):
+                pass
         assert _fresh_ledger.snapshot(window_s=600.0, via="http")["checked"] == 1
         assert _fresh_ledger.snapshot(window_s=600.0, via="bus")["checked"] == 1

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
 import httpx
@@ -19,7 +22,15 @@ from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_co
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
-from .llm_backend import get_route_targets, run_llm_chat
+from .llm_backend import (
+    ChatDispatchPlan,
+    get_route_targets,
+    plan_llm_chat,
+    resolve_caller_budget_sec,
+    run_llm_chat,
+)
+from .priority_admission import background_admission
+from .upstream_admission import UpstreamAdmission, get_upstream_admission
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
 from .route_catalog import get_routes_payload
@@ -132,7 +143,11 @@ async def admission_snapshot(
     # JSON but which Python's own json.loads accepts, so the consumer would not notice either.
     raw = float(window_s)
     window = 21600.0 if not math.isfinite(raw) else min(max(raw, 60.0), 86400.0)
-    return get_ledger().snapshot(window_s=window, via=via)
+    snapshot = get_ledger().snapshot(window_s=window, via=via)
+    # Per-upstream in-flight depth (upstream_admission.py): live gauges, not windowed.
+    # Extra key on the same surface; cortex-exec's admission_cue only requires its own fields.
+    snapshot["upstreams"] = get_upstream_admission().snapshot()
+    return snapshot
 
 
 def _cfg() -> ChassisConfig:
@@ -210,6 +225,180 @@ async def _maybe_publish_latent_upsert(
         logger.warning("Latent upsert publish failed doc_id=%s error=%s", doc_id, exc)
 
 
+def _overloaded_result(
+    plan: ChatDispatchPlan, *, stage: str, waited_s: float, budget_s: float, lane: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Same shape as llm_backend's `llm_route_unavailable` early return: empty text,
+    `raw.error` set. Consumers that check for empty content (orion-mind, topic-foundry,
+    vision-council, memory-consolidation) treat it as a failed call. NOTE: cortex-exec's
+    chat-turn step does not check `raw.error` or empty content today (pre-existing gap,
+    tracked in this PR's report); it would carry an empty answer forward."""
+    served_by = plan.route_target.served_by if plan.route_target else None
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {
+            "error": "gateway_overloaded",
+            "details": {
+                "stage": stage,
+                "route": plan.route,
+                "upstream": plan.upstream,
+                "served_by": served_by,
+                "waited_s": round(waited_s, 3),
+                "budget_s": round(budget_s, 3),
+                "lane": lane,
+            },
+        },
+        "route": plan.route,
+        "served_by": served_by,
+    }
+
+
+_chat_executor: Optional[ThreadPoolExecutor] = None
+
+
+def _executor(loop: asyncio.AbstractEventLoop) -> ThreadPoolExecutor:
+    global _chat_executor
+    if _chat_executor is None:
+        configure_executor(loop, get_upstream_admission())
+    assert _chat_executor is not None
+    return _chat_executor
+
+
+async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, Any]:
+    """Admission on the event loop, generation on a thread.
+
+    One deadline for the whole stay: `resolve_caller_budget_sec` (the caller's own
+    stated wait, raw, not the 30s-floored HTTP read value). Every wait -- the
+    background route's slack/concurrency gate, then the upstream lane permit -- is
+    bounded by what is left of it, and whatever is left after admission becomes the
+    upstream read timeout, so a request that queued for 390s of a 393s budget is not
+    then given a fresh 393s to generate. Past the deadline the request is shed with
+    `gateway_overloaded` rather than generated for a caller that already timed out --
+    that wasted generation is what turned a busy lane into a 20-minute backlog on
+    2026-09-05.
+
+    Gate order: a background route waits for /slots slack FIRST, holding only its
+    route's background permit, never an upstream lane permit, so a background request
+    polling for 30s does not occupy a permit a foreground request on the same upstream
+    needs. Only once it may dispatch does it queue for a lane permit like everyone
+    else. The lane permit is released when the executor thread finishes, not when the
+    awaiting task ends (see `_Admission.release_when_done`).
+    """
+    plan = plan_llm_chat(body)
+    if plan.error is not None:
+        return dict(plan.error)
+    if plan.has_route_table and plan.route_target is None:
+        # route_not_configured: run_llm_chat returns immediately without I/O. No permit,
+        # no thread, no "legacy" lane invented for a route that does not exist.
+        return run_llm_chat(body, plan)
+    budget_s = resolve_caller_budget_sec(body)
+    deadline = time.monotonic() + budget_s
+    gate = get_upstream_admission()
+    loop = asyncio.get_running_loop()
+
+    def _remaining() -> float:
+        return deadline - time.monotonic()
+
+    async def _admit_and_run() -> Dict[str, Any]:
+        admission = gate.admit(plan.upstream, max_wait_s=_remaining())
+        async with admission as admitted:
+            lane = gate.lane(plan.upstream).public()
+            remaining = _remaining()
+            if not admitted or remaining <= 0.0:
+                stage = "upstream_queue" if not admitted else "budget_exhausted"
+                logger.warning(
+                    "gateway_overloaded correlation_id=%s stage=%s route=%s upstream=%s waited=%.1fs "
+                    "budget=%.1fs inflight=%s waiting=%s max_inflight=%s",
+                    correlation_id, stage, plan.route, plan.upstream, admission.waited_s, budget_s,
+                    lane["inflight"], lane["waiting"], lane["max_inflight"],
+                )
+                return _overloaded_result(
+                    plan, stage=stage, waited_s=admission.waited_s, budget_s=budget_s, lane=lane
+                )
+            if admission.queued:
+                logger.info(
+                    "gateway_upstream_queued correlation_id=%s route=%s upstream=%s waited=%.3fs "
+                    "remaining=%.1fs inflight=%s waiting=%s",
+                    correlation_id, plan.route, plan.upstream, admission.waited_s, remaining,
+                    lane["inflight"], lane["waiting"],
+                )
+            # The upstream read gets what the caller has left (llm_backend still floors
+            # it at 30s for the HTTP client), not the original full budget.
+            run_body = plan.body.model_copy(
+                update={"options": {**(plan.body.options or {}), "gateway_read_timeout_sec": remaining}}
+            )
+            run_plan = dataclasses.replace(plan, body=run_body)
+            future = _executor(loop).submit(run_llm_chat, run_body, run_plan)
+            admission.release_when_done(future, loop)
+            return await asyncio.wrap_future(future)
+
+    target = plan.route_target
+    if target is None or target.priority != "background":
+        return await _admit_and_run()
+
+    background = background_admission(
+        plan.route,
+        target,
+        concurrency=settings.llm_gateway_background_concurrency,
+        poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
+        max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+        # ROADMAP A5: this path is orion-cortex-exec's bus RPC and orion-embodiment's
+        # speech -- Orion. The OpenAI passthrough on the same route key is AI Town's NPC
+        # dialogue, which is not. The cue makes a first-person claim, so the ledger
+        # must be able to tell them apart.
+        via="bus",
+    )
+    queued_at = time.monotonic()
+    try:
+        async with asyncio.timeout(max(0.0, _remaining())):
+            await background.__aenter__()
+    except TimeoutError:
+        waited = time.monotonic() - queued_at
+        lane = gate.lane(plan.upstream).public()
+        logger.warning(
+            "gateway_overloaded correlation_id=%s stage=background_queue route=%s upstream=%s "
+            "waited=%.1fs budget=%.1fs",
+            correlation_id, plan.route, plan.upstream, waited, budget_s,
+        )
+        return _overloaded_result(plan, stage="background_queue", waited_s=waited, budget_s=budget_s, lane=lane)
+    try:
+        return await _admit_and_run()
+    finally:
+        await background.__aexit__(None, None, None)
+
+
+def configure_executor(loop: asyncio.AbstractEventLoop, gate: UpstreamAdmission) -> int:
+    """Build the chat thread pool so every upstream lane can be full at once.
+
+    Dedicated pool, deliberately NOT the loop's default executor: the stock default is
+    capped at min(32, cpu+4) regardless of how many lanes exist and is shared with the
+    chassis' own `to_thread` heartbeat, and asyncio shuts the default executor down
+    with the loop. The right size is a function of the route table, so it is derived,
+    not configured. `loop` is accepted for symmetry with startup; the pool is
+    process-owned.
+    """
+    global _chat_executor
+    upstreams = {t.url for t in get_route_targets().values()} or {"legacy"}
+    workers = gate.executor_workers(len(upstreams))
+    if _chat_executor is not None:
+        _chat_executor.shutdown(wait=False)
+    _chat_executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="llm-gw-chat")
+    logger.info(
+        "[LLM-GW] executor sized workers=%d upstreams=%d max_inflight_per_upstream=%d",
+        workers, len(upstreams), gate.max_inflight,
+    )
+    return workers
+
+
+def reset_executor_for_tests() -> None:
+    global _chat_executor
+    if _chat_executor is not None:
+        _chat_executor.shutdown(wait=False)
+    _chat_executor = None
+
+
 async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     if env.kind not in ("llm.chat.request", "legacy.message"):
         return BaseEnvelope(
@@ -281,7 +470,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         len(messages),
     )
 
-    result = await asyncio.to_thread(run_llm_chat, body)
+    result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
     text = result.get("text") if isinstance(result, dict) else str(result)
 
     # Optional Spark/NeuralHost enrichments. These may be absent depending on
@@ -454,6 +643,7 @@ async def main() -> None:
     )
     global bus_handle
     bus_handle = chat_svc.bus
+    configure_executor(asyncio.get_running_loop(), get_upstream_admission())
     route_targets = get_route_targets()
     routes_summary = ",".join(
         f"{name}={target.url}" for name, target in sorted(route_targets.items())

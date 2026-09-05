@@ -104,6 +104,16 @@ class Settings(BaseSettings):
     llm_gateway_background_concurrency: int = Field(
         1, alias="LLM_GATEWAY_BACKGROUND_CONCURRENCY"
     )
+    # Per-upstream in-flight cap on the bus chat path (upstream_admission.py). Each
+    # distinct route-table URL may hold at most this many executor threads at once;
+    # the executor is sized to (distinct upstreams x this) + headroom, so a flood on
+    # one lane cannot take the threads another lane's requests need. A request that
+    # cannot get its lane's permit inside its own read-timeout budget is shed with
+    # `gateway_overloaded` instead of being generated for a caller that already
+    # gave up. Incident: 2026-09-05 stance_react starvation.
+    llm_gateway_upstream_max_inflight: int = Field(
+        8, alias="LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT"
+    )
     llm_route_chat_url: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_URL")
     llm_route_metacog_url: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_URL")
     llm_route_latents_url: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_URL")

@@ -169,6 +169,11 @@ SYNC_PREFIXES = (
     "LLM_GATEWAY_OPENAI_",
     "LLM_GATEWAY_VISION_",
     "LLM_GATEWAY_ATTACHMENT_",
+    # 2026-09-05: LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT (per-upstream in-flight cap,
+    # the fix for the stance_react gateway-starvation incident) was written to
+    # .env_example and then silently not synced -- no LLM_GATEWAY_ prefix covered
+    # it, and the run reported nothing. Same failure shape as HUB_CURIOSITY_ above.
+    "LLM_GATEWAY_UPSTREAM_",
     "ORION_VECTOR_HOST_",
     "VECTOR_HOST_",
     "HUB_CONTEXT_EXEC_",

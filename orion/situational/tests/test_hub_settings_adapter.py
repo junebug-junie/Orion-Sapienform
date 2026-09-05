@@ -58,33 +58,6 @@ def test_adapter_output_survives_settings_from_runtime_round_trip() -> None:
     assert cfg.llm_gateway_base_url == "http://127.0.0.1:8210"
 
 
-def test_curiosity_stale_after_reuses_hub_configured_value_not_a_second_guess() -> None:
-    """Regression cover, 2026-09-05: `_fetch_curiosity_context` used to read a
-    hardcoded module constant (`_CURIOSITY_PRIOR_STALE_AFTER = 6`) instead of
-    Hub's real, configured `HUB_CURIOSITY_STALE_PRIOR_TESTS`
-    (curiosity_investigation.py's own real curiosity turns already used that
-    one, default 3) -- so the exact same belief read as "stale, set aside"
-    on one curiosity code path and "still worth re-testing" on the other,
-    purely depending on which one asked. This asserts the adapter carries
-    Hub's real number through, not a second, independent one.
-    """
-    hub_settings = SimpleNamespace(HUB_CURIOSITY_STALE_PRIOR_TESTS=9)
-    ns = hub_settings_to_runtime_namespace(hub_settings)
-    assert ns.orion_situation_curiosity_stale_after == 9
-
-    cfg = settings_from_runtime(ns)
-    assert cfg.curiosity_stale_after == 9
-
-
-def test_curiosity_stale_after_defaults_to_hubs_real_default_not_the_old_six() -> None:
-    """No HUB_CURIOSITY_STALE_PRIOR_TESTS configured -> falls back to 3 (the
-    value curiosity_investigation.py's own turns use), not the old,
-    independent 6 that used to live only in this module.
-    """
-    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(SimpleNamespace()))
-    assert cfg.curiosity_stale_after == 3
-
-
 def test_adapter_turns_off_unwired_providers_explicitly() -> None:
     """Lab/perception are not yet configurable from orion-hub -- the adapter
     must turn them off explicitly rather than leave it to a

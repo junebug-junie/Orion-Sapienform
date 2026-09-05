@@ -261,6 +261,51 @@ async def test_curiosity_confident_priors_survive_a_large_live_pool(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_curiosity_heavily_tested_confident_prior_still_shown(monkeypatch) -> None:
+    """Regression, 2026-09-05 (caught by code review on a related patch): a
+    genuinely confident belief must not vanish from this display just
+    because Orion has tested it many times.
+
+    `_build_curiosity_context()`'s own docstring already says "there is no
+    staleness gate here" -- but `_fetch_curiosity_context()` used to pass a
+    hardcoded `stale_after=6` into `read_snapshot()` anyway, so any
+    confident prior tested >= 6 times was silently reclassified as "stale"
+    by `select_priors()` and dropped: this function only ever reads
+    `snapshot.live_priors`, never `snapshot.stale_priors`. Uses a
+    deliberately large `times_tested=50` so this stays true regardless of
+    whatever number curiosity_investigation.py's own (unrelated) "what to
+    test next" queue is configured with.
+    """
+    rows_by_cypher = {
+        LIVE_PRIORS_CYPHER: [
+            {
+                "prior_id": "well-tested-confident",
+                "claim": "Juniper drinks her coffee black.",
+                "confidence": 0.95,
+                "status": "open",
+                "times_tested": 50,
+                "formed_from": "",
+                "last_tested_at": "",
+            }
+        ],
+        COUNTS_CYPHER: [{"live_total": 1, "closed_total": 0}],
+        CONCEPT_COUNT_CYPHER: [{"n": 0}],
+        RECENT_SETTLED_CYPHER: [],
+        RECENT_RUNS_CYPHER: [],
+    }
+    monkeypatch.setattr(
+        situation_mod,
+        "WorldviewReader",
+        lambda **kwargs: _FakeGraphReader(rows_by_cypher),
+    )
+    ctx = await _build_curiosity_context(
+        _cfg(curiosity_enabled=True, curiosity_graph_host="127.0.0.1"), _diag()
+    )
+    assert ctx.available is True
+    assert "Juniper drinks her coffee black." in [s.claim for s in ctx.summaries]
+
+
+@pytest.mark.asyncio
 async def test_curiosity_empty_live_pool_is_unavailable(monkeypatch) -> None:
     snapshot = WorldviewSnapshot(live_priors=[], live_total=0)
     monkeypatch.setattr(situation_mod, "read_snapshot", lambda *a, **k: snapshot)

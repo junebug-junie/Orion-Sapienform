@@ -147,15 +147,15 @@ def _isolated_control_surface(*, seed_threshold: float):
 
 
 def _routing_smoke_proposal(*, subject_ref: str, target_value: float = 0.58) -> MutationProposalV1:
-    """A routing_threshold_patch proposal, bypassing the parked ProposalFactory.
+    """A routing_threshold_patch proposal, bypassing the retired ProposalFactory path.
 
-    As of 2026-09-03 `ProposalFactory.plan_for_pressure()`/`from_pressure()`
-    refuse every "routing" pressure outright (parked -- see
-    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`), so this smoke's
+    "routing" was parked 2026-09-03, then retired outright 2026-09-05 --
+    `ProposalFactory.plan_for_pressure()`/`from_pressure()` no longer even
+    recognize it as a target_surface, so this smoke's
     active-surface/auto-promote/apply/rollback-required demonstrations, which
-    are about the queue/decision/apply mechanics and not about the parked
-    evidence pipeline, build the proposal directly instead of going through
-    the (now dead-for-routing) detector -> pressure -> factory chain, via the
+    are about the queue/decision/apply mechanics and not about the (now-gone)
+    live evidence pipeline, build the proposal directly instead of going
+    through the (now dead-for-routing) detector -> pressure -> factory chain, via the
     shared `build_placeholder_routing_proposal()` (also used by
     test_mutation_v21.py and the orion-hub replay-inspection endpoint).
 

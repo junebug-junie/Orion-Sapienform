@@ -25,7 +25,6 @@ from orion.substrate.mutation_decision import DecisionEngine
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
 from orion.substrate.mutation_proposals import (
-    ROUTING_TARGET_PARKED_REASON,
     ProposalFactory,
     build_placeholder_routing_proposal,
 )
@@ -94,14 +93,14 @@ def _routing_pressure() -> MutationPressureV1:
 
 
 def _direct_routing_proposal(*, target_value: float = 0.58, rollback_value: float = 0.50) -> MutationProposalV1:
-    """A routing_threshold_patch proposal, bypassing the parked ProposalFactory.
+    """A routing_threshold_patch proposal, bypassing the retired ProposalFactory path.
 
-    As of 2026-09-03, `ProposalFactory.plan_for_pressure()`/`from_pressure()`
-    refuse every "routing" pressure outright (parked -- see
-    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`). The tests that
-    use this are about generic proposal -> trial -> decision -> store/apply/
-    replay mechanics, not about the parked evidence pipeline, so they build
-    the proposal the factory used to build directly instead, via the shared
+    "routing" was parked 2026-09-03, then retired outright 2026-09-05 --
+    `ProposalFactory.plan_for_pressure()`/`from_pressure()` no longer even
+    recognize it as a target_surface. The tests that use this are about
+    generic proposal -> trial -> decision -> store/apply/replay mechanics,
+    not about the (now-gone) live evidence pipeline, so they build the
+    proposal the factory used to build directly instead, via the shared
     `build_placeholder_routing_proposal()` (also used by
     smoke_mutation_v21.py and the orion-hub replay-inspection endpoint, so
     the shape stays in one place).
@@ -118,13 +117,11 @@ def test_signal_to_pressure_pipeline_filters_parked_routing_signals() -> None:
 
     Formerly `test_signal_to_pressure_pipeline`, which asserted the opposite
     (exactly one signal, target_surface "routing", feeding a real pressure).
-    As of 2026-09-03 the routing surface is parked: this telemetry is a
-    review-pipeline consolidation-outcome signal that has nothing to do with
-    what `chat_reflective_lane_threshold` gates, and mutation_proposals.py
-    refuses every "routing" pressure unconditionally regardless -- so the
-    detector filters it here instead of spending a store write and a
-    pressure-accumulation cycle on a signal that can only ever be discarded
-    three steps later.
+    "routing" was parked 2026-09-03, then retired outright 2026-09-05:
+    `autonomy_graph` is now a zone with no live target_surface at all (see
+    mutation_detectors.py's `_RETIRED_TELEMETRY_ZONES`), so the detector
+    skips base-signal generation for it entirely -- no store write, no
+    pressure-accumulation cycle, for a signal that has nowhere to go.
     """
     detector = MutationDetectors()
     telemetry = GraphReviewTelemetryRecordV1(
@@ -141,14 +138,12 @@ def test_signal_to_pressure_pipeline_filters_parked_routing_signals() -> None:
 
 
 def test_routing_detector_no_longer_emits_runtime_social_pressure_signals() -> None:
-    """As of 2026-09-03 the routing surface is parked (see
-    mutation_detectors.py's filter at the end of `from_review_telemetry()`).
+    """"routing" was parked 2026-09-03, then retired outright 2026-09-05.
     Formerly `test_routing_detector_emits_richer_runtime_social_pressure_signals`,
-    which asserted these kinds WERE produced. The underlying signal-building
-    functions (`_build_rich_routing_signals` etc.) are untouched and still
-    build them internally -- they are filtered from the returned list now,
-    not removed at the source, so this proves the filter, not their absence
-    from the code.
+    which asserted these kinds WERE produced. The signal-building function
+    that used to build these (`_build_rich_routing_signals`) is gone now,
+    not just filtered -- `autonomy_graph` telemetry never reaches any
+    signal-building code at all (see `_RETIRED_TELEMETRY_ZONES`).
     """
     detector = MutationDetectors()
     telemetry = GraphReviewTelemetryRecordV1(
@@ -603,18 +598,17 @@ def test_recall_pressure_evidence_history_bounded_and_in_proposal() -> None:
     assert isinstance(hist, list) and len(hist) == 8
 
 
-def test_routing_pressure_is_parked_not_turned_into_a_proposal() -> None:
-    """As of 2026-09-03 the routing surface is parked (see
-    mutation_proposals.py's `ROUTING_TARGET_PARKED_REASON`): confirmed live
-    that the evidence feeding it has nothing to do with what the dial gates,
-    and that the hardcoded 0.58 target is below the minimum confidence
-    (0.61) any heuristic routing decision can carry at execution_depth >= 2
-    with AUTO_ROUTER_LLM_ENABLED=false. Formerly
-    `test_routing_threshold_proposal_class_unchanged` /
+def test_routing_pressure_is_retired_not_turned_into_a_proposal() -> None:
+    """"routing" was parked 2026-09-03, then retired outright 2026-09-05 once
+    live traffic confirmed the decision path it tuned is itself unreachable
+    from any current Hub UI mode (see mutation_proposals.py's
+    `SURFACE_TO_CLASS` note). It no longer has a mutation_class at all, so
+    the refusal is "unknown_target_surface", not a park-specific reason.
+    Formerly `test_routing_threshold_proposal_class_unchanged` /
     `test_pressure_to_proposal`, which asserted the opposite."""
     plan = ProposalFactory(routing_surface_reader=_routing_surface()).plan_for_pressure(_routing_pressure())
     assert plan.proposal is None
-    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == "unknown_target_surface"
 
 
 def test_proposal_to_trial() -> None:

@@ -1,5 +1,15 @@
 # Handoff: giving Orion self-modification — where it stands
 
+> **SUPERSEDED 2026-09-05.** The `routing`/`chat_reflective_lane_threshold`
+> self-modification target this whole handoff is about was retired outright
+> (not just parked) once live traffic confirmed the decision path it tuned
+> (`decision_router.route()`) is unreachable from any current Hub UI mode.
+> PR #2071 (item 4 below) never got deployed, and never will as described --
+> `orion:routing:decision`, `RoutingDecisionRecordV1`, and the
+> `routing_decision` table's producer/consumer wiring are all removed. Do
+> not resume this handoff's plan as written; see this change's PR
+> description for the full trail.
+
 Session context is melting; this is the pickup doc for the next agent/session. Written 2026-09-03. Read this before touching anything in the mutation loop.
 
 ## The arc, one sentence

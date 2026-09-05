@@ -28,19 +28,28 @@ class MutationClassContract:
 # avoid reporting a cycle "healthy" when every matched row can only ever
 # produce a parked-surface signal. Changing this one set re-derives all three.
 #
-# "routing" (chat_reflective_lane_threshold) parked 2026-09-03: confirmed
-# live evidence mismatch (the signals this surface received describe review-
-# pipeline outcomes, not what the dial gates) and structural inertness (the
-# hardcoded 0.58 patch target sits below the 0.61 confidence floor every
-# heuristic routing decision at execution_depth >= 2 can carry, with
-# AUTO_ROUTER_LLM_ENABLED=false in production -- decision_confidence <
-# routing_threshold can never fire at this target). Full trail in this
-# change's PR description and commit message.
-PARKED_TARGET_SURFACES: frozenset[str] = frozenset({"routing"})
+# "routing" (chat_reflective_lane_threshold) was parked here 2026-09-03, then
+# retired outright 2026-09-05 once live traffic confirmed it wasn't just
+# under-evidenced but structurally unreachable (see mutation_proposals.py's
+# retirement note, and this change's PR description). Nothing is currently
+# parked -- an empty set is the correct, expected state, not a placeholder.
+PARKED_TARGET_SURFACES: frozenset[str] = frozenset()
 
 
 CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
     "routing_threshold_patch": MutationClassContract(
+        # Retired 2026-09-05 (was parked 2026-09-03) -- confirmed
+        # unreachable, see PARKED_TARGET_SURFACES' comment above and this
+        # change's PR description. Kept here, unlike a merely-parked class,
+        # because this dict defines a mutation_class's *shape* (fields,
+        # bounds, evaluation_metrics), which the 147 historical proposal
+        # rows already in Postgres still need for scoring/trial-replay/
+        # display (ClassSpecificScorer.evaluate(), SubstrateTrialRunner,
+        # the orion-hub replay-inspection endpoint) -- deleting the entry
+        # broke those with a bare KeyError, confirmed live by this
+        # change's own test run. The actual "no NEW proposal" enforcement
+        # is `SURFACE_TO_CLASS` (mutation_proposals.py) no longer mapping
+        # "routing" to this class at all, not this contract's absence.
         mutation_class="routing_threshold_patch",
         allowed_targets=("routing",),
         allowed_fields=("chat_reflective_lane_threshold", "autonomy_route_threshold"),

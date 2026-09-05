@@ -6,8 +6,13 @@ from typing import Any, Dict
 
 from .autonomy_constitution import PRODUCTION_RECALL_MODE, RECALL_LIVE_APPLY_ENABLED
 from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
-from orion.substrate.mutation_proposals import ROUTING_TARGET_PARKED_REASON
 from orion.substrate.mutation_queue import SubstrateMutationStore, cognition_view_snapshot
+
+# routing's own reason, not mutation_proposals.py's generic
+# _PARKED_SURFACE_REASON (that mechanism is for a surface that's still
+# registered but refused; "routing" is fully gone from SURFACE_TO_CLASS as
+# of 2026-09-05, one step further than parked).
+_ROUTING_RETIRED_REASON = "routing_target_retired_2026_09_05"
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
@@ -133,19 +138,23 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
         for row in active_stance_notes
     ]
     return {
-        "mutation_scope": "routing_threshold_patch_only",
-        # 2026-09-03: chat_reflective_lane_threshold is parked at
-        # ProposalFactory.plan_for_pressure() -- every routing proposal is
-        # refused unconditionally regardless of these env flags (evidence
-        # mismatch + the 0.58 patch target sitting below the 0.61 confidence
-        # floor every heuristic routing decision can carry). live_ramp_active
+        # Was "routing_threshold_patch_only" -- that was the only mutation
+        # class this context ever described, and it's retired now (see
+        # mutation_proposals.py's SURFACE_TO_CLASS note). None is the honest
+        # value: no mutation class currently has any live scope at all.
+        "mutation_scope": None,
+        # chat_reflective_lane_threshold was parked 2026-09-03, then retired
+        # outright 2026-09-05: confirmed live that the decision path it was
+        # meant to tune (decision_router.route()) is itself unreachable from
+        # any current Hub UI mode, not just under-evidenced. live_ramp_active
         # must say so: this context is injected into Orion's own cognition,
         # and a self-model claiming live self-modification capability that
         # cannot actually fire is exactly the empty-shell-cognition failure
         # mode CLAUDE.md 0A forbids.
         "live_ramp_active": False,
-        "routing_target_parked": True,
-        "routing_target_parked_reason": ROUTING_TARGET_PARKED_REASON,
+        "routing_target_parked": True,  # kept for existing consumers; still true
+        "routing_target_retired": True,
+        "routing_target_parked_reason": _ROUTING_RETIRED_REASON,
         "routing_proposals_enabled": _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True),
         "routing_apply_enabled": bool(
             _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)

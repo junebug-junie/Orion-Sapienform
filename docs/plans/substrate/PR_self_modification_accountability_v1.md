@@ -2,6 +2,13 @@
 
 Status: design, 2026-09-02. Prompted by a live finding, not a roadmap item.
 
+> **Note (2026-09-05):** the historical narrative below (the 2026-09-02
+> change, the lockout, the fixes that followed) is accurate as history. The
+> forward-looking design proposals are moot -- `routing`/
+> `chat_reflective_lane_threshold` was retired outright 2026-09-05, once
+> live traffic confirmed the decision path it tuned is itself unreachable
+> from any current Hub UI mode. See this change's PR description.
+
 ## Arsonist summary
 
 Orion changed their own behaviour for the first time at 04:11 UTC on 2026-09-02.

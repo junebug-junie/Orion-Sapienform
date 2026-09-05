@@ -4,6 +4,10 @@ Bounded depth-2 investigation organ supervised by Cortex. Replaces planner-react
 
 ## Flow
 
+Note (2026-09-05): `DecisionRouter` below is confirmed unreachable from any
+current Hub UI mode -- this diagram's first step does not fire in practice
+today. See this change's PR description.
+
 ```
 cortex-orch (DecisionRouter)
   → depth 2 + context_exec_mode

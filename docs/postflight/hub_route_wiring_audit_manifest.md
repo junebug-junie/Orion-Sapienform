@@ -1,5 +1,15 @@
 # Hub Route Wiring Audit Manifest
 
+> **Stale as of 2026-09-05.** This is a point-in-time audit; treat the
+> verdicts below as history, not current state. Confirmed live: the current
+> Hub UI's mode selector only offers `orion`/`quick`/`story`/`agent` -- no
+> `auto` option -- and `DecisionRouter.route()` (referenced below) is never
+> invoked by any of those, so the "Hub Auto" path described in this doc is
+> not reachable from the UI today, whatever its status was when this audit
+> was written. `routing_threshold_patch`, the self-modification target this
+> router fed, was separately retired 2026-09-05. See this change's PR
+> description for the full trail.
+
 ## Verdict
 
 ### Is Hub Agent fully wired correctly?

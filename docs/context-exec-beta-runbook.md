@@ -105,6 +105,10 @@ The point is to replace the planner primitive, not Cortex.
 
 ### Stack flow
 
+Note (2026-09-05): `DecisionRouter` below is confirmed unreachable from any
+current Hub UI mode -- this diagram's first step does not fire in practice
+today. See this change's PR description.
+
 ```
 Hub → Cortex-Orch (DecisionRouter, mode selection)
     → Cortex-Exec (Supervisor, depth-2 routing)

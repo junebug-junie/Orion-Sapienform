@@ -1,5 +1,12 @@
 # Orion Answer Depth Overhaul — Post-Flight Manifest
 
+> **Note (2026-09-05):** The "Auto-routing: DecisionRouter..." line in the
+> audit findings below is historical -- accurate for when this was written,
+> but `DecisionRouter.route()` is confirmed unreachable from any current
+> Hub UI mode, and the self-modification target it fed
+> (`routing_threshold_patch`) was retired 2026-09-05. See this change's PR
+> description.
+
 ## 1. Problem Addressed
 
 **What was wrong before:** Orion's answers were chronically shallow. The system excelled at executive cognition (triage, plan_action, assess_risk, evaluate) but produced meta-work artifacts instead of concrete answers. Requests like "How do I deploy you onto Discord?" yielded responses such as "gather requirements, create a guide, test deployment, review and refine"—managerial scaffolding rather than the actual deployment guide.

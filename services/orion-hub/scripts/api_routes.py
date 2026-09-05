@@ -145,10 +145,15 @@ from orion.substrate.mutation_detectors import PARKED_TELEMETRY_ZONES, MutationD
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator
 from orion.substrate.mutation_proposals import (
-    ROUTING_TARGET_PARKED_REASON,
     ProposalFactory,
     build_placeholder_routing_proposal,
 )
+
+# routing's own retirement reason -- mutation_proposals.py's
+# _PARKED_SURFACE_REASON is the generic mechanism for a surface that's still
+# registered but refused; "routing" is fully gone from SURFACE_TO_CLASS as
+# of 2026-09-05, one step further than parked.
+_ROUTING_RETIRED_REASON = "routing_target_retired_2026_09_05"
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -5464,14 +5469,18 @@ def _routing_live_ramp_posture_payload() -> Dict[str, Any]:
             "last_adoption": routing_adoption.model_dump(mode="json") if routing_adoption is not None else None,
             "last_rollback": routing_rollback.model_dump(mode="json") if routing_rollback is not None else None,
             "live_surface": inspect_chat_reflective_lane_threshold(),
-            # 2026-09-03: routing_threshold_patch is parked at
-            # ProposalFactory.plan_for_pressure() -- last_decision/last_adoption/
-            # last_rollback above are frozen at whatever existed before the park
-            # and will never move again while it holds. Without this the panel
-            # reads as "quiet" rather than "permanently inert" -- CLAUDE.md 0A:
-            # no empty-shell cognition without an inspectable reason why.
-            "routing_target_parked": True,
-            "routing_target_parked_reason": ROUTING_TARGET_PARKED_REASON,
+            # routing_threshold_patch was parked 2026-09-03, then retired
+            # outright 2026-09-05 (confirmed live: the decision path it
+            # tuned is itself unreachable from any current Hub UI mode) --
+            # last_decision/last_adoption/last_rollback above are frozen at
+            # whatever existed before that and will never move again.
+            # Without this the panel reads as "quiet" rather than
+            # "permanently inert" -- CLAUDE.md 0A: no empty-shell cognition
+            # without an inspectable reason why.
+            "status": "retired",
+            "routing_target_parked": True,  # kept for existing consumers; still true
+            "routing_target_retired": True,
+            "routing_target_parked_reason": _ROUTING_RETIRED_REASON,
         },
     }
 
@@ -5595,6 +5604,13 @@ def _self_modification_panel_payload(*, now: datetime | None = None) -> Dict[str
         "history": [],
         "history_available": False,
         "surface_holds": [],
+        # Retired 2026-09-05 (parked 2026-09-03): confirmed live that the
+        # decision path this surface tuned is itself unreachable from any
+        # current Hub UI mode. "current"/"history" above still reflect real,
+        # already-persisted data -- just frozen, since nothing can write to
+        # this surface again.
+        "retired": True,
+        "retired_reason": _ROUTING_RETIRED_REASON,
     }
     try:
         store = control_surface_store()
@@ -5677,9 +5693,12 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
         "generated_at": generated_at,
         "overall": {
             "autonomy_level": "level_2_5_bounded_self_mutation",
-            "summary": "bounded self-mutation with routing-only narrow live apply and recall/cognitive proposal-shadow controls",
+            # "routing-only narrow live apply" retired 2026-09-05 (was the
+            # only surface this level description named as live) -- no
+            # surface currently has live apply. See autonomy_constitution.py.
+            "summary": "bounded self-mutation with recall/cognitive proposal-shadow controls; no surface currently has live apply",
             "safe_next_action": "build_recall_v2_manual_canary",
-            "highest_risk": "misconfigured autonomy apply gate outside routing narrow class",
+            "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
             "warnings": [],
         },
         "scheduler": {"enabled": False, "proposal_enabled": False, "apply_enabled": False, "source": "env/runtime", "gates": {}},

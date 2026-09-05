@@ -181,6 +181,26 @@ design doc) has a real `source_table` to point a `DatasetSpec` at -- before
 this patch, Layer-1 items were only ever in-process, never durably
 queryable across runs. No new env keys.
 
+### Self-concept history (2026-09-05, self-model rebuild arc, Patch 3)
+
+The identity.yaml-replacement store named in the design doc:
+`self_concept_history`, an append-only, versioned log of Orion's own
+self-concept claims, additive to `identity.yaml` (not a replacement -- that
+decision is explicitly out of scope for this patch). Fed by
+`publish_self_concept_history_from_reflection()`, called from
+`run_self_concept_reflect()` right after Layer 3's real LLM reflection
+succeeds: one row per distinct `concept_kind` a finding's `concept_refs`
+touch (falls back to the finding's own `reflection_kind` if it has no
+concept refs), never on the `llm_call_failed` path -- same no-empty-shell
+discipline as the journal/graph writebacks next to it. "Current" is defined
+as the latest row per `concept_id` by `created_at`, not an upsert; `version`
+is a real, queried-not-guessed increment (`_next_self_concept_version()`,
+reuses `self_study_analysis.py`'s engine) but is informational, not
+load-bearing for that definition. The second producer this table is
+designed for -- Self Atlas's own per-cluster descriptions, once topic-
+foundry's pipeline is pointed at self-facts -- is not wired in this patch;
+see `services/orion-hub/README.md`'s Self Atlas section for that half.
+
 ### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
 
 `self_study.py`'s Layer 1 (inspect) used to be pure codebase inventory

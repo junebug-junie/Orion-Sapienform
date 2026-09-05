@@ -54,6 +54,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "journal.entry.write.v1": "JournalEntrySQL",
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
+    "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
     "social.turn.v1": "SocialRoomTurnSQL",
@@ -163,6 +164,7 @@ class Settings(BaseSettings):
             "orion:journal:write",
             "orion:self_study:items:write",
             "orion:chat_stance:belief:write",
+            "orion:self_concept:history:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
             "orion:evidence:markdown:ingest",
@@ -546,6 +548,14 @@ class Settings(BaseSettings):
         # done here across two independently in-flight branches at once.)
         if "orion:chat_stance:belief:write" not in channels:
             channels.append("orion:chat_stance:belief:write")
+        # Same guarantee again, same reason -- confirmed twice already this
+        # session (chat_stance:belief:write and self_study:items:write both
+        # shipped without this and were caught by review, one after
+        # merging). self_concept.history.write.v1 is a code-default route
+        # with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces
+        # rather than merges.
+        if "orion:self_concept:history:write" not in channels:
+            channels.append("orion:self_concept:history:write")
         return channels
 
     @property

@@ -288,6 +288,33 @@ _TOPIC_FOUNDRY_AITOWN_MODEL_NAME = (
 )
 _TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE = "aitown_chat_history_log"
 
+# Self Atlas (self-model rebuild arc, Patch 3, 2026-09-05): topic-foundry's
+# same clustering pipeline pointed at Orion's own self-facts
+# (self_knowledge_items, orion-cortex-exec's self_study.py Layer 1) instead
+# of chat. Not a dialogue -- no speaker concept, empty column_speakers same
+# as AI Town's own "speakers unknown" pattern. No where_sql filter needed:
+# self_knowledge_items is already self-only by construction (its only
+# producer is self_study.py), unlike the Orion chat dataset above which
+# has to filter AI Town rows out of a shared table.
+_TOPIC_FOUNDRY_SELF_COLUMN_SPEAKERS: dict[str, str] = {}
+_TOPIC_FOUNDRY_SELF_DATASET_NAME = "orion-self-atlas-dataset-v1"
+_TOPIC_FOUNDRY_SELF_MODEL_NAME_BASE = "orion-self-atlas-v1"
+_TOPIC_FOUNDRY_SELF_WINDOWING_SPEC = _topic_foundry_windowing_spec(_TOPIC_FOUNDRY_SELF_COLUMN_SPEAKERS)
+_TOPIC_FOUNDRY_SELF_MODEL_NAME = (
+    f"{_TOPIC_FOUNDRY_SELF_MODEL_NAME_BASE}-"
+    f"{_topic_foundry_model_spec_fingerprint(_TOPIC_FOUNDRY_SELF_WINDOWING_SPEC)}"
+)
+_TOPIC_FOUNDRY_SELF_SOURCE_TABLE = "self_knowledge_items"
+# Different from the Orion/AI Town chat datasets' id/time/text columns
+# (correlation_id/created_at/prompt+response) -- self_knowledge_items has
+# its own real shape (orion/schemas/self_knowledge_item_log.py). created_at
+# happens to match the chat datasets' time_column name, kept as its own
+# constant anyway for clarity and so a future schema change to either table
+# doesn't silently affect the other.
+_TOPIC_FOUNDRY_SELF_ID_COLUMN = "item_id"
+_TOPIC_FOUNDRY_SELF_TIME_COLUMN = "created_at"
+_TOPIC_FOUNDRY_SELF_TEXT_COLUMNS = ["name", "symbol_name", "metadata_text"]
+
 # HDBSCAN's noise/outlier bucket (topic-foundry side). Never a real topic --
 # same convention as orion/substrate/adapters/topic_foundry.py's own
 # OUTLIER_TOPIC_ID, not imported from there since this module deliberately
@@ -329,6 +356,9 @@ def _ensure_topic_foundry_dataset_and_model(
     model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
     source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
     where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
+    id_column: str = _TOPIC_FOUNDRY_ID_COLUMN,
+    time_column: str = _TOPIC_FOUNDRY_TIME_COLUMN,
+    text_columns: list[str] = _TOPIC_FOUNDRY_TEXT_COLUMNS,
     windowing_spec: dict[str, Any],
 ) -> Optional[tuple[str, str]]:
     """Idempotent get-or-create for a scheduler dataset+model, by name.
@@ -339,6 +369,15 @@ def _ensure_topic_foundry_dataset_and_model(
     fingerprinted model name) instead of a hand-duplicated copy. Every
     keyword default matches the pre-parameterization Orion behavior exactly,
     so the zero-arg call shape callers already use is unchanged.
+
+    ``id_column``/``time_column``/``text_columns`` joined the parameter list
+    2026-09-05 for the Self Atlas dataset (self_knowledge_items), the first
+    caller whose source table doesn't share the chat datasets' correlation_id
+    /created_at/prompt+response shape -- previously these three were hardcoded
+    module globals inside this function's body, silently assuming every
+    caller's source table looked like chat_history_log. Defaults match the
+    pre-parameterization values exactly, so Orion/AI Town's existing zero-arg
+    call shape is unchanged.
 
     Returns ``(dataset_id, model_id)``, or ``None`` on any failure -- never
     raises. Safe to call on every scheduler tick: after the first tick
@@ -354,9 +393,9 @@ def _ensure_topic_foundry_dataset_and_model(
                 {
                     "name": dataset_name,
                     "source_table": source_table,
-                    "id_column": _TOPIC_FOUNDRY_ID_COLUMN,
-                    "time_column": _TOPIC_FOUNDRY_TIME_COLUMN,
-                    "text_columns": _TOPIC_FOUNDRY_TEXT_COLUMNS,
+                    "id_column": id_column,
+                    "time_column": time_column,
+                    "text_columns": text_columns,
                     "timezone": "UTC",
                     "where_sql": where_sql,
                 },
@@ -447,6 +486,9 @@ def trigger_topic_foundry_training_run(
     model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
     source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
     where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
+    id_column: str = _TOPIC_FOUNDRY_ID_COLUMN,
+    time_column: str = _TOPIC_FOUNDRY_TIME_COLUMN,
+    text_columns: list[str] = _TOPIC_FOUNDRY_TEXT_COLUMNS,
     windowing_spec: dict[str, Any] = _TOPIC_FOUNDRY_WINDOWING_SPEC,
     log_prefix: str = "topic_foundry",
 ) -> dict[str, Any]:
@@ -484,6 +526,9 @@ def trigger_topic_foundry_training_run(
         model_name=model_name,
         source_table=source_table,
         where_sql=where_sql,
+        id_column=id_column,
+        time_column=time_column,
+        text_columns=text_columns,
         windowing_spec=windowing_spec,
     )
     if ids is None:
@@ -631,12 +676,44 @@ def trigger_topic_foundry_aitown_training_run() -> dict[str, Any]:
     )
 
 
+def trigger_topic_foundry_self_training_run() -> dict[str, Any]:
+    """Self Atlas -- zero-arg wrapper binding
+    ``trigger_topic_foundry_training_run`` to the self-facts dataset/model
+    constants above (self-model rebuild arc, Patch 3), same shape as
+    ``trigger_topic_foundry_aitown_training_run`` so ``main.py``'s scheduler
+    can call this exactly like the other two steps."""
+    return trigger_topic_foundry_training_run(
+        dataset_name=_TOPIC_FOUNDRY_SELF_DATASET_NAME,
+        model_name=_TOPIC_FOUNDRY_SELF_MODEL_NAME,
+        source_table=_TOPIC_FOUNDRY_SELF_SOURCE_TABLE,
+        where_sql=None,
+        id_column=_TOPIC_FOUNDRY_SELF_ID_COLUMN,
+        time_column=_TOPIC_FOUNDRY_SELF_TIME_COLUMN,
+        text_columns=_TOPIC_FOUNDRY_SELF_TEXT_COLUMNS,
+        windowing_spec=_TOPIC_FOUNDRY_SELF_WINDOWING_SPEC,
+        log_prefix="topic_foundry_self",
+    )
+
+
 def trigger_topic_foundry_aitown_enrichment() -> dict[str, Any]:
     """Same as ``trigger_topic_foundry_aitown_training_run`` above, for
     ``trigger_topic_foundry_enrichment``."""
     return trigger_topic_foundry_enrichment(
         model_name=_TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
         log_prefix="topic_foundry_aitown",
+    )
+
+
+def trigger_topic_foundry_self_enrichment() -> dict[str, Any]:
+    """Same as ``trigger_topic_foundry_self_training_run`` above, for
+    ``trigger_topic_foundry_enrichment`` (self-model rebuild arc, Patch 3).
+    Confirmed (2026-09-05 investigation): the enrichment LLM prompt
+    (``services/orion-topic-foundry/app/services/enrichment.py::_llm_prompt``)
+    is fully generic over segment text -- no chat/speaker framing -- so this
+    needs no changes beyond pointing it at the self-facts model."""
+    return trigger_topic_foundry_enrichment(
+        model_name=_TOPIC_FOUNDRY_SELF_MODEL_NAME,
+        log_prefix="topic_foundry_self",
     )
 
 
@@ -678,6 +755,15 @@ def _get_aitown_substrate_store() -> Any:
     graph (``api_routes.py``'s ``SUBSTRATE_SEMANTIC_STORE_AITOWN`` singleton)."""
     return _get_named_substrate_store(
         "SUBSTRATE_SEMANTIC_STORE_AITOWN", log_prefix="concept_atlas_aitown_store"
+    )
+
+
+def _get_self_substrate_store() -> Any:
+    """Same as ``_get_substrate_store`` above, for the Self Atlas
+    (``api_routes.py``'s ``SUBSTRATE_SEMANTIC_STORE_SELF`` singleton,
+    self-model rebuild arc, Patch 3)."""
+    return _get_named_substrate_store(
+        "SUBSTRATE_SEMANTIC_STORE_SELF", log_prefix="concept_atlas_self_store"
     )
 
 
@@ -992,7 +1078,7 @@ def _at_risk_concepts(
     return at_risk[:20], note
 
 
-_VALID_GRAPH_PARAM_VALUES = {"orion", "aitown"}
+_VALID_GRAPH_PARAM_VALUES = {"orion", "aitown", "self"}
 
 
 def _resolve_store_for_graph_param(graph: Optional[str]) -> tuple[Any, str]:
@@ -1018,6 +1104,8 @@ def _resolve_store_for_graph_param(graph: Optional[str]) -> tuple[Any, str]:
     graph_norm = graph.strip().lower() if isinstance(graph, str) else ""
     if graph_norm == "aitown":
         return _get_aitown_substrate_store(), "aitown"
+    if graph_norm == "self":
+        return _get_self_substrate_store(), "self"
     if graph_norm and graph_norm not in _VALID_GRAPH_PARAM_VALUES:
         logger.info("concept_atlas_ignored_bad_graph_param value=%s", graph_norm)
     return _get_substrate_store(), "orion"
@@ -1919,6 +2007,22 @@ def concept_atlas_ingest_topic_foundry_aitown() -> dict[str, Any]:
         store=_get_aitown_substrate_store(),
         model_name=_TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
         log_prefix="concept_atlas_aitown",
+    )
+
+
+@router.post("/api/substrate/concepts/ingest-topic-foundry-self")
+def concept_atlas_ingest_topic_foundry_self() -> dict[str, Any]:
+    """Same as ``concept_atlas_ingest_topic_foundry`` above, for the Self
+    Atlas (``SUBSTRATE_SEMANTIC_STORE_SELF``, self-model rebuild arc,
+    Patch 3) -- pulls from the self-facts topic-foundry model/dataset
+    instead of the chat-based Orion/AI Town ones. No landmark/speaker
+    concept ids (self_knowledge_items has no equivalent concept), same as
+    AI Town's own simpler ingest shape above.
+    """
+    return _ingest_topic_foundry_run(
+        store=_get_self_substrate_store(),
+        model_name=_TOPIC_FOUNDRY_SELF_MODEL_NAME,
+        log_prefix="concept_atlas_self",
     )
 
 

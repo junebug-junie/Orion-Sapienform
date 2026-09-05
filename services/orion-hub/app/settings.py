@@ -1464,6 +1464,17 @@ class Settings(BaseSettings):
     SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED: bool = Field(
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED"
     )
+    # Same shape as the AI Town flag above, for the Self Atlas (self-model
+    # rebuild arc, Patch 3, 2026-09-05) -- topic-foundry's clustering
+    # pipeline pointed at Orion's own self_knowledge_items instead of chat.
+    # Default OFF, unlike AI Town's established default-on pipeline: this is
+    # a brand-new, unverified pipeline over a table that only just started
+    # accumulating real rows -- an operator should turn this on deliberately
+    # once there's enough self_knowledge_items history to cluster over, not
+    # have it silently start on deploy.
+    SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED: bool = Field(
+        default=False, alias="SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED"
+    )
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"
     )

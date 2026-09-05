@@ -1873,7 +1873,25 @@ profiles:
       # VRAM headroom is not the constraint this time.
       max_model_len: 131072
       max_batch_tokens: 1024
-      max_concurrent_requests: 1
+      # RAISED 2026-09-05, 1 -> 2 (Juniper's go-ahead, "ok" after this was
+      # presented as the recommended fix): this worker was single-concurrency,
+      # and three different internal steps of a single Hub turn -- the
+      # visible reply (llm_lane "agent"), the background stance_react check
+      # (rerouted onto this same worker via PR #2099's chat/harness ->
+      # circe:8015 fix), and harness_finalize_reflect (deliberately pinned to
+      # "agent" by a 2026-08-16 incident fix specifically to avoid contention
+      # with other verbs -- see orion/harness/finalize.py's own comment) --
+      # all now land on this one worker and queue behind each other one at a
+      # time. Confirmed live: harness_finalize_reflect timed out
+      # (FINALIZE_REFLECT_TIMEOUT_SEC=180s) waiting behind other traffic on
+      # this exact worker. Raising concurrency here is the actual fix for
+      # that contention; raising individual downstream timeouts one at a
+      # time (already done once for stance_react) does not address the root
+      # cause. VRAM headroom supports it -- current single-slot usage is
+      # ~60GB of 128GB total, room for a second ctx-131072 KV-cache slot.
+      # UNVERIFIED: real throughput/latency with 2 concurrent slots on this
+      # exact model/hardware -- watch nvidia-smi and OOM risk on first boot.
+      max_concurrent_requests: 2
       gpu_memory_fraction: 0.90
 
     llamacpp:
@@ -1893,7 +1911,13 @@ profiles:
       # guaranteed-partial situation.
       n_gpu_layers: 99
       threads: 16
-      n_parallel: 1
+      # RAISED 2026-09-05, 1 -> 2, matching max_concurrent_requests above --
+      # see that field's comment for the full incident/reasoning. This is
+      # the actual llama-server flag; max_concurrent_requests above is this
+      # repo's own admission-gate setting, both need to move together.
+      # If OOM at boot: revert both to 1 before touching ctx_size or
+      # n_gpu_layers -- concurrency, not size, is what changed.
+      n_parallel: 2
       batch_size: 1024
 
       # Identical to the Q4_K_XL card -- these are model-family settings,

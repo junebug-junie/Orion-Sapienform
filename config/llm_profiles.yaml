@@ -1689,3 +1689,147 @@ profiles:
       was about VRAM headroom for the existing config, not a request to raise
       the context window. Revert device_ids to [0, 1, 3] and restart the two
       stopped GPU2 services once this test run is done.
+
+  qwen3.8-flash-next-udq5kxl-4xv100-32gb-circe-flagship:
+    # NEW PROFILE 2026-09-05, Juniper's explicit go-ahead ("im running tests
+    # and q4 isn't capable"): a separate, higher-precision quant to compare
+    # against qwen3.8-flash-next-udiq4xs-3xv100-32gb-circe-flagship above --
+    # that profile is LEFT AS-IS (still the live baseline), not edited in
+    # place, so both remain comparable. Swap ATLAS_AGENT_PROFILE_NAME on
+    # circe between the two to switch which one the agent lane actually runs.
+    display_name: "Qwen3.8-Flash-Next – UD-Q5_K_XL (llama.cpp, 4x V100 32GB, Circe flagship, LIVE TEST 2026-09-05)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.8-flash-next-ud-q5_k_xl"
+
+    supports_tools: true
+    supports_embeddings: false
+    # Same caveat as the IQ4_XS card above: mmproj-BF16.gguf/mmproj-F16.gguf
+    # exist at the repo root and this GGUF family is vision-capable per
+    # Unsloth's own "multimodal" label, but not wired here either -- confirm
+    # text-only boots first.
+    supports_vision: false
+
+    gpu:
+      # Same 4 cards as the IQ4_XS flagship card -- this profile swaps IN to
+      # replace it via ATLAS_AGENT_PROFILE_NAME, not a simultaneous second
+      # deployment. Same eviction of GPU0/1/2/3's normal workloads applies;
+      # see that card's notes for exactly what was stopped and why.
+      num_gpus: 4
+      tensor_parallel_size: 1
+      device_ids: [0, 1, 2, 3]
+
+      # UD-Q5_K_XL is ~147.76GB (verified against actual per-shard byte sizes
+      # on Hugging Face, 2026-09-05: 6 shards, 158,686,406,650 bytes total) --
+      # this is BIGGER than the 128GB of VRAM across all 4 V100s COMBINED,
+      # before any KV cache or compute buffers are even counted. Unlike
+      # IQ4_XS (which mostly fits), full GPU residency is flatly impossible
+      # here -- a real, guaranteed chunk of this model must run on system
+      # RAM. Circe has 214GB free system RAM (confirmed live 2026-09-05,
+      # `free -h`), so it will not OOM-crash from lack of RAM, but expect
+      # generation speed meaningfully SLOWER than IQ4_XS's already-slow
+      # ~30 tok/s -- IQ4_XS was already timing out real requests (stance_react
+      # took 114.55s of a 115s budget) leaning much less heavily on CPU than
+      # this profile will need to. If the goal is response latency, this is
+      # very likely the wrong direction; if the goal is judging output
+      # quality at a slower pace, raise every timeout in the path
+      # (gateway route timeouts, stance_react's own) well past what IQ4_XS
+      # needed before testing this profile for real.
+      max_model_len: 65536
+      max_batch_tokens: 512
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.8-Flash-Next-GGUF"
+      # 6-shard split GGUF under UD-Q5_K_XL/ -- same auto-expansion mechanism
+      # as the IQ4_XS card's 3-shard path. Confirmed against the real HF API
+      # file listing (?blobs=true), byte sizes checked by hand, 2026-09-05.
+      hf_filename: "UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf"
+
+      # No MTP draft head wired -- the IQ4_XS card's MTP attempt was already a
+      # confirmed dead end on this llama.cpp build (both shared and
+      # non-shared companion files fatal-crash), and that finding is about
+      # the build/architecture, not the quant, so it applies here too. Not
+      # re-attempting.
+
+      # Same reasoning as the IQ4_XS card: no separate PLE/n-gram GGUF exists
+      # in this repo for any quant. ngram_filename left UNSET here too.
+
+      host: "0.0.0.0"
+      port: 8080
+
+      # UNTESTED, conservative starting guess, NOT 99: the VRAM math above
+      # means requesting full GPU residency (99) is not a "may OOM," it is a
+      # guaranteed, known-in-advance overflow -- weights alone exceed total
+      # VRAM before any KV cache. Starting at 80 (roughly the fraction of
+      # weight bytes that could fit in 128GB minus a reserve for KV
+      # cache/compute buffers at ctx 65536) as an informed first guess, not a
+      # verified value -- this is a MoE architecture with uneven expert
+      # sizes, so layers are not uniformly sized and this estimate could be
+      # off in either direction. Watch nvidia-smi and this worker's own
+      # health/logs on first boot; escalate DOWN on OOM same as the IQ4_XS
+      # card (80 -> 60 -> 40 -> 20), or up if there's clear unused headroom.
+      n_gpu_layers: 80
+      threads: 24
+      n_parallel: 1
+      batch_size: 512
+
+      # Same as the IQ4_XS card, unchanged -- this is about quant/precision,
+      # not context budget, so keep it identical for a fair comparison.
+      ctx_size: 65536
+
+      # Same sampling/reasoning config as the IQ4_XS card -- Unsloth
+      # documents these as applicable across this model's quants, not
+      # specific to IQ4_XS.
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        reasoning_effort: "xhigh"
+
+      no_context_shift: true
+      split_mode: "layer"
+      tensor_split: "1,1,1,1"
+      flash_attn: "off"
+
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+    notes: |
+      NEW 2026-09-05, Juniper's explicit go-ahead ("im running tests and q4
+      isn't capable"): a higher-precision alternative to
+      qwen3.8-flash-next-udiq4xs-3xv100-32gb-circe-flagship, added alongside
+      it (not replacing it) so both remain available to compare.
+
+      Known before first boot, not discovered by trial and error:
+      1. Size: 147.76GB (6 shards), verified against real HF byte sizes,
+         2026-09-05 -- bigger than all 4 V100s' VRAM combined (128GB), before
+         KV cache. A meaningful chunk of this model WILL run on CPU/system
+         RAM, guaranteed, not a possible outcome.
+      2. Speed: expect slower than IQ4_XS, which was already slow enough
+         (~30 tok/s) to time out a real stance_react call at 114.55s against
+         a 115s budget. This profile leans on CPU more, not less.
+      3. n_gpu_layers starting value (80) is an informed guess from the raw
+         byte-size ratio, not a live-tested number -- MoE expert sizes are
+         uneven, so the real working value could differ. Live boot is the
+         actual test.
+
+      Still open, inherited unchanged from the IQ4_XS card since neither is
+      quant-specific: llama.cpp build support for this architecture on Volta
+      (sm_70) is unverified; no ngram/PLE file exists in this repo for any
+      quant; MTP is a confirmed dead end on this build regardless of quant.
+
+      Escalation order once boot is attempted: if OOM, lower n_gpu_layers
+      first (80 -> 60 -> 40 -> 20), then ctx_size, before touching quant
+      level -- same order as the IQ4_XS card, same reasoning.
+
+      Before testing responses for real: raise the read timeouts in the
+      request path (gateway route timeouts at minimum) well past what
+      IQ4_XS needed -- this profile is expected to be slower, not faster,
+      so IQ4_XS's already-marginal 115s budget will not be enough.

@@ -110,10 +110,14 @@ class _Admission:
         self._max_wait_s = max(0.0, float(max_wait_s))
         self._holding = False
         self.waited_s = 0.0
+        # Exact, like priority_admission's queued flag: whether the acquire had to block.
+        # A monotonic delta is never exactly 0, so "waited > 0" would log every request.
+        self.queued = False
 
     async def __aenter__(self) -> bool:
         lane = self._lane
         started = time.monotonic()
+        self.queued = lane.sem.locked()
         lane.waiting += 1
         try:
             try:
@@ -130,7 +134,7 @@ class _Admission:
         self._holding = True
         lane.inflight += 1
         lane.admitted += 1
-        if self.waited_s > lane.longest_wait_s:
+        if self.queued and self.waited_s > lane.longest_wait_s:
             lane.longest_wait_s = self.waited_s
         return True
 

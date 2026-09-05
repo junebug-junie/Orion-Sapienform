@@ -283,7 +283,7 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, An
                 return _overloaded_result(
                     plan, waited_s=admission.waited_s, budget_s=budget_s, lane=lane
                 )
-            if admission.waited_s > 0.0:
+            if admission.queued:
                 logger.info(
                     "gateway_upstream_queued correlation_id=%s route=%s upstream=%s waited=%.3fs "
                     "inflight=%s waiting=%s",

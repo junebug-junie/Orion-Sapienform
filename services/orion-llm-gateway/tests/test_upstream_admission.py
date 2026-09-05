@@ -41,6 +41,7 @@ async def test_lanes_are_independent() -> None:
     gate = ua.UpstreamAdmission(max_inflight=1)
     async with gate.admit(QUICK, max_wait_s=1.0) as first:
         assert first is True
+        assert gate.snapshot()[QUICK]["longest_wait_s"] == 0.0, "an uncontended acquire is not a wait"
         # QUICK is full. CHAT must still admit instantly.
         started = time.monotonic()
         async with gate.admit(CHAT, max_wait_s=1.0) as other:
@@ -96,6 +97,7 @@ async def test_a_queued_request_is_admitted_when_the_permit_frees_and_its_wait_i
     async with adm as admitted:
         assert admitted is True
     await holder
+    assert adm.queued is True
     assert adm.waited_s >= 0.05
     assert gate.snapshot()[QUICK]["longest_wait_s"] >= 0.05
 
@@ -169,7 +171,7 @@ async def test_a_flood_on_quick_does_not_delay_chat(_two_lanes) -> None:
     assert all(r["text"] == "ok:quick" for r in results), "budget is 30s+, nothing should shed"
     snap = ua.get_upstream_admission().snapshot()
     assert snap[QUICK]["admitted"] == 12 and snap[QUICK]["longest_wait_s"] > 0.2
-    assert snap[CHAT]["admitted"] == 1 and snap[CHAT]["longest_wait_s"] < 0.05
+    assert snap[CHAT]["admitted"] == 1 and snap[CHAT]["longest_wait_s"] == 0.0
 
 
 @pytest.mark.asyncio

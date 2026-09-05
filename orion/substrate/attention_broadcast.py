@@ -241,6 +241,84 @@ def build_substrate_attention_frame(
 logger = logging.getLogger(__name__)
 
 
+def _classify_override_absence(
+    result: "TopDownResult",
+    goal: "GoalContext",
+    loops: "list[OpenLoopV1]",
+) -> VoluntaryOverrideAbsentReasonV1:
+    """Which flavour of "no override" this was. Caller guarantees a goal ran.
+
+    Decided from the GOAL/LOOP JOIN and the effort actually applied -- never
+    from "max bias is 0.0". Code review 2026-09-05 showed that inference is
+    three facts wearing one face: bias is ``priority * relevance``, so it is
+    also 0.0 when the goal's target IS competing but ``priority == 0.0``, and
+    when the goal carries no target at all. Both were reproduced live, and both
+    would have narrated as "the goal and the competition were about different
+    things" -- false, and landing directly in the overlap number this patch
+    exists to make trustworthy.
+
+    Cases, each with a different owner:
+
+    - ``goal_had_no_target``  -- the goal never said what it was about. A
+      producer defect, not a fact about attention.
+    - ``goal_matched_no_loop`` -- target set, but nothing competing carries it.
+      A routing/overlap problem, upstream of this file.
+    - ``goal_pushed_nothing`` -- the goal's target IS competing but no bias was
+      actually applied to it (zero priority, or the effort budget let nothing
+      through). Reads on ``applied_bias``, not raw bias, so a tick with
+      ``effort_used == 0`` can never narrate as "pushed and lost".
+    - ``goal_target_already_winning`` -- the bottom-up winner is one of the
+      loops the goal wanted. Nothing to override; the goal already had it.
+    - ``bias_did_not_flip_winner`` -- bias landed on a goal loop that then lost.
+      The only genuine competitive defeat, and the only one that is evidence
+      against Orion's agency.
+
+    Relevance is read through ``relevance()`` itself rather than re-deriving
+    the join here, so the two can never drift apart.
+
+    Never raises. An unreadable result returns ``absence_unclassified`` -- it
+    must not fall through to any of the narrow values above, all of which
+    assert a specific cause.
+    """
+    try:
+        from orion.substrate.attention.top_down import relevance
+
+        target = getattr(goal, "target_id", None)
+        if not target:
+            return "goal_had_no_target"
+
+        per_loop = result.per_loop or {}
+        if not per_loop:
+            return "absence_unclassified"
+
+        matched = [lp.id for lp in (loops or []) if relevance(goal, lp) > 0.0]
+        if not matched:
+            return "goal_matched_no_loop"
+
+        # applied_bias, not top_down_bias: the effort budget is what decides
+        # whether anything was really pushed.
+        applied = max(
+            (per_loop[lid].applied_bias for lid in matched if lid in per_loop),
+            default=0.0,
+        )
+        if applied <= 0.0:
+            return "goal_pushed_nothing"
+
+        bu_winner = result.bottom_up_winner_loop_id
+        if bu_winner is None:
+            return "absence_unclassified"
+        # Not a judgment call: relevance() is binary, so `matched` is exactly
+        # the set of loops carrying the goal's target. This is the precise
+        # statement "the bottom-up winner is one of the loops the goal wanted".
+        return (
+            "goal_target_already_winning"
+            if bu_winner in matched
+            else "bias_did_not_flip_winner"
+        )
+    except Exception:
+        return "absence_unclassified"
+
+
 def _set_override_absent_reason(
     frame: AttentionFrameV1, reason: VoluntaryOverrideAbsentReasonV1 | None
 ) -> None:
@@ -338,8 +416,12 @@ def _apply_voluntary_attention(
         elif result.override is None:
             # The combiner ran and top-down bias did not change the winner
             # (top_down.py Rule 6). Distinct from the guards above: a goal WAS
-            # present and effort WAS spent; bottom-up simply still won.
-            _set_override_absent_reason(frame, "bias_did_not_flip_winner")
+            # present. Which of three very different things happened is decided
+            # here -- collapsing them into one string made the override rate
+            # uninterpretable (see VoluntaryOverrideAbsentReasonV1).
+            _set_override_absent_reason(
+                frame, _classify_override_absence(result, goal, frame.open_loops)
+            )
         else:
             # Only record the override when the winner actually has an action to
             # re-point to — otherwise the frame would claim an override it can't

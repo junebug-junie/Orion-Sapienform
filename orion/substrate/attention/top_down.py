@@ -112,6 +112,14 @@ class TopDownResult:
     override: Optional[VoluntaryOverrideV1]
     effort_used: float
     winner_loop_id: Optional[str]   # argmax by RAW combined (s + gain*applied_bias)
+    # argmax by bottom_up ALONE -- what would have won with no goal at all.
+    # Exposed 2026-09-05 so the caller can distinguish "the goal's target was
+    # already winning on salience" (agreement; nothing to override) from "the
+    # goal pushed a different loop and lost" (a real competitive defeat). Both
+    # produce override=None and were recorded under the same reason string,
+    # which made a low override rate uninterpretable -- they mean opposite
+    # things about whether Orion has any say.
+    bottom_up_winner_loop_id: Optional[str] = None
     # True when Rule 8 below swallowed an exception and this result is a
     # fallback, not a real competition outcome. Added 2026-09-04 (code review):
     # the fallback is `_pure_bottom_up`, which returns a POPULATED per_loop with
@@ -182,7 +190,11 @@ class TopDownBiasCombiner:
             )
         winner = self._argmax_bottom_up(loops, bottom_up)
         return TopDownResult(
-            per_loop=per_loop, override=None, effort_used=0.0, winner_loop_id=winner
+            per_loop=per_loop, override=None, effort_used=0.0, winner_loop_id=winner,
+            # With no bias applied anywhere, the combined winner IS the
+            # bottom-up winner. Set explicitly rather than left None so callers
+            # never have to special-case this path.
+            bottom_up_winner_loop_id=winner,
         )
 
     def _argmax_bottom_up(
@@ -285,6 +297,7 @@ class TopDownBiasCombiner:
                 override=override,
                 effort_used=effort_used,
                 winner_loop_id=winner_combined,
+                bottom_up_winner_loop_id=winner_bottom_up,
             )
         except Exception:
             # Rule 8: never raise. Fall back to pure bottom-up, but say so --

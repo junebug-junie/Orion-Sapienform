@@ -31,6 +31,7 @@ from scripts.self_brain_routes import router as self_brain_router
 from scripts.chat_attachments import router as chat_attachments_router
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
+import scripts.self_atlas_cluster_history as self_atlas_cluster_history_runtime
 import scripts.vision_affect_ambient as vision_affect_ambient_runtime
 import scripts.vision_frame_cache as vision_frame_cache_runtime
 from scripts.websocket_handler import websocket_endpoint
@@ -1069,6 +1070,29 @@ async def startup_event():
                         )
                     except Exception as exc:  # advisory runtime loop; never crash service startup
                         logger.warning("substrate_topic_foundry_self_scheduler_ingest_error error=%s", exc)
+
+                    # Self Atlas's second self_concept_history producer (self-model
+                    # rebuild arc, Patch 3 follow-up, 2026-09-05) -- Layer 3's real
+                    # LLM reflection is the only other writer to this table
+                    # (orion-cortex-exec). Same gate as the three steps above
+                    # (no separate flag): a natural extension of a pipeline that's
+                    # already off by default and unverified against real
+                    # cluster-quality data.
+                    try:
+                        self_history_summary = await asyncio.to_thread(
+                            self_atlas_cluster_history_runtime.publish_self_atlas_cluster_history
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_self_scheduler_history_tick available=%s run_id=%s "
+                            "published_count=%s skipped_unchanged_count=%s failed_count=%s",
+                            self_history_summary.get("available"),
+                            self_history_summary.get("run_id"),
+                            self_history_summary.get("published_count"),
+                            self_history_summary.get("skipped_unchanged_count"),
+                            self_history_summary.get("failed_count"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_self_scheduler_history_error error=%s", exc)
 
         substrate_topic_foundry_scheduler_task = asyncio.create_task(
             _run_substrate_topic_foundry_scheduler(),

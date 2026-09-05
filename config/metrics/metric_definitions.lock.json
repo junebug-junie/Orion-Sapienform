@@ -3,10 +3,10 @@
   "metric_count": 634,
   "_last_change": {
     "base": "merge base a8eaa4139 (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:self_concept:history:write (all_producers: ['orion-cortex-exec'] -> ['orion-cortex-exec', 'orion-hub'])"
     ]
   },
   "definitions": {
@@ -943,7 +943,8 @@
     "metric://bus_channel/orion-cortex-exec/orion:self_concept:history:write": {
       "schema_id": "SelfConceptHistoryV1",
       "all_producers": [
-        "orion-cortex-exec"
+        "orion-cortex-exec",
+        "orion-hub"
       ],
       "declared_consumers": [
         "orion-sql-writer"

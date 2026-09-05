@@ -10,20 +10,19 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-# RAISED 2026-09-05 (was 120000 -> 115s effective gateway read timeout,
-# services/orion-cortex-exec/app/executor.py's
-# gateway_read_timeout_sec = max(45, min(effective_timeout - 5, 900))):
-# live-confirmed twice tonight, once against Qwen3.8-Flash-Next IQ4_XS
-# (114.55s of a 115s budget) and once against Qwen3.8-27B BF16 full
-# precision on the same agent-lane worker -- both timed out at exactly
-# this ceiling. Same shape as self_study.py's SELF_STUDY_REFLECT_TIMEOUT_SEC
-# fix (2026-09-04, PR #2080/#2085): the reasoning model genuinely needs more
-# wall-clock time to finish thinking before answering, not more tokens.
-# 240000 (240s) matches that same precedent's value -- comfortably under
-# orion-thought's own 360s overall RPC ceiling
-# (STANCE_REACT_TIMEOUT_SEC, services/orion-thought/app/settings.py), which
-# does not need to change.
-timeout_ms: 240000
+# REVERTED 2026-09-05, end of session ("move everything back to how it
+# was"): was briefly 240000 (see PR #2108/#2112) to accommodate
+# Qwen3.8-Flash-Next and Qwen3.8-27B-BF16, both of which live-confirmed
+# needing >115s for a real stance_react completion at reasoning_effort
+# xhigh. Reverted to 120000 alongside reverting the agent lane back to
+# qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex, which this value was
+# already proven fine against before tonight's testing. If a future model
+# swap on this lane produces the same "stance_react exec result missing
+# thought payload" / gateway TIMEOUT at route=chat, re-raise this first
+# before assuming something else broke -- see PR #2108 for the full
+# incident writeup and self_study.py's SELF_STUDY_REFLECT_TIMEOUT_SEC for
+# the matching precedent.
+timeout_ms: 120000
 
 services:
   - LLMGatewayService

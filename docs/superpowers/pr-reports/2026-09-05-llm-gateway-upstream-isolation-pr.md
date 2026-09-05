@@ -101,8 +101,9 @@ holding a slot for 700s.
 - Added: `GET /admission` response key `upstreams` (additive; cortex-exec's
   `admission_cue` checks only its own required fields).
 - Added: chat result `raw.error = "gateway_overloaded"` with
-  `raw.details.{route,upstream,served_by,waited_s,budget_s,lane}`. Same shape as
-  the existing `llm_route_unavailable` early return.
+  `raw.details.{stage,route,upstream,served_by,waited_s,budget_s,lane}`, stage in
+  `background_queue | upstream_queue | budget_exhausted`. Same shape as the
+  existing `llm_route_unavailable` early return.
 - Removed: none on the bus. `priority_admission.wait_for_slack_sync` (in-service
   function) deleted.
 - Behavior changed: bus-path background routes now honour
@@ -126,7 +127,7 @@ holding a slot for 700s.
 ## Tests run
 
 ```text
-.venv/bin/python -m pytest services/orion-llm-gateway/tests -q        301 passed
+.venv/bin/python -m pytest services/orion-llm-gateway/tests -q        308 passed (service .env moved aside)
 .venv/bin/python -m pytest services/orion-memory-consolidation/tests -q  112 passed
 .venv/bin/python scripts/check_env_key_single_source.py             OK
 git diff --check                                                     clean
@@ -157,6 +158,8 @@ scripts/safe_docker_build.sh orion-llm-gateway up -d --build           Built, St
   startup log: executor sized workers=36 upstreams=4 max_inflight_per_upstream=8
   GET /health ok, 7 routes; GET /admission -> upstreams populated
   live: gateway_upstream_queued lines on quick only; threads 33 -> 12
+scripts/safe_docker_build.sh orion-llm-gateway up -d --build  (again, at ad3180316 after review fixes)
+  docker exec grep release_when_done main.py -> present; health ok
 scripts/safe_docker_build.sh orion-topic-foundry up -d --build          Built, Started
   docker exec grep gateway_read_timeout_sec llm_client.py -> 1
 scripts/safe_docker_build.sh orion-memory-consolidation up -d --build   Built, Started
@@ -165,7 +168,63 @@ scripts/safe_docker_build.sh orion-memory-consolidation up -d --build   Built, S
 
 ## Review findings fixed
 
-REVIEW_SECTION
+Review ran in a subagent (`code-review`, effort high, three reviewer agents plus
+empirical probes against the live gateway). Findings and what changed:
+
+- Finding (MUST): background routes skipped the shed-at-budget rule; the per-route
+  `background_admission` semaphore was an unbounded queue and a request past its
+  deadline was generated anyway.
+  - Fix: `_dispatch_chat` wraps the background gate's entry in
+    `asyncio.timeout(remaining)` and sheds with stage `background_queue`.
+  - Evidence: `test_a_background_request_stuck_on_its_route_permit_is_shed_at_budget`
+    (holds the route permit, tiny budget, asserts no /slots poll and no run).
+- Finding (SHOULD): wait time was not deducted from the read timeout; a request that
+  queued 392.9s of a 393s budget (live corr `a2206234-...`) got a fresh 393s read.
+  - Fix: one deadline for the whole stay; what is left after admission is passed as
+    `gateway_read_timeout_sec` (HTTP client still floors it at 30s); nothing left =
+    shed with stage `budget_exhausted`.
+  - Evidence: `test_time_spent_queueing_comes_out_of_the_read_timeout`,
+    `test_a_permit_admitted_with_nothing_left_is_shed_before_dispatch`.
+- Finding (SHOULD): memory-consolidation's 8s budget was floored to 30s because the
+  queue wait reused the HTTP read clamp.
+  - Fix: `resolve_caller_budget_sec` uses the raw caller value (floor 1s) for
+    admission; the 30s floor stays on the HTTP client only.
+  - Evidence: `test_an_8s_caller_gets_an_8s_queue_budget_not_the_30s_read_floor`.
+- Finding (SHOULD): a cancelled handler (Rabbit reconnect cancels in-flight
+  handlers) released its lane permit while the thread kept running, so a lane could
+  hold 2x its cap in real threads.
+  - Fix: `_Admission.release_when_done(future, loop)` releases from the executor
+    future's done-callback; `__aexit__` skips once deferred. Dedicated chat pool
+    (`_chat_executor`) instead of hijacking the loop's default executor.
+  - Evidence: `test_a_cancelled_handler_keeps_its_permit_until_the_thread_finishes`.
+- Finding (SHOULD): the "plain routes never enter the background gate" guard was
+  deleted with the sync path and not replaced.
+  - Fix: `test_plain_routes_never_enter_the_background_gate` spies
+    `background_admission` through `_dispatch_chat`.
+- Finding (SHOULD): README and `admission_ledger.py` still described
+  `wait_for_slack_sync`; `_dispatch_chat` docstring said a background request holds
+  "nothing" while it holds its route permit.
+  - Fix: all three rewritten; README now states the shared cross-`via` semaphore
+    consequence.
+- Finding (SHOULD, pre-existing consumer gap): cortex-exec's chat-turn step does not
+  check `raw.error` or empty content, so `gateway_overloaded` would flow on as an
+  empty answer there. Every other consumer checked (orion-mind, topic-foundry,
+  vision-council, memory-consolidation, embodiment via cortex-exec) is safe.
+  - Fix: `_overloaded_result` docstring no longer claims every consumer handles it.
+    Consumer fix is out of this service's scope -- follow-up below.
+- Finding (NOTE): an unconfigured route landed in an unsized "legacy" lane.
+  - Fix: `route_not_configured` short-circuits before any permit or thread.
+  - Evidence: `test_an_unconfigured_route_never_takes_a_permit_or_a_thread`.
+- Finding (NOTE): the live gateway was running commit 1 (queued log fired at
+  `waited=0.000s`). Redeployed at `ad3180316`; verified below.
+
+Cleared by review: semaphore/counter integrity under cancellation and races
+(scratch probes), lock ordering (route permit before lane permit, no cycle),
+`plan_llm_chat` early return byte-identical, executor sizing dedups by URL,
+`run_llm_generate` bypasses the gates but has zero callers.
+
+Follow-up (not this PR): cortex-exec chat-turn step should treat `raw.error` /
+empty content as a failed call.
 
 ## Restart required
 

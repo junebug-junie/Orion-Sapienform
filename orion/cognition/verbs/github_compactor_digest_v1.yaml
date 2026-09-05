@@ -9,7 +9,9 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-timeout_ms: 90000
+# 10 minutes: 8k-token digest over ~30 PRs routinely exceeds the old 90s
+# deadline (live empty/invalid_json failure 2026-09-05). Chat can wait.
+timeout_ms: 600000
 
 services:
   - LLMGatewayService

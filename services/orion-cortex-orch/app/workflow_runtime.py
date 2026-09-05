@@ -21,7 +21,11 @@ from orion.cognition.chat_history_compactor.window import (
     exclude_workflow_notification_turns,
     resolve_chat_compactor_window,
 )
-from orion.cognition.github_compactor.constants import DEFAULT_LOOKBACK_DAYS
+from orion.cognition.github_compactor.constants import (
+    DEFAULT_LOOKBACK_DAYS,
+    DIGEST_ORCH_RPC_TIMEOUT_SEC,
+    GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC,
+)
 from orion.cognition.github_compactor.digest import (
     fit_digest_within_budget,
     build_quiet_day_digest,
@@ -1992,6 +1996,9 @@ def _build_compactor_digest_request(
             "reasoning": {"effort": "none"},
         }
     )
+    if verb == "github_compactor_digest_v1":
+        # Must cover the 10-minute verb budget; default orch wait used to be 120s.
+        synth_req.options["timeout_sec"] = float(DIGEST_ORCH_RPC_TIMEOUT_SEC)
     if llm_route is not None:
         synth_req.options["llm_route"] = llm_route
     return synth_req
@@ -2052,7 +2059,7 @@ async def _run_github_compactor_digest(
         correlation_id=correlation_id,
         causality_chain=causality_chain,
         trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-        timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
+        timeout_sec=float((synth_req.options or {}).get("timeout_sec", DIGEST_ORCH_RPC_TIMEOUT_SEC)),
     )
     if not verb_result.ok:
         raise WorkflowExecutionError(f"github_compactor_digest_failed:{verb_result.error or 'verb_failed'}")
@@ -2100,6 +2107,7 @@ async def _execute_github_compactor_pass(
             "policy_dispatch_only": True,
             "workflow_execution": True,
             "workflow_id": workflow_id,
+            "timeout_sec": float(GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC),
         },
         recall=RecallDirective(enabled=False, required=False, profile=None),
         context=CortexClientContext(
@@ -2132,7 +2140,7 @@ async def _execute_github_compactor_pass(
         correlation_id=_workflow_sub_correlation_id(correlation_id, "github_fetch"),
         causality_chain=causality_chain,
         trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-        timeout_sec=float((fetch_req.options or {}).get("timeout_sec", 120.0)),
+        timeout_sec=float((fetch_req.options or {}).get("timeout_sec", GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC)),
     )
     fetch_payload = _parse_json_text(_extract_result_payload(fetch_result).get("final_text"))
     if not isinstance(fetch_payload, dict):

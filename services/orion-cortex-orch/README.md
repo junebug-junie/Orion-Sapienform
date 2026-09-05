@@ -66,7 +66,7 @@ Requires cortex-orch `RECALL_PG_DSN` for card writes and cortex-exec SQL access 
 
 ### `github_compactor_pass`
 
-Daily merged-PR digest: fetch via `skills.repo.github_recent_prs.v1`, digest via `github_compactor_digest_v1` (single attempt, fail loud), supersede-slot card (`compactor_slot`), journal append. Quiet days write a journal entry noting the card was left unchanged.
+Daily merged-PR digest: fetch via `skills.repo.github_recent_prs.v1` (up to 100 closed PRs/page), digest via `github_compactor_digest_v1` (up to 32 PR bodies into the LLM, 8k journal body, 10-minute timeout; single attempt, fail loud), supersede-slot card (`compactor_slot`), journal append. Quiet days write a journal entry noting the card was left unchanged. Sized for ~30 merges/day — chat can wait.
 
 ## Running & Testing
 

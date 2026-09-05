@@ -39,7 +39,6 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "spark.state.snapshot.v1": "SparkTelemetrySQL",
     "cognition.trace": "CognitionTraceSQL",
     "thought.event.v1": "ThoughtDecisionSQL",
-    "routing.decision.record.v1": "RoutingDecisionSQL",
     "harness.run.v1": "HarnessTurnTraceSQL",
     "harness.verdict.molecule.v1": "HarnessTurnTraceSQL",
     "harness.turn.outcome.v1": "HarnessTurnTraceSQL",
@@ -54,6 +53,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "journal.entry.write.v1": "JournalEntrySQL",
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
+    "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
     "social.turn.v1": "SocialRoomTurnSQL",
@@ -150,7 +150,6 @@ class Settings(BaseSettings):
             "orion:spark:telemetry",
             "orion:cognition:trace",
             "orion:thought:artifact",
-            "orion:routing:decision",
             "orion:harness:run:artifact",
             "orion:harness:verdict:artifact",
             "orion:substrate:turn_outcome",
@@ -163,6 +162,7 @@ class Settings(BaseSettings):
             "orion:journal:write",
             "orion:self_study:items:write",
             "orion:chat_stance:belief:write",
+            "orion:self_concept:history:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
             "orion:evidence:markdown:ingest",
@@ -501,15 +501,12 @@ class Settings(BaseSettings):
         # autonomy feedback lane before it can even reach the fallback log.
         if "orion:autonomy:action:outcome" not in channels:
             channels.append("orion:autonomy:action:outcome")
-        # Same guarantee, same reason, learned the same way -- this time from the
-        # comment directly below, which describes this exact failure and which I
-        # read past while adding the channel. routing.decision.record.v1 is a
-        # code-default route with no feature toggle, and it is the only evidence
-        # of Orion's own routing behaviour that exists; a stale operator env list
-        # dropping it leaves the post-adoption monitor reading an empty table and
-        # every test still green.
-        if "orion:routing:decision" not in channels:
-            channels.append("orion:routing:decision")
+        # routing.decision.record.v1 / orion:routing:decision force-append guard
+        # (added 2026-09-03) removed 2026-09-05: the channel, schema, and
+        # RoutingDecisionSQL model are all retired -- decision_router.route()
+        # (the only producer) confirmed unreachable from any current Hub UI
+        # mode, so the channel never carried a single event before being
+        # removed. See this change's PR description.
         # Same guarantee, same reason, learned the same way. biometrics.cluster.v1 is a
         # code-default route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS
         # REPLACES the Python default wholesale rather than merging the way `route_map`
@@ -546,6 +543,14 @@ class Settings(BaseSettings):
         # done here across two independently in-flight branches at once.)
         if "orion:chat_stance:belief:write" not in channels:
             channels.append("orion:chat_stance:belief:write")
+        # Same guarantee again, same reason -- confirmed twice already this
+        # session (chat_stance:belief:write and self_study:items:write both
+        # shipped without this and were caught by review, one after
+        # merging). self_concept.history.write.v1 is a code-default route
+        # with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces
+        # rather than merges.
+        if "orion:self_concept:history:write" not in channels:
+            channels.append("orion:self_concept:history:write")
         return channels
 
     @property

@@ -46,7 +46,6 @@ from app.models import (
     SparkTelemetrySQL,
     BusFallbackLog,
     CognitionTraceSQL,
-    RoutingDecisionSQL,
     ThoughtDecisionSQL,
     MetacognitionTickSQL,
     MetacogTriggerSQL,
@@ -58,6 +57,7 @@ from app.models import (
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
     ChatStanceBeliefLogSQL,
+    SelfConceptHistorySQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
     ExternalRoomParticipantSQL,
@@ -100,6 +100,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
+from orion.schemas.self_concept_history import SelfConceptHistoryV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -112,7 +113,6 @@ from orion.journaler import (
     build_created_event_payload,
     build_journal_entry_index_payload,
 )
-from orion.schemas.routing_decision import RoutingDecisionRecordV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
@@ -213,6 +213,7 @@ INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
     ChatStanceBeliefLogSQL,
+    SelfConceptHistorySQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -442,7 +443,6 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
-    "RoutingDecisionSQL": (RoutingDecisionSQL, RoutingDecisionRecordV1),
     # schema_cls=None: harness-governor already validated each of the four
     # source molecules before publishing (orion/harness/finalize.py); the
     # column this write fills is picked from the payload's own
@@ -462,6 +462,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
     "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
+    "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
     "ExternalRoomParticipantSQL": (ExternalRoomParticipantSQL, ExternalRoomParticipantV1),

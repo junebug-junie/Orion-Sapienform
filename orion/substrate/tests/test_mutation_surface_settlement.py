@@ -260,57 +260,13 @@ def test_a_regressing_delta_still_rolls_back_rather_than_settling(monkeypatch) -
     assert f"settled:{adoption.proposal_id}" not in result["notes"]
 
 
-def test_adoption_records_the_real_prior_value_not_the_class_constant(
-    monkeypatch, tmp_path
-) -> None:
-    """The undo button must point at a reading, not at a hardcoded number.
-
-    ``mutation_apply`` read the live threshold and then dropped it, because the
-    proposal already carries ``{"chat_reflective_lane_threshold": 0.50}`` from
-    ``_default_rollback_for_class`` and the merge used ``setdefault``. Every
-    recorded rollback value was therefore a constant. It matched reality once,
-    on 2026-09-02, by coincidence -- the live value happened to be 0.5 because a
-    pytest fixture had been writing it there.
-    """
-    from orion.core.schemas.substrate_mutation import MutationDecisionV1, MutationPatchV1, MutationProposalV1
-    from orion.substrate import mutation_control_surface
-
-    monkeypatch.setenv("SUBSTRATE_MUTATION_CONTROL_SQL_DB_PATH", str(tmp_path / "cs.sqlite3"))
-    monkeypatch.setattr(
-        mutation_control_surface,
-        "_CONTROL_SURFACE_STORE",
-        mutation_control_surface.RuntimeControlSurfaceStore(sql_db_path=str(tmp_path / "cs.sqlite3")),
-    )
-    # A live value that is deliberately NOT the class constant.
-    mutation_control_surface.set_chat_reflective_lane_threshold(value=0.71, actor="operator")
-
-    proposal = MutationProposalV1(
-        mutation_class="routing_threshold_patch",
-        target_surface="routing",
-        lane="operational",
-        risk_tier="low",
-        rationale="test",
-        anchor_scope="orion",
-        subject_ref="orion",
-        expected_effect="reduce_runtime_executed",
-        evidence_refs=["e-1"],
-        source_signal_ids=["s-1"],
-        source_pressure_id="pr-1",
-        patch=MutationPatchV1(
-            mutation_class="routing_threshold_patch",
-            target_surface="routing",
-            target_ref="routing",
-            patch={"chat_reflective_lane_threshold": 0.58},
-            rollback_payload={"chat_reflective_lane_threshold": 0.50},  # the constant
-        ),
-    )
-    decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote", reason="test")
-
-    adoption = PatchApplier(surfaces={}).apply(proposal=proposal, decision=decision)
-
-    assert adoption is not None
-    assert adoption.rollback_payload["chat_reflective_lane_threshold"] == 0.71
-    assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.58
+# test_adoption_records_the_real_prior_value_not_the_class_constant() removed
+# 2026-09-05: it tested mutation_apply.py's routing_threshold_patch-specific
+# apply branch (the real-live-value-vs-hardcoded-rollback-constant bug fix),
+# which is now unreachable -- "routing_threshold_patch" is retired
+# (mutation_contracts.py's RETIRED_MUTATION_CLASSES), and PatchApplier.apply()
+# refuses it unconditionally before that branch is ever reached. See this
+# change's PR description.
 
 
 def test_adoption_retention_never_evicts_the_surface_lock_holder(monkeypatch) -> None:

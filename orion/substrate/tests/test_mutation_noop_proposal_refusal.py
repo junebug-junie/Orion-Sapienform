@@ -21,17 +21,23 @@ SubstrateTrialRunner._routing_baseline_threshold reads the PROPOSAL's rollback,
 so trials were replaying a 0.58 candidate against a 0.50 baseline while live
 was 0.58 -- untouched by #2058.
 
-**2026-09-03, same session:** `plan_for_pressure()` now refuses every
-"routing" pressure outright, unconditionally, before it ever reaches
+**2026-09-03, same session:** `plan_for_pressure()` started refusing every
+"routing" pressure outright, unconditionally, before it ever reached
 `_routing_threshold_payloads()`. Confirmed live: (a) the evidence this
 surface receives is graph-review telemetry that has nothing to do with what
 `chat_reflective_lane_threshold` gates, and (b) with
 `AUTO_ROUTER_LLM_ENABLED=false` in production, the lowest confidence any
 heuristic routing decision can carry at `execution_depth >= 2` is 0.61 --
 above the hardcoded patch target of 0.58 -- so `decision_confidence <
-routing_threshold` can never fire at this target regardless of evidence. Full
-trail in this change's PR description and commit message. See
-`orion/substrate/mutation_proposals.py`'s `ROUTING_TARGET_PARKED_REASON`.
+routing_threshold` can never fire at this target regardless of evidence.
+
+**2026-09-05:** retired outright, not just parked -- confirmed live that the
+decision path this surface was meant to tune (`decision_router.route()`) is
+itself unreachable from any current Hub UI mode. "routing" no longer has a
+`mutation_class` at all (removed from `mutation_proposals.py`'s
+`SURFACE_TO_CLASS`), so the refusal below now happens one step earlier than
+the park did: `"unknown_target_surface"`, not a park-specific reason. Full
+trail in this change's PR description and commit message, and #2077's.
 
 `mutation_detectors.py`'s `from_review_telemetry()` also now filters
 "routing"-surfaced signals out of its return value entirely (not just at the
@@ -60,10 +66,15 @@ from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
 from orion.substrate.mutation_proposals import (
-    ROUTING_TARGET_PARKED_REASON,
     _routing_threshold_payloads,
     ProposalFactory,
 )
+
+# "routing" is retired, not parked (2026-09-05) -- it has no mutation_class
+# in SURFACE_TO_CLASS at all any more, so plan_for_pressure() refuses it via
+# this generic reason, one step before the (now unreachable-for-routing)
+# parked-class check would fire.
+_UNKNOWN_SURFACE_REASON = "unknown_target_surface"
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
@@ -100,36 +111,36 @@ def _reader(value=0.50, *, degraded=False):
     }
 
 
-# --- plan_for_pressure(): the routing surface is parked, full stop ---------
+# --- plan_for_pressure(): the routing surface is retired, full stop -------
 
 
 def test_plan_for_pressure_refuses_every_routing_pressure() -> None:
-    """The park guard fires before the surface reader is ever touched."""
+    """The refusal fires before the surface reader is ever touched."""
     plan = ProposalFactory(routing_surface_reader=_reader(0.58)).plan_for_pressure(
         _routing_pressure()
     )
     assert plan.proposal is None
-    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == _UNKNOWN_SURFACE_REASON
 
 
-def test_plan_for_pressure_parks_regardless_of_a_real_gap() -> None:
-    """Before parking, a genuine gap (0.50 live vs 0.58 target) would have
+def test_plan_for_pressure_refuses_regardless_of_a_real_gap() -> None:
+    """Before retirement, a genuine gap (0.50 live vs 0.58 target) would have
     produced a real proposal. It must not any more."""
     plan = ProposalFactory(routing_surface_reader=_reader(0.50)).plan_for_pressure(
         _routing_pressure()
     )
     assert plan.proposal is None
-    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == _UNKNOWN_SURFACE_REASON
 
 
-def test_plan_for_pressure_parks_with_no_reader_at_all() -> None:
-    """The park guard does not depend on a surface reader existing."""
+def test_plan_for_pressure_refuses_with_no_reader_at_all() -> None:
+    """The refusal does not depend on a surface reader existing."""
     plan = ProposalFactory().plan_for_pressure(_routing_pressure())
     assert plan.proposal is None
-    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == _UNKNOWN_SURFACE_REASON
 
 
-def test_plan_for_pressure_parks_even_when_the_reader_would_raise() -> None:
+def test_plan_for_pressure_refuses_even_when_the_reader_would_raise() -> None:
     def _boom():
         raise RuntimeError("postgres down")
 
@@ -137,11 +148,11 @@ def test_plan_for_pressure_parks_even_when_the_reader_would_raise() -> None:
         _routing_pressure()
     )
     assert plan.proposal is None
-    assert plan.refusal_reason == ROUTING_TARGET_PARKED_REASON
+    assert plan.refusal_reason == _UNKNOWN_SURFACE_REASON
 
 
-def test_non_routing_surfaces_are_unaffected_by_the_park() -> None:
-    """Only "routing" is parked; every other class behaves as before."""
+def test_non_routing_surfaces_are_unaffected_by_the_retirement() -> None:
+    """Only "routing" is gone; every other class behaves as before."""
     pressure = MutationPressureV1(
         anchor_scope="orion",
         subject_ref="entity:orion",
@@ -281,9 +292,9 @@ def test_worker_traces_the_refusal_instead_of_skipping_silently(monkeypatch) -> 
 
     Before PR #2058/#2071-era work, the worker did a bare `continue` on a None
     proposal, so a generator refusing 100% of the time was indistinguishable
-    from one nothing ever asked. As of 2026-09-03 the routing surface refuses
-    100% of the time by design (parked) -- this asserts that refusal is still
-    traced, now with the park reason.
+    from one nothing ever asked. As of 2026-09-05 the routing surface refuses
+    100% of the time by design (retired) -- this asserts that refusal is
+    still traced, now with the retirement reason.
     """
     traces: list[dict] = []
     store = SubstrateMutationStore()
@@ -317,7 +328,7 @@ def test_worker_traces_the_refusal_instead_of_skipping_silently(monkeypatch) -> 
     refusals = [t for t in traces if t.get("event") == "mutation_proposal_refused"]
     assert refusals, f"no refusal traced; events={sorted({t.get('event') for t in traces})}"
     assert any(
-        f"reason={ROUTING_TARGET_PARKED_REASON}" in (t.get("notes") or [])
+        f"reason={_UNKNOWN_SURFACE_REASON}" in (t.get("notes") or [])
         for t in refusals
     )
     assert not [t for t in traces if t.get("event") == "mutation_proposal_enqueued"]

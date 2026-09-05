@@ -23,6 +23,7 @@ from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
+from orion.schemas.self_concept_history import SelfConceptHistoryV1
 from orion.llm.routes import normalize_llm_route
 from orion.schemas.cortex.contracts import (
     CortexClientContext,
@@ -96,6 +97,7 @@ SELF = Namespace("http://conjourney.net/orion/self#")
 RDF_ENQUEUE_CHANNEL = "orion:rdf:enqueue"
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 SELF_STUDY_ITEMS_WRITE_CHANNEL = "orion:self_study:items:write"
+SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
 # Same public intake channel orion-actions and every other external-ish
 # CortexClientRequest caller uses (settings.cortex_request_channel there) --
 # self_study.py round-trips through cortex-orch like any other client rather
@@ -2793,6 +2795,124 @@ async def publish_self_reflection_artifacts(
     return graph_status, journal_status, journal_entry
 
 
+def _next_self_concept_version(concept_id: str) -> int:
+    """Real current-max-version lookup, not a guess -- reuses
+    self_study_analysis.py's existing engine/DSN fallback chain (same
+    pattern as _behavioral_items()). `version` is informational (see
+    orion/schemas/self_concept_history.py's own docstring: "current" is
+    resolved by latest created_at per concept_id, not by version), but
+    still worth getting right rather than always writing 1. Fails soft to
+    1 -- an unreachable DB must not block a real reflection from being
+    recorded, just cost this one row an uninformative version number."""
+    try:
+        from app.self_study_analysis import _get_engine
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        if engine is None:
+            return 1
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT MAX(version) AS max_version FROM self_concept_history WHERE concept_id = :concept_id"),
+                {"concept_id": concept_id},
+            ).mappings().first()
+        current_max = row["max_version"] if row else None
+        return int(current_max) + 1 if current_max is not None else 1
+    except Exception as exc:
+        logger.debug("self_concept_history_version_lookup_failed concept_id=%s error=%s", concept_id, exc)
+        return 1
+
+
+async def publish_self_concept_history_from_reflection(
+    *, bus: Any | None, source: ServiceRef, findings: Sequence[SelfReflectiveFindingV1], correlation_id: str
+) -> SelfWritebackStatusV1:
+    """Feed Layer 3's real LLM reflection findings into the append-only
+    self_concept_history store (self-model rebuild arc, Patch 3) -- the
+    identity.yaml-replacement history, additive not a replacement. One row
+    per distinct concept_kind a finding's concept_refs touch (a finding
+    with no concept_refs falls back to its own reflection_kind as the
+    concept_id) -- concept_kind/reflection_kind are the stable, recurring
+    identity anchors; a finding's own hashed reflection_id is not (it's
+    unique per finding, never repeats, so nothing would ever accumulate a
+    real history under it)."""
+    status = SelfWritebackStatusV1(
+        target="self_concept_history",
+        status="skipped",
+        authoritative=False,
+        channel=SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+        append_only=True,
+        detail="missing_bus",
+    )
+    if bus is None or not findings:
+        logger.info(
+            "self_concept_history_publish_skip reason=%s finding_count=%s",
+            "missing_bus" if bus is None else "no_findings",
+            len(findings),
+        )
+        return status
+
+    envelope_corr_id = _as_envelope_correlation_id(correlation_id)
+    published = 0
+    failed = 0
+    for finding in findings:
+        concept_ids = sorted({ref.concept_kind for ref in finding.concept_refs}) or [finding.reflection_kind]
+        for concept_id in concept_ids:
+            try:
+                # Review finding: _next_self_concept_version() is a blocking
+                # SQLAlchemy call (create_engine + a real SELECT) -- calling
+                # it directly here (this function is async) would freeze
+                # cortex-exec's event loop for every concept touched by every
+                # finding, the exact same blocking-event-loop bug already
+                # caught and fixed twice this session (chat_stance_belief_bus,
+                # publish_self_knowledge_items).
+                version = await asyncio.to_thread(_next_self_concept_version, concept_id)
+                payload = SelfConceptHistoryV1(
+                    concept_id=concept_id,
+                    version=version,
+                    content=f"{finding.title}: {finding.description}",
+                    evidence_refs=[ref.item_id for ref in finding.evidence],
+                    produced_by="layer3_reflect",
+                )
+                envelope = BaseEnvelope(
+                    kind="self_concept.history.write.v1",
+                    source=source,
+                    correlation_id=envelope_corr_id,
+                    payload=payload.model_dump(mode="json"),
+                )
+                await bus.publish(SELF_CONCEPT_HISTORY_WRITE_CHANNEL, envelope)
+                published += 1
+            except Exception as exc:
+                failed += 1
+                logger.debug(
+                    "self_concept_history_publish_item_failed concept_id=%s error=%s",
+                    concept_id,
+                    exc,
+                )
+
+    if failed > 0:
+        overall_status: SelfWritebackState = "failed"
+    elif published > 0:
+        overall_status = "written"
+    else:
+        overall_status = "skipped"
+    status = SelfWritebackStatusV1(
+        target="self_concept_history",
+        status=overall_status,
+        authoritative=False,
+        channel=SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+        append_only=True,
+        detail=f"published={published} failed={failed}",
+    )
+    log_fn = logger.warning if failed > 0 else logger.info
+    log_fn(
+        "self_concept_history_publish status=%s published=%s failed=%s",
+        overall_status,
+        published,
+        failed,
+    )
+    return status
+
+
 async def publish_self_study_artifacts(
     *,
     bus: Any | None,
@@ -3141,6 +3261,17 @@ async def run_self_concept_reflect(*, bus: Any | None, source: ServiceRef, corre
             append_only=True,
             detail="reflection_llm_call_failed",
         )
+        # No real findings exist on this path -- publishing self-concept
+        # history rows here would be exactly the empty-shell-cognition
+        # pattern the comment above already rules out for the journal.
+        self_concept_history_status = SelfWritebackStatusV1(
+            target="self_concept_history",
+            status="skipped",
+            authoritative=False,
+            channel=SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+            append_only=True,
+            detail="reflection_llm_call_failed",
+        )
     else:
         graph_status, journal_status, journal_entry = await publish_self_reflection_artifacts(
             bus=bus,
@@ -3148,6 +3279,9 @@ async def run_self_concept_reflect(*, bus: Any | None, source: ServiceRef, corre
             snapshot=snapshot,
             findings=findings,
             correlation_id=correlation_id,
+        )
+        self_concept_history_status = await publish_self_concept_history_from_reflection(
+            bus=bus, source=source, findings=findings, correlation_id=correlation_id
         )
     return SelfConceptReflectResultV1(
         run_id=snapshot.run_id,
@@ -3160,6 +3294,7 @@ async def run_self_concept_reflect(*, bus: Any | None, source: ServiceRef, corre
         graph_write=graph_status,
         journal_write=journal_status,
         journal_entry=journal_entry,
+        self_concept_history_write=self_concept_history_status,
     )
 
 

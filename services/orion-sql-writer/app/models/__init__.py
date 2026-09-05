@@ -30,7 +30,6 @@ from .notify_models import (
 from .fallback_log import BusFallbackLog
 from .fallback_alert_state import BusFallbackAlertState
 from .cognition_trace import CognitionTraceSQL
-from .routing_decision import RoutingDecisionSQL
 from .thought_decision import ThoughtDecisionSQL
 from .metacognition_tick import MetacognitionTickSQL
 from . metacognition_enriched import MetacognitionEnrichedSQL
@@ -40,6 +39,7 @@ from .journal_entry import JournalEntrySQL
 from .journal_entry_index import JournalEntryIndexSQL
 from .self_knowledge_item import SelfKnowledgeItemLogSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
+from .self_concept_history import SelfConceptHistorySQL
 from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
 from .external_room_message import ExternalRoomMessageSQL
@@ -113,7 +113,6 @@ __all__ = [
     "SparkTelemetrySQL",
     "BusFallbackLog",
     "CognitionTraceSQL",
-    "RoutingDecisionSQL",
     "ThoughtDecisionSQL",
     "MetacognitionTickSQL",
     "MetacognitionEnrichedSQL",
@@ -123,6 +122,7 @@ __all__ = [
     "SelfKnowledgeItemLogSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
+    "SelfConceptHistorySQL",
     "EvidenceUnitSQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",

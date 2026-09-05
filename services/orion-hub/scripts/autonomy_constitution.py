@@ -55,25 +55,24 @@ def _base_surfaces() -> list[AutonomyPolicySurfaceV1]:
             apply="gated_auto",
             rollback="auto",
             human_required=False,
-            # Parked 2026-09-03 at ProposalFactory.plan_for_pressure() -- every
-            # proposal for this surface is refused unconditionally, regardless
-            # of the required_gates below. Confirmed: an evidence mismatch
-            # (its signals describe review-pipeline outcomes, not what the
-            # dial gates) and a structural inertness (the hardcoded 0.58 patch
-            # target sits below the 0.61 confidence floor every heuristic
-            # routing decision can carry, with AUTO_ROUTER_LLM_ENABLED=false
-            # in production). live_apply_allowed/autonomous_apply_allowed
-            # below reflect this: they describe what can actually happen, not
-            # what the gates below would permit if evidence reached them.
-            status="parked",
+            # Parked 2026-09-03 at ProposalFactory.plan_for_pressure(), then
+            # retired outright 2026-09-05: confirmed live that the decision
+            # path this surface was meant to tune (decision_router.route())
+            # is itself unreachable from any current Hub UI mode, not just
+            # under-evidenced. "routing" no longer has a mutation_class at
+            # all (mutation_proposals.py's SURFACE_TO_CLASS), so this entry
+            # now describes a surface with nothing behind it, kept only so
+            # historical proposal rows (147, all pre-retirement) still have a
+            # policy entry to resolve against for display.
+            status="retired",
             required_gates=[
                 "SUBSTRATE_AUTONOMY_ENABLED",
                 "SUBSTRATE_AUTONOMY_APPLY_ENABLED",
                 "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
             ],
             forbidden=[],
-            description="Narrow bounded live routing threshold control -- parked pending real evidence.",
-            rationale="Formerly the only surface permitted for gated live apply; parked, not removed, so re-enabling is a one-line change once routing_decision has real volume and a non-hardcoded target.",
+            description="Narrow bounded live routing threshold control -- retired 2026-09-05, unreachable from any live chat path.",
+            rationale="Formerly the only surface permitted for gated live apply; parked 2026-09-03, retired 2026-09-05 once confirmed structurally dead, not just under-evidenced. See this change's PR description.",
             risk_tier="medium",
             live_apply_allowed=False,
             autonomous_apply_allowed=False,
@@ -224,11 +223,11 @@ def validate_autonomy_constitution(constitution: AutonomyConstitutionV1) -> list
     warnings: list[str] = []
     by_surface = {row.surface: row for row in constitution.surfaces}
     live_apply = [row.surface for row in constitution.surfaces if row.live_apply_allowed]
-    # Empty is valid as of 2026-09-03: routing_threshold_patch (the only
-    # surface this was ever meant to allow) is parked, so zero live-apply
-    # surfaces is the correct, expected state -- not a violation to flag
-    # every time this loads.
-    if live_apply not in ([], ["routing_threshold_patch"]):
+    # Empty is the correct, expected state: routing_threshold_patch (the
+    # only surface this was ever meant to allow) was parked 2026-09-03 and
+    # retired outright 2026-09-05 -- zero live-apply surfaces is not a
+    # violation to flag every time this loads.
+    if live_apply != []:
         warnings.append(f"live_apply_surface_violation:{','.join(live_apply) or 'none'}")
     for row in constitution.surfaces:
         if row.category == "cognitive" and row.live_apply_allowed:
@@ -266,7 +265,7 @@ def load_autonomy_constitution() -> AutonomyConstitutionV1:
         loaded_at=datetime.now(timezone.utc).isoformat(),
         surfaces=_base_surfaces(),
         safety_invariants=[
-            "routing_threshold_patch is parked (2026-09-03); no surface currently has live apply enabled",
+            "routing_threshold_patch is retired (2026-09-05, parked 2026-09-03); no surface currently has live apply enabled",
             "recall production default remains v1 unless explicit external operator process changes it",
             "recall autonomous production promotion is forbidden",
             "recall_weighting_patch live apply is forbidden",

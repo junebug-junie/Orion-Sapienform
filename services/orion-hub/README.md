@@ -851,7 +851,10 @@ Scheduled mutation autonomy is intentionally fail-closed for non-shared control-
 - If unsupported/degraded (for example memory/sqlite fallback), scheduler ticks no-op with structured `substrate_mutation_scheduler` log status `unsafe_mode_noop`.
 - Hub startup logs an explicit warning when autonomy is enabled but runtime posture is unsafe.
 
-Live control-surface inspection:
+Live control-surface inspection ("live"/"routing" naming below is legacy --
+`routing_threshold_patch` was retired 2026-09-05, was parked 2026-09-03; these
+endpoints stay up and now report a `retired`/`routing_target_parked` status
+plus whatever historical data already exists, rather than a live value):
 
 - `GET /api/substrate/mutation-runtime/live-routing-surface`
   - Returns current live value for `routing.chat_reflective_lane_threshold`, including control-surface store source/degraded metadata.
@@ -1666,7 +1669,11 @@ Operational refresh:
 
 1) Inspect autonomy posture:
 - `curl -s "http://localhost:8080/api/substrate/autonomy-readiness" | jq .`
-- Confirm `surfaces.live` contains only `routing_threshold_patch`.
+- **Retired 2026-09-05** (was parked 2026-09-03): `routing_threshold_patch`
+  was the only surface this step ever named as live, and it's confirmed
+  unreachable now -- `decision_router.route()`, the decision path it tuned,
+  is not reached by any current Hub UI mode. Confirm `surfaces.live` is
+  empty instead.
 
 2) View policy matrix / constitution:
 - `curl -s "http://localhost:8080/api/substrate/autonomy-constitution" | jq .`
@@ -1697,7 +1704,8 @@ Operational refresh:
 - freeform production prompt rewrite
 
 9) Live mutable surface:
-- only `routing_threshold_patch` (gated).
+- none. `routing_threshold_patch` was the only one and it's retired
+  2026-09-05 (see step 1 above) -- no surface currently has live apply.
 
 10) Routing rollback check:
 - inspect `GET /api/substrate/autonomy-readiness` routing + recent activity blocks/rollbacks.
@@ -1946,6 +1954,50 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 ### Static JS cache/version notes
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
+
+## Self Atlas (2026-09-05, self-model rebuild arc, Patch 3)
+
+Topic-foundry's real clustering pipeline (the same UMAP+HDBSCAN + LLM-tagging
+one Orion's chat Concept Atlas already uses), pointed at Orion's own
+self-facts (`self_knowledge_items`, produced by `orion-cortex-exec`'s
+`self_study.py` Layer 1) instead of chat. A third dataset/model pair
+alongside the existing Orion/AI Town ones, following their exact established
+shape:
+
+- Constants: `_TOPIC_FOUNDRY_SELF_*` in `scripts/concept_atlas_routes.py`
+  (dataset `orion-self-atlas-dataset-v1`, model `orion-self-atlas-v1-*`,
+  `source_table="self_knowledge_items"`). Different id/time/text columns
+  than the chat datasets (`item_id`/`created_at`/`name,symbol_name,
+  metadata_text`) -- `_ensure_topic_foundry_dataset_and_model()` and
+  `trigger_topic_foundry_training_run()` were extended to accept these as
+  parameters (previously hardcoded globals, since both prior datasets
+  happened to share the same chat-shaped columns).
+- Scheduler: `trigger_topic_foundry_self_training_run()` /
+  `trigger_topic_foundry_self_enrichment()` / `concept_atlas_ingest_topic_
+  foundry_self()`, wired into `main.py`'s existing topic-foundry scheduler
+  tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED`
+  (**default false**, unlike AI Town's default-on -- a brand-new,
+  unverified pipeline over a table that only just started accumulating
+  real rows; turn on deliberately once there's real history to cluster
+  over).
+- Storage: its own FalkorDB graph (`FALKORDB_SELF_SUBSTRATE_GRAPH`, default
+  `orion_substrate_self`) via `build_self_falkor_substrate_store_from_env()`
+  and `api_routes.py`'s `SUBSTRATE_SEMANTIC_STORE_SELF` singleton -- never
+  mixed with Orion's chat-facing concept graph.
+- Reachable via `?graph=self` on the existing `/api/substrate/concepts/*`
+  GET routes (same mechanism as `?graph=aitown`), and a dedicated
+  `POST /api/substrate/concepts/ingest-topic-foundry-self` route. No
+  dedicated UI page yet, same as AI Town's graph today -- reachable by
+  query param, not a Concept Atlas page toggle.
+- The enrichment LLM prompt (`services/orion-topic-foundry/app/services/
+  enrichment.py::_llm_prompt`) was confirmed generic over segment text, no
+  chat/speaker framing -- this needed no changes to run against self-facts
+  text.
+- **Not built in this patch:** feeding Self Atlas's own per-cluster
+  descriptions back into `self_concept_history` (the identity.yaml-
+  replacement store, see `orion-cortex-exec/README.md`) -- that store's
+  Layer-3-reflection producer shipped this patch; the Self-Atlas-cluster
+  producer is a real, disclosed follow-up, not silently dropped.
 
 ## Field Channels tab
 

@@ -241,6 +241,42 @@ def build_substrate_attention_frame(
 logger = logging.getLogger(__name__)
 
 
+def _classify_override_absence(result: "TopDownResult") -> VoluntaryOverrideAbsentReasonV1:
+    """Which flavour of "no override" this was. Caller guarantees a goal ran.
+
+    Three outcomes share ``override is None`` and mean opposite things:
+
+    - every bias 0.0 -> the goal is about something not competing at all
+      (``goal_matched_no_loop``). A statement about goal/attention overlap,
+      not about whether Orion can steer.
+    - the most-biased loop IS the bottom-up winner -> the goal already agreed
+      with the reflex (``goal_target_already_winning``). Nothing to override.
+    - the most-biased loop is some OTHER loop -> bias landed and still lost
+      (``bias_did_not_flip_winner``). The only real competitive defeat.
+
+    Ties (several loops share the max bias) count as "already winning" when the
+    bottom-up winner is among them: the goal did get its target, and calling
+    that a defeat would overstate the case against Orion's agency. Never
+    raises -- an unreadable result falls back to the broadest of the three.
+    """
+    try:
+        per_loop = result.per_loop or {}
+        if not per_loop:
+            return "bias_did_not_flip_winner"
+        max_bias = max((ls.top_down_bias for ls in per_loop.values()), default=0.0)
+        if max_bias <= 0.0:
+            return "goal_matched_no_loop"
+        bu_winner = result.bottom_up_winner_loop_id
+        if bu_winner is None:
+            return "bias_did_not_flip_winner"
+        biased = {lid for lid, ls in per_loop.items() if ls.top_down_bias >= max_bias}
+        if bu_winner in biased:
+            return "goal_target_already_winning"
+        return "bias_did_not_flip_winner"
+    except Exception:
+        return "bias_did_not_flip_winner"
+
+
 def _set_override_absent_reason(
     frame: AttentionFrameV1, reason: VoluntaryOverrideAbsentReasonV1 | None
 ) -> None:
@@ -338,8 +374,12 @@ def _apply_voluntary_attention(
         elif result.override is None:
             # The combiner ran and top-down bias did not change the winner
             # (top_down.py Rule 6). Distinct from the guards above: a goal WAS
-            # present and effort WAS spent; bottom-up simply still won.
-            _set_override_absent_reason(frame, "bias_did_not_flip_winner")
+            # present. Which of three very different things happened is decided
+            # here -- collapsing them into one string made the override rate
+            # uninterpretable (see VoluntaryOverrideAbsentReasonV1).
+            _set_override_absent_reason(
+                frame, _classify_override_absence(result)
+            )
         else:
             # Only record the override when the winner actually has an action to
             # re-point to — otherwise the frame would claim an override it can't

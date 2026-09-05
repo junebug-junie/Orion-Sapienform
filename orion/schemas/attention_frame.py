@@ -273,6 +273,24 @@ VoluntaryOverrideAbsentReasonV1 = Literal[
     # The combiner ran and top-down bias did NOT change the winner
     # (top_down.py Rule 6). Bottom-up would have chosen the same loop.
     "bias_did_not_flip_winner",
+    # Split out of bias_did_not_flip_winner 2026-09-05. That one string was
+    # covering three outcomes that mean different things:
+    #   goal_matched_no_loop        -- the goal is about something that is not
+    #                                  competing at all; every bias is 0.0.
+    #                                  Says nothing about Orion's agency, only
+    #                                  about goal/attention overlap (measured
+    #                                  live at ~22% of competitive ticks).
+    #   goal_target_already_winning -- the goal's target was ALREADY the
+    #                                  bottom-up winner. The goal got what it
+    #                                  wanted; there was nothing to override.
+    #   bias_did_not_flip_winner    -- bias landed on a loop that then LOST.
+    #                                  The only one of the three that is a real
+    #                                  competitive defeat.
+    # Measured on the first 44 post-fix ticks: 33 of 43 non-firing ticks were
+    # actually goal_matched_no_loop, so reading the old aggregate as "goals
+    # keep losing" was wrong for three quarters of it.
+    "goal_matched_no_loop",
+    "goal_target_already_winning",
     # Top-down DID flip the winner, but that loop had no candidate action to
     # re-point to, so the frame refused to claim an override it cannot enact.
     "winner_had_no_action",

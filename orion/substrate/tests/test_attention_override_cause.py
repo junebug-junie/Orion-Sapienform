@@ -118,7 +118,15 @@ class TestProducerExits:
         no_loops = _apply_voluntary_attention(_frame())
         assert _reason(no_goal) != _reason(no_loops)
 
-    def test_bias_that_does_not_flip_the_winner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_goal_targeting_the_already_winning_loop_is_not_a_defeat(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Split out 2026-09-05. This scenario -- the goal wanting the loop that
+        already wins -- used to record `bias_did_not_flip_winner`, the same
+        string as a goal that pushed a different loop and lost. Measured live,
+        that conflation was most of the signal: the goal usually wants `chat`,
+        which often wins on salience anyway, so a low override rate looked like
+        Orion losing when it was Orion agreeing."""
         _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
         # the goal targets the loop that ALREADY wins bottom-up -> bias applied,
         # effort spent, winner unchanged.
@@ -126,8 +134,35 @@ class TestProducerExits:
             _frame(_loop("loop-a", salience=0.50, goal_relevant=True), _loop("loop-b", salience=0.30))
         )
         assert frame.voluntary_override is None
-        assert _reason(frame) == "bias_did_not_flip_winner"
+        assert _reason(frame) == "goal_target_already_winning"
         assert frame.effort_budget_used > 0.0, "a goal really did run the combiner"
+
+    def test_goal_about_nothing_competing_is_not_a_defeat_either(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The third flavour: the goal's target is not in the competition at
+        all, so every bias is 0.0. Measured live at 33 of 43 non-firing ticks --
+        the single largest slice, and the one most wrongly read as "goals keep
+        losing"."""
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
+        frame = _apply_voluntary_attention(
+            _frame(_loop("loop-a", salience=0.50), _loop("loop-b", salience=0.30))
+        )
+        assert frame.voluntary_override is None
+        assert _reason(frame) == "goal_matched_no_loop"
+
+    def test_a_real_defeat_still_reads_as_a_defeat(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bias lands on a loop that then loses -- the ONLY one of the three
+        that is a genuine competitive loss. If the split ever mislabels this as
+        agreement it would erase the evidence that Orion tried and failed."""
+        _enable(monkeypatch, goal=GoalContext(priority=0.05, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
+        frame = _apply_voluntary_attention(
+            _frame(_loop("loop-a", salience=0.95), _loop("loop-b", salience=0.30, goal_relevant=True))
+        )
+        assert frame.voluntary_override is None
+        assert _reason(frame) == "bias_did_not_flip_winner"
 
     def test_flip_without_a_candidate_action_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
@@ -297,7 +332,33 @@ class TestDescribeOverrideAbsence:
         )
         assert describe_override_absence(irrelevant) != describe_override_absence(pushed_and_lost)
         assert "relevant to none" in describe_override_absence(irrelevant)
-        assert "did not" in describe_override_absence(pushed_and_lost)
+        assert "Legacy row" in describe_override_absence(irrelevant), (
+            "a pre-split row's cause is INFERRED from the bias number, not "
+            "recorded -- the narrative must say so rather than presenting it "
+            "with the same confidence as a classified row"
+        )
+        assert "then lost" in describe_override_absence(pushed_and_lost)
+
+    def test_the_three_absence_flavours_read_differently(self) -> None:
+        """The whole point of the split: these mean different things about
+        whether Orion has any say, and must not share prose."""
+        def _m(reason, bias):
+            return AttentionSelfModelV1(
+                voluntary_override_absent_reason=reason,
+                top_down_bias_max=bias, top_down_effort_used=bias, open_loop_count=4,
+            )
+        no_overlap = describe_override_absence(_m("goal_matched_no_loop", 0.0))
+        already_won = describe_override_absence(_m("goal_target_already_winning", 1.0))
+        lost = describe_override_absence(_m("bias_did_not_flip_winner", 0.9))
+
+        assert len({no_overlap, already_won, lost}) == 3
+        # Each must actually say its own thing, not merely differ by a number.
+        assert "different things" in no_overlap
+        assert "nothing to override" in already_won
+        assert "competitive defeat" in lost
+        # And the two that are NOT defeats must not read as defeats.
+        assert "defeat" not in no_overlap
+        assert "defeat" not in already_won
 
     def test_missing_reason_reports_absence_never_a_cause(self) -> None:
         """Rows written before this patch carry no reason. That must read as

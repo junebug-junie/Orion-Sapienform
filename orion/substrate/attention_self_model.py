@@ -303,22 +303,39 @@ def describe_override_absence(model: AttentionSelfModelV1) -> str:
         return "no goal was active, so nothing competed with salience."
     if reason == "no_open_loops":
         return "no open loops were available to compete."
+    if reason == "goal_matched_no_loop":
+        return (
+            "a goal was active but was about none of the "
+            f"{model.open_loop_count} competing loops, so salience was "
+            "unopposed. This says nothing about whether Orion can steer -- "
+            "only that the goal and the competition were about different "
+            "things."
+        )
+    if reason == "goal_target_already_winning":
+        return (
+            f"a goal was active and pushed (max bias {model.top_down_bias_max}"
+            f", effort {model.top_down_effort_used}), and its target was "
+            "already winning on salience -- so there was nothing to override. "
+            "The goal got what it wanted."
+        )
     if reason == "bias_did_not_flip_winner":
         effort = model.top_down_effort_used
         bias = model.top_down_bias_max
-        # The two numbers separate "the goal was irrelevant to everything"
-        # from "the goal pushed and still lost" -- the reason string alone
-        # merges them, and they mean different things about Orion.
+        # Pre-2026-09-05 rows collapsed three outcomes into this one string;
+        # the bias number is the only thing that separates them retroactively.
+        # New rows are classified at the producer, so this branch now means
+        # the narrow thing it says.
         if bias is not None and bias <= 0.0:
             return (
                 "a goal was active but was relevant to none of the "
                 f"{model.open_loop_count} competing loops, so salience was "
-                "unopposed."
+                "unopposed. (Legacy row: recorded before the reason was split, "
+                "inferred from a zero bias.)"
             )
         return (
             f"a goal was active and pushed (max bias {bias}, effort "
-            f"{effort}) across {model.open_loop_count} loops, but did not "
-            "change the winner."
+            f"{effort}) across {model.open_loop_count} loops onto a loop that "
+            "then lost. A real competitive defeat, not a missing goal."
         )
     if reason == "winner_had_no_action":
         return (

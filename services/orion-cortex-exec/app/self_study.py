@@ -247,13 +247,21 @@ SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH = os.getenv("SELF_STUDY_STRUCTURAL_MASS_
 # verb-based default) rather than guessing, same contract normalize_llm_route
 # already documents.
 SELF_STUDY_REFLECT_LLM_ROUTE = os.getenv("SELF_STUDY_REFLECT_LLM_ROUTE", "agent")
-# 240s, not the original 115s (2026-09-04, same day as PR #2080): live-
-# confirmed the agent-route reasoning model needs real wall-clock time to
-# write its reasoning before the answer, not just tokens -- a real call
-# completed normally (not truncated) in ~121s once given the token budget
-# to finish (see PR #2085's max_tokens fix). See self_study.reflect.yaml's
-# own comment for why its verb/step timeout stays larger than this.
-SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "240"))
+# 480s, not the original 240s (2026-09-05): live-confirmed 240s wasn't
+# enough for a real reflect call against a real self_knowledge_items-sized
+# snapshot (hundreds of concepts, not the small fixture used when 240s was
+# first set) -- two manual end-to-end test calls both failed with
+# self_study_reflect_llm_call_failed (RPC timeout waiting on
+# orion:cortex:result:self-study-reflect:*), one at 240s and one with an
+# outer client budget of 300s (still bounded by this constant internally).
+# Doubling rather than guessing a small bump: SELF_STUDY_REFLECT_LLM_ROUTE
+# defaults to "agent" (see below), already flagged elsewhere in this repo
+# (reference_agent_lane_27b_vs_chat_lane_35b_speed) as ~2x slower than the
+# chat lane on both prompt processing and generation -- if 480s still isn't
+# enough, the real fix is moving this route off "agent", not raising the
+# timeout again. See self_study.reflect.yaml's own comment for why its
+# verb/step timeout stays larger than this.
+SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "480"))
 
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (

@@ -1,6 +1,8 @@
 # The attention schema as a surface, not a seam
 
-**Date:** 2026-09-04
+**Date:** 2026-09-04, **substantially revised 2026-09-05** (see "What changed" below —
+this document's own recommended next patch has since shipped and its central claim is
+superseded)
 **Status:** Design / proposal mode (§0A — touches self-modeling, no code in this patch)
 **Program:** Sentience Striving Program, Objective 3 (`orion/sentience_striving_program/README.md` §6 item 2, §9b items 2 and 4)
 **Instrument:** `ast_hot_reducer` (`orion/sentience_striving_program/instruments.yaml`)
@@ -24,12 +26,76 @@ processes emitting the same shape, the question becomes "which of these three is
 deliberating, which is drifting, which is reacting?" That is a discrimination test with
 real alternatives, and it is the fix for the exact blocker that closed Objective 7.
 
-There is a second prize. Orion's substrate attention has taken the `bottom_up_salience`
-branch 19,408 times out of 19,408 over seven days and has never once recorded a voluntary
-override. Curiosity's own selection code says, in its docstring, that Orion chooses. If
-that is true, **voluntary attention may already exist in Orion, in the one place
-structurally incapable of reporting it** — and we have been reading the wrong lane and
-concluding it never happens.
+There is a second prize. Orion's substrate attention had taken the `bottom_up_salience`
+branch 19,408 times out of 19,408 over seven days without one voluntary override.
+**That has since been root-caused and fixed — see "What changed" — and the answer was not
+"we were reading the wrong lane."** The override was impossible by construction. It now
+fires. The prize remains, but it is now a *sharper* question: curiosity's own selection
+code says in its docstring that Orion chooses, and still records nothing, so that lane is
+now the only one of the three where a real choice happens and no trace survives.
+
+---
+
+## What changed since this was written (2026-09-05)
+
+This document's **"Recommended next patch" has shipped**, and it did what the doc predicted
+it would: it changed what the surface is expected to reveal. Four merged, deployed,
+live-verified PRs:
+
+| PR | what it did |
+|---|---|
+| #2097 | recorded WHY no override fired (`voluntary_override_absent_reason` + 3 numbers) |
+| #2101 | fixed the cause — override was **impossible**, not rare |
+| #2106 | split "no override" into its three real causes |
+| #2110 | lowered `MIN_SALIENCE` 0.2 → 0.05, so a competition can exist at all |
+
+**The 19,408/19,408 result was not a measurement problem.** `relevance(goal, loop)`
+accepted a goal and never read it — the body was `return _clamp01(loop.concept_value)`, a
+function of the loop alone — and the loop side was a constant, because `scoring.py` floored
+`concept_value` to `0.55` for every substrate loop. So `bias = priority * relevance` was
+**identical across every candidate**, a uniform shift cannot change an argmax, and the
+bottom-up winner always survived. Proved on the live graph: 5 real loops, goal priority
+swept 0.1→1.0, override fired **0/6** and the winner never moved.
+
+It now fires. First ever, 2026-09-05 03:45:09Z: a loop at `bottom_up=0.58` beat one at
+`0.75` because a goal wanted it.
+
+Measured before/after on the gate change, matched windows, control taken *before*:
+
+```
+                        gate=0.2 (119 ticks)   gate=0.05 (134 ticks)
+no_open_loops                82.4%                  11.2%
+>=2 competitors               0.8%                  58.2%      73x
+OVERRIDE FIRED                0.8%                   9.7%      12x
+```
+
+**The bottleneck moved rather than vanished, and it moved onto this document's subject.**
+`goal_matched_no_loop` is now the dominant reason at **72.4%**: things finally compete, and
+Orion's goal is about none of them.
+
+### The finding that makes this document load-bearing
+
+The overlap between what goals are about and what attention competes over is **19.8%**
+(21.7% over the prior 7 days; the gate change did not move it — it is independent).
+
+Tracing why found the thing this document was reaching for:
+
+> **There are two attention systems.**
+> `orion/attention/field_attention/{scoring,selectors,builder}.py` produces the goals.
+> `orion/substrate/attention*` runs the competition those goals would steer.
+> Both key on the same `node:substrate.*` id space. **Neither reads the other.**
+
+They agree about one tick in five, by coincidence of both watching the same substrate.
+
+And curiosity is not merely unintegrated, it is unaware: `orion/curiosity/worldview.py`
+contains **zero** references to `OpenLoopV1` or `AttentionFrameV1`. Reverie has two.
+
+So "one contract implemented one and a half times" understates it. The contract is
+implemented twice in full, by two systems that do not know about each other, plus a third
+process doing real thinking with no contact with either.
+
+**19.8% is a number measuring that disintegration.** It is the strongest available argument
+for this document, and it did not exist when this document was written.
 
 ---
 
@@ -237,6 +303,80 @@ that return a value.
 
 ---
 
+## The read side (added 2026-09-05)
+
+The original draft is deliberately **write-only** — "not wired to any decision or control
+path." That was right for a measurement surface and it stays right for the first patch.
+But it left the actual integration question unasked, and 19.8% is that question.
+
+**Integration here does NOT mean normalizing the three vocabularies.** That remains banned
+and remains the primary cathedral risk. It means something narrower and testable:
+
+> The two attention systems already speak the same id space. Integration is one of them
+> being able to *see* the other's current attended id — not to translate its reasons.
+
+Concretely, the one bridge worth building, and only after the surface exists to make it
+observable:
+
+- **The goal producer should be able to read what is actually competing.** Today
+  `orion/attention/field_attention/` picks a dominant target from the field frame, with no
+  reference to which substrate loops cleared the salience gate this tick. A goal aimed at a
+  node that is not in the competition is, by construction, a goal that cannot be acted on —
+  that is 72.4% of ticks, named exactly by `goal_matched_no_loop`.
+- **Nothing else.** Not a router, not a reconciler, not a shared taxonomy. One read.
+
+The acceptance number for that bridge is already defined and already being measured:
+**`goal_matched_no_loop` falls from 72.4%**, and `voluntary_override` rises. Both come off
+instruments that are deployed and running today, with a control window already banked.
+
+## The state machine (added 2026-09-05)
+
+The standing question is whether LangGraph becomes the thing that sequences these
+processes. Recorded here so the sequencing argument is not re-derived a fourth time.
+
+**The case for it is real and this program already made it.** §1 item 5 of the charter
+found that the one genuinely self-initiated behavior in production is attributable to a
+*clock/backlog mechanism*, not to any deliberation — "the visual chain is a cron, not a
+decision." That is still true and it is structural: substrate attention ticks every 30s,
+reverie on its own ~90s loop, curiosity per-run. Three independent timers, no shared state,
+no sequencing. A state machine is the right shape for replacing clocks with states.
+
+**The case against doing it now is the sequencing, and this program's own history.**
+§1 item 7 records that the last time this program reached for new machinery, tracing
+revealed the proposed competition layer already existed and was running live, and the whole
+drives apparatus was a parallel, poorer reimplementation of Layers 4–9 of an existing
+pipeline. Two-plus weeks.
+
+A state machine over processes that do not share a surface does not integrate them. It
+**formalizes the disconnect in a new framework** — and would then be the *third* parallel
+attention implementation, in a repo that currently has two that cannot see each other.
+
+Prior decisions on record, both narrow and both deliberate:
+
+- `README.md:1054` — "Durable LangGraph-style planning for selected workflows **without
+  replacing the existing verb/action spine**."
+- `docs/superpowers/plans/2026-05-20-orion-knowledge-forge-v0.md` — "LangGraph HITL
+  workflows" is an explicit **v0 non-goal**, deferred to v2.
+
+So the prior answer was never "no." It was "yes, narrowly, for durable workflows, not as a
+cognition substrate." Nothing learned on 2026-09-05 contradicts that; the overlap finding
+*strengthens* it, because it shows the missing piece is a shared surface rather than a
+missing orchestrator.
+
+**Order, and the reason for it:**
+
+1. **Surface** (this document). Makes the three processes describable in one shape.
+2. **One bridge.** Goal producer reads what is competing. Falsifiable against a number
+   that is already being collected.
+3. **State machine.** Only once there is a shared surface for it to sequence, and only
+   for durable/resumable workflows per the two prior decisions — not as a replacement
+   for the attention path.
+
+If (2) does not move `goal_matched_no_loop`, (3) should not be started: it would be
+sequencing processes whose disagreement is not actually about sequencing.
+
+---
+
 ## Non-goals
 
 - **Not a framework.** No base class, no plugin registry, no producer interface, no
@@ -292,28 +432,36 @@ against a bounded window is rejected at review, per Missing Question 4.
 
 ## Recommended next patch
 
-Not the surface. **The discriminating fields on the existing reducer, first.**
+**Superseded 2026-09-05. The patch this section recommended has shipped** (#2097 / #2101 /
+#2106 / #2110, all merged and live-verified). Its stated purpose was to answer whether the
+substrate override branch was *dead* or merely *quiet* before building the surface blind.
 
-`top_down_override` has four gates it must clear (a goal exists; the goal flipped the
-winner; the winner has a candidate action; the broadcast lane was fresh). The stored
-self-model records `voluntary_override = None` and **nothing about which gate stopped it** —
-no goal-present flag, no `effort_budget_used`. So the 19,408/19,408 result cannot currently
-be root-caused, only guessed at. That is the failure mode already in the record as *"an
-aggregate that cannot name a cause will hide one."*
+**Answered: it was dead by construction, and is now alive at ~9.7% of ticks.** The three
+reasons that section gave for sequencing it first all held — it was small, it changed no
+behavior, and the answer materially changed what this surface is expected to reveal. It
+also produced a finding worth having on its own, exactly as predicted: Orion's goals have
+**never lost a competition**. Not once. The old aggregate read as constant defeat and was
+wrong in every instance.
 
-Reasons to do this before the surface, not after:
+### The new next patch
 
-1. It is small, self-contained, and changes no behavior — four fields on an existing row.
-2. It answers whether the substrate lane's override branch is *dead* or merely *quiet*,
-   which materially changes what the surface is expected to reveal. Building the surface
-   first means building it without knowing that.
-3. If the answer is "no goal is ever present," that is a finding about O2/O3 worth having
-   on its own, independent of whether this surface is ever built.
+**The substrate adapter and the schema, cheapest lane first** — now unblocked, because the
+substrate lane finally has something worth projecting. Before #2101 its `attention_reason`
+was `bottom_up_salience` on 100% of rows and its `reason_narrative` was one hardcoded
+string; a blind-rater test against that would have been rating a constant. It now
+distributes across real causes with real numbers behind them.
 
-Then, in order: settle Missing Question 1 by reading a real curiosity run; write the schema
-and the substrate adapter (the cheapest, since the data already exists); reverie second;
-curiosity last, since it carries both open questions.
+Then, in order, unchanged from the original: settle Missing Question 1 by reading a real
+curiosity run; reverie second; curiosity last, since it carries both open questions.
 
-Deferred and explicitly not bundled: the `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS`
-bump (168 → 8760), which is an operator change owned by Juniper, and the standing fix to
-the `narrative_diversity` claim's "ever" question.
+### What is no longer deferred, and what still is
+
+- **No longer deferred:** the `narrative_diversity` claim's "ever"-against-a-bounded-window
+  bug (Missing Question 4) is now *demonstrated*, not theorised — the substrate lane's
+  distribution was measured shifting materially inside one 168h window on 2026-09-05.
+- **Still deferred, still Juniper's:** the
+  `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` bump (168 → 8760). Note this now
+  matters more than when first written: the before/after control windows that make the
+  override work falsifiable are inside the retention window and will expire.
+- **Newly deferred:** the goal-producer bridge (see "The read side") and anything
+  LangGraph-shaped (see "The state machine"). Both are downstream of this surface existing.

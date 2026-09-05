@@ -52,6 +52,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "notify.recipient.update.v1": "RecipientProfileDB",
     "notify.preference.update.v1": "NotificationPreferenceDB",
     "journal.entry.write.v1": "JournalEntrySQL",
+    "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
     "social.turn.v1": "SocialRoomTurnSQL",
@@ -159,6 +160,7 @@ class Settings(BaseSettings):
             "orion:notify:persistence:request",
             "orion:notify:persistence:receipt",
             "orion:journal:write",
+            "orion:self_study:items:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
             "orion:evidence:markdown:ingest",
@@ -522,6 +524,14 @@ class Settings(BaseSettings):
             channels.append("orion:power:intent:settled")
         if "orion:cabinet:ambient:spike" not in channels:
             channels.append("orion:cabinet:ambient:spike")
+        # Same guarantee again, same reason, same failure shape review caught
+        # before this shipped: self_study.items.write.v1 is a code-default
+        # route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS
+        # replaces rather than merges -- a stale already-deployed operator
+        # .env that predates this channel would otherwise leave the route/
+        # model/table all correct and the write silently going nowhere.
+        if "orion:self_study:items:write" not in channels:
+            channels.append("orion:self_study:items:write")
         return channels
 
     @property

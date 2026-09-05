@@ -99,7 +99,11 @@ class SelfSnapshotV1(BaseModel):
 class SelfWritebackStatusV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target: Literal["graph", "journal"]
+    # Added 2026-09-05 (self-model rebuild arc, Patch 2): "self_knowledge_items"
+    # for publish_self_knowledge_items()'s writeback status -- previously
+    # forced into "journal" (a real review finding: that write goes to a
+    # different channel/table entirely, not the journal).
+    target: Literal["graph", "journal", "self_knowledge_items"]
     status: SelfWritebackState
     authoritative: bool
     channel: str | None = None
@@ -117,6 +121,10 @@ class SelfRepoInspectResultV1(BaseModel):
     graph_write: SelfWritebackStatusV1
     journal_write: SelfWritebackStatusV1
     journal_entry: JournalEntryWriteV1
+    # Added 2026-09-05 (self-model rebuild arc, Patch 2): review finding --
+    # this was previously computed and discarded, so a run where every item
+    # publish failed was indistinguishable from a fully successful one.
+    self_knowledge_items_write: SelfWritebackStatusV1
 
 
 class SelfConceptEvidenceRefV1(BaseModel):

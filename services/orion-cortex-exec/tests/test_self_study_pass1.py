@@ -1125,8 +1125,16 @@ def test_self_repo_inspect_verb_graph_write_retired_journal_still_written():
     assert data["graph_write"]["authoritative"] is True
     assert data["journal_write"]["status"] == "written"
     assert data["journal_write"]["authoritative"] is False
-    assert [channel for channel, _ in bus.published] == ["orion:journal:write"]
+    # First publish is still the journal-summary write; everything after it
+    # is the new self-knowledge-item log (self-model rebuild arc, Patch 2) --
+    # one message per Layer-1 item, additive to the journal write, not a
+    # replacement of it.
+    channels = [channel for channel, _ in bus.published]
+    assert channels[0] == "orion:journal:write"
     assert bus.published[0][1].kind == "journal.entry.write.v1"
+    assert set(channels[1:]) == {"orion:self_study:items:write"}
+    assert all(env.kind == "self_study.items.write.v1" for _, env in bus.published[1:])
+    assert len(channels) > 1, "expected at least one self-knowledge-item publish alongside the journal write"
 
 
 def test_self_repo_inspect_reports_partial_backend_failure():

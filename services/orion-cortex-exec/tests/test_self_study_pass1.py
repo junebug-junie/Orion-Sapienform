@@ -241,7 +241,7 @@ def test_graphify_derived_concepts_skip_already_covered_items():
 
     all_item_ids = {
         item.item_id
-        for section in ("services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces")
+        for section in self_study._SNAPSHOT_SECTION_NAMES
         for item in getattr(snapshot, section)
     }
 

@@ -1013,6 +1013,63 @@ async def startup_event():
                     except Exception as exc:  # advisory runtime loop; never crash service startup
                         logger.warning("substrate_topic_foundry_aitown_scheduler_ingest_error error=%s", exc)
 
+                # Self Atlas (self-model rebuild arc, Patch 3, 2026-09-05) --
+                # same three-step shape as Orion/AI Town above, riding on the
+                # same tick interval. Own ENABLE, default off (see settings.py's
+                # own comment): a brand-new, unverified pipeline over a table
+                # that only just started accumulating real rows. Writes into a
+                # different FalkorDB graph (FALKORDB_SELF_SUBSTRATE_GRAPH) and a
+                # different topic-foundry dataset/model
+                # (source_table=self_knowledge_items) -- never feeds Orion's
+                # chat-facing concept graph.
+                if settings.SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED:
+                    try:
+                        self_trigger_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.trigger_topic_foundry_self_training_run
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_self_scheduler_trigger_tick triggered=%s run_id=%s status=%s reason=%s",
+                            self_trigger_summary.get("triggered"),
+                            self_trigger_summary.get("run_id"),
+                            self_trigger_summary.get("status"),
+                            self_trigger_summary.get("reason"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_self_scheduler_trigger_error error=%s", exc)
+
+                    try:
+                        self_enrich_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.trigger_topic_foundry_self_enrichment
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_self_scheduler_enrich_tick triggered=%s run_id=%s status=%s reason=%s "
+                            "enriched_count=%s failed_count=%s",
+                            self_enrich_summary.get("triggered"),
+                            self_enrich_summary.get("run_id"),
+                            self_enrich_summary.get("status"),
+                            self_enrich_summary.get("reason"),
+                            self_enrich_summary.get("enriched_count"),
+                            self_enrich_summary.get("failed_count"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_self_scheduler_enrich_error error=%s", exc)
+
+                    try:
+                        self_ingest_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry_self
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_self_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s entities_written=%s edges_written=%s typed_edges_written=%s",
+                            self_ingest_summary.get("available"),
+                            self_ingest_summary.get("run_id"),
+                            self_ingest_summary.get("concepts_written"),
+                            self_ingest_summary.get("entities_written"),
+                            self_ingest_summary.get("edges_written"),
+                            self_ingest_summary.get("typed_edges_written"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_self_scheduler_ingest_error error=%s", exc)
+
         substrate_topic_foundry_scheduler_task = asyncio.create_task(
             _run_substrate_topic_foundry_scheduler(),
             name="hub-substrate-topic-foundry-scheduler",

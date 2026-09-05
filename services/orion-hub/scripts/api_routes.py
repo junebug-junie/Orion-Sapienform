@@ -337,6 +337,30 @@ def _build_aitown_substrate_store_from_env() -> Any:
 SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
 
 
+def _build_self_substrate_store_from_env() -> Any:
+    """Third, independently-named concept graph -- the Self Atlas
+    (self-model rebuild arc, Patch 3, 2026-09-05). Same shape, same
+    falkor-only scoping, same degrade-to-in-memory-and-warn behavior as
+    ``_build_aitown_substrate_store_from_env`` above."""
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    if backend in {"falkor", "falkordb"}:
+        from orion.substrate.falkor_store import build_self_falkor_substrate_store_from_env
+
+        return build_self_falkor_substrate_store_from_env()
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    if backend and backend not in {"in_memory", "memory", "mem", "local"}:
+        logger.warning(
+            "self_substrate_store_backend_unsupported backend=%s -- falling back to in-memory "
+            "(the Self Atlas graph is falkor-only today; every write is lost on restart)",
+            backend,
+        )
+    return InMemorySubstrateGraphStore()
+
+
+SUBSTRATE_SEMANTIC_STORE_SELF = _build_self_substrate_store_from_env()
+
+
 def seed_golden_concepts_at_startup() -> int:
     """Load the 4 golden concepts (Orion, Juniper, Claude, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on

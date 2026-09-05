@@ -57,6 +57,7 @@ from app.models import (
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
     ChatStanceBeliefLogSQL,
+    SelfConceptHistorySQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
     ExternalRoomParticipantSQL,
@@ -99,6 +100,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
+from orion.schemas.self_concept_history import SelfConceptHistoryV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -211,6 +213,7 @@ INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
     ChatStanceBeliefLogSQL,
+    SelfConceptHistorySQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -459,6 +462,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
     "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
+    "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
     "ExternalRoomParticipantSQL": (ExternalRoomParticipantSQL, ExternalRoomParticipantV1),

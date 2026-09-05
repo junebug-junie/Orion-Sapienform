@@ -94,3 +94,47 @@ def test_aitown_builder_falls_back_to_in_memory_when_uri_missing(monkeypatch) ->
     monkeypatch.delenv("FALKORDB_URI", raising=False)
     result = fs.build_aitown_falkor_substrate_store_from_env()
     assert isinstance(result, InMemorySubstrateGraphStore)
+
+
+# --- Self Atlas's own graph (self-model rebuild arc, Patch 3, 2026-09-05) --
+# same shape as the AI Town tests above, third independently-named graph.
+
+
+def test_self_builder_resolves_orion_substrate_self_graph_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("FALKORDB_URI", "redis://fake-host:6379")
+    monkeypatch.delenv("FALKORDB_SELF_SUBSTRATE_GRAPH", raising=False)
+    monkeypatch.setattr(fs, "FalkorSubstrateStore", _RecordingFakeStore)
+
+    result = fs.build_self_falkor_substrate_store_from_env()
+
+    assert isinstance(result, _RecordingFakeStore)
+    assert _RecordingFakeStore.last_cfg.graph_name == "orion_substrate_self"
+    assert _RecordingFakeStore.last_cfg.uri == "redis://fake-host:6379"
+
+
+def test_self_builder_honors_its_own_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("FALKORDB_URI", "redis://fake-host:6379")
+    monkeypatch.setenv("FALKORDB_SELF_SUBSTRATE_GRAPH", "custom_self_graph")
+    monkeypatch.setattr(fs, "FalkorSubstrateStore", _RecordingFakeStore)
+
+    fs.build_self_falkor_substrate_store_from_env()
+
+    assert _RecordingFakeStore.last_cfg.graph_name == "custom_self_graph"
+
+
+def test_self_builder_is_independent_of_the_primary_and_aitown_graph_envs(monkeypatch) -> None:
+    monkeypatch.setenv("FALKORDB_URI", "redis://fake-host:6379")
+    monkeypatch.setenv("FALKORDB_SUBSTRATE_GRAPH", "orion_substrate")
+    monkeypatch.setenv("FALKORDB_AITOWN_SUBSTRATE_GRAPH", "orion_substrate_aitown")
+    monkeypatch.delenv("FALKORDB_SELF_SUBSTRATE_GRAPH", raising=False)
+    monkeypatch.setattr(fs, "FalkorSubstrateStore", _RecordingFakeStore)
+
+    fs.build_self_falkor_substrate_store_from_env()
+
+    assert _RecordingFakeStore.last_cfg.graph_name == "orion_substrate_self"
+
+
+def test_self_builder_falls_back_to_in_memory_when_uri_missing(monkeypatch) -> None:
+    monkeypatch.delenv("FALKORDB_URI", raising=False)
+    result = fs.build_self_falkor_substrate_store_from_env()
+    assert isinstance(result, InMemorySubstrateGraphStore)

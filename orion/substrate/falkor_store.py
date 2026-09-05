@@ -905,3 +905,14 @@ def build_aitown_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InM
         graph_name_env="FALKORDB_AITOWN_SUBSTRATE_GRAPH",
         graph_name_default="orion_substrate_aitown",
     )
+
+
+def build_self_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
+    """Third, independently-named FalkorDB graph -- the Self Atlas
+    (self-model rebuild arc, Patch 3, 2026-09-05). Same shape and same
+    Falkor-only scoping rationale as
+    build_aitown_falkor_substrate_store_from_env() above."""
+    return build_falkor_substrate_store_from_env(
+        graph_name_env="FALKORDB_SELF_SUBSTRATE_GRAPH",
+        graph_name_default="orion_substrate_self",
+    )

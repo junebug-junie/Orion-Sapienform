@@ -1955,6 +1955,50 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
 
+## Self Atlas (2026-09-05, self-model rebuild arc, Patch 3)
+
+Topic-foundry's real clustering pipeline (the same UMAP+HDBSCAN + LLM-tagging
+one Orion's chat Concept Atlas already uses), pointed at Orion's own
+self-facts (`self_knowledge_items`, produced by `orion-cortex-exec`'s
+`self_study.py` Layer 1) instead of chat. A third dataset/model pair
+alongside the existing Orion/AI Town ones, following their exact established
+shape:
+
+- Constants: `_TOPIC_FOUNDRY_SELF_*` in `scripts/concept_atlas_routes.py`
+  (dataset `orion-self-atlas-dataset-v1`, model `orion-self-atlas-v1-*`,
+  `source_table="self_knowledge_items"`). Different id/time/text columns
+  than the chat datasets (`item_id`/`created_at`/`name,symbol_name,
+  metadata_text`) -- `_ensure_topic_foundry_dataset_and_model()` and
+  `trigger_topic_foundry_training_run()` were extended to accept these as
+  parameters (previously hardcoded globals, since both prior datasets
+  happened to share the same chat-shaped columns).
+- Scheduler: `trigger_topic_foundry_self_training_run()` /
+  `trigger_topic_foundry_self_enrichment()` / `concept_atlas_ingest_topic_
+  foundry_self()`, wired into `main.py`'s existing topic-foundry scheduler
+  tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED`
+  (**default false**, unlike AI Town's default-on -- a brand-new,
+  unverified pipeline over a table that only just started accumulating
+  real rows; turn on deliberately once there's real history to cluster
+  over).
+- Storage: its own FalkorDB graph (`FALKORDB_SELF_SUBSTRATE_GRAPH`, default
+  `orion_substrate_self`) via `build_self_falkor_substrate_store_from_env()`
+  and `api_routes.py`'s `SUBSTRATE_SEMANTIC_STORE_SELF` singleton -- never
+  mixed with Orion's chat-facing concept graph.
+- Reachable via `?graph=self` on the existing `/api/substrate/concepts/*`
+  GET routes (same mechanism as `?graph=aitown`), and a dedicated
+  `POST /api/substrate/concepts/ingest-topic-foundry-self` route. No
+  dedicated UI page yet, same as AI Town's graph today -- reachable by
+  query param, not a Concept Atlas page toggle.
+- The enrichment LLM prompt (`services/orion-topic-foundry/app/services/
+  enrichment.py::_llm_prompt`) was confirmed generic over segment text, no
+  chat/speaker framing -- this needed no changes to run against self-facts
+  text.
+- **Not built in this patch:** feeding Self Atlas's own per-cluster
+  descriptions back into `self_concept_history` (the identity.yaml-
+  replacement store, see `orion-cortex-exec/README.md`) -- that store's
+  Layer-3-reflection producer shipped this patch; the Self-Atlas-cluster
+  producer is a real, disclosed follow-up, not silently dropped.
+
 ## Field Channels tab
 
 `#field-channel-glossary` panel (`templates/index.html`), backed by `/static/field-channel-glossary.html`

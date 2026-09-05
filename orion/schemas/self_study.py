@@ -119,7 +119,11 @@ class SelfWritebackStatusV1(BaseModel):
     # for publish_self_knowledge_items()'s writeback status -- previously
     # forced into "journal" (a real review finding: that write goes to a
     # different channel/table entirely, not the journal).
-    target: Literal["graph", "journal", "self_knowledge_items"]
+    # Added 2026-09-05 (self-model rebuild arc, Patch 3): "self_concept_history"
+    # for publish_self_concept_history_from_reflection()'s writeback status --
+    # same lesson as "self_knowledge_items" above, applied correctly this time
+    # instead of hardcoding "journal" for a write that goes elsewhere.
+    target: Literal["graph", "journal", "self_knowledge_items", "self_concept_history"]
     status: SelfWritebackState
     authoritative: bool
     channel: str | None = None
@@ -227,6 +231,10 @@ class SelfConceptReflectResultV1(BaseModel):
     graph_write: SelfWritebackStatusV1
     journal_write: SelfWritebackStatusV1
     journal_entry: JournalEntryWriteV1
+    # Added 2026-09-05 (self-model rebuild arc, Patch 3) -- surfaced from the
+    # start this time, not discarded (see the same fix on
+    # SelfRepoInspectResultV1.self_knowledge_items_write in Patch 2).
+    self_concept_history_write: SelfWritebackStatusV1
 
 
 class SelfStudyRetrieveFiltersV1(BaseModel):

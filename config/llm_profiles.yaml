@@ -1432,7 +1432,11 @@ profiles:
         one env; same caveat as muse-glimmer above).
 
   qwen3.8-flash-next-udiq4xs-3xv100-32gb-circe-flagship:
-    display_name: "Qwen3.8-Flash-Next – UD-IQ4_XS (llama.cpp, 3x V100 32GB, Circe flagship, LIVE TEST 2026-09-04)"
+    # Key/name kept as "-3xv100-" despite the 2026-09-05 expansion to 4 GPUs --
+    # renaming would require updating every operator reference (.env's
+    # ATLAS_AGENT_PROFILE_NAME, this session's PR/docs trail) for a cosmetic
+    # mismatch only. device_ids/num_gpus below are the real, current truth.
+    display_name: "Qwen3.8-Flash-Next – UD-IQ4_XS (llama.cpp, 4x V100 32GB, Circe flagship, LIVE TEST 2026-09-04, expanded 2026-09-05)"
     task_type: chat
     backend: llamacpp
     model_id: "qwen3.8-flash-next-ud-iq4_xs"
@@ -1459,18 +1463,26 @@ profiles:
       # being taken down for this. Orion's normal circe-hosted chat/agent
       # lanes are unavailable on these three cards for the duration -- see the
       # PR/session notes for exactly what was stopped and when it was restored.
-      num_gpus: 3
+      #
+      # EXPANDED 2026-09-05, Juniper's explicit go-ahead ("evict the other
+      # v100 model 0,1,2,3 should now run for this test run. i know it will
+      # kill things. we need it for this test"): GPU2 added. GPU2 previously
+      # carried `orion-circe-circe-vision-host-qwen` (Orion's vision
+      # perception model) and `orion-circe-diffusion-host` (image gen) --
+      # both stopped for the duration of this test.
+      num_gpus: 4
       tensor_parallel_size: 1
-      device_ids: [0, 1, 3]
+      device_ids: [0, 1, 2, 3]
 
       # UD-IQ4_XS is ~93.7GB (verified against both Unsloth's own quant table
-      # AND the actual per-shard byte sizes on Hugging Face, 2026-09-04) vs
-      # 96GB total VRAM across these three cards -- unlike UD-Q4_K_XL's
-      # ~111.3GB, this one is at least in the right neighborhood. Still very
-      # tight: ~2.3GB of raw headroom before KV cache, compute buffers, or any
-      # CPU/GPU split inefficiency, on a model whose own docs say it's
-      # designed to lean on system RAM. Do not expect full n_gpu_layers to
-      # cleanly fit -- see the escalation ladder in llamacpp below.
+      # AND the actual per-shard byte sizes on Hugging Face, 2026-09-04).
+      # UPDATED 2026-09-05: with GPU2 added, this is now ~93.7GB against
+      # 128GB total VRAM across four cards (was 96GB/3 cards) -- meaningfully
+      # more headroom for KV cache, compute buffers, and n_gpu_layers than the
+      # original 3-card ~2.3GB-headroom estimate. Still leans on system RAM by
+      # design per Unsloth's own docs; do not expect full n_gpu_layers to
+      # cleanly fit just because there's more room now -- see the escalation
+      # ladder in llamacpp below.
       max_model_len: 32768
       max_batch_tokens: 512
       max_concurrent_requests: 1
@@ -1575,14 +1587,15 @@ profiles:
         reasoning_effort: "xhigh"
 
       no_context_shift: true
-      # No established anchor for a 3-way split on this architecture -- every
+      # No established anchor for an even split on this architecture -- every
       # other multi-GPU profile in this file skews toward the card carrying
       # the bulk of the weights (e.g. "3,1" for 2 GPUs), but there is no prior
-      # art here to skew from. "1,1,1" is a neutral starting point, not a
+      # art here to skew from. "1,1,1,1" is a neutral starting point, not a
       # tuned value -- watch per-GPU `nvidia-smi` usage on first boot and
-      # adjust toward whichever card is starving.
+      # adjust toward whichever card is starving. UPDATED 2026-09-05 for the
+      # 4th GPU (was "1,1,1" for 3).
       split_mode: "layer"
-      tensor_split: "1,1,1"
+      tensor_split: "1,1,1,1"
       # V100 is Volta (sm_70). Whether this brand-new architecture even runs
       # on Volta at all is UNVERIFIED -- nothing in the sources fetched while
       # writing this card confirms or denies it. Off by default for the same
@@ -1652,3 +1665,11 @@ profiles:
       first (this profile is CPU/RAM-heavy by design, unlike every other
       profile in this file that sets 99 because the whole model fits), then
       ctx_size, before touching quant level.
+
+      EXPANDED 2026-09-05, Juniper's explicit go-ahead: added GPU2 (device_ids
+      0,1,3 -> 0,1,2,3; tensor_split 1,1,1 -> 1,1,1,1), stopping
+      orion-circe-circe-vision-host-qwen and orion-circe-diffusion-host for
+      the duration. ctx_size (32768) and everything else left as-is -- this
+      was about VRAM headroom for the existing config, not a request to raise
+      the context window. Revert device_ids to [0, 1, 3] and restart the two
+      stopped GPU2 services once this test run is done.

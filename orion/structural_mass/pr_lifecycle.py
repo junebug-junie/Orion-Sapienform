@@ -5,16 +5,16 @@ domain (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md, Phase
 **Deviation from the design spec's original assumption, confirmed live
 2026-07-30:** the spec proposed reading ``items_total`` from "the pre-trim
 ``github_compactor`` fetch payload" to bypass ``trim_github_compactor_input()``'s
-``MAX_DIGEST_INPUT_PRS`` (8) cap. That fetch
+``MAX_DIGEST_INPUT_PRS`` digest-input cap. That fetch
 (``services/orion-cortex-exec/app/verb_adapters.py::GithubRecentPullRequestsVerb``)
-turns out to have two narrower limits of its own, upstream of the 8-item digest
-cap this spec meant to bypass: it calls the GitHub REST API with a hardcoded
-``per_page=20`` (never paginated further), and it unconditionally drops every PR
-with no ``merged_at`` (``if not merged_at: continue``) -- so it structurally can
-never report "submitted" (opened) or "closed-without-merge" counts, only merged
-ones, regardless of window size. Reusing it would have silently capped this
-domain at the same narrow slice the digest already suffers from, one layer
-further upstream. This module fetches independently via the ``gh`` CLI instead
+has two narrower limits of its own, upstream of the digest item list: it calls
+the GitHub REST API with a single ``per_page`` request (never paginated further;
+raised to 100 alongside the digest budget so a ~30-merge day can reach the
+summarizer), and it unconditionally drops every PR with no ``merged_at``
+(``if not merged_at: continue``) -- so it structurally can never report
+"submitted" (opened) or "closed-without-merge" counts, only merged ones,
+regardless of window size. Reusing it would still miss open/closed-without-merge
+counts. This module fetches independently via the ``gh`` CLI instead
 (already authenticated in this repo's own dev/CI environments, same command
 this repo's own PR-management workflow already uses) -- not a reuse of
 ``github_compactor``'s fetch, a deliberate divergence from it.

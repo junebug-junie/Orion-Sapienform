@@ -823,21 +823,23 @@ def test_github_recent_prs_includes_truncated_body(monkeypatch):
         "execute",
         _GITHUB_RECENT_PRS_EXECUTE,
     )
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     sample_prs = [
         {
             "number": 42,
             "title": "Add compactor",
             "user": {"login": "juniper"},
             "state": "closed",
-            "merged_at": "2026-07-08T12:00:00Z",
-            "created_at": "2026-07-07T12:00:00Z",
-            "updated_at": "2026-07-08T12:00:00Z",
+            "merged_at": recent,
+            "created_at": recent,
+            "updated_at": recent,
             "labels": [],
             "base": {"ref": "main"},
             "head": {"ref": "feat/compactor"},
             "html_url": "https://github.com/acme/widgets/pull/42",
             "changed_files": 3,
             "body": "x" * 2500,
+            "url": "https://api.github.com/repos/acme/widgets/pulls/42",
         }
     ]
 
@@ -856,7 +858,7 @@ def test_github_recent_prs_includes_truncated_body(monkeypatch):
 
     def _urlopen(request, timeout=0):
         url = request.full_url
-        if url.endswith("/pulls?state=closed&sort=updated&direction=desc&per_page=20"):
+        if url.endswith("/pulls?state=closed&sort=updated&direction=desc&per_page=100"):
             return _Resp(sample_prs)
         if url.endswith("/files?per_page=100"):
             return _Resp([{"filename": "services/orion-hub/app/main.py"}])

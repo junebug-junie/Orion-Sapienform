@@ -1897,7 +1897,9 @@ class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutpu
         if settings.github_token:
             headers["Authorization"] = f"Bearer {settings.github_token}"
         base = str(settings.github_api_url or "https://api.github.com").rstrip("/")
-        pulls_url = f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls?state=closed&sort=updated&direction=desc&per_page=20"
+        # GitHub max per_page is 100. Keep this at/above MAX_DIGEST_INPUT_PRS (32)
+        # so a ~30-merge day is not silently truncated at fetch before digest.
+        pulls_url = f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls?state=closed&sort=updated&direction=desc&per_page=100"
         try:
             request = Request(pulls_url, headers=headers)
             with urlopen(request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as response:  # noqa: S310

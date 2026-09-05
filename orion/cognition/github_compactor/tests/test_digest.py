@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from orion.cognition.github_compactor.constants import (
     CARD_SUMMARY_MAX_CHARS,
     DIGEST_INPUT_BODY_MAX_CHARS,
+    DIGEST_ORCH_RPC_TIMEOUT_SEC,
+    DIGEST_VERB_TIMEOUT_MS,
     JOURNAL_BODY_MAX_CHARS,
     JOURNAL_TITLE_MAX_CHARS,
+    MAX_DIGEST_INPUT_PRS,
 )
 from orion.cognition.github_compactor.digest import (
     fit_digest_within_budget,
@@ -107,6 +112,40 @@ def test_parse_github_compactor_digest_json() -> None:
     assert digest.pr_refs == ["#9"]
 
 
+def test_digest_budget_supports_high_volume_merge_days() -> None:
+    """~30 merges/day must fit the digest input + journal body + wall-clock budget.
+
+    Live failure 2026-09-05: timeout_ms=90000 + MAX_DIGEST_INPUT_PRS=8 meant the
+    8k-token digest timed out empty (invalid_json) while most daily PRs never
+    reached the LLM. Chat can wait; the digest must finish.
+    """
+    assert MAX_DIGEST_INPUT_PRS >= 30
+    assert JOURNAL_BODY_MAX_CHARS >= 8000
+    assert DIGEST_VERB_TIMEOUT_MS >= 600_000
+    assert DIGEST_ORCH_RPC_TIMEOUT_SEC >= DIGEST_VERB_TIMEOUT_MS / 1000.0
+
+    verb_path = (
+        Path(__file__).resolve().parents[3]
+        / "cognition"
+        / "verbs"
+        / "github_compactor_digest_v1.yaml"
+    )
+    verb = yaml.safe_load(verb_path.read_text(encoding="utf-8"))
+    assert int(verb["timeout_ms"]) == DIGEST_VERB_TIMEOUT_MS
+    assert int(verb["timeout_ms"]) >= 600_000
+
+    prompt_path = (
+        Path(__file__).resolve().parents[3]
+        / "cognition"
+        / "prompts"
+        / "github_compactor_digest_v1.j2"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert f"(max {JOURNAL_BODY_MAX_CHARS} chars)" in prompt
+    assert f"(max {CARD_SUMMARY_MAX_CHARS} chars)" in prompt
+    assert f"(max {JOURNAL_TITLE_MAX_CHARS} chars)" in prompt
+
+
 def test_trim_github_compactor_input_caps_items_for_digest() -> None:
     payload = {
         "repo": "acme/widgets",
@@ -125,6 +164,19 @@ def test_trim_github_compactor_input_caps_items_for_digest() -> None:
     assert trimmed["items_truncated_for_digest"] is True
     assert trimmed["items_total"] == 20
     assert trimmed["merged_pr_count"] == 20
+
+
+def test_trim_github_compactor_input_default_keeps_high_volume_day() -> None:
+    payload = {
+        "repo": "acme/widgets",
+        "merged_pr_count": 35,
+        "items": [{"number": i, "title": f"PR {i}", "body": "ok"} for i in range(35)],
+    }
+    trimmed = trim_github_compactor_input(payload)
+    assert len(trimmed["items"]) == MAX_DIGEST_INPUT_PRS
+    assert trimmed["items_total"] == 35
+    assert trimmed["merged_pr_count"] == 35
+    assert trimmed["items_truncated_for_digest"] is True
 
 
 def test_trim_github_compactor_input_preserves_short_bodies_untruncated() -> None:

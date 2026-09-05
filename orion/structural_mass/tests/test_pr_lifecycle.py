@@ -263,18 +263,24 @@ def test_multiple_prs_span_all_three_buckets_in_one_call() -> None:
 
 
 def test_exceeds_max_digest_input_prs_cap_on_synthetic_window() -> None:
-    """Regression guard mirroring the design spec's own acceptance check: a
-    window with more than MAX_DIGEST_INPUT_PRS (8) real events must report the
-    real count, not a value silently capped at 8 like
+    """Regression guard: a window with more than MAX_DIGEST_INPUT_PRS real
+    events must report the real count, not a value silently capped like
     trim_github_compactor_input()'s LLM-facing item list."""
     from orion.cognition.github_compactor.constants import MAX_DIGEST_INPUT_PRS
 
     prs = [
-        _pr(100 + i, created_at="2026-07-01T00:00:00", merged_at=f"2026-07-01T{i:02d}:00:00", closed_at=f"2026-07-01T{i:02d}:00:00", state="MERGED")
+        _pr(
+            100 + i,
+            created_at="2026-07-01T00:00:00",
+            merged_at=f"2026-07-01T{i // 60:02d}:{i % 60:02d}:00",
+            closed_at=f"2026-07-01T{i // 60:02d}:{i % 60:02d}:00",
+            state="MERGED",
+        )
         for i in range(MAX_DIGEST_INPUT_PRS + 3)
     ]
     result = pr_lifecycle_delta(prs, since=_dt("2026-07-01T00:00:00"), until=_dt("2026-07-02T00:00:00"))
     assert result.merged_count > MAX_DIGEST_INPUT_PRS
+    assert result.merged_count == MAX_DIGEST_INPUT_PRS + 3
 
 
 # -- fetch_recent_prs -----------------------------------------------------

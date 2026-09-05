@@ -85,6 +85,13 @@ class TopDownConfig:
 class GoalContext:
     priority: float             # [0,1]
     goal_artifact_id: Optional[str] = None
+    # What the goal is ABOUT -- FieldGoalProvenanceV1.field_target_id, e.g.
+    # "node:substrate.execution". Same id space as OpenLoopV1.source_refs, so
+    # relevance() can join them exactly. Optional because a goal that names no
+    # target must produce no bias at all (see relevance()), never a fabricated
+    # constant -- that fabrication is exactly what made voluntary override
+    # mathematically impossible before 2026-09-05.
+    target_id: Optional[str] = None
     # When this goal was received by GoalContextStore -- staleness dead-man's-switch
     # (goal_context.py::GoalContextStore.current()), not continuous decay. See
     # docs/superpowers/specs/2026-07-30-goal-provenance-and-decision-lattice-
@@ -118,30 +125,40 @@ class TopDownResult:
 
 
 def relevance(goal: GoalContext, loop: OpenLoopV1) -> float:
-    """Goal-alignment relevance signal for a candidate open loop.
+    """How much does this candidate loop match what the goal is about?
 
-    Reads ``OpenLoopV1.concept_value`` directly. Before Wave 2b (deleting the
-    drive-pressure/goal-generation system), this used to select among five
-    per-drive relevance fields (``predictive_value``, ``relational_relevance``,
-    ``continuity_relevance``, ``autonomy_value``, ``concept_value``) keyed by
-    ``goal.drive_origin`` -- ``concept_value`` was already the fallback for
-    unknown/coherence/capability drives. With drive_origin gone from
-    ``GoalContext``, there is no longer a signal to pick among those fields, so
-    this collapses to the one dimension that was already the generic
-    fallback: ``concept_value`` is a real, independently-populated field
-    (``orion/substrate/attention/scoring.py``'s conceptual-pressure score),
-    not the loop's bottom-up ``salience`` -- using ``salience`` itself here
-    would double-count bottom-up evidence as top-down bias and defeat biased
-    competition (a bias correlated with salience only entrenches the existing
-    winner, it can never flip one).
+    Exact id match between ``goal.target_id`` and the loop's ``source_refs``.
+    Both sides already carry ids in the same space (``node:substrate.chat``):
+    the goal's comes from ``FieldGoalProvenanceV1.field_target_id``, the loop's
+    from the substrate node that produced its signal.
 
-    Returns a value in [0,1]. Returns 0.0 if the field is missing/None.
+    **Why this replaced ``loop.concept_value`` (2026-09-05).** The old body was
+    ``return _clamp01(loop.concept_value)`` -- it accepted ``goal`` and never
+    read it, so relevance could not vary by goal even in principle. Worse, the
+    loop side was a constant: ``scoring.py``'s ``concept_pressure_from_signals``
+    only counts signals whose source starts with ``concept_induction``, and
+    every substrate-broadcast signal is sourced ``substrate_broadcast``, so it
+    always returned 0.0 and a hardcoded ``max(..., 0.55)`` floor replaced it.
+    Every loop therefore scored exactly 0.55, making ``bias = priority *
+    relevance`` identical across candidates. A uniform bias shifts every loop
+    equally, so ``argmax(combined) == argmax(salience)`` -- the bottom-up winner
+    always. Proved live against the real substrate graph: 5 real loops, goal
+    priority swept 0.1..1.0, override fired 0/6 and the winner never changed.
+
+    Binary on purpose. A goal whose target is not among the competing loops
+    returns 0.0 for all of them -- no push at all, bottom-up decides. Partial
+    credit by graph distance was considered and deliberately not built: "near"
+    would be an invented judgment, and this repo has a documented history of
+    inventing taxonomies ahead of evidence. Narrow and provable first.
+
+    Never raises; any malformed input reads as "not relevant".
     """
     try:
-        raw = getattr(loop, "concept_value", None)
-        if raw is None:
+        target = getattr(goal, "target_id", None)
+        if not target:
             return 0.0
-        return _clamp01(raw)
+        refs = getattr(loop, "source_refs", None) or []
+        return 1.0 if target in refs else 0.0
     except Exception:
         return 0.0
 

@@ -20,19 +20,26 @@ from orion.substrate.attention.top_down import (
 )
 
 
+# The node the goal points at. relevance() joins GoalContext.target_id to
+# OpenLoopV1.source_refs (2026-09-05); before that it read loop.concept_value
+# and ignored the goal entirely, which made override impossible.
+_GOAL_TARGET = "node:substrate.wanted"
+
+
 def _candidates(n: int) -> list[OpenLoopV1]:
-    # One dominant bottom-up loop + n aligned low-salience loops (concept_value
-    # is relevance()'s signal since Wave 2b removed per-drive field selection).
-    loops = [OpenLoopV1(id="dom", description="dominant", salience=0.75, concept_value=0.0)]
+    # One dominant bottom-up loop pointing at a DIFFERENT node + n low-salience
+    # loops that are on the goal's target.
+    loops = [OpenLoopV1(id="dom", description="dominant", salience=0.75,
+                        source_refs=["node:substrate.other"])]
     for i in range(n):
         loops.append(OpenLoopV1(id=f"g{i}", description=f"goal-aligned {i}",
-                                salience=0.30, concept_value=0.9))
+                                salience=0.30, source_refs=[_GOAL_TARGET]))
     return loops
 
 
 def _override_rate(*, priority: float, effort_max: float, trials: int = 20) -> float:
     combiner = TopDownBiasCombiner(TopDownConfig(gain=0.6, effort_max=effort_max))
-    goal = GoalContext(priority=priority, goal_artifact_id="g")
+    goal = GoalContext(priority=priority, goal_artifact_id="g", target_id=_GOAL_TARGET)
     overrides = 0
     for _ in range(trials):
         loops = _candidates(3)
@@ -50,10 +57,12 @@ def run() -> int:
 
     # (c) strong bottom-up beats weak bias
     combiner = TopDownBiasCombiner(TopDownConfig())
-    strong = [OpenLoopV1(id="dom", description="d", salience=0.98, concept_value=0.0),
-              OpenLoopV1(id="g0", description="g", salience=0.30, concept_value=0.9)]
-    strong_res = combiner.apply(goal=GoalContext(priority=0.3), loops=strong,
-                                bottom_up={"dom": 0.98, "g0": 0.30})
+    strong = [OpenLoopV1(id="dom", description="d", salience=0.98,
+                         source_refs=["node:substrate.other"]),
+              OpenLoopV1(id="g0", description="g", salience=0.30,
+                         source_refs=[_GOAL_TARGET])]
+    strong_res = combiner.apply(goal=GoalContext(priority=0.3, target_id=_GOAL_TARGET),
+                                loops=strong, bottom_up={"dom": 0.98, "g0": 0.30})
     # (d) no goal -> no override
     none_res = combiner.apply(goal=None, loops=strong, bottom_up={"dom": 0.98, "g0": 0.30})
 

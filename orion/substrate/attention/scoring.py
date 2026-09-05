@@ -136,7 +136,15 @@ def build_open_loops(
         continuity = 0.58 if any(token in user_text.lower() for token in ("again", "still", "remember", "continue", "our")) else 0.25
         relational = 0.68 if any(token in user_text.lower() for token in ("my ", "our ", "we ", "juniper", "relationship")) else 0.18
         predictive = 0.72 if target_type in {"plan", "future_event", "anomaly"} or _PLAN_RE.search(user_text) else 0.22
-        concept_value = max(concept_pressure_from_signals(signals, phrase), 0.55 if target_type in {"concept", "belief", "anomaly"} else 0.25)
+        # No floor. This used to be
+        #   max(concept_pressure_from_signals(...), 0.55 if <concept-ish> else 0.25)
+        # which fabricated a constant: the helper returns 0.0 for every
+        # substrate-broadcast signal (it only counts `concept_induction`
+        # sources), so the floor always won and every loop scored exactly 0.55.
+        # relevance() read this field, so top-down bias was identical across
+        # candidates and voluntary override could never fire -- see
+        # top_down.py::relevance. Report the real number, including 0.0.
+        concept_value = concept_pressure_from_signals(signals, phrase)
         askability = 0.5 if direct_turn else 0.72
         if generic_reversal or stale_thread_active:
             askability = min(askability, 0.25)

@@ -168,6 +168,7 @@ async def test_classify_turn_rpc_uses_metacog_route_and_disables_thinking():
     assert payload["options"]["llm_route"] == "metacog"
     assert payload["options"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["options"]["return_logprobs"] is True
+    assert payload["options"]["gateway_read_timeout_sec"] == float(app_settings.MEMORY_CLASSIFY_TIMEOUT_SEC)
     assert patch["turn_change_classify_route"] == "metacog"
 
 

@@ -162,6 +162,7 @@ class Settings(BaseSettings):
             "orion:notify:persistence:receipt",
             "orion:journal:write",
             "orion:self_study:items:write",
+            "orion:chat_stance:belief:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
             "orion:evidence:markdown:ingest",
@@ -533,6 +534,18 @@ class Settings(BaseSettings):
         # model/table all correct and the write silently going nowhere.
         if "orion:self_study:items:write" not in channels:
             channels.append("orion:self_study:items:write")
+        # Same guarantee again, same reason. chat_stance.belief.write.v1 is a
+        # code-default route with no feature toggle, and SQL_WRITER_SUBSCRIBE_
+        # CHANNELS replaces rather than merges -- a stale already-deployed
+        # operator .env that predates this channel would otherwise leave the
+        # route/model/table all correct and the write silently going nowhere.
+        # (Review note: this repeated per-channel guard pattern is a known,
+        # accepted maintenance cost -- a real union(code_defaults,
+        # env_configured) mechanism would remove the whole category, but
+        # refactoring this property is left to a follow-up patch rather than
+        # done here across two independently in-flight branches at once.)
+        if "orion:chat_stance:belief:write" not in channels:
+            channels.append("orion:chat_stance:belief:write")
         return channels
 
     @property

@@ -109,6 +109,26 @@ if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/nu
     fi
 fi
 
+# --- 2b. Refuse to ship a service whose live .env is behind its contract ---
+# `.env` is gitignored and machine-local, so NO CI gate can ever see it drift
+# behind the committed `.env_example`. This is the only chokepoint that can --
+# every bring-up already routes through here. Blocks only on structured drift
+# (a key present but short entries inside its JSON value), which no other tool
+# in this repo can detect and which deploys cleanly and then does nothing:
+# 2026-09-05, orion-sql-writer was four channels short and self_concept_history
+# sat at 0 rows through two "successful" deploys. Missing whole keys only warn,
+# since sync_local_env_from_example.py already fixes those.
+# Never blocks on a read-only compose arg it cannot classify -- it runs for any
+# invocation, and the cost of a skipped check is a silent outage.
+if [ -f "scripts/check_env_template_parity.py" ]; then
+    if ! python3 scripts/check_env_template_parity.py "$SERVICE"; then
+        echo "" >&2
+        echo "REFUSING to deploy $SERVICE with a structured env value behind its contract." >&2
+        echo "Deliberate exception: ORION_ALLOW_ENV_DRIFT=1 scripts/safe_docker_build.sh ..." >&2
+        exit 1
+    fi
+fi
+
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
 # AGENTS.md section 8 requires every docker compose invocation in this repo
 # to load BOTH the root .env and the service's own .env, root first --

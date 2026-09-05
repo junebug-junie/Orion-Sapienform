@@ -1993,11 +1993,31 @@ shape:
   enrichment.py::_llm_prompt`) was confirmed generic over segment text, no
   chat/speaker framing -- this needed no changes to run against self-facts
   text.
-- **Not built in this patch:** feeding Self Atlas's own per-cluster
-  descriptions back into `self_concept_history` (the identity.yaml-
-  replacement store, see `orion-cortex-exec/README.md`) -- that store's
-  Layer-3-reflection producer shipped this patch; the Self-Atlas-cluster
-  producer is a real, disclosed follow-up, not silently dropped.
+- **Self Atlas cluster-description writer (2026-09-05 follow-up):**
+  `scripts/self_atlas_cluster_history.py`'s `publish_self_atlas_cluster_
+  history()` is the second `self_concept_history` producer named above --
+  a 4th step in this same scheduler tick (same gate, no separate flag),
+  right after `concept_atlas_ingest_topic_foundry_self`. Per completed run:
+  fetches the run's topics/keywords/segments, builds one candidate row per
+  real cluster (`concept_id` from the cluster's LLM label, slugified --
+  falls back to `self-atlas-cluster-topic-{id}` when unlabeled, mirroring
+  `orion/substrate/adapters/topic_foundry.py`'s own missing-label
+  convention; `content` is the label plus up to 10 keywords; `evidence_refs`
+  are the cluster's `self_knowledge_items.item_id` values via each
+  segment's `provenance.row_ids`, capped at 50), then skips any cluster
+  whose content is unchanged since its last published version (a real
+  content-diff against `self_concept_history` itself, not an in-process
+  flag -- stays correct across a service restart) and publishes the rest
+  as `produced_by="self_atlas_cluster"` over `orion:self_concept:history:
+  write` (now a two-producer channel: `orion-cortex-exec` for Layer 3
+  reflection, `orion-hub` for this).
+  **Known, disclosed limitation:** topic-foundry has no stable cross-run
+  cluster identity -- a retrain that meaningfully relabels a cluster starts
+  a new `concept_id` lineage under this label-slug scheme. Not solved here;
+  would need real cross-run cluster matching that doesn't exist anywhere in
+  topic-foundry today.
+  **Still not built:** wiring any of this (Layer 3 reflection or Self Atlas
+  clusters) into live chat -- a deliberately separate, later decision.
 
 ## Field Channels tab
 

@@ -196,9 +196,9 @@ discipline as the journal/graph writebacks next to it. "Current" is defined
 as the latest row per `concept_id` by `created_at`, not an upsert; `version`
 is a real, queried-not-guessed increment (`_next_self_concept_version()`,
 reuses `self_study_analysis.py`'s engine) but is informational, not
-load-bearing for that definition. The second producer this table is
-designed for -- Self Atlas's own per-cluster descriptions, once topic-
-foundry's pipeline is pointed at self-facts -- is not wired in this patch;
+load-bearing for that definition. The second producer this table was
+designed for -- Self Atlas's own per-cluster descriptions -- is now wired
+too (2026-09-05 follow-up, `orion-hub`'s `self_atlas_cluster_history.py`);
 see `services/orion-hub/README.md`'s Self Atlas section for that half.
 
 ### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)

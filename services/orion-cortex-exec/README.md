@@ -181,6 +181,43 @@ design doc) has a real `source_table` to point a `DatasetSpec` at -- before
 this patch, Layer-1 items were only ever in-process, never durably
 queryable across runs. No new env keys.
 
+### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
+
+`self_study.py`'s Layer 1 (inspect) used to be pure codebase inventory
+(services/modules/channels/verbs/schemas/touchpoints/env_surfaces). Two new
+sections, both additive:
+
+- **`hardware`** -- `_hardware_items()` parses `config/field/
+  orion_field_topology.v1.yaml` directly (nodes/capabilities/edges). v1
+  scope only: live cabinet-sensor readings (temp/humidity/etc) are a known,
+  disclosed fast-follow, not silently dropped -- cortex-exec has no
+  `/run/orion-sensors` mount (only orion-hub does), so a live read needs
+  either a new mount or a cross-service call to orion-hub's
+  `cabinet_sensors_routes.py`.
+- **`behavioral`** -- `_behavioral_items()` reads the most recent rows from
+  the new `chat_stance_belief_log` table (real content: which anchors were
+  live, shift kind, lineage -- not anonymized counts. Juniper's explicit
+  2026-09-05 call: she is the sole user and companion, so redacting her own
+  conversations from Orion's own self-model is moot). That table is
+  populated by `chat_stance.py`'s real per-turn belief computation via
+  `orion/substrate/chat_stance_belief_bus.py`'s
+  `publish_chat_stance_belief_log_sync()` -- previously this belief set was
+  computed every turn and thrown away entirely (only a 4-key compact
+  summary survived 30 minutes in `executor.py`'s in-process
+  `_PRIOR_STANCE_CACHE`).
+
+Both new sections feed Layer 2's induced concepts (`_hardware_concepts()`/
+`_behavioral_concepts()`, concept kinds `physical_topology`/
+`behavioral_pattern`) and are therefore visible to Layer 3's real LLM
+reflection call automatically -- no change needed there, since
+`_self_study_reflect_input()` already receives the whole set of induced
+concepts.
+
+No new env keys. The behavioral read reuses `self_study_analysis.py`'s
+existing `_get_engine()`/DSN fallback chain (`SUBSTRATE_FELT_STATE_DATABASE_URL`
+→ `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL` → `POSTGRES_URI`) -- no fourth DB-URL
+key for one more table.
+
 ### AutonomyStateV2 on chat stance (default off)
 
 `app/chat_stance.py` can run the AutonomyStateV2 reducer after social/reasoning locals are built and **before** writing `ctx["chat_social_bridge_summary"]`.

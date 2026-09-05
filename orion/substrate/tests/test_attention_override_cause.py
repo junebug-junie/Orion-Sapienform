@@ -37,12 +37,22 @@ from orion.schemas.attention_self_model import AttentionSelfModelV1
 NOW = datetime(2026, 9, 4, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _loop(loop_id: str, *, salience: float, concept_value: float = 0.0) -> OpenLoopV1:
+_GOAL_TARGET = "node:substrate.wanted"
+
+
+def _loop(loop_id: str, *, salience: float, goal_relevant: bool = False) -> OpenLoopV1:
+    """Build a loop; ``goal_relevant`` puts it on the node the test goal targets.
+
+    Was ``concept_value=`` until 2026-09-05. relevance() no longer reads any
+    per-loop score field -- it joins ``GoalContext.target_id`` against
+    ``source_refs`` -- so steering these tests by concept_value silently made
+    every loop equally relevant and no override could fire.
+    """
     return OpenLoopV1(
         id=loop_id,
-        description=f"loop {loop_id}",
+        description=f"desc {loop_id}",
         salience=salience,
-        concept_value=concept_value,
+        source_refs=[_GOAL_TARGET] if goal_relevant else ["node:substrate.unrelated"],
     )
 
 
@@ -70,11 +80,11 @@ def _enable(monkeypatch: pytest.MonkeyPatch, *, goal: GoalContext | None) -> Non
     monkeypatch.setattr(goal_context_mod, "get_active_goal", lambda: goal)
 
 
-# Bottom-up would pick loop-b (0.50 > 0.30); concept_value only on loop-a means
+# Bottom-up would pick loop-b (0.50 > 0.30); only loop-a sits on the goal's target, so
 # top-down bias lands entirely there and flips the winner. gain=0.6,
 # effort_max=1.0 -> combined(a) = 0.30 + 0.6*1.0 = 0.90 > 0.50.
 def _flipping_loops() -> tuple[OpenLoopV1, OpenLoopV1]:
-    return _loop("loop-a", salience=0.30, concept_value=1.0), _loop("loop-b", salience=0.50)
+    return _loop("loop-a", salience=0.30, goal_relevant=True), _loop("loop-b", salience=0.50)
 
 
 class TestProducerExits:
@@ -92,7 +102,7 @@ class TestProducerExits:
         assert _reason(frame) == "no_active_goal"
 
     def test_no_loops_records_no_open_loops(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
         frame = _apply_voluntary_attention(_frame())
         assert _reason(frame) == "no_open_loops"
 
@@ -104,16 +114,16 @@ class TestProducerExits:
         nothing" vs "there was nothing to want"."""
         _enable(monkeypatch, goal=None)
         no_goal = _apply_voluntary_attention(_frame(_loop("loop-a", salience=0.4)))
-        _enable(monkeypatch, goal=GoalContext(priority=1.0))
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, target_id=_GOAL_TARGET))
         no_loops = _apply_voluntary_attention(_frame())
         assert _reason(no_goal) != _reason(no_loops)
 
     def test_bias_that_does_not_flip_the_winner(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
-        # concept_value on the loop that ALREADY wins bottom-up -> bias applied,
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
+        # the goal targets the loop that ALREADY wins bottom-up -> bias applied,
         # effort spent, winner unchanged.
         frame = _apply_voluntary_attention(
-            _frame(_loop("loop-a", salience=0.50, concept_value=1.0), _loop("loop-b", salience=0.30))
+            _frame(_loop("loop-a", salience=0.50, goal_relevant=True), _loop("loop-b", salience=0.30))
         )
         assert frame.voluntary_override is None
         assert _reason(frame) == "bias_did_not_flip_winner"
@@ -122,13 +132,13 @@ class TestProducerExits:
     def test_flip_without_a_candidate_action_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
         frame = _apply_voluntary_attention(_frame(*_flipping_loops()))
         assert frame.voluntary_override is None
         assert _reason(frame) == "winner_had_no_action"
 
     def test_successful_override_sets_no_reason(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
         action = CuriosityCandidateActionV1(action_type="watch", open_loop_id="loop-a")
         frame = _apply_voluntary_attention(_frame(*_flipping_loops(), actions=[action]))
         assert frame.voluntary_override is not None, "fixture must actually flip the winner"
@@ -144,14 +154,14 @@ class TestProducerExits:
         relevant to nothing" outcome. Before `TopDownResult.failed`, a crash in
         here was recorded as `bias_did_not_flip_winner` and narrated as a
         confident claim about goal quality. Found by code review 2026-09-04."""
-        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
 
         def _boom(goal: object, loop: object) -> float:
             raise RuntimeError("relevance exploded")
 
         monkeypatch.setattr(top_down_mod, "relevance", _boom)
         frame = _apply_voluntary_attention(
-            _frame(_loop("loop-a", salience=0.5, concept_value=1.0), _loop("loop-b", salience=0.3))
+            _frame(_loop("loop-a", salience=0.5, goal_relevant=True), _loop("loop-b", salience=0.3))
         )
         assert _reason(frame) == "combiner_error"
         assert _reason(frame) != "bias_did_not_flip_winner"
@@ -163,7 +173,7 @@ class TestProducerExits:
         success path is load-bearing rather than defensive. Deleting the clear
         must fail this test -- an earlier version asserted only against the
         schema default and could not fail at all (code review 2026-09-04)."""
-        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1"))
+        _enable(monkeypatch, goal=GoalContext(priority=1.0, goal_artifact_id="g-1", target_id=_GOAL_TARGET))
         action = CuriosityCandidateActionV1(action_type="watch", open_loop_id="loop-a")
         frame = _frame(*_flipping_loops(), actions=[action])
         frame.debug[VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY] = "no_active_goal"

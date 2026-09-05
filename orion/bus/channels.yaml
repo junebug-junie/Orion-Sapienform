@@ -2059,6 +2059,16 @@ channels:
     since: "2026-09-05"
     description: "Durable, multi-run history of self_study.py's Layer-1 SelfKnowledgeItemV1 items -- previously only summarized into a one-off journal entry, never stored as a growing queryable table. Prerequisite for topic-foundry's Self Atlas (Layer 2 rebuild, self-model rebuild arc)."
 
+  - name: "orion:chat_stance:belief:write"
+    kind: "event"
+    schema_id: "ChatStanceBeliefLogV1"
+    message_kind: "chat_stance.belief.write.v1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-05"
+    description: "Durable per-turn log of chat_stance.py's real belief computation (anchors/shift-kind/lineage), previously discarded after every turn. Feeds self_study Layer 1 _behavioral_items() (services/orion-cortex-exec/app/self_study.py) -- part of the self-model rebuild arc."
+
   - name: "orion:journal:created"
     kind: "event"
     schema_id: "JournalEntryWriteV1"

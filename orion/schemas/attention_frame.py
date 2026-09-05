@@ -77,6 +77,14 @@ class OpenLoopV1(BaseModel):
     target_type: AttentionTargetTypeV1 = "other"
     description: str
     source_text: str | None = None
+    # LOAD-BEARING for goal-directed attention since 2026-09-05: relevance()
+    # (orion/substrate/attention/top_down.py) matches GoalContext.target_id
+    # against this list, so a substrate loop must carry its originating
+    # `node:substrate.*` id here or no goal can ever bias it. Populated from
+    # AttentionSignalV1.evidence_refs in scoring.py::build_open_loops, which
+    # substrate_pressure_signals seeds with the node id. Changing the shape,
+    # order, or prefix of these ids silently reverts voluntary override to
+    # impossible -- pinned by test_relevance_joins_a_real_substrate_node.
     source_refs: list[str] = Field(default_factory=list)
     why_it_matters: str = ""
     novelty: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -113,10 +121,22 @@ class OpenLoopV1(BaseModel):
     # earlier draft of this note that wrongly claimed `novelty` was still
     # live -- it is not; `loop.novelty`/`OpenLoopV1.novelty` has no reader
     # anywhere, only a comment describing the deleted pre-v2 formula that
-    # used to reference it). predictive_value/concept_value/autonomy_value
-    # ARE confirmed still live: orion/substrate/attention/policy.py reads
+    # used to reference it). predictive_value/autonomy_value ARE confirmed
+    # still live: orion/substrate/attention/policy.py reads
     # loop.autonomy_value/loop.predictive_value directly in its ask-gating
-    # condition, and top_down.py's relevance() reads loop.concept_value.
+    # condition.
+    #
+    # concept_value JOINED THE UNREAD SET 2026-09-05. It was live only
+    # because top_down.py's relevance() read it -- and that was the defect:
+    # relevance() took a goal, never read it, and returned this field, which
+    # scoring.py had floored to a constant 0.55 for every substrate loop. So
+    # top-down bias was identical across candidates and voluntary override was
+    # mathematically impossible. relevance() now joins the goal's target to
+    # `source_refs` (see top_down.py::relevance) and nothing reads
+    # concept_value any more -- the producer at scoring.py still writes its
+    # real value. Retiring the field was NOT in this patch's scope; recorded
+    # here as a disclosed follow-up so the next cleanup does not re-derive
+    # this from scratch or trust the stale claim above.
     # novelty/continuity_relevance/relational_relevance were NOT part of
     # this patch's scope/approval -- flagged as a disclosed follow-up, not
     # removed here.

@@ -78,9 +78,15 @@ class GoalContextStore:
                 if self._current is not None and self._current.goal_artifact_id == artifact_id:
                     self._current = None
                 return
+            raw_target = getattr(goal, "field_target_id", None)
+            target_id = str(raw_target) if raw_target else None
             self._current = GoalContext(
                 priority=max(0.0, min(1.0, float(getattr(goal, "priority", 0.0) or 0.0))),
                 goal_artifact_id=artifact_id,
+                # Carrying the goal's subject through is what makes top-down
+                # bias able to discriminate at all -- dropping it here was the
+                # upstream half of the override-impossible defect.
+                target_id=target_id,
             )
         except Exception:
             return

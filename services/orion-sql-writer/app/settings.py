@@ -53,6 +53,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "notify.preference.update.v1": "NotificationPreferenceDB",
     "journal.entry.write.v1": "JournalEntrySQL",
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
+    "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
     "social.turn.v1": "SocialRoomTurnSQL",

@@ -39,6 +39,7 @@ from .metacognitive_trace import MetacognitiveTraceSQL
 from .journal_entry import JournalEntrySQL
 from .journal_entry_index import JournalEntryIndexSQL
 from .self_knowledge_item import SelfKnowledgeItemLogSQL
+from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
 from .external_room_message import ExternalRoomMessageSQL
@@ -121,6 +122,7 @@ __all__ = [
     "JournalEntrySQL",
     "SelfKnowledgeItemLogSQL",
     "JournalEntryIndexSQL",
+    "ChatStanceBeliefLogSQL",
     "EvidenceUnitSQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",

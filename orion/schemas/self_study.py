@@ -15,6 +15,14 @@ SelfKnowledgeCategory = Literal[
     "schema",
     "touchpoint",
     "env_surface",
+    # Added 2026-09-05 (Layer 1 broadening, self-model rebuild arc):
+    # physical/hardware facts (config/field/orion_field_topology.v1.yaml) and
+    # Orion's own aggregated conversational behavior (chat_stance_belief_log,
+    # previously computed every turn and discarded -- see
+    # services/orion-cortex-exec/app/self_study.py _hardware_items/
+    # _behavioral_items).
+    "hardware",
+    "behavioral",
 ]
 SelfWritebackState = Literal["written", "skipped", "failed"]
 SelfConceptKind = Literal[
@@ -31,6 +39,10 @@ SelfConceptKind = Literal[
     "graphify_community",
     "structural_mass",
     "semantic_enrichment",
+    # Added 2026-09-05 (Layer 1 broadening, self-model rebuild arc): additive
+    # concept sources over the new hardware/behavioral Layer-1 sections.
+    "physical_topology",
+    "behavioral_pattern",
 ]
 SelfReflectionKind = Literal[
     "tension",
@@ -76,6 +88,8 @@ class SelfKnowledgeSectionCountsV1(BaseModel):
     schemas: int = 0
     touchpoints: int = 0
     env_surfaces: int = 0
+    hardware: int = 0
+    behavioral: int = 0
 
 
 class SelfSnapshotV1(BaseModel):
@@ -94,6 +108,8 @@ class SelfSnapshotV1(BaseModel):
     schemas: list[SelfKnowledgeItemV1] = Field(default_factory=list)
     touchpoints: list[SelfKnowledgeItemV1] = Field(default_factory=list)
     env_surfaces: list[SelfKnowledgeItemV1] = Field(default_factory=list)
+    hardware: list[SelfKnowledgeItemV1] = Field(default_factory=list)
+    behavioral: list[SelfKnowledgeItemV1] = Field(default_factory=list)
 
 
 class SelfWritebackStatusV1(BaseModel):

@@ -64,6 +64,10 @@
 
     <div id="masError" class="hidden rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100/90"></div>
 
+    <!-- Computed from real numbers in state.trace/state.triggers, not prose --
+         see renderInterpretationBanner(). -->
+    <div id="masInterpretation" class="rounded-lg border border-gray-800 bg-gray-900/30 px-3 py-2 text-xs text-gray-300"></div>
+
     <div class="rounded-lg border border-gray-800 bg-gray-900/30 px-3 py-2 text-xs text-gray-500">
       Three panels below share one time axis (oldest &rarr; newest, left to right). Hover any panel for exact
       values at that moment. Each panel keeps its own Y-axis on purpose &mdash; <code>recon_loss</code> and
@@ -77,9 +81,17 @@
         <div class="text-[11px] text-gray-400" id="masLegendRecon">
           <span class="legend-key" style="background:var(--series-recon)"></span>recon_loss
           <span class="legend-key dashed ml-3"></span>threshold
+          <span class="ml-3" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--status-critical);vertical-align:middle;"></span>&nbsp;reacted to
+          <span class="ml-2" style="display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid #fbbf24;vertical-align:middle;"></span>&nbsp;flagged, no reaction
         </div>
       </div>
-      <div class="text-[11px] text-gray-500 mb-1">How wrong the encoder's own prediction is right now, against the line it must cross to count as anomalous.</div>
+      <div class="text-[11px] text-gray-500 mb-1">
+        When the solid line rises above the dashed line, a model trained on ~37 system metrics at once is
+        seeing a pattern it doesn't recognize as normal. A <b>filled red dot</b> means that reading actually
+        caused Orion to react (see panel 3); a <b>hollow amber ring</b> means it was flagged but no reaction
+        followed within 35s &mdash; almost always because orion-equilibrium-service's shared 30-second cooldown
+        was already used up by some other trigger.
+      </div>
       <div class="relative">
         <canvas id="masReconCanvas" width="960" height="160" class="w-full block"></canvas>
       </div>
@@ -94,7 +106,10 @@
           <span class="legend-key ml-3" style="background:var(--series-channel)"></span>30s avg
         </div>
       </div>
-      <div class="text-[11px] text-gray-500 mb-1">Real value of the one system metric confirmed (from actual trigger data) to be the dominant driver of panel 1 right now. This signal genuinely jumps between extremes tick-to-tick &mdash; the faint line is every real value, the bold line is a 30-second trailing average so the trend is readable.</div>
+      <div class="text-[11px] text-gray-500 mb-1">This is the "why" behind panel 1 &mdash; the one metric confirmed (from real trigger data) to be
+        responsible for panel 1's reading right now. It genuinely jumps between extremes tick-to-tick &mdash;
+        the faint line is every real value, the bold line is a 30-second trailing average so the trend is
+        readable. If this stays elevated, that's a real problem worth tracing to whatever produces it.</div>
       <div class="relative">
         <canvas id="masChannelCanvas" width="960" height="120" class="w-full block"></canvas>
       </div>
@@ -108,7 +123,10 @@
           <span class="legend-key" style="background:var(--status-critical); border-radius:50%; width:8px; height:8px;"></span>trigger fired
         </div>
       </div>
-      <div class="text-[11px] text-gray-500 mb-1">Real firings in orion-equilibrium-service, same time axis as above. Dot height = how far <code>recon_loss</code> overshot <code>threshold</code> at the moment it fired &mdash; not decoration, a real number.</div>
+      <div class="text-[11px] text-gray-500 mb-1">Each dot is a real moment Orion stopped and ran an actual self-reflection step
+        (<code>log_orion_metacognition</code>, in orion-cortex-orch) because of this signal &mdash; not a log
+        line, a genuine LLM call with panel 1's reason/pressure passed in as context. Dot height = how far
+        <code>recon_loss</code> overshot <code>threshold</code> at the moment it fired.</div>
       <div class="relative">
         <canvas id="masTriggerCanvas" width="960" height="110" class="w-full block"></canvas>
       </div>
@@ -173,8 +191,72 @@
       }
     }
 
+    // orion-equilibrium-service's metacog cooldown is 30s AND shared across
+    // every trigger kind (not just telemetry_anomaly) -- confirmed live,
+    // EQUILIBRIUM_METACOG_COOLDOWN_SEC=30 in that service's own .env. 35s
+    // gives a little slack for the real dispatch/processing delay between
+    // "recon_loss crossed threshold" and "trigger row written" without
+    // reaching into the NEXT cooldown window.
+    const REACTION_WINDOW_MS = 35000;
+
+    // For each anomalous inference-trace point, was there a real trigger
+    // fire within REACTION_WINDOW_MS after it? This is the actual
+    // cause-to-effect join the whole page exists to show -- computed once,
+    // shared by the recon chart's dot styling and the interpretation banner
+    // below, so they can never disagree with each other.
+    function correlateAnomaliesWithTriggers(points, triggers) {
+      const triggerTimes = triggers.map((t) => parseT(t.t)).filter((t) => t !== null).sort((a, b) => a - b);
+      return points.map((p) => {
+        if (!p.anomalous) return { ...p, reacted: null };
+        const pt = parseT(p.t);
+        if (pt === null) return { ...p, reacted: null };
+        const reacted = triggerTimes.some((tt) => tt >= pt && tt - pt <= REACTION_WINDOW_MS);
+        return { ...p, reacted };
+      });
+    }
+
+    function renderInterpretationBanner() {
+      const el = document.getElementById("masInterpretation");
+      const points = (state.trace && state.trace.points) || [];
+      const triggers = (state.triggers && state.triggers.triggers) || [];
+      const correlated = correlateAnomaliesWithTriggers(points, triggers);
+      const anomalousCount = correlated.filter((p) => p.anomalous).length;
+      const reactedCount = correlated.filter((p) => p.reacted === true).length;
+      const suppressedCount = anomalousCount - reactedCount;
+
+      if (!points.length) {
+        el.textContent = "No data loaded yet.";
+        return;
+      }
+      if (anomalousCount === 0) {
+        el.innerHTML = `<b class="text-emerald-300">Calm.</b> No anomalous ticks in this window -- nothing for Orion to react to.`;
+        return;
+      }
+
+      const parts = [];
+      parts.push(`<b>${anomalousCount}</b> anomalous tick${anomalousCount === 1 ? "" : "s"} in this window.`);
+      if (reactedCount > 0) {
+        parts.push(`<b class="text-rose-300">${triggers.length}</b> real self-reflection${triggers.length === 1 ? "" : "s"} fired because of ${reactedCount === triggers.length ? "them" : "some of them"} &mdash; panel 3.`);
+      }
+      if (suppressedCount > 0) {
+        parts.push(`<b class="text-amber-300">${suppressedCount}</b> flagged but had no reaction within 35s &mdash; most likely swallowed by the shared 30s cooldown, not evidence nothing was wrong.`);
+      }
+
+      let callToAction;
+      if (suppressedCount > reactedCount && suppressedCount >= 3) {
+        callToAction = "More anomalies are being suppressed than acted on. Worth asking whether telemetry_anomaly needs its own cooldown slot instead of sharing one with every other trigger kind.";
+      } else if (reactedCount > 0) {
+        callToAction = "Check panel 2 for what's actually elevated -- if it's still high, that's a real system condition worth tracing to its source, not just noting that Orion reacted.";
+      } else {
+        callToAction = "";
+      }
+
+      el.innerHTML = parts.join(" ") + (callToAction ? `<div class="mt-1 text-gray-400">${callToAction}</div>` : "");
+    }
+
     function render() {
       renderEncoderLine();
+      renderInterpretationBanner();
       renderReconChart();
       renderChannelChart();
       renderTriggerChart();
@@ -405,9 +487,13 @@
       drawLine(ctx, points, "threshold", domain, yLo, yHi, rect, "#898781", true);
       drawLine(ctx, points, "recon_loss", domain, yLo, yHi, rect, "#3987e5", false);
 
-      // Anomalous ticks -- surface ring (2px gap) so they read as distinct
-      // markers even where they sit on the line itself.
-      for (const p of points) {
+      // Anomalous ticks, split by whether a real trigger followed within the
+      // reaction window -- the actual cause->effect join, not decoration
+      // (see correlateAnomaliesWithTriggers, shared with the interpretation
+      // banner so the two can never disagree).
+      const triggers = (state.triggers && state.triggers.triggers) || [];
+      const correlated = correlateAnomaliesWithTriggers(points, triggers);
+      for (const p of correlated) {
         if (!p.anomalous || typeof p.recon_loss !== "number") continue;
         const t = parseT(p.t);
         if (t === null) continue;
@@ -415,12 +501,20 @@
         const y = yFor(p.recon_loss, yLo, yHi, rect);
         ctx.beginPath();
         ctx.arc(x, y, 4, 0, Math.PI * 2);
-        ctx.fillStyle = "#1a1a19";
+        ctx.fillStyle = "#1a1a19"; // surface ring
         ctx.fill();
-        ctx.beginPath();
-        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = "#d03b3b";
-        ctx.fill();
+        if (p.reacted) {
+          ctx.beginPath();
+          ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = "#d03b3b"; // status critical -- reacted to
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+          ctx.strokeStyle = "#fbbf24"; // hollow amber ring -- flagged, no reaction
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
       }
 
       attachHover(canvas, domain, [

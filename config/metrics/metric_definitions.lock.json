@@ -6,7 +6,7 @@
     "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-cortex-exec/orion:self_study:items:write"
+      "medium added metric://bus_channel/orion-cortex-exec/orion:chat_stance:belief:write"
     ]
   },
   "definitions": {
@@ -718,6 +718,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-cortex-exec/orion:chat_stance:belief:write": {
+      "schema_id": "ChatStanceBeliefLogV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-cortex-exec/orion:cognition:reasoning_call": {
       "schema_id": "ReasoningCallV1",
       "all_producers": [
@@ -927,17 +938,6 @@
         "orion-signal-gateway"
       ],
       "notes": "kind=telemetry stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-cortex-exec/orion:self_study:items:write": {
-      "schema_id": "SelfKnowledgeItemLogV1",
-      "all_producers": [
-        "orion-cortex-exec"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-exec/orion:spark:introspect:candidate": {

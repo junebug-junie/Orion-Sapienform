@@ -303,6 +303,25 @@ def describe_override_absence(model: AttentionSelfModelV1) -> str:
         return "no goal was active, so nothing competed with salience."
     if reason == "no_open_loops":
         return "no open loops were available to compete."
+    if reason == "goal_had_no_target":
+        return (
+            "a goal was active but named no target, so there was nothing to "
+            "match against the competing loops. That is a defect in whatever "
+            "produced the goal, not a fact about attention."
+        )
+    if reason == "goal_pushed_nothing":
+        return (
+            "a goal was active and its target WAS competing, but no bias "
+            f"actually reached it (effort {model.top_down_effort_used}) -- "
+            "zero priority, or the effort budget let nothing through. Nothing "
+            "was pushed, so nothing could be overridden."
+        )
+    if reason == "absence_unclassified":
+        return (
+            "the combiner returned a result this reducer could not classify, "
+            "so why no override occurred is unknown. Recorded as unknown "
+            "rather than guessed."
+        )
     if reason == "goal_matched_no_loop":
         return (
             "a goal was active but was about none of the "

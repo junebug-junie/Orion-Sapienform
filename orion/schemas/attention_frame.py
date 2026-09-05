@@ -289,8 +289,16 @@ VoluntaryOverrideAbsentReasonV1 = Literal[
     # Measured on the first 44 post-fix ticks: 33 of 43 non-firing ticks were
     # actually goal_matched_no_loop, so reading the old aggregate as "goals
     # keep losing" was wrong for three quarters of it.
+    "goal_had_no_target",
     "goal_matched_no_loop",
+    "goal_pushed_nothing",
     "goal_target_already_winning",
+    # Honest fallback. NEVER guess a cause when the result is unreadable: the
+    # narrow values above are consequential (bias_did_not_flip_winner is the
+    # only evidence-against-agency one) and defaulting to any of them makes an
+    # unreadable tick assert the strongest claim available. Same principle that
+    # put combiner_error here on 2026-09-04.
+    "absence_unclassified",
     # Top-down DID flip the winner, but that loop had no candidate action to
     # re-point to, so the frame refused to claim an override it cannot enact.
     "winner_had_no_action",

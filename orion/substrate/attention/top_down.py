@@ -119,6 +119,7 @@ class TopDownResult:
     # produce override=None and were recorded under the same reason string,
     # which made a low override rate uninterpretable -- they mean opposite
     # things about whether Orion has any say.
+    bottom_up_winner_loop_id: Optional[str] = None
     # True when Rule 8 below swallowed an exception and this result is a
     # fallback, not a real competition outcome. Added 2026-09-04 (code review):
     # the fallback is `_pure_bottom_up`, which returns a POPULATED per_loop with
@@ -128,7 +129,6 @@ class TopDownResult:
     # no override fired would confidently attribute the crash to goal
     # irrelevance. Rule 8 keeps the never-raise contract; this keeps the
     # never-raise contract from lying.
-    bottom_up_winner_loop_id: Optional[str] = None
     failed: bool = False
 
 

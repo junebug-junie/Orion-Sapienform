@@ -49,6 +49,7 @@ def test_mood_arc_status_static_page_has_root_ids() -> None:
         'id="masChannelCanvas"',
         'id="masTriggerCanvas"',
         'id="masTooltip"',
+        'id="masInterpretation"',
     ]:
         assert needle in html, f"Missing: {needle}"
 

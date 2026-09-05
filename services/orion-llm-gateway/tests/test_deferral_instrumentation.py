@@ -17,7 +17,7 @@ import logging
 
 import pytest
 
-from app.priority_admission import wait_for_slack, wait_for_slack_sync
+from app.priority_admission import wait_for_slack
 
 
 class _Target:
@@ -111,34 +111,11 @@ def test_a_timeout_still_warns_and_now_carries_the_duration(monkeypatch, caplog)
     assert float(rec["waited"].rstrip("s")) >= 0.0
 
 
-# ------------------------------------------------------------ the sync path is not forgotten
-
-def test_the_sync_path_is_instrumented_identically(monkeypatch, caplog):
-    """llm_backend.py:1414 uses wait_for_slack_sync. Instrumenting only the async path would
-    leave whichever one Orion's traffic actually takes invisible -- and it is not obvious from
-    the call sites which that is."""
-    calls = {"n": 0}
-
-    def fake_free(url, **kw):
-        calls["n"] += 1
-        return 0 if calls["n"] < 2 else 4
-
-    monkeypatch.setattr("app.priority_admission._free_slot_count_sync", fake_free)
-    with caplog.at_level(logging.INFO):
-        assert wait_for_slack_sync(_Target(), poll_interval_sec=0.001, max_wait_sec=5.0)
-
-    (rec,) = _parse(caplog)
-    assert rec["outcome"] == "admitted"
-    assert rec["polls"] == "2"
-
-
-def test_the_sync_timeout_also_carries_duration(monkeypatch, caplog):
-    monkeypatch.setattr("app.priority_admission._free_slot_count_sync", lambda url, **kw: 0)
-    with caplog.at_level(logging.INFO):
-        assert wait_for_slack_sync(_Target(), poll_interval_sec=0.001, max_wait_sec=0.01) is False
-
-    (rec,) = _parse(caplog)
-    assert rec["outcome"] == "timeout_forwarded"
+# ------------------------------------------------------------ there is no second path to forget
+#
+# `wait_for_slack_sync` was deleted 2026-09-05: the bus path now goes through the same
+# `background_admission` on the event loop (see test_priority_admission's via="bus" test),
+# so there is exactly one instrumented implementation and nothing left to drift.
 
 
 # ------------------------------------------------------------ behaviour is unchanged

@@ -133,7 +133,16 @@ class TopicFoundryLLMClient:
             try:
                 correlation_id = str(uuid4())
                 reply_channel = f"{settings.topic_foundry_llm_reply_prefix}:{correlation_id}"
-                options: Dict[str, Any] = {"temperature": temperature, "return_json": True}
+                options: Dict[str, Any] = {
+                    "temperature": temperature,
+                    "return_json": True,
+                    # The gateway's upstream read timeout defaults to READ_TIMEOUT_SEC (700s)
+                    # unless told otherwise, so without this it kept generating for up to
+                    # 700s after this RPC gave up at timeout_sec -- confirmed 2026-09-05 as
+                    # the feedback loop behind a 20-minute gateway backlog. Same field
+                    # orion-mind and orion-cortex-exec already send.
+                    "gateway_read_timeout_sec": float(settings.topic_foundry_llm_timeout_secs),
+                }
                 if max_tokens is not None:
                     options["max_tokens"] = max_tokens
                 payload = ChatRequestPayload(

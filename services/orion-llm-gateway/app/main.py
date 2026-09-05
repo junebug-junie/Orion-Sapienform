@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
 import httpx
@@ -19,7 +21,15 @@ from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_co
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
-from .llm_backend import get_route_targets, run_llm_chat
+from .llm_backend import (
+    ChatDispatchPlan,
+    _resolve_http_read_timeout_sec,
+    get_route_targets,
+    plan_llm_chat,
+    run_llm_chat,
+)
+from .priority_admission import background_admission
+from .upstream_admission import UpstreamAdmission, get_upstream_admission
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
 from .route_catalog import get_routes_payload
@@ -132,7 +142,11 @@ async def admission_snapshot(
     # JSON but which Python's own json.loads accepts, so the consumer would not notice either.
     raw = float(window_s)
     window = 21600.0 if not math.isfinite(raw) else min(max(raw, 60.0), 86400.0)
-    return get_ledger().snapshot(window_s=window, via=via)
+    snapshot = get_ledger().snapshot(window_s=window, via=via)
+    # Per-upstream in-flight depth (upstream_admission.py): live gauges, not windowed.
+    # Extra key on the same surface; cortex-exec's admission_cue only requires its own fields.
+    snapshot["upstreams"] = get_upstream_admission().snapshot()
+    return snapshot
 
 
 def _cfg() -> ChassisConfig:
@@ -210,6 +224,109 @@ async def _maybe_publish_latent_upsert(
         logger.warning("Latent upsert publish failed doc_id=%s error=%s", doc_id, exc)
 
 
+def _overloaded_result(
+    plan: ChatDispatchPlan, *, waited_s: float, budget_s: float, lane: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Same shape as llm_backend's `llm_route_unavailable` early return, so every consumer
+    that already handles a `raw.error` result handles this one."""
+    served_by = plan.route_target.served_by if plan.route_target else None
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {
+            "error": "gateway_overloaded",
+            "details": {
+                "route": plan.route,
+                "upstream": plan.upstream,
+                "served_by": served_by,
+                "waited_s": round(waited_s, 3),
+                "budget_s": round(budget_s, 3),
+                "lane": lane,
+            },
+        },
+        "route": plan.route,
+        "served_by": served_by,
+    }
+
+
+async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, Any]:
+    """Admission on the event loop, generation on a thread.
+
+    Order matters: a background route waits for /slots slack FIRST, while holding
+    nothing, so a background request polling for 30s never occupies one of its
+    upstream's in-flight permits (upstream_admission.py) that a foreground request
+    on the same upstream needs. Only once it may dispatch does it queue for a permit
+    like everyone else. The permit wait is bounded by the request's own read-timeout
+    budget: past that the caller has timed out anyway, so the request is shed rather
+    than generated into the void -- that wasted generation is what turned a busy
+    lane into a 20-minute backlog on 2026-09-05.
+    """
+    plan = plan_llm_chat(body)
+    if plan.error is not None:
+        return dict(plan.error)
+    budget_s = _resolve_http_read_timeout_sec(body)
+    deadline = time.monotonic() + budget_s
+    gate = get_upstream_admission()
+
+    async def _admit_and_run() -> Dict[str, Any]:
+        admission = gate.admit(plan.upstream, max_wait_s=deadline - time.monotonic())
+        async with admission as admitted:
+            lane = gate.lane(plan.upstream).public()
+            if not admitted:
+                logger.warning(
+                    "gateway_overloaded correlation_id=%s route=%s upstream=%s waited=%.1fs "
+                    "budget=%.1fs inflight=%s waiting=%s max_inflight=%s",
+                    correlation_id, plan.route, plan.upstream, admission.waited_s, budget_s,
+                    lane["inflight"], lane["waiting"], lane["max_inflight"],
+                )
+                return _overloaded_result(
+                    plan, waited_s=admission.waited_s, budget_s=budget_s, lane=lane
+                )
+            if admission.waited_s > 0.0:
+                logger.info(
+                    "gateway_upstream_queued correlation_id=%s route=%s upstream=%s waited=%.3fs "
+                    "inflight=%s waiting=%s",
+                    correlation_id, plan.route, plan.upstream, admission.waited_s,
+                    lane["inflight"], lane["waiting"],
+                )
+            return await asyncio.to_thread(run_llm_chat, body, plan)
+
+    target = plan.route_target
+    if target is not None and target.priority == "background":
+        async with background_admission(
+            plan.route,
+            target,
+            concurrency=settings.llm_gateway_background_concurrency,
+            poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
+            max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+            # ROADMAP A5: this path is orion-cortex-exec's bus RPC and orion-embodiment's
+            # speech -- Orion. The OpenAI passthrough on the same route key is AI Town's NPC
+            # dialogue, which is not. The cue makes a first-person claim, so the ledger
+            # must be able to tell them apart.
+            via="bus",
+        ):
+            return await _admit_and_run()
+    return await _admit_and_run()
+
+
+def configure_executor(loop: asyncio.AbstractEventLoop, gate: UpstreamAdmission) -> int:
+    """Size the default executor so every upstream lane can be full at once.
+
+    `asyncio.to_thread` runs on the loop's default executor, whose stock cap is
+    min(32, cpu+4) regardless of how many lanes exist. With per-upstream caps the
+    right size is a function of the route table, so it is derived, not configured.
+    """
+    upstreams = {t.url for t in get_route_targets().values()} or {"legacy"}
+    workers = gate.executor_workers(len(upstreams))
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=workers, thread_name_prefix="llm-gw"))
+    logger.info(
+        "[LLM-GW] executor sized workers=%d upstreams=%d max_inflight_per_upstream=%d",
+        workers, len(upstreams), gate.max_inflight,
+    )
+    return workers
+
+
 async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     if env.kind not in ("llm.chat.request", "legacy.message"):
         return BaseEnvelope(
@@ -281,7 +398,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         len(messages),
     )
 
-    result = await asyncio.to_thread(run_llm_chat, body)
+    result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
     text = result.get("text") if isinstance(result, dict) else str(result)
 
     # Optional Spark/NeuralHost enrichments. These may be absent depending on
@@ -454,6 +571,7 @@ async def main() -> None:
     )
     global bus_handle
     bus_handle = chat_svc.bus
+    configure_executor(asyncio.get_running_loop(), get_upstream_admission())
     route_targets = get_route_targets()
     routes_summary = ",".join(
         f"{name}={target.url}" for name, target in sorted(route_targets.items())

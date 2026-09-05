@@ -16,23 +16,19 @@ This is deliberately a fail-open gate, not a hard block: an unreachable
 caller's request -- it just proceeds without the wait, same as
 orion-embodiment's existing fail-open speech path.
 
-Two implementations live here, not one: `run_llm_chat` (llm_backend.py) is
-plain `def`, not `async def` -- it's dispatched via `asyncio.to_thread` from
-main.py, so it and everything it calls (including its LLM backend execution
-helpers) is blocking/sync code, not compatible with the asyncio-based
-`wait_for_slack`/`background_admission` above. `wait_for_slack_sync` is the
-same polling logic against a blocking `httpx` call and `time.sleep`, for that
-call site (used by orion-embodiment's ai-town speech, which reaches the
-gateway through this bus-native path rather than the OpenAI-compatible HTTP
-passthrough). It deliberately skips the per-route-key concurrency cap the
-async version has: `run_llm_chat`'s only caller in that context is
-orion-embodiment's speech path, which fires speech generation via
-`asyncio.create_task` (not strictly serialized) but is bounded to ~1, rarely
-2, concurrent calls in practice (one `active_conversation` at a time, guarded
-by the `_speaking_conversations` per-conversation set) -- not a hard
-guarantee, but nowhere near the kind of burst the async path's cap exists
-for. Wrapping this large, heavily-branched function's full dispatch in a
-semaphore for that marginal case would add real risk for little benefit.
+One implementation, used by both entry points. Until 2026-09-05 there was also a
+blocking `wait_for_slack_sync` that `run_llm_chat` called from inside its executor
+thread, because that function is plain `def`. That put the whole slack wait (up to
+LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC) on a pool thread, and the bus path skipped the
+per-route concurrency cap entirely. Admission for the bus path now happens in
+main.py's `handle_chat`, on the event loop, before any thread is taken -- the same
+`background_admission` context manager the OpenAI passthrough uses, with
+`via="bus"` so the ledger still tells the two apart. The sync variant is gone, not
+kept as a fallback.
+
+The per-upstream in-flight cap that stops one saturated lane from starving every
+other lane lives in upstream_admission.py; this module only decides *when* a
+background request may take one of that lane's permits.
 """
 from __future__ import annotations
 
@@ -175,65 +171,6 @@ async def wait_for_slack(
         await asyncio.sleep(interval)
 
 
-def _free_slot_count_sync(base_url: str, *, timeout_sec: float = 5.0) -> Optional[int]:
-    """Blocking counterpart to _free_slot_count, for run_llm_chat's sync call path."""
-    try:
-        resp = httpx.get(f"{base_url.rstrip('/')}/slots", timeout=timeout_sec)
-        resp.raise_for_status()
-        slots = resp.json()
-    except Exception as exc:  # noqa: BLE001 -- any failure here just means "can't check", not a hard error
-        logger.warning("[LLM-GW background] could not read /slots at %s: %s", base_url, exc)
-        return None
-    if not isinstance(slots, list):
-        return None
-    return sum(1 for s in slots if isinstance(s, dict) and not s.get("is_processing"))
-
-
-def wait_for_slack_sync(
-    target: RouteTarget,
-    *,
-    poll_interval_sec: float,
-    max_wait_sec: float,
-    route_key: str = "",
-    via: str = "",
-    queue_wait_s: float = 0.0,
-    queued: bool = False,
-) -> bool:
-    """Blocking counterpart to wait_for_slack, for run_llm_chat's sync call path.
-
-    Same contract: returns True if slack was confirmed, False if proceeding
-    without confirmation (unreachable /slots or timed out) -- the caller
-    forwards the request regardless either way.
-    """
-    reserved = target.reserved_free_slots or _DEFAULT_RESERVED_FREE_SLOTS
-    interval = max(poll_interval_sec, _MIN_POLL_INTERVAL_SEC)
-    started = time.monotonic()
-    deadline = started + max(0.0, max_wait_sec)
-    polls = 0
-    while True:
-        free = _free_slot_count_sync(target.url)
-        polls += 1
-        if free is None:
-            _log_and_record(route_key=route_key, target=target, via=via,
-                            queue_wait_s=queue_wait_s, queued=queued,
-                            waited_s=time.monotonic() - started, polls=polls,
-                            reserved=reserved, outcome="unchecked")
-            return False
-        if free >= reserved:
-            _log_and_record(route_key=route_key, target=target, via=via,
-                            queue_wait_s=queue_wait_s, queued=queued,
-                            waited_s=time.monotonic() - started, polls=polls,
-                            reserved=reserved, outcome="admitted")
-            return True
-        if time.monotonic() >= deadline:
-            _log_and_record(route_key=route_key, target=target, via=via,
-                            queue_wait_s=queue_wait_s, queued=queued,
-                            waited_s=time.monotonic() - started, polls=polls,
-                            reserved=reserved, outcome="timeout_forwarded")
-            return False
-        time.sleep(interval)
-
-
 class background_admission:
     """Async context manager: caps concurrent background requests to one
     upstream (so a burst of, say, several NPCs speaking at once can't claim
@@ -254,11 +191,13 @@ class background_admission:
         concurrency: int,
         poll_interval_sec: float,
         max_wait_sec: float,
+        via: str = "http",
     ) -> None:
         self._route_key = route_key
         self._target = target
         self._poll_interval_sec = poll_interval_sec
         self._max_wait_sec = max_wait_sec
+        self._via = via
         self._sem = _semaphore_for(route_key, concurrency)
 
     async def __aenter__(self) -> "background_admission":
@@ -282,7 +221,7 @@ class background_admission:
                 poll_interval_sec=self._poll_interval_sec,
                 max_wait_sec=self._max_wait_sec,
                 route_key=self._route_key,
-                via="http",
+                via=self._via,
                 queue_wait_s=queue_wait_s,
                 queued=queued,
             )

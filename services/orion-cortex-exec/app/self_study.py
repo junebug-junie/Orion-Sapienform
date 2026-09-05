@@ -128,7 +128,19 @@ _ENV_FALLBACK_RE = re.compile(r'^(?P<name>[A-Z0-9_]+)\s*:\s*', re.MULTILINE)
 # shared constant so a future new section only needs updating here.
 _SNAPSHOT_SECTION_NAMES: tuple[str, ...] = (
     "services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces",
+    # Added 2026-09-05 (Layer 1 broadening, self-model rebuild arc).
+    "hardware", "behavioral",
 )
+
+# Layer 1 hardware facts, v1 scope: the static field-topology config only
+# (see _hardware_items() below for why live cabinet-sensor readings are an
+# explicit, disclosed fast-follow rather than in this patch).
+_FIELD_TOPOLOGY_RELPATH = "config/field/orion_field_topology.v1.yaml"
+
+# How many recent chat_stance_belief_log rows Layer 1 surfaces as behavioral
+# facts each run. Not a privacy cap (see module-level note above) -- purely
+# to keep one snapshot from growing unbounded as the table accumulates.
+_BEHAVIORAL_ITEMS_LIMIT = 20
 
 _GRAPHIFY_GRAPH_JSON_RELPATH = "graphify-out/graph.json"
 _GRAPHIFY_GRAPH_REPORT_RELPATH = "graphify-out/GRAPH_REPORT.md"
@@ -514,6 +526,144 @@ def _env_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
     return sorted(items, key=lambda item: (item.metadata.get("surface", ""), item.name))
 
 
+def _hardware_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
+    """Physical/hardware self-facts, v1 scope: the static field-topology
+    config (nodes/capabilities/edges) -- config/field/orion_field_topology
+    .v1.yaml, parsed directly (mirrors _channel_items()'s own yaml.safe_load
+    pattern; no cross-service import). Live cabinet-sensor readings
+    (temp/humidity/etc) are a known, disclosed fast-follow, not silently
+    dropped: cortex-exec has no /run/orion-sensors mount (only orion-hub
+    does), so a live read needs either a new mount or a cross-service call
+    to orion-hub's cabinet_sensors_routes.py -- out of scope for this patch,
+    see the PR report."""
+    path = REPO_ROOT / _FIELD_TOPOLOGY_RELPATH
+    if not path.exists():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.warning("self_study_field_topology_unreadable path=%s", path)
+        return []
+
+    items: list[SelfKnowledgeItemV1] = []
+    for node in data.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("node_id") or "")
+        if not node_id:
+            continue
+        items.append(
+            _item(
+                run_id=run_id,
+                observed_at=observed_at,
+                category="hardware",
+                name=f"node:{node_id}",
+                source_path=_rel(path),
+                origin_kind="hardware_node",
+                origin_name=node_id,
+                metadata={"kind": "node"},
+            )
+        )
+    for capability in data.get("capabilities") or []:
+        if not isinstance(capability, dict):
+            continue
+        capability_id = str(capability.get("capability_id") or "")
+        if not capability_id:
+            continue
+        items.append(
+            _item(
+                run_id=run_id,
+                observed_at=observed_at,
+                category="hardware",
+                name=f"capability:{capability_id}",
+                source_path=_rel(path),
+                origin_kind="hardware_capability",
+                origin_name=capability_id,
+                metadata={"kind": "capability"},
+            )
+        )
+    for edge in data.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        source_id = str(edge.get("source_id") or "")
+        target_id = str(edge.get("target_id") or "")
+        if not source_id or not target_id:
+            continue
+        items.append(
+            _item(
+                run_id=run_id,
+                observed_at=observed_at,
+                category="hardware",
+                name=f"edge:{source_id}->{target_id}",
+                source_path=_rel(path),
+                origin_kind="hardware_edge",
+                origin_name=f"{source_id}->{target_id}",
+                metadata={
+                    "kind": "edge",
+                    "edge_type": edge.get("edge_type"),
+                    "weight": edge.get("weight"),
+                },
+            )
+        )
+    return sorted(items, key=lambda item: item.name)
+
+
+def _behavioral_items(*, run_id: str, observed_at: str) -> list[SelfKnowledgeItemV1]:
+    """Orion's own recent conversational behavior, read directly from
+    chat_stance_belief_log (populated by chat_stance.py's real per-turn
+    belief computation -- see orion/substrate/chat_stance_belief_bus.py).
+    Real content, not anonymized counts: Juniper's explicit 2026-09-05 call
+    is that she is the sole user and companion, so redaction/aggregation of
+    her own conversations from her own self-model is moot. Fails soft (empty
+    list) if the DB is unreachable or the table doesn't exist yet -- this
+    table is new as of this same patch, so a fresh deploy racing this call
+    is expected, not a bug."""
+    from app.self_study_analysis import _get_engine
+    from sqlalchemy import text
+
+    engine = _get_engine()
+    if engine is None:
+        return []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT entry_id, created_at, shift_kind, anchor_summary, lineage_summary "
+                    "FROM chat_stance_belief_log ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"limit": _BEHAVIORAL_ITEMS_LIMIT},
+            ).mappings().all()
+    except Exception as exc:
+        logger.debug("self_study_behavioral_items_unavailable error=%s", exc)
+        return []
+
+    items: list[SelfKnowledgeItemV1] = []
+    for row in rows:
+        entry_id = str(row["entry_id"])
+        created_at = row["created_at"]
+        created_at_str = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+        shift_kind = row["shift_kind"]
+        name = f"turn:{created_at_str}" + (f":{shift_kind}" if shift_kind and shift_kind != "NONE" else "")
+        items.append(
+            _item(
+                run_id=run_id,
+                observed_at=observed_at,
+                category="behavioral",
+                name=name,
+                source_path="chat_stance_belief_log",
+                origin_kind="behavioral_turn",
+                origin_name=entry_id,
+                metadata={
+                    "shift_kind": shift_kind,
+                    "anchor_summary": row["anchor_summary"],
+                    "lineage_summary": row["lineage_summary"],
+                    "created_at": created_at_str,
+                },
+            )
+        )
+    return items
+
+
 def _counts_for_sections(sections: dict[str, Sequence[SelfKnowledgeItemV1]]) -> SelfKnowledgeSectionCountsV1:
     return SelfKnowledgeSectionCountsV1(**{key: len(value) for key, value in sections.items()})
 
@@ -551,6 +701,8 @@ def build_self_snapshot(*, observed_at: str | None = None, root: Path | None = N
         "schemas": _schema_items(run_id=run_id, observed_at=ts),
         "touchpoints": _touchpoint_items(run_id=run_id, observed_at=ts),
         "env_surfaces": _env_items(run_id=run_id, observed_at=ts),
+        "hardware": _hardware_items(run_id=run_id, observed_at=ts),
+        "behavioral": _behavioral_items(run_id=run_id, observed_at=ts),
     }
     snapshot_id = f"self-snapshot-{_stable_digest(_canonical_snapshot_payload(sections))}"
     return SelfSnapshotV1(
@@ -967,6 +1119,51 @@ def _semantic_enrichment_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedC
     return sorted(concepts, key=lambda concept: concept.label)
 
 
+def _hardware_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]:
+    """One `physical_topology` concept summarizing Layer 1's new hardware
+    items (field-topology nodes/capabilities/edges), if any exist. Additive,
+    whole-snapshot, same shape as _structural_delta_concepts/
+    _semantic_enrichment_concepts above -- not the real Layer 2 clustering
+    rebuild (that's a separate, later patch in the self-model rebuild arc),
+    just making sure these new Layer-1 facts are visible to Layer 3 today."""
+    if not snapshot.hardware:
+        return []
+    names = sorted({item.name for item in snapshot.hardware})
+    preview = ", ".join(names[:8]) + ("..." if len(names) > 8 else "")
+    return [
+        _concept(
+            snapshot=snapshot,
+            concept_kind="physical_topology",
+            label="Orion's physical mesh topology",
+            description=f"Orion's physical mesh: {preview}.",
+            evidence_items=snapshot.hardware,
+            inferred_from=["hardware"],
+        )
+    ]
+
+
+def _behavioral_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]:
+    """One `behavioral_pattern` concept summarizing Layer 1's new behavioral
+    items (recent real chat_stance turns), if any exist. Same additive shape
+    as _hardware_concepts above."""
+    if not snapshot.behavioral:
+        return []
+    shift_kinds = sorted({str(item.metadata.get("shift_kind") or "NONE") for item in snapshot.behavioral})
+    return [
+        _concept(
+            snapshot=snapshot,
+            concept_kind="behavioral_pattern",
+            label="Orion's recent conversational behavior",
+            description=(
+                f"Orion's {len(snapshot.behavioral)} most recent logged conversational turns "
+                f"span shift kinds: {', '.join(shift_kinds)}."
+            ),
+            evidence_items=snapshot.behavioral,
+            inferred_from=["behavioral"],
+        )
+    ]
+
+
 def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]:
     _validate_authoritative_snapshot(snapshot)
 
@@ -1082,6 +1279,9 @@ def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]
     concepts.extend(_graphify_derived_concepts(snapshot, covered_item_ids))
     concepts.extend(_structural_delta_concepts(snapshot))
     concepts.extend(_semantic_enrichment_concepts(snapshot))
+    # Added 2026-09-05 (Layer 1 broadening, self-model rebuild arc).
+    concepts.extend(_hardware_concepts(snapshot))
+    concepts.extend(_behavioral_concepts(snapshot))
 
     concepts.sort(key=lambda item: (item.concept_kind, item.label))
     return concepts
@@ -2332,6 +2532,8 @@ def build_self_study_rdf_request(snapshot: SelfSnapshotV1) -> RdfWriteRequest:
         ("schemas", snapshot.schemas),
         ("touchpoints", snapshot.touchpoints),
         ("env_surfaces", snapshot.env_surfaces),
+        ("hardware", snapshot.hardware),
+        ("behavioral", snapshot.behavioral),
     )
     for section_name, items in section_map:
         for item in items:

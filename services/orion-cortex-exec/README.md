@@ -160,6 +160,43 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `SELF_STUDY_REFLECT_LLM_ROUTE` | `agent` | LLM route override for the `self_study.reflect` verb's real reflection call, validated through `orion/llm/routes.py`'s `normalize_llm_route()`. An unrecognised value falls back to the verb's own default lane rather than guessing. |
 | `SELF_STUDY_REFLECT_TIMEOUT_SEC` | `240` | RPC budget (seconds) for the `self_study.reflect` call. Raised from an initial 115s the same day (2026-09-04) once live: the agent-route reasoning model needs real wall-clock time to write its reasoning before the answer, not just tokens -- a real call completed normally in ~121s once given enough token budget to finish (see PR #2085). Kept under `self_study.reflect.yaml`'s own 260000ms verb/step timeout on purpose, so this file's own RPC wait times out first -- a clean, catchable "no reflection" result instead of the orchestrator killing the step out from under an in-flight wait. |
 
+### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
+
+`self_study.py`'s Layer 1 (inspect) used to be pure codebase inventory
+(services/modules/channels/verbs/schemas/touchpoints/env_surfaces). Two new
+sections, both additive:
+
+- **`hardware`** -- `_hardware_items()` parses `config/field/
+  orion_field_topology.v1.yaml` directly (nodes/capabilities/edges). v1
+  scope only: live cabinet-sensor readings (temp/humidity/etc) are a known,
+  disclosed fast-follow, not silently dropped -- cortex-exec has no
+  `/run/orion-sensors` mount (only orion-hub does), so a live read needs
+  either a new mount or a cross-service call to orion-hub's
+  `cabinet_sensors_routes.py`.
+- **`behavioral`** -- `_behavioral_items()` reads the most recent rows from
+  the new `chat_stance_belief_log` table (real content: which anchors were
+  live, shift kind, lineage -- not anonymized counts. Juniper's explicit
+  2026-09-05 call: she is the sole user and companion, so redacting her own
+  conversations from Orion's own self-model is moot). That table is
+  populated by `chat_stance.py`'s real per-turn belief computation via
+  `orion/substrate/chat_stance_belief_bus.py`'s
+  `publish_chat_stance_belief_log_sync()` -- previously this belief set was
+  computed every turn and thrown away entirely (only a 4-key compact
+  summary survived 30 minutes in `executor.py`'s in-process
+  `_PRIOR_STANCE_CACHE`).
+
+Both new sections feed Layer 2's induced concepts (`_hardware_concepts()`/
+`_behavioral_concepts()`, concept kinds `physical_topology`/
+`behavioral_pattern`) and are therefore visible to Layer 3's real LLM
+reflection call automatically -- no change needed there, since
+`_self_study_reflect_input()` already receives the whole set of induced
+concepts.
+
+No new env keys. The behavioral read reuses `self_study_analysis.py`'s
+existing `_get_engine()`/DSN fallback chain (`SUBSTRATE_FELT_STATE_DATABASE_URL`
+→ `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL` → `POSTGRES_URI`) -- no fourth DB-URL
+key for one more table.
+
 ### AutonomyStateV2 on chat stance (default off)
 
 `app/chat_stance.py` can run the AutonomyStateV2 reducer after social/reasoning locals are built and **before** writing `ctx["chat_social_bridge_summary"]`.

@@ -20,6 +20,8 @@ The daily compaction cron (`scripts/compact_convex_data.sh`, see "Maintenance" b
 | `dashboard` | 6791 | Convex dashboard |
 | `frontend` | 5173 | AI Town game UI |
 
+All three services use `restart: unless-stopped` so a Circe host reboot (or Docker daemon restart) brings town back without a manual `compose up`. A deliberate `docker compose stop` still stays stopped.
+
 ## Bootstrap (mesh node)
 
 ### 1. Clone upstream

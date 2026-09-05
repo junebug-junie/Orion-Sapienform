@@ -109,6 +109,47 @@ if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/nu
     fi
 fi
 
+# --- 2b. Refuse to ship a service whose live .env is behind its contract ---
+# `.env` is gitignored and machine-local, so NO CI gate can ever see it drift
+# behind the committed `.env_example`. This is the only chokepoint that can --
+# every bring-up already routes through here. Blocks only on structured drift
+# (a key present but short entries inside its JSON value), which no other tool
+# in this repo can detect and which deploys cleanly and then does nothing:
+# 2026-09-05, orion-sql-writer was four channels short and self_concept_history
+# sat at 0 rows through two "successful" deploys. Missing whole keys only warn,
+# since sync_local_env_from_example.py already fixes those.
+# Never blocks on a read-only compose arg it cannot classify -- it runs for any
+# invocation, and the cost of a skipped check is a silent outage.
+if [ -f "scripts/check_env_template_parity.py" ]; then
+    if ! python3 scripts/check_env_template_parity.py "$SERVICE"; then
+        echo "" >&2
+        echo "REFUSING to deploy $SERVICE with a structured env value behind its contract." >&2
+        echo "Deliberate exception: ORION_ALLOW_ENV_DRIFT=1 scripts/safe_docker_build.sh ..." >&2
+        exit 1
+    fi
+fi
+
+# Same blind spot, different symptom: check_service_hostname_refs.py has always
+# read .env_example only, because it runs in CI and .env is gitignored. But .env
+# is what the container reads, so a hand-edit to http://orion-notify:7140 passes
+# CI green, deploys clean, and silently breaks notify -- ~20 PRs of recurring
+# repair. Verified from inside a container 2026-09-05: `notify` and
+# `orion-athena-notify` resolve, `orion-notify` resolves nowhere. Scoped to the
+# service being deployed so an unrelated service's file cannot block this bring-up.
+# The hatch is honoured HERE rather than inside the script: that script is also a
+# CI gate, and teaching a CI gate to read an env var meant for deploys would give
+# CI a bypass it must never have.
+if [ -f "scripts/check_service_hostname_refs.py" ] && [ "${ORION_ALLOW_ENV_DRIFT:-}" != "1" ]; then
+    if ! python3 scripts/check_service_hostname_refs.py \
+            --include-live-env --service "$SERVICE"; then
+        echo "" >&2
+        echo "REFUSING to deploy $SERVICE: its live .env names a service by its" >&2
+        echo "directory name, which resolves on no host. Use the compose service key." >&2
+        echo "Deliberate exception: ORION_ALLOW_ENV_DRIFT=1 scripts/safe_docker_build.sh ..." >&2
+        exit 1
+    fi
+fi
+
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
 # AGENTS.md section 8 requires every docker compose invocation in this repo
 # to load BOTH the root .env and the service's own .env, root first --

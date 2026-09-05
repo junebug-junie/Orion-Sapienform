@@ -113,13 +113,68 @@ def _service_keys_by_dirname() -> dict[str, str]:
     return keys
 
 
-def _find_violations(dirname_to_key: dict[str, str]) -> list[dict[str, str]]:
+def _find_violations(
+    dirname_to_key: dict[str, str],
+    *,
+    include_live_env: bool = False,
+    only_service: str | None = None,
+) -> list[dict[str, str]]:
+    """Scan `.env_example`, and optionally the live `.env` alongside it.
+
+    **Why `.env` was not scanned until 2026-09-05.** `.env` is gitignored, so a CI
+    run cannot see it and this script has always been a CI gate. But `.env` is the
+    file the container actually reads: a hand-edit to `http://orion-notify:7140`
+    passes CI green, deploys successfully, and silently breaks notify -- a failure
+    Juniper reports having fixed across roughly twenty PRs. Checking only the
+    committed template validates the contract and never the thing that runs.
+
+    `include_live_env` is therefore used from `scripts/safe_docker_build.sh`, the
+    one place `.env` is both present and about to matter, and left off in CI where
+    the file does not exist.
+    """
     violations: list[dict[str, str]] = []
     for service_dir in sorted(_SERVICES_DIR.iterdir()):
-        env_example = service_dir / ".env_example"
-        if not env_example.is_file():
+        if only_service and service_dir.name != only_service:
             continue
-        for lineno, line in enumerate(env_example.read_text(encoding="utf-8").splitlines(), start=1):
+        targets = [service_dir / ".env_example"]
+        if include_live_env:
+            # `.env` is gitignored, so it exists ONLY in the primary checkout --
+            # never in a linked worktree. Resolving it relative to this file makes
+            # the scan silently find nothing and report OK, which is worse than not
+            # having it: caught 2026-09-05 by injecting a real bad hostname and
+            # watching the gate pass. Same trap main_worktree_root() documents for
+            # sync_local_env_from_example.py.
+            targets.append(_live_env_root() / "services" / service_dir.name / ".env")
+        for env_example in targets:
+            if not env_example.is_file():
+                continue
+            _scan_file(env_example, dirname_to_key, violations)
+    return violations
+
+
+def _display_path(p: "Path") -> str:
+    for base in (_REPO_ROOT, _live_env_root()):
+        try:
+            return str(p.relative_to(base))
+        except ValueError:
+            continue
+    return str(p)
+
+
+def _live_env_root() -> Path:
+    """Where the live `.env` files actually are -- the primary checkout, always."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from sync_local_env_from_example import main_worktree_root
+
+        return main_worktree_root()
+    except Exception:
+        return _REPO_ROOT
+
+
+def _scan_file(env_example: "Path", dirname_to_key: dict[str, str], violations: list) -> None:
+    if True:
+        for lineno, line in enumerate(env_example.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -130,18 +185,27 @@ def _find_violations(dirname_to_key: dict[str, str]) -> list[dict[str, str]]:
                     continue
                 violations.append(
                     {
-                        "file": str(env_example.relative_to(_REPO_ROOT)),
+                        "file": _display_path(env_example),
                         "line": str(lineno),
                         "hostname_used": host,
                         "real_compose_service_key": real_key,
                     }
                 )
-    return violations
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of prose.")
+    parser.add_argument(
+        "--include-live-env",
+        action="store_true",
+        help="also scan each service's gitignored .env -- the file the container actually "
+             "reads. Used at deploy time; useless in CI, where .env does not exist.",
+    )
+    parser.add_argument(
+        "--service",
+        help="restrict the scan to one services/<name> directory (deploy-time use).",
+    )
     parser.add_argument(
         "--report-only",
         action="store_true",
@@ -150,7 +214,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     dirname_to_key = _service_keys_by_dirname()
-    violations = _find_violations(dirname_to_key)
+    violations = _find_violations(
+        dirname_to_key,
+        include_live_env=args.include_live_env,
+        only_service=args.service,
+    )
 
     if args.json:
         print(json.dumps({"violations": violations}))

@@ -126,7 +126,10 @@ _DEFAULT_PROMPT_MAX_CHARS = 7200
 # larger result set) and guarantees this module's re-rank sees the true full
 # live pool.
 _CURIOSITY_PRIOR_POOL_SAMPLE = LIVE_PRIORS_LIMIT
-_CURIOSITY_PRIOR_STALE_AFTER = 6
+# _CURIOSITY_PRIOR_STALE_AFTER (was a hardcoded 6, no rationale ever
+# recorded) removed 2026-09-05 -- see _fetch_curiosity_context()'s
+# `stale_after=0` for why this consumer needs no staleness gate at all,
+# not a differently-sourced number.
 _CURIOSITY_MAX_PRIORS = 2
 # Kept tight relative to worldview.py's own `_clip(text, limit=240)` (used
 # for Orion's SELF-STUDY prompt, a much larger budget than this 1200-char
@@ -1673,7 +1676,22 @@ def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
     snapshot = read_snapshot(
         reader,
         sample=_CURIOSITY_PRIOR_POOL_SAMPLE,
-        stale_after=_CURIOSITY_PRIOR_STALE_AFTER,
+        # 0 disables select_priors()'s staleness split entirely
+        # (`if stale_after > 0 and ...`) -- matches _build_curiosity_
+        # context()'s own documented intent above ("no staleness gate
+        # here"). This module used to pass a hardcoded 6 instead
+        # (_CURIOSITY_PRIOR_STALE_AFTER, removed 2026-09-05, no rationale
+        # ever recorded for that number), which silently contradicted that
+        # intent: a well-tested, genuinely confident prior (real example,
+        # this file's own test suite: times_tested=3 and =5) would cross
+        # the threshold and vanish from this confidence-ranked display
+        # entirely, via a code path this function never reads
+        # (`snapshot.stale_priors`) -- confirmed live by code review,
+        # reproduced by hand. Staleness is a real, meaningful gate for
+        # curiosity_investigation.py's own "what should Orion test next"
+        # queue (HUB_CURIOSITY_STALE_PRIOR_TESTS); it was never a real gate
+        # for "what does Orion currently believe."
+        stale_after=0,
     )
     if snapshot.is_unavailable:
         return CuriosityPriorContextV1(available=False, source="error")

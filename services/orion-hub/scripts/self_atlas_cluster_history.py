@@ -125,6 +125,17 @@ def _build_self_atlas_cluster_events(
                 bucket.add(str(row_id))
 
     events: list[dict[str, Any]] = []
+    # Review finding (2026-09-05): two distinct clusters can slugify to the
+    # same concept_id (e.g. "GPU Thermal Behavior!" vs "GPU Thermal
+    # Behavior?" both -> "self-atlas-cluster-gpu-thermal-behavior"). Left
+    # undetected, the caller's per-concept version lookup runs before either
+    # candidate is actually published, so both would compute the SAME next
+    # version with DIFFERENT content and both get written -- silently
+    # clobbering one cluster's identity in an append-only table with no
+    # uniqueness constraint to catch it. Disambiguate any same-batch
+    # collision by the topic_id, deterministically, so at most one candidate
+    # per concept_id ever reaches the caller's publish loop.
+    seen_concept_ids: set[str] = set()
     for item in topics:
         raw_topic_id = item.get("topic_id")
         try:
@@ -137,9 +148,20 @@ def _build_self_atlas_cluster_events(
         label = str(label).strip() if label else None
         keywords = keywords_by_topic.get(topic_id, [])
         evidence_refs = sorted(row_ids_by_topic.get(topic_id, set()))[:_MAX_EVIDENCE_REFS_PER_CLUSTER]
+        concept_id = _self_atlas_concept_id(topic_id, label)
+        if concept_id in seen_concept_ids:
+            logger.warning(
+                "self_atlas_cluster_history_concept_id_collision concept_id=%s topic_id=%s -- "
+                "another cluster in this same run already claimed this slug; "
+                "disambiguating by topic_id instead of silently colliding",
+                concept_id,
+                topic_id,
+            )
+            concept_id = f"{concept_id}-topic-{topic_id}"
+        seen_concept_ids.add(concept_id)
         events.append(
             {
-                "concept_id": _self_atlas_concept_id(topic_id, label),
+                "concept_id": concept_id,
                 "content": _self_atlas_content(label, topic_id, keywords),
                 "evidence_refs": evidence_refs,
             }
@@ -178,12 +200,37 @@ def _get_engine() -> Any:
     return _ENGINE
 
 
-def _latest_self_concept_history_row(concept_id: str) -> Optional[tuple[int, str]]:
-    """Real ``(version, content)`` of the newest row for ``concept_id``, or
-    ``None`` if there isn't one yet or the lookup fails for any reason.
-    Fails soft (same convention as cortex-exec's
+def _coerce_evidence_refs(raw: Any) -> list[str]:
+    """``evidence_refs`` is a generic JSON column (not JSONB) -- psycopg2
+    usually deserializes it to a Python list already, but a raw ``text()``
+    query bypasses SQLAlchemy's typed-column machinery, so tolerate it
+    coming back as a JSON string too rather than assuming the driver did it."""
+    if isinstance(raw, list):
+        return [str(v) for v in raw]
+    if isinstance(raw, str):
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            return [str(v) for v in parsed] if isinstance(parsed, list) else []
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
+def _latest_self_concept_history_row(concept_id: str) -> Optional[tuple[int, str, list[str]]]:
+    """Real ``(version, content, evidence_refs)`` of the newest row for
+    ``concept_id``, or ``None`` if there isn't one yet or the lookup fails
+    for any reason. Fails soft (same convention as cortex-exec's
     ``_next_self_concept_version``) -- an unreachable DB must not block this
     producer from at least attempting a version-1 write.
+
+    ``evidence_refs`` is part of this lookup (review finding, 2026-09-05):
+    a cluster whose label/keywords stay stable but keeps accumulating new
+    self_knowledge_items evidence over time must still get a fresh version --
+    comparing content text alone would skip it forever after the first
+    publish, silently freezing "evidence-linked" history that isn't tracking
+    new evidence at all.
     """
     try:
         from sqlalchemy import text
@@ -195,7 +242,7 @@ def _latest_self_concept_history_row(concept_id: str) -> Optional[tuple[int, str
             row = (
                 conn.execute(
                     text(
-                        "SELECT version, content FROM self_concept_history "
+                        "SELECT version, content, evidence_refs FROM self_concept_history "
                         "WHERE concept_id = :concept_id ORDER BY version DESC LIMIT 1"
                     ),
                     {"concept_id": concept_id},
@@ -205,7 +252,7 @@ def _latest_self_concept_history_row(concept_id: str) -> Optional[tuple[int, str
             )
         if row is None:
             return None
-        return int(row["version"]), str(row["content"])
+        return int(row["version"]), str(row["content"]), _coerce_evidence_refs(row["evidence_refs"])
     except Exception as exc:
         logger.debug("self_atlas_cluster_history_lookup_failed concept_id=%s error=%s", concept_id, exc)
         return None
@@ -222,11 +269,11 @@ def _unavailable(reason: str, error: Optional[str] = None, **extra: Any) -> dict
 def publish_self_atlas_cluster_history() -> dict[str, Any]:
     """Fetch the self-facts dataset's latest completed topic-foundry run,
     build one candidate ``self_concept_history`` row per real cluster, skip
-    any whose content is unchanged since its last published version (so an
-    unchanged cluster produces zero rows on every scheduler tick -- this
-    replaces any need for in-process "have I seen this run_id" tracking, and
-    stays correct across a service restart, which an in-memory flag would
-    not), and publish the rest.
+    any whose content AND evidence_refs are both unchanged since its last
+    published version (so an unchanged cluster produces zero rows on every
+    scheduler tick -- this replaces any need for in-process "have I seen
+    this run_id" tracking, and stays correct across a service restart, which
+    an in-memory flag would not), and publish the rest.
 
     Never raises -- every failure mode degrades to an ``_unavailable(...)``
     dict, same contract as this service's other Self Atlas scheduler steps.
@@ -279,7 +326,17 @@ def publish_self_atlas_cluster_history() -> dict[str, Any]:
     skipped_unchanged = 0
     for candidate in candidates:
         existing = _latest_self_concept_history_row(candidate["concept_id"])
-        if existing is not None and existing[1] == candidate["content"]:
+        # Compare content AND evidence_refs (sorted -- _build_self_atlas_
+        # cluster_events already returns evidence_refs sorted, so this is a
+        # stable comparison): a cluster whose label/keywords stay the same
+        # but keeps accumulating new self_knowledge_items evidence still
+        # needs a fresh version. Content-only comparison would silently
+        # freeze that cluster's history after its first publish.
+        if (
+            existing is not None
+            and existing[1] == candidate["content"]
+            and existing[2] == sorted(candidate["evidence_refs"])
+        ):
             skipped_unchanged += 1
             continue
         version = existing[0] + 1 if existing is not None else 1

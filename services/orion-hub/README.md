@@ -2004,13 +2004,19 @@ shape:
   `orion/substrate/adapters/topic_foundry.py`'s own missing-label
   convention; `content` is the label plus up to 10 keywords; `evidence_refs`
   are the cluster's `self_knowledge_items.item_id` values via each
-  segment's `provenance.row_ids`, capped at 50), then skips any cluster
-  whose content is unchanged since its last published version (a real
-  content-diff against `self_concept_history` itself, not an in-process
-  flag -- stays correct across a service restart) and publishes the rest
-  as `produced_by="self_atlas_cluster"` over `orion:self_concept:history:
-  write` (now a two-producer channel: `orion-cortex-exec` for Layer 3
-  reflection, `orion-hub` for this).
+  segment's `provenance.row_ids`, capped at 50). Two clusters that
+  slugify to the same `concept_id` in the same run (e.g. differently
+  punctuated near-duplicate labels) are disambiguated by topic_id rather
+  than silently colliding onto one identity -- caught by code review, see
+  `test_build_events_disambiguates_concept_id_collision_within_a_batch`.
+  Skips any cluster whose content AND evidence_refs are both unchanged
+  since its last published version (a real diff against
+  `self_concept_history` itself, not an in-process flag -- stays correct
+  across a service restart, and correctly still bumps the version when
+  only the evidence trail grew, not just when the label/keywords changed)
+  and publishes the rest as `produced_by="self_atlas_cluster"` over
+  `orion:self_concept:history:write` (now a two-producer channel:
+  `orion-cortex-exec` for Layer 3 reflection, `orion-hub` for this).
   **Known, disclosed limitation:** topic-foundry has no stable cross-run
   cluster identity -- a retrain that meaningfully relabels a cluster starts
   a new `concept_id` lineage under this label-slug scheme. Not solved here;

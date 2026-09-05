@@ -201,7 +201,7 @@ def test_publish_writes_version_one_when_no_existing_row(monkeypatch: pytest.Mon
 def test_publish_skips_concept_with_unchanged_content(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import self_atlas_cluster_history as sach
 
-    monkeypatch.setattr(sach, "_latest_self_concept_history_row", lambda concept_id: (2, "same content"))
+    monkeypatch.setattr(sach, "_latest_self_concept_history_row", lambda concept_id: (2, "same content", []))
     published_events = []
     monkeypatch.setattr(
         sach, "_publish_events", lambda events, *, correlation_id: (published_events.extend(events) or (len(events), 0))
@@ -222,7 +222,7 @@ def test_publish_skips_concept_with_unchanged_content(monkeypatch: pytest.Monkey
 def test_publish_bumps_version_when_content_changed(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import self_atlas_cluster_history as sach
 
-    monkeypatch.setattr(sach, "_latest_self_concept_history_row", lambda concept_id: (2, "old content"))
+    monkeypatch.setattr(sach, "_latest_self_concept_history_row", lambda concept_id: (2, "old content", []))
     published_events = []
     monkeypatch.setattr(
         sach, "_publish_events", lambda events, *, correlation_id: (published_events.extend(events) or (len(events), 0))
@@ -237,6 +237,81 @@ def test_publish_bumps_version_when_content_changed(monkeypatch: pytest.MonkeyPa
 
     assert result["published_count"] == 1
     assert published_events[0]["version"] == 3
+
+
+def test_publish_bumps_version_when_only_evidence_refs_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review finding (2026-09-05): a cluster whose label/keywords are
+    stable but has accumulated new self_knowledge_items evidence must still
+    get a fresh version -- comparing content text alone would freeze this
+    cluster's history forever after its first publish."""
+    from scripts import self_atlas_cluster_history as sach
+
+    monkeypatch.setattr(sach, "_latest_self_concept_history_row", lambda concept_id: (1, "same content", ["item-1"]))
+    published_events = []
+    monkeypatch.setattr(
+        sach, "_publish_events", lambda events, *, correlation_id: (published_events.extend(events) or (len(events), 0))
+    )
+    monkeypatch.setattr(
+        sach,
+        "_build_self_atlas_cluster_events",
+        lambda **kwargs: [
+            {"concept_id": "self-atlas-cluster-a", "content": "same content", "evidence_refs": ["item-1", "item-2"]}
+        ],
+    )
+
+    result = _run_publish_with_fake_fetch(monkeypatch, sach)
+
+    assert result["published_count"] == 1
+    assert result["skipped_unchanged_count"] == 0
+    assert published_events[0]["version"] == 2
+
+
+def test_build_events_disambiguates_concept_id_collision_within_a_batch() -> None:
+    """Review finding (2026-09-05): two distinct clusters whose labels
+    slugify to the same string must not silently collide onto one
+    concept_id -- each candidate in a batch must end up with a unique id."""
+    from scripts import self_atlas_cluster_history as sach
+
+    topics = [
+        {"topic_id": 0, "label": "GPU Thermal Behavior!", "count": 5},
+        {"topic_id": 1, "label": "GPU Thermal Behavior?", "count": 7},
+    ]
+
+    events = sach._build_self_atlas_cluster_events(topics=topics, keywords_by_topic={}, segments=[])
+
+    concept_ids = [e["concept_id"] for e in events]
+    assert len(concept_ids) == len(set(concept_ids)), "collided concept_ids must be disambiguated"
+    assert concept_ids[0] == "self-atlas-cluster-gpu-thermal-behavior"
+    assert concept_ids[1] == "self-atlas-cluster-gpu-thermal-behavior-topic-1"
+
+
+def test_publish_end_to_end_handles_colliding_concept_ids_without_dropping_either(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full orchestration path (not just the pure builder): two colliding
+    candidates must both reach a distinct _latest_self_concept_history_row
+    lookup and both get published, rather than one silently overwriting the
+    other's version decision."""
+    from scripts import self_atlas_cluster_history as sach
+
+    monkeypatch.setattr(sach, "_latest_self_concept_history_row", lambda concept_id: None)
+    published_events = []
+    monkeypatch.setattr(
+        sach, "_publish_events", lambda events, *, correlation_id: (published_events.extend(events) or (len(events), 0))
+    )
+    monkeypatch.setattr(
+        sach,
+        "_build_self_atlas_cluster_events",
+        lambda **kwargs: [
+            {"concept_id": "self-atlas-cluster-a", "content": "content A", "evidence_refs": []},
+            {"concept_id": "self-atlas-cluster-a-topic-1", "content": "content B", "evidence_refs": []},
+        ],
+    )
+
+    result = _run_publish_with_fake_fetch(monkeypatch, sach)
+
+    assert result["published_count"] == 2
+    assert {e["concept_id"] for e in published_events} == {"self-atlas-cluster-a", "self-atlas-cluster-a-topic-1"}
 
 
 def _run_publish_with_fake_fetch(monkeypatch: pytest.MonkeyPatch, sach) -> dict:

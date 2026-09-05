@@ -851,7 +851,10 @@ Scheduled mutation autonomy is intentionally fail-closed for non-shared control-
 - If unsupported/degraded (for example memory/sqlite fallback), scheduler ticks no-op with structured `substrate_mutation_scheduler` log status `unsafe_mode_noop`.
 - Hub startup logs an explicit warning when autonomy is enabled but runtime posture is unsafe.
 
-Live control-surface inspection:
+Live control-surface inspection ("live"/"routing" naming below is legacy --
+`routing_threshold_patch` was retired 2026-09-05, was parked 2026-09-03; these
+endpoints stay up and now report a `retired`/`routing_target_parked` status
+plus whatever historical data already exists, rather than a live value):
 
 - `GET /api/substrate/mutation-runtime/live-routing-surface`
   - Returns current live value for `routing.chat_reflective_lane_threshold`, including control-surface store source/degraded metadata.
@@ -1666,7 +1669,11 @@ Operational refresh:
 
 1) Inspect autonomy posture:
 - `curl -s "http://localhost:8080/api/substrate/autonomy-readiness" | jq .`
-- Confirm `surfaces.live` contains only `routing_threshold_patch`.
+- **Retired 2026-09-05** (was parked 2026-09-03): `routing_threshold_patch`
+  was the only surface this step ever named as live, and it's confirmed
+  unreachable now -- `decision_router.route()`, the decision path it tuned,
+  is not reached by any current Hub UI mode. Confirm `surfaces.live` is
+  empty instead.
 
 2) View policy matrix / constitution:
 - `curl -s "http://localhost:8080/api/substrate/autonomy-constitution" | jq .`
@@ -1697,7 +1704,8 @@ Operational refresh:
 - freeform production prompt rewrite
 
 9) Live mutable surface:
-- only `routing_threshold_patch` (gated).
+- none. `routing_threshold_patch` was the only one and it's retired
+  2026-09-05 (see step 1 above) -- no surface currently has live apply.
 
 10) Routing rollback check:
 - inspect `GET /api/substrate/autonomy-readiness` routing + recent activity blocks/rollbacks.

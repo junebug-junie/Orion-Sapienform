@@ -78,14 +78,8 @@ def test_the_ratchet_does_not_hide_a_channel_that_got_fixed() -> None:
     assert not stale, f"now subscribed -- delete from KNOWN_UNSUBSCRIBED: {stale}"
 
 
-def test_the_routing_decision_channel_survives_a_stale_operator_env() -> None:
-    """The always-append guarantee, not just the default list.
-
-    An operator env var replaces the default wholesale, so the default alone is
-    not enough to keep this lane alive.
-    """
-    stale = settings.model_copy(
-        update={"sql_writer_subscribe_channels": ["orion:tags:enriched"]}
-    )
-
-    assert "orion:routing:decision" in stale.effective_subscribe_channels
+# test_the_routing_decision_channel_survives_a_stale_operator_env() removed
+# 2026-09-05: the always-append guarantee it tested (`orion:routing:decision`
+# force-appended to effective_subscribe_channels) was removed along with the
+# channel, schema, and RoutingDecisionSQL model -- all retired, see this
+# change's PR description.

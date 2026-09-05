@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from orion.core.schemas.substrate_mutation import MutationDecisionV1, MutationProposalV1, MutationTrialV1
-from orion.substrate.mutation_contracts import CONTRACTS, validate_patch
+from orion.substrate.mutation_contracts import CONTRACTS, RETIRED_MUTATION_CLASSES, validate_patch
 
 _PROMOTED_GOAL_STATUSES = frozenset({"planned", "executing"})
 
@@ -36,7 +36,11 @@ def _proposal_targets_autonomy_goal_execution(proposal: MutationProposalV1) -> b
 
 @dataclass
 class DecisionPolicy:
-    auto_promote_allowlist: set[str] = field(default_factory=lambda: {"routing_threshold_patch", "graph_consolidation_param_patch"})
+    # "routing_threshold_patch" removed 2026-09-05 (retired -- see
+    # mutation_contracts.py's RETIRED_MUTATION_CLASSES). Kept out of this
+    # allowlist as defense in depth alongside DecisionEngine.decide()'s
+    # explicit early-reject below, not as the only gate.
+    auto_promote_allowlist: set[str] = field(default_factory=lambda: {"graph_consolidation_param_patch"})
     operator_gated_classes: set[str] = field(
         default_factory=lambda: {
             "approved_prompt_profile_variant_promotion",
@@ -69,6 +73,18 @@ class DecisionEngine:
         has_replay_and_baseline: bool,
         active_surface_exists: bool,
     ) -> MutationDecisionV1:
+        if proposal.mutation_class in RETIRED_MUTATION_CLASSES:
+            # Checked before anything else: a retired class must never reach
+            # "auto_promote" or even "require_review" regardless of how the
+            # proposal reached this call (normal pipeline, a hand-built
+            # proposal, a replayed historical row). See
+            # mutation_contracts.py's RETIRED_MUTATION_CLASSES docstring.
+            return MutationDecisionV1(
+                proposal_id=proposal.proposal_id,
+                action="reject",
+                reason="mutation_class_retired",
+                notes=[f"mutation_class:{proposal.mutation_class}"],
+            )
         if _proposal_targets_autonomy_goal_execution(proposal):
             goal_status = _goal_proposal_status_from_proposal(proposal)
             if unpromoted_goal_blocks_execution(goal_proposal_status=goal_status):

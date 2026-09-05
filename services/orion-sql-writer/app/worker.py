@@ -46,7 +46,6 @@ from app.models import (
     SparkTelemetrySQL,
     BusFallbackLog,
     CognitionTraceSQL,
-    RoutingDecisionSQL,
     ThoughtDecisionSQL,
     MetacognitionTickSQL,
     MetacogTriggerSQL,
@@ -114,7 +113,6 @@ from orion.journaler import (
     build_created_event_payload,
     build_journal_entry_index_payload,
 )
-from orion.schemas.routing_decision import RoutingDecisionRecordV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
@@ -445,7 +443,6 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
-    "RoutingDecisionSQL": (RoutingDecisionSQL, RoutingDecisionRecordV1),
     # schema_cls=None: harness-governor already validated each of the four
     # source molecules before publishing (orion/harness/finalize.py); the
     # column this write fills is picked from the payload's own

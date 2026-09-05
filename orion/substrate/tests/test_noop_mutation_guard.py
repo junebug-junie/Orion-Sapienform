@@ -10,22 +10,14 @@ which blocks a real proposal for the length of the window.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
 
 from orion.core.schemas.substrate_mutation import (
-    MutationDecisionV1,
     MutationPatchV1,
     MutationProposalV1,
 )
 from orion.substrate import mutation_control_surface
 from orion.substrate.mutation_apply import PatchApplier
-from orion.substrate.mutation_decision import DecisionEngine
-from orion.substrate.mutation_detectors import MutationDetectors
-from orion.substrate.mutation_monitor import PostAdoptionMonitor
-from orion.substrate.mutation_pressure import PressureAccumulator
-from orion.substrate.mutation_proposals import ProposalFactory
 from orion.substrate.mutation_queue import SubstrateMutationStore
 
 
@@ -91,64 +83,15 @@ def test_an_uncomparable_surface_is_never_called_a_noop(isolated_surface) -> Non
     assert PatchApplier(surfaces={}).noop_reason(proposal=other) is None
 
 
-def test_the_worker_records_the_skip_rather_than_swallowing_it(
-    isolated_surface, monkeypatch
-) -> None:
-    """Driven through the real run_cycle, not by calling the helper directly.
-
-    The guard's whole value is that the cycle *reaches* it and leaves a record.
-    A test that calls ``noop_reason`` and then records the block by hand proves
-    only that the helper returns a string.
-    """
-    from orion.core.schemas.substrate_mutation import MutationTrialV1
-    from orion.substrate.mutation_worker import SubstrateAdaptationWorker
-
-    class _PassingTrials:
-        """Minimal stand-in: the trial lane is not what is under test here."""
-
-        class corpus_registry:  # noqa: N801 - matches the attribute the worker reads
-            @staticmethod
-            def ready_for_class(_mutation_class: str) -> bool:
-                return True
-
-        def run_trial(self, *, proposal, **_kwargs) -> MutationTrialV1:
-            return MutationTrialV1(
-                proposal_id=proposal.proposal_id,
-                mutation_class=proposal.mutation_class,
-                replay_corpus_id="corpus-test",
-                baseline_metric_ref="baseline-test",
-                status="passed",
-            )
-
-    monkeypatch.setenv("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true")
-    mutation_control_surface.set_chat_reflective_lane_threshold(value=0.58, actor="seed")
-    store = SubstrateMutationStore()
-    proposal = _proposal(0.58)
-    store.add_proposal(proposal, priority=60)
-    worker = SubstrateAdaptationWorker(
-        store=store,
-        detectors=MutationDetectors(),
-        pressure=PressureAccumulator(),
-        proposals=ProposalFactory(),
-        trial_runner=_PassingTrials(),
-        decision_engine=DecisionEngine(),
-        applier=PatchApplier(surfaces={}),
-        monitor=PostAdoptionMonitor(),
-    )
-
-    result = worker.run_cycle(
-        telemetry=[],
-        measured_metrics_by_proposal={},
-        now=datetime.now(timezone.utc),
-    )
-
-    assert any("patch_is_noop" in n for n in result["notes"]), result["notes"]
-    assert result["adoptions"] == 0
-    assert store.active_surface("routing") is None  # no lock taken
-    assert any(
-        "patch_is_noop" in str(row.get("reason"))
-        for row in store.recent_blocked_applies(limit=5)
-    )
+# test_the_worker_records_the_skip_rather_than_swallowing_it() removed
+# 2026-09-05: drove this guard through a real run_cycle() on a
+# "routing_threshold_patch" proposal, which can no longer reach the noop
+# check at all -- DecisionEngine.decide() now rejects the retired class
+# (mutation_contracts.py's RETIRED_MUTATION_CLASSES) before the cycle ever
+# gets to PatchApplier.apply()/noop_reason(). The noop-detection logic
+# itself is still covered directly by the tests above and below (calling
+# noop_reason() in isolation, not through a full worker cycle). See this
+# change's PR description.
 
 
 def test_the_noop_guard_leaves_the_surface_untouched(isolated_surface) -> None:

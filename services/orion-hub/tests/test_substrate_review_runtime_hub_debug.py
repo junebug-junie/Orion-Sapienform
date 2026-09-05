@@ -750,12 +750,11 @@ def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
     assert "identity_kernel" in by_surface
     assert "policy_safety" in by_surface
     assert "production_prompt" in by_surface
-    # routing_threshold_patch is parked as of 2026-09-03 (see
-    # mutation_proposals.py's ROUTING_TARGET_PARKED_REASON) -- zero surfaces
-    # currently have live apply, which is the correct, expected state, not a
-    # regression of the constitution's own invariant.
+    # routing_threshold_patch was parked 2026-09-03, retired 2026-09-05 --
+    # zero surfaces currently have live apply, which is the correct,
+    # expected state, not a regression of the constitution's own invariant.
     assert payload["summary"]["live_apply_surfaces"] == []
-    assert by_surface["routing_threshold_patch"]["status"] == "parked"
+    assert by_surface["routing_threshold_patch"]["status"] == "retired"
     assert by_surface["routing_threshold_patch"]["live_apply_allowed"] is False
     assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
     assert by_surface["recall_weighting_patch"]["apply"] == "forbidden"

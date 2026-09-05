@@ -268,6 +268,15 @@ class Settings(BaseSettings):
     orion_situation_curiosity_ttl_seconds: int = Field(
         180, alias="ORION_SITUATION_CURIOSITY_TTL_SECONDS"
     )
+    # 2026-09-05: matches Hub's real HUB_CURIOSITY_STALE_PRIOR_TESTS default
+    # (3) instead of silently falling back to settings_from_runtime's own
+    # getattr default -- same as the fields above, declared explicitly here
+    # rather than left implicit. Inert in practice today: with no graph host
+    # configured for this process (see the comment above), _fetch_curiosity_
+    # context() degrades to unavailable before stale_after is ever read.
+    orion_situation_curiosity_stale_after: int = Field(
+        3, alias="ORION_SITUATION_CURIOSITY_STALE_AFTER"
+    )
     # 2026-08-30: Orion's most recent dream/reverie interpretations. Default
     # ON -- reuses the POSTGRES_URI this process already reads for
     # orion/situational/perception_reader.py, via

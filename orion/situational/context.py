@@ -126,7 +126,11 @@ _DEFAULT_PROMPT_MAX_CHARS = 7200
 # larger result set) and guarantees this module's re-rank sees the true full
 # live pool.
 _CURIOSITY_PRIOR_POOL_SAMPLE = LIVE_PRIORS_LIMIT
-_CURIOSITY_PRIOR_STALE_AFTER = 6
+# _CURIOSITY_PRIOR_STALE_AFTER (was a hardcoded 6, no rationale ever
+# recorded) removed 2026-09-05: SituationSettings.curiosity_stale_after now
+# carries this, sourced from the same HUB_CURIOSITY_STALE_PRIOR_TESTS
+# curiosity_investigation.py's real turns already use, instead of a second,
+# independent guess that quietly disagreed with it.
 _CURIOSITY_MAX_PRIORS = 2
 # Kept tight relative to worldview.py's own `_clip(text, limit=240)` (used
 # for Orion's SELF-STUDY prompt, a much larger budget than this 1200-char
@@ -186,6 +190,7 @@ class SituationSettings:
     affect_max_age_seconds: int
     curiosity_enabled: bool
     curiosity_ttl_seconds: int
+    curiosity_stale_after: int
     curiosity_graph_host: str
     curiosity_graph_port: int
     curiosity_graph_name: str
@@ -332,6 +337,18 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         # is looser than affect/perception on purpose.
         curiosity_ttl_seconds=int(
             getattr(settings, "orion_situation_curiosity_ttl_seconds", 180)
+        ),
+        # 2026-09-05: was a second, independent hardcoded guess
+        # (`_CURIOSITY_PRIOR_STALE_AFTER = 6`, no rationale ever recorded)
+        # sitting next to curiosity_investigation.py's real, configured one
+        # (`HUB_CURIOSITY_STALE_PRIOR_TESTS`, default 3) -- the same belief
+        # read as "stale, set aside" on one curiosity code path and "still
+        # worth re-testing" on the other, purely depending on which one
+        # asked. One number now, reused via
+        # hub_settings_to_runtime_namespace()'s mapping, same pattern as the
+        # graph host/port/name below.
+        curiosity_stale_after=int(
+            getattr(settings, "orion_situation_curiosity_stale_after", 3)
         ),
         # Reuses HUB_CURIOSITY_GRAPH_* wiring rather than a new dedicated
         # key set -- see hub_settings_to_runtime_namespace()'s mapping.
@@ -520,6 +537,12 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         ),
         orion_situation_curiosity_ttl_seconds=int(
             getattr(cfg, "ORION_SITUATION_CURIOSITY_TTL_SECONDS", 180)
+        ),
+        # Reuses Hub's EXISTING HUB_CURIOSITY_STALE_PRIOR_TESTS (already the
+        # real value curiosity_investigation.py's own turns use) instead of
+        # a second, parallel constant -- see settings_from_runtime()'s note.
+        orion_situation_curiosity_stale_after=int(
+            getattr(cfg, "HUB_CURIOSITY_STALE_PRIOR_TESTS", 3)
         ),
         orion_situation_curiosity_graph_host=str(
             getattr(cfg, "HUB_CURIOSITY_GRAPH_HOST", "") or ""
@@ -1673,7 +1696,7 @@ def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
     snapshot = read_snapshot(
         reader,
         sample=_CURIOSITY_PRIOR_POOL_SAMPLE,
-        stale_after=_CURIOSITY_PRIOR_STALE_AFTER,
+        stale_after=cfg.curiosity_stale_after,
     )
     if snapshot.is_unavailable:
         return CuriosityPriorContextV1(available=False, source="error")

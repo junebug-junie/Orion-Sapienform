@@ -160,6 +160,27 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `SELF_STUDY_REFLECT_LLM_ROUTE` | `agent` | LLM route override for the `self_study.reflect` verb's real reflection call, validated through `orion/llm/routes.py`'s `normalize_llm_route()`. An unrecognised value falls back to the verb's own default lane rather than guessing. |
 | `SELF_STUDY_REFLECT_TIMEOUT_SEC` | `240` | RPC budget (seconds) for the `self_study.reflect` call. Raised from an initial 115s the same day (2026-09-04) once live: the agent-route reasoning model needs real wall-clock time to write its reasoning before the answer, not just tokens -- a real call completed normally in ~121s once given enough token budget to finish (see PR #2085). Kept under `self_study.reflect.yaml`'s own 260000ms verb/step timeout on purpose, so this file's own RPC wait times out first -- a clean, catchable "no reflection" result instead of the orchestrator killing the step out from under an in-flight wait. |
 
+### Self-study knowledge item log (2026-09-05, self-model rebuild arc, Patch 2)
+
+Every `self_repo_inspect` run now also publishes one `orion:self_study:items
+:write` bus message per Layer-1 item (`publish_self_knowledge_items()`,
+published concurrently, bounded), additive to the existing one-off journal
+summary (which stays exactly that, a summary, not storage of record). This
+is designed to give the new `self_knowledge_items` Postgres table a real,
+growing, multi-run history of Layer-1 facts, with a `metadata_text` column
+flattened for plain-text clustering -- **implemented and unit-tested, not
+yet live-verified this patch** (no real deploy/smoke test performed; see
+the PR report). `orion-sql-writer` must actually subscribe to the new
+channel for this to be true in a running deployment -- confirmed added to
+both `SQL_WRITER_SUBSCRIBE_CHANNELS`' default and a guaranteed-append in
+`effective_subscribe_channels` (a real review finding: registering a
+channel/route/model alone does not make a consumer subscribe to it). It
+exists specifically so Patch 3 (pointing topic-foundry's real clustering
+pipeline at self-facts instead of chat, per the self-model rebuild arc's
+design doc) has a real `source_table` to point a `DatasetSpec` at -- before
+this patch, Layer-1 items were only ever in-process, never durably
+queryable across runs. No new env keys.
+
 ### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
 
 `self_study.py`'s Layer 1 (inspect) used to be pure codebase inventory

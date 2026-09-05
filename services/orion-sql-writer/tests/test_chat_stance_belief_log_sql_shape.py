@@ -10,6 +10,7 @@ column test, only by generic route-map completeness -- this closes that gap.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1  # noqa: E402
 
 from app.models.chat_stance_belief import ChatStanceBeliefLogSQL  # noqa: E402
 from app.worker import MODEL_MAP  # noqa: E402
-from app.settings import DEFAULT_ROUTE_MAP  # noqa: E402
+from app.settings import DEFAULT_ROUTE_MAP, Settings  # noqa: E402
 
 
 def _make_payload(**overrides) -> ChatStanceBeliefLogV1:
@@ -37,6 +38,25 @@ def _make_payload(**overrides) -> ChatStanceBeliefLogV1:
     )
     defaults.update(overrides)
     return ChatStanceBeliefLogV1(**defaults)
+
+
+def test_the_channel_is_actually_subscribed() -> None:
+    """Review finding: registering a channel/route/model is not the same
+    as subscribing to it -- confirmed live on this exact patch, the channel
+    was registered everywhere except SQL_WRITER_SUBSCRIBE_CHANNELS, so the
+    whole feature was a silent no-op until this was caught. Both the
+    .env_example list and a code-default-only Settings instance must carry
+    the new channel."""
+    example = Path(__file__).resolve().parents[1] / ".env_example"
+    raw = next(
+        line.split("=", 1)[1].strip()
+        for line in example.read_text().splitlines()
+        if line.startswith("SQL_WRITER_SUBSCRIBE_CHANNELS=")
+    )
+    assert "orion:chat_stance:belief:write" in json.loads(raw)
+
+    stale = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=["orion:biometrics:summary"])
+    assert "orion:chat_stance:belief:write" in stale.effective_subscribe_channels
 
 
 def test_default_route_map_points_chat_stance_belief_write_v1_at_chat_stance_belief_log_sql() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -21,6 +22,7 @@ from rdflib.namespace import RDF, XSD
 from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.journaler.schemas import JournalEntryWriteV1
+from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.llm.routes import normalize_llm_route
 from orion.schemas.cortex.contracts import (
     CortexClientContext,
@@ -53,6 +55,7 @@ from orion.schemas.self_study import (
     SelfReflectiveFindingV1,
     SelfRepoInspectResultV1,
     SelfSnapshotV1,
+    SelfWritebackState,
     SelfWritebackStatusV1,
 )
 
@@ -92,6 +95,7 @@ ORION = Namespace("http://conjourney.net/orion#")
 SELF = Namespace("http://conjourney.net/orion/self#")
 RDF_ENQUEUE_CHANNEL = "orion:rdf:enqueue"
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
+SELF_STUDY_ITEMS_WRITE_CHANNEL = "orion:self_study:items:write"
 # Same public intake channel orion-actions and every other external-ish
 # CortexClientRequest caller uses (settings.cortex_request_channel there) --
 # self_study.py round-trips through cortex-orch like any other client rather
@@ -131,6 +135,16 @@ _SNAPSHOT_SECTION_NAMES: tuple[str, ...] = (
     # Added 2026-09-05 (Layer 1 broadening, self-model rebuild arc).
     "hardware", "behavioral",
 )
+
+
+def _all_snapshot_items(snapshot: "SelfSnapshotV1") -> list[SelfKnowledgeItemV1]:
+    """Flat list of every Layer-1 item across all sections. Added for
+    publish_self_knowledge_items() (review finding: a 6th near-identical
+    `for section_name in _SNAPSHOT_SECTION_NAMES: for item in
+    getattr(...)` loop in this file) -- the five pre-existing call sites
+    each do something different with the items inline (filtering, grouping)
+    and are left untouched, out of scope for this patch."""
+    return [item for section_name in _SNAPSHOT_SECTION_NAMES for item in getattr(snapshot, section_name)]
 
 # Layer 1 hardware facts, v1 scope: the static field-topology config only
 # (see _hardware_items() below for why live cabinet-sensor readings are an
@@ -2860,6 +2874,180 @@ async def publish_self_study_artifacts(
     return graph_status, journal_status, journal_entry
 
 
+_METADATA_TEXT_MAX_CHARS = 2000
+
+
+def _flatten_metadata_text(item: SelfKnowledgeItemV1) -> str | None:
+    """Plain-text rendering of an item's metadata dict for topic-foundry's
+    clustering text_columns -- the pipeline wants text, not a dict it would
+    have to know how to flatten itself. `key=value` pairs, sorted for
+    determinism, capped for storage sanity.
+
+    Review finding: a plain `[:2000]` slice can cut a `key=value` pair in
+    half, storing a syntactically broken trailing fragment as the exact
+    field Patch 3's clustering pipeline is meant to consume as clean text.
+    Builds up whole pairs instead and stops before the next one would
+    exceed the cap, so the result never ends mid-pair."""
+    if not item.metadata:
+        return None
+    parts = [f"{key}={value}" for key, value in sorted(item.metadata.items(), key=lambda kv: kv[0])]
+    kept: list[str] = []
+    length = 0
+    for part in parts:
+        added_length = len(part) + (2 if kept else 0)  # ", " separator
+        if length + added_length > _METADATA_TEXT_MAX_CHARS:
+            break
+        kept.append(part)
+        length += added_length
+    if not kept and parts:
+        # Review finding: if even the first whole pair alone exceeds the cap,
+        # the loop above keeps nothing and this returned None for the whole
+        # item -- dropping all its text instead of giving Patch 3's
+        # clustering pipeline a truncated-but-real string. Fall back to a
+        # hard truncation of just that first pair rather than nothing.
+        return parts[0][:_METADATA_TEXT_MAX_CHARS]
+    return ", ".join(kept) or None
+
+
+_SELF_KNOWLEDGE_ITEMS_PUBLISH_CONCURRENCY = 20
+
+
+async def _publish_one_self_knowledge_item(
+    *,
+    bus: Any,
+    source: ServiceRef,
+    snapshot: SelfSnapshotV1,
+    item: SelfKnowledgeItemV1,
+    envelope_corr_id: str,
+    semaphore: "asyncio.Semaphore",
+) -> bool:
+    """Publish one item; returns True on success, False on any failure.
+    Review finding: payload/envelope construction must live INSIDE the
+    try/except too -- a pydantic validation error on one item's fields must
+    not crash the whole run (it previously did, since construction happened
+    before the try block, contradicting this function's own per-item-
+    isolation claim)."""
+    try:
+        # Review finding: a fresh random uuid4() entry_id (the schema's own
+        # default) meant a retried publish of the same item within the same
+        # run (process crash mid-batch, verb re-invocation) inserted a
+        # brand-new row instead of colliding on the primary key --
+        # orion-sql-writer's INSERT_ONLY_MODELS duplicate-skip (the
+        # mechanism this table relies on for idempotent writes) can only
+        # fire on an entry_id collision, which a random id makes structurally
+        # impossible. Deriving it from (item_id, run_id) instead makes a
+        # retry of the same item in the same run collide and get skipped,
+        # while a genuinely new run (a new build_self_snapshot() call, with
+        # its own fresh run_id) still gets its own row -- matching the "one
+        # row per item per run" design intent.
+        entry_id = f"self-know-item-{_stable_digest({'item_id': item.item_id, 'run_id': item.run_id})}"
+        payload = SelfKnowledgeItemLogV1(
+            entry_id=entry_id,
+            item_id=item.item_id,
+            run_id=item.run_id,
+            category=item.category,
+            name=item.name,
+            trust_tier=item.trust_tier,
+            observed_at=item.observed_at,
+            source_path=item.source_path,
+            symbol_name=item.symbol_name,
+            metadata_text=_flatten_metadata_text(item),
+        )
+        envelope = BaseEnvelope(
+            kind="self_study.items.write.v1",
+            source=source,
+            correlation_id=envelope_corr_id,
+            payload=payload.model_dump(mode="json"),
+        )
+        async with semaphore:
+            await bus.publish(SELF_STUDY_ITEMS_WRITE_CHANNEL, envelope)
+        return True
+    except Exception as exc:
+        logger.debug(
+            "self_study_items_publish_item_failed snapshot_id=%s item_id=%s error=%s",
+            snapshot.snapshot_id,
+            item.item_id,
+            exc,
+        )
+        return False
+
+
+async def publish_self_knowledge_items(
+    *, bus: Any | None, source: ServiceRef, snapshot: SelfSnapshotV1, correlation_id: str
+) -> SelfWritebackStatusV1:
+    """Durable, multi-run history of this snapshot's Layer-1 items (self-
+    model rebuild arc, Patch 2) -- prerequisite for topic-foundry's Self
+    Atlas, which needs a real, growing, queryable source_table to cluster
+    over. One bus message per item, published concurrently (bounded by
+    _SELF_KNOWLEDGE_ITEMS_PUBLISH_CONCURRENCY -- review finding: a real
+    snapshot has 1000+ items, and sequential awaits would add thousands of
+    Redis round trips directly to this run's critical path). Best-effort
+    per item so one bad item doesn't drop the rest of a run's batch.
+    Additive to the existing journal-summary write in
+    publish_self_study_artifacts, not a replacement -- that one stays a
+    one-off summary by design."""
+    status = SelfWritebackStatusV1(
+        target="self_knowledge_items",
+        status="skipped",
+        authoritative=False,
+        channel=SELF_STUDY_ITEMS_WRITE_CHANNEL,
+        idempotency_key=snapshot.snapshot_id,
+        append_only=True,
+        detail="missing_bus",
+    )
+    if bus is None:
+        logger.info("self_study_items_publish_skip snapshot_id=%s reason=missing_bus", snapshot.snapshot_id)
+        return status
+
+    envelope_corr_id = _as_envelope_correlation_id(correlation_id)
+    items = _all_snapshot_items(snapshot)
+    semaphore = asyncio.Semaphore(_SELF_KNOWLEDGE_ITEMS_PUBLISH_CONCURRENCY)
+    results = await asyncio.gather(
+        *(
+            _publish_one_self_knowledge_item(
+                bus=bus, source=source, snapshot=snapshot, item=item,
+                envelope_corr_id=envelope_corr_id, semaphore=semaphore,
+            )
+            for item in items
+        )
+    )
+    published = sum(1 for ok in results if ok)
+    failed = sum(1 for ok in results if not ok)
+
+    # Review finding: "any success at all -> written" reported a run that
+    # lost 999 of 1000 items the same as a fully clean run -- a monitor
+    # filtering on status=="failed" or on WARNING logs would never see a
+    # near-total failure. Any real failure now marks the whole batch
+    # "failed" (not just an all-failed batch); `detail` still records the
+    # real published count, so a partial success isn't lost, just not
+    # allowed to read as a plain success.
+    if failed > 0:
+        overall_status: SelfWritebackState = "failed"
+    elif published > 0:
+        overall_status = "written"
+    else:
+        overall_status = "skipped"
+    status = SelfWritebackStatusV1(
+        target="self_knowledge_items",
+        status=overall_status,
+        authoritative=False,
+        channel=SELF_STUDY_ITEMS_WRITE_CHANNEL,
+        idempotency_key=snapshot.snapshot_id,
+        append_only=True,
+        detail=f"published={published} failed={failed}",
+    )
+    log_fn = logger.warning if failed > 0 else logger.info
+    log_fn(
+        "self_study_items_publish snapshot_id=%s run_id=%s status=%s published=%s failed=%s",
+        snapshot.snapshot_id,
+        snapshot.run_id,
+        overall_status,
+        published,
+        failed,
+    )
+    return status
+
+
 async def run_self_repo_inspect(*, bus: Any | None, source: ServiceRef, correlation_id: str) -> SelfRepoInspectResultV1:
     start = time.monotonic()
     snapshot = build_self_snapshot()
@@ -2869,9 +3057,12 @@ async def run_self_repo_inspect(*, bus: Any | None, source: ServiceRef, correlat
         snapshot=snapshot,
         correlation_id=correlation_id,
     )
+    items_write_status = await publish_self_knowledge_items(
+        bus=bus, source=source, snapshot=snapshot, correlation_id=correlation_id
+    )
     duration_ms = int((time.monotonic() - start) * 1000)
     logger.info(
-        "self_study_scan snapshot_id=%s run_id=%s duration_ms=%s services=%s modules=%s channels=%s verbs=%s schemas=%s graph_status=%s journal_status=%s",
+        "self_study_scan snapshot_id=%s run_id=%s duration_ms=%s services=%s modules=%s channels=%s verbs=%s schemas=%s graph_status=%s journal_status=%s items_write_status=%s",
         snapshot.snapshot_id,
         snapshot.run_id,
         duration_ms,
@@ -2882,6 +3073,7 @@ async def run_self_repo_inspect(*, bus: Any | None, source: ServiceRef, correlat
         snapshot.counts.schemas,
         graph_status.status,
         journal_status.status,
+        items_write_status.status,
     )
     return SelfRepoInspectResultV1(
         snapshot=snapshot,
@@ -2889,6 +3081,7 @@ async def run_self_repo_inspect(*, bus: Any | None, source: ServiceRef, correlat
         graph_write=graph_status,
         journal_write=journal_status,
         journal_entry=journal_entry,
+        self_knowledge_items_write=items_write_status,
     )
 
 

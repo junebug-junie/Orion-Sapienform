@@ -1483,7 +1483,20 @@ profiles:
       # design per Unsloth's own docs; do not expect full n_gpu_layers to
       # cleanly fit just because there's more room now -- see the escalation
       # ladder in llamacpp below.
-      max_model_len: 32768
+      #
+      # RAISED 2026-09-05, Juniper's explicit go-ahead ("up it"): 32768 ->
+      # 65536, a doubling step (this profile's own escalation-order note below
+      # says raise ctx_size only after checking live headroom -- the 4th GPU
+      # is exactly that check passing). Reason: the FCC/Claude-Code harness
+      # itself already costs 11,500+ tokens before any real content, and real
+      # turns run 19k p90 / 25k max on the 131072 lane (see PR #2062's
+      # findings, project_hub_agent_compute_qwen27b_circe_gpu1 memory) -- so
+      # 32768 was always going to overflow ("Prompt is too long") on a real
+      # harness turn regardless of which model backs this route. UNTESTED
+      # past this specific value for this architecture: watch nvidia-smi and
+      # this worker's health on first boot, escalate further only after this
+      # step is confirmed stable, per the same ladder as n_gpu_layers.
+      max_model_len: 65536
       max_batch_tokens: 512
       max_concurrent_requests: 1
       gpu_memory_fraction: 0.90
@@ -1568,14 +1581,17 @@ profiles:
       n_parallel: 1
       batch_size: 512
 
-      # 32768, not the model's native 262144: (1) this card set's real VRAM
-      # budget is unresolved (see gpu: above), and (2) the llama.cpp PR that
-      # added this architecture (ggml-org/llama.cpp#27742) itself records a
-      # CUDA abort at the full native ctx (ggml-cuda/norm.cu, invalid argument)
-      # with a practical ceiling around 261,888 -- so native ctx is not simply
-      # available even once VRAM is sorted. Raise only after both are checked
-      # live, not from this table.
-      ctx_size: 32768
+      # RAISED 2026-09-05 to 65536 (was 32768), Juniper's explicit go-ahead --
+      # see the matching note on max_model_len above for why (harness overhead
+      # alone already exceeded 32768 on real turns, independent of quant/GPU
+      # count) and what "UNTESTED past this point" means here. Still well
+      # under the model's native 262144: the llama.cpp PR that added this
+      # architecture (ggml-org/llama.cpp#27742) itself records a CUDA abort at
+      # the full native ctx (ggml-cuda/norm.cu, invalid argument) with a
+      # practical ceiling around 261,888 -- native ctx is not simply available
+      # even with VRAM sorted. Escalate further only after live-checking both
+      # nvidia-smi headroom and this worker's health at 65536 first.
+      ctx_size: 65536
 
       # Confirmed applicable to THIS model specifically (Unsloth's own docs
       # give `--chat-template-kwargs '{"reasoning_effort":"medium"}'` as the

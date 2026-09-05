@@ -55,6 +55,8 @@ from app.models import (
     RecipientProfileDB,
     NotificationPreferenceDB,
     JournalEntrySQL,
+    SelfKnowledgeItemLogSQL,
+    ChatStanceBeliefLogSQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
     ExternalRoomParticipantSQL,
@@ -95,6 +97,8 @@ from app.models import (
 from app.harness_turn_trace_persist import upsert_harness_turn_trace
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
+from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
+from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -205,6 +209,8 @@ COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
+    SelfKnowledgeItemLogSQL,
+    ChatStanceBeliefLogSQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -451,6 +457,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "RecipientProfileDB": (RecipientProfileDB, None),
     "NotificationPreferenceDB": (NotificationPreferenceDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
+    "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
+    "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
     "ExternalRoomParticipantSQL": (ExternalRoomParticipantSQL, ExternalRoomParticipantV1),

@@ -58,6 +58,7 @@ from .endogenous_runtime import (
     runtime_service,
 )
 from orion.core.schemas.endogenous_runtime import EndogenousRuntimeQueryV1
+from orion.substrate.chat_stance_belief_bus import publish_chat_stance_belief_log_sync
 
 FALLBACK_ORION_IDENTITY_SUMMARY = [
     "Oríon is an ongoing cognitive presence in a long-running shared project.",
@@ -245,6 +246,38 @@ def _unified_beliefs_for_stance(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefS
         )
 
     return beliefs
+
+
+async def _publish_chat_stance_belief(ctx: Dict[str, Any], beliefs: UnifiedRelationalBeliefSetV1 | None) -> None:
+    """Durable per-turn behavioral fact (self-model rebuild arc, 2026-09-05):
+    beliefs used to be computed every turn and thrown away. Now logged for
+    real so self_study.py's Layer 1 _behavioral_items() has actual history
+    to read, not nothing.
+
+    Review finding (2026-09-05): the underlying publish is a real blocking
+    Redis call (connect/ping/publish), and unlike
+    publish_substrate_tier_outcomes_sync's caller (which only fires on the
+    rare cold-anchor path), this one fires on essentially every real turn --
+    calling it inline would freeze this async event loop, and every other
+    concurrent turn with it, for as long as the socket call takes. Offloaded
+    via asyncio.to_thread() so a slow/unreachable Redis costs this turn
+    latency, not the whole process. Best-effort/never raises regardless."""
+    if beliefs is None:
+        return
+    try:
+        from app.pcr_chat_memory import _extract_turn_change_appraisal
+
+        appraisal = _extract_turn_change_appraisal(ctx) or {}
+        await asyncio.to_thread(
+            publish_chat_stance_belief_log_sync,
+            anchors=beliefs.anchors,
+            degraded_producers=beliefs.degraded_producers,
+            lineage=beliefs.lineage,
+            shift_kind=appraisal.get("shift_kind"),
+            ctx=ctx,
+        )
+    except Exception as exc:
+        logger.debug("chat_stance_belief_log_publish_skip error=%s", exc)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -2303,6 +2336,8 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             logger.debug("unified_beliefs_for_stance %s", payload)
     ctx["chat_unified_beliefs_lineage"] = beliefs.lineage if beliefs is not None else []
     ctx["chat_unified_beliefs_degraded"] = beliefs.degraded_producers if beliefs is not None else []
+
+    await _publish_chat_stance_belief(ctx, beliefs)
 
     inputs = {
         "identity": {

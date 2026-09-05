@@ -160,6 +160,64 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `SELF_STUDY_REFLECT_LLM_ROUTE` | `agent` | LLM route override for the `self_study.reflect` verb's real reflection call, validated through `orion/llm/routes.py`'s `normalize_llm_route()`. An unrecognised value falls back to the verb's own default lane rather than guessing. |
 | `SELF_STUDY_REFLECT_TIMEOUT_SEC` | `240` | RPC budget (seconds) for the `self_study.reflect` call. Raised from an initial 115s the same day (2026-09-04) once live: the agent-route reasoning model needs real wall-clock time to write its reasoning before the answer, not just tokens -- a real call completed normally in ~121s once given enough token budget to finish (see PR #2085). Kept under `self_study.reflect.yaml`'s own 260000ms verb/step timeout on purpose, so this file's own RPC wait times out first -- a clean, catchable "no reflection" result instead of the orchestrator killing the step out from under an in-flight wait. |
 
+### Self-study knowledge item log (2026-09-05, self-model rebuild arc, Patch 2)
+
+Every `self_repo_inspect` run now also publishes one `orion:self_study:items
+:write` bus message per Layer-1 item (`publish_self_knowledge_items()`,
+published concurrently, bounded), additive to the existing one-off journal
+summary (which stays exactly that, a summary, not storage of record). This
+is designed to give the new `self_knowledge_items` Postgres table a real,
+growing, multi-run history of Layer-1 facts, with a `metadata_text` column
+flattened for plain-text clustering -- **implemented and unit-tested, not
+yet live-verified this patch** (no real deploy/smoke test performed; see
+the PR report). `orion-sql-writer` must actually subscribe to the new
+channel for this to be true in a running deployment -- confirmed added to
+both `SQL_WRITER_SUBSCRIBE_CHANNELS`' default and a guaranteed-append in
+`effective_subscribe_channels` (a real review finding: registering a
+channel/route/model alone does not make a consumer subscribe to it). It
+exists specifically so Patch 3 (pointing topic-foundry's real clustering
+pipeline at self-facts instead of chat, per the self-model rebuild arc's
+design doc) has a real `source_table` to point a `DatasetSpec` at -- before
+this patch, Layer-1 items were only ever in-process, never durably
+queryable across runs. No new env keys.
+
+### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
+
+`self_study.py`'s Layer 1 (inspect) used to be pure codebase inventory
+(services/modules/channels/verbs/schemas/touchpoints/env_surfaces). Two new
+sections, both additive:
+
+- **`hardware`** -- `_hardware_items()` parses `config/field/
+  orion_field_topology.v1.yaml` directly (nodes/capabilities/edges). v1
+  scope only: live cabinet-sensor readings (temp/humidity/etc) are a known,
+  disclosed fast-follow, not silently dropped -- cortex-exec has no
+  `/run/orion-sensors` mount (only orion-hub does), so a live read needs
+  either a new mount or a cross-service call to orion-hub's
+  `cabinet_sensors_routes.py`.
+- **`behavioral`** -- `_behavioral_items()` reads the most recent rows from
+  the new `chat_stance_belief_log` table (real content: which anchors were
+  live, shift kind, lineage -- not anonymized counts. Juniper's explicit
+  2026-09-05 call: she is the sole user and companion, so redacting her own
+  conversations from Orion's own self-model is moot). That table is
+  populated by `chat_stance.py`'s real per-turn belief computation via
+  `orion/substrate/chat_stance_belief_bus.py`'s
+  `publish_chat_stance_belief_log_sync()` -- previously this belief set was
+  computed every turn and thrown away entirely (only a 4-key compact
+  summary survived 30 minutes in `executor.py`'s in-process
+  `_PRIOR_STANCE_CACHE`).
+
+Both new sections feed Layer 2's induced concepts (`_hardware_concepts()`/
+`_behavioral_concepts()`, concept kinds `physical_topology`/
+`behavioral_pattern`) and are therefore visible to Layer 3's real LLM
+reflection call automatically -- no change needed there, since
+`_self_study_reflect_input()` already receives the whole set of induced
+concepts.
+
+No new env keys. The behavioral read reuses `self_study_analysis.py`'s
+existing `_get_engine()`/DSN fallback chain (`SUBSTRATE_FELT_STATE_DATABASE_URL`
+→ `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL` → `POSTGRES_URI`) -- no fourth DB-URL
+key for one more table.
+
 ### AutonomyStateV2 on chat stance (default off)
 
 `app/chat_stance.py` can run the AutonomyStateV2 reducer after social/reasoning locals are built and **before** writing `ctx["chat_social_bridge_summary"]`.

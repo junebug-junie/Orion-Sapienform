@@ -52,6 +52,8 @@ from orion.schemas.actions.mesh_ops import (
     RepoRecentChangesDigestV1,
 )
 from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryIndexV1, JournalEntryWriteV1, JournalTriggerV1
+from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
+from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import (
     AgentTraceStepV1,
@@ -1201,6 +1203,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalEntryDraftV1": JournalEntryDraftV1,
     "JournalEntryIndexV1": JournalEntryIndexV1,
     "JournalEntryWriteV1": JournalEntryWriteV1,
+    "SelfKnowledgeItemLogV1": SelfKnowledgeItemLogV1,
+    "ChatStanceBeliefLogV1": ChatStanceBeliefLogV1,
     "DailyMetacogV1": DailyMetacogV1,
     "MeshNodeStatusV1": MeshNodeStatusV1,
     "MeshStatusSnapshotV1": MeshStatusSnapshotV1,

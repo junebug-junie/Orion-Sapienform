@@ -1833,3 +1833,129 @@ profiles:
       request path (gateway route timeouts at minimum) well past what
       IQ4_XS needed -- this profile is expected to be slower, not faster,
       so IQ4_XS's already-marginal 115s budget will not be enough.
+
+  qwen3.8-27b-bf16-4xv100-32gb-circe-fullprec:
+    # NEW PROFILE 2026-09-05, Juniper's explicit go-ahead ("let's try out the
+    # qwen 38 27b model with full precision"): full-precision (BF16, not
+    # quantized) variant of qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex
+    # above -- that profile is LEFT AS-IS, not edited in place. Context: in
+    # Juniper's own live testing tonight, the Q4_K_XL 27B underperformed
+    # Qwen3.8-Flash-Next's Q4 (IQ4_XS); this profile tests whether the 27B's
+    # own quantization (not its size/architecture) was the limiting factor.
+    display_name: "Qwen3.8 27B – BF16 full precision (llama.cpp, 4x V100 32GB, Circe, LIVE TEST 2026-09-05)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.8-27b-bf16"
+
+    supports_tools: true
+    supports_embeddings: false
+    # Same as the Q4_K_XL card -- unconfirmed vision-capable, Unsloth's own
+    # deployment docs describe this model's llama.cpp deployment in
+    # text-only terms. Not quant-dependent, so inherited unchanged.
+    supports_vision: false
+
+    gpu:
+      # 4 GPUs (this test arc's existing footprint, already evicted for
+      # Flash-Next tonight) instead of the Q4 card's single GPU -- BF16 is
+      # ~54.66GB (verified against real HF byte sizes, 2026-09-05: 2 shards,
+      # 54,657,735,616 bytes), does not fit on one 32GB V100 the way the
+      # ~17GB Q4_K_XL quant does. 128GB across 4 cards gives ~73GB of
+      # headroom over the weights alone -- by far the most comfortable fit
+      # of any profile touched tonight, unlike Flash-Next's razor-thin or
+      # negative headroom. Full GPU residency (no CPU offload) should be
+      # straightforward, unlike every Flash-Next profile above.
+      num_gpus: 4
+      tensor_parallel_size: 1
+      device_ids: [0, 1, 2, 3]
+      # Matches the Q4 card's already-proven-good value (raised there
+      # 2026-09-03 specifically because 32768 could not hold a real Hub
+      # harness turn -- see that card's own note). No reason to differ here;
+      # VRAM headroom is not the constraint this time.
+      max_model_len: 131072
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.8-27B-GGUF"
+      # 2-shard BF16 GGUF under BF16/ -- confirmed against the real HF API
+      # file listing (?blobs=true), byte sizes checked by hand, 2026-09-05.
+      hf_filename: "BF16/Qwen3.8-27B-BF16-00001-of-00002.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 131072
+      # 99 should actually mean full residency here (unlike every
+      # Flash-Next profile above) -- weights are ~54.66GB against 128GB
+      # total VRAM, no known reason for a partial fit. Escalate DOWN only
+      # if boot proves otherwise; this is not a repeat of Flash-Next's
+      # guaranteed-partial situation.
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      # Identical to the Q4_K_XL card -- these are model-family settings,
+      # not quant-dependent. See that card's own extensive sourcing/caveats
+      # for reasoning_effort, preserve_thinking, and the chat-template
+      # verification this still needs on first boot.
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        reasoning_effort: "xhigh"
+        preserve_thinking: true
+
+      no_context_shift: true
+      # V100 is Volta -- same reasoning as the Q4_K_XL card, not re-benched
+      # separately for the BF16 weight format.
+      flash_attn: "off"
+      split_mode: "layer"
+      tensor_split: "1,1,1,1"
+
+      # Identical to the Q4_K_XL card's Thinking-Mode defaults.
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+    notes: |
+      NEW 2026-09-05, Juniper's explicit go-ahead: full-precision test of
+      Qwen3.8-27B, added alongside qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex
+      (not replacing it) so both remain available to compare.
+
+      Why this test exists: in live testing tonight, the Q4_K_XL 27B
+      underperformed Qwen3.8-Flash-Next's Q4 (IQ4_XS) -- an architecture
+      Juniper was skeptical of for being MoE rather than dense. This profile
+      isolates one variable: is the 27B's real ceiling higher than Q4_K_XL
+      showed, i.e. was quantization loss (not the dense architecture itself)
+      the limiting factor in that comparison?
+
+      Known before first boot:
+      1. Size: 54.66GB (2 shards), verified against real HF byte sizes,
+         2026-09-05 -- comfortably inside 128GB VRAM across 4 cards, ~73GB
+         of headroom. Full GPU residency expected, no CPU offload needed.
+      2. Speed: should be markedly faster than any Flash-Next profile
+         tonight (dense 27B active-compute vs Flash-Next's MoE routing
+         overhead and partial CPU residency), though not yet live-verified
+         for this specific weight format.
+      3. Everything else (reasoning/sampling config, chat template caveats,
+         vision status) is inherited unchanged from the Q4_K_XL card --
+         those are model-family properties, not quant-specific ones.
+
+      Still open, inherited unchanged from the Q4_K_XL card: whether
+      chat_template_kwargs.reasoning_effort is actually honored by the
+      pinned llama.cpp build: whether Orion's harness path round-trips
+      reasoning_content for preserve_thinking to have any visible effect.
+
+      Escalation order if this somehow still OOMs (unexpected, given the
+      headroom math above): lower ctx_size before touching n_gpu_layers --
+      the opposite order from every Flash-Next profile tonight, because
+      this profile's problem shape (if any) would be different.
+
+      DEPLOY TIMING: Juniper was mid-chat-turn when this was requested --
+      do not redeploy the agent worker (which interrupts whatever is
+      currently using it) until she confirms the current turn is done.

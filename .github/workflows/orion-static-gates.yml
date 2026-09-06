@@ -95,6 +95,11 @@ jobs:
       - name: Compose host mounts must not be relative
         run: python scripts/check_compose_no_relative_mounts.py
 
+      - name: Compose must not bind-mount the operator's ~/.claude.json
+        run: |
+          python scripts/check_compose_no_host_claude_json_mount.py --self-test
+          python scripts/check_compose_no_host_claude_json_mount.py
+
       - name: Journal dispatch registry completeness
         run: python scripts/check_journal_dispatch_registry.py
 

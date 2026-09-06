@@ -11,6 +11,7 @@ for this first producer per that doc's Recommended next patch.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
@@ -47,7 +48,9 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAtte
 MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
-def top_node_substrate_target(frame: FieldAttentionFrameV1) -> FieldAttentionTargetV1 | None:
+def top_node_substrate_target(
+    frame: FieldAttentionFrameV1, *, competing: Collection[str] | None = None
+) -> FieldAttentionTargetV1 | None:
     """The highest-salience target among ``frame.node_targets`` that is one of
     Candidate A's real ``node:substrate.*`` domains AND has accumulated enough real
     observations to be trusted with a goal-provenance win
@@ -75,6 +78,23 @@ def top_node_substrate_target(frame: FieldAttentionFrameV1) -> FieldAttentionTar
     ]
     if not candidates:
         return None
+    # THE ONE BRIDGE (2026-09-06, docs/superpowers/specs/2026-09-04-attention-
+    # schema-surface-design.md "The read side"). `competing` is the set of
+    # node ids the substrate's own workspace competition is currently holding
+    # as open loops (their `source_refs`). The substrate honours a goal only
+    # when `goal.target_id` is exactly one of those refs
+    # (`orion/substrate/attention/top_down.py::relevance`), so a goal aimed at
+    # a target that is not competing is, by construction, a goal that cannot
+    # be acted on -- 37% of self-model ticks over the 24h before this shipped
+    # (`goal_matched_no_loop`). Among the qualified candidates, prefer the
+    # highest-salience one the competition can actually see. When none is in
+    # the competition, or the competition is unknown (None), fall back to the
+    # plain top-1 -- this must never make the producer fire LESS than before.
+    # Not a reconciler, not a shared taxonomy: one read of one id set.
+    if competing:
+        seen = [t for t in candidates if t.target_id in competing]
+        if seen:
+            candidates = seen
     return max(candidates, key=lambda t: t.salience_score)
 
 

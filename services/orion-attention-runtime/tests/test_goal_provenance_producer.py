@@ -393,3 +393,100 @@ async def test_stop_awaits_poll_task_before_closing_bus(monkeypatch):
     await worker.stop()
 
     assert events == ["poll_task_done", "bus_closed"]
+
+
+# --- the one bridge: the producer reads the competition (2026-09-06) ------------
+
+
+def _bridge_worker_at_threshold(monkeypatch, *, competing, reads_competition: bool = True):
+    monkeypatch.setenv("ORION_GOAL_PROVENANCE_READS_COMPETITION", str(reads_competition))
+    worker = _make_worker(monkeypatch, min_streak=1)
+    worker._store.load_competing_loop_refs.return_value = competing
+    return worker
+
+
+def _emit(worker, frame):
+    """A brand-new target's first tick never emits (streak starts at 1 and the
+    first-tick branch returns False), so warm the streak once, then emit."""
+    worker._maybe_build_goal(frame)
+    worker._store.load_competing_loop_refs.reset_mock()
+    return worker._maybe_build_goal(frame)
+
+
+def test_bridge_goal_targets_the_competing_candidate_and_says_so(monkeypatch):
+    worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.biometrics"})
+    frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
+    goal, _ = _emit(worker, frame)
+    assert goal is not None
+    assert goal.field_target_id == "node:substrate.biometrics"
+    assert goal.competition_read == "in_competition"
+    assert goal.competing_refs == ["node:substrate.biometrics"]
+    worker._store.load_competing_loop_refs.assert_called_once_with(
+        max_age_sec=worker._settings.goal_competition_max_age_sec
+    )
+
+
+def test_bridge_falls_back_and_records_not_in_competition(monkeypatch):
+    worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.chat"})
+    goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
+    assert goal.field_target_id == "node:substrate.execution"
+    assert goal.competition_read == "not_in_competition"
+
+
+def test_bridge_unknown_competition_is_unavailable_not_empty(monkeypatch):
+    worker = _bridge_worker_at_threshold(monkeypatch, competing=None)
+    goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
+    assert goal.competition_read == "unavailable"
+    assert goal.competing_refs == []
+
+
+def test_bridge_kill_switch_never_reads_the_store(monkeypatch):
+    worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.biometrics"}, reads_competition=False)
+    frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
+    goal, _ = _emit(worker, frame)
+    assert goal.field_target_id == "node:substrate.execution"  # pre-bridge behaviour exactly
+    assert goal.competition_read == "unavailable"
+    worker._store.load_competing_loop_refs.assert_not_called()
+
+
+def test_bridge_read_failure_is_logged_not_fatal(monkeypatch):
+    worker = _bridge_worker_at_threshold(monkeypatch, competing=None)
+    worker._store.load_competing_loop_refs.side_effect = RuntimeError("db down")
+    goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
+    assert goal is not None and goal.competition_read == "unavailable"
+
+
+def test_store_reader_parses_refs_and_treats_stale_as_unknown():
+    from contextlib import contextmanager
+
+    from app.store import AttentionRuntimeStore
+
+    class _Conn:
+        def __init__(self, row):
+            self.row = row
+        def execute(self, *_a, **_k):
+            row = self.row
+            class _R:
+                def mappings(self_inner):
+                    return self_inner
+                def first(self_inner):
+                    return row
+            return _R()
+
+    def _store_with(row):
+        store = AttentionRuntimeStore.__new__(AttentionRuntimeStore)
+        class _Engine:
+            @contextmanager
+            def connect(self_inner):
+                yield _Conn(row)
+        store._engine = _Engine()
+        return store
+
+    projection = {"frame": {"open_loops": [{"source_refs": ["node:substrate.execution"]}, {"source_refs": ["node:substrate.biometrics", ""]}]}}
+    fresh = _store_with({"projection_json": projection, "age_sec": 12.0})
+    assert fresh.load_competing_loop_refs(max_age_sec=120.0) == {"node:substrate.execution", "node:substrate.biometrics"}
+    stale = _store_with({"projection_json": projection, "age_sec": 500.0})
+    assert stale.load_competing_loop_refs(max_age_sec=120.0) is None
+    assert _store_with(None).load_competing_loop_refs(max_age_sec=120.0) is None
+    empty = _store_with({"projection_json": {"frame": {"open_loops": []}}, "age_sec": 1.0})
+    assert empty.load_competing_loop_refs(max_age_sec=120.0) == set()

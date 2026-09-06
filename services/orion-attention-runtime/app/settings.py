@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     # propagates to _poll_loop's blanket exception handler. Failing fast at settings load
     # is clearer than failing deep in the tick loop.
     goal_provenance_min_streak: int = Field(3, ge=1, alias="ORION_GOAL_PROVENANCE_MIN_STREAK")
+    # THE ONE BRIDGE (2026-09-06): before choosing a goal target, read which
+    # node ids the substrate's workspace competition currently holds as open
+    # loops and prefer a qualified candidate the competition can see. Kill
+    # switch for a cognition-loop change; off = pre-bridge behaviour exactly.
+    enable_goal_reads_competition: bool = Field(
+        True, alias="ORION_GOAL_PROVENANCE_READS_COMPETITION"
+    )
+    # A projection older than this reads as "competition unknown" (fall back),
+    # never as "nothing is competing". 120s = four ~30s substrate broadcast
+    # ticks -- one missed tick is normal, four is a stalled producer.
+    goal_competition_max_age_sec: float = Field(
+        120.0, gt=0.0, alias="ORION_GOAL_PROVENANCE_COMPETITION_MAX_AGE_SEC"
+    )
     channel_goal_proposal: str = Field(
         "orion:memory:goals:proposed", alias="CHANNEL_GOAL_PROPOSAL"
     )

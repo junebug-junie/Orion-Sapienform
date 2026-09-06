@@ -188,7 +188,8 @@ class AttentionRuntimeWorker:
             return None, None
         if self._node_streak is None:
             self._node_streak = self._store.load_node_dominance_streak()
-        winner = top_node_substrate_target(frame)
+        competing = self._load_competition()
+        winner = top_node_substrate_target(frame, competing=competing)
         winner_id = winner.target_id if winner is not None else None
         self._node_streak, should_emit = update_dominance_streak(
             self._node_streak, winner_id, min_streak=self._settings.goal_provenance_min_streak
@@ -220,8 +221,36 @@ class AttentionRuntimeWorker:
             source_attention_frame_id=frame.frame_id,
             priority=winner.salience_score,
             provenance={"intake_channel": "internal.attention_runtime"},
+            # The bridge's own receipt (typed on the schema): what the
+            # producer saw when it chose. The downstream truth is the
+            # self-model's `voluntary_override_absent_reason`.
+            competition_read=(
+                "unavailable" if competing is None
+                else "in_competition" if winner.target_id in competing
+                else "not_in_competition"
+            ),
+            competing_refs=sorted(competing)[:16] if competing else [],
         )
         return goal, streak_tick
+
+    def _load_competition(self) -> set[str] | None:
+        """The substrate competition's current open-loop node ids, or None.
+
+        None on the kill switch, on a missing/stale projection, and on any
+        read error -- the selector treats None as "unknown" and falls back to
+        its pre-bridge top-1, so this read can never make the producer emit
+        fewer goals than before. Logged, not raised: a goal tick must not die
+        on a cross-service read.
+        """
+        if not self._settings.enable_goal_reads_competition:
+            return None
+        try:
+            return self._store.load_competing_loop_refs(
+                max_age_sec=self._settings.goal_competition_max_age_sec
+            )
+        except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+            logger.warning("goal_provenance_competition_read_failed err=%s", exc)
+            return None
 
     async def _publish_envelope(
         self,

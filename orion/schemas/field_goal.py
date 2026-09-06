@@ -23,12 +23,17 @@ real winning history, derived later from these records, not asserted here.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.schemas.drives import GraphReadyArtifact, ProposalStatus
+
+
+CompetitionRead = Literal["in_competition", "not_in_competition", "unavailable"]
 
 
 class FieldGoalProvenanceV1(GraphReadyArtifact):
@@ -52,6 +57,17 @@ class FieldGoalProvenanceV1(GraphReadyArtifact):
     # Reuses goal_context.py's existing _ACTIVE_STATES vocabulary unchanged -- no new status
     # vocabulary for this producer.
     proposal_status: ProposalStatus = "proposed"
+    # THE ONE BRIDGE (2026-09-06, docs/superpowers/specs/2026-09-04-attention-
+    # schema-surface-design.md "The read side"): the producer's own receipt of
+    # what the substrate competition held when it chose this target.
+    #   in_competition     -- target is one of the competing loops' source_refs
+    #   not_in_competition -- no qualified candidate was competing; plain top-1
+    #   unavailable        -- no fresh projection / read failed / bridge off
+    # Additive with defaults: an older payload (or the pre-bridge producer)
+    # validates unchanged. The downstream truth stays the self-model's
+    # `voluntary_override_absent_reason`; this only says what the producer saw.
+    competition_read: CompetitionRead | None = None
+    competing_refs: list[str] = Field(default_factory=list, max_length=16)
 
 
 class DominanceStreakTickV1(BaseModel):

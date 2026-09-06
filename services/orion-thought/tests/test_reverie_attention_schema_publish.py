@@ -75,7 +75,10 @@ async def test_chain_publishes_one_attention_schema_row_alongside_the_chain():
     assert payload["reason_narrative"] == "thought 0: the loop ol-1 keeps recurring"
     assert payload["narrative_kind"] == "self_report"
     assert payload["predicted_next"] == "the deploy"  # from the LAST thought
-    assert payload["correlation_id"] == "corr-r"
+    # "corr-r" is not a UUID, so bind_correlation minted one; the envelope and
+    # the payload must carry the SAME id (sql-writer stamps the column from
+    # the envelope).
+    assert str(env.correlation_id) == payload["correlation_id"]
 
 
 @pytest.mark.asyncio

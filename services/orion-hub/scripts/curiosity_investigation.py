@@ -114,13 +114,17 @@ from orion.curiosity.worldview import (
 )
 from orion.llm.routes import fcc_model_for_route
 from orion.journaler.schemas import JournalEntryWriteV1
-from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
 
 logger = logging.getLogger("orion-hub.curiosity_investigation")
 
 INVESTIGATION_TAG = "curiosity_investigation"
 OUTREACH_TAG = "curiosity_outreach"
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
+# Upper bound on the attention-surface graph read that precedes the journal
+# write (see _publish_attention_schema). Above the reader's 5s socket_timeout
+# so a merely slow read completes; below the ~10s a dead host would cost.
+ATTENTION_SCHEMA_GRAPH_READ_TIMEOUT_SEC = 6.0
 _JOURNAL_SOURCE_KIND = "self_study"
 _AUTHOR = "orion"
 
@@ -677,6 +681,8 @@ class CuriosityInvestigation:
             )
 
         self._bus: Any = None
+        # Instance-level so a test can shorten it; see the constant's comment.
+        self.attention_schema_graph_read_timeout_sec: float = ATTENTION_SCHEMA_GRAPH_READ_TIMEOUT_SEC
         self._harness_rpc_bus: Any = None
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
@@ -1576,23 +1582,40 @@ class CuriosityInvestigation:
             return
         try:
             reader = self._reader
-            priors = (
-                await asyncio.to_thread(read_attended_priors, reader, run_id)
-                if reader is not None
-                else None
-            )
-            row = curiosity_to_attention_schema(
-                run_id=run_id,
-                outcome=outcome,
-                priors=priors,
-                correlation_id=correlation_id,
-                generated_at=now,
+            priors = None
+            if reader is not None:
+                # Bounded: this sits BEFORE the journal write, this loop's sole
+                # persistence path. The reader's own redis socket_timeout is
+                # 5s on connect and again on read, so an unhealthy graph
+                # could hold the journal ~10s per run; a timeout here is
+                # reported as `graph_unreadable` (not "touched nothing") and
+                # the journal proceeds. Review finding 2026-09-06.
+                try:
+                    priors = await asyncio.wait_for(
+                        asyncio.to_thread(read_attended_priors, reader, run_id),
+                        timeout=self.attention_schema_graph_read_timeout_sec,
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    logger.warning(
+                        "curiosity_attention_schema_graph_read_timeout run=%s timeout_sec=%s",
+                        run_id,
+                        self.attention_schema_graph_read_timeout_sec,
+                    )
+            row, corr = bind_correlation(
+                curiosity_to_attention_schema(
+                    run_id=run_id,
+                    outcome=outcome,
+                    priors=priors,
+                    correlation_id=correlation_id,
+                    generated_at=now,
+                )
             )
             await self._bus.publish(
                 ATTENTION_SCHEMA_CHANNEL,
                 BaseEnvelope(
                     kind=ATTENTION_SCHEMA_KIND,
                     source=self._source_ref,
+                    correlation_id=corr,
                     payload=row.model_dump(mode="json"),
                 ),
             )

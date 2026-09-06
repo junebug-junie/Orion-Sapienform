@@ -131,10 +131,27 @@ def build_attention_frame(
     )
 
 
-def to_attention_schema(frame: AttentionFrameV1) -> AttentionSchemaV1:
-    """Project one chat-turn attention frame onto the shared attention surface
+def to_attention_schema(frame: AttentionFrameV1, *, leg: str | None = None) -> AttentionSchemaV1:
+    """Project one turn's attention frame onto the shared attention surface
     as `process="cortex_turn"` (docs/superpowers/specs/2026-09-04-attention-
     schema-surface-design.md, "Cortex is the kickoff").
+
+    `cortex_turn` means every unified turn cortex built a stance for -- a
+    human chat turn AND Orion's own self-initiated turns (curiosity
+    investigation, endogenous outreach, journal). Those are not filtered
+    out: cortex genuinely ran attention for them, and a self-initiated turn's
+    row is joinable to its originating lane's row by `correlation_id`
+    (curiosity's uuid5 run correlation is the same id on both). Live check
+    2026-09-06: the previous two days of chat history were entirely
+    `orion_journal` / `orion_outreach` sessions, so filtering to "human
+    only" would have emptied the lane.
+
+    `leg` names which of a turn's cortex legs built this frame (the verb,
+    e.g. `harness_finalize_reflect` vs `orion_voice_finalize`). A unified
+    turn runs more than one brain-mode leg under ONE correlation id and no
+    turn_id, so without it both legs collided on `entry_id` and the writer
+    kept whichever arrived first (review finding 2026-09-06). Absent a leg
+    the generated_at hash disambiguates instead.
 
     Vocabulary is this lane's own: `top_down_override`, `selected:<action>`,
     `suppressed:<reason>`, `open_loops_no_action`, `no_open_loops`. The
@@ -178,11 +195,11 @@ def to_attention_schema(frame: AttentionFrameV1) -> AttentionSchemaV1:
 
     label = loops[attended_id].description if attended_id in loops else ""
     predicted = clip(frame.deferred_items[0], MAX_PREDICTED_NEXT_CHARS) if frame.deferred_items else None
-    key = frame.turn_id or frame.correlation_id or hashlib.sha256(
-        frame.generated_at.isoformat().encode("utf-8")
-    ).hexdigest()[:24]
+    stamp = hashlib.sha256(frame.generated_at.isoformat().encode("utf-8")).hexdigest()
+    key = frame.turn_id or frame.correlation_id or stamp[:24]
+    suffix = " ".join(str(leg or "").split()).lower().replace(" ", "_") or stamp[:8]
     return AttentionSchemaV1(
-        entry_id=f"cortex-{key}",
+        entry_id=f"cortex-{key}-{suffix}",
         generated_at=frame.generated_at,
         process="cortex_turn",
         correlation_id=frame.correlation_id,

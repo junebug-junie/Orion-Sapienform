@@ -2444,7 +2444,9 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             # chat turn (app/attention_schema_publish.py). Own guard, same
             # reasoning as the trace writer above.
             try:
-                await publish_attention_schema(attention_frame)
+                await publish_attention_schema(
+                    attention_frame, leg=str(ctx.get("verb") or "").strip() or None
+                )
             except Exception as exc:
                 logger.warning("attention_schema_publish_call_failed error=%s", exc)
 

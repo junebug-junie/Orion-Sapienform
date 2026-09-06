@@ -2944,7 +2944,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-06"
-    description: "AttentionSchemaV1 rows from four attending processes (substrate_attention, reverie, curiosity, cortex_turn) -> substrate_attention_schema via orion-sql-writer. docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
+    description: "AttentionSchemaV1 rows from four attending processes (substrate_attention, reverie, curiosity, cortex_turn) -> substrate_attention_schema via orion-sql-writer. cortex_turn covers every unified turn cortex built a stance for, including Orion's own self-initiated turns; those join to their originating lane by correlation_id. docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
 
   - name: "orion:harness:run:request"
     kind: "request"

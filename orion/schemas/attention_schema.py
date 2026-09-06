@@ -13,7 +13,7 @@ Four producers, one consumer, one table:
     orion-substrate-runtime  process="substrate_attention"  (every ~30s tick)
     orion-thought            process="reverie"              (per chain)
     orion-hub                process="curiosity"            (per investigation run)
-    orion-cortex-exec        process="cortex_turn"          (per real chat turn)
+    orion-cortex-exec        process="cortex_turn"          (per unified turn, human or self-initiated)
         -> bus channel ATTENTION_SCHEMA_CHANNEL
         -> orion-sql-writer -> table substrate_attention_schema
 
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -111,3 +112,28 @@ class AttentionSchemaV1(BaseModel):
 
     # --- what it expects to attend to next ---------------------------------
     predicted_next: str | None = Field(default=None, max_length=MAX_PREDICTED_NEXT_CHARS)
+
+
+def bind_correlation(row: AttentionSchemaV1) -> tuple[AttentionSchemaV1, UUID]:
+    """Return (row, envelope correlation id) with the two guaranteed equal.
+
+    Review finding 2026-09-06: orion-sql-writer stamps every persisted row's
+    `correlation_id` column from the *envelope* (`extra_sql_fields`, applied
+    after payload validation), and `BaseEnvelope.correlation_id` defaults to
+    a fresh uuid4. A producer that builds the envelope without passing one
+    therefore gets a random id in the table, silently replacing the row's own
+    (reverie thought, cortex turn, curiosity run) -- every join back to the
+    originating artifact dead on arrival. Same reason
+    orion/substrate/chat_stance_belief_bus.py passes `correlation_id=` on
+    its envelope. Every producer of this schema calls this and passes the
+    returned UUID on the envelope. A row with no usable id gets one minted
+    here so payload and column still agree.
+    """
+    raw = row.correlation_id
+    try:
+        corr = UUID(str(raw)) if raw else uuid4()
+    except (ValueError, TypeError):
+        corr = uuid4()
+    if str(corr) != raw:
+        row = row.model_copy(update={"correlation_id": str(corr)})
+    return row, corr

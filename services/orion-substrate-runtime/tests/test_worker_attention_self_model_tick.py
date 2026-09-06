@@ -451,6 +451,7 @@ def test_attention_surface_loop_publishes_and_clears_the_pending_row(monkeypatch
     assert channel == ATTENTION_SCHEMA_CHANNEL
     assert envelope.kind == ATTENTION_SCHEMA_KIND
     assert envelope.payload["entry_id"] == "substrate-x"
+    assert str(envelope.correlation_id) == envelope.payload["correlation_id"]
     assert worker._pending_attention_schema is None
 
     # Nothing pending -> nothing published.

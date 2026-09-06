@@ -2080,6 +2080,10 @@ def test_attention_surface_a_tick_publishes_exactly_one_curiosity_row() -> None:
     # "unreadable", never "touched nothing".
     assert payload["attention_reason"] == "graph_unreadable"
     assert payload["attended_id"] is None
+    # The run's uuid5 correlation survives onto the persisted column: envelope
+    # and payload carry the same id, and it is the journal entry's too.
+    assert str(env.correlation_id) == payload["correlation_id"]
+    assert payload["correlation_id"] == bus.journal[0][1].payload["correlation_id"]
     # The journal itself is still exactly one entry (see bus.journal above).
     assert len(bus.journal) == 1
 
@@ -2098,6 +2102,42 @@ def test_attention_surface_publish_failure_does_not_cost_the_journal() -> None:
     assert asyncio.run(loop.tick()) is None
     assert _attention_surface_rows(bus) == []
     assert len(bus.journal) == 1
+
+
+def test_attention_surface_a_hung_graph_read_does_not_hold_the_journal() -> None:
+    """Review finding: the graph read sits before the journal write. A read
+    that never returns must time out into graph_unreadable, not stall."""
+    import threading
+
+    class _HangingReader:
+        def query(self, cypher):
+            threading.Event().wait(3)
+            return []
+
+    from datetime import datetime, timezone
+
+    bus = _FakeBus()
+    loop = _loop(bus)
+    # Called directly: the full tick's ACL pre-check wants a real reader
+    # client, and what is under test is only the bounded read + publish.
+    loop._reader = _HangingReader()
+    loop.attention_schema_graph_read_timeout_sec = 0.2
+    # run_until_complete, not asyncio.run: asyncio.run's teardown joins the
+    # default executor, i.e. waits for the hung thread, which would measure
+    # the fake's sleep instead of the timeout under test.
+    event_loop = asyncio.new_event_loop()
+    try:
+        started = time.monotonic()
+        event_loop.run_until_complete(loop._publish_attention_schema(
+            run_id="abc123", outcome=None, correlation_id="7dcc3944-29bb-5d8f-915f-90f4e6968d47",
+            now=datetime.now(timezone.utc),
+        ))
+        elapsed = time.monotonic() - started
+    finally:
+        event_loop.close()
+    assert elapsed < 2.0, elapsed
+    rows = _attention_surface_rows(bus)
+    assert len(rows) == 1 and rows[0].payload["attention_reason"] == "graph_unreadable"
 
 
 def test_attention_surface_an_empty_generation_publishes_nothing() -> None:

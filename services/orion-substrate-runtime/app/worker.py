@@ -2887,14 +2887,17 @@ class BiometricsSubstrateWorker:
             from orion.schemas.attention_schema import (
                 ATTENTION_SCHEMA_CHANNEL,
                 ATTENTION_SCHEMA_KIND,
+                bind_correlation,
             )
 
+            row, corr = bind_correlation(row)
             await publish_with_reconnect(
                 self._bus,
                 ATTENTION_SCHEMA_CHANNEL,
                 BaseEnvelope(
                     kind=ATTENTION_SCHEMA_KIND,
                     source=self._service_ref(),
+                    correlation_id=corr,
                     payload=row.model_dump(mode="json"),
                 ),
                 log_label="substrate_attention_schema_publish",

@@ -28,7 +28,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.reverie.attention_schema import to_attention_schema
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
-from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
 from orion.schemas.reverie import (
     MAX_CHAIN_THOUGHTS,
     MAX_EVIDENCE_REFS,
@@ -293,13 +293,14 @@ async def run_reverie_chain(
         # table/consumers above are untouched; this emits the shared shape
         # alongside (orion/reverie/attention_schema.py).
         with suppress(Exception):
-            row = to_attention_schema(chain, thoughts[:MAX_CHAIN_THOUGHTS])
+            row, corr = bind_correlation(to_attention_schema(chain, thoughts[:MAX_CHAIN_THOUGHTS]))
             await publish_with_reconnect(
                 bus,
                 ATTENTION_SCHEMA_CHANNEL,
                 BaseEnvelope(
                     kind=ATTENTION_SCHEMA_KIND,
                     source=_source(),
+                    correlation_id=corr,
                     payload=row.model_dump(mode="json"),
                 ),
                 log_label="reverie_attention_schema_publish",

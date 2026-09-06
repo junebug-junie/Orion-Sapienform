@@ -22,7 +22,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.schemas.attention_frame import AttentionFrameV1
-from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
 from orion.substrate.attention_frame import to_attention_schema
 
 from app.settings import settings
@@ -45,17 +45,25 @@ def _source() -> ServiceRef:
     return ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name)
 
 
-async def publish_attention_schema(frame: AttentionFrameV1) -> bool:
+async def publish_attention_schema(frame: AttentionFrameV1, *, leg: str | None = None) -> bool:
+    """`leg` is the verb this frame was built under (ctx["verb"]); see
+    orion.substrate.attention_frame.to_attention_schema for why it is part of
+    the row id."""
     bus = _BUS
     if bus is None:
         logger.warning("attention_schema_publish_skipped reason=bus_unbound")
         return False
     try:
-        row = to_attention_schema(frame)
+        row, corr = bind_correlation(to_attention_schema(frame, leg=leg))
         await publish_with_reconnect(
             bus,
             ATTENTION_SCHEMA_CHANNEL,
-            BaseEnvelope(kind=ATTENTION_SCHEMA_KIND, source=_source(), payload=row.model_dump(mode="json")),
+            BaseEnvelope(
+                kind=ATTENTION_SCHEMA_KIND,
+                source=_source(),
+                correlation_id=corr,
+                payload=row.model_dump(mode="json"),
+            ),
             log_label="attention_schema_publish",
         )
         return True

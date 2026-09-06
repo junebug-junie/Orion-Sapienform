@@ -38,6 +38,7 @@ from orion.schemas.attention_schema import (
     ATTENTION_SCHEMA_KIND,
     MAX_NARRATIVE_CHARS,
     AttentionSchemaV1,
+    bind_correlation,
     clip,
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
@@ -82,6 +83,22 @@ def test_schema_rejects_unknown_fields_and_out_of_range_confidence() -> None:
         AttentionSchemaV1(entry_id="x", process="reverie", attention_reason="r", confidence=1.5)
     with pytest.raises(Exception):
         AttentionSchemaV1(entry_id="x", process="not_a_process", attention_reason="r")
+
+
+def test_bind_correlation_makes_row_and_envelope_agree() -> None:
+    """Review finding: sql-writer stamps the column from the envelope, so the
+    two must be the same id or the row's own correlation is lost."""
+    from uuid import UUID
+
+    row = AttentionSchemaV1(entry_id="x", process="reverie", attention_reason="r",
+                            correlation_id="7dcc3944-29bb-5d8f-915f-90f4e6968d47")
+    bound, corr = bind_correlation(row)
+    assert corr == UUID("7dcc3944-29bb-5d8f-915f-90f4e6968d47") and bound.correlation_id == str(corr)
+
+    for raw in (None, "corr-1", ""):
+        bound, corr = bind_correlation(AttentionSchemaV1(entry_id="x", process="reverie", attention_reason="r", correlation_id=raw))
+        assert bound.correlation_id == str(corr)
+        assert isinstance(corr, UUID)
 
 
 def test_clip_normalises_whitespace_and_caps_with_an_ellipsis() -> None:
@@ -178,9 +195,9 @@ def test_cortex_projection_selected_action_uses_the_policy_rationale() -> None:
         ),
         deferred_items=["the deploy"],
     )
-    row = cortex_to_attention_schema(frame)
+    row = cortex_to_attention_schema(frame, leg="harness_finalize_reflect")
     assert row.process == "cortex_turn"
-    assert row.entry_id == "cortex-turn-1"
+    assert row.entry_id == "cortex-turn-1-harness_finalize_reflect"
     assert row.correlation_id == "corr-1"
     assert row.attended_id == "loop-1"
     assert row.attended_label == "Zephyr Bridge"
@@ -229,6 +246,20 @@ def test_cortex_projection_suppression_and_empty_branches() -> None:
 def test_cortex_entry_id_falls_back_without_turn_or_correlation_ids() -> None:
     row = cortex_to_attention_schema(_frame(turn_id=None, correlation_id=None))
     assert row.entry_id.startswith("cortex-") and len(row.entry_id) > len("cortex-")
+
+
+def test_cortex_two_legs_of_one_turn_do_not_collide() -> None:
+    """Review finding: a unified turn runs more than one brain-mode leg under
+    one correlation id and no turn_id; without the leg in the key the writer
+    kept whichever arrived first."""
+    frame = _frame(turn_id=None)
+    a = cortex_to_attention_schema(frame, leg="harness_finalize_reflect")
+    b = cortex_to_attention_schema(frame, leg="orion_voice_finalize")
+    assert a.entry_id != b.entry_id and a.correlation_id == b.correlation_id == "corr-1"
+    # No leg at all: the generated_at stamp still separates distinct builds.
+    c = cortex_to_attention_schema(frame)
+    d = cortex_to_attention_schema(_frame(turn_id=None, generated_at=NOW.replace(second=1)))
+    assert c.entry_id != d.entry_id
 
 
 # --- reverie -------------------------------------------------------------------

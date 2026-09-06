@@ -43,13 +43,15 @@ async def test_unbound_bus_is_a_noop_that_reports_false():
 async def test_bound_bus_gets_one_cortex_turn_row():
     bus = AsyncMock()
     asp.bind_attention_schema_bus(bus)
-    assert await asp.publish_attention_schema(_frame()) is True
+    assert await asp.publish_attention_schema(_frame(), leg="harness_finalize_reflect") is True
     bus.publish.assert_awaited_once()
     channel, envelope = bus.publish.await_args.args
     assert channel == ATTENTION_SCHEMA_CHANNEL
     assert envelope.kind == ATTENTION_SCHEMA_KIND
     assert envelope.payload["process"] == "cortex_turn"
-    assert envelope.payload["entry_id"] == "cortex-turn-1"
+    assert envelope.payload["entry_id"] == "cortex-turn-1-harness_finalize_reflect"
+    # sql-writer stamps the column from the envelope: they must agree.
+    assert str(envelope.correlation_id) == envelope.payload["correlation_id"]
     assert envelope.payload["attention_reason"] == "selected:watch"
     assert envelope.payload["reason_narrative"] == "keep an eye on it"
     assert envelope.payload["attended_label"] == "Zephyr Bridge"

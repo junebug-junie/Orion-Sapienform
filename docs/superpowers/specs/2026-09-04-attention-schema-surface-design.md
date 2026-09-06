@@ -553,3 +553,46 @@ What this patch does about it, concretely:
    cortex, only for durable/resumable workflows per the two prior decisions. LangGraph is not
    a dependency of this repo today (`README.md:1054` names it as a direction, nothing imports
    it); it should not become one before step 2 moves a number.
+
+## The one bridge (shipped 2026-09-06)
+
+The read side above is built, and it is exactly one read.
+
+`orion-attention-runtime`'s goal producer (`_maybe_build_goal`) now asks the substrate what
+is actually competing before it chooses a target: `AttentionRuntimeStore.load_competing_loop_refs`
+returns the `source_refs` of every open loop in the latest
+`substrate_attention_broadcast_projection`, and `top_node_substrate_target(frame, competing=...)`
+prefers, among the qualified `node:substrate.*` candidates, the highest-salience one the
+competition can see. When none is competing, or the projection is missing or older than
+`ORION_GOAL_PROVENANCE_COMPETITION_MAX_AGE_SEC` (120s, four broadcast ticks), it falls back to
+the plain top-1 -- so the producer never fires less than before.
+`ORION_GOAL_PROVENANCE_READS_COMPETITION=false` is the kill switch and restores the pre-bridge
+behaviour exactly.
+
+Each emitted `FieldGoalProvenanceV1` carries a typed receipt of what the producer saw:
+`competition_read` (`in_competition` / `not_in_competition` / `unavailable`) and
+`competing_refs`. That is the producer's side of the story; the truth stays downstream, in the
+self-model's `voluntary_override_absent_reason`.
+
+Not a reconciler, not a router, not a shared taxonomy. One id set, read once per tick.
+
+**Control window, banked before deploy (self-model rows, 24h):**
+
+| absent reason | rows | share |
+|---|---|---|
+| `goal_matched_no_loop` | 1010 | 36.9% |
+| `goal_target_already_winning` | 797 | 29.2% |
+| `no_open_loops` | 573 | 21.0% |
+| `top_down_override` (fired) | 354 | 12.9% |
+
+The falsifiable prediction: `goal_matched_no_loop`'s share falls and `top_down_override`'s
+rises in a matched window after deploy. If neither moves, the state machine (step 3) should
+not be started, per the ordering above.
+
+**A finding from building it.** The goal producer can only ever target the five domains in
+`PREDICTION_ERROR_NATIVE_TARGETS` (`biometrics`, `execution`, `chat`, `route`,
+`bus_synaptic`), but the competition also holds loops for `node:substrate.codebase` and
+others. Some of the 37% is structural: the competition is about things the goal producer
+cannot aim at. The bridge can only close the part where a targetable domain *was* competing
+and the producer picked a different one; the rest needs the producer's target set widened,
+which is a separate decision.

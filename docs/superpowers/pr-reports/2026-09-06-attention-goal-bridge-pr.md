@@ -11,7 +11,7 @@
 - This patch is the design doc's "one bridge": before choosing a target, the goal producer reads which node ids are currently competing and prefers, among its qualified candidates, the highest-salience one the competition can see. Nothing else: no reconciler, no router, no shared taxonomy.
 - It never fires less than before: no candidate competing, or a missing/stale projection, falls back to the old top-1. `ORION_GOAL_PROVENANCE_READS_COMPETITION=false` is the kill switch and restores the pre-bridge behaviour exactly.
 - Each emitted goal carries a typed receipt (`competition_read`, `competing_refs`) of what the producer saw.
-- Deployed to `orion-attention-runtime` at 10:25Z from this worktree; live within a minute (see below). The falsifiable number is the self-model's `goal_matched_no_loop` share, banked before deploy.
+- Deployed to `orion-attention-runtime` at 10:25Z from this worktree; a review finding (strict consumer schemas) made that first deploy drop goals for nine minutes; hot-fix live 10:34:32Z. The falsifiable number is the self-model's `goal_matched_no_loop` share, banked before deploy.
 
 ## Outcome moved
 
@@ -92,7 +92,27 @@ projection freshness at that moment: 1.3s
 
 ## Review findings fixed
 
-(filled after review)
+Round 1 (six findings, all acted on; one was a live incident):
+
+- Finding: the two typed receipt fields I added to `FieldGoalProvenanceV1` are rejected by all three consumers, which validate with `extra="forbid"` -- a producer-first deploy drops every goal until the consumers are rebuilt. **This happened live**: 186 goals rejected by `orion-substrate-runtime` (`goal_context invalid payload`) between 10:25Z and 10:34Z.
+  - Fix: fields removed; the schema is byte-for-byte what the consumers expect. The receipt (`competition_read=`) is now on the producer's own `field_goal_provenance_published` log line, which is inspectable and needs no contract change. Hot-fix redeployed 10:34:32Z; rejected goals since: 0.
+  - Evidence: substrate log count 0 after redeploy; the contaminated 10:25-10:34 window was discarded and measurement restarted from 10:34:32Z.
+- Finding: the competition read changes every ~30s and is None on any error, while the frame ticks every ~2s; alternating winners would reset the 3-tick dominance streak and the producer could fire *less* than before.
+  - Fix: hysteresis in `top_node_substrate_target(..., current=)` -- an unknown/empty read keeps the current streak target while it is still qualified; only a competing read naming a different qualified target moves it.
+  - Evidence: `test_bridge_unknown_reads_do_not_flap_the_streak` (reads: competing, None, empty, error, competing -> one target, streak 5, three goals) and `test_bridge_hysteresis_keeps_the_current_target_on_unknown_or_empty_reads`.
+- Finding: the two new env keys were in `.env_example`/settings but not in this service's explicit compose `environment:` list (no `env_file`), so the kill switch never reached the container. The parity gate had in fact printed this and I read only its last line.
+  - Fix: both keys forwarded, plus two pre-existing streak-telemetry keys the same gate had been flagging. `check_service_env_compose_parity orion-attention-runtime`: OK, 27/27.
+  - Evidence: `docker exec ... env | grep READS_COMPETITION` = 1 in the redeployed container; `test_bridge_compose_forwards_the_kill_switch`.
+- Finding: `source_refs` also carry up to 20 redis stream ids per loop; a sorted, truncated receipt would have been all stream ids.
+  - Fix: the store reader keeps only `node:` ids (the only refs a goal target can ever match). `test_bridge_store_reader_keeps_only_node_ids`.
+- Finding: the goal's `salience_score`/`priority` are now the *chosen* target's own salience, which may be lower than the field's raw top-1, and two schema comments still said "the real field winner".
+  - Fix: comments corrected on `FieldGoalProvenanceV1.field_target_id` and `DominanceStreakTickV1.target_id`; the README paragraph and design section say the target is competition-aware.
+- Finding: no test could observe a streak reset caused by the bridge.
+  - Fix: the flap test above drives a constant frame through five alternating reads with `min_streak=3`.
+
+Reviewer's altitude note, agreed and recorded under Risks: the overlap is real (1,839 of 2,735 recent broadcasts held a targetable id, so the bridge is not a no-op), but its main effect may convert `goal_matched_no_loop` into `goal_target_already_winning` rather than into overrides. The pre-registered number is `goal_matched_no_loop` falling; `voluntary_override` rising is the hoped-for second effect, not the gate.
+
+Round 2: (filled after re-review)
 
 ## Restart required
 
@@ -116,4 +136,4 @@ scripts/safe_docker_build.sh orion-attention-runtime up -d --build
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2126

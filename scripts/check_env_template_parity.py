@@ -117,11 +117,23 @@ def main() -> int:
     root = main_worktree_root()
     argv = [a for a in sys.argv[1:] if not a.startswith("-")]
     if argv:
-        dirs = [root / "services" / a for a in argv]
-        for d in dirs:
+        dirs = []
+        for a in argv:
+            d = root / "services" / a
             if not d.is_dir():
-                print(f"env parity: no such service {d.name}", file=sys.stderr)
-                return 1
+                # A service that exists only on this branch has no directory in
+                # the primary checkout yet (2026-09-06, orion-durable-runs): its
+                # .env_example AND its operator .env both live in the worktree
+                # being deployed from. Compare there rather than refusing to
+                # deploy a brand-new service at all.
+                local = Path.cwd() / "services" / a
+                if local.is_dir():
+                    print(f"env parity: {a} is new on this branch; comparing the worktree-local .env", file=sys.stderr)
+                    d = local
+                else:
+                    print(f"env parity: no such service {d.name}", file=sys.stderr)
+                    return 1
+            dirs.append(d)
     else:
         dirs = sorted(p for p in (root / "services").iterdir() if p.is_dir())
 

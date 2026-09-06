@@ -565,6 +565,9 @@ async def startup_event():
                 # are the same interruption. Read through a callable because
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
+                kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
+                cortex_request_channel=settings.CORTEX_REQUEST_CHANNEL,
+                cortex_result_prefix=settings.CORTEX_RESULT_PREFIX,
                 outreach_provider=lambda: endogenous_outreach,
                 # Liveness only. Without this the loop cannot reach Hub's own
                 # soft-ceiling extension and a long turn is killed mid-run --

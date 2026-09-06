@@ -26,6 +26,7 @@ from .workflow_runtime import (
     has_explicit_workflow_request,
     has_workflow_schedule_management_request,
 )
+from .durable_runs import dispatch_durable_run, has_durable_run_request
 from orion.spark.concept_induction.profile_repository import concept_profile_parity_evidence_snapshot
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
@@ -274,6 +275,23 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 (req.context.metadata or {}).get("classifier_preferred_render_style")
                 if isinstance(req.context.metadata, dict)
                 else None,
+            )
+
+        # Durable cognition runs: cortex is the kickoff, the runner does the
+        # work (app/durable_runs.py). Checked before every routing branch --
+        # an explicit metadata key, like workflow_request below.
+        if has_durable_run_request(req):
+            durable_result = await dispatch_durable_run(
+                bus=_bus_for_rpc(),
+                source=sref,
+                req=req,
+                correlation_id=str(env.correlation_id),
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=durable_result.model_dump(mode="json"),
             )
 
         if has_explicit_workflow_request(req):

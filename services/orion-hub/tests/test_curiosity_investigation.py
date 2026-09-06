@@ -2145,3 +2145,124 @@ def test_attention_surface_an_empty_generation_publishes_nothing() -> None:
     loop = _loop(bus, text="")
     assert asyncio.run(loop.tick()) == "empty_generation"
     assert _attention_surface_rows(bus) == []
+
+
+# --- durable runs: kickoff via cortex, turn on request, outreach on completion --
+# (docs/superpowers/specs/2026-09-06-durable-cognition-runs-from-cortex-design.md)
+
+
+class _CortexBus(_FakeBus):
+    """A bus whose cortex RPC answers `accepted` (or whatever `reply` says)."""
+
+    def __init__(self, reply: dict | None = None, *, raise_on_rpc: bool = False) -> None:
+        from orion.core.bus.codec import OrionCodec
+
+        super().__init__()
+        self.codec = OrionCodec()
+        self.rpc_calls: list = []
+        self.reply = reply if reply is not None else {"payload": {"status": "accepted"}}
+        self.raise_on_rpc = raise_on_rpc
+
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec=60.0):
+        self.rpc_calls.append((channel, envelope, reply_channel))
+        if self.raise_on_rpc:
+            raise RuntimeError("cortex down")
+        return self.reply
+
+
+def test_durable_kickoff_hands_the_run_to_cortex_and_does_not_run_the_turn() -> None:
+    from orion.schemas.durable_run import DurableRunRequestV1
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True)
+    calls = []
+    original = loop._generate
+
+    async def counting_generate(*a, **k):
+        calls.append(a)
+        return await original(*a, **k)
+
+    loop._generate = counting_generate  # type: ignore[assignment]
+    assert asyncio.run(loop.tick()) == "dispatched"
+    assert calls == []  # the turn did NOT run in-process
+    assert bus.journal == []  # and nothing was journaled here -- the runner owns the tail
+    assert len(bus.rpc_calls) == 1
+    channel, envelope, reply_channel = bus.rpc_calls[0]
+    assert channel == loop.cortex_request_channel
+    assert envelope.kind == "cortex.orch.request" and envelope.reply_to == reply_channel
+    durable = envelope.payload["context"]["metadata"]["durable_run"]
+    request = DurableRunRequestV1.model_validate(durable)
+    assert request.workflow == "curiosity.investigate"
+    assert request.brief.prompt and request.brief.session_id == "orion_curiosity"
+    assert request.brief.material.approved_total >= 0
+    # The slot is still recorded by Hub (scheduling stays here).
+    assert bus.redis.values.get("orion:curiosity:last_investigation_at") is not None
+
+
+def test_durable_kickoff_falls_back_to_the_direct_path_when_cortex_is_down() -> None:
+    bus = _CortexBus(raise_on_rpc=True)
+    loop = _loop(bus, kickoff_via_cortex=True)
+    assert asyncio.run(loop.tick()) is None
+    assert len(bus.journal) == 1  # ran in-process after the failed dispatch
+
+
+def test_durable_kickoff_off_is_the_direct_path_exactly() -> None:
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=False)
+    assert asyncio.run(loop.tick()) is None
+    assert bus.rpc_calls == [] and len(bus.journal) == 1
+
+
+def test_turn_request_runs_generate_and_replies_on_reply_to() -> None:
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.durable_run import CURIOSITY_TURN_RESULT_KIND, CuriosityTurnResultV1
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True, text="the finding")
+    env = BaseEnvelope(
+        kind="curiosity.turn.request.v1", source=SOURCE, reply_to="orion:curiosity:turn:reply:abc",
+        payload={"run_id": "abc123def456", "correlation_id": "7dcc3944-29bb-5d8f-915f-90f4e6968d47", "prompt": "Pick something.", "timeout_sec": 3500.0, "attempt": 2},
+    )
+    msg = {"data": bus.codec.encode(env)}
+    asyncio.run(loop._handle_turn_request(msg))
+    replies = [(c, e) for c, e in bus.published if c == "orion:curiosity:turn:reply:abc"]
+    assert len(replies) == 1
+    reply = CuriosityTurnResultV1.model_validate(replies[0][1].payload)
+    assert replies[0][1].kind == CURIOSITY_TURN_RESULT_KIND
+    assert reply.ok is True and reply.text == "the finding" and reply.debug["harness_step_count"] == 14
+
+
+def test_turn_request_with_no_text_replies_not_ok() -> None:
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.durable_run import CuriosityTurnResultV1
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True, text="")
+    env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to="orion:curiosity:turn:reply:x",
+                       payload={"run_id": "abc123def456", "correlation_id": "c", "prompt": "p", "timeout_sec": 10.0})
+    asyncio.run(loop._handle_turn_request({"data": bus.codec.encode(env)}))
+    reply = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "orion:curiosity:turn:reply:x"][0].payload)
+    assert reply.ok is False and reply.error
+
+
+def test_completed_run_state_with_reach_out_triggers_outreach_here() -> None:
+    from orion.core.bus.bus_schemas import BaseEnvelope
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True)
+    seen = []
+
+    async def fake_reach_out(*, outcome, finding_text, run_id):
+        seen.append((outcome.reach_out, outcome.reach_out_why, finding_text, run_id))
+        return None
+
+    loop._maybe_reach_out = fake_reach_out  # type: ignore[assignment]
+    state = {"run_id": "abc123def456", "workflow": "curiosity.investigate", "thread_id": "abc123def456", "node": "finish",
+             "status": "completed", "correlation_id": "c", "detail": {"reach_out": True, "reach_out_why": "worth it", "finding_text": "the finding"}}
+    env = BaseEnvelope(kind="durable.run.state.v1", source=SOURCE, payload=state)
+    asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
+    assert seen == [(True, "worth it", "the finding", "abc123def456")]
+    # A non-terminal transition, or one without reach_out, is ignored.
+    asyncio.run(loop._handle_run_state({"data": bus.codec.encode(BaseEnvelope(kind="durable.run.state.v1", source=SOURCE, payload={**state, "status": "running", "node": "journal"}))}))
+    asyncio.run(loop._handle_run_state({"data": bus.codec.encode(BaseEnvelope(kind="durable.run.state.v1", source=SOURCE, payload={**state, "detail": {"reach_out": False}}))}))
+    assert len(seen) == 1

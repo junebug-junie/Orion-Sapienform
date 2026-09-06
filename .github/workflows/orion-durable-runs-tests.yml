@@ -1,0 +1,36 @@
+name: orion-durable-runs tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-durable-runs/**"
+      - "orion/schemas/durable_run.py"
+      - "orion/curiosity/journal.py"
+      - "orion/curiosity/attention_schema.py"
+      - ".github/workflows/orion-durable-runs-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-durable-runs/**"
+      - "orion/schemas/durable_run.py"
+
+jobs:
+  unit:
+    name: durable-runs — graph resume + contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (services/orion-durable-runs/requirements.txt)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-durable-runs/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Pytest services/orion-durable-runs/tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider

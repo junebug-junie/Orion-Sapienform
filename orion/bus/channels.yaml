@@ -2946,6 +2946,43 @@ channels:
     since: "2026-09-06"
     description: "AttentionSchemaV1 rows from four attending processes (substrate_attention, reverie, curiosity, cortex_turn) -> substrate_attention_schema via orion-sql-writer. cortex_turn covers every unified turn cortex built a stance for, including Orion's own self-initiated turns; those join to their originating lane by correlation_id. docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
 
+  # --- Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-cognition-runs-from-cortex-design.md) ---
+  # Hub kicks a curiosity run off THROUGH cortex (orion:cortex:request with
+  # context.metadata.durable_run); cortex-orch dispatches it here; the runner
+  # owns the run's state machine under a Postgres checkpointer and resumes it
+  # after a restart. Hub keeps the one node only Hub can execute (the harness
+  # turn) behind its own RPC channel below.
+  - name: "orion:durable:run:request"
+    kind: "request"
+    schema_id: "DurableRunRequestV1"
+    message_kind: "durable.run.request.v1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-durable-runs"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-06"
+
+  - name: "orion:durable:run:state"
+    kind: "event"
+    schema_id: "DurableRunStateV1"
+    message_kind: "durable.run.state.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-sql-writer", "orion-hub"]
+    stability: "experimental"
+    since: "2026-09-06"
+    description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver."
+
+  - name: "orion:curiosity:turn:request"
+    kind: "request"
+    schema_id: "CuriosityTurnRequestV1"
+    message_kind: "curiosity.turn.request.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-06"
+    description: "Runner -> Hub: execute this run's harness turn (Hub's unified-turn saga needs Hub-internal clients). Reply on orion:curiosity:turn:reply:<correlation_id> as CuriosityTurnResultV1. The runner re-issues it, same run_id, if Hub goes away mid-turn."
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

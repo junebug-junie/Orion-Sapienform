@@ -1,0 +1,34 @@
+services:
+  durable-runs:
+    build:
+      context: ../..
+      dockerfile: services/orion-durable-runs/Dockerfile
+    container_name: ${PROJECT}-durable-runs
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${DURABLE_RUNS_PORT:-8121}:8121"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-durable-runs}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME:-athena}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DURABLE_RUNS_ENABLED=${DURABLE_RUNS_ENABLED:-true}
+      - DURABLE_RUNS_RESUME_ON_BOOT=${DURABLE_RUNS_RESUME_ON_BOOT:-true}
+      - DURABLE_RUNS_RESUME_SWEEP_SEC=${DURABLE_RUNS_RESUME_SWEEP_SEC:-120.0}
+      - DURABLE_RUNS_MAX_AGE_HOURS=${DURABLE_RUNS_MAX_AGE_HOURS:-24.0}
+      - DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=${DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC:-3600.0}
+      - DURABLE_RUNS_GRAPH_HOST=${DURABLE_RUNS_GRAPH_HOST:-}
+      - DURABLE_RUNS_GRAPH_PORT=${DURABLE_RUNS_GRAPH_PORT:-6379}
+      - DURABLE_RUNS_GRAPH_OWN=${DURABLE_RUNS_GRAPH_OWN:-orion_worldview}
+
+networks:
+  app-net:
+    external: true
+    name: ${PROJECT}-net

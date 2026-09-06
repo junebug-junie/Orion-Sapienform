@@ -59,7 +59,7 @@ Both containers mounted `${HOME}/.claude.json:/root/.claude.json:ro` (added 2026
 15 passed
 
 python3 scripts/check_compose_no_host_claude_json_mount.py --self-test  -> self-test PASS
-python3 scripts/check_compose_no_host_claude_json_mount.py              -> PASS (85 compose files, 0 mounts)
+python3 scripts/check_compose_no_host_claude_json_mount.py              -> PASS (89 compose files, 0 mounts)
 Gate bites on origin/main's compose files:
   orion-harness-governor -> [(27, '${HOME}/.claude.json')]
   orion-hub              -> [(32, '${HOME}/.claude.json')]
@@ -92,7 +92,14 @@ the post-patch state with a fresh CLAUDE_CONFIG_DIR and no host file):
 - Finding: the regression gate lived under `services/orion-harness-governor/tests/`, which no CI workflow runs, so it was a gate in name only.
   - Fix: rewritten as `scripts/check_compose_no_host_claude_json_mount.py` and added to `orion-static-gates.yml`.
   - Evidence: gate output above; bites on both origin/main compose files at the exact removed lines.
-- The first review subagent was cut off by a usage limit after raising the CI-coverage point; a second review pass ran after the rewrite (see below).
+- Finding (second review pass, should): the gate's regex stopped at the `:` inside `${HOME:-/root}`, so a `${VAR:-default}` prefix slipped through while the comment claimed it was covered.
+  - Fix: pattern now tolerates colons inside `${...}` and quotes; self-test covers `${HOME}`, `${HOME:-/root}` and a quoted absolute path.
+  - Evidence: `--self-test` PASS with all three forms.
+- Finding (second review pass, should): the glob skipped host-specific variants like `docker-compose.circe-qwen.yml`.
+  - Fix: glob widened to `services/*/docker-compose*.yml` (89 files).
+  - Evidence: gate output above.
+- Second review pass: no must-fix findings; no code reads `.claude.json` directly; no README or non-historical doc still describes the mount; CI YAML parses and the step sits in the `static-gates` job.
+- The first review subagent was cut off by a usage limit after raising the CI-coverage point.
 
 ## Restart required
 

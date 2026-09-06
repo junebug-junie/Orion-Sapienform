@@ -34,9 +34,14 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
-# A volume entry whose SOURCE side is a path ending in `.claude.json`,
-# whatever prefix it carries (${HOME}, an absolute path, a ${VAR:-default}).
-_CLAUDE_JSON_SOURCE = re.compile(r"^\s*-\s*([^:#]*?/\.claude\.json)\s*:")
+# A short-syntax volume entry whose SOURCE side is a path ending in
+# `.claude.json`, whatever prefix it carries: ${HOME}, an absolute path, a
+# ${VAR:-default} (the `:` inside the braces must not end the source), with or
+# without quotes. Long-syntax `source:` entries are not matched on purpose --
+# no compose file under services/ uses long syntax (0 hits for `source:`).
+_CLAUDE_JSON_SOURCE = re.compile(
+    r"""^\s*-\s*["']?((?:\$\{[^}]*\}|[^:#"'])*?/\.claude\.json)\s*:"""
+)
 
 
 def find_offenders(text: str) -> list[tuple[int, str]]:
@@ -58,9 +63,16 @@ def self_test() -> int:
         "      - ${HOME}/.claude.json:/root/.claude.json:ro\n"
         "      # - ${HOME}/.claude.json:/root/.claude.json:ro  (commented out is fine)\n"
         "      - harness-claude-config:/root/.claude\n"
+        "      - ${HOME:-/root}/.claude.json:/root/.claude.json:ro\n"
+        "      - \"/home/athena/.claude.json:/root/.claude.json\"\n"
     )
     got = find_offenders(bad)
-    if got != [(5, "${HOME}/.claude.json")]:
+    want = [
+        (5, "${HOME}/.claude.json"),
+        (8, "${HOME:-/root}/.claude.json"),
+        (9, "/home/athena/.claude.json"),
+    ]
+    if got != want:
         print(f"compose claude.json-mount gate: SELF-TEST FAIL, got {got!r}")
         return 1
     print("compose claude.json-mount gate: self-test PASS")
@@ -72,7 +84,8 @@ def main(argv: list[str]) -> int:
         return self_test()
 
     offenders: list[tuple[str, int, str]] = []
-    composes = sorted(REPO.glob("services/*/docker-compose.yml"))
+    # docker-compose.yml plus host-specific variants (docker-compose.<host>.yml).
+    composes = sorted(REPO.glob("services/*/docker-compose*.yml"))
     for path in composes:
         for lineno, src in find_offenders(path.read_text(encoding="utf-8")):
             offenders.append((str(path.relative_to(REPO)), lineno, src))

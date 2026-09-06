@@ -160,7 +160,20 @@ substrate_attention   508   116                  4  (goal_target_already_winning
 reverie                39    36                  2  (coalition_broadcast 25, no_coalition 14)
 ```
 
-Wave 2: see the section below (filled after review).
+Wave 2 (05:31-05:32Z, after review fixes): orion-substrate-runtime, orion-thought,
+orion-cortex-exec (all four containers), orion-hub.
+
+```text
+code-in-container: cortex-exec main.py has bind_attention_schema_bus; hub has the bounded
+              graph read; substrate-runtime has bind_correlation. All Up, thought healthy.
+correlation fix: post-wave-2 substrate rows carry a real UUID in the column, distinct per tick
+              (count=count(DISTINCT), regex check true); zero sql-writer validation failures.
+cortex_turn / curiosity lanes: need a unified turn / an investigation run to fire, which happen on
+              their own schedule (journal + outreach turns hourly-ish, curiosity a few times a day).
+              See "Live lane status" at the end of this report for what had landed by the time of
+              the PR.
+```
+
 
 ## Review findings fixed
 
@@ -205,6 +218,10 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 - Severity: low
   Concern: `scripts/safe_graphify_update.sh` refused the incremental graph update (known bug) and auto-restored; the committed graph does not yet include the new modules.
   Mitigation: per CLAUDE.md, not re-run; a full re-extraction is the safe path when someone next does one.
+
+## Live lane status at PR time
+
+(appended below as lanes come online)
 
 ## PR link
 

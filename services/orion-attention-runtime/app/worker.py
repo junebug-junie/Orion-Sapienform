@@ -12,6 +12,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
 )
 from orion.attention.field_attention.goal_provenance import (
+    qualified_node_targets,
     DominanceStreak,
     top_node_substrate_target,
     update_dominance_streak,
@@ -188,7 +189,11 @@ class AttentionRuntimeWorker:
             return None, None
         if self._node_streak is None:
             self._node_streak = self._store.load_node_dominance_streak()
-        competing = self._load_competition()
+        # With fewer than two qualified candidates no competition set can change
+        # the answer, so the cross-service read is skipped (review finding).
+        competing = (
+            self._load_competition() if len(qualified_node_targets(frame)) >= 2 else None
+        )
         winner = top_node_substrate_target(
             frame, competing=competing, current=self._node_streak.target_id
         )
@@ -230,10 +235,17 @@ class AttentionRuntimeWorker:
         # and a producer-first deploy of two new fields dropped 186 goals live
         # on 2026-09-06 before the consumers could be rebuilt. The downstream
         # truth is the self-model's `voluntary_override_absent_reason`.
-        self._last_competition_read = (
-            "unavailable" if competing is None
-            else "in_competition" if winner.target_id in competing
-            else "not_in_competition"
+        logger.info(
+            "field_goal_provenance_competition_read artifact_id=%s field_target_id=%s "
+            "competition_read=%s competing=%s",
+            goal.artifact_id,
+            goal.field_target_id,
+            (
+                "unavailable" if competing is None
+                else "in_competition" if winner.target_id in competing
+                else "not_in_competition"
+            ),
+            ",".join(sorted(competing)) if competing else "",
         )
         return goal, streak_tick
 
@@ -316,12 +328,11 @@ class AttentionRuntimeWorker:
         if published:
             logger.info(
                 "field_goal_provenance_published artifact_id=%s field_target_id=%s "
-                "salience=%.3f streak=%d competition_read=%s",
+                "salience=%.3f streak=%d",
                 goal.artifact_id,
                 goal.field_target_id,
                 goal.salience_score,
                 self._node_streak.count,
-                getattr(self, "_last_competition_read", "unavailable"),
             )
 
     async def _publish_streak_tick(self, streak_tick: DominanceStreakTickV1) -> None:

@@ -48,6 +48,20 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAtte
 MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
+def qualified_node_targets(frame: FieldAttentionFrameV1) -> list[FieldAttentionTargetV1]:
+    """The candidates a goal may name: Candidate A's real ``node:substrate.*``
+    domains with enough observations to be trusted (see
+    ``MIN_CONFIDENCE_FOR_GOAL_PROVENANCE``). Exposed so the producer can skip
+    the competition read when fewer than two qualify -- with 0 or 1 candidate
+    no competition set can change the answer."""
+    return [
+        t
+        for t in frame.node_targets
+        if t.target_id in PREDICTION_ERROR_NATIVE_TARGETS
+        and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
+    ]
+
+
 def top_node_substrate_target(
     frame: FieldAttentionFrameV1,
     *,
@@ -73,47 +87,19 @@ def top_node_substrate_target(
     this producer already gives a tick with zero qualifying candidates, not a forced
     pick of the least-thin option.
     """
-    candidates = [
-        t
-        for t in frame.node_targets
-        if t.target_id in PREDICTION_ERROR_NATIVE_TARGETS
-        and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
-    ]
+    candidates = qualified_node_targets(frame)
     if not candidates:
         return None
-    # THE ONE BRIDGE (2026-09-06, docs/superpowers/specs/2026-09-04-attention-
-    # schema-surface-design.md "The read side"). `competing` is the set of
-    # node ids the substrate's own workspace competition is currently holding
-    # as open loops (their `source_refs`). The substrate honours a goal only
-    # when `goal.target_id` is exactly one of those refs
-    # (`orion/substrate/attention/top_down.py::relevance`), so a goal aimed at
-    # a target that is not competing is, by construction, a goal that cannot
-    # be acted on -- 37% of self-model ticks over the 24h before this shipped
-    # (`goal_matched_no_loop`). Among the qualified candidates, prefer the
-    # highest-salience one the competition can actually see. When none is in
-    # the competition, or the competition is unknown (None), fall back to the
-    # plain top-1 -- this must never make the producer fire LESS than before.
-    # Not a reconciler, not a shared taxonomy: one read of one id set.
-    #
-    # Hysteresis (review finding 2026-09-06): the competition read changes
-    # every ~30s and reads as None on any error/staleness, while the field
-    # frame ticks every ~2s and the emission debounce needs the SAME winner
-    # for min_streak consecutive ticks. If an unknown or empty read fell back
-    # to the raw top-1 while a competing read picked something else, the
-    # winner would alternate and the streak would never reach the threshold
-    # -- the producer would fire LESS than before, the one thing this bridge
-    # must not do. So an unknown/empty competition keeps `current` (the
-    # streak's present target) whenever it is still a qualified candidate;
-    # only a competing read that names a different qualified target moves it.
-    if competing:
-        seen = [t for t in candidates if t.target_id in competing]
-        if seen:
-            return max(seen, key=lambda t: t.salience_score)
-    if current is not None:
-        held = next((t for t in candidates if t.target_id == current), None)
-        if held is not None:
-            return held
-    return max(candidates, key=lambda t: t.salience_score)
+    # Precedence, top to bottom (the one bridge, 2026-09-06 -- design doc
+    # "The read side"): a qualified candidate the substrate competition is
+    # holding; else the streak's current target while it is still qualified
+    # (hysteresis: an unknown/empty read must not flap the emission debounce,
+    # pinned by test_bridge_hysteresis_keeps_the_current_target...); else the
+    # raw field top-1. Not a reconciler: one id set, read once per tick.
+    seen = [t for t in candidates if competing and t.target_id in competing]
+    held = [t for t in candidates if current is not None and t.target_id == current]
+    pool = seen or held or candidates
+    return max(pool, key=lambda t: t.salience_score)
 
 
 @dataclass

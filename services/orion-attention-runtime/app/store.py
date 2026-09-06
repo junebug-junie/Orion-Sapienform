@@ -425,51 +425,55 @@ class AttentionRuntimeStore:
 
     def load_competing_loop_refs(self, *, max_age_sec: float) -> set[str] | None:
         """Node ids the substrate's workspace competition currently holds as open
-        loops -- the `source_refs` of every loop in the latest
-        `substrate_attention_broadcast_projection` (singleton row, written by
+        loops -- the ``node:`` entries of every loop's ``source_refs`` in the latest
+        ``substrate_attention_broadcast_projection`` (singleton row, written by
         orion-substrate-runtime every ~30s).
 
-        `None` when there is no projection or it is older than `max_age_sec`:
-        an unknown competition must read as unknown, not as empty -- a stalled
-        substrate would otherwise make every goal look "not in competition"
-        forever. The caller falls back to its pre-bridge behaviour on None.
+        Extracted in SQL: the projection row is 3.5-8.7KB and this runs on every
+        ~2s goal tick, while the answer is ~55 bytes. The age bound is a WHERE
+        clause on the DB clock (no container/DB skew), so a stale singleton
+        returns no row and no payload.
+
+        ``None`` when there is no fresh projection OR the row's shape is not
+        what this reader expects (no ``frame.open_loops`` array): an unknown
+        competition must read as unknown, never as empty -- ``set()`` means
+        "fresh projection, nothing competing". The caller falls back to its
+        pre-bridge behaviour on None.
         """
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
-                        SELECT projection_json,
-                               EXTRACT(EPOCH FROM (now() - generated_at)) AS age_sec
+                        SELECT
+                            jsonb_typeof(projection_json->'frame'->'open_loops') AS loops_type,
+                            (
+                                SELECT array_agg(DISTINCT r)
+                                FROM jsonb_array_elements(
+                                    CASE WHEN jsonb_typeof(projection_json->'frame'->'open_loops') = 'array'
+                                         THEN projection_json->'frame'->'open_loops'
+                                         ELSE '[]'::jsonb END
+                                ) AS l,
+                                jsonb_array_elements_text(
+                                    CASE WHEN jsonb_typeof(l->'source_refs') = 'array'
+                                         THEN l->'source_refs' ELSE '[]'::jsonb END
+                                ) AS r
+                                WHERE r LIKE 'node:%'
+                            ) AS refs
                         FROM substrate_attention_broadcast_projection
+                        WHERE generated_at > now() - make_interval(secs => :max_age)
                         ORDER BY generated_at DESC
                         LIMIT 1
                         """
                     ),
+                    {"max_age": float(max_age_sec)},
                 )
                 .mappings()
                 .first()
             )
-        if not row:
+        if not row or row["loops_type"] != "array":
             return None
-        try:
-            if float(row["age_sec"]) > float(max_age_sec):
-                return None
-        except (TypeError, ValueError):
-            return None
-        payload = row["projection_json"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        loops = ((payload or {}).get("frame") or {}).get("open_loops") or []
-        # `source_refs` is `[node_id] + contributing stream ids` (up to 20 redis
-        # stream ids per loop); only the node id can ever match a goal target,
-        # so keep just those. Review finding 2026-09-06.
-        refs: set[str] = set()
-        for loop in loops:
-            for ref in (loop or {}).get("source_refs") or []:
-                if isinstance(ref, str) and ref.startswith("node:"):
-                    refs.add(ref)
-        return refs
+        return {str(r) for r in (row["refs"] or [])}
 
     def load_attention_frame_for_field_tick(self, tick_id: str) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:

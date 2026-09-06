@@ -396,145 +396,157 @@ async def test_stop_awaits_poll_task_before_closing_bus(monkeypatch):
 
 
 # --- the one bridge: the producer reads the competition (2026-09-06) ------------
+# The producer's receipt is a log line (not a schema field -- see worker.py);
+# tests read it back with caplog.
+
+import logging
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+
+from app.store import AttentionRuntimeStore
 
 
-def _bridge_worker_at_threshold(monkeypatch, *, competing, reads_competition: bool = True):
+def _bridge_worker(monkeypatch, *, competing, reads_competition: bool = True):
     monkeypatch.setenv("ORION_GOAL_PROVENANCE_READS_COMPETITION", str(reads_competition))
     worker = _make_worker(monkeypatch, min_streak=1)
     worker._store.load_competing_loop_refs.return_value = competing
     return worker
 
 
-def _emit(worker, frame):
-    """A brand-new target's first tick never emits (streak starts at 1 and the
-    first-tick branch returns False), so warm the streak once, then emit."""
+def _emit_twice(worker, frame):
+    """A brand-new target's first tick never emits (the streak starts at 1 and
+    the first-tick branch returns False regardless of min_streak), so tick
+    once to warm the streak, then emit."""
     worker._maybe_build_goal(frame)
-    worker._store.load_competing_loop_refs.reset_mock()
     return worker._maybe_build_goal(frame)
 
 
-def test_bridge_goal_targets_the_competing_candidate_and_says_so(monkeypatch):
-    worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.biometrics"})
-    frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
-    goal, _ = _emit(worker, frame)
-    assert goal is not None
-    assert goal.field_target_id == "node:substrate.biometrics"
-    assert worker._last_competition_read == "in_competition"
-    worker._store.load_competing_loop_refs.assert_called_once_with(
+def _receipt(caplog) -> str:
+    lines = [r.getMessage() for r in caplog.records if "field_goal_provenance_competition_read" in r.getMessage()]
+    assert lines, "no receipt logged"
+    return lines[-1].split("competition_read=")[1].split()[0]
+
+
+def _two_candidates():
+    return _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
+
+
+def test_bridge_goal_targets_the_competing_candidate_and_says_so(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.biometrics"})
+    goal, _ = _emit_twice(worker, _two_candidates())
+    assert goal is not None and goal.field_target_id == "node:substrate.biometrics"
+    assert _receipt(caplog) == "in_competition"
+    worker._store.load_competing_loop_refs.assert_called_with(
         max_age_sec=worker._settings.goal_competition_max_age_sec
     )
 
 
-def test_bridge_falls_back_and_records_not_in_competition(monkeypatch):
-    worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.chat"})
-    goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
+def test_bridge_falls_back_and_records_not_in_competition(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.chat"})
+    goal, _ = _emit_twice(worker, _two_candidates())
     assert goal.field_target_id == "node:substrate.execution"
-    assert worker._last_competition_read == "not_in_competition"
+    assert _receipt(caplog) == "not_in_competition"
 
 
-def test_bridge_unknown_competition_is_unavailable_not_empty(monkeypatch):
-    worker = _bridge_worker_at_threshold(monkeypatch, competing=None)
-    goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
-    assert worker._last_competition_read == "unavailable"
+def test_bridge_unknown_competition_is_unavailable_not_empty(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    worker = _bridge_worker(monkeypatch, competing=None)
+    goal, _ = _emit_twice(worker, _two_candidates())
+    assert goal is not None and _receipt(caplog) == "unavailable"
 
 
-def test_bridge_kill_switch_never_reads_the_store(monkeypatch):
-    worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.biometrics"}, reads_competition=False)
-    frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
-    goal, _ = _emit(worker, frame)
+def test_bridge_kill_switch_never_reads_the_store(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.biometrics"}, reads_competition=False)
+    goal, _ = _emit_twice(worker, _two_candidates())
     assert goal.field_target_id == "node:substrate.execution"  # pre-bridge behaviour exactly
-    assert worker._last_competition_read == "unavailable"
+    assert _receipt(caplog) == "unavailable"
     worker._store.load_competing_loop_refs.assert_not_called()
 
 
-def test_bridge_read_failure_is_logged_not_fatal(monkeypatch):
-    worker = _bridge_worker_at_threshold(monkeypatch, competing=None)
+def test_bridge_skips_the_read_when_it_cannot_matter(monkeypatch):
+    """With fewer than two qualified candidates no competition set can change
+    the answer, so the cross-service read is not made (review finding)."""
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.biometrics"})
+    goal, _ = _emit_twice(worker, _frame([_target("node:substrate.execution", 0.9)]))
+    assert goal is not None and goal.field_target_id == "node:substrate.execution"
+    worker._store.load_competing_loop_refs.assert_not_called()
+
+
+def test_bridge_read_failure_is_logged_not_fatal(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    worker = _bridge_worker(monkeypatch, competing=None)
     worker._store.load_competing_loop_refs.side_effect = RuntimeError("db down")
-    goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
-    assert goal is not None and worker._last_competition_read == "unavailable"
-
-
-def test_store_reader_parses_refs_and_treats_stale_as_unknown():
-    from contextlib import contextmanager
-
-    from app.store import AttentionRuntimeStore
-
-    class _Conn:
-        def __init__(self, row):
-            self.row = row
-        def execute(self, *_a, **_k):
-            row = self.row
-            class _R:
-                def mappings(self_inner):
-                    return self_inner
-                def first(self_inner):
-                    return row
-            return _R()
-
-    def _store_with(row):
-        store = AttentionRuntimeStore.__new__(AttentionRuntimeStore)
-        class _Engine:
-            @contextmanager
-            def connect(self_inner):
-                yield _Conn(row)
-        store._engine = _Engine()
-        return store
-
-    projection = {"frame": {"open_loops": [{"source_refs": ["node:substrate.execution"]}, {"source_refs": ["node:substrate.biometrics", ""]}]}}
-    fresh = _store_with({"projection_json": projection, "age_sec": 12.0})
-    assert fresh.load_competing_loop_refs(max_age_sec=120.0) == {"node:substrate.execution", "node:substrate.biometrics"}
-    stale = _store_with({"projection_json": projection, "age_sec": 500.0})
-    assert stale.load_competing_loop_refs(max_age_sec=120.0) is None
-    assert _store_with(None).load_competing_loop_refs(max_age_sec=120.0) is None
-    empty = _store_with({"projection_json": {"frame": {"open_loops": []}}, "age_sec": 1.0})
-    assert empty.load_competing_loop_refs(max_age_sec=120.0) == set()
+    goal, _ = _emit_twice(worker, _two_candidates())
+    assert goal is not None and _receipt(caplog) == "unavailable"
 
 
 def test_bridge_unknown_reads_do_not_flap_the_streak(monkeypatch):
-    """Review finding: the competition read changes every ~30s and is None on
-    any error; if that flipped the winner, the 3-tick streak would never
-    fill and the producer would fire LESS than before. A None/empty read must
-    keep the current streak target."""
+    """The competition read changes every ~30s and is None on any error; if
+    that flipped the winner, the 3-tick streak would never fill and the
+    producer would fire LESS than before. A None/empty read keeps the current
+    streak target."""
     monkeypatch.setenv("ORION_GOAL_PROVENANCE_READS_COMPETITION", "true")
     worker = _make_worker(monkeypatch, min_streak=3)
-    frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
     reads = [{"node:substrate.biometrics"}, None, set(), RuntimeError("db down"), {"node:substrate.biometrics"}]
     worker._store.load_competing_loop_refs.side_effect = reads
-    goals = [worker._maybe_build_goal(frame)[0] for _ in reads]
+    goals = [worker._maybe_build_goal(_two_candidates())[0] for _ in reads]
     assert [g.field_target_id for g in goals if g is not None] == ["node:substrate.biometrics"] * 3
     assert worker._node_streak.target_id == "node:substrate.biometrics" and worker._node_streak.count == 5
 
 
-def test_bridge_store_reader_keeps_only_node_ids():
-    from contextlib import contextmanager
+# --- store reader: one fake engine, shared by the reader tests ---------------
 
-    from app.store import AttentionRuntimeStore
+
+def _store_with(row):
+    class _Result:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
 
     class _Conn:
         def execute(self, *_a, **_k):
-            row = {"projection_json": {"frame": {"open_loops": [{"source_refs": ["node:substrate.execution", "1757100000000-0", "1757100000001-0"]}]}}, "age_sec": 3.0}
-            class _R:
-                def mappings(self_inner):
-                    return self_inner
-                def first(self_inner):
-                    return row
-            return _R()
+            return _Result()
 
-    store = AttentionRuntimeStore.__new__(AttentionRuntimeStore)
     class _Engine:
         @contextmanager
-        def connect(self_inner):
+        def connect(self):
             yield _Conn()
+
+    store = AttentionRuntimeStore.__new__(AttentionRuntimeStore)
     store._engine = _Engine()
-    assert store.load_competing_loop_refs(max_age_sec=120.0) == {"node:substrate.execution"}
+    return store
 
 
-def test_bridge_compose_forwards_the_kill_switch():
-    """Review finding: this service's compose lists env keys explicitly (no
-    env_file); a key missing from that list never reaches the container, so
-    the kill switch would be decorative."""
-    from pathlib import Path
+def test_store_reader_returns_node_refs_from_a_fresh_projection():
+    store = _store_with({"loops_type": "array", "refs": ["node:substrate.execution", "node:substrate.biometrics"]})
+    assert store.load_competing_loop_refs(max_age_sec=120.0) == {"node:substrate.execution", "node:substrate.biometrics"}
 
-    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
-    for key in ("ORION_GOAL_PROVENANCE_READS_COMPETITION", "ORION_GOAL_PROVENANCE_COMPETITION_MAX_AGE_SEC"):
-        assert f"- {key}=${{{key}" in compose, key
+
+def test_store_reader_distinguishes_unknown_from_empty():
+    # No fresh row (absent or older than max_age: the WHERE clause filters it) -> unknown.
+    assert _store_with(None).load_competing_loop_refs(max_age_sec=120.0) is None
+    # Fresh row whose shape is not what we expect (schema drift) -> unknown, not empty.
+    assert _store_with({"loops_type": None, "refs": None}).load_competing_loop_refs(max_age_sec=120.0) is None
+    assert _store_with({"loops_type": "object", "refs": None}).load_competing_loop_refs(max_age_sec=120.0) is None
+    # Fresh row, real array, nothing competing -> empty, which is a real state.
+    assert _store_with({"loops_type": "array", "refs": None}).load_competing_loop_refs(max_age_sec=120.0) == set()
+
+
+def test_bridge_env_keys_reach_the_container_via_compose():
+    """This service lists env keys explicitly (no env_file); a key missing from
+    that list never reaches the container, so the kill switch would be
+    decorative. Delegates to the repo's own parity gate rather than hand-listing
+    keys (review finding)."""
+    repo = Path(__file__).resolve().parents[3]
+    proc = subprocess.run(
+        [sys.executable, str(repo / "scripts/check_service_env_compose_parity.py"), "orion-attention-runtime"],
+        capture_output=True, text=True, cwd=str(repo),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr

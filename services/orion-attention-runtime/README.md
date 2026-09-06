@@ -71,8 +71,10 @@ of self-model ticks in the 24h before this shipped. When no candidate is in the 
 or the projection is missing/older than `ORION_GOAL_PROVENANCE_COMPETITION_MAX_AGE_SEC`, the
 selector falls back to the plain top-1, so this never makes the producer emit fewer goals.
 `ORION_GOAL_PROVENANCE_READS_COMPETITION=false` restores the pre-bridge behaviour exactly.
-Each emitted goal's `provenance.competition_read` records what the producer saw
-(`in_competition` / `not_in_competition` / `unavailable`). Design:
+The producer logs what it saw on every emission
+(`field_goal_provenance_competition_read ... competition_read=in_competition|not_in_competition|unavailable`);
+it is deliberately not a schema field, because `FieldGoalProvenanceV1` is `extra="forbid"` on
+three consumers and a producer-first deploy of new fields drops every goal until they are rebuilt. Design:
 `docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md`, "The read side".
 
 `ORION_GOAL_PROVENANCE_MIN_STREAK`'s value (default `3`) is an unmeasured, disclosed

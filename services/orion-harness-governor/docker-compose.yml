@@ -24,7 +24,16 @@ services:
       - ${HARNESS_REPO_MOUNT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
       - ${HARNESS_REPO_MOUNT:-/mnt/scripts/Orion-Sapienform}:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc
-      - ${HOME}/.claude.json:/root/.claude.json:ro
+      # Deliberately NOT ${HOME}/.claude.json. Claude Code rewrites that file by
+      # atomic replace (write temp, rename), so a single-file bind mount pins the
+      # inode from container start and silently goes stale -- confirmed live
+      # 2026-09-06: container copy dated 09-03 while the host file was newer.
+      # Worse, it leaks the operator's host-global MCP servers (caveman) into
+      # Orion's turns, where the binary doesn't exist -> "failed to connect"
+      # banner every session. The claude subprocess needs nothing from it:
+      # a fresh config with no host file spawned fine with github/firecrawl/
+      # gitnexus all connected (same date). Container-local /root/.claude.json
+      # is cosmetic state claude recreates on its own.
       - ${HARNESS_FCC_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - ${HARNESS_FCC_GH_BIN_HOST:-${HOME}/.local/bin/gh}:/usr/local/bin/gh:ro
       # GitNexus global registry (~/.gitnexus/registry.json) — index is built on
@@ -39,8 +48,8 @@ services:
       # Harness-scoped Claude state (hook mode). Plugin installs persist here:
       #   claude plugin marketplace add mksglu/context-mode
       #   claude plugin install context-mode@context-mode
-      # This is NEVER the operator's own ~/.claude; ~/.claude.json stays a
-      # separate read-only mount above.
+      # This is NEVER the operator's own ~/.claude, and the operator's
+      # ~/.claude.json is not mounted either (see the note above).
       - harness-claude-config:/root/.claude
       # GitHub CLI credentials — read-only, for GITHUB_PAT injection into FCC subprocess.
       - ${HOME}/.config/gh:/root/.config/gh:ro

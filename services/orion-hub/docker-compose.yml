@@ -29,7 +29,11 @@ services:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc:ro
-      - ${HOME}/.claude.json:/root/.claude.json:ro
+      # Deliberately NOT ${HOME}/.claude.json -- same reasoning as
+      # orion-harness-governor's docker-compose.yml: a single-file bind mount of
+      # a file Claude Code rewrites by atomic replace pins a stale inode and
+      # leaks host-global MCP servers into Orion's subprocess. The agent-claude
+      # subprocess reads HUB_AGENT_CLAUDE_CONFIG_DIR's own .claude.json anyway.
       # Orion's disposable FCC sandbox checkout (see orion/fcc/sandbox_sync.py). A
       # standalone git clone, not a worktree -- no shared .git object store with the
       # primary checkout at /mnt/scripts/Orion-Sapienform. Mounted rw so Orion can
@@ -51,7 +55,7 @@ services:
       # since Hub only ever reads these -- it is not the producer.
       - ${REVERIE_VISUAL_STORAGE_DIR:-/mnt/storage-lukewarm/orion/reverie-visual}:${REVERIE_VISUAL_STORAGE_DIR:-/mnt/storage-lukewarm/orion/reverie-visual}:ro
       # Reuse the operator's existing host-level git/gh auth read-only, same pattern
-      # as the .claude.json/claude-binary mounts above -- no credentials are stored
+      # as the claude-binary mount below -- no credentials are stored
       # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
       # needs the SSH key + known_hosts; `gh` (PR creation) needs its own token dir.
       # Same identity/keys this worktree's own git/gh operations already use.

@@ -221,8 +221,16 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Live lane status at PR time
 
-(appended below as lanes come online)
+| lane | first live row | evidence |
+|---|---|---|
+| `substrate_attention` | 00:46:05Z (wave 1) | 500+ rows, 4 reasons, real override numbers |
+| `reverie` | 00:51Z (wave 1) | 39 rows / 36 distinct self-report narratives in 4.5h |
+| `cortex_turn` | 05:37:37Z (wave 2, 5 min after deploy) | `cortex-7640f1b2-...-journal.compose`, `selected:suppress`, "already-known target should not be asked about again", correlation id preserved -- a journal-compose turn, exactly the self-initiated case the lane definition covers |
+| `curiosity` | **not yet** | fires on the next investigation run (a few per day); adapter and publish path are unit-tested against the live run shape; report as failure if still zero after 24h (Acceptance Check 1) |
+
+CI on PR #2124: SQL writer grammar integration, SQL writer unit + shape, Static repo gates,
+hub-schedule-browser-smoke -- all pass.
 
 ## PR link
 
-(filled on push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2124

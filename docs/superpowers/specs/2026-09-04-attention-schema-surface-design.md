@@ -589,6 +589,13 @@ The falsifiable prediction: `goal_matched_no_loop`'s share falls and `top_down_o
 rises in a matched window after deploy. If neither moves, the state machine (step 3) should
 not be started, per the ordering above.
 
+**Measured, 4.7h after deploy (n = 530 ticks per arm, matched control immediately before):**
+`goal_matched_no_loop` 42.1% -> 14.3%; `top_down_override` 4.2% -> 10.2%;
+`goal_target_already_winning` 20.8% -> 50.2%; `bias_did_not_flip_winner` 0 -> 2.5% (a goal pushing a
+competing loop and losing -- the first time that has ever happened). Both predicted numbers moved.
+Full table and caveats in `docs/superpowers/pr-reports/2026-09-06-attention-goal-bridge-pr.md`. The
+ordering's gate for step 3 is therefore open, not closed -- but step 3 is still a separate decision.
+
 **A finding from building it.** The goal producer can only ever target the five domains in
 `PREDICTION_ERROR_NATIVE_TARGETS` (`biometrics`, `execution`, `chat`, `route`,
 `bus_synaptic`), but the competition also holds loops for `node:substrate.codebase` and

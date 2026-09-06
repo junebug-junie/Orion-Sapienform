@@ -12,6 +12,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
 )
 from orion.attention.field_attention.goal_provenance import (
+    qualified_node_targets,
     DominanceStreak,
     top_node_substrate_target,
     update_dominance_streak,
@@ -188,7 +189,14 @@ class AttentionRuntimeWorker:
             return None, None
         if self._node_streak is None:
             self._node_streak = self._store.load_node_dominance_streak()
-        winner = top_node_substrate_target(frame)
+        # With fewer than two qualified candidates no competition set can change
+        # the answer, so the cross-service read is skipped (review finding).
+        competing = (
+            self._load_competition() if len(qualified_node_targets(frame)) >= 2 else None
+        )
+        winner = top_node_substrate_target(
+            frame, competing=competing, current=self._node_streak.target_id
+        )
         winner_id = winner.target_id if winner is not None else None
         self._node_streak, should_emit = update_dominance_streak(
             self._node_streak, winner_id, min_streak=self._settings.goal_provenance_min_streak
@@ -221,7 +229,44 @@ class AttentionRuntimeWorker:
             priority=winner.salience_score,
             provenance={"intake_channel": "internal.attention_runtime"},
         )
+        # The bridge's receipt lives in this service's own log, deliberately
+        # NOT on the schema: FieldGoalProvenanceV1 is extra="forbid" on three
+        # consumers (substrate-runtime, world-pulse, spark-concept-induction),
+        # and a producer-first deploy of two new fields dropped 186 goals live
+        # on 2026-09-06 before the consumers could be rebuilt. The downstream
+        # truth is the self-model's `voluntary_override_absent_reason`.
+        logger.info(
+            "field_goal_provenance_competition_read artifact_id=%s field_target_id=%s "
+            "competition_read=%s competing=%s",
+            goal.artifact_id,
+            goal.field_target_id,
+            (
+                "unavailable" if competing is None
+                else "in_competition" if winner.target_id in competing
+                else "not_in_competition"
+            ),
+            ",".join(sorted(competing)) if competing else "",
+        )
         return goal, streak_tick
+
+    def _load_competition(self) -> set[str] | None:
+        """The substrate competition's current open-loop node ids, or None.
+
+        None on the kill switch, on a missing/stale projection, and on any
+        read error -- the selector treats None as "unknown" and falls back to
+        its pre-bridge top-1, so this read can never make the producer emit
+        fewer goals than before. Logged, not raised: a goal tick must not die
+        on a cross-service read.
+        """
+        if not self._settings.enable_goal_reads_competition:
+            return None
+        try:
+            return self._store.load_competing_loop_refs(
+                max_age_sec=self._settings.goal_competition_max_age_sec
+            )
+        except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+            logger.warning("goal_provenance_competition_read_failed err=%s", exc)
+            return None
 
     async def _publish_envelope(
         self,

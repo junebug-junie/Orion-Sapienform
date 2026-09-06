@@ -157,3 +157,67 @@ def test_dominance_streak_flip_flop_never_emits():
     for target_id in ("a", "b", "a", "b", "a"):
         streak, should_emit = update_dominance_streak(streak, target_id, min_streak=3)
         assert should_emit is False
+
+
+# --- the one bridge: competition-aware target choice (2026-09-06) --------------
+
+
+def _bridge_target(target_id: str, salience: float):
+    from orion.schemas.field_attention_frame import FieldAttentionTargetV1
+
+    return FieldAttentionTargetV1(
+        target_id=target_id, target_kind="node", salience_score=salience,
+        pressure_score=salience, novelty_score=salience, urgency_score=salience,
+        confidence_score=1.0,
+    )
+
+
+def _bridge_frame(targets):
+    from orion.schemas.field_attention_frame import FieldAttentionFrameV1
+
+    return FieldAttentionFrameV1(
+        frame_id="frame-b", generated_at="2026-09-06T00:00:00Z",
+        source_field_tick_id="tick-b", source_field_generated_at="2026-09-06T00:00:00Z",
+        overall_salience=max(t.salience_score for t in targets),
+        dominant_targets=targets, node_targets=targets,
+    )
+
+
+def test_bridge_prefers_the_candidate_the_competition_can_see():
+    from orion.attention.field_attention.goal_provenance import top_node_substrate_target
+
+    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.biometrics", 0.6)])
+    assert top_node_substrate_target(frame).target_id == "node:substrate.execution"
+    chosen = top_node_substrate_target(frame, competing={"node:substrate.biometrics", "node:substrate.chat"})
+    assert chosen.target_id == "node:substrate.biometrics"
+
+
+def test_bridge_falls_back_to_top1_when_nothing_qualified_is_competing():
+    """Must never make the producer fire less than before."""
+    from orion.attention.field_attention.goal_provenance import top_node_substrate_target
+
+    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.biometrics", 0.6)])
+    assert top_node_substrate_target(frame, competing={"node:substrate.chat"}).target_id == "node:substrate.execution"
+    assert top_node_substrate_target(frame, competing=set()).target_id == "node:substrate.execution"
+    assert top_node_substrate_target(frame, competing=None).target_id == "node:substrate.execution"
+
+
+def test_bridge_still_returns_none_when_no_candidate_qualifies():
+    from orion.attention.field_attention.goal_provenance import top_node_substrate_target
+
+    thin = _bridge_target("node:substrate.execution", 0.9)
+    thin = thin.model_copy(update={"confidence_score": 0.2})
+    assert top_node_substrate_target(_bridge_frame([thin]), competing={"node:substrate.execution"}) is None
+
+
+def test_bridge_hysteresis_keeps_the_current_target_on_unknown_or_empty_reads():
+    from orion.attention.field_attention.goal_provenance import top_node_substrate_target
+
+    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.biometrics", 0.6)])
+    cur = "node:substrate.biometrics"
+    assert top_node_substrate_target(frame, competing=None, current=cur).target_id == cur
+    assert top_node_substrate_target(frame, competing=set(), current=cur).target_id == cur
+    # a competing read naming a different qualified target still moves it
+    assert top_node_substrate_target(frame, competing={"node:substrate.execution"}, current=cur).target_id == "node:substrate.execution"
+    # a current target that is no longer qualified does not stick
+    assert top_node_substrate_target(frame, competing=None, current="node:substrate.chat").target_id == "node:substrate.execution"

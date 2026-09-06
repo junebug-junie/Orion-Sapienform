@@ -11,6 +11,7 @@ for this first producer per that doc's Recommended next patch.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
@@ -47,7 +48,26 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAtte
 MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
-def top_node_substrate_target(frame: FieldAttentionFrameV1) -> FieldAttentionTargetV1 | None:
+def qualified_node_targets(frame: FieldAttentionFrameV1) -> list[FieldAttentionTargetV1]:
+    """The candidates a goal may name: Candidate A's real ``node:substrate.*``
+    domains with enough observations to be trusted (see
+    ``MIN_CONFIDENCE_FOR_GOAL_PROVENANCE``). Exposed so the producer can skip
+    the competition read when fewer than two qualify -- with 0 or 1 candidate
+    no competition set can change the answer."""
+    return [
+        t
+        for t in frame.node_targets
+        if t.target_id in PREDICTION_ERROR_NATIVE_TARGETS
+        and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
+    ]
+
+
+def top_node_substrate_target(
+    frame: FieldAttentionFrameV1,
+    *,
+    competing: Collection[str] | None = None,
+    current: str | None = None,
+) -> FieldAttentionTargetV1 | None:
     """The highest-salience target among ``frame.node_targets`` that is one of
     Candidate A's real ``node:substrate.*`` domains AND has accumulated enough real
     observations to be trusted with a goal-provenance win
@@ -67,15 +87,19 @@ def top_node_substrate_target(frame: FieldAttentionFrameV1) -> FieldAttentionTar
     this producer already gives a tick with zero qualifying candidates, not a forced
     pick of the least-thin option.
     """
-    candidates = [
-        t
-        for t in frame.node_targets
-        if t.target_id in PREDICTION_ERROR_NATIVE_TARGETS
-        and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
-    ]
+    candidates = qualified_node_targets(frame)
     if not candidates:
         return None
-    return max(candidates, key=lambda t: t.salience_score)
+    # Precedence, top to bottom (the one bridge, 2026-09-06 -- design doc
+    # "The read side"): a qualified candidate the substrate competition is
+    # holding; else the streak's current target while it is still qualified
+    # (hysteresis: an unknown/empty read must not flap the emission debounce,
+    # pinned by test_bridge_hysteresis_keeps_the_current_target...); else the
+    # raw field top-1. Not a reconciler: one id set, read once per tick.
+    seen = [t for t in candidates if competing and t.target_id in competing]
+    held = [t for t in candidates if current is not None and t.target_id == current]
+    pool = seen or held or candidates
+    return max(pool, key=lambda t: t.salience_score)
 
 
 @dataclass

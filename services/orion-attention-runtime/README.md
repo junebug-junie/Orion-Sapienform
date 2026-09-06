@@ -60,6 +60,23 @@ PR #1543) proposed surfacing this exact count directly into a real LLM-facing pr
 
 ## Streak-tick telemetry: min_streak calibration (2026-08-11, Part H)
 
+**The one bridge (2026-09-06).** Before choosing a goal target, `_maybe_build_goal` reads
+which node ids the substrate's workspace competition currently holds as open loops
+(`AttentionRuntimeStore.load_competing_loop_refs`, the `source_refs` of every loop in the
+latest `substrate_attention_broadcast_projection`) and prefers, among the qualified
+candidates, the highest-salience one the competition can actually see. The substrate honours
+a goal only on an exact id match (`orion/substrate/attention/top_down.py::relevance`), so a
+goal about a node that is not competing cannot be acted on -- `goal_matched_no_loop` was 37%
+of self-model ticks in the 24h before this shipped. When no candidate is in the competition,
+or the projection is missing/older than `ORION_GOAL_PROVENANCE_COMPETITION_MAX_AGE_SEC`, the
+selector falls back to the plain top-1, so this never makes the producer emit fewer goals.
+`ORION_GOAL_PROVENANCE_READS_COMPETITION=false` restores the pre-bridge behaviour exactly.
+The producer logs what it saw on every emission
+(`field_goal_provenance_competition_read ... competition_read=in_competition|not_in_competition|unavailable`);
+it is deliberately not a schema field, because `FieldGoalProvenanceV1` is `extra="forbid"` on
+three consumers and a producer-first deploy of new fields drops every goal until they are rebuilt. Design:
+`docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md`, "The read side".
+
 `ORION_GOAL_PROVENANCE_MIN_STREAK`'s value (default `3`) is an unmeasured, disclosed
 placeholder debounce. To calibrate it against the true streak-length distribution --
 `orion:memory:goals:proposed` alone is a censored sample that only ever shows streaks that

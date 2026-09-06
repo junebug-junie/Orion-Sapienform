@@ -32,7 +32,10 @@ from orion.core.schemas.drives import GraphReadyArtifact, ProposalStatus
 
 
 class FieldGoalProvenanceV1(GraphReadyArtifact):
-    # Which real field competition winner triggered this -- e.g. "node:substrate.biometrics",
+    # The target the producer chose this tick -- e.g. "node:substrate.biometrics". Since
+    # 2026-09-06 (the one bridge) this prefers a qualified target the substrate competition
+    # is holding, so it is not always the field's raw salience top-1; see
+    # orion/attention/field_attention/goal_provenance.py::top_node_substrate_target.
     # "capability:memory". Matches FieldAttentionTargetV1.target_id exactly, not a derived id.
     field_target_id: str
     # Mirrors FieldAttentionTargetV1.target_kind's real value ("node" | "capability" | "system"
@@ -82,7 +85,8 @@ class DominanceStreakTickV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     tick_telemetry_id: str = Field(default_factory=lambda: f"streak-tick-{uuid4()}")
-    # The real node-target winner this tick (FieldAttentionTargetV1.target_id), or None when
+    # The producer's chosen node target this tick (competition-aware since 2026-09-06 --
+    # see goal_provenance.py), or None when
     # no target won (update_dominance_streak's own None-target_id reset case).
     target_id: str | None = None
     # DominanceStreak.count after this tick's update -- 0 when target_id is None, 1 on a

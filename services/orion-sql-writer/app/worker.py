@@ -56,6 +56,7 @@ from app.models import (
     NotificationPreferenceDB,
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
+    AttentionSchemaSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SocialRoomTurnSQL,
@@ -99,6 +100,7 @@ from app.harness_turn_trace_persist import upsert_harness_turn_trace
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
+from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 
@@ -212,6 +214,7 @@ SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
+    AttentionSchemaSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SocialRoomTurnSQL,
@@ -461,6 +464,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "NotificationPreferenceDB": (NotificationPreferenceDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
     "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
+    "AttentionSchemaSQL": (AttentionSchemaSQL, AttentionSchemaV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),

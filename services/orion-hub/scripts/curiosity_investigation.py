@@ -97,6 +97,10 @@ from orion.curiosity.study_material import (
     StudyMaterial,
     assemble_study_material,
 )
+from orion.curiosity.attention_schema import (
+    read_attended_priors,
+    to_attention_schema as curiosity_to_attention_schema,
+)
 from orion.curiosity.worldview import (
     FindingConnectivity,
     TurnOutcome,
@@ -110,6 +114,7 @@ from orion.curiosity.worldview import (
 )
 from orion.llm.routes import fcc_model_for_route
 from orion.journaler.schemas import JournalEntryWriteV1
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND
 
 logger = logging.getLogger("orion-hub.curiosity_investigation")
 
@@ -1304,6 +1309,9 @@ class CuriosityInvestigation:
             return "empty_generation"
 
         outcome, footprint, hops, evidence = await self._read_turn_result(run_id)
+        await self._publish_attention_schema(
+            run_id=run_id, outcome=outcome, correlation_id=correlation_id, now=now
+        )
 
         await self._journal(
             material=material,
@@ -1550,6 +1558,48 @@ class CuriosityInvestigation:
             result.get("reason"),
         )
         return None if result.get("outreach") else str(result.get("reason") or "not_sent")
+
+    async def _publish_attention_schema(
+        self,
+        *,
+        run_id: str,
+        outcome: Optional[TurnOutcome],
+        correlation_id: str,
+        now: datetime,
+    ) -> None:
+        """One AttentionSchemaV1 row per run onto the shared attention surface
+        (orion/curiosity/attention_schema.py). Reads which prior this run
+        stamped from Orion's own graph; never raises, never blocks the
+        journal -- a failed publish is a warning and a missing row, not a
+        lost investigation."""
+        if self._bus is None:
+            return
+        try:
+            reader = self._reader
+            priors = (
+                await asyncio.to_thread(read_attended_priors, reader, run_id)
+                if reader is not None
+                else None
+            )
+            row = curiosity_to_attention_schema(
+                run_id=run_id,
+                outcome=outcome,
+                priors=priors,
+                correlation_id=correlation_id,
+                generated_at=now,
+            )
+            await self._bus.publish(
+                ATTENTION_SCHEMA_CHANNEL,
+                BaseEnvelope(
+                    kind=ATTENTION_SCHEMA_KIND,
+                    source=self._source_ref,
+                    payload=row.model_dump(mode="json"),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "curiosity_attention_schema_publish_failed run=%s", run_id, exc_info=True
+            )
 
     async def _journal(
         self,

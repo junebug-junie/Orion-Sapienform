@@ -601,6 +601,7 @@ from orion.schemas.attention_frame import (
     VoluntaryOverrideV1,
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.attention_salience import (
     AttentionLoopOutcomeV1,
     AttentionSalienceTraceV1,
@@ -904,6 +905,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
+    "AttentionSchemaV1": AttentionSchemaV1,
     "AttentionSalienceTraceV1": AttentionSalienceTraceV1,
     "AttentionLoopOutcomeV1": AttentionLoopOutcomeV1,
     "PendingAttentionCardV1": PendingAttentionCardV1,
@@ -1634,6 +1636,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "AttentionSelfModelV1": SchemaRegistration(
         model=AttentionSelfModelV1,
         kind="attention.self_model.v1",
+    ),
+    # Attention schema surface (docs/superpowers/specs/2026-09-04-attention-
+    # schema-surface-design.md): the one shared shape four attending processes
+    # project onto, published on orion:attention:schema and persisted by
+    # orion-sql-writer into substrate_attention_schema.
+    "AttentionSchemaV1": SchemaRegistration(
+        model=AttentionSchemaV1,
+        kind="attention.schema.v1",
     ),
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(
         model=SelfStudyEnrichmentRequestV1,

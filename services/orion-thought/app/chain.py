@@ -25,7 +25,10 @@ from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import publish_with_reconnect
+from orion.reverie.attention_schema import to_attention_schema
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND
 from orion.schemas.reverie import (
     MAX_CHAIN_THOUGHTS,
     MAX_EVIDENCE_REFS,
@@ -230,6 +233,10 @@ async def run_reverie_chain(
 
     chain_id = str(uuid4())
     thought_ids: list[str] = []
+    # The thoughts themselves, kept only for the attention-surface projection
+    # below (it needs the first coalition + interpretation and the last
+    # next_focus); the chain readout still carries ids alone, unchanged.
+    thoughts: list[SpontaneousThoughtV1] = []
     ema = 0.0
     terminal: TerminalReason = "max_steps"
 
@@ -244,6 +251,7 @@ async def run_reverie_chain(
             break
 
         thought_ids.append(thought.thought_id)
+        thoughts.append(thought)
         ema = update_ema(ema, thought.salience, alpha=alpha)
 
         if pressure_reader is not None:
@@ -280,6 +288,22 @@ async def run_reverie_chain(
             )
             await bus.publish(settings.channel_reverie_chain, envelope)
         persist_reverie_chain(chain)
+
+        # Attention schema surface: adapt, do not migrate. The chain and its
+        # table/consumers above are untouched; this emits the shared shape
+        # alongside (orion/reverie/attention_schema.py).
+        with suppress(Exception):
+            row = to_attention_schema(chain, thoughts[:MAX_CHAIN_THOUGHTS])
+            await publish_with_reconnect(
+                bus,
+                ATTENTION_SCHEMA_CHANNEL,
+                BaseEnvelope(
+                    kind=ATTENTION_SCHEMA_KIND,
+                    source=_source(),
+                    payload=row.model_dump(mode="json"),
+                ),
+                log_label="reverie_attention_schema_publish",
+            )
 
         # Phase E: a settled chain queues a compaction *request* (no consumer).
         if settings.reverie_compaction_request_enabled:

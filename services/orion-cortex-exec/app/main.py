@@ -937,6 +937,7 @@ svc = Rabbit(
     handler=handle,
     concurrent_handlers=settings.exec_concurrent_handlers,
 )
+from .attention_schema_publish import bind_attention_schema_bus
 from .current_turn_llm_signals import bind_current_turn_llm_signals_bus
 from .pre_turn_appraisal import bind_pre_turn_appraisal_bus, handle_pre_turn_appraisal_request
 from orion.situational.identity_ask_cooldown import bind_identity_ask_cooldown_bus
@@ -1052,6 +1053,7 @@ async def main() -> None:
     if settings.enable_pre_turn_appraisal_handler:
         bind_pre_turn_appraisal_bus(_rpc_bus or svc.bus)
     bind_current_turn_llm_signals_bus(_rpc_bus or svc.bus)
+    bind_attention_schema_bus(_rpc_bus or svc.bus)
     bind_session_turn_phase_bus(_rpc_bus or svc.bus)
     # 2026-08-25: mirrors bind_session_turn_phase_bus above -- see
     # orion/situational/juniper_affect_state.py's docstring.

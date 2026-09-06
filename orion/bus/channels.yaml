@@ -2929,6 +2929,23 @@ channels:
     stability: "experimental"
     since: "2026-07-07"
 
+  # --- Attention schema surface (AST/HOT, Sentience Striving Program O3) ---
+  # One thin shared shape for "what is Orion attending to, and why", emitted
+  # by every process that attends and selects, so they can be compared on one
+  # table. Write-only measurement: nothing routes, gates, or budgets off it.
+  # Cortex is both a producer here (every real chat turn's attention frame)
+  # and the natural reader for any later sequencing of these processes --
+  # see the design doc's "Cortex is the kickoff".
+  - name: "orion:attention:schema"
+    kind: "event"
+    schema_id: "AttentionSchemaV1"
+    message_kind: "attention.schema.v1"
+    producer_services: ["orion-substrate-runtime", "orion-thought", "orion-hub", "orion-cortex-exec"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-06"
+    description: "AttentionSchemaV1 rows from four attending processes (substrate_attention, reverie, curiosity, cortex_turn) -> substrate_attention_schema via orion-sql-writer. docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

@@ -23,6 +23,7 @@ from orion.curiosity.worldview import FindingConnectivity
 # which pytest reports as an ERROR rather than a failure, so a run that looks
 # like it "ended" has actually run nothing in this file.
 from scripts.curiosity_investigation import (
+    JOURNAL_WRITE_CHANNEL,
     MIN_HARNESS_STEPS,
     CuriosityInvestigation,
     SchedulingGateInputs,
@@ -152,6 +153,14 @@ class _FakeBus:
     async def publish(self, channel, envelope):
         self.published.append((channel, envelope))
 
+    @property
+    def journal(self) -> list:
+        """Journal-channel publishes only. Since the attention schema surface
+        (orion/curiosity/attention_schema.py) the loop also publishes one
+        AttentionSchemaV1 row per run on orion:attention:schema; a test about
+        what the *journal* received must not count that row."""
+        return [(c, e) for c, e in self.published if c == JOURNAL_WRITE_CHANNEL]
+
 
 def _row(cid, kind="semantic", subject="a real thought"):
     return {
@@ -261,8 +270,8 @@ def test_a_successful_tick_journals_exactly_one_entry() -> None:
     bus = _FakeBus()
     loop = _loop(bus)
     assert asyncio.run(loop.tick()) is None
-    assert len(bus.published) == 1
-    channel, envelope = bus.published[0]
+    assert len(bus.journal) == 1
+    channel, envelope = bus.journal[0]
     assert channel == "orion:journal:write"
     assert envelope.payload["source_kind"] == "self_study"
     assert envelope.payload["source_ref"].startswith("curiosity:")
@@ -274,14 +283,14 @@ def test_the_journal_title_does_not_invent_a_subject() -> None:
     the exact move this rewrite exists to delete."""
     bus = _FakeBus()
     assert asyncio.run(_loop(bus).tick()) is None
-    assert bus.published[0][1].payload["title"] == "Curiosity"
+    assert bus.journal[0][1].payload["title"] == "Curiosity"
 
 
 def test_the_journal_records_what_was_offered() -> None:
     """So a reader can tell what was on the table when Orion chose."""
     bus = _FakeBus()
     assert asyncio.run(_loop(bus).tick()) is None
-    body = bus.published[0][1].payload["body"]
+    body = bus.journal[0][1].payload["body"]
     assert "Offered 4 of 268 approved concepts" in body
     assert "sampled at random" in body
     assert "14 harness steps" in body
@@ -301,7 +310,7 @@ def test_an_unreadable_store_writes_nothing() -> None:
     bus = _FakeBus()
     loop = _loop(bus, conn=_FakeConn(raises=True))
     assert asyncio.run(loop.tick()) == "stores_unavailable"
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_a_missing_pool_writes_nothing() -> None:
@@ -311,21 +320,21 @@ def test_a_missing_pool_writes_nothing() -> None:
     bus = _FakeBus()
     loop = _loop(bus, pool_provider=lambda: None)
     assert asyncio.run(loop.tick()) == "stores_not_ready"
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_no_approved_material_writes_nothing() -> None:
     bus = _FakeBus()
     loop = _loop(bus, conn=_FakeConn(rows=[], relations=[]))
     assert asyncio.run(loop.tick()) == "no_approved_material"
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_a_deferred_or_empty_turn_writes_nothing() -> None:
     bus = _FakeBus()
     loop = _loop(bus, text="")
     assert asyncio.run(loop.tick()) == "empty_generation"
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_a_failed_turn_still_consumes_its_slot() -> None:
@@ -364,7 +373,7 @@ def test_the_cooldown_survives_a_restart() -> None:
     assert asyncio.run(_loop(bus).tick()) is None
     for _ in range(4):
         assert asyncio.run(_loop(bus).tick()) == "cooldown"
-    assert len(bus.published) == 1
+    assert len(bus.journal) == 1
 
 
 def test_the_daily_cap_survives_a_restart() -> None:
@@ -372,7 +381,7 @@ def test_the_daily_cap_survives_a_restart() -> None:
     for _ in range(3):
         assert asyncio.run(_loop(bus, min_cooldown_sec=0.0).tick()) is None
     assert asyncio.run(_loop(bus, min_cooldown_sec=0.0).tick()) == "daily_cap"
-    assert len(bus.published) == 3
+    assert len(bus.journal) == 3
 
 
 def test_the_daily_counter_rolls_over_when_there_is_no_redis() -> None:
@@ -409,7 +418,7 @@ def test_the_correlation_id_is_uuid_shaped() -> None:
     loop._generate = _capture  # type: ignore[assignment]
     assert asyncio.run(loop.tick()) is None
     UUID(seen["corr"])
-    assert UUID(bus.published[0][1].payload["correlation_id"])
+    assert UUID(bus.journal[0][1].payload["correlation_id"])
 
 
 # --- the real _generate, with execute_unified_turn stubbed ----------------
@@ -600,14 +609,14 @@ def test_a_failed_acl_blocks_the_run_rather_than_degrading_it_silently() -> None
     bus = _FakeBus()
     loop = _graph_loop(bus, reader=_FakeReader(redis_raises=True))
     assert asyncio.run(loop.tick()) == "graph_unavailable"
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_a_dropped_postgres_role_blocks_before_a_turn_is_spent() -> None:
     bus = _FakeBus()
     loop = _loop(bus, conn=_FakeConn(pg_role_missing=True))
     assert asyncio.run(loop.tick()) == "pg_role_missing"
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_the_role_check_is_skipped_when_no_role_is_configured() -> None:
@@ -636,7 +645,7 @@ def test_a_query_level_graph_failure_degrades_the_prompt_without_blocking() -> N
     loop = _graph_loop(bus, reader=_FakeReader(raises=True))
     assert asyncio.run(loop.tick()) is None
     assert "COULD NOT BE READ" in loop.seen_prompt
-    assert len(bus.published) == 1
+    assert len(bus.journal) == 1
 
 
 def test_with_no_graph_configured_the_prompt_names_no_graph_to_write_to() -> None:
@@ -659,7 +668,7 @@ def test_the_journal_reports_what_orion_actually_wrote_to_its_graph() -> None:
     ]})
     loop = _graph_loop(bus, reader=reader)
     assert asyncio.run(loop.tick()) is None
-    body = bus.published[0][1].payload["body"]
+    body = bus.journal[0][1].payload["body"]
     assert "Wrote to its own graph: Hop 3, Prior 2" in body
 
 
@@ -669,7 +678,7 @@ def test_a_run_that_wrote_nothing_says_so_instead_of_implying_it_did() -> None:
     bus = _FakeBus()
     loop = _graph_loop(bus)
     assert asyncio.run(loop.tick()) is None
-    assert "Wrote nothing to its own graph" in bus.published[0][1].payload["body"]
+    assert "Wrote nothing to its own graph" in bus.journal[0][1].payload["body"]
 
 
 def test_the_journal_recounts_the_path_when_hops_were_recorded() -> None:
@@ -680,7 +689,7 @@ def test_the_journal_recounts_the_path_when_hops_were_recorded() -> None:
     ]})
     loop = _graph_loop(bus, reader=reader)
     assert asyncio.run(loop.tick()) is None
-    body = bus.published[0][1].payload["body"]
+    body = bus.journal[0][1].payload["body"]
     assert "1. the candidate ids resolve nowhere" in body
     assert "2. so I looked at where they are written" in body
 
@@ -877,7 +886,7 @@ def test_the_journal_is_written_even_when_the_second_turn_is_blocked() -> None:
         outreach_provider=lambda: outreach,
     )
     assert asyncio.run(loop.tick()) is None
-    assert len(bus.published) == 1
+    assert len(bus.journal) == 1
 
 
 def test_no_outreach_loop_is_reported_rather_than_swallowed() -> None:
@@ -889,7 +898,7 @@ def test_no_outreach_loop_is_reported_rather_than_swallowed() -> None:
         outreach_provider=lambda: None,
     )
     assert asyncio.run(loop.tick()) is None
-    assert len(bus.published) == 1
+    assert len(bus.journal) == 1
 
 
 def test_an_unreadable_footprint_is_not_reported_as_writing_nothing() -> None:
@@ -914,7 +923,7 @@ def test_a_graph_that_cannot_answer_does_not_claim_orion_wrote_nothing() -> None
     bus = _FakeBus()
     loop = _graph_loop(bus, reader=_FakeReader(raises=True))
     assert asyncio.run(loop.tick()) is None
-    body = bus.published[0][1].payload["body"]
+    body = bus.journal[0][1].payload["body"]
     assert "Wrote nothing to its own graph" not in body
 
 
@@ -929,7 +938,7 @@ def test_a_missing_graph_credential_disables_the_graph_not_the_loop() -> None:
     loop = _loop(bus, graph_host="127.0.0.1", graph_user="", graph_password="")
     assert loop.graph_enabled is False
     assert asyncio.run(loop.tick()) is None
-    assert len(bus.published) == 1
+    assert len(bus.journal) == 1
     assert "WRITING TO YOUR OWN GRAPH" not in loop.seen_prompt
 
 
@@ -983,7 +992,7 @@ def test_the_lookup_gate_still_refuses_an_investigation_that_did_not_look() -> N
         assert asyncio.run(loop.tick()) == "empty_generation"
     finally:
         turn_orchestrator.execute_unified_turn = original
-    assert bus.published == []
+    assert bus.journal == []
 
 
 def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> None:
@@ -1023,12 +1032,12 @@ def test_no_pool_blocks_as_not_ready_and_a_broken_query_still_blocks_as_unavaila
     bus = _FakeBus()
     loop = _loop(bus, pool_provider=lambda: None)
     assert asyncio.run(loop.tick()) == "stores_not_ready"
-    assert bus.published == []
+    assert bus.journal == []
 
     bus2 = _FakeBus()
     broken = _loop(bus2, conn=_FakeConn(raises=True))
     assert asyncio.run(broken.tick()) == "stores_unavailable"
-    assert bus2.published == []
+    assert bus2.journal == []
 
 
 def test_a_pool_absent_for_more_than_one_tick_escalates_to_warning(caplog) -> None:
@@ -1099,7 +1108,7 @@ def test_no_relay_configured_still_runs() -> None:
     bus = _FakeBus()
     loop = _loop(bus)
     assert asyncio.run(loop.tick()) is None
-    assert len(bus.published) == 1
+    assert len(bus.journal) == 1
 
 
 # --- the manual override ---------------------------------------------------
@@ -1728,7 +1737,7 @@ def test_a_tick_carries_the_turn_duration_all_the_way_into_the_journal():
     """
     bus = _FakeBus()
     assert asyncio.run(_loop(bus).tick()) is None
-    body = bus.published[0][1].payload["body"]
+    body = bus.journal[0][1].payload["body"]
     assert "14 harness steps" in body
     assert "whole turn 1s (stance + harness + finalize)" in body
 
@@ -1806,7 +1815,7 @@ def test_a_malformed_duration_cannot_destroy_the_writeup():
             harness_elapsed_sec="not a number",  # type: ignore[arg-type]
         )
     )
-    assert bus.published == []
+    assert bus.journal == []
 
 
 # --- the FCC leg, distinguished from the whole turn (2026-09-01) ------------
@@ -2040,3 +2049,59 @@ def test_the_lane_actually_reaches_the_unified_turn() -> None:
     # downstream (chat_history_log tags, HarnessRunRequestV1.mode) shifts.
     assert "mode" not in seen["payload"]
     assert seen["payload"]["no_write"] is True
+
+
+# --- attention schema surface ------------------------------------------------
+# One AttentionSchemaV1 row per run on orion:attention:schema
+# (orion/curiosity/attention_schema.py). Names are prefixed `attention_surface_`
+# so nothing here shadows a helper defined above.
+
+
+def _attention_surface_rows(bus) -> list:
+    from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL
+
+    return [e for c, e in bus.published if c == ATTENTION_SCHEMA_CHANNEL]
+
+
+def test_attention_surface_a_tick_publishes_exactly_one_curiosity_row() -> None:
+    from orion.schemas.attention_schema import ATTENTION_SCHEMA_KIND
+
+    bus = _FakeBus()
+    loop = _loop(bus)
+    assert asyncio.run(loop.tick()) is None
+    rows = _attention_surface_rows(bus)
+    assert len(rows) == 1
+    env = rows[0]
+    assert env.kind == ATTENTION_SCHEMA_KIND
+    payload = env.payload
+    assert payload["process"] == "curiosity"
+    assert payload["entry_id"].startswith("curiosity-")
+    # No graph reader configured in this fixture: the honest state is
+    # "unreadable", never "touched nothing".
+    assert payload["attention_reason"] == "graph_unreadable"
+    assert payload["attended_id"] is None
+    # The journal itself is still exactly one entry (see bus.journal above).
+    assert len(bus.journal) == 1
+
+
+def test_attention_surface_publish_failure_does_not_cost_the_journal() -> None:
+    from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL
+
+    class _FlakyBus(_FakeBus):
+        async def publish(self, channel, envelope):
+            if channel == ATTENTION_SCHEMA_CHANNEL:
+                raise RuntimeError("bus down")
+            await super().publish(channel, envelope)
+
+    bus = _FlakyBus()
+    loop = _loop(bus)
+    assert asyncio.run(loop.tick()) is None
+    assert _attention_surface_rows(bus) == []
+    assert len(bus.journal) == 1
+
+
+def test_attention_surface_an_empty_generation_publishes_nothing() -> None:
+    bus = _FakeBus()
+    loop = _loop(bus, text="")
+    assert asyncio.run(loop.tick()) == "empty_generation"
+    assert _attention_surface_rows(bus) == []

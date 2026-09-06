@@ -1,12 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 634,
+  "metric_count": 637,
   "_last_change": {
-    "base": "merge base 7de0acac5 (origin/main)",
-    "change_count": 0,
+    "base": "merge base 56b87f8cc (origin/main)",
+    "change_count": 3,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-cortex-exec/orion:attention:schema",
+      "medium added metric://inner_state/orion-substrate-runtime/attention_schema.v1",
+      "medium added metric://inner_state/orion-substrate-runtime/attention_schema.v1#confidence"
     ]
   },
   "definitions": {
@@ -693,6 +695,20 @@
         "orion-agent-council"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:attention:schema": {
+      "schema_id": "AttentionSchemaV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-substrate-runtime",
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-exec/orion:autonomy:goal:planned": {
@@ -3798,6 +3814,19 @@
         "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1"
       ],
       "notes": "scalar field on AttentionBroadcastProjectionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_schema.v1": {
+      "schema_id": "AttentionSchemaV1",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_schema.v1#confidence": {
+      "schema_id": "AttentionSchemaV1",
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_schema.v1"
+      ],
+      "notes": "scalar field on AttentionSchemaV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1": {

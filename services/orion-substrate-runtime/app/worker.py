@@ -389,6 +389,12 @@ class BiometricsSubstrateWorker:
         self._health_monitor = HealthMonitor(self._store, self._settings)
         self._stop = asyncio.Event()
         self._bus = None
+        # AttentionSchemaV1 projected by the most recent self-model tick,
+        # handed from the sync tick (runs in a thread) to the async broadcast
+        # loop, which is the only place this worker can publish from. One
+        # slot, overwritten each tick: a missed publish loses one ~30s row,
+        # never queues up.
+        self._pending_attention_schema: Any = None
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
         # Perceptual health state, fed by _vision_artifact_listener_loop and
@@ -2808,7 +2814,10 @@ class BiometricsSubstrateWorker:
         independently-computed self-models live at once ever causes real
         confusion for a consumer.
         """
-        from orion.substrate.attention_self_model import reduce_attention_self_model
+        from orion.substrate.attention_self_model import (
+            reduce_attention_self_model,
+            to_attention_schema,
+        )
         from orion.substrate.prediction_error_trend import compute_prediction_error_trend
 
         pe_by_domain, pe_evidence_by_domain = (
@@ -2846,6 +2855,10 @@ class BiometricsSubstrateWorker:
             self_model,
             retention_hours=self._settings.attention_self_model_log_retention_hours,
         )
+        # Projected here, published by _attention_broadcast_loop() once this
+        # thread returns -- the shared attention surface (orion/schemas/
+        # attention_schema.py) rides the bus, not a second direct table write.
+        self._pending_attention_schema = to_attention_schema(self_model)
         logger.info(
             "substrate_attention_self_model_tick_completed attention_reason=%s "
             "confidence=%s prediction_error_confidence=%s predicted_shift=%s",
@@ -2855,11 +2868,46 @@ class BiometricsSubstrateWorker:
             self_model.predicted_shift,
         )
 
+    async def _publish_pending_attention_schema(self) -> None:
+        """Publish the AttentionSchemaV1 the last self-model tick projected.
+
+        Consumes the one-slot handoff `_attention_self_model_tick()` fills.
+        Fail-open: a bus hiccup logs and drops this tick's row; the self-model
+        table write already happened and is unaffected.
+        """
+        row = self._pending_attention_schema
+        if row is None:
+            return
+        self._pending_attention_schema = None
+        if self._bus is None:
+            return
+        try:
+            from orion.core.bus.bus_schemas import BaseEnvelope
+            from orion.core.bus.resilience import publish_with_reconnect
+            from orion.schemas.attention_schema import (
+                ATTENTION_SCHEMA_CHANNEL,
+                ATTENTION_SCHEMA_KIND,
+            )
+
+            await publish_with_reconnect(
+                self._bus,
+                ATTENTION_SCHEMA_CHANNEL,
+                BaseEnvelope(
+                    kind=ATTENTION_SCHEMA_KIND,
+                    source=self._service_ref(),
+                    payload=row.model_dump(mode="json"),
+                ),
+                log_label="substrate_attention_schema_publish",
+            )
+        except Exception:
+            logger.exception("substrate_attention_schema_publish_failed")
+
     async def _attention_broadcast_loop(self) -> None:
         interval = float(self._settings.attention_broadcast_interval_sec)
         while not self._stop.is_set():
             try:
                 await asyncio.to_thread(self._attention_broadcast_tick)
+                await self._publish_pending_attention_schema()
             except Exception:
                 logger.exception("substrate_attention_broadcast_loop_failed")
             try:

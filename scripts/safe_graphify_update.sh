@@ -78,6 +78,18 @@ except Exception as exc:
 "
 }
 
+# Refuse to run at all when graphify's own scanner cannot see the repo's code
+# (root cause of the ~95% shrink, found 2026-09-06: a nested bare-`*`
+# .gitignore leaking across the whole walk). A hollow scan plus the
+# AST-ownership rule is a wiped graph; the node-count check further down
+# would only catch that after the fact.
+if [ -f "scripts/check_graphify_scan_scope.py" ]; then
+    if ! python3 scripts/check_graphify_scan_scope.py; then
+        echo "[safe-graphify-update] REFUSING: graphify's scan of this repo is hollow (see above). Nothing was changed." >&2
+        exit 1
+    fi
+fi
+
 BEFORE=$(_count_nodes) || {
     echo "[safe-graphify-update] ERROR: could not read node count before update -- refusing to run" >&2
     exit 1

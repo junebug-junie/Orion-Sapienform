@@ -465,3 +465,91 @@ curiosity run; reverie second; curiosity last, since it carries both open questi
   override work falsifiable are inside the retention window and will expire.
 - **Newly deferred:** the goal-producer bridge (see "The read side") and anything
   LangGraph-shaped (see "The state machine"). Both are downstream of this surface existing.
+
+---
+
+## What shipped (2026-09-06)
+
+The surface is built. Four adapters, one channel, one table, no framework.
+
+| lane | artifact read | adapter | emits from | `attention_reason` vocabulary |
+|---|---|---|---|---|
+| `substrate_attention` | `AttentionSelfModelV1` | `orion/substrate/attention_self_model.py::to_attention_schema` | `orion-substrate-runtime`, every self-model tick (~30s) | `top_down_override`, `bottom_up_salience:<absent cause>`, `field_salience_only`, `no_data` |
+| `reverie` | `ReverieChainV1` + its `SpontaneousThoughtV1`s | `orion/reverie/attention_schema.py` | `orion-thought`, once per chain | `coalition_broadcast`, `no_coalition`, `trigger:<kind>` |
+| `curiosity` | `TurnOutcome` + the priors the run stamped | `orion/curiosity/attention_schema.py` | `orion-hub`, once per investigation run | `tested_held_prior`, `formed_new_prior`, `no_prior_touched`, `graph_unreadable` |
+| `cortex_turn` | `AttentionFrameV1` | `orion/substrate/attention_frame.py::to_attention_schema` | `orion-cortex-exec`, every real chat turn | `top_down_override`, `selected:<action>`, `suppressed:<reason>`, `open_loops_no_action`, `no_open_loops` |
+
+All four publish `AttentionSchemaV1` (`orion/schemas/attention_schema.py`, registered in
+both registry maps) on `orion:attention:schema`; `orion-sql-writer` is the single writer
+into `substrate_attention_schema` (SQLAlchemy model, `create_all` on boot, composite
+`(process, created_at)` index, 90-day retention via
+`SUBSTRATE_ATTENTION_SCHEMA_RETENTION_DAYS` in the writer's own retention loop).
+
+### Two deviations from the original proposal, and why
+
+**Bus + one writer instead of three direct table writers.** The original text had each
+service write the table directly, with retention owned by `orion-substrate-runtime`. That
+would have been three or four engines writing one table from four containers. The bus is
+the nervous system here; `self_knowledge_items` (PR #2105) had just established the exact
+pattern (channel -> `orion-sql-writer` -> table, retention with the writer), and putting the
+rows on the bus is also what makes the next section possible. Retention therefore moved to
+`orion-sql-writer` and the key is `..._RETENTION_DAYS`, not `..._HOURS`.
+
+**A fourth lane.** The original counted three attending processes. Tracing where a chat turn
+kicks off found a fourth that was already computing the full shape and throwing it away:
+`orion-cortex-exec` builds an `AttentionFrameV1` on every real turn
+(`chat_stance.py::build_attention_frame`, `ORION_CURIOSITY_FRAME_ENABLED=true` live) with a
+`selected_action`, a possible `voluntary_override`, and `suppressions` -- and persisted only a
+salience trace of it. It is now a producer.
+
+### Missing Question 1, settled from a real run
+
+Read live 2026-09-06 against `orion_worldview`, run `3b2d038cf18e`:
+
+- **What Orion attended is recoverable.** The kickoff prompt has Orion stamp `p.last_run_id`
+  on a prior it tests, `p.run_id` on one it forms, and write a `:PriorRevision {run_id,
+  from_confidence, to_confidence}` when a belief moves. That run tested
+  `substrate_domain_isolation_two_paths`, 0.95 -> 0.92, and the adapter's query returns
+  exactly that. Acceptance Check 3 is met for the *what*.
+- **Why Orion chose it is not recorded anywhere.** `p.why` is why the prior was *formed*;
+  `TurnOutcome.continue_note` is what Orion decided about *continuing* (that is
+  `predicted_next`, in Orion's own words). Capturing the choice-reason means changing the
+  kickoff prompt -- a live cognition-loop change, proposal mode per CLAUDE.md sec 0A -- and
+  was deliberately not done in this patch. Until it is, the curiosity lane's narrative is
+  computed from graph facts (which prior, how far confidence moved, status) and is honestly
+  `narrative_kind="computed"`.
+
+### Missing Question 2, answered with a field
+
+`narrative_kind: "computed" | "self_report"` is on the schema. Reverie's narrative is Orion's
+own LLM-written `interpretation` (self-report); the other three lanes are computed by code.
+The blind-rater control arm stratifies on this column rather than discovering the split later.
+
+### A correction to this document's own reverie claim
+
+`ReverieChainV1.trigger` -- named above as reverie's "why" -- is NULL on all 24,140 live chains.
+`chain.py` never sets it. The honest why-it-won for a chain is the substrate broadcast
+coalition it inherits, so the adapter's vocabulary is `coalition_broadcast`, with
+`trigger:<pressure_kind>` reserved for the day a chain carries one.
+
+## Cortex is the kickoff (added 2026-09-06)
+
+Juniper's standing requirement, recorded so it is not re-derived: this surface must not be
+divorced from cortex, and if LangGraph ever sequences these processes, **cortex must still be
+the kickoff** -- the place that knows cognition is starting.
+
+What this patch does about it, concretely:
+
+1. **Cortex produces on the surface.** Every real chat turn's attention frame lands as a
+   `cortex_turn` row. The kickoff point of a conversation is on the same table as the
+   processes that run between conversations.
+2. **The surface rides the bus, so cortex can read it.** `orion:attention:schema` is a plain
+   event channel. The read side described above ("the goal producer sees what is actually
+   competing") and any later cortex-side kickoff that wants "what is Orion attending to right
+   now" subscribe to the same channel. Nothing subscribes yet except the writer; listing
+   cortex as a consumer before it has code would be config-truth, not runtime-truth.
+3. **The ordering stands.** Surface (this) -> one bridge (goal producer reads the competition,
+   falsifiable against `goal_matched_no_loop` at 72.4%) -> state machine, kicked off from
+   cortex, only for durable/resumable workflows per the two prior decisions. LangGraph is not
+   a dependency of this repo today (`README.md:1054` names it as a direction, nothing imports
+   it); it should not become one before step 2 moves a number.

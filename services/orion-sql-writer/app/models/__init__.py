@@ -38,6 +38,7 @@ from .metacognitive_trace import MetacognitiveTraceSQL
 from .journal_entry import JournalEntrySQL
 from .journal_entry_index import JournalEntryIndexSQL
 from .self_knowledge_item import SelfKnowledgeItemLogSQL
+from .attention_schema import AttentionSchemaSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
 from .evidence_unit import EvidenceUnitSQL
@@ -120,6 +121,7 @@ __all__ = [
     "MetacognitiveTraceSQL",
     "JournalEntrySQL",
     "SelfKnowledgeItemLogSQL",
+    "AttentionSchemaSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
     "SelfConceptHistorySQL",

@@ -124,6 +124,66 @@ instruments:
           field_salience_only -- the two branches whose why-logic is unit-tested
           but has never once fired in production. Unmoved since 2026-08-20.
 
+  - id: attention_schema_surface
+    title: "Attention schema surface (four attending processes, one shape)"
+    theory: "Attention Schema Theory (Graziano) -- the schema as a lossy shared cartoon of attention"
+    program_ref: "README.md section 6 item 2; section 9b items 2 and 4; docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
+    module: orion/schemas/attention_schema.py
+    # No `def` entrypoint on purpose: the schema is the instrument; the four
+    # adapters are to_attention_schema() in orion/substrate/attention_self_model.py,
+    # orion/reverie/attention_schema.py, orion/curiosity/attention_schema.py and
+    # orion/substrate/attention_frame.py (cortex chat turn).
+    outcome: O3
+    storage:
+      kind: append_only
+      table: substrate_attention_schema
+      ts_column: created_at
+      # 90 days, not the self-model table's 7: the design doc's Missing
+      # Question 4 found a 168h window silently expires the control windows
+      # the blind-rater check needs. Written by orion-sql-writer off the
+      # orion:attention:schema channel; retention lives with the writer.
+      retention_setting: SUBSTRATE_ATTENTION_SCHEMA_RETENTION_DAYS
+      retention_service: orion-sql-writer
+    metrics:
+      - metric://bus_channel/orion-cortex-exec/orion:attention:schema
+    unlock: >-
+      Makes O3's blind-rater test a real discrimination test. The AST/HOT
+      reducer above could only be rated against a straw man (its own output
+      vs noise); with substrate attention, reverie, curiosity, and the cortex
+      chat turn all projecting the same four facts -- what won, why, how
+      confident, what next -- the question becomes "which of these is
+      deliberating, drifting, reacting?", with real alternatives. Shipped
+      2026-09-06 as four write-only adapters and one bus channel; nothing
+      routes or gates off it. The curiosity lane's WHY is still not captured
+      (only the WHAT -- which prior was tested, from Orion's own graph
+      stamps); asking Orion to record it is a kickoff-prompt change and a
+      separate proposal.
+    last_reviewed: 2026-09-06
+    claims:
+      - id: producers_live
+        question: "How many distinct processes have emitted a row in the retained window? (Acceptance Check 1: all four, or it is a failure -- a lane that emits zero rows is reported, not omitted.)"
+        sql: >-
+          SELECT count(DISTINCT process) FROM substrate_attention_schema
+        recorded: 0
+        recorded_at: 2026-09-06
+        blocks: O3
+        note: >-
+          Recorded 0 at PR time, before deploy: config set and code compiling
+          are not proof. Expected 4 (substrate_attention, reverie, curiosity,
+          cortex_turn) once every producer has run at least once; curiosity
+          runs at most a few times a day and cortex needs a real chat turn,
+          so this drifts upward in steps. Re-record after the first 24h.
+      - id: narrative_diversity_per_lane_is_scoped_to_retention
+        question: "Distinct reason_narrative per process over the retained window (Acceptance Check 4 -- per lane, never an aggregate; the substrate lane's own count is the baseline to beat)."
+        kind: manual
+        recorded: "not yet measured -- run: SELECT process, count(DISTINCT reason_narrative), count(*) FROM substrate_attention_schema GROUP BY 1"
+        recorded_at: 2026-09-06
+        note: >-
+          Deliberately MANUAL, not SQL: a single scalar cannot carry four
+          lanes, and folding them into one number is exactly the aggregate
+          the design doc forbids. The question is scoped to the retained
+          window on purpose (Missing Question 4).
+
   - id: prediction_error_domains
     title: "Predictive-processing prediction-error domains"
     theory: "Predictive Processing / Active Inference"

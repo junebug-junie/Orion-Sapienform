@@ -1185,6 +1185,42 @@ def apply_power_intent_settled_retention(
     return state
 
 
+def apply_substrate_attention_schema_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for substrate_attention_schema (AttentionSchemaV1 rows).
+
+    Bounded from the first commit that creates the table, same rule as the two above.
+    Four producers write here through one channel; the substrate lane alone is ~2,880
+    short rows/day (one per ~30s attention tick), reverie is per chain, curiosity per
+    run, cortex per real chat turn. Ages by `created_at` (write time). Not a grammar
+    lane -- plain `default_engine`.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="substrate_attention_schema",
+        id_column="entry_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["substrate_attention_schema"] = state
+    return state
+
+
 def apply_biometrics_cluster_retention(
     retention_days: int,
     *,
@@ -1286,6 +1322,7 @@ GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     # only retention path in the service (see run_one_retention_cycle's docstring).
     ("orion_biometrics_cluster", apply_biometrics_cluster_retention),
     ("power_intent_settled", apply_power_intent_settled_retention),
+    ("substrate_attention_schema", apply_substrate_attention_schema_retention),
 )
 
 

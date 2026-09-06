@@ -67,6 +67,8 @@ that branch read about 0.09 higher, because a frozen 0.556 term left the mean.
 
 from __future__ import annotations
 
+import hashlib
+
 import math
 from datetime import datetime, timezone
 from typing import get_args
@@ -78,6 +80,12 @@ from orion.schemas.attention_frame import (
     VoluntaryOverrideAbsentReasonV1,
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.attention_schema import (
+    MAX_LABEL_CHARS,
+    MAX_NARRATIVE_CHARS,
+    AttentionSchemaV1,
+    clip,
+)
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 
 _ABSENT_REASON_VALUES = frozenset(get_args(VoluntaryOverrideAbsentReasonV1))
@@ -689,3 +697,39 @@ def reduce_attention_self_model(
         model.reason_narrative = "No attention data available from either lane."
 
     return model
+
+
+def to_attention_schema(model: AttentionSelfModelV1) -> AttentionSchemaV1:
+    """Project one self-model row onto the shared attention surface.
+
+    Pure projection, no logic change to `reduce_attention_self_model()` (its
+    branch-for-branch unit-test proof stays intact). `attention_reason` keeps
+    this lane's own vocabulary and, for the bottom-up branch, carries the
+    absent-override cause PR #2106 split out -- `bottom_up_salience:
+    goal_matched_no_loop` and `bottom_up_salience:no_open_loops` are different
+    facts and the blind-rater check must not see them merged. `confidence`
+    prefers the branch-conditional figure and falls back to the unconditional
+    Active-Inference one, naming which in `confidence_basis`, never inventing.
+    """
+    reason: str = model.attention_reason
+    if reason == "bottom_up_salience" and model.voluntary_override_absent_reason:
+        reason = f"bottom_up_salience:{model.voluntary_override_absent_reason}"
+    if model.confidence is not None:
+        confidence, basis = model.confidence, (model.confidence_basis or None)
+    else:
+        confidence = model.prediction_error_confidence
+        basis = model.prediction_error_confidence_basis or None
+    digest = hashlib.sha256(model.generated_at.isoformat().encode("utf-8")).hexdigest()[:24]
+    return AttentionSchemaV1(
+        entry_id=f"substrate-{digest}",
+        generated_at=model.generated_at,
+        process="substrate_attention",
+        attended_id=model.broadcast_selected_open_loop_id,
+        attended_label=clip(model.broadcast_selected_description or "", MAX_LABEL_CHARS),
+        attention_reason=reason,
+        reason_narrative=clip(model.reason_narrative, MAX_NARRATIVE_CHARS),
+        narrative_kind="computed",
+        confidence=confidence,
+        confidence_basis=basis,
+        predicted_next=model.predicted_shift,
+    )

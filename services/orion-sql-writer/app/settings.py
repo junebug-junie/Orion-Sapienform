@@ -52,6 +52,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "notify.preference.update.v1": "NotificationPreferenceDB",
     "journal.entry.write.v1": "JournalEntrySQL",
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
+    "attention.schema.v1": "AttentionSchemaSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
@@ -161,6 +162,7 @@ class Settings(BaseSettings):
             "orion:notify:persistence:receipt",
             "orion:journal:write",
             "orion:self_study:items:write",
+            "orion:attention:schema",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
             "orion:journal:index",
@@ -370,6 +372,18 @@ class Settings(BaseSettings):
         90, alias="POWER_INTENT_SETTLED_RETENTION_DAYS"
     )
 
+    # substrate_attention_schema (AttentionSchemaV1 rows from four producers).
+    # Name matches the table exactly, same as above. 90 days rather than the
+    # 7-day window the substrate self-model table uses: the design doc's
+    # Missing Question 4 found that a 168h window silently expires the
+    # before/after control windows the blind-rater check needs, and reverie/
+    # curiosity rows are sparse (per chain / per run) so a short window would
+    # leave those lanes with too few rows to stratify. ~2.8k substrate rows a
+    # day of short text is a few MB a month. 0 disables retention.
+    substrate_attention_schema_retention_days: int = Field(
+        90, alias="SUBSTRATE_ATTENTION_SCHEMA_RETENTION_DAYS"
+    )
+
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
     # The window was never the reason these tables were 36 GB -- retention could not run
@@ -551,6 +565,13 @@ class Settings(BaseSettings):
         # rather than merges.
         if "orion:self_concept:history:write" not in channels:
             channels.append("orion:self_concept:history:write")
+        # Same guarantee again, same reason. attention.schema.v1 is a
+        # code-default route with no feature toggle (four producers, one
+        # writer -- docs/superpowers/specs/2026-09-04-attention-schema-
+        # surface-design.md); SQL_WRITER_SUBSCRIBE_CHANNELS replaces rather
+        # than merges.
+        if "orion:attention:schema" not in channels:
+            channels.append("orion:attention:schema")
         return channels
 
     @property

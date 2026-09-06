@@ -4,7 +4,16 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+import hashlib
+
 from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1
+from orion.schemas.attention_schema import (
+    MAX_LABEL_CHARS,
+    MAX_NARRATIVE_CHARS,
+    MAX_PREDICTED_NEXT_CHARS,
+    AttentionSchemaV1,
+    clip,
+)
 from orion.substrate.attention.common import compact
 from orion.substrate.attention.detectors import AttentionSignalDetector, default_attention_detectors
 from orion.substrate.attention.policy import (
@@ -119,4 +128,87 @@ def build_attention_frame(
             "merged_signal_count": len(merged_signals),
             "autonomy_signals": autonomy_signals,
         },
+    )
+
+
+def to_attention_schema(frame: AttentionFrameV1, *, leg: str | None = None) -> AttentionSchemaV1:
+    """Project one turn's attention frame onto the shared attention surface
+    as `process="cortex_turn"` (docs/superpowers/specs/2026-09-04-attention-
+    schema-surface-design.md, "Cortex is the kickoff").
+
+    `cortex_turn` means every unified turn cortex built a stance for -- a
+    human chat turn AND Orion's own self-initiated turns (curiosity
+    investigation, endogenous outreach, journal). Those are not filtered
+    out: cortex genuinely ran attention for them, and a self-initiated turn's
+    row is joinable to its originating lane's row by `correlation_id`
+    (curiosity's uuid5 run correlation is the same id on both). Live check
+    2026-09-06: the previous two days of chat history were entirely
+    `orion_journal` / `orion_outreach` sessions, so filtering to "human
+    only" would have emptied the lane.
+
+    `leg` names which of a turn's cortex legs built this frame (the verb,
+    e.g. `harness_finalize_reflect` vs `orion_voice_finalize`). A unified
+    turn runs more than one brain-mode leg under ONE correlation id and no
+    turn_id, so without it both legs collided on `entry_id` and the writer
+    kept whichever arrived first (review finding 2026-09-06). Absent a leg
+    the generated_at hash disambiguates instead.
+
+    Vocabulary is this lane's own: `top_down_override`, `selected:<action>`,
+    `suppressed:<reason>`, `open_loops_no_action`, `no_open_loops`. The
+    narrative is whatever the policy already wrote as its rationale --
+    computed by code, never an LLM self-report -- so it is `computed`.
+    """
+    loops = {loop.id: loop for loop in frame.open_loops}
+    selected = frame.selected_action
+    override = frame.voluntary_override
+    attended_id: str | None = None
+    confidence: float | None = None
+    basis: str | None = None
+
+    if override is not None:
+        attended_id = override.chosen_loop_id
+        reason = "top_down_override"
+        narrative = (
+            f"Top-down goal bias flipped the winner: '{override.chosen_loop_id}' "
+            f"(bottom_up={override.chosen_bottom_up:.2f}) beat '{override.beat_loop_id}' "
+            f"({override.beat_bottom_up:.2f}) via applied_bias={override.applied_bias:.2f}."
+        )
+        if selected is not None:
+            confidence, basis = selected.score, "policy action score"
+    elif selected is not None and selected.action_type != "none":
+        attended_id = selected.open_loop_id
+        reason = f"selected:{selected.action_type}"
+        narrative = selected.rationale or f"policy selected '{selected.action_type}'"
+        confidence, basis = selected.score, "policy action score"
+    elif frame.suppressions:
+        first = frame.suppressions[0]
+        attended_id = first.target_ref
+        reason = f"suppressed:{first.reason}"
+        narrative = first.rationale or f"policy suppressed the turn's candidate ({first.reason})"
+        confidence, basis = first.confidence, "suppression confidence"
+    elif frame.open_loops:
+        reason = "open_loops_no_action"
+        narrative = f"{len(frame.open_loops)} open loops surfaced; none cleared the action threshold."
+    else:
+        reason = "no_open_loops"
+        narrative = "No open loops detected this turn."
+
+    label = loops[attended_id].description if attended_id in loops else ""
+    predicted = clip(frame.deferred_items[0], MAX_PREDICTED_NEXT_CHARS) if frame.deferred_items else None
+    stamp = hashlib.sha256(frame.generated_at.isoformat().encode("utf-8")).hexdigest()
+    key = frame.turn_id or frame.correlation_id or stamp[:24]
+    suffix = " ".join(str(leg or "").split()).lower().replace(" ", "_") or stamp[:8]
+    return AttentionSchemaV1(
+        entry_id=f"cortex-{key}-{suffix}",
+        generated_at=frame.generated_at,
+        process="cortex_turn",
+        correlation_id=frame.correlation_id,
+        attended_id=attended_id,
+        attended_label=clip(label, MAX_LABEL_CHARS),
+        attention_reason=reason,
+        reason_narrative=clip(narrative, MAX_NARRATIVE_CHARS),
+        narrative_kind="computed",
+        confidence=confidence,
+        confidence_basis=basis,
+        predicted_next=predicted or None,
     )

@@ -42,6 +42,9 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         "power_intent_settled": int(
             getattr(settings, "power_intent_settled_retention_days", 0) or 0
         ),
+        "substrate_attention_schema": int(
+            getattr(settings, "substrate_attention_schema_retention_days", 0) or 0
+        ),
     }
 
 

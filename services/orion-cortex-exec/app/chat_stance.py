@@ -49,6 +49,7 @@ from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_subst
 
 from .attention_frame import attention_frame_enabled, build_attention_frame
 from .autonomy_slice import build_autonomy_slice
+from .attention_schema_publish import publish_attention_schema
 from .chat_attention_salience_trace import persist_chat_attention_salience_trace
 from .current_turn_llm_signals import populate_current_turn_llm_signals
 
@@ -2439,6 +2440,15 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 await persist_chat_attention_salience_trace(attention_frame)
             except Exception as exc:
                 logger.warning("chat_attention_salience_trace_call_failed error=%s", exc)
+            # Attention schema surface: cortex is a producer, every real
+            # chat turn (app/attention_schema_publish.py). Own guard, same
+            # reasoning as the trace writer above.
+            try:
+                await publish_attention_schema(
+                    attention_frame, leg=str(ctx.get("verb") or "").strip() or None
+                )
+            except Exception as exc:
+                logger.warning("attention_schema_publish_call_failed error=%s", exc)
 
     _inject_prior_stance_to_inputs(ctx, inputs)
     continuity_digest = ctx.get("continuity_digest")

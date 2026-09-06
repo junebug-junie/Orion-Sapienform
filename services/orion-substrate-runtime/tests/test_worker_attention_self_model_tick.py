@@ -397,3 +397,79 @@ def test_self_model_tick_still_persists_when_heartbeat_unreachable(monkeypatch):
     model = worker._store.save_attention_self_model.call_args.args[0]
     assert model.heartbeat_mean_ratio is None
     assert model.heartbeat_verdict is None
+
+
+# --- attention schema surface ------------------------------------------------
+# The self-model tick (sync, in a thread) projects an AttentionSchemaV1 into a
+# one-slot handoff; the async broadcast loop publishes it on
+# orion:attention:schema. orion/schemas/attention_schema.py.
+
+
+def test_attention_surface_tick_projects_a_pending_row(monkeypatch):
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    worker._pending_attention_schema = None
+    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.42))
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ):
+        worker._attention_broadcast_tick()
+
+    row = worker._pending_attention_schema
+    assert row is not None
+    assert row.process == "substrate_attention"
+    saved = worker._store.save_attention_self_model.call_args.args[0]
+    assert row.attention_reason.startswith(saved.attention_reason)
+    assert row.reason_narrative == saved.reason_narrative
+
+
+def test_attention_surface_tick_disabled_leaves_no_pending_row(monkeypatch):
+    worker = _make_worker(monkeypatch, self_model_enabled=False)
+    worker._pending_attention_schema = None
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=_fake_store(),
+    ):
+        worker._attention_broadcast_tick()
+    assert worker._pending_attention_schema is None
+
+
+def test_attention_surface_loop_publishes_and_clears_the_pending_row(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, AttentionSchemaV1
+
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    worker._bus = AsyncMock()
+    worker._pending_attention_schema = AttentionSchemaV1(
+        entry_id="substrate-x", process="substrate_attention", attention_reason="no_data"
+    )
+    asyncio.run(worker._publish_pending_attention_schema())
+    worker._bus.publish.assert_awaited_once()
+    channel, envelope = worker._bus.publish.await_args.args
+    assert channel == ATTENTION_SCHEMA_CHANNEL
+    assert envelope.kind == ATTENTION_SCHEMA_KIND
+    assert envelope.payload["entry_id"] == "substrate-x"
+    assert str(envelope.correlation_id) == envelope.payload["correlation_id"]
+    assert worker._pending_attention_schema is None
+
+    # Nothing pending -> nothing published.
+    asyncio.run(worker._publish_pending_attention_schema())
+    worker._bus.publish.assert_awaited_once()
+
+
+def test_attention_surface_publish_failure_is_logged_not_raised(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from orion.schemas.attention_schema import AttentionSchemaV1
+
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    worker._bus = AsyncMock()
+    worker._bus.publish.side_effect = RuntimeError("bus down")
+    worker._pending_attention_schema = AttentionSchemaV1(
+        entry_id="substrate-y", process="substrate_attention", attention_reason="no_data"
+    )
+    asyncio.run(worker._publish_pending_attention_schema())  # must not raise
+    assert worker._pending_attention_schema is None

@@ -40,6 +40,7 @@ from orion.autonomy.models import AutonomyStateV2
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateV1
@@ -187,6 +188,35 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "metacog gates above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
             "and EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE are both true in "
             ".env_example, so the path is live by default, not future work."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="attention_schema.v1",
+        schema=AttentionSchemaV1,
+        # Four producers share the channel (orion-substrate-runtime,
+        # orion-thought, orion-hub, orion-cortex-exec); named here by the
+        # ~30s substrate tick that writes >99% of the rows, so the metric id
+        # this entry mints stays a clean path. See notes.
+        producer_service="orion-substrate-runtime",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        notes=(
+            "The attention schema SURFACE (docs/superpowers/specs/2026-09-04-"
+            "attention-schema-surface-design.md, PR #2092): one thin shared "
+            "shape -- what won, why (process-owned vocabulary, never a "
+            "shared enum), confidence, what next -- projected by every "
+            "process in Orion that attends and selects, so the substrate "
+            "attention tick, reverie, curiosity, and the cortex chat turn "
+            "can be compared on one table (substrate_attention_schema, "
+            "written by orion-sql-writer). Write-only measurement by design: "
+            "REHEARSAL is the honest status, nothing routes, gates, or "
+            "budgets off it in this arc. The intended first reader is the "
+            "goal producer (orion/attention/field_attention/) seeing what "
+            "is actually competing -- the design doc's 'one bridge' -- and "
+            "cortex, which already produces here every real chat turn and "
+            "is the kickoff point for any later sequencing of these "
+            "processes."
         ),
     ),
     InnerStateSignal(

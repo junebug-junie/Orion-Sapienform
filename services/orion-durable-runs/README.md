@@ -51,5 +51,5 @@ before; this service then receives nothing.
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest services/orion-durable-runs/tests -q
 python scripts/check_service_env_compose_parity.py orion-durable-runs
-curl -fsS http://localhost:8121/health
+curl -fsS http://localhost:8124/health
 ```

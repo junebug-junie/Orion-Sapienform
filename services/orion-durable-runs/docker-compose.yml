@@ -8,7 +8,7 @@ services:
     networks:
       - app-net
     ports:
-      - "${DURABLE_RUNS_PORT:-8121}:8121"
+      - "${DURABLE_RUNS_PORT:-8124}:8121"
     environment:
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME:-orion-durable-runs}
@@ -31,4 +31,3 @@ services:
 networks:
   app-net:
     external: true
-    name: ${PROJECT}-net

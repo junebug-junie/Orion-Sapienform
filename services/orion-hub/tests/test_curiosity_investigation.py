@@ -2266,3 +2266,44 @@ def test_completed_run_state_with_reach_out_triggers_outreach_here() -> None:
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(BaseEnvelope(kind="durable.run.state.v1", source=SOURCE, payload={**state, "status": "running", "node": "journal"}))}))
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(BaseEnvelope(kind="durable.run.state.v1", source=SOURCE, payload={**state, "detail": {"reach_out": False}}))}))
     assert len(seen) == 1
+
+
+def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twice() -> None:
+    """A runner restart mid-turn asks for the same run_id again; Hub must
+    answer both from ONE harness turn (the first result would otherwise be
+    orphaned and the run would cost two FCC turns)."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.durable_run import CuriosityTurnResultV1
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True, text="the finding")
+    calls = []
+    gate = asyncio.Event()
+
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True):
+        calls.append(correlation_id)
+        await gate.wait()
+        return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
+
+    loop._generate = slow_generate  # type: ignore[assignment]
+
+    def _env(reply_to: str, attempt: int) -> dict:
+        env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to=reply_to,
+                           payload={"run_id": "abc123def456", "correlation_id": "c", "prompt": "p", "timeout_sec": 10.0, "attempt": attempt})
+        return {"data": bus.codec.encode(env)}
+
+    async def scenario():
+        t1 = asyncio.create_task(loop._handle_turn_request(_env("r1", 1)))
+        await asyncio.sleep(0.01)
+        t2 = asyncio.create_task(loop._handle_turn_request(_env("r2", 2)))
+        await asyncio.sleep(0.01)
+        gate.set()
+        await asyncio.gather(t1, t2)
+        # A third request after completion is served from the cache, still one turn.
+        await loop._handle_turn_request(_env("r3", 3))
+
+    asyncio.run(scenario())
+    assert calls == ["c"]  # exactly one harness turn
+    for ch in ("r1", "r2", "r3"):
+        reply = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == ch][0].payload)
+        assert reply.ok and reply.text == "the finding"

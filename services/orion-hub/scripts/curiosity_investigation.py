@@ -143,6 +143,10 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 # write (see _publish_attention_schema). Above the reader's 5s socket_timeout
 # so a merely slow read completes; below the ~10s a dead host would cost.
 ATTENTION_SCHEMA_GRAPH_READ_TIMEOUT_SEC = 6.0
+# How long a finished harness-turn result is served to a re-issued request for
+# the same run_id (a runner that restarted mid-turn asks again). One hour
+# covers the longest turn plus the runner's own RPC timeout.
+TURN_RESULT_CACHE_SEC = 3600.0
 
 # Cooldown/daily-count state lives in Redis, not in the process. Review finding
 # 2026-08-26: both were plain instance fields, so every Hub restart reset the
@@ -445,6 +449,13 @@ class CuriosityInvestigation:
         self.cortex_result_prefix = cortex_result_prefix
         self._turn_listener_task: Optional[asyncio.Task] = None
         self._state_listener_task: Optional[asyncio.Task] = None
+        # Turn dedup by run_id. A runner restart mid-turn re-issues the turn
+        # while the first one is still running here; without this, one run
+        # would cost two FCC turns and the first result would be orphaned.
+        # In-flight: the second request awaits the first's future. Finished
+        # within TURN_RESULT_CACHE_SEC: the cached result is replied as-is.
+        self._turn_inflight: dict[str, asyncio.Future] = {}
+        self._turn_results: dict[str, tuple[CuriosityTurnResultV1, float]] = {}
         self.enabled = enabled
         self.tick_interval_sec = tick_interval_sec
         self.min_cooldown_sec = min_cooldown_sec
@@ -1559,25 +1570,7 @@ class CuriosityInvestigation:
         logger.info(
             "curiosity_turn_request run=%s attempt=%s corr=%s", request.run_id, request.attempt, request.correlation_id
         )
-        async with self._run_lock:
-            try:
-                text, debug = await self._generate(
-                    request.prompt, request.correlation_id, source=request.source_tag
-                )
-                result = CuriosityTurnResultV1(
-                    run_id=request.run_id,
-                    correlation_id=request.correlation_id,
-                    text=text or "",
-                    debug=dict(debug or {}),
-                    ok=bool(text),
-                    error=None if text else str((debug or {}).get("error") or "empty_generation"),
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                result = CuriosityTurnResultV1(
-                    run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
-                )
+        result = await self._turn_result_for(request)
         if env.reply_to:
             await self._bus.publish(
                 env.reply_to,
@@ -1588,6 +1581,54 @@ class CuriosityInvestigation:
                     payload=result.model_dump(mode="json"),
                 ),
             )
+
+    async def _turn_result_for(self, request: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
+        """One harness turn per run_id, however many times it is asked for."""
+        now = time.monotonic()
+        cached = self._turn_results.get(request.run_id)
+        if cached is not None and now - cached[1] <= TURN_RESULT_CACHE_SEC and cached[0].ok:
+            logger.info("curiosity_turn_request_served_from_cache run=%s attempt=%s", request.run_id, request.attempt)
+            return cached[0]
+        inflight = self._turn_inflight.get(request.run_id)
+        if inflight is not None and not inflight.done():
+            logger.info("curiosity_turn_request_joined_inflight run=%s attempt=%s", request.run_id, request.attempt)
+            return await inflight
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._turn_inflight[request.run_id] = future
+        try:
+            async with self._run_lock:
+                try:
+                    text, debug = await self._generate(
+                        request.prompt, request.correlation_id, source=request.source_tag
+                    )
+                    result = CuriosityTurnResultV1(
+                        run_id=request.run_id,
+                        correlation_id=request.correlation_id,
+                        text=text or "",
+                        debug=dict(debug or {}),
+                        ok=bool(text),
+                        error=None if text else str((debug or {}).get("error") or "empty_generation"),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    result = CuriosityTurnResultV1(
+                        run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
+                    )
+            self._turn_results[request.run_id] = (result, time.monotonic())
+            # Bounded: forget results older than the cache window.
+            cutoff = time.monotonic() - TURN_RESULT_CACHE_SEC
+            for rid in [r for r, (_, ts) in self._turn_results.items() if ts < cutoff]:
+                self._turn_results.pop(rid, None)
+            if not future.done():
+                future.set_result(result)
+            return result
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+            raise
+        finally:
+            self._turn_inflight.pop(request.run_id, None)
 
     async def _run_state_loop(self) -> None:
         """Outreach stays here: a `completed` run whose outcome asked to reach

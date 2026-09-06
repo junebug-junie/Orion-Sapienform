@@ -164,15 +164,38 @@ instruments:
         question: "How many distinct processes have emitted a row in the retained window? (Acceptance Check 1: all four, or it is a failure -- a lane that emits zero rows is reported, not omitted.)"
         sql: >-
           SELECT count(DISTINCT process) FROM substrate_attention_schema
-        recorded: 0
+        recorded: 3
         recorded_at: 2026-09-06
         blocks: O3
         note: >-
-          Recorded 0 at PR time, before deploy: config set and code compiling
-          are not proof. Expected 4 (substrate_attention, reverie, curiosity,
-          cortex_turn) once every producer has run at least once; curiosity
-          runs at most a few times a day and cortex needs a real chat turn,
-          so this drifts upward in steps. Re-record after the first 24h.
+          24h read (2026-09-06 19:00Z): substrate_attention 2082 rows,
+          reverie 163, cortex_turn 871, curiosity 0. The curiosity lane is a
+          FAILURE per Acceptance Check 1, and the surface's own cross-lane
+          join shows why: three runs were started today (redis daily count 3)
+          and none finished (no TurnOutcome since 2026-09-05, no journal);
+          the last one reached cortex at 18:49:11Z (cortex_turn row with the
+          run's correlation id) and the hub was recreated ~19:01Z. Whether
+          the runs were killed or failed is UNVERIFIED -- the logs did not
+          survive the recreate. Step 3 of the surface design (durable runs
+          from cortex, docs/superpowers/specs/2026-09-06-durable-cognition-
+          runs-from-cortex-design.md) is the fix; this claim drifts to 4 on
+          the first run that finishes.
+      - id: cortex_lane_is_constant
+        question: "How many distinct reason_narrative strings has the cortex_turn lane emitted? (Acceptance Check 4, per lane: 2 means the lane is a constant, not an instrument.)"
+        sql: >-
+          SELECT count(DISTINCT reason_narrative) FROM substrate_attention_schema
+          WHERE process = 'cortex_turn'
+        recorded: 2
+        recorded_at: 2026-09-06
+        blocks: O3
+        note: >-
+          871 rows, 850 distinct turns, 2 distinct attended ids, 2 narratives
+          -- 870 of them "already-known target should not be asked about
+          again" (orion/substrate/attention/policy.py::select_actions takes
+          the already_known branch for the same open loop on every unified
+          turn). The lane is honest about what cortex's chat attention policy
+          does, and what it does is a constant. Reported per lane on purpose;
+          not folded into an aggregate. Not this patch's fix.
       - id: narrative_diversity_per_lane_is_scoped_to_retention
         question: "Distinct reason_narrative per process over the retained window (Acceptance Check 4 -- per lane, never an aggregate; the substrate lane's own count is the baseline to beat)."
         kind: manual

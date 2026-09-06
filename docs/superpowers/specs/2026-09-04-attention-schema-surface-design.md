@@ -603,3 +603,21 @@ others. Some of the 37% is structural: the competition is about things the goal 
 cannot aim at. The bridge can only close the part where a targetable domain *was* competing
 and the producer picked a different one; the rest needs the producer's target set widened,
 which is a separate decision.
+
+## 24h read (2026-09-06 19:00Z)
+
+| lane | rows | distinct narratives | verdict |
+|---|---|---|---|
+| `substrate_attention` | 2082 | 364 | real |
+| `reverie` | 163 | 124 | real, self-report |
+| `cortex_turn` | 871 | **2** | a constant: the chat policy suppresses the same already-known target every turn |
+| `curiosity` | **0** | -- | **failure** (Acceptance Check 1) |
+
+The curiosity zero is the surface earning its keep rather than failing: the cross-lane join by
+`correlation_id` traced today's last run into cortex at 18:49:11Z and to nothing after, and
+redis says three runs started today and none finished. A curiosity investigation is Orion's
+longest act of cognition and it lives entirely in one process's memory. That is what step 3 is
+now for -- see `docs/superpowers/specs/2026-09-06-durable-cognition-runs-from-cortex-design.md`.
+
+The bridge (step 2) at 8.5h: `goal_matched_no_loop` 19.4%, `top_down_override` 12.6%,
+`bias_did_not_flip_winner` 3.1% (was 42.1% / 4.2% / 0 before). Holding.

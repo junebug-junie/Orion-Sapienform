@@ -49,7 +49,10 @@ MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
 def top_node_substrate_target(
-    frame: FieldAttentionFrameV1, *, competing: Collection[str] | None = None
+    frame: FieldAttentionFrameV1,
+    *,
+    competing: Collection[str] | None = None,
+    current: str | None = None,
 ) -> FieldAttentionTargetV1 | None:
     """The highest-salience target among ``frame.node_targets`` that is one of
     Candidate A's real ``node:substrate.*`` domains AND has accumulated enough real
@@ -91,10 +94,25 @@ def top_node_substrate_target(
     # the competition, or the competition is unknown (None), fall back to the
     # plain top-1 -- this must never make the producer fire LESS than before.
     # Not a reconciler, not a shared taxonomy: one read of one id set.
+    #
+    # Hysteresis (review finding 2026-09-06): the competition read changes
+    # every ~30s and reads as None on any error/staleness, while the field
+    # frame ticks every ~2s and the emission debounce needs the SAME winner
+    # for min_streak consecutive ticks. If an unknown or empty read fell back
+    # to the raw top-1 while a competing read picked something else, the
+    # winner would alternate and the streak would never reach the threshold
+    # -- the producer would fire LESS than before, the one thing this bridge
+    # must not do. So an unknown/empty competition keeps `current` (the
+    # streak's present target) whenever it is still a qualified candidate;
+    # only a competing read that names a different qualified target moves it.
     if competing:
         seen = [t for t in candidates if t.target_id in competing]
         if seen:
-            candidates = seen
+            return max(seen, key=lambda t: t.salience_score)
+    if current is not None:
+        held = next((t for t in candidates if t.target_id == current), None)
+        if held is not None:
+            return held
     return max(candidates, key=lambda t: t.salience_score)
 
 

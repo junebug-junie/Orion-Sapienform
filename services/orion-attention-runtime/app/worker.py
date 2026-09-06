@@ -189,7 +189,9 @@ class AttentionRuntimeWorker:
         if self._node_streak is None:
             self._node_streak = self._store.load_node_dominance_streak()
         competing = self._load_competition()
-        winner = top_node_substrate_target(frame, competing=competing)
+        winner = top_node_substrate_target(
+            frame, competing=competing, current=self._node_streak.target_id
+        )
         winner_id = winner.target_id if winner is not None else None
         self._node_streak, should_emit = update_dominance_streak(
             self._node_streak, winner_id, min_streak=self._settings.goal_provenance_min_streak
@@ -221,15 +223,17 @@ class AttentionRuntimeWorker:
             source_attention_frame_id=frame.frame_id,
             priority=winner.salience_score,
             provenance={"intake_channel": "internal.attention_runtime"},
-            # The bridge's own receipt (typed on the schema): what the
-            # producer saw when it chose. The downstream truth is the
-            # self-model's `voluntary_override_absent_reason`.
-            competition_read=(
-                "unavailable" if competing is None
-                else "in_competition" if winner.target_id in competing
-                else "not_in_competition"
-            ),
-            competing_refs=sorted(competing)[:16] if competing else [],
+        )
+        # The bridge's receipt lives in this service's own log, deliberately
+        # NOT on the schema: FieldGoalProvenanceV1 is extra="forbid" on three
+        # consumers (substrate-runtime, world-pulse, spark-concept-induction),
+        # and a producer-first deploy of two new fields dropped 186 goals live
+        # on 2026-09-06 before the consumers could be rebuilt. The downstream
+        # truth is the self-model's `voluntary_override_absent_reason`.
+        self._last_competition_read = (
+            "unavailable" if competing is None
+            else "in_competition" if winner.target_id in competing
+            else "not_in_competition"
         )
         return goal, streak_tick
 
@@ -312,11 +316,12 @@ class AttentionRuntimeWorker:
         if published:
             logger.info(
                 "field_goal_provenance_published artifact_id=%s field_target_id=%s "
-                "salience=%.3f streak=%d",
+                "salience=%.3f streak=%d competition_read=%s",
                 goal.artifact_id,
                 goal.field_target_id,
                 goal.salience_score,
                 self._node_streak.count,
+                getattr(self, "_last_competition_read", "unavailable"),
             )
 
     async def _publish_streak_tick(self, streak_tick: DominanceStreakTickV1) -> None:

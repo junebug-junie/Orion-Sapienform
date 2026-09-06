@@ -23,8 +23,6 @@ real winning history, derived later from these records, not asserted here.
 """
 from __future__ import annotations
 
-from typing import Literal
-
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -33,11 +31,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from orion.core.schemas.drives import GraphReadyArtifact, ProposalStatus
 
 
-CompetitionRead = Literal["in_competition", "not_in_competition", "unavailable"]
-
-
 class FieldGoalProvenanceV1(GraphReadyArtifact):
-    # Which real field competition winner triggered this -- e.g. "node:substrate.biometrics",
+    # The target the producer chose this tick -- e.g. "node:substrate.biometrics". Since
+    # 2026-09-06 (the one bridge) this prefers a qualified target the substrate competition
+    # is holding, so it is not always the field's raw salience top-1; see
+    # orion/attention/field_attention/goal_provenance.py::top_node_substrate_target.
     # "capability:memory". Matches FieldAttentionTargetV1.target_id exactly, not a derived id.
     field_target_id: str
     # Mirrors FieldAttentionTargetV1.target_kind's real value ("node" | "capability" | "system"
@@ -57,17 +55,6 @@ class FieldGoalProvenanceV1(GraphReadyArtifact):
     # Reuses goal_context.py's existing _ACTIVE_STATES vocabulary unchanged -- no new status
     # vocabulary for this producer.
     proposal_status: ProposalStatus = "proposed"
-    # THE ONE BRIDGE (2026-09-06, docs/superpowers/specs/2026-09-04-attention-
-    # schema-surface-design.md "The read side"): the producer's own receipt of
-    # what the substrate competition held when it chose this target.
-    #   in_competition     -- target is one of the competing loops' source_refs
-    #   not_in_competition -- no qualified candidate was competing; plain top-1
-    #   unavailable        -- no fresh projection / read failed / bridge off
-    # Additive with defaults: an older payload (or the pre-bridge producer)
-    # validates unchanged. The downstream truth stays the self-model's
-    # `voluntary_override_absent_reason`; this only says what the producer saw.
-    competition_read: CompetitionRead | None = None
-    competing_refs: list[str] = Field(default_factory=list, max_length=16)
 
 
 class DominanceStreakTickV1(BaseModel):
@@ -98,7 +85,8 @@ class DominanceStreakTickV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     tick_telemetry_id: str = Field(default_factory=lambda: f"streak-tick-{uuid4()}")
-    # The real node-target winner this tick (FieldAttentionTargetV1.target_id), or None when
+    # The producer's chosen node target this tick (competition-aware since 2026-09-06 --
+    # see goal_provenance.py), or None when
     # no target won (update_dominance_streak's own None-target_id reset case).
     target_id: str | None = None
     # DominanceStreak.count after this tick's update -- 0 when target_id is None, 1 on a

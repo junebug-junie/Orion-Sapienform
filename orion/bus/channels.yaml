@@ -2255,7 +2255,6 @@ channels:
     ]
     stability: "experimental"
     since: "2026-03-19"
-    description: "2026-09-06: FieldGoalProvenanceV1 gained optional competition_read + competing_refs -- the goal producer's receipt of which substrate open-loop source_refs were competing when it chose (the attention-schema-surface design's one bridge); additive, defaults keep older payloads valid."
 
   - name: "orion:debug:attention:streak_tick"
     kind: "event"

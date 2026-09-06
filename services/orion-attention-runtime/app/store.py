@@ -461,10 +461,13 @@ class AttentionRuntimeStore:
         if isinstance(payload, str):
             payload = json.loads(payload)
         loops = ((payload or {}).get("frame") or {}).get("open_loops") or []
+        # `source_refs` is `[node_id] + contributing stream ids` (up to 20 redis
+        # stream ids per loop); only the node id can ever match a goal target,
+        # so keep just those. Review finding 2026-09-06.
         refs: set[str] = set()
         for loop in loops:
             for ref in (loop or {}).get("source_refs") or []:
-                if isinstance(ref, str) and ref:
+                if isinstance(ref, str) and ref.startswith("node:"):
                     refs.add(ref)
         return refs
 

@@ -419,8 +419,7 @@ def test_bridge_goal_targets_the_competing_candidate_and_says_so(monkeypatch):
     goal, _ = _emit(worker, frame)
     assert goal is not None
     assert goal.field_target_id == "node:substrate.biometrics"
-    assert goal.competition_read == "in_competition"
-    assert goal.competing_refs == ["node:substrate.biometrics"]
+    assert worker._last_competition_read == "in_competition"
     worker._store.load_competing_loop_refs.assert_called_once_with(
         max_age_sec=worker._settings.goal_competition_max_age_sec
     )
@@ -430,14 +429,13 @@ def test_bridge_falls_back_and_records_not_in_competition(monkeypatch):
     worker = _bridge_worker_at_threshold(monkeypatch, competing={"node:substrate.chat"})
     goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
     assert goal.field_target_id == "node:substrate.execution"
-    assert goal.competition_read == "not_in_competition"
+    assert worker._last_competition_read == "not_in_competition"
 
 
 def test_bridge_unknown_competition_is_unavailable_not_empty(monkeypatch):
     worker = _bridge_worker_at_threshold(monkeypatch, competing=None)
     goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
-    assert goal.competition_read == "unavailable"
-    assert goal.competing_refs == []
+    assert worker._last_competition_read == "unavailable"
 
 
 def test_bridge_kill_switch_never_reads_the_store(monkeypatch):
@@ -445,7 +443,7 @@ def test_bridge_kill_switch_never_reads_the_store(monkeypatch):
     frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
     goal, _ = _emit(worker, frame)
     assert goal.field_target_id == "node:substrate.execution"  # pre-bridge behaviour exactly
-    assert goal.competition_read == "unavailable"
+    assert worker._last_competition_read == "unavailable"
     worker._store.load_competing_loop_refs.assert_not_called()
 
 
@@ -453,7 +451,7 @@ def test_bridge_read_failure_is_logged_not_fatal(monkeypatch):
     worker = _bridge_worker_at_threshold(monkeypatch, competing=None)
     worker._store.load_competing_loop_refs.side_effect = RuntimeError("db down")
     goal, _ = _emit(worker, _frame([_target("node:substrate.execution", 0.9)]))
-    assert goal is not None and goal.competition_read == "unavailable"
+    assert goal is not None and worker._last_competition_read == "unavailable"
 
 
 def test_store_reader_parses_refs_and_treats_stale_as_unknown():
@@ -490,3 +488,53 @@ def test_store_reader_parses_refs_and_treats_stale_as_unknown():
     assert _store_with(None).load_competing_loop_refs(max_age_sec=120.0) is None
     empty = _store_with({"projection_json": {"frame": {"open_loops": []}}, "age_sec": 1.0})
     assert empty.load_competing_loop_refs(max_age_sec=120.0) == set()
+
+
+def test_bridge_unknown_reads_do_not_flap_the_streak(monkeypatch):
+    """Review finding: the competition read changes every ~30s and is None on
+    any error; if that flipped the winner, the 3-tick streak would never
+    fill and the producer would fire LESS than before. A None/empty read must
+    keep the current streak target."""
+    monkeypatch.setenv("ORION_GOAL_PROVENANCE_READS_COMPETITION", "true")
+    worker = _make_worker(monkeypatch, min_streak=3)
+    frame = _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
+    reads = [{"node:substrate.biometrics"}, None, set(), RuntimeError("db down"), {"node:substrate.biometrics"}]
+    worker._store.load_competing_loop_refs.side_effect = reads
+    goals = [worker._maybe_build_goal(frame)[0] for _ in reads]
+    assert [g.field_target_id for g in goals if g is not None] == ["node:substrate.biometrics"] * 3
+    assert worker._node_streak.target_id == "node:substrate.biometrics" and worker._node_streak.count == 5
+
+
+def test_bridge_store_reader_keeps_only_node_ids():
+    from contextlib import contextmanager
+
+    from app.store import AttentionRuntimeStore
+
+    class _Conn:
+        def execute(self, *_a, **_k):
+            row = {"projection_json": {"frame": {"open_loops": [{"source_refs": ["node:substrate.execution", "1757100000000-0", "1757100000001-0"]}]}}, "age_sec": 3.0}
+            class _R:
+                def mappings(self_inner):
+                    return self_inner
+                def first(self_inner):
+                    return row
+            return _R()
+
+    store = AttentionRuntimeStore.__new__(AttentionRuntimeStore)
+    class _Engine:
+        @contextmanager
+        def connect(self_inner):
+            yield _Conn()
+    store._engine = _Engine()
+    assert store.load_competing_loop_refs(max_age_sec=120.0) == {"node:substrate.execution"}
+
+
+def test_bridge_compose_forwards_the_kill_switch():
+    """Review finding: this service's compose lists env keys explicitly (no
+    env_file); a key missing from that list never reaches the container, so
+    the kill switch would be decorative."""
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    for key in ("ORION_GOAL_PROVENANCE_READS_COMPETITION", "ORION_GOAL_PROVENANCE_COMPETITION_MAX_AGE_SEC"):
+        assert f"- {key}=${{{key}" in compose, key

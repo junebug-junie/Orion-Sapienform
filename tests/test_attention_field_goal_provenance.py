@@ -208,3 +208,16 @@ def test_bridge_still_returns_none_when_no_candidate_qualifies():
     thin = _bridge_target("node:substrate.execution", 0.9)
     thin = thin.model_copy(update={"confidence_score": 0.2})
     assert top_node_substrate_target(_bridge_frame([thin]), competing={"node:substrate.execution"}) is None
+
+
+def test_bridge_hysteresis_keeps_the_current_target_on_unknown_or_empty_reads():
+    from orion.attention.field_attention.goal_provenance import top_node_substrate_target
+
+    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.biometrics", 0.6)])
+    cur = "node:substrate.biometrics"
+    assert top_node_substrate_target(frame, competing=None, current=cur).target_id == cur
+    assert top_node_substrate_target(frame, competing=set(), current=cur).target_id == cur
+    # a competing read naming a different qualified target still moves it
+    assert top_node_substrate_target(frame, competing={"node:substrate.execution"}, current=cur).target_id == "node:substrate.execution"
+    # a current target that is no longer qualified does not stick
+    assert top_node_substrate_target(frame, competing=None, current="node:substrate.chat").target_id == "node:substrate.execution"

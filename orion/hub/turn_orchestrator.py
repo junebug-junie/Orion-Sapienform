@@ -10,8 +10,8 @@ from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.cockpit_emit import (
     emit_motor_hop_from_claude_step,
+    emit_pre_motor_hops,
     emit_slice_a_finalize_hops,
-    emit_slice_a_pre_motor_hops,
     publish_cockpit_frames,
     timeline_complete_frame,
 )
@@ -610,13 +610,24 @@ async def execute_unified_turn(
         close: bool = False,
     ) -> None:
         await _deliver_cockpit_frames(
-            emit_slice_a_pre_motor_hops(
+            emit_pre_motor_hops(
                 correlation_id,
                 _thought_as_cockpit_dict(
                     thought_obj,
                     fallback_disposition=disposition,
                     fallback_reasons=reasons,
                 ),
+                association=(
+                    association.model_dump(mode="json")
+                    if hasattr(association, "model_dump")
+                    else dict(association or {})
+                ),
+                stance_inputs={
+                    "user_message": user_message,
+                    "session_id": session_id,
+                    "llm_profile": getattr(stance_req, "llm_profile", "brain"),
+                    "stance_inputs": dict(stance_req.stance_inputs or {}),
+                },
             ),
             bus=bus,
             cockpit_sink=cockpit_sink,

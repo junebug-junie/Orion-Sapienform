@@ -6,24 +6,19 @@ from typing import Any
 
 from orion.cockpit.builders import (
     gap_hop,
+    hop_from_association,
     hop_from_closure,
     hop_from_motor_step,
     hop_from_outcome,
     hop_from_run_artifact,
+    hop_from_stance_inputs,
     hop_from_thought,
 )
 from orion.cockpit.publish import publish_cockpit_hop
 from orion.cockpit.sequencer import advance_seq, next_seq, reset_seq
-from orion.schemas.cockpit_sighting import CockpitHopV1, CockpitStageV1
+from orion.schemas.cockpit_sighting import CockpitHopV1
 
 logger = logging.getLogger("orion.hub.cockpit_emit")
-
-PRE_MOTOR_GAP_STAGES: tuple[CockpitStageV1, ...] = (
-    "ingress",
-    "association",
-    "stance_inputs",
-    "motor_boot",
-)
 
 
 def _hop_frame(correlation_id: str, hop: CockpitHopV1) -> dict[str, Any]:
@@ -38,25 +33,56 @@ def timeline_complete_frame(correlation_id: str) -> dict[str, Any]:
     return {"kind": "cockpit_timeline_complete", "correlation_id": correlation_id}
 
 
-def emit_slice_a_pre_motor_hops(
+def emit_pre_motor_hops(
     correlation_id: str,
     thought: dict[str, Any],
+    *,
+    association: dict[str, Any],
+    stance_inputs: dict[str, Any],
 ) -> list[dict[str, Any]]:
     reset_seq(correlation_id)
     frames: list[dict[str, Any]] = []
-    for stage in PRE_MOTOR_GAP_STAGES:
-        hop = gap_hop(
-            correlation_id=correlation_id,
-            seq=next_seq(correlation_id),
-            stage=stage,
+    frames.append(
+        _hop_frame(
+            correlation_id,
+            gap_hop(
+                correlation_id=correlation_id,
+                seq=next_seq(correlation_id),
+                stage="ingress",
+                deferred_to="slice_c",
+            ),
         )
-        frames.append(_hop_frame(correlation_id, hop))
-    hop = hop_from_thought(
-        correlation_id=correlation_id,
-        seq=next_seq(correlation_id),
-        thought=thought,
     )
-    frames.append(_hop_frame(correlation_id, hop))
+    frames.append(
+        _hop_frame(
+            correlation_id,
+            hop_from_association(
+                correlation_id=correlation_id,
+                seq=next_seq(correlation_id),
+                association=association if isinstance(association, dict) else {},
+            ),
+        )
+    )
+    frames.append(
+        _hop_frame(
+            correlation_id,
+            hop_from_stance_inputs(
+                correlation_id=correlation_id,
+                seq=next_seq(correlation_id),
+                stance_inputs=stance_inputs if isinstance(stance_inputs, dict) else {},
+            ),
+        )
+    )
+    frames.append(
+        _hop_frame(
+            correlation_id,
+            hop_from_thought(
+                correlation_id=correlation_id,
+                seq=next_seq(correlation_id),
+                thought=thought,
+            ),
+        )
+    )
     return frames
 
 

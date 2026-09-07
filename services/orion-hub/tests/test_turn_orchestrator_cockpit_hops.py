@@ -13,30 +13,54 @@ _THOUGHT = {
     "tone": "calm",
 }
 
+_MIN_ASSOC: dict = {}
+_MIN_STANCE: dict = {}
 
-def test_orchestrator_emits_gap_then_stance_cockpit_hops():
-    from orion.hub.cockpit_emit import emit_slice_a_pre_motor_hops
 
-    frames = emit_slice_a_pre_motor_hops("corr-1", _THOUGHT)
-    kinds = [f.get("kind") for f in frames]
-    assert kinds.count("cockpit_hop") >= 5  # 4 gaps + stance
-    stages = [f["hop"]["stage"] for f in frames if f["kind"] == "cockpit_hop"]
-    assert stages[:4] == ["ingress", "association", "stance_inputs", "motor_boot"]
-    assert stages[4] == "stance_decision"
-    assert frames[0]["correlation_id"] == "corr-1"
-    assert frames[0]["hop"]["seq"] == 0
-    assert frames[4]["hop"]["seq"] == 4
-    assert frames[4]["hop"]["status"] == "ok"
-    assert frames[0]["hop"]["status"] == "gap"
+def test_orchestrator_emits_thick_pre_motor_hops():
+    from orion.hub.cockpit_emit import emit_pre_motor_hops
+
+    frames = emit_pre_motor_hops(
+        "corr-1",
+        _THOUGHT,
+        association={
+            "schema_version": "hub.association.bundle.v1",
+            "correlation_id": "corr-1",
+            "broadcast_stale": True,
+            "broadcast": None,
+            "execution_trajectory_slice": None,
+            "repair_bundle": None,
+            "read_source": "felt_state_reader",
+        },
+        stance_inputs={
+            "user_message": "hi",
+            "session_id": None,
+            "llm_profile": "brain",
+            "stance_inputs": {"user_message": "hi"},
+        },
+    )
+    hops = [f["hop"] for f in frames if f["kind"] == "cockpit_hop"]
+    stages = [h["stage"] for h in hops]
+    assert stages == ["ingress", "association", "stance_inputs", "stance_decision"]
+    assert hops[0]["status"] == "gap"
+    assert hops[0]["summary"]["deferred_to"] == "slice_c"
+    assert hops[1]["status"] == "ok"
+    assert hops[1]["raw"]["broadcast_stale"] is True
+    assert hops[2]["status"] == "ok"
+    assert hops[2]["raw"]["user_message"] == "hi"
+    assert hops[3]["stage"] == "stance_decision"
+    assert hops[3]["seq"] == 3
 
 
 def test_motor_hop_from_drained_claude_step_increments_seq():
     from orion.hub.cockpit_emit import (
         emit_motor_hop_from_claude_step,
-        emit_slice_a_pre_motor_hops,
+        emit_pre_motor_hops,
     )
 
-    emit_slice_a_pre_motor_hops("corr-1", _THOUGHT)
+    emit_pre_motor_hops(
+        "corr-1", _THOUGHT, association=_MIN_ASSOC, stance_inputs=_MIN_STANCE
+    )
     frame = emit_motor_hop_from_claude_step(
         "corr-1",
         {
@@ -50,17 +74,19 @@ def test_motor_hop_from_drained_claude_step_increments_seq():
     assert frame["kind"] == "cockpit_hop"
     assert frame["correlation_id"] == "corr-1"
     assert frame["hop"]["stage"] == "motor_hop"
-    assert frame["hop"]["seq"] == 5
+    assert frame["hop"]["seq"] == 4
     assert frame["hop"]["summary"]["step_index"] == 2
 
 
 def test_motor_hop_helper_ignores_non_claude_step():
     from orion.hub.cockpit_emit import (
         emit_motor_hop_from_claude_step,
-        emit_slice_a_pre_motor_hops,
+        emit_pre_motor_hops,
     )
 
-    emit_slice_a_pre_motor_hops("corr-1", _THOUGHT)
+    emit_pre_motor_hops(
+        "corr-1", _THOUGHT, association=_MIN_ASSOC, stance_inputs=_MIN_STANCE
+    )
     assert emit_motor_hop_from_claude_step("corr-1", {"kind": "other"}) is None
 
 
@@ -68,10 +94,12 @@ def test_finalize_hops_from_run_artifact_and_timeline_complete():
     from orion.hub.cockpit_emit import (
         emit_motor_hop_from_claude_step,
         emit_slice_a_finalize_hops,
-        emit_slice_a_pre_motor_hops,
+        emit_pre_motor_hops,
     )
 
-    emit_slice_a_pre_motor_hops("corr-1", _THOUGHT)
+    emit_pre_motor_hops(
+        "corr-1", _THOUGHT, association=_MIN_ASSOC, stance_inputs=_MIN_STANCE
+    )
     emit_motor_hop_from_claude_step(
         "corr-1",
         {
@@ -93,8 +121,8 @@ def test_finalize_hops_from_run_artifact_and_timeline_complete():
     hops = [f for f in frames if f.get("kind") == "cockpit_hop"]
     stages = [f["hop"]["stage"] for f in hops]
     assert stages == ["draft_appraisal", "finalize"]
-    assert hops[0]["hop"]["seq"] == 6
-    assert hops[1]["hop"]["seq"] == 7
+    assert hops[0]["hop"]["seq"] == 5
+    assert hops[1]["hop"]["seq"] == 6
     assert frames[-1] == {
         "kind": "cockpit_timeline_complete",
         "correlation_id": "corr-1",
@@ -121,9 +149,11 @@ def test_finalize_hops_emit_outcome_when_present():
 
 @pytest.mark.asyncio
 async def test_publish_cockpit_frames_fail_open():
-    from orion.hub.cockpit_emit import emit_slice_a_pre_motor_hops, publish_cockpit_frames
+    from orion.hub.cockpit_emit import emit_pre_motor_hops, publish_cockpit_frames
 
-    frames = emit_slice_a_pre_motor_hops("corr-pub", _THOUGHT)
+    frames = emit_pre_motor_hops(
+        "corr-pub", _THOUGHT, association=_MIN_ASSOC, stance_inputs=_MIN_STANCE
+    )
     bus = MagicMock()
     bus.publish = AsyncMock(side_effect=RuntimeError("bus down"))
     await publish_cockpit_frames(bus, frames)
@@ -131,9 +161,11 @@ async def test_publish_cockpit_frames_fail_open():
 
 @pytest.mark.asyncio
 async def test_publish_cockpit_frames_skips_when_bus_missing():
-    from orion.hub.cockpit_emit import emit_slice_a_pre_motor_hops, publish_cockpit_frames
+    from orion.hub.cockpit_emit import emit_pre_motor_hops, publish_cockpit_frames
 
-    frames = emit_slice_a_pre_motor_hops("corr-nobus", _THOUGHT)
+    frames = emit_pre_motor_hops(
+        "corr-nobus", _THOUGHT, association=_MIN_ASSOC, stance_inputs=_MIN_STANCE
+    )
     await publish_cockpit_frames(None, frames)
 
 
@@ -153,7 +185,7 @@ async def test_deliver_cockpit_frames_fail_open_on_sink_error():
 
 @pytest.mark.asyncio
 async def test_pre_motor_ws_send_failure_does_not_abort_turn():
-    from orion.hub.cockpit_emit import emit_slice_a_pre_motor_hops
+    from orion.hub.cockpit_emit import emit_pre_motor_hops
     from orion.hub.turn_orchestrator import run_unified_turn
 
     class _BoomOnPreMotor:
@@ -174,7 +206,14 @@ async def test_pre_motor_ws_send_failure_does_not_abort_turn():
             holder["run"] = _run_dump()
         sink = kwargs.get("cockpit_sink")
         if sink is not None:
-            await sink(emit_slice_a_pre_motor_hops("corr-ws", _THOUGHT))
+            await sink(
+                emit_pre_motor_hops(
+                    "corr-ws",
+                    _THOUGHT,
+                    association=_MIN_ASSOC,
+                    stance_inputs=_MIN_STANCE,
+                )
+            )
         return _SUCCESS_FINAL
 
     with patch("orion.hub.turn_orchestrator.execute_unified_turn", _fake_execute):
@@ -219,7 +258,7 @@ async def test_run_unified_turn_converts_drained_claude_step_to_cockpit_hop():
         }
     ]
 
-    from orion.hub.cockpit_emit import emit_slice_a_pre_motor_hops
+    from orion.hub.cockpit_emit import emit_pre_motor_hops
 
     async def _fake_execute(**kwargs):
         holder = kwargs.get("cockpit_run_holder")
@@ -232,7 +271,14 @@ async def test_run_unified_turn_converts_drained_claude_step_to_cockpit_hop():
             }
         sink = kwargs.get("cockpit_sink")
         if sink is not None:
-            await sink(emit_slice_a_pre_motor_hops("corr-ws", _THOUGHT))
+            await sink(
+                emit_pre_motor_hops(
+                    "corr-ws",
+                    _THOUGHT,
+                    association=_MIN_ASSOC,
+                    stance_inputs=_MIN_STANCE,
+                )
+            )
         queue = kwargs.get("harness_step_queue")
         if queue is not None:
             queue.put_nowait(
@@ -262,7 +308,7 @@ async def test_run_unified_turn_converts_drained_claude_step_to_cockpit_hop():
     kinds = [f.get("kind") for f in sent]
     assert "claude_step" in kinds
     hop_stages = [f["hop"]["stage"] for f in sent if f.get("kind") == "cockpit_hop"]
-    assert hop_stages[:4] == ["ingress", "association", "stance_inputs", "motor_boot"]
+    assert hop_stages[:4] == ["ingress", "association", "stance_inputs", "stance_decision"]
     assert "stance_decision" in hop_stages
     assert "motor_hop" in hop_stages
     assert "draft_appraisal" in hop_stages or "finalize" in hop_stages

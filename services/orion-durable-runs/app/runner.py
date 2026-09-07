@@ -340,15 +340,17 @@ class DurableRunner:
         """(thread_id, next_node, checkpoint_ts) for every thread whose latest
         checkpoint still has a next node. Newest checkpoint per thread wins
         (`alist` yields newest first)."""
-        seen: set[str] = set()
-        out: list[tuple[str, str, datetime | None]] = []
+        # MATERIALISE the listing before asking for any state. The Postgres
+        # saver serialises its cursor use behind one asyncio.Lock; `alist` is
+        # an async generator that holds that lock while it yields, and
+        # `aget_state` needs the same lock -- calling one inside the other
+        # deadlocked the runner at boot the first time a checkpoint existed
+        # (live, 2026-09-07 01:16Z: "Waiting for application startup" forever,
+        # zero Postgres activity). Newest checkpoint per thread wins.
+        newest_ts: dict[str, datetime | None] = {}
         async for cp in self._checkpointer.alist(None):
             thread_id = str(((cp.config or {}).get("configurable") or {}).get("thread_id") or "")
-            if not thread_id or thread_id in seen:
-                continue
-            seen.add(thread_id)
-            snap = await self._graph.aget_state(self._config(thread_id))
-            if not snap or not snap.next:
+            if not thread_id or thread_id in newest_ts:
                 continue
             ts_raw = (cp.checkpoint or {}).get("ts")
             ts = None
@@ -357,6 +359,12 @@ class DurableRunner:
                     ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
                 except ValueError:
                     ts = None
+            newest_ts[thread_id] = ts
+        out: list[tuple[str, str, datetime | None]] = []
+        for thread_id, ts in newest_ts.items():
+            snap = await self._graph.aget_state(self._config(thread_id))
+            if not snap or not snap.next:
+                continue
             out.append((thread_id, str(snap.next[0]), ts))
         return out
 

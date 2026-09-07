@@ -209,3 +209,64 @@ def test_durable_runs_trend_computes_cumulative_completions_per_day_deduped(monk
         {"day": "2026-09-07", "cumulative_completed": 2},
     ]
     assert out["milestones"] == hub_surface.HUB_SURFACE_MILESTONES
+
+
+def test_recent_attention_route_reflects_fresh_rows(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"process": "cortex_turn", "reason_narrative": "just talked to Juniper", "generated_at": now},
+    ]
+    monkeypatch.setattr(hub_surface, "_engine", lambda: _Engine(rows))
+    out = hub_surface.recent_attention()
+    assert out["stale"] is False
+    assert len(out["items"]) == 1
+    assert out["items"][0]["process"] == "cortex_turn"
+    assert out["items"][0]["narrative"] == "just talked to Juniper"
+    assert out["items"][0]["age_label"] == "moments ago"
+
+
+def test_recent_attention_route_reads_as_stale_when_nothing_recent(monkeypatch):
+    monkeypatch.setattr(hub_surface, "_engine", lambda: _Engine([]))
+    out = hub_surface.recent_attention()
+    assert out["stale"] is True
+    assert out["items"] == []
+
+
+def test_recent_attention_route_fails_open_on_db_error(monkeypatch):
+    # Review finding (2026-09-07): hub-surface.js's loadAll() awaits every
+    # panel in one Promise.all, so an unhandled exception here would blank
+    # out the bridge/durable-runs/activity panels too, not just this one.
+    class _ExplodingEngine:
+        def connect(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(hub_surface, "_engine", lambda: _ExplodingEngine())
+    out = hub_surface.recent_attention()
+    assert out["stale"] is True
+    assert out["items"] == []
+    assert out["mirrors_cortex_exec_defaults"] is True
+
+
+def test_recent_attention_route_discloses_mirrored_defaults(monkeypatch):
+    monkeypatch.setattr(hub_surface, "_engine", lambda: _Engine([]))
+    out = hub_surface.recent_attention()
+    assert out["mirrors_cortex_exec_defaults"] is True
+
+
+def test_recent_attention_route_uses_the_same_pure_builder_cortex_exec_uses():
+    # Not a mock, not a reimplementation -- this is the actual shared function
+    # (orion.substrate.recent_attention_cue.build_recent_attention_cue), the
+    # same one services/orion-cortex-exec/app/recent_attention_reader.py
+    # calls. Import identity, not just behavior, is the point: this route can
+    # never silently drift from what a real chat turn's prompt sees.
+    from orion.substrate.recent_attention_cue import build_recent_attention_cue
+
+    assert hub_surface.build_recent_attention_cue is build_recent_attention_cue
+
+
+def test_recent_attention_query_sql_is_the_shared_constant(monkeypatch):
+    engine = _Engine([])
+    monkeypatch.setattr(hub_surface, "_engine", lambda: engine)
+    hub_surface.recent_attention()
+    executed = engine.last_conn.executed_sql[0]
+    assert executed == hub_surface.RECENT_ATTENTION_QUERY_SQL

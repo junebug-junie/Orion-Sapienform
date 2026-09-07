@@ -3,7 +3,25 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-__all__ = ["build_recent_attention_cue"]
+__all__ = ["RECENT_ATTENTION_QUERY_SQL", "build_recent_attention_cue"]
+
+# Shared with every reader of this cue (services/orion-cortex-exec/app/
+# recent_attention_reader.py, services/orion-hub/scripts/hub_surface_routes.py)
+# so the query itself -- not just the row-shaping logic below -- cannot
+# silently drift between "what a real chat turn sees" and "what Juniper's
+# dashboard shows". A plain string, not an executed query: this module stays
+# I/O-free: each reader runs it with its own SQLAlchemy engine/connection and
+# a `:limit` bind param. The `reason_narrative <> ''` filter runs BEFORE
+# `LIMIT` deliberately (2026-09-07 review finding on the original PR): an
+# empty-narrative burst in the most recent rows must not starve the cue of
+# real narrated rows sitting just past the window.
+RECENT_ATTENTION_QUERY_SQL = """
+    SELECT process, reason_narrative, generated_at
+    FROM substrate_attention_schema
+    WHERE reason_narrative <> ''
+    ORDER BY generated_at DESC
+    LIMIT :limit
+"""
 
 
 def _age_label(age_sec: float) -> str:

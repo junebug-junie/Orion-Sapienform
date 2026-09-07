@@ -12,6 +12,8 @@
     chartDurable: document.getElementById('chartDurable'),
     chartDurableLegend: document.getElementById('chartDurableLegend'),
     activityLog: document.getElementById('activityLog'),
+    recentAttentionStalePill: document.getElementById('recentAttentionStalePill'),
+    recentAttentionItems: document.getElementById('recentAttentionItems'),
   };
 
   // Only `top_down_override` needs a special label -- every other key is
@@ -208,6 +210,36 @@
     `;
   }
 
+  // ---- live: recent-attention ambient cue ---------------------------------
+
+  function renderRecentAttention(data) {
+    const pill = els.recentAttentionStalePill;
+    const items = data.items || [];
+    if (data.stale) {
+      pill.className = 'text-[11px] font-mono px-2 py-1 rounded border whitespace-nowrap flex-shrink-0 border-gray-700 bg-gray-950 text-gray-400';
+      pill.textContent = 'stale — nothing recent to notice';
+    } else {
+      pill.className = 'text-[11px] font-mono px-2 py-1 rounded border whitespace-nowrap flex-shrink-0 border-green-700 bg-green-900/30 text-green-300';
+      pill.textContent = 'fresh';
+    }
+    if (!items.length) {
+      els.recentAttentionItems.innerHTML = '<div class="text-gray-600">Nothing in this window — quiet, not broken.</div>';
+      return;
+    }
+    els.recentAttentionItems.innerHTML = items
+      .map((it) => {
+        const color = LANE_COLOR[it.process] || '#9ca3af';
+        return `<div class="flex items-start gap-3 py-1.5 border-b border-gray-800 last:border-0">
+          <span class="font-mono text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" style="background:${color}22; color:${color}">${escapeHtml(it.process)}</span>
+          <div class="flex-1">
+            <div class="text-[12.5px] text-gray-300">${escapeHtml(it.narrative)}</div>
+            <div class="text-[11px] text-gray-600">${escapeHtml(it.age_label)}</div>
+          </div>
+        </div>`;
+      })
+      .join('');
+  }
+
   // ---- charts ---------------------------------------------------------
 
   function svgLine(x1, y1, x2, y2, extra) {
@@ -337,17 +369,19 @@
   async function loadAll() {
     els.error.classList.add('hidden');
     try {
-      const [bridge, bridgeTrend, durable, durableTrend, activity] = await Promise.all([
+      const [bridge, bridgeTrend, durable, durableTrend, recentAttention, activity] = await Promise.all([
         fetchJson('/api/hub-surface/bridge'),
         fetchJson('/api/hub-surface/bridge/trend'),
         fetchJson('/api/hub-surface/durable-runs'),
         fetchJson('/api/hub-surface/durable-runs/trend'),
+        fetchJson('/api/hub-surface/recent-attention'),
         fetchJson('/api/hub-surface/activity?limit=40'),
       ]);
       renderBridge(bridge);
       renderBridgeTrend(bridgeTrend);
       renderDurable(durable);
       renderDurableTrend(durableTrend);
+      renderRecentAttention(recentAttention);
       renderActivity(activity);
     } catch (err) {
       showError(err);

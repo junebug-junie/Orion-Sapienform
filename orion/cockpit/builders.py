@@ -150,30 +150,13 @@ def hop_from_stance_inputs(
     stance_inputs: dict[str, Any],
 ) -> CockpitHopV1:
     user_message = str(stance_inputs.get("user_message") or "")
-    summary: dict[str, Any] = {"user_message_len": len(user_message)}
-    # Ambient, not a status report (see recent_attention_cue.py's docstring):
-    # surfaced here only as an inspectable count/staleness pair, same posture
-    # as everything else in this summary -- Juniper can see what Oríon's
-    # stance synthesis saw without it becoming a mandatory field to narrate.
-    # NOTE: `stance_inputs` here is turn_orchestrator.py's outer wrapper
-    # ({"user_message":..., "session_id":..., "llm_profile":...,
-    # "stance_inputs": <the real per-turn dict build_chat_stance_inputs()
-    # returned>}) -- the real dict `_inject_recent_attention_to_inputs`
-    # writes into is one level deeper, at stance_inputs["stance_inputs"].
-    nested_inputs = stance_inputs.get("stance_inputs")
-    nested_inputs = nested_inputs if isinstance(nested_inputs, dict) else {}
-    recent_attention = nested_inputs.get("recent_attention")
-    if isinstance(recent_attention, dict) and recent_attention:
-        items = recent_attention.get("items")
-        summary["recent_attention_items"] = len(items) if isinstance(items, list) else 0
-        summary["recent_attention_stale"] = bool(recent_attention.get("stale"))
     return _base_hop(
         correlation_id=correlation_id,
         seq=seq,
         stage="stance_inputs",
         visor_line=f"stance inputs · {len(user_message)} chars",
         status="ok",
-        summary=summary,
+        summary={"user_message_len": len(user_message)},
         raw=dict(stance_inputs),
     )
 

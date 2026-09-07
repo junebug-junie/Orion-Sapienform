@@ -277,6 +277,12 @@ def durable_runs(minutes: int = Query(DEFAULT_WINDOW_MINUTES)) -> dict[str, Any]
             .mappings()
             .all()
         )
+        # Deliberately ALL-TIME, not scoped to `window` -- the example exists
+        # to show the single most illustrative resume ever recorded, not
+        # "whichever run happens to have a transition in the last hour" (a
+        # short window would almost never show one at all). Kept honest in
+        # the response as `example_scope: "all_time"` so a short-window
+        # caller isn't left thinking the two numbers describe the same span.
         resume_rows = (
             conn.execute(
                 text(
@@ -333,6 +339,7 @@ def durable_runs(minutes: int = Query(DEFAULT_WINDOW_MINUTES)) -> dict[str, Any]
         "kickoff_via_cortex": settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
         **summarize_durable_lifecycle([dict(r) for r in lifecycle_rows]),
         "example": example,
+        "example_scope": "all_time",
     }
 
 
@@ -374,7 +381,7 @@ def durable_runs_trend() -> dict[str, Any]:
 
 
 @router.get("/activity")
-def activity(limit: int = Query(50, le=500)) -> dict[str, Any]:
+def activity(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
     """Last `limit` rows across all attention-schema lanes, newest first --
     `reason_narrative` is already written to be a plain sentence, rendered
     directly with no per-lane translation logic."""

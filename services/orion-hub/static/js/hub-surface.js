@@ -14,13 +14,15 @@
     activityLog: document.getElementById('activityLog'),
   };
 
-  const BRANCH_LABELS = {
-    top_down_override: 'top_down_override (fired)',
-    goal_matched_no_loop: 'goal_matched_no_loop',
-    goal_target_already_winning: 'goal_target_already_winning',
-    no_open_loops: 'no_open_loops',
-    bias_did_not_flip_winner: 'bias_did_not_flip_winner',
-  };
+  // Only `top_down_override` needs a special label -- every other key is
+  // shown verbatim so a value this map doesn't know about (a NEW enum member
+  // added to VoluntaryOverrideAbsentReasonV1, orion/schemas/attention_frame.py)
+  // still renders as itself instead of silently vanishing from the page.
+  const BRANCH_LABELS = { top_down_override: 'top_down_override (fired)' };
+  // Defect-class values per that schema's own comments: not a normal outcome,
+  // should read as an alarm the moment it's non-zero, not blend into the gray
+  // "just another branch" rows.
+  const DEFECT_BRANCHES = new Set(['combiner_error', 'absence_unclassified']);
   const BRANCH_COLOR = {
     top_down_override: '#2dd4bf', // teal-400 -- the one branch that's the actual signal
   };
@@ -52,8 +54,19 @@
   function renderBridge(data) {
     const branches = data.branches || {};
     const baseline = data.baseline || {};
-    const order = ['top_down_override', 'goal_matched_no_loop', 'goal_target_already_winning', 'no_open_loops', 'bias_did_not_flip_winner'];
-    const present = order.filter((k) => k in branches || k in baseline);
+    // Every key the backend actually returned, not a fixed guess at what
+    // exists -- VoluntaryOverrideAbsentReasonV1 has values this page has
+    // never seen fire; if one starts firing it must show up here, not
+    // vanish. top_down_override first (it's the one branch that's the
+    // actual signal), defect-class values next (they're an alarm regardless
+    // of size), everything else by descending live share.
+    const present = Array.from(new Set([...Object.keys(branches), ...Object.keys(baseline)])).sort((a, b) => {
+      if (a === 'top_down_override') return -1;
+      if (b === 'top_down_override') return 1;
+      const aDefect = DEFECT_BRANCHES.has(a), bDefect = DEFECT_BRANCHES.has(b);
+      if (aDefect !== bDefect) return aDefect ? -1 : 1;
+      return (branches[b] ?? 0) - (branches[a] ?? 0);
+    });
     if (data.sample_count === 0) {
       els.bridgeBranches.innerHTML = `<div class="text-gray-500">No self-model rows in the last ${Math.round(data.window_minutes / 60)}h — nothing to summarize yet.</div>`;
       return;
@@ -64,11 +77,13 @@
         const before = baseline[k];
         const after = branches[k] ?? 0;
         const isKey = k === 'top_down_override';
-        const color = BRANCH_COLOR[k] || '#9ca3af';
+        const isDefect = DEFECT_BRANCHES.has(k);
+        const color = isDefect ? '#f87171' : (BRANCH_COLOR[k] || '#9ca3af');
+        const labelClass = isKey ? 'text-teal-300' : (isDefect ? 'text-red-300' : 'text-gray-300');
         return `
         <div class="grid gap-2 py-2 border-b border-gray-800 last:border-0" style="grid-template-columns: 1fr 160px">
           <div>
-            <div class="font-mono text-[12px] ${isKey ? 'text-teal-300' : 'text-gray-300'}">${isKey ? '★ ' : ''}${escapeHtml(BRANCH_LABELS[k] || k)}</div>
+            <div class="font-mono text-[12px] ${labelClass}">${isKey ? '★ ' : ''}${isDefect ? '⚠ ' : ''}${escapeHtml(BRANCH_LABELS[k] || k)}</div>
             <div class="relative h-2 bg-gray-800 rounded mt-1 overflow-hidden">
               ${before != null ? `<div class="absolute inset-y-0 left-0 bg-gray-600 opacity-40 rounded" style="width:${(before / max) * 100}%"></div>` : ''}
               <div class="absolute inset-y-0 left-0 rounded" style="width:${(after / max) * 100}%; background:${color}; opacity:.9"></div>
@@ -180,7 +195,7 @@
 
     return `
       <div class="rounded border border-gray-800 bg-gray-950 p-3 mb-3">
-        <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Concrete instance — most-retried run</div>
+        <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Concrete instance — most-retried run, all-time (not scoped to the window above)</div>
         <div class="font-mono text-[12px] text-teal-300 mb-2">${escapeHtml(example.run_id)}</div>
         <div class="flex items-start gap-0 overflow-x-auto pb-1">${stepsHtml}</div>
         <p class="text-[11.5px] text-gray-400 mt-3 leading-relaxed">

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
 from orion.harness.runner import HarnessRunner
 from orion.harness.tests.fixtures import make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -46,6 +47,14 @@ async def test_harness_runner_publishes_run_step_events() -> None:
     result = await runner.run(request)
 
     assert result.draft_text == "draft"
-    assert len(published) == 1
-    assert published[0]["correlation_id"] == "c-step-stream"
-    assert published[0]["step_index"] == 0
+    assert len(published) == 2
+
+    boot = published[0]
+    assert boot["correlation_id"] == "c-step-stream"
+    assert boot["step_index"] == -1
+    assert boot["step"]["_cockpit"] == COCKPIT_MOTOR_BOOT_MARKER
+    assert boot["step"]["prompt_char_len"] > 0
+
+    fcc_step = published[1]
+    assert fcc_step["correlation_id"] == "c-step-stream"
+    assert fcc_step["step_index"] == 0

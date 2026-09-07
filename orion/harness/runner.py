@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     is_context_overflow_text,
@@ -332,6 +333,25 @@ class HarnessRunner:
             recent_turns=list(getattr(request, "recent_turns", None) or []),
             situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
         )
+
+        try:
+            await publish_harness_run_step(
+                self.bus,
+                correlation_id=request.correlation_id,
+                step_index=-1,
+                step={
+                    "_cockpit": COCKPIT_MOTOR_BOOT_MARKER,
+                    "prompt": prompt,
+                    "prompt_char_len": len(prompt),
+                },
+                channel=self.step_channel,
+            )
+        except Exception:
+            logger.warning(
+                "harness motor_boot cockpit step publish failed corr=%s",
+                request.correlation_id,
+                exc_info=True,
+            )
 
         collector = HarnessGrammarCollector(
             node_name=self.node_name,

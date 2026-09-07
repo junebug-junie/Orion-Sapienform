@@ -66,6 +66,27 @@ def test_render_orders_hops_and_marks_gap():
     assert "cockpit-hop-gap" in html or 'status="gap"' in html or 'data-status="gap"' in html
 
 
+def test_inspector_shows_prompt_section_for_motor_boot():
+    html = _node_call(
+        "renderFixture",
+        {
+            "hops": [
+                {
+                    "seq": 4,
+                    "stage": "motor_boot",
+                    "status": "ok",
+                    "visor_line": "motor_boot · 12 chars",
+                    "summary": {"prompt_char_len": 12},
+                    "raw": {"prompt": "HELLO PREFIX", "prompt_char_len": 12},
+                },
+            ],
+            "selectedSeq": 4,
+        },
+    )
+    assert 'data-cockpit-section="prompt"' in html or "Prompt/Prefix" in html
+    assert "HELLO PREFIX" in html
+
+
 def test_render_fixture_shows_selected_raw_and_visor():
     html = _node_call(
         "renderFixture",

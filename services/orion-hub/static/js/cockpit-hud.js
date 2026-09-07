@@ -143,6 +143,15 @@
         return '<div class="cockpit-inspector-row"><span>' + escapeText(key) + '</span><span>' + escapeText(String(summary[key])) + '</span></div>';
       }).join('')
       : '<div class="cockpit-inspector-muted">No summary fields.</div>';
+    const promptText = (raw && typeof raw.prompt === 'string') ? raw.prompt : '';
+    const promptSection = promptText
+      ? (
+          '<div class="cockpit-inspector-section" data-cockpit-section="prompt">' +
+            '<div class="cockpit-inspector-section-title">Prompt/Prefix</div>' +
+            '<pre class="cockpit-inspector-prompt">' + escapeText(promptText) + '</pre>' +
+          '</div>'
+        )
+      : '';
     return [
       '<div class="cockpit-inspector" id="cockpitInspector">',
       '<div class="cockpit-inspector-meta">',
@@ -151,6 +160,7 @@
       '<div data-status="' + escapeHtml(hop.status || '') + '">' + escapeText(hop.status || '') + '</div>',
       '</div>',
       '<div class="cockpit-inspector-summary">' + summaryRows + '</div>',
+      promptSection,
       '<pre class="cockpit-inspector-raw">' + escapeText(JSON.stringify(raw, null, 2)) + '</pre>',
       '</div>',
     ].join('');

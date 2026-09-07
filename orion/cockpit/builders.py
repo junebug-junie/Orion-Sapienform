@@ -16,6 +16,7 @@ def _base_hop(
     status: str,
     summary: dict[str, Any] | None = None,
     raw: dict[str, Any] | None = None,
+    producer: str = _HUB_PRODUCER,
 ) -> CockpitHopV1:
     return CockpitHopV1(
         correlation_id=correlation_id,
@@ -25,7 +26,67 @@ def _base_hop(
         status=status,  # type: ignore[arg-type]
         summary=summary or {},
         raw=raw or {},
-        producer=_HUB_PRODUCER,
+        producer=producer,
+    )
+
+
+def hop_from_association(
+    *,
+    correlation_id: str,
+    seq: int,
+    association: dict[str, Any],
+) -> CockpitHopV1:
+    stale = bool(association.get("broadcast_stale"))
+    label = "stale" if stale else "fresh"
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage="association",
+        visor_line=f"association · {label}",
+        status="ok",
+        summary={
+            "broadcast_stale": stale,
+            "read_source": association.get("read_source"),
+        },
+        raw=dict(association),
+    )
+
+
+def hop_from_stance_inputs(
+    *,
+    correlation_id: str,
+    seq: int,
+    stance_inputs: dict[str, Any],
+) -> CockpitHopV1:
+    user_message = str(stance_inputs.get("user_message") or "")
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage="stance_inputs",
+        visor_line=f"stance inputs · {len(user_message)} chars",
+        status="ok",
+        summary={"user_message_len": len(user_message)},
+        raw=dict(stance_inputs),
+    )
+
+
+def hop_from_motor_boot(
+    *,
+    correlation_id: str,
+    seq: int,
+    prompt: str,
+    producer: str = "orion-harness-governor",
+) -> CockpitHopV1:
+    text = prompt if isinstance(prompt, str) else ""
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage="motor_boot",
+        visor_line=f"motor_boot · {len(text)} chars",
+        status="ok",
+        summary={"prompt_char_len": len(text)},
+        raw={"prompt": text, "prompt_char_len": len(text)},
+        producer=producer,
     )
 
 

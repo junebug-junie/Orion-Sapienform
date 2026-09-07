@@ -1,7 +1,7 @@
 # Orion Cockpit POV — Soft HUD turn sighting
 
 **Date:** 2026-09-06  
-**Status:** Slice A planned/landed; B/C follow-on plans  
+**Status:** Slice A landed; Slice B planned; C stubbed 
 **Branch intent:** `docs/cockpit-pov-design`  
 **Related:** Unified Orion turn (`docs/superpowers/specs/2026-07-05-unified-orion-turn-design.md`), fused Turn Trace (`services/orion-hub/scripts/chat_turn_trace_routes.py`), harness step bus (`orion:harness:run:step`)
 
@@ -239,4 +239,4 @@ Exact file list locked in the implementation plan.
 
 ## Recommended next step
 
-Invoke **writing-plans** for Slice A (spine + Soft HUD modal + first real hop producers), with explicit follow-on plan hooks for Slice B and C so thickness is scheduled, not optional.
+Execute **Slice B** plan: `docs/superpowers/plans/2026-09-06-orion-cockpit-pov-slice-b.md`. After B lands, invoke **writing-plans** for Slice C (`docs/superpowers/plans/2026-09-06-orion-cockpit-pov-slice-c-stub.md`).

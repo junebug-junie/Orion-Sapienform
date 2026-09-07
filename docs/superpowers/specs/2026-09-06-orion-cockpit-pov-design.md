@@ -105,7 +105,7 @@ Each hop includes at least:
 
 ### Canonical stages
 
-1. **ingress** — user message, attachments, observation molecule
+1. **ingress** — user message, attachments metadata, turn intake (real hop; observation molecule publish still deferred)
 2. **pre_turn_appraisal** — Hub boundary progress (started / ok / failed / skipped) for repair_pressure etc.
 3. **association** — attention / open loops / repair / trajectory slice (emitted as soon as built; hollow-fresh called out when `signal_count=0`)
 4. **thought_rpc** — Thought stance RPC started + done (elapsed / failure); Mind quality when present on the reply
@@ -121,7 +121,7 @@ Each hop includes at least:
 
 Missing instrumentation shows as an explicit **gap** bead — never a fabricated hop.
 
-**Pre-motor progress (Rank-1, live):** Soft HUD streams honest Hub-boundary hops for dying appraisal / Thought / Mind / felt-state phases while the unified turn waits. This is not Slice C ingress thickness — it is live sighting of timeouts, hollow association, and Mind fallback flags when Hub actually has them.
+**Pre-motor progress (Rank-1, live):** Soft HUD streams honest Hub-boundary hops for dying appraisal / Thought / Mind / felt-state phases while the unified turn waits. Ingress is a real user-intake hop; remaining Slice C thickness is observation-molecule publish + optional thicker attachments — not another ingress gap.
 
 ### Producers (emit as the turn runs)
 

@@ -74,6 +74,43 @@ def _association_signal_count(association: dict[str, Any]) -> int | None:
     return None
 
 
+def hop_from_ingress(
+    *,
+    correlation_id: str,
+    seq: int,
+    ingress: dict[str, Any],
+) -> CockpitHopV1:
+    """User-text / turn-intake hop. Honest about observation publish when omitted."""
+    raw = dict(ingress) if isinstance(ingress, dict) else {}
+    user_message = str(raw.get("user_message") or "")
+    msg_len = len(user_message)
+    visor_line = f"ingress · {msg_len} chars" if msg_len else "ingress · empty"
+    try:
+        attachment_count = int(raw.get("attachment_count") or 0)
+    except (TypeError, ValueError):
+        attachment_count = 0
+    summary: dict[str, Any] = {
+        "user_message_len": msg_len,
+        "attachment_count": attachment_count,
+    }
+    if "session_id" in raw:
+        summary["session_id"] = raw.get("session_id")
+    mode = raw.get("mode")
+    if mode is None:
+        mode = raw.get("client_mode")
+    if mode is not None:
+        summary["mode"] = mode
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage="ingress",
+        visor_line=visor_line,
+        status="ok",
+        summary=summary,
+        raw=raw,
+    )
+
+
 def hop_from_association(
     *,
     correlation_id: str,

@@ -43,6 +43,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "harness.verdict.molecule.v1": "HarnessTurnTraceSQL",
     "harness.turn.outcome.v1": "HarnessTurnTraceSQL",
     "harness.post_turn.closure.v1": "HarnessTurnTraceSQL",
+    "cockpit.hop.v1": "CockpitTurnSightingSQL",
     "metacognition.tick.v1": "MetacognitionTickSQL",
     "orion.metacog.trigger.v1": "MetacogTriggerSQL",
     "metacognitive.trace.v1": "MetacognitiveTraceSQL",
@@ -156,6 +157,7 @@ class Settings(BaseSettings):
             "orion:harness:verdict:artifact",
             "orion:substrate:turn_outcome",
             "orion:substrate:post_turn_closure",
+            "orion:cockpit:hop",
             "orion:metacognition:tick",
             "orion:equilibrium:metacog:trigger",
             "orion:metacog:trace",
@@ -579,6 +581,14 @@ class Settings(BaseSettings):
         # than merges.
         if "orion:attention:schema" not in channels:
             channels.append("orion:attention:schema")
+        # Same guarantee again, same reason. cockpit.hop.v1 is a
+        # code-default route with no feature toggle; SQL_WRITER_SUBSCRIBE_
+        # CHANNELS replaces rather than merges -- a stale already-deployed
+        # operator .env that predates this channel would otherwise leave
+        # the route/model/table all correct and the write silently going
+        # nowhere.
+        if "orion:cockpit:hop" not in channels:
+            channels.append("orion:cockpit:hop")
         # Same guarantee, same reason (durable.run.state.v1 is a code-default
         # route with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:durable:run:state" not in channels:

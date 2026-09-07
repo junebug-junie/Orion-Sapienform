@@ -8,6 +8,13 @@ from typing import Any, Awaitable, Callable, Protocol
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
+from orion.hub.cockpit_emit import (
+    emit_motor_hop_from_claude_step,
+    emit_slice_a_finalize_hops,
+    emit_slice_a_pre_motor_hops,
+    publish_cockpit_frames,
+    timeline_complete_frame,
+)
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.situational.context import build_situation_for_ctx, hub_settings_to_runtime_namespace
@@ -473,6 +480,36 @@ async def _build_situation_prompt_fragment(
         return None
 
 
+def _thought_as_cockpit_dict(
+    thought: ThoughtEventV1 | None,
+    *,
+    fallback_disposition: str,
+    fallback_reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    if thought is not None:
+        return thought.model_dump(mode="json")
+    return {
+        "disposition": fallback_disposition,
+        "disposition_reasons": list(fallback_reasons or []),
+    }
+
+
+async def _deliver_cockpit_frames(
+    frames: list[dict[str, Any]],
+    *,
+    bus: Any,
+    cockpit_sink: Callable[[list[dict[str, Any]]], Awaitable[None]] | None,
+) -> None:
+    """Deliver cockpit frames without aborting the chat turn."""
+    try:
+        if cockpit_sink is not None:
+            await cockpit_sink(frames)
+            return
+        await publish_cockpit_frames(bus, frames)
+    except Exception:
+        logger.warning("cockpit frame deliver failed", exc_info=True)
+
+
 async def execute_unified_turn(
     *,
     bus: Any,
@@ -486,6 +523,8 @@ async def execute_unified_turn(
     harness_rpc_bus: Any | None = None,
     harness_step_relay: Any | None = None,
     harness_step_queue: asyncio.Queue | None = None,
+    cockpit_sink: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+    cockpit_run_holder: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -562,7 +601,31 @@ async def execute_unified_turn(
     )
     react_result = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
     thought = react_result.thought
+
+    async def _emit_pre_motor(
+        thought_obj: ThoughtEventV1 | None,
+        *,
+        disposition: str,
+        reasons: list[str],
+        close: bool = False,
+    ) -> None:
+        await _deliver_cockpit_frames(
+            emit_slice_a_pre_motor_hops(
+                correlation_id,
+                _thought_as_cockpit_dict(
+                    thought_obj,
+                    fallback_disposition=disposition,
+                    fallback_reasons=reasons,
+                ),
+            ),
+            bus=bus,
+            cockpit_sink=cockpit_sink,
+        )
+        if close and cockpit_sink is None:
+            await publish_cockpit_frames(bus, [timeline_complete_frame(correlation_id)])
+
     if thought is None:
+        timeout_reason = react_result.failure_reason or "stance_react_timeout"
         await _publish_unified_turn_chat_grammar(
             bus=bus,
             correlation_id=correlation_id,
@@ -570,15 +633,21 @@ async def execute_unified_turn(
             user_message=user_message,
             repair_bundle=repair_bundle,
             stance_disposition="stance_timeout",
-            stance_disposition_reasons=[react_result.failure_reason or "stance_react_timeout"],
+            stance_disposition_reasons=[timeout_reason],
             stance_boundary_register=False,
             settings=cfg,
+        )
+        await _emit_pre_motor(
+            None,
+            disposition="stance_timeout",
+            reasons=[timeout_reason],
+            close=True,
         )
         return [
             {
                 "type": "turn_deferred",
                 "correlation_id": correlation_id,
-                "reason": react_result.failure_reason or "stance_react_timeout",
+                "reason": timeout_reason,
             }
         ]
     if thought.disposition in ("defer", "refuse"):
@@ -593,6 +662,12 @@ async def execute_unified_turn(
             stance_boundary_register=bool(thought.boundary_register),
             settings=cfg,
         )
+        await _emit_pre_motor(
+            thought,
+            disposition=thought.disposition,
+            reasons=list(thought.disposition_reasons),
+            close=True,
+        )
         return [_thought_deferred_frame(thought, correlation_id=correlation_id)]
 
     await _publish_unified_turn_chat_grammar(
@@ -605,6 +680,11 @@ async def execute_unified_turn(
         stance_disposition_reasons=thought.disposition_reasons,
         stance_boundary_register=bool(thought.boundary_register),
         settings=cfg,
+    )
+    await _emit_pre_motor(
+        thought,
+        disposition=thought.disposition,
+        reasons=list(thought.disposition_reasons),
     )
 
     situation_prompt_fragment = await _build_situation_prompt_fragment(
@@ -748,8 +828,26 @@ async def execute_unified_turn(
         # under it turns a not-yet-issued Read into file-not-found.
         if staging_attempted and _harness_run_completed:
             await asyncio.to_thread(prune_staging, correlation_id)
+
+    async def _finish_cockpit(run_obj: HarnessRunV1 | None, *, success: bool) -> None:
+        if run_obj is not None and cockpit_run_holder is not None:
+            cockpit_run_holder["run"] = run_obj.model_dump(mode="json")
+        if cockpit_sink is not None:
+            return
+        if success and run_obj is not None:
+            await publish_cockpit_frames(
+                bus,
+                emit_slice_a_finalize_hops(
+                    correlation_id,
+                    run_obj.model_dump(mode="json"),
+                ),
+            )
+            return
+        await publish_cockpit_frames(bus, [timeline_complete_frame(correlation_id)])
+
     if run is None:
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
+        await _finish_cockpit(None, success=False)
         return [
             {
                 "type": "turn_error",
@@ -789,6 +887,7 @@ async def execute_unified_turn(
             "correlation_id": correlation_id,
             "reason": run.finalize_degraded_reason,
         }
+        await _finish_cockpit(run, success=True)
         return [
             degraded_frame,
             *_success_frames(
@@ -799,6 +898,7 @@ async def execute_unified_turn(
             ),
         ]
     if not run.finalize_ran or not run.final_text:
+        await _finish_cockpit(run, success=False)
         return [_harness_error_frame(run, correlation_id=correlation_id)]
     await _publish_unified_turn_chat_history(
         bus=bus,
@@ -811,6 +911,7 @@ async def execute_unified_turn(
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
         fcc_model_label=resolved_model_label,
     )
+    await _finish_cockpit(run, success=True)
     return _success_frames(
         run,
         correlation_id=correlation_id,
@@ -980,20 +1081,60 @@ async def run_unified_turn(
     """Execute unified turn and emit WS frames."""
     step_queue: asyncio.Queue | None = None
     drain_task: asyncio.Task | None = None
+    cockpit_run_holder: dict[str, Any] = {}
+
+    async def _send_ws(frame: dict[str, Any]) -> None:
+        outbound = frame
+        if with_biometrics is not None:
+            outbound = await with_biometrics(frame, cache=biometrics_cache)
+        await websocket.send_json(outbound)
+
+    async def cockpit_sink(frames: list[dict[str, Any]]) -> None:
+        await publish_cockpit_frames(bus, frames)
+        for frame in frames:
+            try:
+                await _send_ws(frame)
+            except Exception:
+                logger.warning(
+                    "cockpit ws send failed corr=%s kind=%s",
+                    correlation_id,
+                    frame.get("kind"),
+                    exc_info=True,
+                )
+
+    async def _emit_relay_frame(frame: dict[str, Any]) -> None:
+        await _send_ws(frame)
+        if frame.get("kind") != "claude_step":
+            return
+        try:
+            hop_frame = emit_motor_hop_from_claude_step(correlation_id, frame)
+            if hop_frame is not None:
+                await cockpit_sink([hop_frame])
+        except Exception:
+            logger.warning(
+                "cockpit hop emit failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
+
+    drain_stop = asyncio.Event()
     if harness_step_relay is not None:
         step_queue = asyncio.Queue(maxsize=256)
 
         async def _drain_harness_steps() -> None:
             assert step_queue is not None
-            try:
-                while True:
-                    frame = await step_queue.get()
-                    outbound = frame
-                    if with_biometrics is not None:
-                        outbound = await with_biometrics(frame, cache=biometrics_cache)
-                    await websocket.send_json(outbound)
-            except asyncio.CancelledError:
-                pass
+            while True:
+                if drain_stop.is_set() and step_queue.empty():
+                    return
+                try:
+                    frame = await asyncio.wait_for(step_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                # Await on the drain task itself so stop+flush finishes the
+                # current hop (including next_seq) before finalize. Do not
+                # shield: a drain cancel would otherwise leave next_seq
+                # running in the background racing finalize hops.
+                await _emit_relay_frame(frame)
 
         drain_task = asyncio.create_task(
             _drain_harness_steps(),
@@ -1011,27 +1152,52 @@ async def run_unified_turn(
             harness_rpc_bus=harness_rpc_bus,
             harness_step_relay=harness_step_relay,
             harness_step_queue=step_queue,
+            cockpit_sink=cockpit_sink,
+            cockpit_run_holder=cockpit_run_holder,
         )
     finally:
         if harness_step_relay is not None and step_queue is not None:
-            while not step_queue.empty():
+            drain_stop.set()
+            if drain_task is not None:
+                try:
+                    await asyncio.wait_for(drain_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    drain_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await drain_task
+                except Exception:
+                    logger.warning(
+                        "harness step drain failed corr=%s",
+                        correlation_id,
+                        exc_info=True,
+                    )
+            while True:
                 try:
                     frame = step_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                outbound = frame
-                if with_biometrics is not None:
-                    outbound = await with_biometrics(frame, cache=biometrics_cache)
-                await websocket.send_json(outbound)
-        if drain_task is not None:
-            drain_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await drain_task
+                try:
+                    await _emit_relay_frame(frame)
+                except Exception:
+                    logger.warning(
+                        "harness step leftover emit failed corr=%s",
+                        correlation_id,
+                        exc_info=True,
+                    )
     for frame in frames:
-        outbound = frame
-        if with_biometrics is not None:
-            outbound = await with_biometrics(frame, cache=biometrics_cache)
-        await websocket.send_json(outbound)
+        await _send_ws(frame)
+    try:
+        run_dump = cockpit_run_holder.get("run")
+        if isinstance(run_dump, dict) and any(frame.get("type") == "final" for frame in frames):
+            await cockpit_sink(emit_slice_a_finalize_hops(correlation_id, run_dump))
+        else:
+            await cockpit_sink([timeline_complete_frame(correlation_id)])
+    except Exception:
+        logger.warning(
+            "cockpit finalize emit failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
     # Mirror the classic lane contract (websocket_handler emits {"state": "idle"} at end of
     # turn): the Hub status line is set to "Sent..." on send and only resets to "Ready." when
     # a frame carries state 'idle'. The unified terminal frames omit state, so emit a trailing

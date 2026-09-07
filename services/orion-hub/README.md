@@ -1242,6 +1242,10 @@ docker compose logs -f orion-whisper-tts | grep -E '\[STT\]|Sent STT result'
 
 Empty-transcript WebSocket errors include `audio_debug` with client and STT metadata. No JS unit harness — verify manually in the browser.
 
+### Cockpit (Soft HUD)
+
+On each Orion reply, **Turn Trace** (fused GET trace) stays as-is. **Cockpit** opens a full-screen Soft HUD beside it: visor line, hop rail, scrubber, and raw inspector for that turn's sighting timeline. Click **Cockpit** on a message to load `GET /api/chat/turn/{correlation_id}/cockpit`; live unified turns also stream `cockpit_hop` WebSocket frames into the open modal until `cockpit_timeline_complete`. Turn Trace and Cockpit are independent — use either or both.
+
 ---
 
 ## 🧪 Verification & Smoke Tests

@@ -1,52 +1,52 @@
-# Graph Report - Orion-Sapienform-durable-runs  (2026-09-07)
+# Graph Report - Orion-Sapienform-cockpit-ci-fix  (2026-09-07)
 
 ## Corpus Check
-- 5652 files · ~5,193,246 words
+- 5672 files · ~5,204,836 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 75135 nodes · 162820 edges · 4454 communities (3004 shown, 1450 thin omitted)
-- Extraction: 89% EXTRACTED · 11% INFERRED · 0% AMBIGUOUS · INFERRED: 17626 edges (avg confidence: 0.63)
+- 75345 nodes · 163275 edges · 4480 communities (3033 shown, 1447 thin omitted)
+- Extraction: 89% EXTRACTED · 11% INFERRED · 0% AMBIGUOUS · INFERRED: 17648 edges (avg confidence: 0.63)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `f05194c2`
+- Built from commit: `63531cb4`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- ServiceRef
+- OrionBusAsync
 - OrionTissue
 - api_routes.py
 - HeartbeatOnly
-- RedisStreamWorkQueue
+- BaseEnvelope
 - NormalizationContext
-- cognitive_substrate.py
-- CortexClientContext
+- ExecutionDispatchCandidateV1
+- finalize_pass.py
 - ContextExecRequestV1
-- workflow_runtime.py
-- GraphReviewTelemetryRecordV1
-- test_workflow_lane.py
-- synthesizer.py
+- CortexClientRequest
+- MutationProposalV1
+- ServiceRef
+- registry.py
 - main.py
 - conjourney
 - delta_to_perturbations
 - test_curiosity_investigation.py
-- websocket_handler.py
+- CortexClientResult
 - test_curiosity_worldview.py
 - LLMMessage
 - ThoughtEventV1
-- GraphDBSubstrateStore
+- call_with_fuseki_retry
 - BiometricsSubstrateStore
 - FieldAttentionFrameV1
-- CallSyneRoomMessageV1
-- CortexChatRequest
-- ProposalEnvelopeV1
-- runner.py
+- extract_social_gif_observed_signal
+- WindowService
+- context_exec.py
+- JournalEntryWriteV1
 - NodeCatalog
 - EquilibriumService
 - profile_repository.py
-- models.py
+- AutonomyStateV1
 - recall_utils.py
 - executor.py
 - main.py
@@ -58,66 +58,66 @@
 - OrganClass
 - SubstrateMoleculeV1
 - RedisGraphQueryClient
-- Hunter
-- WindowService
+- MemoryTurnPersistedV1
+- VisionArtifactPayload
 - test_review_telemetry_attrition.py
 - ExecutionDispatchFrameV1
-- contracts.py
-- CortexClientRequest
-- FieldStateV1
+- ContextExecRunV1
+- main.py
+- FieldEdgeV1
 - ReductionReceiptV1
 - ConceptRelationV1
-- BiometricsSubstrateWorker
+- .start
 - ProposalCandidateV1
-- SubstrateEdgeV1
-- association.py
+- InMemorySubstrateGraphStore
+- SubstrateFeltStateReader
 - GrammarEventV1
 - service.py
-- __init__.py
+- SubstratePolicyProfileStore
 - bus_worker.py
-- .text
+- reverie.py
 - main.py
 - FakeStore
-- investigation_v2.py
+- SourceResult
 - router.py
 - self_study.py
 - test_memory_crystallization.py
 - SuggestDraftV1
 - VisionWindowPayload
-- Service: orion-sql-writer
-- test_execution_substrate_reducer.py
+- Service: orion-notify
+- GrammarProvenanceV1
 - main.py
-- BusConsumerReadinessResult
-- SubstrateMutationStore
+- consumer_readiness.py
+- test_credit_integrity.py
 - llm_backend.py
 - VisionFramePointerPayload
-- UnifiedRelationalBeliefSetV1
-- TurnWindowMessageV1
+- ConceptNodeV1
+- TurnAppraisalBundleV1
 - builder.py
 - memory_cards.py
 - build_substrate_attention_frame
 - appraise_repair_pressure
 - DecisionRouter
 - test_relation_classification.py
-- BusTransportGrammarCollector
+- GrammarAtomV1
 - attention_frame.py
-- FrontierInvocationSignalV1
-- ExecutionTrajectoryProjectionV1
-- test_stance_react_pipeline.py
+- test_policy_act.py
+- prediction_error.py
+- thought.py
 - JournalPageIndexService
-- SocialRoomBridgeService
-- ContextExecRunner
-- vision.py
-- AttentionBroadcastProjectionV1
+- test_bridge_service.py
+- agent_synthesis.py
+- main.py
+- reverie.py
 - Service: orion-cortex-exec
 - .patch
 - DiscussionWindowResultV1
-- memory_extractor.py
-- SubstrateProvenanceV1
+- RouterState
+- FalkorSubstrateStore
 - persist_context_exec_run
-- test_digest.py
+- truncate_at_word_boundary
 - test_vision_persistence_smoke_helpers.py
-- registry.py
+- AttentionLoopOutcomeV1
 - substrate_lattice_routes.py
 - Service: orion-hub
 - SemanticSynthesisV1
@@ -126,20 +126,20 @@
 - showToast
 - Orion Bus Channels Registry (channels.yaml)
 - CortexExecGrammarCollector
-- worker.py
+- JuniperAffectiveStateService
 - goal_archive.py
-- cortex_request_builder.py
+- _attachments_from_payload
 - main.py
 - suggest_with_escalation
-- InMemorySubstrateGraphStore
+- test_concept_atlas_ingest_topic_foundry.py
 - worker.py
-- test_agent_repl_tools.py
+- test_merge_commensurability.py
 - test_substrate_lattice_routes.py
 - Orion Autonomy README
 - HTTPException
-- supervisor.py
+- VerbRegistry
 - ExecutionDispatchRuntimeStore
-- OpenLoopV1
+- GoalContext
 - Candidate
 - context_mode_hooks_smoke.py
 - pcr_chat_memory.py
@@ -153,109 +153,109 @@
 - test_route_substrate_reducer.py
 - CapabilityEvaluationContext
 - DeviationGate
-- main.py
+- asterisk_control.py
 - runner.py
 - DriveStateV1
 - snippet_dedupe.py
 - test_execution_dispatch_runtime_worker.py
 - graphiti_core.py
-- HarnessRunV1
+- turn_orchestrator.py
 - test_endogenous_outreach.py
-- test_reverie_spontaneous_thought.py
+- SpontaneousThoughtV1
 - ConceptRelationDecision
-- worldview.py
-- StanceReactRequestV1
-- EndogenousRuntimeAdoptionService
+- websocket_handler.py
+- mind_enrichment.py
+- mind_runtime.py
 - attention_loops_store.py
 - test_brain_frame_producer.py
 - test_social_memory_service.py
-- test_memory_crystallization_dynamics.py
+- MemoryCrystallizationV1
 - WorldPerceptionV1
-- test_chat_substrate_reducer.py
-- test_harness_governor_client_liveness.py
+- ChatSessionProjectionV1
+- bus_listener.py
 - engine.py
-- SparkStateSnapshotV1
+- test_spark_contract_gate.py
 - test_attention_verdict_exclusion.py
 - social_room.py
 - thought-process.js
 - RecoveryStore
 - context.py
-- test_openai_passthrough.py
+- settings
 - snapshot_from_window
 - derive_retrieval_intent
-- RouteTarget
+- anthropic_passthrough.py
 - Unified Cognitive Substrate — Phase 9: Reflective Graph Consolidation
 - test_chat_relational_stance.py
-- test_self_study_pass1.py
+- reconcile_field_state_with_lattice
 - test_metric_lineage.py
 - test_grammar_truth.py
-- OrionCodec
-- MemoryCrystallizationV1
+- main.py
+- schemas.py
 - detect_resonance
 - syncDebugModalScrollLock
-- score_fragments
+- service.py
 - ResonanceHealthMonitor
 - CompressionRegionV1
 - train_v2.py
 - Service: orion-vision-host
 - VisionSceneInterpretationV1
-- AttentionFrameV1
-- PolicyDecisionFrameV1
+- reduce_attention_self_model
+- builder.py
 - import_chatgpt_export.py
 - build_crystallization_from_window
-- compact_suggest_draft_json_schema
-- suggest_validate.py
+- MoodArcEncoderManifestV1
+- memory_graph_suggest.py
 - HyperbolicGPTConfig
 - Consolidation Policy v1
-- Settings
+- capture_clip
 - test_reasoning_emit.py
 - sources.py
 - fcc_motor.py
 - Phase 11: Offline Evaluation and Calibration for Endogenous Runtime
-- test_uncertainty_metacog.py
-- test_field_observations.py
-- ProposalRuntimeStore
+- MindPhaseTelemetry
+- agent_trace.py
+- .text
 - extract_measurements
-- test_falkor_recall_writer.py
+- main.py
 - ConceptWorker
-- project.py
+- FieldGoalProvenanceV1
 - EvidenceUnitV1
-- record_sync_skip
+- run_substrate_effect_pipeline
 - WorldPulseSourceV1
 - client.py
 - pg_conn
-- training.py
+- test_training_umap_reduction.py
 - github_repo_context.py
 - test_attention_candidate_precision_weighted.py
 - CausalGeometrySnapshotV1
 - world_pulse.py
 - HarnessGrammarCollector
 - map_curiosity_ctx_to_substrate
-- schemas.py
+- supervisor.py
 - test_graphiti_core_backend.py
-- test_recall_strategy_readiness.py
+- submitExplicitChatText
 - WindowingSpec
 - PackManager
-- active_packet.py
+- retriever.py
 - aitown_client.py
 - MetacogDraftTextPatchV1
-- startup_event
+- main.py
 - test_external_platform_gate.py
 - SocialScenarioReplayHarness
 - ChatTurnRecord
 - test_fcc_motor_mcp.py
-- mutation_control_surface.py
+- test_control_surface_isolation_guard.py
 - AnswerContract
-- map_recall_bundle_to_substrate
-- MindRunResultV1
+- _state
+- MindRunRequestV1
 - PsuService
 - bootstrap_orion_agent.py
 - Service: orion-harness-governor
 - recall.py
-- test_worker_attention_self_model_tick.py
-- sql_timeline.py
+- test_turn_orchestrator_cockpit_hops.py
+- SelfSnapshotV1
 - extract_repair_evidence
-- sources.py
+- CrystallizationEvidenceRefV1
 - test_instruments.py
 - test_metric_definition_drift.py
 - ConceptProfile
@@ -265,49 +265,49 @@
 - biometrics_pipeline.py
 - test_falkor_codec.py
 - ExecutionDispatchRuntimeWorker
-- se
+- ie
 - test_cortex_request_builder.py
 - test_drive_history_reflection_synthesis.py
 - test_atom_signals.py
 - AutonomyVerificationHarness
 - test_introspection_fixture.py
-- persist_turn_referent
-- test_field_topology_learned_store.py
+- vision_persistence_smoke.py
+- VisionResult
 - EpisodicFederator
 - build_semantic_foundry
 - fit_phi_encoder.py
 - drive_history_reflection_synthesis.py
-- CouncilService
+- InterpretationParseOutcome
 - sentience-program.js
-- mind_enrichment.py
+- select_mind_coloring
 - main.py
 - main.py
 - _worker
 - test_situation_perception_context.py
-- NotificationRequest
+- Policy
 - SceneBeliefTracker
 - World Pulse Dev Bring-Up
-- SocialGifUsageStateV1
+- test_gif_policy.py
 - test_curiosity_study_material.py
 - SignalsInspectCache
 - substrate-atlas.js
 - TestClamp
 - tts.py
-- test_workflow_scheduler_bridge.py
+- WorkflowScheduleStore
 - 17. Acceptance checks
-- DailyWorldPulseV1
+- CuriosityFollowupV1
 - Service: orion-actions
-- collect_field_channel_pressures
+- field_state.py
 - extract_suggest_draft_dict_from_cortex_payload
-- bind_session_turn_phase_bus
+- test_session_turn_phase.py
 - orion-landing-pad Docker Compose
 - test_measure_autonomy_gate.py
-- endogenous_curiosity_candidates
-- context_exec.py
+- smoke_substrate_motivation_golden_path.py
+- test_rlm_eval_fixtures.py
 - proposal_review_client.py
 - probe_structured_output.py
 - test_interpretation_v2.py
-- PlanExecutionRequest
+- bus_schemas.py
 - test_attention_schema_surface.py
 - check_single_consumer_channels.py
 - channel_regime
@@ -317,49 +317,49 @@
 - Service: orion-landing-pad
 - should_rewrite_for_instructional
 - load_channel_catalog
-- aggregate_borda
+- main.py
 - test_metric_lineage_gate.py
 - measure_autonomy_gate.py
 - trace_unified_turn.py
-- fit_encoder.py
+- test_mood_arc_encoder_fit_script.py
 - mind_provenance.js
 - test_substrate_mutation_scheduler_runtime.py
 - test_proposal_review_api.py
 - substrateReviewFetch
 - Durable cognition runs, kicked off from cortex
 - SemanticPlanner
-- CrystallizationEvidenceRefV1
-- test_curiosity_atlas.py
-- evaluate_investigation_outcome
+- process_consolidation_crystallization
+- worldview.py
+- ContextExecVerbStepV1
 - orion-hub service (README) — browser gateway into the mesh
-- ContextExecEventEmitter
+- test_falkor_materialization.py
 - test_service.py
-- FieldChannelCorpusRowV1
+- test_corpus_enrichment.py
 - __init__.py
 - query.py
-- summarize_capability_gaps
-- ReasoningWriteRequestV1
+- test_capability_gap_journal.py
+- __init__.py
 - test_chat_turn_metacog_gate.py
 - SalienceState
-- build_social_inspection_snapshot
+- FrontierInvocationSignalV1
 - autonomy_subject_fanout_from_runtime_ctx
-- test_skill_verbs.py
+- get_profile
 - fetch_aitown_status
 - biometrics_preview_routes.py
 - test_claude_code_ingest.py
-- sessionmaker
+- grammar_integration_helpers.py
 - test_metacog.py
-- graph_structural_delta
+- GraphSnapshotStats
 - memory_routes.py
 - rdf_retention.py
 - test_crystallization_routes_contract.py
 - test_last_tool_fetch_cache.py
 - SystemHealthV1
-- memory_listener.py
-- ConceptNodeV1
+- se
+- test_dispatcher.py
 - test_orion_proposal_cli.py
 - orion-agent-council service (multi-agent deliberation stub)
-- FakeQueue
+- test_power_intent_settlement.py
 - sql_fetch.py
 - main.py
 - test_corpus_gate.py
@@ -367,46 +367,46 @@
 - memory-graph-draft-form.js
 - test_presence_stream_resolution.py
 - substrate_observability_routes.py
-- _staleness_worker
+- test_tts_streaming_chunks.py
 - test_llm_uncertainty.py
-- CoreEventV1
-- disk_threshold_watchdog.py
+- appendMessage
+- training.py
 - IntentionForCausalLM
 - FieldChannelAnomalyScorer
-- chat_stance.py
+- ChatStanceBrief
 - Service: orion-spark-introspector
-- SubstrateConceptProfileRepository
+- test_self_study_analysis_wiring.py
 - PduPoller
 - test_self_study_analysis_runner.py
-- ChatDispatchPlan
-- chat_source_tags
+- CockpitHopV1
+- sql_timeline.py
 - orion-vision-scribe event recording service
-- context_exec_permissions_for_llm_profile
+- test_agent_repl_semantic_telemetry.py
 - VectorHostEmbeddingProvider
 - test_metacog_publish_lane.py
 - orion-cortex-exec Docker Compose Service
 - test_turn_effect.py
 - model_moc.py
 - BiometricsCollector
-- classify_producer_liveness
+- VisionScheduler
 - test_store.py
 - test_recall_canary_battle_harness.py
 - Tensor
-- salience.py
-- execute_readonly_fetch
-- looks_like_error_text
+- test_context_mode_hooks_smoke.py
+- ActionOutcomeRefV1
+- extract_cortex_payload_text
 - bus_synaptic_graph_routes.py
 - refreshMindRunsForCorrelation
-- ndarray
+- fit_encoder.py
 - test_single_consumer_channels_gate.py
 - sync_file
 - main.py
 - test_orion_bus_observer_rollup.py
 - test_presence.py
 - renderNotifications
-- test_substrate_review_runtime_hub_debug.py
+- bind_session_turn_phase_bus
 - fetch_graph_compression_fragments
-- SubstrateSignalBundleV1
+- test_concept_atlas_routes.py
 - test_reverie_chain.py
 - train_moc.py
 - MotifObservationV1
@@ -417,24 +417,24 @@
 - synthesis.py
 - test_fallback_watch.py
 - test_proposal_review_hub.py
-- TestAnthropicPassthroughHTTP
-- MindRunBudget
+- test_anthropic_passthrough.py
+- measure_proposal_dimension_variance.py
 - test_metric_generic_consumers.py
 - enrichment.py
 - test_check_service_env_compose_parity.py
 - 0A. Hard architectural mandates
-- main.py
-- is_caption_prompt_echo
+- PowerStatus
+- Orion Cockpit POV — Soft HUD turn sighting
 - Context-exec beta runtime runbook
 - test_chat_attention_salience_trace.py
 - test_transition_settings.py
-- test_state_store.py
+- AutonomyStateV2
 - intention.py
 - LivenessStateStore
 - test_disk_threshold_watchdog.py
 - normalize_llm_route
 - world_pulse_journal.py
-- Orion Subagent Development Contract
+- ReverieMetacogHealthMonitor
 - self-brain.js
 - substrate-lattice.js
 - apply_structured_output_to_payload
@@ -455,8 +455,8 @@
 - properties
 - build_perception
 - memory_graph_routes.py
-- settings
-- EndogenousRuntimeSqlReader
+- test_vision_backend.py
+- build_route_arbitration_grammar_events
 - _project_reverie_glimpse
 - conversation_front.py
 - build_readout
@@ -466,9 +466,9 @@
 - receipt_pruner.py
 - FakeConn
 - Agent Trace inspection modal (Hub UI, fail case screenshot)
-- test_route_catalog_background.py
+- RouteTarget
 - test_agent_chain_guards.py
-- test_proposal.py
+- test_hub_grammar_emit.py
 - BiometricsAdapter
 - SemanticTangentAdapter
 - test_situation_curiosity_reverie_context.py
@@ -478,41 +478,41 @@
 - resolve_llm_lane_for_step
 - orion-harness-governor requirements.txt
 - run_recall_canary_battle.py
-- build_investigation_journal_entry
+- _material
 - workflow-schedule-ui.js
 - workflow-ui.js
 - test_fcc_claude_bridge_run.py
 - test_memory_graph_suggest_coalesce_ui.py
 - IntentionModel_v1
-- EquilibriumSnapshotV1
+- EquilibriumServiceTransitionV1
 - config/vision_frame_router.yaml (baseline vs triggered dispatch)
 - test_topic_foundry_scheduler.py
 - test_recall_prefetch.py
 - required
 - test_vision_attachments.py
-- in_window
-- stable_hash_id
-- WorkflowScheduleStore
+- _FakeEnvelope
+- derive_implicit_verdicts
+- next_run_for_recurring_schedule
 - grammar_truth_gate.py
 - test_bus_core_health_watchdog.py
 - _project_recent_dispatch_actions
 - OrchConceptProfileSettings
 - PowerPrior
 - social-inspection.js
-- test_concept_region_collector.py
-- MoodArcEncoderManifestV1
+- SocialRoomBridgeService
+- test_mood_arc_promote.py
 - test_thought_candidate.py
-- _build_prompt_fragment
-- ThoughtSettings
-- test_node_availability_alert.py
+- WorkloadRoute
+- VisualChainHealthMonitor
+- HealthMonitor
 - test_stt_engine.py
 - orion:chat:history:log channel
 - φ as Intrinsic Reward + Value Learning — preferences that are earned, not installed
 - cocreation_signals_routes.py
 - properties
 - GraphAnalytics
-- JournalEntryWriteV1
-- graph_view.py
+- collapse_mirror.py
+- main.py
 - assert_hub_context_exec_routing
 - orion_fresh_main_smoke.sh
 - main.py
@@ -534,13 +534,13 @@
 - memory-crystallization-ui.js
 - test_grammar_atlas_api.py
 - test_substrate_observability_api.py
-- main.py
+- chat_stance_shared_spine.py
 - test_caption_sanitize.py
-- GraphQueryClient
+- goal_actions.py
 - test_self_study_analysis_rules.py
 - Memory as weight + reinforcement + decay (not novelty + approval)
 - PR report: git-native enforcement for the shared-checkout worktree policy
-- _clean_daydream
+- endogenous_outreach.py
 - render_aitown_tab_blocks
 - orion-llamacpp-host single-worker Docker Compose
 - config/proposals/proposal_policy.v1.yaml — Layer 7 proposal policy: limits, priority/risk thresholds, dimension weights, and named proposal_templates that turn substrate state into ProposalFrameV1 candidates
@@ -551,8 +551,8 @@
 - Vision scene belief — habituation at the window layer
 - Orion Unified Turn — canonical spec
 - Felt-state arc roadmap — dense spec
-- CabinetAmbientSpikeV1
-- resolve_fetch_backend
+- cabinet_ambient_spike_consumer.py
+- apply_decay
 - classify_channel_series
 - OutreachContext
 - _FakeSession
@@ -620,9 +620,9 @@
 - test_check_substrate_projection_schema_drift.py
 - orion_ambient_audio_reader.py
 - SnapshotState
-- test_repair_pressure_appraisal_log.py
-- test_dev_economics_ledger_sql_shape.py
-- EndogenousOutreach
+- .inspect
+- test_chat_general_route_mapping.py
+- outreach_block_reason
 - test_worker_attention_broadcast_tick.py
 - claim:orion:substrate-telemetry:0001 — orion-substrate-telemetry persists tier outcomes
 - Social claim revision and peer-claim tracking
@@ -632,7 +632,7 @@
 - Self Tab: Substrate Brain-EKG — Design
 - φ cognitive motor unification — harness + cortex-exec → execution trajectory + seed-v3 encoder input
 - source:2026-05-20-knowledge-forge-v1-merge (metadata)
-- SelfKnowledgeItemLogV1
+- test_insight_flow_metacog_gates.py
 - executive_pack: classify/plan/prioritize/evaluate verbs
 - walkable_tiles
 - test_fcc_motor_served_model.py
@@ -642,7 +642,7 @@
 - FeedbackFrameV1
 - test_destructive_git_guard.py
 - test_falkor_store_aitown_graph.py
-- _score
+- test_doc_semantic_drift_chunking.py
 - compact_vision_scene_interpretation_json_schema
 - agent-trace.js
 - organ-signals-graph-ui.js
@@ -672,9 +672,9 @@
 - test_cocreation_signals_page.py
 - test_room_turn.py
 - check_daily_schedule_collisions.py
-- test_reverie_expectation_scoring.py
+- Any
 - _attempt_mind_handoff_chat_stance_shortcut
-- endogenous_runtime.py
+- LocalProfileStore
 - Orion scarcity: the plant, the ceilings, the unit, the seam
 - correlation_chain_from_cognition_trace
 - renderScheduleInventory
@@ -688,7 +688,7 @@
 - _Store
 - test_hub_ui_layout_pass.py
 - Orion Autonomy Phase 3 Materialization
-- ActionDedupe
+- test_causal_geometry_report.py
 - MetacogTrendStateV1
 - test_agent_board_lib.py
 - measure_arena_degeneracy.py
@@ -705,7 +705,7 @@
 - World-Pulse Curiosity Followups ("Orion went looking") — Design
 - Mind → Unified Turn Stance Enrichment (advisory self/frontier coloring)
 - Stance React
-- _target
+- WorkflowDispatchRequestV1
 - test_recall_signal_resolver.py
 - Settings
 - test_run_recovery.py
@@ -747,18 +747,18 @@
 - smoke_all_notifications.sh
 - _FakeConn
 - audit_channels.py
-- session_store.py
+- Request
 - _load_app
 - check_settings_defaults.py
 - test_causal_geometry_api.py
 - test_chat_history_no_raw_publish.py
-- run_dream
+- utils.py
 - GrammarRetentionState
 - test_hub_local_time_naive_utc.py
 - test_memory_graph_bridge_ui.py
 - test_mind_hub_tab.py
 - hub_main
-- chat_history.py
+- RoomClaudeRelay
 - test_self_brain_routes.py
 - test_stop_chat_ui_smoke.py
 - Orion Notify Service
@@ -767,7 +767,7 @@
 - measure_self_state_signal_quality.py
 - settings_from_runtime
 - test_phase21_wiring_verification.py
-- SubstrateIdentityResolver
+- ChatHistorySparkMetaPatchV1
 - test_check_metric_dead_wiring.py
 - ChainTracker
 - Orion LLM Gateway – Manual Smoke Tests
@@ -782,10 +782,10 @@
 - Self-State & mesh-aware metrics substrate — redesign
 - up_all_services.sh
 - PresenceRegistry
-- Service: orion-rdf-writer
+- Service: orion-sql-writer
 - orion-rdf-writer (bus → triples → RDF store service)
 - test_biometrics_preview_api.py
-- TestTheCycleBudget
+- grammar_truth
 - smoke_memory_cognition_loop_e2e.sh
 - town_cards.yaml (cast source of truth)
 - test_main_autonomy_graph_probe.py
@@ -799,7 +799,7 @@
 - test_substrate_policy_debug_api.py
 - test_substrate_proposal_debug_api.py
 - test_turn_cancel.py
-- test_situation_cabinet_context.py
+- ParityReadinessThresholds
 - test_world_model_features.py
 - test_sql_chat_self_hit_suppression.py
 - agent_board_lib.py
@@ -812,7 +812,7 @@
 - test_tts_engine_settings.py
 - test_execution_dispatch_bus_catalog.py
 - resolve_attachment_url
-- test_vision_gate_integration.py
+- AttachmentRefV1
 - Reasoning Promotion Phase 3
 - Q1 — Does L7-L11 reach real behavior, or terminate in Hub debug tiles?
 - Ablation Baseline (heartbeat disabled)
@@ -841,7 +841,7 @@
 - test_conversation_proximity_patch.py
 - test_town_chat_turns_patch.py
 - orion-attention-runtime
-- SelfConceptHistoryV1
+- capability_gap_journal.py
 - fetch_latest_world_context_capsule
 - up-with-tailscale.sh
 - score_message
@@ -922,7 +922,7 @@
 - test_vision_persistence_lane.py
 - conftest.py
 - test_stance_prompt_renders_coloring.py
-- fcc_env_catalog.py
+- test_async_notify_producers.py
 - FalkorDB property-graph doctrine + persistence router — design spec
 - test_agent_trace_js.py
 - Scarcity roadmap
@@ -930,7 +930,7 @@
 - cabinet-sensors.js
 - _load_state_journaler
 - test_vision_retina_no_detector.py
-- hub_quick_playwright_live.py
+- DowntimeTransitionTracker
 - Fuseki / SPARQL Active Graph Backend
 - Social context window selection
 - Social thread choreography
@@ -980,7 +980,7 @@
 - test_websocket_agent_claude_routing.py
 - validate_llamacpp_upgrade.sh
 - settings.py
-- test_self_concept_history_publish.py
+- test_ingest_turn.py
 - orion-policy-runtime: Layer 8 substrate service evaluating ProposalFrameV1 against SubstratePolicyV1, persists PolicyDecisionFrameV1 (policy is not execution)
 - smoke.sh
 - test_audit_prediction_error_domain.py
@@ -1042,7 +1042,7 @@
 - measure_self_model_calibration.py
 - locate-bound-capability-live-path.sh
 - migrate_fuseki_data_to_graphdb.sh
-- test_measure_ast_hot_reducer.py
+- AttentionBroadcastProjectionV1
 - smoke_biometrics_grammar.sh
 - smoke_chat_message.sh
 - smoke_digest.sh
@@ -1075,7 +1075,7 @@
 - _reset_graphiti_core_search_stack_cache
 - test_finalize_exec_channel.py
 - test_agent_claude_trace_js.py
-- TopicFoundryClientError
+- __init__.py
 - find_unrouted_channels
 - orion-knowledge-forge Docker Compose
 - Orion Meta Tags
@@ -1083,7 +1083,7 @@
 - orion-notify service (notification policy owner)
 - orion-rdf-store docker-compose (orion-athena-fuseki container, port 3030, JVM_ARGS, FUSEKI_DATA_DIR bind mount)
 - test_juniper_multimodal_affect_sql_shape.py
-- test_model_shapes.py
+- FeatureGroupDims
 - Orion hears Juniper, and each spoken turn is bracketed by an affect record
 - get_pg_connection
 - test_cards_adapter_active_only.py
@@ -1208,7 +1208,7 @@
 - apply_upstream_patches.sh
 - wire_llm_gateway.sh
 - conftest.py
-- test_lane_routing.py
+- refreshVisionCapability
 - orion-execution-dispatch-runtime Docker Compose Service
 - edge_registry.py
 - node_registry.py
@@ -1220,7 +1220,7 @@
 - orion-power-guard docker-compose (UPS/SNMP monitoring, on-battery grace, shutdown command, host SSH key mount)
 - run_server.sh
 - test_juniper_affect_state.py
-- ConfidenceSample
+- test_generative_metacog_gate_evaluation.py
 - test_visual_chain.py
 - test_check_graph_worktree_integrity.py
 - __init__.py
@@ -1249,8 +1249,8 @@
 - orion-vision-window (docker-compose service)
 - __init__.py
 - test_velocity.py
-- test_fusion_entity_relatedness_boost.py
-- is_chat_template_vlm
+- test_cockpit_turn_sighting_sql_shape.py
+- test_identity_secondary_dispatch.py
 - BiometricsClusterV1
 - /subagent-driven-development command (parallel sprint orchestration)
 - Profile: Action Recognition
@@ -1313,7 +1313,7 @@
 - chat.story.kids.v1 Recall Profile
 - test_concept_relation_classifier.py
 - test_self_atlas_cluster_history.py
-- sample_frames
+- vision_backend.py
 - orion-aitown-mcp
 - orion-cognition
 - orion-sapienform
@@ -1324,7 +1324,7 @@
 - Orion mission (digital-mind / emergent intelligence experiment)
 - Chat Grammar Lane V1 Implementation Plan
 - Integrated Memory Cognition Loop — Design
-- SelfKnowledgeSectionCountsV1
+- test_self_study_layer1_broadening.py
 - ChatGPT Export Import (Bus Fanout)
 - test_check_single_consumer_channels_glob.py
 - test_compact_convex_data_disk_preflight.py
@@ -1333,7 +1333,7 @@
 - biometrics-view.js
 - test_concept_atlas_traversal_routes.py
 - test_field_attention_operator_panel.py
-- Rabbit
+- Orion Subagent Development Contract
 - _query_backends
 - apply_sweep
 - VisionLivenessWatcher
@@ -1354,9 +1354,9 @@
 - test_windowing_speakers.py
 - test_deviation_gate.py
 - __init__.py
-- hydrate_consolidation_draft_dict
+- memory_consolidation_draft_routes.py
 - test_measure_doc_semantic_drift.py
-- mind_routes.py
+- graph_structural_delta
 - AttentionRuntimeStore
 - test_builder_prune_skill.py
 - chat_attachments.py
@@ -1369,9 +1369,9 @@
 - Turn Change Appraisal v1 — Design Spec
 - Unified Orion Turn — reactive stance, harness motor, required finalize
 - Scarcity and repertoire: the execution plan
-- self_brain_routes.py
+- build_conversations
 - draft_sanitize.py
-- SelfStudyRetrievedRecordV1
+- _graphdb_reflection_records
 - IloPoller
 - BusEventFact
 - test_generate.py
@@ -1388,10 +1388,10 @@
 - Voluntary Attention Override — choosing to attend against your own salience
 - cocreation-signals.js
 - estimate_session_cost_usd
-- ChatStanceBeliefLogV1
+- ensure_delivery_pack_in_packs
 - RoomClaudeRequestV1
-- compute_ewma_update
-- map_episode_ctx_to_substrate
+- FieldStateV1
+- stance_handoff.py
 - HeartbeatSubstrate
 - test_tension_outreach_trigger.py
 - test_claude_session.py
@@ -1423,12 +1423,12 @@
 - Cypher-native substrate + Postgres-via-bus split — design spec
 - A consequential action space, and the first budget with a wall behind it
 - load_direction_map
-- _change
+- test_power_intent_publish.py
 - open_readonly_connection
 - measure_attention_self_model_confidence_baseline.py
 - analyze_cabinet_ambient_correlation.py
 - orion-ai-town
-- test_tension_pressure_baseline.py
+- empty_field_state
 - orion-field-digester
 - test_falkor_entity_relatedness.py
 - evidence.py
@@ -1441,7 +1441,7 @@
 - Contested scarcity — giving Orion a budget somebody else wants
 - derive_workflow_execution_policy
 - test_substrate_read_contract.py
-- grammar_retention_loop
+- test_worker_endogenous_curiosity_tick.py
 - 🎛 Profile Knobs (Full Spec)
 - store_visual_artifact
 - measure_capability_salience_coupling.py
@@ -1449,17 +1449,17 @@
 - PowerIntentV1
 - service_logs.py
 - test_exo_exploration_routes.py
-- main.py
+- resolve_thinking_launch_policy
 - town_continuity.py
 - test_health_monitor.py
 - test_session_agent_board_hooks.py
 - Substrate Effect UI Implementation Plan
 - AI Town → Atlas migration runbook
 - resolve_user_workflow_invocation
-- deque
+- ScribeService
 - measure_transport_bus_signal_history.py
 - test_self_study_enrichment_hook.py
-- 0A. Hard architectural mandates
+- check_metric_lineage.py
 - test_dev_economics_producer.py
 - AttentionSelfModelReader
 - test_ksl_adapter_parsing.py
@@ -1469,7 +1469,7 @@
 - 2026-05-23-llm-uncertainty-logprobs.md
 - 2026-05-24-cortex-exec-substrate-digestion-v1.md
 - 2026-05-24-node-scoped-biometrics-grammar-ingress.md
-- ._publish_conversation_memory
+- attention_escalation.py
 - test_rpc_health_adapter.py
 - datetime
 - service.py
@@ -1478,7 +1478,7 @@
 - check_graph_worktree_integrity.py
 - test_check_postgres_connection_headroom.py
 - test_docker_compose_service_bringup.py
-- _offer
+- _should_request_chat_reply_logprobs
 - test_allocator_enforcement.py
 - 🏗️ Architecture
 - test_vision_affect_ambient.py
@@ -1500,25 +1500,25 @@
 - Athena cabinet ambient audio (levels-only) — design
 - AI Town: cull four NPCs and give the remaining town CallsYne continuity
 - sandbox_sync.py
-- test_journal_entry_indexing.py
-- test_mood_arc_anomaly_detector.py
+- build_journal_entry_index_select
+- FieldChannelCorpusRowV1
 - main.py
 - The Sentience Striving Program
-- doc_semantic_drift.py
-- test_vision_channel_signal.py
+- test_doc_semantic_drift.py
+- TestBusSynapticPredictionError
 - measure_rpc_health_baseline.py
 - main
 - SchedulerCursorStore
 - score_candidate
 - pg_conn
-- _maybe_publish_spark_introspect
+- setupMemoryGraphBridgeModal
 - test_topic_foundry_scheduler_policy.py
 - chat-attachments.test.js
-- settings.py
-- upsert_spark_telemetry
-- test_tts_multi_reference_voice.py
+- recall_v2.py
+- test_vision_affect_quality_eval.py
+- _resolve_speaker_wav_refs
 - test_stop_worktree_wip_snapshot.py
-- _event
+- maybe_send_email
 - test_fleet_roster_coverage.py
 - 2026-07-07-orion-embodiment-cd.md
 - Alert on bus_fallback_log backlog at 5, 10, 15, ...
@@ -1527,9 +1527,9 @@
 - Phase 5 — signal semantics: provenance, window, commensurability
 - Topic Foundry ↔ Orion Hub Topic Studio Contract Deep-Dive
 - claude_code_ingest.py
-- Event
+- test_affective_state_producer.py
 - WorldModelTaskRequestPayload
-- WorldModelTrajectoryStepV1
+- test_service_prediction.py
 - measure_goal_provenance_streak_distribution.py
 - destructive_git_guard.py
 - test_metric_lineage_nudge.py
@@ -1552,15 +1552,15 @@
 - Durable World-Pulse → Concept-Induction Consumption — Design
 - Proposed shape
 - Athena cabinet sensory node (Nano ESP32) — design
-- _resolve_latest_frame_path
+- TestTheCycleBudget
 - sanitize_metadata
-- smoke_rdf.py
+- McpPreflightError
 - test_check_env_template_parity.py
-- test_dead_profiles_removed.py
-- test_digestion_significance.py
+- test_graph_write_intent.py
+- test_workflow_schedule_store.py
 - FalkorEpisodicFederator
-- _fetch_current_daydream
-- test_chat_turn_affect.py
+- WorldPulseStreamConsumer
+- _run
 - test_field_digester_client.py
 - _compute_entity_relatedness_boost_map
 - test_main.py
@@ -1569,7 +1569,7 @@
 - _vision_result_payload
 - orchestrator.py
 - test_attention_loop_decay_digest.py
-- load_identity_file
+- model_runtime.py
 - db.py
 - Layer 1–11 Pipeline Guide
 - Hub Route Wiring Audit Manifest
@@ -1598,15 +1598,15 @@
 - Bus vitality field signal — brainstorm (candidates, gated)
 - Metric semantic layer: lineage, liveness, and edit-time compliance gates
 - Current architecture
-- suggest_runner.py
+- compact_suggest_draft_json_schema
 - test_causal_geometry_producer.py
 - test_chat_stance_belief_bus.py
-- test_reverie_compaction_request.py
+- load_ambient_audio_snapshot
 - Contracts
 - test_cocreation_signals_dev_economics.py
 - mood_arc_status_routes.py
 - test_cabinet_sensors_api.py
-- _run
+- RosterEntry
 - test_hub_agent_mode_fcc_routing.py
 - test_vision_frame_cache.py
 - Orion LLM Gateway
@@ -1614,7 +1614,7 @@
 - test_sql_chat_fetch_by_id.py
 - _Conn
 - test_prediction_error_domain_map.py
-- datetime
+- main.py
 - GpuInspector
 - gate
 - test_env_key_single_source.py
@@ -1638,7 +1638,7 @@
 - Precision-weighted attention organ + orion-heartbeat discrimination fix — design spec
 - Giving Orion's substrate action something to perceive
 - Biographical curiosity miss — celebrate without probing
-- _FakeSession
+- ProposalRuntimeWorker
 - Curiosity: Orion's own time, and its own graph
 - explain_alerts
 - organ_layer
@@ -1646,7 +1646,7 @@
 - measure_transport_biometrics_prediction_error_correlation.py
 - test_measure_rpc_health_baseline.py
 - test_session_stop_agent_board.py
-- load_cabinet_sensors_snapshot
+- File structure (locked)
 - _bare_worker
 - FalkorSubstrateFederator
 - query_real_bus_synaptic_raw_mean_abs_z
@@ -1656,7 +1656,7 @@
 - rdf_adapter.py
 - test_falkor_neighborhood_adapter.py
 - test_harness_turn_trace_sql_shape.py
-- _run
+- _load_autonomy_state
 - test_measure_precision_weighted_salience_probe.py
 - Port roles
 - Agent no-recall timeout postflight manifest
@@ -1681,9 +1681,9 @@
 - Spark/Field Unification & Holographic Lattice Probe — design draft
 - Field-native goal-provenance producer, goal-context staleness, and decision-lattice observability
 - Hub Cabinet ambient audio charts (multi-day) — design
-- test_fcc_sandbox_sync_test_process_guard.py
+- looks_like_error_text
 - bare_graphify_update_guard.py
-- seed.py
+- generate_turtle_for_all
 - measure_capability_surprise_success_correlation.py
 - record_io_attribution.py
 - _FakeCursor
@@ -1694,12 +1694,12 @@
 - TestBusSynapticPollE2E
 - get_engine
 - self_atlas_cluster_history.py
-- vision_affect_ambient.py
+- test_mcp_config.py
 - causal-geometry.js
 - test_sentience_program_api.py
 - test_percept_store.py
 - test_fetch_chat_turn_for_memory_emit.py
-- TopicFoundryLLMClient
+- test_github_compactor_schedule_bootstrap.py
 - test_main_startup_cuda_gating.py
 - test_check_graph_node_loss.py
 - _run_installer
@@ -1756,14 +1756,14 @@
 - test_hostname_refs_live_env.py
 - test_gpu_collector.py
 - test_chat_stance_self_state_projection.py
-- test_memory_graph_structured_output.py
+- test_delivery_status.py
 - test_insight_flow_separate_cooldown.py
 - test_lane_control.py
 - FCC MCP (Orion mode)
-- reconstruction.py
-- cabinet_sensor_frame.py
-- pressure_evidence_from_eval_suite_rows
-- AttentionPublisher
+- test_power_intent_settled_sql_shape.py
+- test_content_addressed_frames.py
+- rdf_materialization.py
+- MeshGuardianService
 - test_sql_adapter_aitown_tagging.py
 - run_claude_once
 - orion-signal-gateway
@@ -1850,12 +1850,12 @@
 - _select_device
 - Drives & Autonomy: origin, theory, and current state (retrospective)
 - Orion Cognitive Substrate — Detailed Buildout Notes
-- compute_stale_channel_candidates
-- test_presence_chat_injection.py
+- test_brain_frame_store.py
+- ExternalRoomPostRequestV1
 - Hyperbolic GPT (research MVP)
 - backfill_aitown_chat_history_move_to_split_table.py
 - test_check_journal_dispatch_registry.py
-- relay_harness_run_steps
+- EquilibriumServiceState
 - 🧠 Orion Bus — Mesh Message Backbone
 - test_dedup.py
 - CompressionWorker
@@ -1863,13 +1863,13 @@
 - reverie_routes.py
 - reverie-tab.js
 - orion-llamacpp-host
-- main.py
+- doc_semantic_drift_changes
 - TestTheParentTraceRowIsPrunedToo
 - View its logs
 - test_shared_checkout_edit_guard.py
 - test_measure_arena_degeneracy.py
 - _rows
-- fcc_model_mapping.py
+- run_dream
 - Orion Context Exec
 - Layer Pipeline Plan: <service>
 - repair_pressure_v1 Implementation Plan
@@ -2058,27 +2058,27 @@
 - Tension-driven mutating dispatch — wiring deviation to real action
 - QuotaState
 - detect_tool_provenance_mismatch
-- EvidenceBundle
-- test_error_severity_is_what_actually_triggers_the_email
+- test_mps_state.py
+- build_alert_request
 - main.py
 - fetch_drive_stats_postgres
-- measure_candidate_a_vs_b_head_to_head.py
+- build_hub_ui_asset_version
 - test_measure_capability_salience_coupling.py
 - test_measure_goal_provenance_streak_distribution.py
 - scan_file
-- FakeBus
+- Settings
 - _default_llm_route_for_step
 - Recall Strategy Staging + Shadow Ramp (Operator-Only)
-- outreach_block_reason
-- _Result
+- _dynamics_properties_from_metadata
+- summarize_capability_gaps
 - Settings
 - orion-durable-runs
-- _make_store
+- WorkflowScheduleMetrics
 - test_post_turn_closure_listener.py
 - test_worker_bus_synaptic_tick.py
-- main.py
+- transcribe_audio
 - _cand
-- _Conn
+- _Result
 - Substrate Trace Emitter Pattern
 - Evidence and Epistemic Classes
 - Answer Depth Holdouts Pass 6 Manifest
@@ -2181,17 +2181,17 @@
 - Athena cabinet sensor node — Arduino Nano ESP32
 - LimitObservation
 - report_quota_budget.py
-- _runner
+- extract_autonomy_payload
 - benchmark_rpc_request_logging_overhead.py
 - check_control_surface_store_parity.py
 - check_service_hostname_refs.py
 - stop_worktree_wip_snapshot.py
 - Contracts
-- 16. Orion-specific touched-file checklist
+- substrate_field_routes.py
 - test_metacog_draft_trigger_kind_type_mapping.py
 - Contracts
 - FluxLikeFakePipe
-- 19. Completion status
+- empty_transcript_error_message
 - Orion FalkorDB (operator stack)
 - BiometricsCache
 - test_reverie_visual_cockpit_ui.py
@@ -2204,7 +2204,7 @@
 - test_falkor_chat_adapter.py
 - test_visual_chain_honesty_eval.py
 - types.py
-- _chunks
+- test_tts_multi_reference_voice.py
 - test_measure_candidate_a_vs_b_head_to_head.py
 - Reducer and State Delta Pattern
 - PR Report: <service> substrate trace adoption
@@ -2247,25 +2247,25 @@
 - Phi v2: a real internal-state score built from live metrics
 - Capability absence: making Orion notice when part of its body is gone
 - Vision Services Documentation
-- mps_state.py
+- site_reduced_density_matrix
 - 🧠 Orion Verb Onboarding (Services + Bus Execution)
 - test_topic_foundry_adapter.py
-- DocSemanticDriftV1
-- _FakeBus
-- _runner
+- test_cockpit_hud_ui.py
+- 0A. Hard architectural mandates
+- parse_journal_discussion_lookback_seconds
 - test_check_scripts_dir_no_stdlib_shadow.py
 - chat_attention_salience_trace.py
-- test_self_study_knowledge_items.py
+- turn_in_progress
 - Phase 0 — Metabolism Adapter (PR 1)
 - orion-embodiment
 - _Loop
-- Phase T4 — `derive_retrieval_intent`
+- main.py
 - exo-exploration.js
 - test_hub_panel_reachability.py
 - test_turn_trace_panel_ui.py
-- .fetch
+- run_agent_flow_live_matrix.py
 - cache.py
-- handle_request_payload
+- main.py
 - orion-substrate-runtime
 - orion-thought
 - RDF Store V1 Cutover
@@ -2314,23 +2314,23 @@
 - Why `substrate_mutation_*` never fired
 - Orion Semantic Self-Indexing and Rapid Introspection Plane
 - Drive taxonomy grounding decision
-- test_validate_payload_system_error_exemption.py
-- apply_collector_plan
+- smoke_situation_grounding.py
+- test_bus_consumer.py
 - SelfStateRecord
 - test_measure_transport_biometrics_prediction_error_correlation.py
-- is_saturation_error
+- llm_gateway_client.py
 - check_sql_migrations_applied.py
 - orion-actions
 - test_town_continuity_prompt_patch.py
 - orion-bus-tap (UI)
-- FeedbackRuntimeWorker
+- renderMemoryDebugModal
 - test_api.py
 - chat_turn_affect.py
 - .load_profile_registry
-- extract_unified_turn_final_text
+- _FailAfterNUpsertsStore
 - test_causal_geometry_page.py
 - test_evidence_bus_synaptic_resolver.py
-- test_continuous_presence_accumulates_since_sec
+- test_turn_stop_command.py
 - 📚 Orion RAG Service
 - _query
 - allow_and_record
@@ -2400,35 +2400,35 @@
 - AI Town table split, Phase 2 migration design — `orion-recall`
 - Objective 7 — re-evaluate integration (design-mode pass)
 - Phase completion checklist
-- load_skill_manifest
+- test_store_observability_writers.py
 - run
 - Autonomy Origination Measurement Gate
 - test_benchmark_rpc_request_logging_overhead.py
 - test_measure_capability_surprise_success_correlation.py
 - test_measure_self_state_signal_quality.py
 - test_refresh_metric_lineage_cache.py
-- 11. Tests and evals
-- 21. Juniper-facing response style
+- bus_integration.py
+- test_heartbeat_chassis.py
 - _project_autonomy_from_beliefs
-- 2. Clean git and worktree rules
+- test_analysis_branches.py
 - test_substrate_probe_prompt_grounding.py
 - orion-graph-compression
-- test_unmatched_added_chunk_counts_as_drift
+- extract_face_crops
 - test_self_brain_region_provenance.py
 - orion-juniper-affective-state
-- _stub_rpc_fork
+- transcribe.py
 - Orion Recall Service
-- test_no_identity_signal_is_neither_confirmed_nor_uncertain
+- attention_loops_routes.py
 - test_fleet_power_landing_eval.py
-- FieldGoalProvenanceV1
-- test_absence_before_any_sighting_has_no_last_seen
-- test_exactly_at_the_grace_boundary_is_still_recent
-- SegmentRecord
+- test_goal_provenance_producer.py
+- main.py
+- workflow_scheduler.py
+- test_mind_projection_resolver.py
 - Orion Vision Host
 - test_detector_vocabulary.py
 - _runner
 - _run
-- _FakeConn
+- chat_cockpit_routes.py
 - test_vision_retina_device_contention.py
 - test_chat_history_concurrent_write_eval.py
 - Design: Rebuild `orion-llamacpp-host` (llama.cpp pin, thinking policy, live verification)
@@ -2494,11 +2494,11 @@
 - backfill_chat_history_from_bus_fallback.py
 - Contracts
 - test_metacog_trend_reader.py
-- ._process_scope
+- leiden_cluster
 - _fetch_fresh_candidates
 - ServiceLogSession
 - test_handle_tts_fields_frontend.py
-- test_since_sec_resets_on_a_real_state_transition
+- CaptureAndAssessRequest
 - orion-proposal-runtime
 - falkor_bus_synaptic_adapter.py
 - orion-room-companion
@@ -2513,7 +2513,9 @@
 - _run_prune
 - test_safe_docker_build_heartbeat.py
 - _FakeCursor
+- test_mind_enrichment_fail_open.py
 - _decision
+- http_api.py
 - Design
 - Unified Cognitive Substrate — Phase 11: Narrow Runtime Review Execution
 - Unified Cognitive Substrate — Phase 18: Durable Policy Store and Policy-Backed Cache/Runtime Wiring
@@ -2576,11 +2578,12 @@
 - Recall: tag and correctly label ai-town-sourced chat memories
 - Design: connect the golden seed concepts to the organic concept graph
 - Calibration finding: dollar-spend-per-window does not predict the limit
-- test_async_service_velocity.py
+- test_apply_causal_density_to_entry.py
+- test_ouroboros_invariants.py
 - memory_crystallizations.sql
-- WorldModelFeatureGroupV1
+- WorldModelTrajectoryStepV1
 - Brainstorming Session #1 — Appendix Ideas 3–10
-- logic.py
+- ensure_chat_history_compactor_daily_schedule
 - test_compact_convex_data_script.py
 - bus-core cold-standby: cutover / cutback runbook
 - Orion Diffusion Host
@@ -2594,6 +2597,7 @@
 - test_control_plane_isolation_guard.py
 - _FakeAiohttpSession
 - Orion Notify Digest Service
+- aggregators_sql.py
 - 2) Environment Variables (high-signal)
 - test_falkor_chat_windowing.py
 - Contracts
@@ -2668,14 +2672,18 @@
 - WorldContextCapsuleCache
 - test_chat_stance_belief_publish.py
 - test_topic_taxonomy_client.py
+- autonomy_constitution.py
 - main.py
-- run_cortex_bus_stack_diagnostic
+- _route_loop
+- _app_request
+- SceneBeliefRegistry
 - carbon-affect-snapshot.test.js
 - test_chat_attachments_http.py
 - test_endogenous_outreach_decisions.py
 - test_route_catalog.py
 - test_scheduler_next_run.py
 - orion-policy-runtime
+- test_py310_compat.py
 - test_brain_frame_worker.py
 - extract_blocks
 - Contracts
@@ -2727,7 +2735,10 @@
 - WindowSpend
 - Orion Metacog/Spark — Surgical Patch Tracker
 - Review flow as it exists now
+- resolve_subtitle
+- test_aitown_substrate_store_singleton.py
 - orion/mood_arc — felt-state-trajectory autoencoder
+- models.py
 - Phase 4: ConceptProfile Runtime Cutover (concept_induction_pass)
 - Local `/mnt/scripts` backup and nightly database backups
 - Nightly database backups (Postgres, FalkorDB, Chroma, Convex)
@@ -2738,26 +2749,28 @@
 - End-to-end architecture flows
 - Schedule lifecycle and management semantics
 - orion-affectgpt-worker
+- Channel "orion:chat:gpt:conversation" (kind=event, schema=ChatGptConversationV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host]
 - Contracts
 - test_concrete_grounding_prompt_patch.py
 - test_sprite_assignments.py
 - orion-cocreation-signals
-- api.py
+- Channel "orion:evidence:index:upsert" (kind=event, schema=EvidenceUnitV1) producers=[orion-sql-writer, *] consumers=[orion-evidence-index, orion-sql-writer, *]
 - test_metacog_trend_cue_prompt_render.py
 - Concept Induction Details Modal + Journal Synthesis Note
 - orion-gpu-lane-controller
 - build_region
 - store.py
-- test_http_endpoints.py
-- _seed_concept_ids
+- verdict_thresholds
+- EmailTransport
+- build_daily_seed_payload
 - test_biometrics_node_client.py
-- test_fcc_model_labels_api.py
+- _make_worker
 - Atlas quickstart
 - test_recall_falkor_store.py
 - Orion Spark Concept Induction
 - manual_migration_grammar_atlas.sql
 - Settings
-- read_recent_vision_events
+- inject_session_presence
 - test_settings_env_parity.py
 - _run_hook
 - test_schema_apply_lock_timeout.py
@@ -2810,7 +2823,9 @@
 - Field-digester decay/injection-interval mismatch: hold-by-default fix
 - catalog_drift_pressure: mesh-wide fix (item 3, Idea 1)
 - 16. Proposed implementation sequence
-- test_rpc_timeout_grammar_emit.py
+- test_skill_runner_catalogue.py
+- test_service_logs.py
+- test_notify_attention_ack.py
 - Usage
 - Orion Platform Audit Scripts
 - safe_graphify_update.sh
@@ -2825,14 +2840,16 @@
 - test_bus_attachment_passthrough.py
 - orion-fcc
 - orion-heartbeat (v0)
+- _FakeStream
 - _FakeFrameCache
+- settings.py
 - orion-percept-store
 - Concept reinforcement-on-recall
 - test_docker_compose_numeric_defaults.py
 - test_rdf_recency_scoring.py
 - 🛡 Orion Security Watcher (Guard)
 - orion-self-experiments
-- test_journal_entry_trigger_kind_filtering.py
+- test_ready.py
 - build_chat_turn_index
 - test_topics_endpoint_labels.py
 - ConnectionManager
@@ -2871,13 +2888,14 @@
 - Review queue
 - 🧠 Core Concepts
 - 🛠 Tool Scripts
+- _day_bucket_from_timestamp
 - Phase 1: Spark ConceptProfile Graph Materialization
 - Spark Concept Profile Repository Seam (Phase 0)
 - measure_attention_reason_branch_starvation.py
 - _SequenceConn
 - _snapshot
 - main
-- connection_params
+- _ensure_hub_scripts_import_path
 - shared_checkout_edit_guard.py
 - audit_config_lineage.py
 - Verbal / natural-language invocation examples
@@ -2887,11 +2905,12 @@
 - test_settings.py
 - test_docker_compose_bringup_cli_plugins_mount.py
 - Concept-profile config adapter in Orch
+- 16. Orion-specific touched-file checklist
 - test_docker_compose_env_parity.py
 - cognitive-loop-card.test.js
 - container-bringup-ui.test.js
 - turn-timer.test.js
-- _env_example_value
+- 19. Completion status
 - _FakeAiohttpGetCtx
 - Pinned llama.cpp CUDA base image
 - Common failures
@@ -2899,7 +2918,7 @@
 - orion-social-memory
 - orion-sql-db: PostgreSQL database + pgAdmin client
 - manual_migration_biometrics_substrate_loop.sql
-- _fallback_counts
+- _RaisingRedis
 - Evidence index substrate (slice note)
 - TestTheLaneTableMatchesTheRealConsumers
 - TestTheLoop
@@ -2949,6 +2968,8 @@
 - Q: How does a bus event become a SQL row in orion-sql-writer, and is the write an upsert?
 - Q: FinalizeReflectionV1 world_contact_opportunity consumers
 - Q: grammar_events table readers and retention
+- _FixedDatetime
+- test_dream_trigger_contract.py
 - Patch Set 21: Spark introspector wildcard publish guard
 - Patch Set 22: Metacog prompt templates aligned with phase contract
 - Review scheduling
@@ -2958,6 +2979,7 @@
 - run_scripts_platform_shadow_blast_radius_eval.py
 - resume_compact_convex_data.sh
 - test_anti_repetition_prompt_patch.py
+- Phase 3 — Substrate act path (decouple fetch from goal publish)
 - orion-chat-memory Docker Compose Service
 - test_health.py
 - test_docker_compose_env_parity.py
@@ -2988,8 +3010,9 @@
 - 7. Measurement Protocol
 - Spark Introspection Phase 2 — Exec lane isolation (implementation)
 - 2026-06-18-context-exec-smolcode-engine-pr.md
-- Phase 2 — Audit / goals / bus_worker wiring
-- Phase 4 — Env parity + agent gate
+- Orion Cockpit POV — Slice B/C follow-on stub
+- _episode_key
+- test_chat_cockpit_routes.py
 - Dual-Nano cabinet sensors — implementation plan
 - Bus Contracts
 - `SurfaceEncoding v2` Schema
@@ -3036,8 +3059,8 @@
 - Testing (without Hub)
 - max_recursion_depth
 - graphiti_projection.sql
-- _SyncAbort
-- _break_rescue
+- settings.py
+- _FakeConn
 - Roadmap
 - open_readonly_connection
 - orion_runtime_root.sh
@@ -3077,6 +3100,8 @@
 - 1) Executive summary
 - 4.1 What exists
 - 9) Canonical-source recommendation
+- 11. Tests and evals
+- 21. Juniper-facing response style
 - Scope & Non-goals
 - Scope and Non-Scope Boundary
 - New service: `orion-substrate-telemetry`
@@ -3084,6 +3109,7 @@
 - 3. Goals
 - Deployment
 - Testing
+- 2. Clean git and worktree rules
 - actions.respond_to_juniper_collapse_mirror.v1 verb
 - High-level architecture
 - Durable control-plane parity
@@ -3094,7 +3120,9 @@
 - Standard bus contract (exec)
 - requires_gpu
 - safety_rules
-- test_resilience_importable_without_loguru
+- test_a_later_alert_bounds_an_earlier_gap_instead_of_leaving_it_open
+- test_bounded_gaps_drop_out_of_a_later_window
+- test_partially_matching_neighbours_do_lower_the_score
 - `orion/inner_state_registry.py`
 - orion-recall (memory retrieval / MemoryBundleV1 fusion service)
 - diagnose_athena_cabinet_sensors.sh
@@ -3111,7 +3139,7 @@
 - Orion Consolidation Runtime Service (Layer 11)
 - test_dockerfile_cuda_device_order.py
 - test_aggregators_sql_collapse_scope.py
-- run_bus_synaptic_poll_e2e_eval.py
+- test_chunking_preserves_all_content
 - test_settings_ignore_empty_substrate_env
 - crawl_runs.py
 - health.py
@@ -3123,6 +3151,7 @@
 - Vendored browser libraries
 - test_turn_timer_js.py
 - orion-llama-cola-host Docker Compose
+- test_oversized_line_after_buffered_lines_does_not_lose_the_buffer
 - orion-pageindex: standalone journals PageIndex service (corpora rebuild/status/query API for journals and chat_episodes)
 - orion-rag: retrieval-augmented generation orchestrator, enriches queries with vector-db context before delegating to LLM host
 - 12) Local dev env gotchas
@@ -3188,7 +3217,7 @@
 - entrypoint.sh
 - SUBSTRATE_TRACE_MAP.md
 - orion-bus-tap service
-- test_doc_semantic_drift_chunking.py
+- test_nonpositive_max_chars_degrades_to_single_chunk_not_infinite_loop
 - test_single_chunk_per_side_reduces_to_plain_cosine_distance
 - test_extra_chunks_bias_the_score_high_not_low
 - test_returns_none_rather_than_fabricate_when_a_pair_is_unmeasurable
@@ -3202,11 +3231,6 @@
 - entrypoint.sh
 - orion-hub service (compose, hub-app + optional knowledge-forge)
 - smoke_biometrics_ws.md
-- test_unexpected_exception_still_releases_the_lock
-- test_inflight_task_is_strongly_referenced_then_released
-- test_post_leg_sends_no_transcript
-- test_voice_turn_still_forwards_the_subtitle
-- _final_frame
 - test_ambient_toggle_off_never_requires_base_url
 - test_check_now_stores_raw_response_and_video_sha256_for_the_affect_snapshot_view
 - test_latest_frame_routes_accept_a_stream_id_param_not_hardcoded_carbon
@@ -4197,10 +4221,10 @@
 - WorldPulseRunResultV1
 
 ## God Nodes (most connected - your core abstractions)
-1. `ServiceRef` - 1304 edges
-2. `BaseEnvelope` - 1224 edges
+1. `ServiceRef` - 1306 edges
+2. `BaseEnvelope` - 1226 edges
 3. `OrionBusAsync` - 812 edges
-4. `SchemaRegistration` - 613 edges
+4. `SchemaRegistration` - 614 edges
 5. `HeartbeatOnly` - 279 edges
 6. `FieldStateV1` - 279 edges
 7. `Orion Bus Channels Registry (channels.yaml)` - 261 edges
@@ -4213,12 +4237,12 @@
   .verify-run/hub_agent_trace_timeline.png → 2026-07-11-turn-visibility-design-spec.md
 - `Agent Trace inspection modal (Hub UI, fail case screenshot)` --conceptually_related_to--> `agent-trace.js (plain-text step consumer)`  [AMBIGUOUS]
   .verify-run/hub_agent_trace_timeline.png → 2026-07-11-turn-visibility-design-spec.md
-- `test_aggregate_borda_single_target_universe_gets_zero_points()` --calls--> `aggregate_borda()`  [INFERRED]
-  tests/test_attention_candidate_society_of_mind.py → orion/attention/rank_aggregation.py
-- `test_model_map_registers_the_sql_model_with_the_event_schema()` --indirect_call--> `JuniperMultimodalAffectV1`  [INFERRED]
-  services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py → orion/schemas/affectgpt.py
-- `test_main_exits_nonzero_when_a_collision_exists()` --indirect_call--> `gate()`  [INFERRED]
-  scripts/test_check_scripts_dir_no_stdlib_shadow.py → tests/test_env_key_single_source.py
+- `test_stable_hash_id_is_deterministic()` --calls--> `stable_hash_id()`  [INFERRED]
+  tests/test_substrate_deterministic_ids.py → orion/core/ids.py
+- `test_route_map_and_model_map_agree()` --indirect_call--> `AttentionSchemaV1`  [INFERRED]
+  services/orion-sql-writer/tests/test_attention_schema_sql_shape.py → orion/schemas/attention_schema.py
+- `test_model_map_registers_chat_stance_belief_log_sql_with_its_schema()` --indirect_call--> `ChatStanceBeliefLogV1`  [INFERRED]
+  services/orion-sql-writer/tests/test_chat_stance_belief_log_sql_shape.py → orion/schemas/chat_stance_belief.py
 
 ## Import Cycles
 - 3-file cycle: `services/orion-cortex-exec/app/executor.py -> services/orion-cortex-exec/app/verb_adapters.py -> services/orion-cortex-exec/app/router.py -> services/orion-cortex-exec/app/executor.py`
@@ -4333,11 +4357,11 @@
 - **Knowledge Forge dangling-reference test family** — tests_fixtures_knowledge_forge_claims_disputed_claim_test_bad_ref_claim, tests_fixtures_knowledge_forge_claims_disputed_claim_test_bad_ref_missing_claim, tests_fixtures_knowledge_forge_claims_disputed_claim_test_bad_ref_missing_source [INFERRED 0.65]
 - **orion-whisper-tts service definition family (README + compose + requirements)** — services_orion_whisper_tts_readme_doc, services_orion_whisper_tts_docker_compose_whisper_tts, services_orion_whisper_tts_requirements_dependencies [EXTRACTED 1.00]
 
-## Communities (4454 total, 1450 thin omitted)
+## Communities (4480 total, 1447 thin omitted)
 
-### Community 0 - "ServiceRef"
+### Community 0 - "OrionBusAsync"
 Cohesion: 0.01
-Nodes (397): HttpClient, dispatch_autonomy_episode_journal(), _new_reply_channel(), Any, Compose autonomy episode journal via cortex RPC and publish journal write., test_dispatch_autonomy_episode_journal_publishes_write(), ScenarioRunResult, _BusStub (+389 more)
+Nodes (375): ClosureHandler, HttpClient, OrionBusAsync, Any, Redis, Best-effort per-channel publish counter (see orion.bus.velocity).          Runs, Async Redis bus client., Unified async message iterator. Yields dicts with fields similar to redis-py's l (+367 more)
 
 ### Community 1 - "OrionTissue"
 Cohesion: 0.11
@@ -4345,47 +4369,47 @@ Nodes (15): OrionTissue, Any, ndarray, Path, Baseline-relative novelty using a r
 
 ### Community 2 - "api_routes.py"
 Cohesion: 0.02
-Nodes (303): ge, build_feedback_category_options(), ProposalStatus, chat_reflective_lane_threshold_history(), control_surface_store(), inspect_chat_reflective_lane_threshold(), Recorded changes to the routing threshold, newest first.      Consumed by the hu, _aitown_convex_internal_url() (+295 more)
+Nodes (527): ge, GoalActionError, GoalActionResult, Exception, CognitiveDraftRecommendationV1, CognitiveProposalDraftV1, CognitiveProposalReviewV1, CognitiveStanceNoteV1 (+519 more)
 
 ### Community 3 - "HeartbeatOnly"
 Cohesion: 0.01
-Nodes (416): HeartbeatDetailsProvider, _handle_bus_message(), Any, Task, Generic bus listener that keeps a service's local ``goal_state.py`` cache curren, Subscribe to the goal-proposal channel and keep this process's goal_state     ca, run_goal_state_listener(), start_goal_state_listener() (+408 more)
+Nodes (494): HeartbeatDetailsProvider, Task, start_goal_state_listener(), stop_goal_state_listener(), EwmaUpdate, create_entry_from_v2(), ErrorInfo, BaseChassis (+486 more)
 
-### Community 4 - "RedisStreamWorkQueue"
-Cohesion: 0.03
-Nodes (82): _attempt_from_envelope(), _consumer_suffix(), _expires_at(), _not_before_ms(), BaseException, datetime, Handler, QueueRabbit (+74 more)
+### Community 4 - "BaseEnvelope"
+Cohesion: 0.01
+Nodes (182): BaseEnvelope, Titanium, universal, versioned envelope.      - Strict (extra fields forbidden), DecodeResult, OrionCodec, Any, BaseModel, Bulletproof encode/decode layer.      Goals:     - Never leak raw JSON dicts int, OrionRouter (+174 more)
 
 ### Community 5 - "NormalizationContext"
 Cohesion: 0.04
-Nodes (111): AutonomyAdapter, _extract_state(), _extract_summary_dict(), Autonomy summary/state → autonomy_state OrionSignalV1 (Milestone B4)., OrionSignalAdapter, ABC, AdapterResult, Abstract base class for all Orion signal adapters. (+103 more)
+Nodes (112): EquilibriumSnapshotV1, Aggregate view of system equilibrium and distress., AutonomyAdapter, _extract_state(), _extract_summary_dict(), _pressure_dimensions(), Any, Autonomy summary/state → autonomy_state OrionSignalV1 (Milestone B4). (+104 more)
 
-### Community 6 - "cognitive_substrate.py"
-Cohesion: 0.03
-Nodes (118): EdgeRefV1, EvidenceRefV1, BaseModel, datetime, Unified cognitive substrate contracts (Phase 1 foundation)., SubjectRefV1, test_empty_perception_returns_none(), test_maps_nearby_players_to_nodes() (+110 more)
+### Community 6 - "ExecutionDispatchCandidateV1"
+Cohesion: 0.04
+Nodes (86): baseline_bin(), Fixed-width decile of a [0, 1] pressure, stamped at write time.      Deliberatel, claim_upheld(), control_key(), ControlObservation, _is_capacity_blocked(), _is_holdback(), OutcomeResolution (+78 more)
 
-### Community 7 - "CortexClientContext"
-Cohesion: 0.03
-Nodes (103): _build_request(), _load_env_file(), main(), _parse_args(), Namespace, Path, _tap(), Contract smoke tests for dream modernization schemas. (+95 more)
+### Community 7 - "finalize_pass.py"
+Cohesion: 0.05
+Nodes (72): Environment, bootstrap_answer_contract_on_request(), build_answer_contract_draft_for_hub(), enrich_answer_contract_after_routing(), heuristic_answer_contract(), investigation_state_for_contract(), merge_draft(), _norm_user_text() (+64 more)
 
 ### Community 8 - "ContextExecRequestV1"
-Cohesion: 0.03
-Nodes (126): Model, Top nodes by one centrality measure.          The measures disagree, and the dis, ContextExecPermissionV1, ContextExecRequestV1, Schema validation for context-exec llm_profile., test_context_exec_request_accepts_valid_llm_profiles(), test_context_exec_request_normalizes_llm_profile_case(), test_context_exec_request_omitted_llm_profile_allowed() (+118 more)
-
-### Community 9 - "workflow_runtime.py"
-Cohesion: 0.04
-Nodes (125): ConceptProfileBackendKind, CutoverFallbackPolicyKind, JournalMode, JournalEntryDraftV1, JournalEntryIndexV1, JournalTriggerV1, BaseModel, datetime (+117 more)
-
-### Community 10 - "GraphReviewTelemetryRecordV1"
 Cohesion: 0.02
-Nodes (244): MutationTrialStatusV1, MutationAdoptionV1, MutationDecisionV1, MutationPatchV1, MutationPressureV1, MutationProposalV1, MutationRollbackV1, MutationTrialV1 (+236 more)
+Nodes (219): Model, BusConsumerReadinessResult, BaseModel, ContextExecRequestV1, RepoImpactAnalysisReportV1, TraceAutopsyReportV1, Schema validation for context-exec llm_profile., test_context_exec_request_accepts_valid_llm_profiles() (+211 more)
 
-### Community 11 - "test_workflow_lane.py"
-Cohesion: 0.07
-Nodes (76): build_introspection_context(), Any, execute_chat_workflow(), DummyBus, _load_sql_writer_worker(), Load orion-sql-writer's worker under its own ``app`` package.      The worker im, An over-long card_summary is repaired, not thrown away.      Live 2026-08-27/08-, Regression for a confirmed-live incident (2026-07-30): the completion-notify (+68 more)
+### Community 9 - "CortexClientRequest"
+Cohesion: 0.01
+Nodes (286): ConceptProfileBackendKind, CutoverFallbackPolicyKind, JournalMode, dispatch_autonomy_episode_journal(), _new_reply_channel(), Any, Compose autonomy episode journal via cortex RPC and publish journal write., test_dispatch_autonomy_episode_journal_publishes_write() (+278 more)
 
-### Community 12 - "synthesizer.py"
-Cohesion: 0.06
-Nodes (169): BaseModel, SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtifactRevisionV1, BaseModel, SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1 (+161 more)
+### Community 10 - "MutationProposalV1"
+Cohesion: 0.01
+Nodes (340): FixtureRequest, MutationTrialStatusV1, BaseModel, Recall V2 / recall-strategy promotion readiness (advisory only; no live apply)., RecallStrategyReadinessV1, MutationAdoptionV1, MutationDecisionV1, MutationPatchV1 (+332 more)
+
+### Community 11 - "ServiceRef"
+Cohesion: 0.02
+Nodes (207): Identity for the producer/consumer of a message.      Keep this tiny + stable; y, ServiceRef, _source(), build_introspection_context(), Any, fake_bus(), FakeBus, FakeRedis (+199 more)
+
+### Community 12 - "registry.py"
+Cohesion: 0.02
+Nodes (403): BBox, callable, Canonical recall boundary. The only acceptable request field for text is `query_, Normalized recall response. Exec exposes debug counts, not raw fragments, by def, RecallRequestPayload, RecallResultPayload, DailyMetacogV1, DailyPulseV1 (+395 more)
 
 ### Community 13 - "main.py"
 Cohesion: 0.12
@@ -4396,60 +4420,60 @@ Cohesion: 0.01
 Nodes (179): "public"."action_outcomes", "public"."attention_loop_outcome", "public"."attention_salience_trace", "public"."autonomy_state_v2", "public"."bus_fallback_log", "public"."calibration_profile_audit", "public"."calibration_profiles", "public"."chat_gpt_conversation" (+171 more)
 
 ### Community 15 - "delta_to_perturbations"
-Cohesion: 0.02
-Nodes (161): apply_decay(), _aware_utc(), datetime, Read this service's README ("Decay vs. injection-interval mismatch") and this di, apply_perturbations(), _prune_recent_perturbations(), datetime, Tightly coupled to app/digestion/decay.py -- read that module's docstring and th (+153 more)
+Cohesion: 0.04
+Nodes (127): BaseModel, StateDeltaV1, apply_perturbations(), apply_suppression(), delta_to_perturbations(), _node_key(), Perturbation, run_digestion_tick() (+119 more)
 
 ### Community 16 - "test_curiosity_investigation.py"
 Cohesion: 0.02
-Nodes (168): _at(), _at_slot(), _attention_surface_rows(), _CortexBus, _drive_real_generate(), _FakeBus, _FakeConn, _FakeOutreach (+160 more)
+Nodes (171): FindingConnectivity, How many of ONE run's findings were joined to anything at all.      THE FOOTPRIN, Findings this run wrote that point at nothing. NOT clamped at 0.          `max(0, For the log line. `total == 0` is not a failure -- see the reader., CuriosityTurnResultV1, DurableRunRequestV1, BaseModel, The gates that need the stores, checked only after the cheap ones pass.      Not (+163 more)
 
-### Community 17 - "websocket_handler.py"
+### Community 17 - "CortexClientResult"
 Cohesion: 0.02
-Nodes (179): _chat_turn_trace_linkage(), handle_chat_request(), Canonical correlation linkage for chat turn metadata (Runtime Trace Nexus §5.8)., Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.     De, _rec_tape_req(), extract_autonomy_payload(), log_autonomy_payload_extraction(), Any (+171 more)
+Nodes (99): AutoRouteDecisionV1, AutoRouteRecallDecisionV1, CortexClientResult, BaseModel, Reply contract returned to clients via Orch., api_debug_container_bringup(), _augment_thin_history_from_persisted(), _chat_turn_trace_linkage() (+91 more)
 
 ### Community 18 - "test_curiosity_worldview.py"
 Cohesion: 0.02
-Nodes (191): _priors_section(), What the last few runs were ABOUT -- not just where the last one stopped.      T, _thread_section(), build_recent_runs(), collapse_duplicate_priors(), dedupe_settled_rows(), finding_connectivity_cypher(), Prior (+183 more)
+Nodes (197): _priors_section(), build_prior(), build_recent_runs(), collapse_duplicate_priors(), dedupe_settled_rows(), hops_for_run_cypher(), outcome_for_run_cypher(), Prior (+189 more)
 
 ### Community 19 - "LLMMessage"
-Cohesion: 0.04
-Nodes (173): InputT, ChatRequestPayload, ChatResultPayload, CollapseMirrorPayload, LLMMessage, Any, BaseModel, Request payload for LLM chat. (+165 more)
+Cohesion: 0.02
+Nodes (247): InputT, _BusStub, test_process_recall_includes_sql(), test_recall_handler_returns_bundle(), ChatRequestPayload, ChatResultPayload, LLMMessage, BaseModel (+239 more)
 
 ### Community 20 - "ThoughtEventV1"
 Cohesion: 0.03
-Nodes (228): CortexClientFn, Layer attribution evals (spec §11.2) — structural replay with mocked inputs., High surprise appraisal blocks quick lane; low surprise allows deterministic 5b., Misaligned reflection must change voice finalize output vs aligned., Turn N closure with surprise_unresolved exposes reducer-facing strain signal., test_5a_affects_5b_verdict(), test_5b_affects_5c_text(), test_turn_n_error_shifts_turn_n_plus_one_strain() (+220 more)
+Nodes (233): CortexClientFn, FrameSender, Return ``{prefix}_{sha256(preimage)[:24]}`` from ordered semantic parts., stable_hash_id(), Layer attribution evals (spec §11.2) — structural replay with mocked inputs., High surprise appraisal blocks quick lane; low surprise allows deterministic 5b., Misaligned reflection must change voice finalize output vs aligned., Turn N closure with surprise_unresolved exposes reducer-facing strain signal. (+225 more)
 
-### Community 21 - "GraphDBSubstrateStore"
-Cohesion: 0.03
-Nodes (102): call_with_fuseki_retry(), fuseki_http_error_body(), fuseki_http_retry_attempts(), fuseki_http_retry_base_delay_sec(), is_fuseki_lock_exhaustion(), is_fuseki_retryable_http_error(), Response, Fuseki/TDB transient HTTP failure detection and client-side retry. (+94 more)
+### Community 21 - "call_with_fuseki_retry"
+Cohesion: 0.17
+Nodes (15): call_with_fuseki_retry(), fuseki_http_error_body(), fuseki_http_retry_attempts(), fuseki_http_retry_base_delay_sec(), is_fuseki_lock_exhaustion(), is_fuseki_retryable_http_error(), Response, Fuseki/TDB transient HTTP failure detection and client-side retry. (+7 more)
 
 ### Community 22 - "BiometricsSubstrateStore"
-Cohesion: 0.05
-Nodes (21): record_tail_seed(), TailSeedRecord, BiometricsSubstrateStore, _cursor_lag_seconds(), Any, datetime, Append one brain-frame row per tick; prune rows beyond retention., Return the most-recent N frame payloads, ascending by generated_at. (+13 more)
+Cohesion: 0.04
+Nodes (32): clear_tail_seeds_for_tests(), has_cold_start_tail_seed(), has_recent_tail_seed(), Track substrate cursor tail-seeds that skip unreduced history., record_tail_seed(), tail_seed_snapshot(), TailSeedRecord, BiometricsSubstrateStore (+24 more)
 
 ### Community 23 - "FieldAttentionFrameV1"
 Cohesion: 0.03
-Nodes (162): Collection, ObservationMode, build_attention_frame(), datetime, 2026-07-30: `previous_frame` is used by `select_host_targets`/     `select_capab, stable_frame_id(), dwell_scorer(), magnitude_scorer() (+154 more)
+Nodes (162): ObservationMode, build_attention_frame(), datetime, 2026-07-30: `previous_frame` is used by `select_host_targets`/     `select_capab, stable_frame_id(), Candidate A -- precision-weighted prediction-error salience.  **Shadow, read-onl, dwell_scorer(), magnitude_scorer() (+154 more)
 
-### Community 24 - "CallSyneRoomMessageV1"
-Cohesion: 0.04
-Nodes (85): BaseModel, SocialOpenThreadV1, SocialTurnPolicyDecisionV1, CallSyneRoomMessageV1, ExternalRoomMessageV1, ExternalRoomParticipantV1, ExternalRoomPostResultV1, ExternalRoomTurnSkippedV1 (+77 more)
+### Community 24 - "extract_social_gif_observed_signal"
+Cohesion: 0.14
+Nodes (22): _boolish(), build_social_gif_proxy_context(), _candidate_value(), extract_social_gif_observed_signal(), _normalize_filename(), _normalize_fragment(), _normalize_tags(), Any (+14 more)
 
-### Community 25 - "CortexChatRequest"
-Cohesion: 0.13
-Nodes (118): GoalActionError, GoalActionResult, Exception, CognitiveProposalDraftV1, CognitiveProposalReviewV1, CognitiveStanceNoteV1, MutationPressureEvidenceV1, MutationSignalV1 (+110 more)
-
-### Community 26 - "ProposalEnvelopeV1"
-Cohesion: 0.03
-Nodes (198): ContextExecCreatableReviewState, assert_context_exec_proposal_safe(), build_memory_correction_proposal_envelope(), build_patch_proposal_envelope(), MemoryCorrectionProposalV1, PatchProposalV1, ProposalEnvelopeV1, Shared review wrapper for context-exec proposal artifacts. (+190 more)
-
-### Community 27 - "runner.py"
+### Community 25 - "WindowService"
 Cohesion: 0.05
-Nodes (61): MaterialCounts, A `StudyMaterial`-shaped object built from counts alone. The journal     entry r, CuriosityRunBriefV1, CuriosityTurnRequestV1, CuriosityTurnResultV1, DurableRunRequestV1, DurableRunStateV1, BaseModel (+53 more)
+Nodes (48): VisionObject, api_catchup(), api_catchup_stream(), api_current(), api_current_stream(), api_metrics(), api_recent(), api_recent_stream() (+40 more)
+
+### Community 26 - "context_exec.py"
+Cohesion: 0.03
+Nodes (204): ContextExecCreatableReviewState, Finding, Finding, FindingsBundle, BaseModel, Cognition-facing contracts (evidence-first answering, etc.)., test_findings_bundle_roundtrip(), assert_context_exec_proposal_safe() (+196 more)
+
+### Community 27 - "JournalEntryWriteV1"
+Cohesion: 0.03
+Nodes (125): build_investigation_journal_entry(), format_footprint(), MaterialCounts, datetime, The curiosity journal entry -- Orion's own written result of a run.  Moved VERBA, A `StudyMaterial`-shaped object built from counts alone. The journal     entry r, `{'Prior': 2, 'Hop': 5}` -> `"Hop 5, Prior 2"`. Empty string for {}., Orion's own written result.      The title is deliberately NOT derived from a su (+117 more)
 
 ### Community 28 - "NodeCatalog"
 Cohesion: 0.03
-Nodes (215): AcceptedPublisher, AvailabilityStatus, EmissionSaver, NodeBioLoader, NodeBioSaver, NodeCatalog, NodeProfile, Any (+207 more)
+Nodes (224): AcceptedPublisher, AvailabilityStatus, EmissionSaver, NodeBioLoader, NodeBioSaver, NodeCatalog, Path, test_node_biometrics_projection_defaults() (+216 more)
 
 ### Community 29 - "EquilibriumService"
 Cohesion: 0.07
@@ -4457,295 +4481,295 @@ Nodes (25): main(), EquilibriumService, _node_age_sec(), Any, datetime, Shared l
 
 ### Community 30 - "profile_repository.py"
 Cohesion: 0.05
-Nodes (61): build_latest_profile_query(), build_profile_details_query(), _escape_sparql(), GraphQueryConfig, GraphQueryError, RuntimeError, _sparql_values_str(), _sparql_values_uri() (+53 more)
+Nodes (47): _as_int(), map_latest_profile_rows(), build_latest_profile_query(), build_profile_details_query(), _escape_sparql(), GraphQueryConfig, GraphQueryError, RuntimeError (+39 more)
 
-### Community 31 - "models.py"
-Cohesion: 0.04
-Nodes (94): AutonomyStanceMode, AutonomyStateQuality, AttentionItemV1, AutonomyActiveGoalV1, AutonomyEvidenceRefV1, AutonomyGoalHeadlineV1, AutonomyStateDeltaV1, AutonomyStateV1 (+86 more)
+### Community 31 - "AutonomyStateV1"
+Cohesion: 0.05
+Nodes (73): AutonomyStanceMode, AutonomyStateQuality, AutonomyGoalHeadlineV1, AutonomyStateV1, Lift a persisted V1 graph row into V2 with synthetic evidence and conservative d, upgrade_autonomy_state_v1_to_v2(), AutonomyLookupV1, AutonomyRepository (+65 more)
 
 ### Community 32 - "recall_utils.py"
-Cohesion: 0.06
-Nodes (61): apply_fast_chat_recall_profile_clamp(), apply_hub_chat_lane_recall_clamp(), _clean_profile(), delivery_safe_recall_decision(), hub_chat_lane_from_ctx(), _is_concrete_ops_query(), _normalize_bool(), plan_ctx_latest_user_text() (+53 more)
+Cohesion: 0.07
+Nodes (59): apply_fast_chat_recall_profile_clamp(), apply_hub_chat_lane_recall_clamp(), _clean_profile(), delivery_safe_recall_decision(), has_inline_recall(), _is_concrete_ops_query(), _normalize_bool(), plan_ctx_latest_user_text() (+51 more)
 
 ### Community 33 - "executor.py"
 Cohesion: 0.03
-Nodes (155): ChatResponsePayload, _bounded_memory_digest(), _load_daily_metacog_template(), test_daily_metacog_prompt_rejects_oversize_without_truncation(), test_daily_metacog_rendered_prompt_stays_bounded(), _alert_tags_from_recent_alerts(), _append_memory_digest(), _apply_autonomous_background_route() (+147 more)
+Nodes (151): _bounded_memory_digest(), _load_daily_metacog_template(), test_daily_metacog_prompt_rejects_oversize_without_truncation(), test_daily_metacog_rendered_prompt_stays_bounded(), test_prompt_render_ctx_preserves_journal_lane_bundle_by_default(), test_prompt_render_ctx_strips_debug_recall_bundle_only_when_opted_in(), CoreEventCache, format_recent_turn_effect_alerts() (+143 more)
 
 ### Community 34 - "main.py"
-Cohesion: 0.06
-Nodes (74): NotificationReceiptDB, AgentTraceSummaryV1, ChatAttentionState, ChatMessageNotification, ChatMessageState, DeliveryAttempt, NotificationAttachment, NotificationPreference (+66 more)
+Cohesion: 0.07
+Nodes (74): UUID, AgentTraceSummaryV1, ChatAttentionRequest, ChatAttentionState, ChatMessageNotification, ChatMessageState, DeliveryAttempt, HubNotificationEvent (+66 more)
 
 ### Community 35 - "EffectPosterior"
 Cohesion: 0.02
-Nodes (180): baseline_bin(), BinContrast, contrast(), ContrastEstimate, ControlCell, pooled_treated_mean(), ControlCellKey, TreatedCellKey (+172 more)
+Nodes (112): BinContrast, contrast(), ContrastEstimate, ControlCell, pooled_treated_mean(), ControlCellKey, TreatedCellKey, Baseline-matched contrast: what an action DID, not what happened after it.  WHY (+104 more)
 
 ### Community 36 - "CollapseMirrorEntryV2"
-Cohesion: 0.06
-Nodes (57): apply_causal_density_to_entry(), CollapseMirrorStore, enrich_entry(), _get_store(), _label_for_score(), Any, Read the relational-trigger upstream (turn_change_classify SHIFT appraisal), Apply causal density scoring in-memory (no collapse store required).      2026-0 (+49 more)
+Cohesion: 0.13
+Nodes (15): apply_causal_density_to_entry(), CollapseMirrorStore, enrich_entry(), _get_store(), _label_for_score(), Any, Read the relational-trigger upstream (turn_change_classify SHIFT appraisal), Apply causal density scoring in-memory (no collapse store required).      2026-0 (+7 more)
 
 ### Community 37 - "test_enrichment_contract.py"
-Cohesion: 0.06
-Nodes (67): _as_object(), _as_text(), coerce_aspects(), coerce_meaning(), coerce_sentiment(), describe_enrichment_shape(), Any, _range_spec() (+59 more)
+Cohesion: 0.05
+Nodes (69): Any, SegmentRecord, _as_object(), _as_text(), coerce_aspects(), coerce_meaning(), coerce_sentiment(), describe_enrichment_shape() (+61 more)
 
 ### Community 38 - "app.js"
 Cohesion: 0.02
-Nodes (218): agentAnswerHeadline(), API_BASE_URL, appendExecutionStepsPanel(), appendMessage(), appendSocialInspectionStateList(), appendTurnTracePanel(), applyAgentClaudePayloadFields(), applyDebugTextLayout() (+210 more)
+Nodes (95): API_BASE_URL, appendSocialInspectionStateList(), applyMindPrefsToControls(), applyPreferenceRows(), audioContext, audioQueue, autonomyAvailabilityRowsForDisplay(), buildChatStanceSection() (+87 more)
 
 ### Community 39 - "worker.py"
-Cohesion: 0.07
-Nodes (54): Telemetry for recall decisions., RecallDecisionV1, classify_intent_v1(), intent_telemetry_payload(), IntentClassification, BaseModel, Build recall.intent.v1 telemetry. ``query_hash16`` is SHA-256 of UTF-8 query tex, resolve_profile_for_intent() (+46 more)
+Cohesion: 0.06
+Nodes (59): count_eligible_active(), RetrievalIntentV1, main(), classify_intent_v1(), intent_telemetry_payload(), IntentClassification, BaseModel, Build recall.intent.v1 telemetry. ``query_hash16`` is SHA-256 of UTF-8 query tex (+51 more)
 
 ### Community 40 - "OrganClass"
 Cohesion: 0.03
-Nodes (72): InMemorySpanExporter, EquilibriumAdapter, normalize_adapter_result(), AdapterResult, test_normalize_list(), test_normalize_single_signal(), Causal parent miss notes (spec §7.B)., _sig() (+64 more)
+Nodes (63): InMemorySpanExporter, normalize_adapter_result(), AdapterResult, SparkAdapter, test_normalize_list(), test_normalize_single_signal(), adapter(), norm_ctx() (+55 more)
 
 ### Community 41 - "SubstrateMoleculeV1"
-Cohesion: 0.03
-Nodes (123): GradientObserver, build_turn_change_signal(), clamp_gradient(), Clamp a single gradient component to [lo, hi]., default_registry(), Build a registry seeded with the canonical defaults.      Molecule kinds expecte, compute_daily_rollup(), _contradiction_clusters() (+115 more)
+Cohesion: 0.04
+Nodes (91): GradientObserver, emit_contradiction(), emit_pressure(), Any, Thin substrate-emit helpers for the autonomy/pressure organ.  These do not modif, A pressure molecule is a constraint+gradient pair.      ``magnitude`` is folded, Emit a contradiction molecule that points at two other molecule ids., compute_daily_rollup() (+83 more)
 
 ### Community 42 - "RedisGraphQueryClient"
 Cohesion: 0.05
-Nodes (61): ``id_property``/``label_property`` are what make this genuinely         graph-ag, FalkorGraphClient, _header_field_names(), Any, Protocol, Shared low-level FalkorDB Cypher client.  Extracted from ``orion.substrate.falko, Run Cypher and return rows as name-keyed dicts.          ``read_only`` routes to, Minimal sync Redis GRAPH.QUERY client for FalkorDB.      ``read_only=True`` send (+53 more)
+Nodes (59): ``id_property``/``label_property`` are what make this genuinely         graph-ag, FalkorGraphClient, _header_field_names(), Any, Protocol, Shared low-level FalkorDB Cypher client.  Extracted from ``orion.substrate.falko, Run Cypher and return rows as name-keyed dicts.          ``read_only`` routes to, Minimal sync Redis GRAPH.QUERY client for FalkorDB.      ``read_only=True`` send (+51 more)
 
-### Community 43 - "Hunter"
-Cohesion: 0.01
-Nodes (209): _rpc_request(), _service_ref(), Hunter, Fire-and-forget consumer. Subscribes to patterns, filters, and acts., binary_score_from_top_logprobs(), build_classify_prompt(), parse_classify_lines(), Any (+201 more)
-
-### Community 44 - "WindowService"
+### Community 43 - "MemoryTurnPersistedV1"
 Cohesion: 0.02
-Nodes (202): VisionArtifactOutputs, VisionArtifactPayload, VisionCaption, VisionObject, VisionWindowRequestPayload, VisionWindowResultPayload, build_artifact_payload(), merge_result_inputs() (+194 more)
+Nodes (171): _rpc_request(), binary_score_from_top_logprobs(), build_classify_prompt(), parse_classify_lines(), Any, build_memory_graph_suggest_options(), Any, Try quick lane first, then metacog if draft JSON cannot be extracted. (+163 more)
+
+### Community 44 - "VisionArtifactPayload"
+Cohesion: 0.06
+Nodes (72): VisionArtifactOutputs, VisionArtifactPayload, VisionCaption, Separate loop, separate channel from _consume() above --         identity_face a, artifact_uris_from_artifact(), _build_evidence(), build_window_payload(), camera_id_from_artifact() (+64 more)
 
 ### Community 45 - "test_review_telemetry_attrition.py"
 Cohesion: 0.21
 Nodes (16): _live_shaped_store(), datetime, Regression cover for the substrate mutation pipeline's five-week starvation.  Li, The exact live failure: both conditions individually satisfiable, jointly never., Rows lost to the limit are not "dropped by a filter" -- widening the     filter, The signature that separates limit truncation from a real zone mismatch.      Th, The live histogram in miniature: 6 operator_review/concept_graph rows and     2, Pins sort direction AND that the limit slice happens AFTER the sort.      Assert (+8 more)
 
 ### Community 46 - "ExecutionDispatchFrameV1"
-Cohesion: 0.04
-Nodes (111): _aggregate_outcome_status(), build_feedback_frame(), _candidate_outcome_kind(), _cortex_status_to_outcome(), _gate_positive_delta_channels(), _observation(), _policy_decision_outcome(), datetime (+103 more)
+Cohesion: 0.05
+Nodes (81): _aggregate_outcome_status(), build_feedback_frame(), _candidate_outcome_kind(), _cortex_status_to_outcome(), _gate_positive_delta_channels(), _observation(), _policy_decision_outcome(), datetime (+73 more)
 
-### Community 47 - "contracts.py"
-Cohesion: 0.04
-Nodes (105): EffectKind, AttachmentRefV1, A reference to caller-supplied binary content, carried beside message text., _agent_chain_delegate_status(), _agent_chain_delegate_summary(), _agent_chain_failure_detail(), _agent_chain_failure_signals(), _agent_delegate_payload() (+97 more)
-
-### Community 48 - "CortexClientRequest"
-Cohesion: 0.02
-Nodes (187): bootstrap_answer_contract_on_request(), build_answer_contract_draft_for_hub(), enrich_answer_contract_after_routing(), heuristic_answer_contract(), investigation_state_for_contract(), merge_draft(), _norm_user_text(), output_modes_for_answer_contract_style() (+179 more)
-
-### Community 49 - "FieldStateV1"
+### Community 47 - "ContextExecRunV1"
 Cohesion: 0.03
-Nodes (148): check_field_coherence(), Return 0-1 incoherence score for one node vector., Return per-node incoherence scores (0-1). Empty if no suspicion found., _rule_suspicion(), FieldEdgeV1, FieldStateV1, BaseModel, _field_from_json() (+140 more)
+Nodes (127): AgentChainRequest, AgentChainResult, Primary entry point for the Agent Chain service., Response from Agent Chain., context_exec_permissions_for_llm_profile(), ContextExecOperatorSummaryV1, ContextExecRunV1, ContextExecSafetySummaryV1 (+119 more)
+
+### Community 48 - "main.py"
+Cohesion: 0.04
+Nodes (94): is_runtime_entry_verb(), publish_with_reconnect(), Any, Publish once; on transport failure reconnect the command client and retry., _FlakyBus, MonkeyPatch, orion.core.bus.resilience must not crash-on-import when loguru is missing., test_publish_with_reconnect_retries_after_transport_error() (+86 more)
+
+### Community 49 - "FieldEdgeV1"
+Cohesion: 0.06
+Nodes (64): FieldEdgeV1, BaseModel, test_field_edge_v1_accepts_explicit_provenance_fields(), test_field_edge_v1_defaults_without_provenance_fields(), apply_diffusion(), _clamp01(), get_learned_store(), _load_learned_overlay() (+56 more)
 
 ### Community 50 - "ReductionReceiptV1"
-Cohesion: 0.04
-Nodes (119): EpisodeSummaryV1, BaseModel, Episodic continuity contracts (self-modeling loop, rung 4).  An episode is a pro, test_node_biometrics_projection_defaults(), test_organ_emission_roundtrip(), test_projection_update_roundtrip(), test_reduction_receipt_requires_schema_version(), test_state_delta_roundtrip() (+111 more)
+Cohesion: 0.05
+Nodes (84): EpisodeSummaryV1, BaseModel, Episodic continuity contracts (self-modeling loop, rung 4).  An episode is a pro, test_projection_update_roundtrip(), test_reduction_receipt_requires_schema_version(), ProjectionUpdateV1, BaseModel, ReductionReceiptV1 (+76 more)
 
 ### Community 51 - "ConceptRelationV1"
-Cohesion: 0.07
-Nodes (40): emit_contradiction(), emit_pressure(), Any, Thin substrate-emit helpers for the autonomy/pressure organ.  These do not modif, A pressure molecule is a constraint+gradient pair.      ``magnitude`` is folded, Emit a contradiction molecule that points at two other molecule ids., ConceptAtomV1, BaseModel (+32 more)
+Cohesion: 0.05
+Nodes (72): build_turn_change_signal(), ConceptAtomV1, BaseModel, Atoms — reusable semantic invariants.  An atom is *not* a domain noun (memory, d, A reusable semantic invariant.      `key` is the unique handle (e.g. "signal.val, CompositeV1, BaseModel, Composite — a small bundle of atoms + relations.  This is the *kernel-level* com (+64 more)
 
-### Community 52 - "BiometricsSubstrateWorker"
-Cohesion: 0.02
-Nodes (85): ReducerHealthClass, _get(), health_snapshots(), Any, datetime, In-process reducer health snapshots for /grammar/truth and operator diagnosis., record_cursor_advance(), record_error() (+77 more)
+### Community 52 - ".start"
+Cohesion: 0.04
+Nodes (18): Any, Fold one observed vision artifact into the perceptual-health window., Subscribe to orion:vision:artifacts and track the eye's own output.          Mir, Subscribe to the same channel node:substrate.vision's listener         uses, and, Score one real ``orion:vision:artifacts`` message that carries an         inline, Sync core of the C producer: map the cached drive state to one intent., Publish at most one involuntary embodiment intent per dynamics tick.          Ga, Subscribe to the drive-state channel and cache the latest DriveStateV1. (+10 more)
 
 ### Community 53 - "ProposalCandidateV1"
-Cohesion: 0.04
-Nodes (118): DecisionLiteral, build_policy_decision_frame(), datetime, stable_policy_frame_id(), evaluate_proposal_candidate(), _finish(), _policy_gate_for_decision(), AutonomyConfigV1 (+110 more)
+Cohesion: 0.02
+Nodes (175): DecisionLiteral, _Eligible, A decision that cleared every gate and is now only competing for a slot., build_policy_decision_frame(), datetime, stable_policy_frame_id(), evaluate_proposal_candidate(), _finish() (+167 more)
 
-### Community 54 - "SubstrateEdgeV1"
-Cohesion: 0.03
-Nodes (126): BaseSubstrateNodeV1, HypothesisNodeV1, SubstrateEdgeV1, FrontierInvocationDecisionV1, FrontierInvocationPlanV1, FrontierInvocationRunResultV1, BaseModel, FrontierContextRefsV1 (+118 more)
+### Community 54 - "InMemorySubstrateGraphStore"
+Cohesion: 0.01
+Nodes (390): BaseSubstrateNodeV1, ContradictionNodeV1, DriveNodeV1, GoalNodeV1, HypothesisNodeV1, SubstrateEdgeV1, FrontierInvocationDecisionV1, FrontierInvocationPlanV1 (+382 more)
 
-### Community 55 - "association.py"
-Cohesion: 0.05
-Nodes (75): _broadcast_enabled(), _broadcast_is_stale(), build_hub_association_bundle(), _default_reader(), _parse_broadcast(), Any, Ensure the current Hub turn is always a coalition member for fail-closed evidenc, Orion capability: felt-state context for the stance turn.      Supplies Thought (+67 more)
+### Community 55 - "SubstrateFeltStateReader"
+Cohesion: 0.06
+Nodes (51): _default_reader(), _database_url(), _flag_enabled(), _get_reader(), hydrate_felt_state_ctx(), LaneSpec, _max_age_sec(), Any (+43 more)
 
 ### Community 56 - "GrammarEventV1"
-Cohesion: 0.02
-Nodes (188): ExecutionProjectionLoader, ExecutionProjectionSaver, Real, bus-wide RPC-timeout grammar marker for the transport metacog trigger, apply_grammar_event(), apply_grammar_trace_batch(), _atom_row(), _bulk_insert_derived(), _bulk_insert_events() (+180 more)
+Cohesion: 0.04
+Nodes (90): Real, bus-wide RPC-timeout grammar marker for the transport metacog trigger, apply_grammar_event(), apply_grammar_trace_batch(), _atom_row(), _bulk_insert_derived(), _bulk_insert_events(), _compaction_row(), _created_at() (+82 more)
 
 ### Community 57 - "service.py"
-Cohesion: 0.09
-Nodes (38): ProbeResult, run_probe(), build_compose_build_command(), build_compose_command(), build_compose_up_command(), execute_remediation(), RemediationResult, _run_command() (+30 more)
+Cohesion: 0.16
+Nodes (22): ProbeResult, run_probe(), load_roster(), ProbeConfig, ProbeMode, BaseModel, Enum, str (+14 more)
 
-### Community 58 - "__init__.py"
-Cohesion: 0.03
-Nodes (146): FrontierTargetZoneV1, GoalNodeV1, Canonical shared schemas for Orion core services., GraphConsolidationDecisionV1, GraphConsolidationResultV1, GraphReviewCycleRecordV1, GraphStateDeltaDigestV1, BaseModel (+138 more)
+### Community 58 - "SubstratePolicyProfileStore"
+Cohesion: 0.02
+Nodes (89): FrontierTargetZoneV1, GraphConsolidationDecisionV1, GraphConsolidationResultV1, BaseModel, Operator-controlled substrate policy profile adoption contracts (Phase 17)., SubstratePolicyAdoptionResultV1, SubstratePolicyAuditEventV1, SubstratePolicyComparisonV1 (+81 more)
 
 ### Community 59 - "bus_worker.py"
-Cohesion: 0.05
-Nodes (59): IdentitySnapshotV1, ActionOutcomeEmitV1, Bus payload carrying an action outcome for durable persistence via sql-writer., _gap_strength(), _gaps_from_rollups(), _load_recommended_sections(), metabolism_enabled(), _signal_from_gap() (+51 more)
+Cohesion: 0.06
+Nodes (44): IdentitySnapshotV1, ActionOutcomeEmitV1, Bus payload carrying an action outcome for durable persistence via sql-writer., metabolism_enabled(), GraphReadyArtifact, ConceptInductionTrigger, Handler for durable world-pulse run-result stream messages.          Routes thro, _service_ref() (+36 more)
 
-### Community 60 - ".text"
-Cohesion: 0.02
-Nodes (139): CompactionRequestV1, A typed *ask* from the awake reverie (reasoning) to the offline dream     (stora, Clear this row's marker, and up to `drain_batch` others that are already done., Re-queue any dispatch frame whose marker was cleared without a feedback frame., parse_receipt_json(), Any, FieldDigesterStore, Raw `field_json` payloads (decoded dicts) from the last         `window_seconds` (+131 more)
+### Community 60 - "reverie.py"
+Cohesion: 0.03
+Nodes (128): BroadcastReader, Reverie -> AttentionSchemaV1 projection (write-only adapter).  Adapt, do not mig, One row per chain. Pure; never touches I/O., to_attention_schema(), CompactionRequestV1, Readout of one train of thought — successive climbs of the ladder.      Continui, A typed *ask* from the awake reverie (reasoning) to the offline dream     (stora, ReverieChainV1 (+120 more)
 
 ### Community 61 - "main.py"
-Cohesion: 0.06
-Nodes (50): ChatHistoryMessageV1, Any, BaseModel, UUID, Canonical chat history payload for vector + SQL persistence., Convert to a vector-writer friendly document.          The caller supplies envel, WebSocket fan-out for the OrionTissue read model.  Relocated 2026-07-28 from ser, Embedder (+42 more)
+Cohesion: 0.04
+Nodes (87): emit_vector_upsert(), Any, _embed_bus(), _embed_http(), publish_crystallization_to_chroma(), Build upsert, optionally embed, publish to vector bus. Returns updated crystalli, EmbeddingGenerateV1, EmbeddingResultV1 (+79 more)
 
 ### Community 62 - "FakeStore"
-Cohesion: 0.03
-Nodes (105): Narrator, CompactionMetricsV1, ConsolidateEntryV1, DownscaleEntryV1, MemoryCompactionDeltaV1, PruneEntryV1, BaseModel, datetime (+97 more)
+Cohesion: 0.04
+Nodes (86): Narrator, CompactionMetricsV1, ConsolidateEntryV1, DownscaleEntryV1, MemoryCompactionDeltaV1, PruneEntryV1, BaseModel, datetime (+78 more)
 
-### Community 63 - "investigation_v2.py"
-Cohesion: 0.07
-Nodes (76): InvestigationV2AnswerStatus, EvidenceBundle, InvestigationSectionV2, SourceResult, Schema tests for investigation_v2 mode and profile permissions., test_context_exec_permissions_for_llm_profile_agent_read_repo(), test_context_exec_request_accepts_investigation_v2_mode(), test_evidence_bundle_and_source_result_schema() (+68 more)
+### Community 63 - "SourceResult"
+Cohesion: 0.10
+Nodes (55): InvestigationV2AnswerStatus, EvidenceBundle, InvestigationReportV2, InvestigationSectionV2, Enum, str, SourceResult, SourceStatus (+47 more)
 
 ### Community 64 - "router.py"
 Cohesion: 0.05
-Nodes (85): get_or_create_collector(), new_cortex_exec_collector(), Any, record_assembled_grammar(), short_error_kind(), extract_reasoning_features(), Any, _active_goals_from_ctx() (+77 more)
+Nodes (84): prepare_chat_quick_reply_context(), Hub quick lane: identity YAML only — no stance/autonomy graph (must stay fast; G, record_assembled_grammar(), short_error_kind(), extract_reasoning_features(), Any, _active_goals_from_ctx(), _autonomy_goal_lineage_from_state() (+76 more)
 
 ### Community 65 - "self_study.py"
-Cohesion: 0.06
-Nodes (95): Direct request to write raw triples or triggers to the RDF writer.     Used for, RdfWriteRequest, SelfInducedConceptV1, SelfKnowledgeItemV1, SelfReflectiveFindingV1, SelfSnapshotV1, _all_snapshot_items(), _as_envelope_correlation_id() (+87 more)
+Cohesion: 0.10
+Nodes (56): SelfKnowledgeItemV1, SelfReflectiveFindingV1, _all_snapshot_items(), _as_envelope_correlation_id(), _behavioral_items(), build_self_reflection_journal_entry(), build_self_reflection_summary(), build_self_snapshot() (+48 more)
 
 ### Community 66 - "test_memory_crystallization.py"
-Cohesion: 0.06
-Nodes (41): fetch_similar_candidates(), Pool, Vector-similarity candidate retrieval across ALL active crystallizations, not sc, detect_contradictions(), detect_duplicates(), DetectionResult, _jaccard(), merge_detection() (+33 more)
+Cohesion: 0.04
+Nodes (66): fetch_similar_candidates(), Pool, Vector-similarity candidate retrieval across ALL active crystallizations, not sc, detect_contradictions(), detect_duplicates(), DetectionResult, _jaccard(), merge_detection() (+58 more)
 
 ### Community 67 - "SuggestDraftV1"
-Cohesion: 0.08
-Nodes (53): approve_memory_graph_draft(), ApproveOutcome, preview_validate_only(), Any, Pool, validate → Postgres (memory_cards + edges).      The RDF graph store write (Fuse, Validate RDF + SHACL without persistence; return preview card shells., CardProjectionDefaultsV1 (+45 more)
+Cohesion: 0.06
+Nodes (95): MemoryCardStatus, TimeHorizonV1, approve_memory_graph_draft(), ApproveOutcome, preview_validate_only(), Any, Pool, validate → Postgres (memory_cards + edges).      The RDF graph store write (Fuse (+87 more)
 
 ### Community 68 - "VisionWindowPayload"
 Cohesion: 0.16
 Nodes (38): VisionWindowPayload, _attach_raw_model_output(), _clamp_float(), _coerce_event_candidate_item(), _coerce_legacy_events_field(), _coerce_llm_text(), _coerce_salient_observation_item(), _coerce_uncertainty_item() (+30 more)
 
-### Community 69 - "Service: orion-sql-writer"
-Cohesion: 0.03
-Nodes (75): Channel "orion:calibration:profile:audit" (kind=event, schema=CalibrationProfileAuditV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer], Channel "orion:chat:gpt:conversation" (kind=event, schema=ChatGptConversationV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:example" (kind=event, schema=ChatGptDerivedExampleV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:import:run" (kind=event, schema=ChatGptImportRunV1) producers=[chatgpt-import] consumers=[orion-sql-writer], Channel "orion:chat:history:spark_meta:patch" (kind=event, schema=ChatHistorySparkMetaPatchV1) producers=[orion-memory-consolidation] consumers=[orion-sql-writer], Channel "orion:chat:response:feedback" (kind=event, schema=ChatResponseFeedbackV1) producers=[orion-hub, *] consumers=[orion-sql-writer], Channel "orion:endogenous:runtime:audit" (kind=event, schema=EndogenousRuntimeAuditV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer], Channel "orion:endogenous:runtime:record" (kind=event, schema=EndogenousRuntimeExecutionRecordV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer] (+67 more)
+### Community 69 - "Service: orion-notify"
+Cohesion: 0.18
+Nodes (11): Channel "orion:notify:config:preference" (kind=event, schema=NotificationPreferencesUpdate) producers=[orion-notify] consumers=[orion-sql-writer], Channel "orion:notify:config:recipient" (kind=event, schema=RecipientProfileUpdate) producers=[orion-notify] consumers=[orion-sql-writer], Channel "orion:notify:in_app" (kind=event, schema=HubNotificationEvent) producers=[orion-notify] consumers=[orion-hub], Channel "orion:notify:persistence:receipt" (kind=event, schema=NotificationReceiptEvent) producers=[orion-notify] consumers=[orion-sql-writer], Channel "orion:notify:persistence:request" (kind=event, schema=NotificationRecord) producers=[orion-notify] consumers=[orion-sql-writer], Schema: HubNotificationEvent, Schema: NotificationPreferencesUpdate, Schema: NotificationReceiptEvent (+3 more)
 
-### Community 70 - "test_execution_substrate_reducer.py"
-Cohesion: 0.08
-Nodes (66): ExecutionRunStateV1, BaseModel, _boolish(), compute_pressure_hints(), extract_execution_state_from_events(), _parse_summary_kv(), datetime, _utc_now() (+58 more)
+### Community 70 - "GrammarProvenanceV1"
+Cohesion: 0.05
+Nodes (104): ExecutionProjectionLoader, ExecutionProjectionSaver, ExecutionRunStateV1, ExecutionTrajectoryProjectionV1, BaseModel, GrammarProvenanceV1, _boolish(), compute_pressure_hints() (+96 more)
 
 ### Community 71 - "main.py"
-Cohesion: 0.06
-Nodes (76): InsertOutcome, BaseModel, Typed self-experiment registry schemas., Accept legacy skill_id payloads or typed experiment fields., SelfExperimentCreateRequestV1, SelfExperimentCreateResponseV1, SelfExperimentDispatchRequestV1, SelfExperimentDispatchResponseV1 (+68 more)
-
-### Community 72 - "BusConsumerReadinessResult"
 Cohesion: 0.05
-Nodes (64): bus_consumer_readiness_v1(), BusConsumerReadinessResult, check_bus_consumer_readiness(), check_heartbeat_fresh(), _decode_redis_val(), _heartbeat_matches_service(), _parse_last_seen_ts(), Any (+56 more)
+Nodes (89): InsertOutcome, build_compact_skill_catalog(), _default_verbs_dir(), _family_for_skill(), _is_host_mutating_skill(), load_skill_manifest(), BaseModel, Path (+81 more)
 
-### Community 73 - "SubstrateMutationStore"
-Cohesion: 0.02
-Nodes (94): CognitiveDraftRecommendationV1, MutationQueueItemV1, cognition_view_snapshot(), Any, datetime, Write a brand-new proposal and its queue row in one transaction.          Same f, Consistent copies of the dicts the chat-path cognition context reads.      Two d, Release a surface because its change survived, not because it failed.          ` (+86 more)
+### Community 72 - "consumer_readiness.py"
+Cohesion: 0.08
+Nodes (34): bus_consumer_readiness_v1(), check_bus_consumer_readiness(), check_heartbeat_fresh(), _decode_redis_val(), _heartbeat_matches_service(), _parse_last_seen_ts(), Any, datetime (+26 more)
+
+### Community 73 - "test_credit_integrity.py"
+Cohesion: 0.06
+Nodes (62): analyse_credit_integrity(), channel_write_backed(), ChannelSample, _classify_tick(), CreditIntegrityReport, _find_silent_run_contribution(), _find_silent_window_timestamp(), datetime (+54 more)
 
 ### Community 74 - "llm_backend.py"
 Cohesion: 0.04
-Nodes (80): _base_of(), _build_ollama_payload(), _common_http_client(), _ctx_ladder(), _debug_len(), _debug_snippet(), _debug_think_capture(), _execute_llamacpp_native_completion() (+72 more)
+Nodes (85): _base_of(), _build_ollama_payload(), _common_http_client(), _ctx_ladder(), _debug_len(), _debug_snippet(), _debug_think_capture(), _execute_llamacpp_native_completion() (+77 more)
 
 ### Community 75 - "VisionFramePointerPayload"
-Cohesion: 0.02
-Nodes (163): A pointer with neither address is silently undeliverable.          Without this, Where a captured frame is, so a consumer can go and read it.      Carries a POIN, VisionFramePointerPayload, VisionTaskRequestPayload, VisionTaskResultPayload, FramePointer, Any, VisionFrameCache (+155 more)
-
-### Community 76 - "UnifiedRelationalBeliefSetV1"
-Cohesion: 0.03
-Nodes (124): build_cognitive_projection_for_context(), build_cognitive_projection_for_mind_with_diagnostics(), build_projection_unification_registry(), _env_float(), get_projection_unification_layer(), _publish_tier_outcomes_if_needed(), Any, Shared CognitiveUnificationLayer → CognitiveProjection builder.  Phase-3 seam: m (+116 more)
-
-### Community 77 - "TurnWindowMessageV1"
 Cohesion: 0.05
-Nodes (74): _LLMCaller, PreTurnAppraisalRequestV1, BaseModel, TurnAppraisalParadigmSliceV1, TurnWindowMessageV1, _build_request(), The schema's own invariant must hold regardless of caller -- a caller     that f, test_recent_turns_accepts_up_to_the_cap() (+66 more)
+Nodes (46): A pointer with neither address is silently undeliverable.          Without this, Where a captured frame is, so a consumer can go and read it.      Carries a POIN, VisionFramePointerPayload, FrameDispatcher, Settings, FrameRouterService, healthz(), lifespan() (+38 more)
+
+### Community 76 - "ConceptNodeV1"
+Cohesion: 0.01
+Nodes (403): build_autonomy_repository(), Real backend is LocalAutonomyRepository only -- the graph/shadow backends     (G, build_cognitive_projection_for_context(), build_cognitive_projection_for_mind_with_diagnostics(), build_projection_unification_registry(), _env_float(), get_projection_unification_layer(), _publish_tier_outcomes_if_needed() (+395 more)
+
+### Community 77 - "TurnAppraisalBundleV1"
+Cohesion: 0.03
+Nodes (140): _LLMCaller, _broadcast_enabled(), _broadcast_is_stale(), build_hub_association_bundle(), _parse_broadcast(), Any, Ensure the current Hub turn is always a coalition member for fail-closed evidenc, Orion capability: felt-state context for the stance turn.      Supplies Thought (+132 more)
 
 ### Community 78 - "builder.py"
-Cohesion: 0.03
-Nodes (128): _build_candidate(), build_proposal_frame(), _dominant_motivations(), _overall_action_pressure(), _overall_risk(), _policy_required(), datetime, Build a ProposalFrameV1 directly from FieldStateV1 + FieldAttentionFrameV1. (+120 more)
+Cohesion: 0.04
+Nodes (77): _build_candidate(), build_proposal_frame(), _dominant_motivations(), _policy_required(), datetime, Build a ProposalFrameV1 directly from FieldStateV1 + FieldAttentionFrameV1., Resolve a template's target_id/target_kind from live attention if the     templa, _resolve_binding_target() (+69 more)
 
 ### Community 79 - "memory_cards.py"
 Cohesion: 0.06
-Nodes (78): MemoryCardCreateV1, MemoryCardEdgeCreateV1, MemoryCardEdgeV1, MemoryCardHistoryEntryV1, MemoryCardPatchV1, MemoryCardV1, BaseModel, Payload for creating a card (Hub POST). (+70 more)
+Nodes (84): EvidenceItemV1, MemoryCardCreateV1, MemoryCardEdgeCreateV1, MemoryCardEdgeV1, MemoryCardHistoryEntryV1, MemoryCardPatchV1, MemoryCardV1, BaseModel (+76 more)
 
 ### Community 80 - "build_substrate_attention_frame"
-Cohesion: 0.05
-Nodes (60): attention_broadcast_enabled(), broadcast_projection_from_frame(), build_substrate_attention_frame(), _node_salience(), Any, datetime, Map graph nodes into workspace signals; tolerant, never raises per-node., One workspace competition over the substrate graph; always one winner.      Same (+52 more)
+Cohesion: 0.12
+Nodes (31): attention_broadcast_enabled(), build_substrate_attention_frame(), _node_salience(), Any, datetime, Map graph nodes into workspace signals; tolerant, never raises per-node., One workspace competition over the substrate graph; always one winner.      Same, Salience for the workspace competition, and which signal drove it.      Magnitud (+23 more)
 
 ### Community 81 - "appraise_repair_pressure"
-Cohesion: 0.04
-Nodes (74): MonkeyPatch, test_ingress_observation_emitted(), emit_claim(), emit_observation(), Any, Thin substrate-emit helpers for the mind/chat organ.  This module deliberately d, Build an ``observation`` molecule from a chat turn.      The molecule binds two, Build a ``claim`` molecule. Supports/contradicts are other molecule ids. (+66 more)
+Cohesion: 0.07
+Nodes (53): MonkeyPatch, test_ingress_observation_emitted(), emit_claim(), emit_observation(), Any, Thin substrate-emit helpers for the mind/chat organ.  This module deliberately d, Build an ``observation`` molecule from a chat turn.      The molecule binds two, Build a ``claim`` molecule. Supports/contradicts are other molecule ids. (+45 more)
 
 ### Community 82 - "DecisionRouter"
 Cohesion: 0.09
-Nodes (44): filter_allowed(), load_verb_catalog(), rank_verbs_for_query(), serialize_shortlist(), _tokenize(), VerbInfo, AutoDepthDecisionV1, DecisionRouter (+36 more)
+Nodes (43): filter_allowed(), load_verb_catalog(), rank_verbs_for_query(), serialize_shortlist(), _tokenize(), VerbInfo, AutoDepthDecisionV1, DecisionRouter (+35 more)
 
 ### Community 83 - "test_relation_classification.py"
 Cohesion: 0.10
-Nodes (54): SubstrateActivationV1, classify_relation(), count_score(), decayed_activation_score(), is_worth_classifying(), pmi_score(), datetime, RelationClassifier (+46 more)
+Nodes (55): decay_activation(), Half-life activation decay — stdlib only (safe for lightweight service imports)., classify_relation(), count_score(), decayed_activation_score(), is_worth_classifying(), pmi_score(), datetime (+47 more)
 
-### Community 84 - "BusTransportGrammarCollector"
-Cohesion: 0.10
-Nodes (32): build_bus_transport_grammar_events(), bus_transport_trace_id(), BusTransportGrammarCollector, Mesh-wide census diff (orion.bus.census.compute_census()) --         real pub/su, Idea 6 (bus_activity_zscore, docs/superpowers/specs/2026-07-24-         bus-vita, A bounded sample of this cataloged stream's recent entries failed         to val, Real recorded timestamp for a given atom_id, falling back to         trace-start, _install_fake_clock() (+24 more)
+### Community 84 - "GrammarAtomV1"
+Cohesion: 0.08
+Nodes (44): test_atom_roundtrip(), test_grammar_event_requires_provenance(), test_invalid_atom_type_rejected(), _build_harness_step_event(), GrammarAtomV1, _atom_event(), _provenance(), test_extract_ignores_cabinet_signals_with_no_salience() (+36 more)
 
 ### Community 85 - "attention_frame.py"
-Cohesion: 0.05
-Nodes (96): AttentionSignalV1, CuriositySuppressionV1, BaseModel, datetime, The two real, evidence-derived features Borda rank-aggregated into     coalition, SalienceFeaturesV1, _utc_now(), Continuous global broadcast — rung 3 of the self-modeling loop.  The workspace c (+88 more)
+Cohesion: 0.04
+Nodes (107): AttentionSignalV1, CuriositySuppressionV1, BaseModel, datetime, The two real, evidence-derived features Borda rank-aggregated into     coalition, SalienceFeaturesV1, _utc_now(), Continuous global broadcast — rung 3 of the self-modeling loop.  The workspace c (+99 more)
 
-### Community 86 - "FrontierInvocationSignalV1"
-Cohesion: 0.06
-Nodes (93): ActionOutcomeRefV1, CapabilityDecisionV1, FetchedArticleRefV1, `surprise` is a mix of one real signal and several fake ones -- check the emitte, SubstrateEpisodeIntentV1, build_episode_narrative_seed(), build_readonly_fetch_query(), curiosity_strength_from_signals() (+85 more)
+### Community 86 - "test_policy_act.py"
+Cohesion: 0.07
+Nodes (74): FetchedArticleRefV1, build_episode_narrative_seed(), build_readonly_fetch_query(), curiosity_strength_from_signals(), maybe_compose_autonomy_episode_after_fetch(), maybe_execute_readonly_fetch_after_goal(), maybe_execute_readonly_recall_after_goal(), maybe_execute_substrate_act_after_metabolism() (+66 more)
 
-### Community 87 - "ExecutionTrajectoryProjectionV1"
+### Community 87 - "prediction_error.py"
+Cohesion: 0.04
+Nodes (100): GitChurnDelta, GraphStructuralDelta, PrLifecycleDelta, codebase_prediction_error(), CodebaseMassBaseline, CodebasePredictionErrorResult, _cosine_similarity(), _domain_ewma_baseline_from_json_dict() (+92 more)
+
+### Community 88 - "thought.py"
 Cohesion: 0.03
-Nodes (126): ChatSessionProjectionV1, ChatTurnStateV1, BaseModel, ExecutionTrajectoryProjectionV1, RouteArbitrationProjectionV1, GitChurnDelta, GraphStructuralDelta, PrLifecycleDelta (+118 more)
-
-### Community 88 - "test_stance_react_pipeline.py"
-Cohesion: 0.06
-Nodes (71): coalition_ids_from_association(), attended_node_ids + open_loop ids + always the current Hub turn anchor., evaluate_trust_rupture_fixture(), _load_fixtures(), Any, Return failure messages for a single fixture; empty when expectations pass., Run all trust rupture fixtures; return aggregated failure messages., run_trust_rupture_eval_corpus() (+63 more)
+Nodes (142): test_grounding_capsule_round_trip(), test_thought_event_capsule_optional_and_defaults_none(), _base_thought(), Back-compat: existing constructors that omit autonomy_slice still validate., Acceptance check for the P4 stance_react dispatch-evidence patch: a     payload, test_autonomy_slice_v1_defaults(), test_autonomy_slice_v1_recent_actions_round_trips_through_json(), test_autonomy_slice_v1_round_trips_through_json() (+134 more)
 
 ### Community 89 - "JournalPageIndexService"
 Cohesion: 0.06
 Nodes (46): JournalRepository, build_heartbeat_chassis(), chat_episodes_query(), chat_episodes_status(), journals_query(), journals_status(), Own, independent bus connection publishing SystemHealthV1 to orion:system:health, rebuild_chat_episodes() (+38 more)
 
-### Community 90 - "SocialRoomBridgeService"
-Cohesion: 0.09
-Nodes (66): callable, ExternalRoomPostRequestV1, _callsyne_bridge_post_body(), CallSyneClient, HubClient, Any, Shape for POST /api/bridge/messages using top-level snake_case fields., SocialMemoryClient (+58 more)
+### Community 90 - "test_bridge_service.py"
+Cohesion: 0.16
+Nodes (52): _FakeBus, _FakeCallSyneClient, _FakeHubClient, _FakeSocialMemoryClient, _payload(), _published_payloads(), _settings(), test_address_detection_aliases() (+44 more)
 
-### Community 91 - "ContextExecRunner"
-Cohesion: 0.04
-Nodes (114): Environment, agent_lane_health_block(), log_agent_lane_startup_warning(), Any, Agent lane configuration health for context-exec ↔ Hub., AgentSynthesisResult, build_operator_summary(), _build_synthesis_prompt() (+106 more)
+### Community 91 - "agent_synthesis.py"
+Cohesion: 0.06
+Nodes (69): agent_lane_health_block(), log_agent_lane_startup_warning(), Any, Agent lane configuration health for context-exec ↔ Hub., AgentSynthesisResult, build_operator_summary(), _build_synthesis_prompt(), _default_title() (+61 more)
 
-### Community 92 - "vision.py"
-Cohesion: 0.02
-Nodes (135): BBox, DetectorSpec, BaseModel, Bus RPC request: 'record an on-demand video+audio clip right now.'      Mirrors, One window's observed inventory of the scene, persisted per window.      **Why t, RetinaClipCaptureRequestPayload, VisionCouncilRequestPayload, VisionCouncilResultPayload (+127 more)
+### Community 92 - "main.py"
+Cohesion: 0.07
+Nodes (23): CameraSource, capture_loop(), _cleanup_old_frames(), _ensure_dir(), _save_frame(), create_app(), heartbeat_loop(), lifespan() (+15 more)
 
-### Community 93 - "AttentionBroadcastProjectionV1"
-Cohesion: 0.02
-Nodes (168): BroadcastReader, Eval: reverie semantic lift quality bar — referent, voice, grounding., test_bad_meta_fixture_fails_infra_vocab(), test_good_fixture_passes_semantic_gates(), _database_url(), default_referent_loader(), parse_harness_closure_ref(), datetime (+160 more)
+### Community 93 - "reverie.py"
+Cohesion: 0.06
+Nodes (63): Eval: reverie semantic lift quality bar — referent, voice, grounding., test_bad_meta_fixture_fails_infra_vocab(), test_good_fixture_passes_semantic_gates(), _database_url(), default_referent_loader(), parse_harness_closure_ref(), datetime, Protocol (+55 more)
 
 ### Community 94 - "Service: orion-cortex-exec"
 Cohesion: 0.05
-Nodes (56): Channel "orion:autonomy:goal:planned" (kind=event, schema=AutonomyGoalPlannedV1) producers=[orion-cortex-exec] consumers=[orion-cortex-exec, *], Channel "orion:cognition:reasoning_call" (kind=telemetry, schema=ReasoningCallV1) producers=[orion-cortex-exec] consumers=[orion-thought], Channel "orion:collapse:enrich" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-cortex-exec] consumers=[orion-collapse-mirror], Channel "orion:collapse:events" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-collapse-mirror, orion-cortex-exec] consumers=[orion-timeline, orion-athena-spark-introspector], Channel "orion:collapse:intake" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-cortex-exec, orion-collapse-mirror] consumers=[orion-collapse-mirror], Channel "orion:collapse:scored" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-cortex-exec] consumers=[orion-collapse-mirror], Channel "orion:collapse:sql-write" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-collapse-mirror] consumers=[orion-sql-writer], Channel "orion:collapse:triage" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-collapse-mirror] consumers=[orion-meta-tags, orion-vector-writer, orion-sql-writer, orion-actions] (+48 more)
+Nodes (53): Channel "orion:autonomy:goal:planned" (kind=event, schema=AutonomyGoalPlannedV1) producers=[orion-cortex-exec] consumers=[orion-cortex-exec, *], Channel "orion:calibration:profile:audit" (kind=event, schema=CalibrationProfileAuditV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer], Channel "orion:cognition:reasoning_call" (kind=telemetry, schema=ReasoningCallV1) producers=[orion-cortex-exec] consumers=[orion-thought], Channel "orion:cortex:exec:request" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch, orion-thought] consumers=[orion-cortex-exec], Channel "orion:cortex:exec:request:background" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch, orion-actions, orion-harness-governor, orion-execution-dispatch-runtime] consumers=[orion-cortex-exec], Channel "orion:cortex:exec:request:chat" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch] consumers=[orion-cortex-exec], Channel "orion:cortex:exec:request:spark" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch] consumers=[orion-cortex-exec], Channel "orion:cortex:pre_turn_appraisal:request" (kind=request, schema=PreTurnAppraisalRequestV1) producers=[orion-hub] consumers=[orion-cortex-exec] (+45 more)
 
 ### Community 95 - ".patch"
 Cohesion: 0.04
-Nodes (106): Real, user-facing reply telemetry (CORTEX_CHAT_RETURN_LOGPROBS). Keyed on exact, _should_request_chat_reply_logprobs(), SimpleNamespace, Unit tests for _should_request_chat_reply_logprobs (CORTEX_CHAT_RETURN_LOGPROBS, stance_react/llm_stance_react is the real, live chat-reply mechanism in this, The bug the review caught: harness_finalize_reflect shares llm_route == "chat", The bug the review caught: return_json alone (no response_format) still forces, _step() (+98 more)
+Nodes (109): ChatHistoryTurnV1, BaseModel, Turn-level chat history row (prompt + response) for `chat_history_log`., _trigger_world_pulse_run(), test_scheduler_uses_actions_world_pulse_run_dry_run_default_true(), client(), TestClient, test_ready_200_when_consumer_ready() (+101 more)
 
 ### Community 96 - "DiscussionWindowResultV1"
 Cohesion: 0.06
 Nodes (65): build_quiet_day_chat_digest(), fit_chat_compactor_digest_within_budget(), parse_chat_history_compactor_digest_json(), Any, Return the digest with over-budget prose fields trimmed to their caps.      Same, stable_chat_compactor_journal_entry_id(), trim_chat_history_compactor_input(), test_build_quiet_day_chat_digest() (+57 more)
 
-### Community 97 - "memory_extractor.py"
-Cohesion: 0.06
-Nodes (45): CardAnnotationV1, derive_visibility_scope(), Write-time auto-annotation output (2026-07-21 memory-cards substrate     spec, I, Deterministic derivation of visibility_scope FROM sensitivity -- never     an in, CandidateCard, extract_candidates(), fingerprint(), fingerprint_from_candidate() (+37 more)
+### Community 97 - "RouterState"
+Cohesion: 0.07
+Nodes (52): CameraState, PendingTask, BaseModel, ``is_primary=False`` for the identity_face secondary dispatch         (dispatche, RouterState, StreamTriggerState, _frame_env(), identity_policy_path() (+44 more)
 
-### Community 98 - "SubstrateProvenanceV1"
-Cohesion: 0.03
-Nodes (129): SubstrateProvenanceV1, SubstrateTemporalWindowV1, Test double that records Cypher and optionally returns scripted rows., RecordingFalkorClient, edge_identity_key must match FalkorSubstrateStore._edge_identity     (``src|pred, test_edge_identity_matches_store_canonical_format(), build_aitown_falkor_substrate_store_from_env(), build_falkor_substrate_store_from_env() (+121 more)
+### Community 98 - "FalkorSubstrateStore"
+Cohesion: 0.04
+Nodes (95): Test double that records Cypher and optionally returns scripted rows., RecordingFalkorClient, _edge_hydrate_return_clause(), FalkorSubstrateStore, FalkorSubstrateStoreConfig, _normalize_rows(), Any, Like `_return_clause("e", fields)`, except `source_id`/`target_id`     are deriv (+87 more)
 
 ### Community 99 - "persist_context_exec_run"
-Cohesion: 0.08
-Nodes (60): health(), Request, configured_storage_paths(), ensure_storage_dirs(), _path_status(), persist_context_exec_run(), Any, Path (+52 more)
+Cohesion: 0.05
+Nodes (75): configured_storage_paths(), ensure_storage_dirs(), _path_status(), persist_context_exec_run(), Any, Path, Best-effort conversion to a JSON-serializable structure.      Never raises; un-s, Persist an immutable forensic bundle for a completed context-exec run.      Retu (+67 more)
 
-### Community 100 - "test_digest.py"
-Cohesion: 0.08
-Nodes (40): fit_fields_within_budget(), Trim over-budget compactor output at a word boundary instead of rejecting it., parse_compactor_digest_json(), Parse an LLM digest JSON payload into the given compactor digest model.      Sha, test_fit_fields_within_budget_handles_empty_value(), test_fit_fields_within_budget_handles_whitespace_dominant_input(), test_fit_fields_within_budget_holds_the_cap_below_ellipsis_width(), test_fit_fields_within_budget_leaves_in_budget_values_untouched() (+32 more)
+### Community 100 - "truncate_at_word_boundary"
+Cohesion: 0.18
+Nodes (16): fit_fields_within_budget(), Trim over-budget compactor output at a word boundary instead of rejecting it., test_fit_fields_within_budget_handles_empty_value(), test_fit_fields_within_budget_handles_whitespace_dominant_input(), test_fit_fields_within_budget_holds_the_cap_below_ellipsis_width(), test_fit_fields_within_budget_leaves_in_budget_values_untouched(), test_fit_fields_within_budget_never_exceeds_the_cap_it_was_given(), test_fit_fields_within_budget_reports_every_trimmed_field_sorted() (+8 more)
 
 ### Community 101 - "test_vision_persistence_smoke_helpers.py"
 Cohesion: 0.25
 Nodes (3): Unit tests for scripts/vision_persistence_smoke.py helpers., Regression for the 2026-07-23 RDF-write removal: guards against the     RDF veri, test_no_rdf_symbols_remain_on_smoke_module()
 
-### Community 102 - "registry.py"
-Cohesion: 0.04
-Nodes (87): Canonical recall boundary. The only acceptable request field for text is `query_, Normalized recall response. Exec exposes debug counts, not raw fragments, by def, RecallRequestPayload, RecallResultPayload, DailyMetacogV1, DailyPulseV1, BaseModel, DiskHealthDeviceV1 (+79 more)
+### Community 102 - "AttentionLoopOutcomeV1"
+Cohesion: 0.17
+Nodes (17): AttentionLoopOutcomeV1, AttentionSalienceTraceV1, PendingAttentionCardV1, BaseModel, datetime, Telemetry + operator-surface contracts for computed salience.  - AttentionSalien, _utc_now(), test_loop_outcome_verdicts() (+9 more)
 
 ### Community 103 - "substrate_lattice_routes.py"
 Cohesion: 0.11
@@ -4757,7 +4781,7 @@ Nodes (83): Channel "orion:attention:loop_outcome" (kind=event, schema=Attention
 
 ### Community 105 - "SemanticSynthesisV1"
 Cohesion: 0.09
-Nodes (61): ActiveFrontierDiagnosticsV1, AppraisalFeatureVectorV1, DeferredFrontierMatterV1, MindEvidenceItemV1, MindEvidencePackV1, BaseModel, Mind semantic synthesis, appraisal, and stance handoff contracts., SelectedFrontierMatterV1 (+53 more)
+Nodes (61): ActiveFrontierDiagnosticsV1, AppraisalFeatureVectorV1, DeferredFrontierMatterV1, MindEvidenceItemV1, MindEvidencePackV1, BaseModel, Mind semantic synthesis, appraisal, and stance handoff contracts., SemanticClaimV1 (+53 more)
 
 ### Community 106 - "test_orion_backup_mnt_scripts.py"
 Cohesion: 0.05
@@ -4773,43 +4797,43 @@ Nodes (72): applyCapabilityDefaults(), applySegmentsClientFilters(), bindTopicSt
 
 ### Community 109 - "Orion Bus Channels Registry (channels.yaml)"
 Cohesion: 0.04
-Nodes (67): Channel "orion:bridge:social:participant" (kind=event, schema=ExternalRoomParticipantV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:delivery" (kind=event, schema=ExternalRoomPostResultV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:intake" (kind=event, schema=ExternalRoomMessageV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:skipped" (kind=event, schema=ExternalRoomTurnSkippedV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:core:events" (kind=event, schema=CoreEventV1) producers=[*] consumers=[*], Channel "orion:rdf:error" (kind=event, schema=SystemErrorV1) producers=[orion-rdf-writer] consumers=[*], Channel "orion:social:bridge-summary" (kind=event, schema=SocialBridgeSummaryV1) producers=[orion-social-memory] consumers=[*, orion-social-room-bridge, orion-hub], Channel "orion:social:claim" (kind=event, schema=SocialClaimV1) producers=[orion-social-memory] consumers=[*, orion-social-room-bridge, orion-hub] (+59 more)
+Nodes (74): Channel "orion:bridge:social:participant" (kind=event, schema=ExternalRoomParticipantV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:delivery" (kind=event, schema=ExternalRoomPostResultV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:intake" (kind=event, schema=ExternalRoomMessageV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:skipped" (kind=event, schema=ExternalRoomTurnSkippedV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:core:events" (kind=event, schema=CoreEventV1) producers=[*] consumers=[*], Channel "orion:graph:compression:events" (kind=event, schema=GraphCompressionRegionMaterializedV1) producers=[orion-graph-compression] consumers=[*], Channel "orion:graph:compression:stale" (kind=event, schema=CompressionStalenessMarkV1) producers=[orion-rdf-writer, orion-graph-compression] consumers=[orion-graph-compression], Channel "orion:rdf:error" (kind=event, schema=SystemErrorV1) producers=[orion-rdf-writer] consumers=[*] (+66 more)
 
 ### Community 110 - "CortexExecGrammarCollector"
-Cohesion: 0.12
-Nodes (36): begin_plan_grammar(), build_cortex_exec_grammar_events(), CortexExecGrammarCollector, trace_lane_for_verb(), _install_fake_clock(), _minimal_plan(), MonkeyPatch, Patch app.grammar_emit's datetime.now() to return strictly increasing,     deter (+28 more)
+Cohesion: 0.10
+Nodes (42): begin_plan_grammar(), build_cortex_exec_grammar_events(), CortexExecGrammarCollector, _event(), get_or_create_collector(), _hash_id(), new_cortex_exec_collector(), Any (+34 more)
 
-### Community 111 - "worker.py"
-Cohesion: 0.09
-Nodes (68): ContradictionNodeV1, NodeRefV1, GraphConsolidationRequestV1, build_metacog_perception_brief(), MetacogPerceptionBriefV1, _priority(), EvidenceSpanV1, SignalEvidenceBundleV1 (+60 more)
+### Community 111 - "JuniperAffectiveStateService"
+Cohesion: 0.07
+Nodes (52): Reply to RetinaClipCaptureRequestPayload. Field-for-field mirror of     the JSON, RetinaClipCaptureResultPayload, JuniperAffectiveStateService, Bus RPC twin of orion-vision-retina's POST /capture/clip. Mirrors         _call_, GET {PERCEPT_STORE_BASE_URL}/{sha256}, verify the bytes actually         hash to, FakeBus, _pin_affectgpt_backend(), Exception (+44 more)
 
 ### Community 112 - "goal_archive.py"
-Cohesion: 0.10
-Nodes (31): Autonomy graph IRIs (no heavy imports — safe for orion-actions / hub)., archive_subject_goals(), archive_subjects(), archive_subjects_drain(), _binding_value(), build_archive_candidates(), build_archive_status_update(), _build_client() (+23 more)
+Cohesion: 0.09
+Nodes (35): Autonomy graph IRIs (no heavy imports — safe for orion-actions / hub)., archive_subject_goals(), archive_subjects(), archive_subjects_drain(), _binding_value(), build_archive_candidates(), build_archive_status_update(), _build_client() (+27 more)
 
-### Community 113 - "cortex_request_builder.py"
-Cohesion: 0.08
-Nodes (43): _attachments_from_payload(), build_continuity_messages(), build_cortex_chat_request(), _build_recall_payload(), _build_social_epistemic_phrase_hint(), _coerce_mind_enabled(), _hub_social_redaction_posture(), _hub_social_room_rituals_enabled() (+35 more)
+### Community 113 - "_attachments_from_payload"
+Cohesion: 0.21
+Nodes (16): _attachments_from_payload(), Validate client-supplied attachment refs from a chat payload.      The browser s, Hub-side validation of client-supplied attachment refs on a chat turn., Guards the real configured default, not just a patched one., extra='forbid' on AttachmentRefV1 means a client cannot smuggle fields., 0 must NOT silently drop everything.      It used to: `raw[:limit] if limit else, ref(), test_absent_attachments_is_empty() (+8 more)
 
 ### Community 114 - "main.py"
-Cohesion: 0.05
-Nodes (74): get_db(), init_models(), Regression for a confirmed-live race: `_dispatch_journal_notifications` runs, test_action_dedupe_try_acquire_is_thread_safe_under_concurrent_callers(), generate_biometrics_model(), Returns a SQLAlchemy model with the table name defined in .env → TABLE_NAME, DigestRunDB, NotificationAttemptDB (+66 more)
+Cohesion: 0.06
+Nodes (72): get_db(), init_models(), generate_biometrics_model(), Returns a SQLAlchemy model with the table name defined in .env → TABLE_NAME, DigestRunDB, NotificationAttemptDB, NotificationRequestDB, Base (+64 more)
 
 ### Community 115 - "suggest_with_escalation"
 Cohesion: 0.08
-Nodes (53): RouteName, _apply_llm_route(), _call_cortex(), _extract_attempt_diagnostics(), _normalize_route(), _parse_suggest_draft_from_text(), Any, BaseException (+45 more)
+Nodes (50): RouteName, _apply_llm_route(), _call_cortex(), _extract_attempt_diagnostics(), _normalize_route(), Any, BaseException, Try grounded Quick, then Brain on hard failures; RDF-validate without persisting (+42 more)
 
-### Community 116 - "InMemorySubstrateGraphStore"
-Cohesion: 0.04
-Nodes (113): InMemorySubstrateGraphStore, ``skip_metadata_keys``: same contract as FalkorSubstrateStore's         (see tha, Bounded persistent in-memory materialized substrate graph state., _day_bucket_from_timestamp(), Parse a topic-foundry segment's ``start_at`` (a plain string over the     wire,, AI Town's own concept graph store singleton (``services/orion-hub/scripts/api_ro, Real assertion, not just "doesn't crash on import": the singleton     must exist, The load-bearing guarantee: two independent stores, not one store     aliased un (+105 more)
+### Community 116 - "test_concept_atlas_ingest_topic_foundry.py"
+Cohesion: 0.08
+Nodes (91): client(), _concept_atlas_test_app(), _ensure_hub_scripts_import_path(), _FakeResponse, _ingest_with_speakers(), _keywords_payload(), _kg_edges_payload_empty(), _kg_edges_payload_mentions() (+83 more)
 
 ### Community 117 - "worker.py"
-Cohesion: 0.05
-Nodes (94): GrammarWorkItem, DreamRequest, Legacy payload shape for historical `dream.log` messages.      Prefer `DreamResu, list_attention(), list_chat_messages(), mark_attention_escalated(), get_session(), Removes the current thread-local session. (+86 more)
+Cohesion: 0.02
+Nodes (159): GrammarWorkItem, NotificationReceiptDB, Contract smoke tests for dream modernization schemas., test_dream_internal_trigger_v1(), test_dream_result_v1_defaults_and_audit(), test_dream_trigger_payload_minimal(), JuniperAffectiveStateV1, BaseModel (+151 more)
 
-### Community 118 - "test_agent_repl_tools.py"
-Cohesion: 0.14
-Nodes (17): MonkeyPatch, Path, Tests for agent_repl workbench tools: repo navigation, workspace artifacts, patc, repo_root(), test_agent_repl_runtime_debug_includes_max_steps(), test_context_exec_agent_repl_max_steps_default_is_32(), test_health_includes_agent_budget_fields(), test_make_tools_includes_new_tools() (+9 more)
+### Community 118 - "test_merge_commensurability.py"
+Cohesion: 0.05
+Nodes (58): analyse_field_history(), analyse_merge(), Contender, MergeAnalysis, observe_channel_to_dimension(), observe_source_to_channel(), One participant in a merge, over the observed window., One merge point, analysed over a window of ticks. (+50 more)
 
 ### Community 119 - "test_substrate_lattice_routes.py"
 Cohesion: 0.04
@@ -4820,80 +4844,80 @@ Cohesion: 0.08
 Nodes (22): `ActionOutcomeRefV1.surprise` is not a real signal (found 2026-07-24), AutonomyStateV2 evidence — RETIRED 2026-07-16, Chat stance drives (Hub compact card), Diagnostic lesson (cost hours, twice in one day), Orion Autonomy README, Drive-economy desaturation series — O2/O3 shipped, two new bugs found live (2026-07-17), Goal graph hygiene (automated — do not run host scripts), Hub Drives Analytics — REMOVED 2026-08-13 (+14 more)
 
 ### Community 121 - "HTTPException"
-Cohesion: 0.08
-Nodes (90): HTTPException, resolve_graphiti_adapter_url(), insert_link(), list_links(), neighborhood(), _normalize_uuid(), Any, Pool (+82 more)
+Cohesion: 0.09
+Nodes (79): HTTPException, emit_crystallization_lifecycle(), resolve_graphiti_adapter_url(), project_crystallization(), Pool, Project active crystallization to derived stores and emit bus project event., get_crystallization(), insert_crystallization() (+71 more)
 
-### Community 122 - "supervisor.py"
-Cohesion: 0.05
-Nodes (77): Path, Loads and caches VerbConfig objects from verbs/*.yaml, Return all registered verbs. Use reload=True to refresh the cache., Lightweight filtering helper used by supervisors/planners., VerbRegistry, BaseModel, VerbConfig, Definition of a tool available to the planner. (+69 more)
+### Community 122 - "VerbRegistry"
+Cohesion: 0.24
+Nodes (7): Path, Loads and caches VerbConfig objects from verbs/*.yaml, Return all registered verbs. Use reload=True to refresh the cache., Lightweight filtering helper used by supervisors/planners., VerbRegistry, BaseModel, VerbConfig
 
 ### Community 123 - "ExecutionDispatchRuntimeStore"
-Cohesion: 0.03
-Nodes (66): health(), get_settings(), BaseSettings, A max below the base makes the backoff run backwards.          Each bound is onl, Settings, _coerce_starvation_counts(), ExecutionDispatchRuntimeStore, datetime (+58 more)
+Cohesion: 0.04
+Nodes (61): _coerce_starvation_counts(), ExecutionDispatchRuntimeStore, datetime, TreatedCellKey, The single newest unprocessed policy frame, regardless of backlog         depth, Restores, at the read boundary, the guarantee the anti-join used to give for fre, Clear this row's marker, plus a batch of others that already have a dispatch fra, Persisted starvation counters -> a usable dict, never an exception.      Rows wr (+53 more)
 
-### Community 124 - "OpenLoopV1"
-Cohesion: 0.03
-Nodes (137): CuriosityCandidateActionV1, OpenLoopV1, Any, _apply_voluntary_attention(), _classify_override_absence(), VoluntaryOverrideAbsentReasonV1, Which flavour of "no override" this was. Caller guarantees a goal ran.      Deci, Record (or clear) why no voluntary override fired, in `frame.debug`.      Not a (+129 more)
+### Community 124 - "GoalContext"
+Cohesion: 0.04
+Nodes (115): CuriosityCandidateActionV1, _apply_voluntary_attention(), _classify_override_absence(), VoluntaryOverrideAbsentReasonV1, Which flavour of "no override" this was. Caller guarantees a goal ran.      Deci, Record (or clear) why no voluntary override fired, in `frame.debug`.      Not a, Layer top-down goal bias onto the bottom-up frame (spec Step 2).      Default-of, _set_override_absent_reason() (+107 more)
 
 ### Community 125 - "Candidate"
 Cohesion: 0.03
 Nodes (68): allocate(), Allocation, Candidate, candidate_from_dispatch(), expected_information_gain_across_bins(), expected_information_gain_nats(), Spend a finite allowance on the actions worth running.  THE PROBLEM THIS HAD TO, Volume-weighted expected gain across an action's baseline bins.      The next ob (+60 more)
 
 ### Community 126 - "context_mode_hooks_smoke.py"
-Cohesion: 0.06
-Nodes (87): mcp_allowed_tool_patterns(), Any, Per-server allow patterns for Claude Code 2.1+ MCP pre-approval.      Use ``mcp_, cleanup_mcp_config(), _deep_replace(), McpPreflightError, _probe_convex_auth(), _probe_convex_version() (+79 more)
+Cohesion: 0.15
+Nodes (29): check_disable_restores_baseline(), check_fresh_session_isolation(), check_no_duplicate_mcp(), check_plugin_installed(), check_plugin_tools_callable(), check_precompact_fires(), check_sessionstart_restore(), CheckResult (+21 more)
 
 ### Community 127 - "pcr_chat_memory.py"
-Cohesion: 0.06
-Nodes (56): PcrChatMemoryV1, Cortex ctx shape for PCR chat memory surfaces., assemble_stance_grounding(), build_grounding_capsule(), _clean(), context_provenance_for_ctx(), _has_content(), Any (+48 more)
+Cohesion: 0.07
+Nodes (56): PcrChatMemoryV1, Purpose-conditioned recall (PCR) schema types., Cortex ctx shape for PCR chat memory surfaces., assemble_stance_grounding(), build_grounding_capsule(), _clean(), context_provenance_for_ctx(), _has_content() (+48 more)
 
 ### Community 128 - "BiometricsSummaryV1"
-Cohesion: 0.06
-Nodes (68): Clock, test_induction_volatility_max(), BiometricsInductionMetricV1, BiometricsInductionV1, BiometricsPayload, BiometricsSampleV1, BiometricsSummaryV1, BaseModel (+60 more)
+Cohesion: 0.05
+Nodes (84): Clock, BiometricsInductionMetricV1, BiometricsInductionV1, BiometricsPayload, BiometricsSampleV1, BiometricsSummaryV1, BaseModel, BiometricsPipeline (+76 more)
 
 ### Community 129 - "TransportBusProjectionV1"
-Cohesion: 0.10
-Nodes (35): BaseModel, TransportBusProjectionV1, TransportBusStateV1, _boolish(), compute_transport_pressures(), extract_transport_bus_state_from_events(), parse_bus_transport_trace_id(), _parse_summary_kv() (+27 more)
+Cohesion: 0.08
+Nodes (45): BaseModel, TransportBusProjectionV1, TransportBusStateV1, _boolish(), compute_transport_pressures(), extract_transport_bus_state_from_events(), parse_bus_transport_trace_id(), _parse_summary_kv() (+37 more)
 
 ### Community 130 - "models.py"
-Cohesion: 0.05
-Nodes (71): BackgroundTasks, CapabilitiesResponse, DatasetCreateRequest, DatasetCreateResponse, DatasetListResponse, DatasetPreviewDoc, DatasetPreviewRequest, DatasetPreviewResponse (+63 more)
+Cohesion: 0.06
+Nodes (69): BackgroundTasks, CapabilitiesResponse, DatasetCreateRequest, DatasetCreateResponse, DatasetListResponse, DatasetPreviewDoc, DatasetSpec, DriftListResponse (+61 more)
 
 ### Community 131 - "repo_tools.py"
-Cohesion: 0.15
-Nodes (34): _diff_path_from_header(), _is_allowed(), _is_denied(), _normalize_rel_path(), patch_validate(), Path, repo_find_files(), repo_grep() (+26 more)
+Cohesion: 0.10
+Nodes (45): _diff_path_from_header(), _is_allowed(), _is_denied(), _normalize_rel_path(), patch_validate(), Path, repo_find_files(), repo_grep() (+37 more)
 
 ### Community 132 - "test_metric_liveness.py"
 Cohesion: 0.04
 Nodes (110): _attention_self_model_liveness(), _classify_unbounded_series(), _fetch_ordered_desc(), FlatColumnSource, has_registered_source(), _ladder_liveness(), liveness_for_node(), LivenessOutcome (+102 more)
 
 ### Community 133 - "fusion.py"
-Cohesion: 0.07
-Nodes (53): test_fuse_dedupe_and_limit(), test_self_factual_filters_exclude_induced_and_reflective_candidates(), _backend_weights(), _belief_source_rank(), _candidate_allowed(), _cards_rail_enabled(), _denial_patterns(), _exact_match_boost() (+45 more)
+Cohesion: 0.05
+Nodes (69): test_fuse_dedupe_and_limit(), test_self_factual_filters_exclude_induced_and_reflective_candidates(), _backend_weights(), _belief_source_rank(), _candidate_allowed(), _cards_rail_enabled(), _denial_patterns(), _entity_relatedness_boost() (+61 more)
 
 ### Community 134 - "resolve"
-Cohesion: 0.03
-Nodes (85): GoalProposalV1, drive_origin was deleted 2026-08-11 (fix/goal-drive-origin-retirement): confirme, Absent means "no motor leg ran" (refusal paths), NOT "it took no time".      Res, test_the_run_schema_carries_the_leg_and_defaults_to_absent(), test_registry_resolves_mood_arc_schemas(), Cross-cutting ouroboros invariants for the reverie/dream/compaction weave.  The, A producer of a weave channel must never also be listed as a consumer of     tha, The memory-touching / dispatch-adjacent channels stay dead-ended: no     service (+77 more)
+Cohesion: 0.04
+Nodes (62): Absent means "no motor leg ran" (refusal paths), NOT "it took no time".      Res, test_the_run_schema_carries_the_leg_and_defaults_to_absent(), BaseModel, resolve(), test_causal_geometry_snapshot_registered(), test_codebase_delta_registered(), test_graph_write_intent_registered(), test_grounding_capsule_registered() (+54 more)
 
 ### Community 135 - "test_route_substrate_reducer.py"
 Cohesion: 0.09
-Nodes (44): BaseModel, RouteArbitrationRunStateV1, _boolish(), extract_route_state_from_events(), _parse_summary_kv(), datetime, _utc_now(), parse_route_trace_id() (+36 more)
+Nodes (46): BaseModel, RouteArbitrationProjectionV1, RouteArbitrationRunStateV1, _boolish(), extract_route_state_from_events(), _parse_summary_kv(), datetime, _utc_now() (+38 more)
 
 ### Community 136 - "CapabilityEvaluationContext"
-Cohesion: 0.15
-Nodes (35): CapabilityEvaluationContext, _decision(), _domain_surprise_gate(), _domain_surprise_note(), _env_bool(), _env_float(), evaluate_capability(), _find_rule() (+27 more)
+Cohesion: 0.16
+Nodes (34): CapabilityEvaluationContext, _decision(), _domain_surprise_gate(), _domain_surprise_note(), _env_bool(), _env_float(), evaluate_capability(), _find_rule() (+26 more)
 
 ### Community 137 - "DeviationGate"
-Cohesion: 0.09
-Nodes (32): deviation_pressure(), FieldTensionCompetition, This tick's admitted deviation, collapsed to a single [0, 1] scalar.      0.0 on, Stateful across ticks -- the gate's baselines are the whole point.      Feed tic, _Baseline, DeviationGate, Worse, Deviation gate: turn a stream of per-dimension observations into admissions that (+24 more)
+Cohesion: 0.03
+Nodes (122): deviation_pressure(), FieldTensionCompetition, Any, Field tension competition: admitted deviations -> one ranked ordering of nodes., This tick's admitted deviation, collapsed to a single [0, 1] scalar.      0.0 on, One tick's admission + competition outcome., Stateful across ticks -- the gate's baselines are the whole point.      Feed tic, TickResult (+114 more)
 
-### Community 138 - "main.py"
-Cohesion: 0.06
-Nodes (48): Popen, asterisk_cmd(), bootstrap_asterisk_and_cisco(), CompletedProcess, Path, Settings, Ensure Asterisk dirs exist, write core configs and SEP<MAC>.cnf.xml (only if mis, Start in.tftpd (tftpd-hpa) serving /tftpboot. (+40 more)
+### Community 138 - "asterisk_control.py"
+Cohesion: 0.19
+Nodes (16): bootstrap_asterisk_and_cisco(), Path, Settings, Ensure Asterisk dirs exist, write core configs and SEP<MAC>.cnf.xml (only if mis, Minimal rtp.conf so RTP has sane defaults., Write content only if file doesn't exist or is empty., Generate a minimal pjsip.conf for one endpoint., Generate extensions.conf with echo test and optional page/auto-answer. (+8 more)
 
 ### Community 139 - "runner.py"
-Cohesion: 0.11
-Nodes (22): PipelineDef, ProfileDef, Map task_type -> pipeline/profile name.         If no mapping exists, treat task, Step, VisionProfiles, _load_image_from_percept_store(), _load_image_from_request(), Any (+14 more)
+Cohesion: 0.06
+Nodes (45): PipelineDef, ProfileDef, Map task_type -> pipeline/profile name.         If no mapping exists, treat task, Step, VisionProfiles, _load_image_from_percept_store(), _load_image_from_request(), Any (+37 more)
 
 ### Community 140 - "DriveStateV1"
 Cohesion: 0.22
@@ -4904,160 +4928,160 @@ Cohesion: 0.15
 Nodes (17): duplicate_orion_reply_assistant(), extract_orion_assistant_from_snippet(), materially_same_text(), normalize_compare_text(), OrionDigestDeduper, Collapse repeated Orion assistant lines in recall snippets (vector → same catchp, Second line of defense: render skips duplicate assistant bodies even if fusion l, If snippet matches transcript-shaped vector rows, return a compact user-only lin (+9 more)
 
 ### Community 142 - "test_execution_dispatch_runtime_worker.py"
-Cohesion: 0.08
-Nodes (84): _candidate(), _frame_with_candidates(), _make_worker(), _patch_bus_and_client(), _patch_bus_and_slow_client(), 2026-07-29: advisory_only is no longer the default (enforcement is back     on,, The real, new behavior this patch adds at the integration level: with     the ne, Every early-return path (theater tripwire here) still has to carry the     curre (+76 more)
+Cohesion: 0.04
+Nodes (125): deque, _candidate(), _FakeClient, _frame_with_candidates(), _make_worker(), _patch_bus_and_client(), _patch_bus_and_slow_client(), _policy_frame() (+117 more)
 
 ### Community 143 - "graphiti_core.py"
 Cohesion: 0.10
 Nodes (34): _cast_embedding_to_vecf32(), _embed_query(), ensure_graphiti_indices(), _ensure_target_entity_stub(), _extract_crystallization_ids(), _falkor_driver(), _filter_intimate_crystallization_ids(), get_neighborhood() (+26 more)
 
-### Community 144 - "HarnessRunV1"
+### Community 144 - "turn_orchestrator.py"
 Cohesion: 0.04
-Nodes (123): EmitObservationFn, _build_situation_prompt_fragment(), execute_unified_turn(), _finalize_phase_error(), _harness_error_frame(), _partial_draft_from_run(), _publish_turn_timeout_grammar(), _publish_unified_turn_chat_grammar() (+115 more)
+Nodes (112): EmitObservationFn, LivenessCheckFn, apply_context_overflow_hint(), is_context_overflow_text(), timeline_complete_frame(), _build_situation_prompt_fragment(), execute_unified_turn(), _finalize_phase_error() (+104 more)
 
 ### Community 145 - "test_endogenous_outreach.py"
-Cohesion: 0.05
-Nodes (104): _always_fires(), _outreach(), _patch_record_decision(), Gates, prompt construction, and delivery for endogenous outreach.  Hand-computed, Review finding 7: the loop and the debug endpoint share cooldown state.      Cou, Regression, generalized for the real pipeline (2026-08-19): a     turn_error/tur, The real pipeline's own context_overflow detection (root-caused     2026-08-19:, Backstop for an upstream that reports failure only in the prose, even     when i (+96 more)
+Cohesion: 0.03
+Nodes (137): EndogenousOutreach, Randomized-trigger outreach loop. Best-effort at every step., This socket is processing an inbound message.          ``active_turn["correlatio, This socket is back to waiting for input., Record the session a connection is chatting in.          ``session_id`` lives in, _always_fires(), _delivered(), _env_example_value() (+129 more)
 
-### Community 146 - "test_reverie_spontaneous_thought.py"
-Cohesion: 0.07
-Nodes (38): _broadcast(), _coalition(), Phase A — spontaneous thought (reverie inside orion-thought).  Covers the load-b, Semantic-lift branch has no open_loops in context at all — outcomes must     not, The tick must look up outcomes for the live broadcast's loops and pass     them, Regression (review caught this live 2026-08-29): ORION_REVERIE_SEMANTIC_LIFT_ENA, A row with no usable created_at must never surface age_days: None into the     p, The 'never raises' guarantee must hold for row-shaping failures too, not     jus (+30 more)
+### Community 146 - "SpontaneousThoughtV1"
+Cohesion: 0.03
+Nodes (96): _clamp01(), Phase B — spontaneous thought → governed proposal candidate.  Maps a non-hollow, Convert a thought into a review-gated proposal candidate, or None.      Returns, spontaneous_thought_to_candidate(), _coalition(), Phase B — spontaneous thought → governed proposal candidate.  The security-criti, test_absent_coalition_targets_self_state_without_raising(), test_autoaction_posture_recorded_but_gate_unchanged() (+88 more)
 
 ### Community 147 - "ConceptRelationDecision"
-Cohesion: 0.10
-Nodes (21): ConceptRelationDecision, maybe_resolve_concept_relation(), Any, BaseModel, Bounded structured-output LLM call. NEVER raises -- degrades to     ConceptRelat, Returns a (crystallization_id, row, outcome) tuple ONLY when it took a decisive, Local to this seam -- not a bus-published event, no registry entry needed     (s, resolve_concept_relation() (+13 more)
+Cohesion: 0.09
+Nodes (25): _build_relation_prompt(), ConceptRelationDecision, maybe_resolve_concept_relation(), merge_new_evidence(), Any, BaseModel, Bounded structured-output LLM call. NEVER raises -- degrades to     ConceptRelat, Returns a (crystallization_id, row, outcome) tuple ONLY when it took a decisive (+17 more)
 
-### Community 148 - "worldview.py"
-Cohesion: 0.04
-Nodes (73): AtlasPrior, AtlasRevision, AtlasRun, _build_prior(), An operator's read of Orion's world view — what changed, run by run.  Separate m, One recorded movement of a prior. Orion writes these; Hub only reads., One turn, assembled from every node that carries its run_id., _as_float() (+65 more)
+### Community 148 - "websocket_handler.py"
+Cohesion: 0.07
+Nodes (53): extract_agent_trace_payload(), Any, cancel_agent_claude_turn(), cancel_in_flight_turn(), publish_harness_run_cancel(), Any, WebSocket, Cancel whichever motor owns this correlation_id. (+45 more)
 
-### Community 149 - "StanceReactRequestV1"
-Cohesion: 0.05
-Nodes (75): MindRunArtifactV1, BaseModel, Bus + Postgres artifact for a completed Mind run (producer: orch, consumer: sql-, HubAssociationBundleV1, StanceReactRequestV1, build_stance_react_failure_thought(), Valid defer ThoughtEventV1 for RPC reply channels that require ThoughtEventV1., Return subscriber count for channel, or -1 when the probe itself fails. (+67 more)
+### Community 149 - "mind_enrichment.py"
+Cohesion: 0.09
+Nodes (30): BaseTransport, Shared Mind contract constants (no runtime / IO)., MindRunArtifactV1, BaseModel, Bus + Postgres artifact for a completed Mind run (producer: orch, consumer: sql-, _clip(), _clip_str_or_none(), _envelope_correlation_id() (+22 more)
 
-### Community 150 - "EndogenousRuntimeAdoptionService"
-Cohesion: 0.06
-Nodes (68): CalibrationAdoptionRequestV1, CalibrationAdoptionResultV1, CalibrationProfileAuditV1, CalibrationProfileResolutionV1, CalibrationProfileV1, CalibrationRollbackRequestV1, CalibrationRollbackResultV1, CalibrationRolloutScopeV1 (+60 more)
+### Community 150 - "mind_runtime.py"
+Cohesion: 0.11
+Nodes (54): MindRunResultV1, _attach_mind_evidence_facets(), _attach_resolution_diagnostics(), _build_cognitive_projection_facet(), build_mind_run_request(), build_synthetic_mind_http_failure_result(), call_orion_mind_http(), fetch_substrate_telemetry_facet_for_mind() (+46 more)
 
 ### Community 151 - "attention_loops_store.py"
-Cohesion: 0.09
-Nodes (39): _cards_enabled(), _close(), CloseRequest, dismiss_loop(), list_loops(), publish_loop_outcome(), BaseModel, Operator Pending Attention API — cognitive-loop rows + Resolve/Dismiss.  Flag-ga (+31 more)
+Cohesion: 0.11
+Nodes (29): build_loop_outcome(), build_pending_card(), card_kind_for_scope(), _database_url(), _engine(), latest_salience_for_theme(), latest_trace_for_theme(), load_pending_loops() (+21 more)
 
 ### Community 152 - "test_brain_frame_producer.py"
-Cohesion: 0.06
-Nodes (72): BrainEdgeSampleV1, BrainNodeSampleV1, BrainRegionV1, BrainSpotlightV1, BaseModel, The spine of the contract: a continuous, trackable per-region signal., Best-effort decoration. NO continuity guarantee across frames., SubstrateBrainFrameV1 (+64 more)
+Cohesion: 0.08
+Nodes (44): assemble_brain_frame(), _field_anomaly_regions(), _honesty_regions(), datetime, Create brain regions representing prediction accuracy.      Reads prediction_err, Create a brain region from the mood-arc encoder's reconstruction-error     anoma, Return a cached SQLAlchemy engine for direct Postgres writes.          Graph sub, Fetch reducer lane health for lane regions, remapped to friendly lane keys. (+36 more)
 
 ### Community 153 - "test_social_memory_service.py"
 Cohesion: 0.09
 Nodes (57): _create_social_room_turns(), _FakeBus, _insert_social_room_turn(), _payload(), _service_and_session(), test_accepted_artifact_confirmation_expands_active_continuity(), test_accepted_confirmation_without_clear_scope_stays_non_active(), test_active_commitment_is_selected_over_old_ritual_hint() (+49 more)
 
-### Community 154 - "test_memory_crystallization_dynamics.py"
-Cohesion: 0.06
-Nodes (58): build_active_packet(), _entry(), Any, datetime, _task_boost(), _aware(), _clamp(), decay() (+50 more)
+### Community 154 - "MemoryCrystallizationV1"
+Cohesion: 0.08
+Nodes (43): build_active_packet(), _entry(), Any, datetime, _task_boost(), _aware(), _clamp(), decay() (+35 more)
 
 ### Community 155 - "WorldPerceptionV1"
 Cohesion: 0.03
-Nodes (119): IntentKind, IntentSource, ArbiterDecision, ArbiterState, decide(), datetime, Pure arbitration. Mutates only ``state.deliberate_hold_until`` on accept., build_intent() (+111 more)
+Nodes (115): IntentKind, IntentSource, ArbiterDecision, ArbiterState, decide(), datetime, Pure arbitration. Mutates only ``state.deliberate_hold_until`` on accept., build_intent() (+107 more)
 
-### Community 156 - "test_chat_substrate_reducer.py"
-Cohesion: 0.10
-Nodes (41): ChatProjectionLoader, ChatProjectionSaver, compute_chat_pressure_hints(), extract_chat_turn_state(), _parse_trace_id(), datetime, Parse hub.chat:{node_id}:{turn_id} → (node_id, turn_id)., _utc_now() (+33 more)
+### Community 156 - "ChatSessionProjectionV1"
+Cohesion: 0.08
+Nodes (54): ChatProjectionLoader, ChatProjectionSaver, ChatSessionProjectionV1, ChatTurnStateV1, BaseModel, compute_chat_pressure_hints(), extract_chat_turn_state(), _parse_trace_id() (+46 more)
 
-### Community 157 - "test_harness_governor_client_liveness.py"
+### Community 157 - "bus_listener.py"
 Cohesion: 0.07
-Nodes (40): LivenessCheckFn, cancel_fcc_turn(), SIGKILL a live FCC claude subprocess for this correlation_id, if any.      If th, HarnessRunCancelV1, Fire-and-forget cancel for an in-flight FCC motor turn (Hub disconnect / abort)., apply_harness_run_cancel(), handle_cancel_bus_message(), Any (+32 more)
+Nodes (43): HarnessCortexClient, Thin RPC client for cortex-exec finalize verbs (5b / 5c)., cancel_fcc_turn(), SIGKILL a live FCC claude subprocess for this correlation_id, if any.      If th, _record_recall_gate_from_debug(), _emit_refused_lifecycle_grammar(), _envelope_correlation_id(), _grammar_event_ids() (+35 more)
 
 ### Community 158 - "engine.py"
-Cohesion: 0.06
-Nodes (66): MindLLMSynthesisOutcome, test_hash_snapshot_inputs_stable(), test_validate_merged_stance_brief_accepts_minimal(), canonical_json_bytes(), hash_snapshot_inputs(), Any, Pure validators for Mind contracts (no HTTP / service imports beyond schemas)., validate_merged_stance_brief() (+58 more)
+Cohesion: 0.14
+Nodes (45): MindLLMSynthesisOutcome, Orion Mind shared contracts (types only; runtime lives in services/orion-mind)., ActiveCognitiveFrontierV1, MindStanceHandoffV1, test_mind_run_result_roundtrip(), test_universe_snapshot_facets(), MindControlDecisionV1, MindHandoffBriefV1 (+37 more)
 
-### Community 159 - "SparkStateSnapshotV1"
-Cohesion: 0.08
-Nodes (40): BaseModel, datetime, Canonical spark source seam used by reasoning adapters (Phase 5)., SparkSourceSnapshotV1, Normalization utilities for Orion payloads., _as_mapping(), _coerce_datetime(), _coerce_telemetry_timestamp() (+32 more)
+### Community 159 - "test_spark_contract_gate.py"
+Cohesion: 0.36
+Nodes (6): _iter_python_files(), _parse_ast(), Module, Path, _relative(), TestSparkContractGate
 
 ### Community 160 - "test_attention_verdict_exclusion.py"
 Cohesion: 0.09
 Nodes (37): _database_url(), _engine(), load_terminal_verdict_loop_ids(), datetime, Read-only lookup of human Resolve/Dismiss verdicts for the rung-3 workspace comp, Return the subset of ``loop_ids`` whose most recent verdict is terminal     AND, _ttl_hours(), _build() (+29 more)
 
 ### Community 161 - "social_room.py"
-Cohesion: 0.06
-Nodes (75): BaseModel, Append-only social_room turn persistence payload., SocialConceptEvidenceV1, SocialGroundingStateV1, SocialRedactionScoreV1, SocialRoomTurnV1, BaseModel, SocialSkillRequestV1 (+67 more)
+Cohesion: 0.03
+Nodes (122): ChatRole, Envelope, Typed envelope: payload is a Pydantic model.      This is the preferred new path, _append_unique(), build_hub_direct_inspection_sections(), build_social_inspection_snapshot(), _candidate_bucket(), _compact_text() (+114 more)
 
 ### Community 162 - "thought-process.js"
-Cohesion: 0.09
-Nodes (67): alignmentBadgeClass(), asList(), asObject(), attach(), buildExecutionStepsPanel(), buildTurnTracePanel(), cleanText(), collectBase() (+59 more)
+Cohesion: 0.06
+Nodes (99): bindRoot(), buildInspectorHtml(), buildRailHtml(), buildScrubberHtml(), buildShell(), buildVisorHtml(), close(), emptyState() (+91 more)
 
 ### Community 163 - "RecoveryStore"
 Cohesion: 0.22
 Nodes (5): _decode_envelope(), Any, Bounded Redis recovery index for vision-window (design §4.2, §4.3). Stores JSON, Return (latest_cursor, earliest_cursor) from last_n list if parseable., RecoveryStore
 
 ### Community 164 - "context.py"
-Cohesion: 0.08
-Nodes (71): AgendaContextV1, CuriosityPriorContextV1, CuriosityPriorSummaryV1, EnvironmentContextV1, LabContextV1, PresenceCompanionV1, BaseModel, Which LLM is actually generating this reply, for the situation brief.      Junip (+63 more)
+Cohesion: 0.03
+Nodes (170): Read-only `GRAPH.RO_QUERY` access to Orion's own graph, from Hub.      Synchrono, WorldviewReader, AffectContextV1, AgendaContextV1, CabinetContextV1, CuriosityPriorContextV1, CuriosityPriorSummaryV1, EnvironmentContextV1 (+162 more)
 
-### Community 165 - "test_openai_passthrough.py"
-Cohesion: 0.17
-Nodes (8): configured_routes(), Any, MonkeyPatch, TestClient, A priority='background' route (e.g. AI Town's quick_background) must     wait fo, test_resolve_openai_route_missing_returns_error(), TestBackgroundPriorityRoute, TestOpenAIPassthroughHTTP
+### Community 165 - "settings"
+Cohesion: 0.05
+Nodes (56): MonkeyPatch, test_legacy_rabbit_enables_concurrent_handlers_by_default(), test_legacy_rabbit_respects_concurrent_handlers_setting(), _enable_pcr_and_grounding(), Inverse of the above: a wide-open chat_turn cooldown must not let the     shared, The bug this fix closes: a shared cooldown timestamp would let a     chat_turn f, Unchanged pre-existing behavior: baseline/manual/pulse/relational/     telemetry, chat_turn's cooldown is independently tunable -- a wide-open shared     cooldown (+48 more)
 
 ### Community 166 - "snapshot_from_window"
-Cohesion: 0.12
-Nodes (31): EvidenceSnapshot, EvidenceTransitionDecision, EvidenceTransitionTracker, _hard_labels_from_evidence(), _labels_for_gate(), _labels_summary(), Deterministic pre-LLM gate: interpret only on host evidence transitions., snapshot_from_window() (+23 more)
+Cohesion: 0.11
+Nodes (32): EvidenceSnapshot, EvidenceTransitionDecision, EvidenceTransitionTracker, _hard_labels_from_evidence(), _labels_for_gate(), _labels_summary(), Deterministic pre-LLM gate: interpret only on host evidence transitions., snapshot_from_window() (+24 more)
 
 ### Community 167 - "derive_retrieval_intent"
 Cohesion: 0.11
 Nodes (35): is_low_info_social(), _normalize_whitespace(), True for greetings, thanks, and other low-information social turns., Deterministic Phase 0 gate: skip recall on low-info social turns., recall_skip_gate(), RecallSkipGateResult, _coerce_novelty(), derive_retrieval_intent() (+27 more)
 
-### Community 168 - "RouteTarget"
-Cohesion: 0.07
-Nodes (69): _available_route_keys(), _backend_supports_anthropic_messages(), build_models_list_payload(), _extract_correlation_id(), _forwardable_request_headers(), _forwardable_response_headers(), handle_messages_get(), handle_messages_head() (+61 more)
+### Community 168 - "anthropic_passthrough.py"
+Cohesion: 0.11
+Nodes (42): _available_route_keys(), _backend_supports_anthropic_messages(), build_models_list_payload(), _extract_correlation_id(), _forwardable_request_headers(), _forwardable_response_headers(), handle_messages_get(), handle_messages_head() (+34 more)
 
 ### Community 169 - "Unified Cognitive Substrate — Phase 9: Reflective Graph Consolidation"
 Cohesion: 0.20
 Nodes (9): Bounded review-cycle philosophy, Comparison logic, Forward path, Integration points, One-off mutation vs iterative consolidation, Outcome semantics, Unified Cognitive Substrate — Phase 9: Reflective Graph Consolidation, Why Phase 9 exists (+1 more)
 
 ### Community 170 - "test_chat_relational_stance.py"
-Cohesion: 0.07
-Nodes (45): test_prompt_render_ctx_preserves_journal_lane_bundle_by_default(), test_prompt_render_ctx_strips_debug_recall_bundle_only_when_opted_in(), compile_speech_contract(), _inject_prior_stance_to_inputs(), Deterministic regime-specific contract injected near TASK in chat_general.j2., Copy prior brief summary into stance inputs and expose it as a TOP-LEVEL ctx, _load_prior_stance_into_ctx(), _prior_stance_cache_get() (+37 more)
+Cohesion: 0.08
+Nodes (44): _compile_repair_speech_overlay(), compile_speech_contract(), _inject_prior_stance_to_inputs(), Deterministic regime-specific contract injected near TASK in chat_general.j2., Copy prior brief summary into stance inputs and expose it as a TOP-LEVEL ctx, Drop trailing customer-support closers when stance contract forbids them., _sentence_is_transactional_closer(), _split_reply_sentences() (+36 more)
 
-### Community 171 - "test_self_study_pass1.py"
-Cohesion: 0.05
-Nodes (34): _FakeBus, _FakeReflectBus, _prime_reflection_cache_for_current_repo_state(), Adds the RPC round trip reflect_self_concepts() now makes, on top of     _FakeBu, Runs a real (fake-bus-backed) reflection pass and leaves its result in     _REFL, _request(), _reset_structural_delta_state(), test_induce_self_concepts_still_idempotent_with_layer2_sources_wired() (+26 more)
+### Community 171 - "reconcile_field_state_with_lattice"
+Cohesion: 0.07
+Nodes (47): LatticeGraph, load_lattice(), Path, _ensure_capability_vector(), _ensure_node_vector(), _prune_every_node_vector(), _prune_retired_lattice_nodes(), Drop the whole node_vectors/node_vector_updated_at entry for a node     that has (+39 more)
 
 ### Community 172 - "test_metric_lineage.py"
 Cohesion: 0.03
-Nodes (92): build_graph(), _float_fields(), _is_float_like(), MetricNode, Any, Path, Resolver: joins the four metric-bearing registries into one URN space.  URN form, Project config/field/field_channel_glossary.v1.yaml. (+84 more)
+Nodes (94): _is_test_path(), scan_python(), build_graph(), _float_fields(), _is_float_like(), Any, Path, Resolver: joins the four metric-bearing registries into one URN space.  URN form (+86 more)
 
 ### Community 173 - "test_grammar_truth.py"
-Cohesion: 0.18
-Nodes (22): apply_grammar_events_retention(), build_grammar_truth_snapshot(), Bounded startup retention for grammar_events older than retention_days., reset_retention_state_for_tests(), _live_cursor_floor(), _make_fake_engine(), _mock_settings(), _patch_truth_deps() (+14 more)
+Cohesion: 0.14
+Nodes (25): build_grammar_truth_snapshot(), _fallback_counts(), Count grammar.event.v1 fallbacks using typed created_at_ts when available., reset_retention_state_for_tests(), Tests for bus_fallback_log created_at_ts population and truth windows., test_fallback_counts_use_created_at_ts_windows(), test_write_fallback_sets_created_at_ts(), _live_cursor_floor() (+17 more)
 
-### Community 174 - "OrionCodec"
-Cohesion: 0.02
-Nodes (109): OrionCodec, Any, BaseModel, Bulletproof encode/decode layer.      Goals:     - Never leak raw JSON dicts int, BaseModel, Bus payloads for substrate observability (tier merge outcomes)., Emitted on ``orion:substrate:tier_outcomes`` when cold-path materialization runs, SubstrateTierOutcomesPayloadV1 (+101 more)
+### Community 174 - "main.py"
+Cohesion: 0.08
+Nodes (32): BaseModel, Bus payloads for substrate observability (tier merge outcomes)., Emitted on ``orion:substrate:tier_outcomes`` when cold-path materialization runs, SubstrateTierOutcomesPayloadV1, _correlation_uuid(), publish_substrate_tier_outcomes_sync(), Any, Redis (+24 more)
 
-### Community 175 - "MemoryCrystallizationV1"
-Cohesion: 0.05
-Nodes (85): emit_active_packet_retrieved(), emit_crystallization_lifecycle(), emit_vector_upsert(), Any, _source(), _embed_bus(), _embed_http(), publish_crystallization_to_chroma() (+77 more)
+### Community 175 - "schemas.py"
+Cohesion: 0.08
+Nodes (45): emit_active_packet_retrieved(), _source(), attach_grammar_to_crystallization(), envelope_from_grammar_event(), Any, Build memory grammar envelope from existing GrammarEventV1-shaped dict., Governed cognitive memory crystallization layer., insert_link() (+37 more)
 
 ### Community 176 - "detect_resonance"
-Cohesion: 0.09
-Nodes (44): action_usefulness_rate(), pressure_discharge_rate(), Phase H — efficacy metrics for the reverie/dream weave.  Pure, deterministic red, Fraction of chains where post-chain pressure fell below pre-chain pressure., Fraction of reverie-originated action outcomes judged useful (FeedbackFrameV1)., Before/after recall metrics around a compaction., Deterministic before/after recall reduction. Negative deltas are wins:     lower, recall_delta() (+36 more)
+Cohesion: 0.08
+Nodes (46): action_usefulness_rate(), pressure_discharge_rate(), Phase H — efficacy metrics for the reverie/dream weave.  Pure, deterministic red, Fraction of chains where post-chain pressure fell below pre-chain pressure., Fraction of reverie-originated action outcomes judged useful (FeedbackFrameV1)., Before/after recall metrics around a compaction., Deterministic before/after recall reduction. Negative deltas are wins:     lower, recall_delta() (+38 more)
 
 ### Community 177 - "syncDebugModalScrollLock"
-Cohesion: 0.08
-Nodes (40): closeAgentTraceModal(), closeAutonomyConstitutionModal(), closeAutonomyDebugModal(), closeAutonomyReadinessModal(), closeBiometricsModal(), closeChatMessageExpandModal(), closeChatStanceDebugModal(), closeCognitiveReviewModal() (+32 more)
+Cohesion: 0.09
+Nodes (38): closeAgentTraceModal(), closeAutonomyConstitutionModal(), closeAutonomyDebugModal(), closeAutonomyReadinessModal(), closeBiometricsModal(), closeChatInputExpandModal(), closeChatMessageExpandModal(), closeChatStanceDebugModal() (+30 more)
 
-### Community 178 - "score_fragments"
-Cohesion: 0.11
-Nodes (29): collect_fragments(), Fragment, Fan-out collector.      This is the only place that knows which storage backends, RecallResult, End-to-end recall pipeline:      1. Collect candidate fragments from SQL and RDF, run_recall_pipeline(), _dedupe(), _mix_kinds() (+21 more)
+### Community 178 - "service.py"
+Cohesion: 0.09
+Nodes (37): collect_fragments(), Fragment, Fan-out collector.      This is the only place that knows which storage backends, RecallResult, End-to-end recall pipeline:      1. Collect candidate fragments from SQL and RDF, run_recall_pipeline(), _dedupe(), _mix_kinds() (+29 more)
 
 ### Community 179 - "ResonanceHealthMonitor"
-Cohesion: 0.10
-Nodes (37): _check(), HealthCheck, _is_worsening(), Severity, Phase H+ — resonance health monitor.  The resonance tripwire (`orion.reverie.res, Edge-triggered per-theme resonance monitor.      Tracks every theme currently be, Reconstruct tracked themes (and their known-unhealthy state) from         orion-, Call once per completed chain, after `_maybe_emit_resonance_alert`         persi (+29 more)
+Cohesion: 0.09
+Nodes (43): _check(), check_resonance_worsening(), HealthCheck, _is_worsening(), Severity, Phase H+ — resonance health monitor.  The resonance tripwire (`orion.reverie.res, Edge-triggered per-theme resonance monitor.      Tracks every theme currently be, Reconstruct tracked themes (and their known-unhealthy state) from         orion- (+35 more)
 
 ### Community 180 - "CompressionRegionV1"
-Cohesion: 0.12
-Nodes (22): CompressionRegionV1, CompressionStalenessMarkV1, GraphCompressionRegionMaterializedV1, BaseModel, A cached semantic compression of a graph region, written to orion:compressions., Bus payload marking a graph region stale when source triples are written., Bus event emitted after each compression artifact is written to Fuseki., CompressionWriter (+14 more)
+Cohesion: 0.11
+Nodes (23): CompressionRegionV1, CompressionStalenessMarkV1, GraphCompressionRegionMaterializedV1, BaseModel, A cached semantic compression of a graph region, written to orion:compressions., Bus payload marking a graph region stale when source triples are written., Bus event emitted after each compression artifact is written to Fuseki., CompressionWriter (+15 more)
 
 ### Community 181 - "train_v2.py"
 Cohesion: 0.16
@@ -5071,13 +5095,13 @@ Nodes (48): Channel "orion:exec:request:VisionCouncilService" (kind=request, sch
 Cohesion: 0.20
 Nodes (25): VisionEventCandidateV1, VisionSceneInterpretationV1, _activity_claim_has_caption_slop(), build_person_presence_fallback(), enforce_evidence_grounding(), ensure_grounded_person_presence(), _events_mention_person(), _filter_person_entity_names() (+17 more)
 
-### Community 184 - "AttentionFrameV1"
-Cohesion: 0.05
-Nodes (52): AttentionFrameV1, Recorded when top-down goal bias makes a lower-bottom-up loop win — an     inspe, VoluntaryOverrideV1, VoluntaryOverrideAbsentReasonV1, Read the producer's reason out of `frame.debug`, or None.      `debug` is an unt, Unify the GWT-dispatch lane and the general field lane into one     inspectable, _read_override_absent_reason(), reduce_attention_self_model() (+44 more)
+### Community 184 - "reduce_attention_self_model"
+Cohesion: 0.06
+Nodes (36): Recorded when top-down goal bias makes a lower-bottom-up loop win — an     inspe, VoluntaryOverrideV1, Unify the GWT-dispatch lane and the general field lane into one     inspectable, reduce_attention_self_model(), _broadcast(), _field_frame(), _override(), _prediction_error_by_domain() (+28 more)
 
-### Community 185 - "PolicyDecisionFrameV1"
-Cohesion: 0.02
-Nodes (177): _admit_candidates(), build_execution_dispatch_frame(), build_stale_discard_execution_dispatch_frame(), build_unevaluable_execution_dispatch_frame(), _candidate_status_for_mode(), candidate_template_key(), _decision_template_key(), effective_priority() (+169 more)
+### Community 185 - "builder.py"
+Cohesion: 0.04
+Nodes (128): _admit_candidates(), build_execution_dispatch_frame(), build_stale_discard_execution_dispatch_frame(), build_unevaluable_execution_dispatch_frame(), _candidate_status_for_mode(), candidate_template_key(), _decision_template_key(), effective_priority() (+120 more)
 
 ### Community 186 - "import_chatgpt_export.py"
 Cohesion: 0.11
@@ -5087,13 +5111,13 @@ Nodes (41): build_conversation_envelope(), build_envelopes_for_turn(), build_exa
 Cohesion: 0.07
 Nodes (55): _appraisal(), consolidation_memory_gate(), ConsolidationGateResult, Any, _significance(), _atom_semantic_role(), fetch_grammar_evidence_for_window(), _parse_event_json() (+47 more)
 
-### Community 188 - "compact_suggest_draft_json_schema"
-Cohesion: 0.20
-Nodes (14): compact_schema_for_llamacpp(), compact_suggest_draft_json_schema(), Any, JSON Schema contracts for memory-graph suggest (llama.cpp-friendly compact form), Full Pydantic JSON schema (may include $defs / $ref)., Strip Pydantic noise; keep inline object shapes only., Stage-1 schema: top-level keys + array item shapes without $ref/oneOf., suggest_draft_json_schema() (+6 more)
+### Community 188 - "MoodArcEncoderManifestV1"
+Cohesion: 0.07
+Nodes (39): Cadence, CompositionStatus, duplicates(), InnerStateSignal, Enum, str, Registry of every "what does Orion currently feel/perceive" signal in the repo (, How often a signal is (re)computed. (+31 more)
 
-### Community 189 - "suggest_validate.py"
-Cohesion: 0.10
-Nodes (45): collect_topical_spine_warnings(), _draft_utterance_corpus(), _entity_surface_forms_lower(), _entity_tokens(), extract_selected_role_evidence(), _has_assistant_role_entity(), _has_role_entity(), _has_topical_entity() (+37 more)
+### Community 189 - "memory_graph_suggest.py"
+Cohesion: 0.09
+Nodes (48): collect_topical_spine_warnings(), _draft_utterance_corpus(), _entity_surface_forms_lower(), _entity_tokens(), extract_selected_role_evidence(), _has_assistant_role_entity(), _has_role_entity(), _has_topical_entity() (+40 more)
 
 ### Community 190 - "HyperbolicGPTConfig"
 Cohesion: 0.12
@@ -5103,13 +5127,13 @@ Nodes (15): HyperbolicGPTConfig, Any, Path, main(), parse_args(), Namespace, Blo
 Cohesion: 0.05
 Nodes (46): Field Attention Policy v1, Signal Kind: biometrics_state, Signal Kind: chat_reasoning_quality, Signal Kind: chat_social_hazard, Signal Kind: failure_event, Signal Kind: mesh_health, Signal to Drive Map v1, Signal Kind: spark_signal (+38 more)
 
-### Community 192 - "Settings"
-Cohesion: 0.27
-Nodes (6): BaseSettings, Settings, _split_csv(), enroll(), main(), Path
+### Community 192 - "capture_clip"
+Cohesion: 0.07
+Nodes (43): capture_clip(), ClipCaptureCooldownError, ClipCaptureError, ClipCaptureResult, _killpg(), Process, RuntimeError, On-demand short video+audio clip capture via ffmpeg subprocess, for AffectGPT (s (+35 more)
 
 ### Community 193 - "test_reasoning_emit.py"
 Cohesion: 0.06
-Nodes (66): BaseModel, Reasoning telemetry — per-call cognition metadata + windowed activity.  `Reasoni, One LLM call's reasoning metadata. No trace text — privacy-preserving., Rolling-window aggregate of ReasoningCallV1, read by φ (spark-introspector)., ReasoningActivityV1, ReasoningCallV1, build_reasoning_call(), _coerce_correlation_uuid() (+58 more)
+Nodes (63): BaseModel, Reasoning telemetry — per-call cognition metadata + windowed activity.  `Reasoni, One LLM call's reasoning metadata. No trace text — privacy-preserving., Rolling-window aggregate of ReasoningCallV1, read by φ (spark-introspector)., ReasoningActivityV1, ReasoningCallV1, build_reasoning_call(), _coerce_correlation_uuid() (+55 more)
 
 ### Community 194 - "sources.py"
 Cohesion: 0.08
@@ -5117,111 +5141,111 @@ Nodes (23): create_frame_source(), FolderFrameSource, FrameReadResult, FrameSour
 
 ### Community 195 - "fcc_motor.py"
 Cohesion: 0.02
-Nodes (227): ContextRisk, FccRunner, auto_approve_from_env(), claude_permission_argv(), extend_mcp_argv(), Path, Shared ``claude -p`` argv helpers for FCC harness bridges., Whether to auto-approve when env is unset: root containers yes, host non-root ye (+219 more)
+Nodes (223): ContextRisk, FccRunner, auto_approve_from_env(), claude_permission_argv(), extend_mcp_argv(), Path, Shared ``claude -p`` argv helpers for FCC harness bridges., Whether to auto-approve when env is unset: root containers yes, host non-root ye (+215 more)
 
 ### Community 196 - "Phase 11: Offline Evaluation and Calibration for Endogenous Runtime"
 Cohesion: 0.22
 Nodes (8): Calibration engine, Manual adoption path, Offline evaluator, Operator-facing outputs, Phase 11: Offline Evaluation and Calibration for Endogenous Runtime, Safety posture, Scope, Typed evaluation/calibration contracts
 
-### Community 197 - "test_uncertainty_metacog.py"
-Cohesion: 0.29
-Nodes (11): _mind_prep(), _prep(), Any, MonkeyPatch, Tests for LLM surface instability metacog advisory trigger., test_maybe_publish_runs_when_metacog_enabled(), test_maybe_publish_skips_when_metacog_disabled(), test_maybe_publish_skips_when_status_not_ok() (+3 more)
+### Community 197 - "MindPhaseTelemetry"
+Cohesion: 0.14
+Nodes (18): MindLLMFailOpenRecord, Any, Fail-open metadata preserved when LLM synthesis falls back to deterministic Mind, MindPhaseTelemetry, phase_telemetry_machine_keys(), Any, Per-phase LLM telemetry for Mind run inspectability., _mind_prep() (+10 more)
 
-### Community 198 - "test_field_observations.py"
-Cohesion: 0.09
-Nodes (35): geometric_decay_ratio(), iter_observations(), Observation, Any, Turn a `substrate_field_state.field_json` payload into per-(node, channel) obser, True when `series` has bottomed out at the end state of the decay artifact., Yield one `Observation` per (node, channel) present in `node_vectors`.      Non-, Return the constant successive ratio of `series` if it is a clean     geometric (+27 more)
+### Community 198 - "agent_trace.py"
+Cohesion: 0.11
+Nodes (45): EffectKind, _agent_chain_delegate_status(), _agent_chain_delegate_summary(), _agent_chain_failure_detail(), _agent_chain_failure_signals(), _agent_delegate_payload(), _agent_delegate_service_key(), _bound_capability_payload() (+37 more)
 
-### Community 199 - "ProposalRuntimeStore"
-Cohesion: 0.09
-Nodes (18): ProposalRuntimeStore, Latest fresh non-hollow spontaneous thought, or None (Phase B).          Degrade, Real repair-pressure appraisals, oldest-first, for hop 0's reducer.          Ret, 2026-07-22 (SelfStateV1 burn): replaces load_proposal_frame_for_self_state., 2026-07-22 (SelfStateV1 burn): replaces load_latest_self_state() as         the, 2026-07-22 (SelfStateV1 burn): looks up by source_field_tick_id         directly, _captured_sql(), _frame() (+10 more)
+### Community 199 - ".text"
+Cohesion: 0.02
+Nodes (96): build_artifact_ref(), latest_bus_synaptic_prediction_error(), Engine, Real, live surprise/epistemic-value signal, shared by every emitter that wants, _engine_with_row(), test_none_when_no_row(), test_none_when_node_absent(), test_none_when_stale() (+88 more)
 
 ### Community 200 - "extract_measurements"
 Cohesion: 0.03
 Nodes (111): _as_float(), extract_measurements(), normalize_rate(), Raw physical quantities from a biometrics sample, in their own units.      ROADM, Strict: None for anything that is not a real, finite number.      Booleans are r, (sum, count) only if EVERY element parses. None if any element does not.      Al, _sum_of(), parse_outlets() (+103 more)
 
-### Community 201 - "test_falkor_recall_writer.py"
-Cohesion: 0.09
-Nodes (35): Build a Cypher `SET alias.key = $key, ...` clause from a params dict,     skippi, set_assignments(), extract_sentiment(), filter_noise(), _is_noise(), _normalize_identity_key(), Any, Cypher-native Falkor write of chat/social-turn and collapse-triage tag/entity en (+27 more)
+### Community 201 - "main.py"
+Cohesion: 0.05
+Nodes (62): Build a Cypher `SET alias.key = $key, ...` clause from a params dict,     skippi, set_assignments(), extract_sentiment(), filter_noise(), _is_noise(), _normalize_identity_key(), Any, Cypher-native Falkor write of chat/social-turn and collapse-triage tag/entity en (+54 more)
 
 ### Community 202 - "ConceptWorker"
-Cohesion: 0.04
-Nodes (56): Language, ConceptWorker, Task, Lazy, cached SQLAlchemy engine for `_bus_synaptic_surprise_source()`.          O, Real `surprise_source` callable passed into `episode_fetch.py`/         `policy_, Pub/sub intake channels, minus any that are consumed via a durable stream., Manages windowed intake and triggers induction., ClusterResult (+48 more)
+Cohesion: 0.06
+Nodes (38): ConceptWorker, Task, Lazy, cached SQLAlchemy engine for `_bus_synaptic_surprise_source()`.          O, Real `surprise_source` callable passed into `episode_fetch.py`/         `policy_, Pub/sub intake channels, minus any that are consumed via a durable stream., Manages windowed intake and triggers induction., WindowEvent, ConceptSettings (+30 more)
 
-### Community 203 - "project.py"
-Cohesion: 0.14
-Nodes (42): MemoryCardStatus, EvidenceItemV1, TimeHorizonV1, DispositionDraft, EdgeDraft, EntityDraft, MemoryGraphSubschemaV1, ParticipantDraft (+34 more)
+### Community 203 - "FieldGoalProvenanceV1"
+Cohesion: 0.09
+Nodes (34): ActiveGoalStore, clear_active_goal(), _handle_bus_message(), Any, Generic bus listener that keeps a service's local ``goal_state.py`` cache curren, Subscribe to the goal-proposal channel and keep this process's goal_state     ca, run_goal_state_listener(), _max_goal_age_sec() (+26 more)
 
 ### Community 204 - "EvidenceUnitV1"
 Cohesion: 0.07
 Nodes (54): EvidenceUnitSQL, EvidenceAdapter, Any, Protocol, _as_dt(), CollapseMirrorEvidenceAdapter, Any, datetime (+46 more)
 
-### Community 205 - "record_sync_skip"
-Cohesion: 0.29
-Nodes (7): Publish a verdict as one atomic rebind.      Rebinding beats mutating in place:, Record a skip decided by the *caller* (e.g. an FCC turn already in flight)., _record(), record_sync_skip(), active_turns(), Best-effort, serialized, turn-aware wrapper around ``sync_fcc_sandbox``.      Ru, _sync_fcc_sandbox_background()
+### Community 205 - "run_substrate_effect_pipeline"
+Cohesion: 0.08
+Nodes (31): attach_repair_pressure_contract(), _contract_changed(), Wire substrate repair contract into Hub → Cortex chat metadata., Mutate req.metadata in place when repair pressure changed behavior., In-memory LRU cache of per-turn substrate effect snapshots., SubstrateEffectCache, SubstrateEffectSnapshot, _push_observation() (+23 more)
 
 ### Community 206 - "WorldPulseSourceV1"
-Cohesion: 0.06
-Nodes (63): HTMLParser, Any, SourceRegistryV1, WorldPulseAllowedUsesV1, WorldPulseSourceV1, fetch_rss_articles(), _parse_date(), Any (+55 more)
+Cohesion: 0.05
+Nodes (70): HTMLParser, Any, SourceRegistryV1, SourceTrustAssessmentV1, WorldPulseAllowedUsesV1, WorldPulseSourceV1, fetch_rss_articles(), _parse_date() (+62 more)
 
 ### Community 207 - "client.py"
 Cohesion: 0.09
 Nodes (38): _admin_key(), AitownClientError, _base_url(), convex_mutation(), convex_query(), convex_request(), _default_player_id(), fetch_version() (+30 more)
 
 ### Community 208 - "pg_conn"
-Cohesion: 0.14
-Nodes (45): pg_conn(), connection, count_segments(), create_conversation_override(), create_dataset(), create_event(), create_model(), create_model_event() (+37 more)
+Cohesion: 0.12
+Nodes (50): get_segment(), get_segment_facets(), get_segment_raw(), list_segments(), Response, UUID, pg_conn(), connection (+42 more)
 
-### Community 209 - "training.py"
-Cohesion: 0.05
-Nodes (76): HDBSCAN, DatasetSpec, EnrichmentSpec, ModelSpec, RunRecord, RunSpecSnapshot, RunTrainRequest, train_run_endpoint() (+68 more)
+### Community 209 - "test_training_umap_reduction.py"
+Cohesion: 0.09
+Nodes (33): ModelSpec, _build_clusterer(), _build_reducer(), Live incident 2026-07-21: this function's caller previously hardcoded     TfidfV, UMAP dimensionality reduction before HDBSCAN clustering.      Standard practice, _require_hdbscan(), _require_umap(), _resolve_keyword_stop_words() (+25 more)
 
 ### Community 210 - "github_repo_context.py"
 Cohesion: 0.09
-Nodes (38): append_github_mcp_harness_brief(), default_harness_workspace(), github_mcp_brief_lines(), github_mcp_repo_brief_line(), harness_mcp_enabled(), parse_github_remote_url(), Path, Resolve GitHub owner/repo for FCC MCP operator briefs. (+30 more)
+Nodes (37): append_github_mcp_harness_brief(), default_harness_workspace(), github_mcp_brief_lines(), github_mcp_repo_brief_line(), harness_mcp_enabled(), parse_github_remote_url(), Path, Resolve GitHub owner/repo for FCC MCP operator briefs. (+29 more)
 
 ### Community 211 - "test_attention_candidate_precision_weighted.py"
-Cohesion: 0.04
-Nodes (89): advance_precision_baseline(), cross_domain_variance_floor(), normalize_across_targets(), _population_variance(), precision_weighted_salience(), precision_weighted_salience_from_baseline(), PrecisionEwmaBaseline, PrecisionWeightedSalienceResult (+81 more)
+Cohesion: 0.03
+Nodes (100): advance_precision_baseline(), cross_domain_variance_floor(), normalize_across_targets(), _population_variance(), precision_weighted_salience(), precision_weighted_salience_from_baseline(), PrecisionEwmaBaseline, PrecisionWeightedSalienceResult (+92 more)
 
 ### Community 212 - "CausalGeometrySnapshotV1"
-Cohesion: 0.03
-Nodes (122): ChannelPoints, ChannelSeries, CausalGeometryDivergenceEntryV1, CausalGeometryEdgeV1, CausalGeometrySnapshotV1, BaseModel, _snapshot(), test_causal_geometry_snapshot_round_trip() (+114 more)
+Cohesion: 0.04
+Nodes (101): ChannelPoints, ChannelSeries, CausalGeometryDivergenceEntryV1, CausalGeometryEdgeV1, CausalGeometrySnapshotV1, BaseModel, _snapshot(), test_causal_geometry_snapshot_round_trip() (+93 more)
 
 ### Community 213 - "world_pulse.py"
-Cohesion: 0.06
-Nodes (101): CoverageStatus, ArticleClusterV1, ArticleRecordV1, ClaimRecordV1, DailyWorldPulseItemV1, EntityRecordV1, EventRecordV1, BaseModel (+93 more)
+Cohesion: 0.04
+Nodes (124): CoverageStatus, _gpu_gap_result(), test_metabolism_skips_covered_sections(), test_metabolism_sparse_gpu_section_raises_predictive(), ArticleClusterV1, ArticleRecordV1, ClaimRecordV1, DailyWorldPulseItemV1 (+116 more)
 
 ### Community 214 - "HarnessGrammarCollector"
-Cohesion: 0.05
-Nodes (77): build_harness_grammar_events(), build_harness_grammar_finalize_events(), compute_harness_reasoning_present(), compute_harness_thinking_source(), _event(), HarnessGrammarCollector, _hash_id(), publish_harness_lifecycle_grammar() (+69 more)
+Cohesion: 0.06
+Nodes (63): build_harness_grammar_events(), build_harness_grammar_finalize_events(), compute_harness_reasoning_present(), compute_harness_thinking_source(), _event(), HarnessGrammarCollector, _hash_id(), publish_harness_lifecycle_grammar() (+55 more)
 
 ### Community 215 - "map_curiosity_ctx_to_substrate"
 Cohesion: 0.08
-Nodes (44): _coerce(), _make_prov(), map_curiosity_ctx_to_substrate(), Any, Curiosity-signal adapter — frontier gaps enter beliefs.  Maps frontier curiosity, Map ``ctx['curiosity_signals']`` → one ``curiosity:unresolved_gaps`` node., Coerce raw input to list of FrontierInvocationSignalV1.      Accepts:     - list, _make_signal() (+36 more)
+Nodes (42): _coerce(), map_curiosity_ctx_to_substrate(), Any, Map ``ctx['curiosity_signals']`` → one ``curiosity:unresolved_gaps`` node., Coerce raw input to list of FrontierInvocationSignalV1.      Accepts:     - list, _make_signal(), Tests for curiosity_ctx adapter., emitted node has salience exactly 0.4 (verify it, don't relax). (+34 more)
 
-### Community 216 - "schemas.py"
-Cohesion: 0.04
-Nodes (91): BoundCapabilityExecutionRequestV1, AgentOpinion, AuditVerdict, BlinkJudgement, BlinkScores, ContextBlock, CouncilResult, DeliberationRequest (+83 more)
+### Community 216 - "supervisor.py"
+Cohesion: 0.02
+Nodes (175): Regression test for the container-bringup skill activation gap.  Live incident (, build_verb_list(), _discover_verbs(), is_active(), list_all_verbs(), _load_manifest(), Any, BoundCapabilityExecutionRequestV1 (+167 more)
 
 ### Community 217 - "test_graphiti_core_backend.py"
 Cohesion: 0.11
 Nodes (22): _edge_data_calls(), _entity_data_calls(), _FakeEntityEdge, _FakeEntityNode, _patch_graphiti_node_edge_modules(), Stands in for graphiti_core.nodes.EntityNode in this dev venv (graphiti-core isn, Root-cause regression: entities must be keyed on .uuid (not a custom .id propert, Graphiti.search() only ever returns edges, never bare nodes -- without a     sel (+14 more)
 
-### Community 218 - "test_recall_strategy_readiness.py"
-Cohesion: 0.15
-Nodes (28): BaseModel, Recall V2 / recall-strategy promotion readiness (advisory only; no live apply)., RecallStrategyReadinessV1, _collect_compare_rows_from_pressure(), compare_rows_from_telemetry_records(), compute_recall_strategy_readiness(), default_eval_corpus_total_cases(), _f() (+20 more)
+### Community 218 - "submitExplicitChatText"
+Cohesion: 0.08
+Nodes (44): agentAnswerHeadline(), applyAgentClaudePayloadFields(), applyOrionUnifiedPayloadFields(), armAudioWatchdog(), audienceChipLabel(), beginWsReadyWait(), clearAudioWatchdog(), cockpitHudOpenForCorrelation() (+36 more)
 
 ### Community 219 - "WindowingSpec"
-Cohesion: 0.07
-Nodes (60): WindowingSpec, _build_prompt(), _cache_key(), _call_llm(), _hash_text(), judge_boundaries(), Any, _write_artifact() (+52 more)
+Cohesion: 0.09
+Nodes (50): WindowingSpec, _build_prompt(), _cache_key(), _call_llm(), _hash_text(), judge_boundaries(), Any, _write_artifact() (+42 more)
 
 ### Community 220 - "PackManager"
-Cohesion: 0.08
-Nodes (23): CognitionPack, PackManager, Path, Represents a pack as defined in packs/*.yaml., Given one or more pack names, return consolidated list of unique verbs., Manages cognitive packs.      Responsibilities:     - Load packs from packs/*.ya, Validate that all verbs in the pack exist in verbs/*.yaml.         Returns a dic, ensure_delivery_pack_in_packs() (+15 more)
+Cohesion: 0.12
+Nodes (9): CognitionPack, PackManager, Path, Represents a pack as defined in packs/*.yaml., Given one or more pack names, return consolidated list of unique verbs., Manages cognitive packs.      Responsibilities:     - Load packs from packs/*.ya, Validate that all verbs in the pack exist in verbs/*.yaml.         Returns a dic, test_pack_validation_memory_pack() (+1 more)
 
-### Community 221 - "active_packet.py"
-Cohesion: 0.23
-Nodes (16): eligible_for_recall(), Return True when an active crystallization is strong enough for recall injection, _allowed_buckets(), _enabled(), _entry_to_fragment(), fetch_active_packet_fragments(), _graphiti_adapter(), _intent() (+8 more)
+### Community 221 - "retriever.py"
+Cohesion: 0.10
+Nodes (27): Any, query_chroma_collection(), Query Chroma HTTP API for semantic hits (Postgres remains canonical)., _apply_recall_boost(), _embed_query(), _persist_recall_boost(), Any, datetime (+19 more)
 
 ### Community 222 - "aitown_client.py"
 Cohesion: 0.10
@@ -5231,41 +5255,41 @@ Nodes (40): accept_invite(), _admin_key(), AitownClientError, _base_url(), conve
 Cohesion: 0.08
 Nodes (51): MetacogDraftTextPatchV1, MetacogDraftWhatChangedV1, BaseModel, _draft_ctx(), _load_executor_module(), _load_template(), A model that reworks the example instead of copying it verbatim is still an, Real content that happens to share the same generally-calm register as the     e (+43 more)
 
-### Community 224 - "startup_event"
-Cohesion: 0.02
-Nodes (85): DecodeResult, HubNotificationEvent, _build_graph_writer(), _ensure_schema(), main(), mirror_bus(), _prune_old_bus_events(), Connection (+77 more)
+### Community 224 - "main.py"
+Cohesion: 0.16
+Nodes (18): _build_graph_writer(), build_heartbeat_chassis(), _ensure_schema(), main(), mirror_bus(), _prune_old_bus_events(), Connection, datetime (+10 more)
 
 ### Community 225 - "test_external_platform_gate.py"
-Cohesion: 0.07
-Nodes (61): auto_activate(), GovernorPathRequired, ValueError, resolve_formation_policy(), The external platform this whole window came from, or None.      Unanimity is re, _window_source_platform(), propose(), Local model / operator may propose; proposal is never canonical. (+53 more)
+Cohesion: 0.08
+Nodes (61): auto_activate(), GovernorPathRequired, datetime, ValueError, _utc_now(), FormationPolicy, _has_identity_scope(), Enum (+53 more)
 
 ### Community 226 - "SocialScenarioReplayHarness"
-Cohesion: 0.08
-Nodes (33): BaseModel, SocialScenarioEvaluationResultV1, SocialScenarioExpectationV1, SocialScenarioFixtureV1, SocialScenarioSeedStateV1, SocialScenarioTurnFixtureV1, BaseModel, SocialShakedownFixV1 (+25 more)
+Cohesion: 0.09
+Nodes (30): BaseModel, SocialScenarioEvaluationResultV1, SocialScenarioExpectationV1, SocialScenarioFixtureV1, SocialScenarioSeedStateV1, SocialScenarioTurnFixtureV1, _clear_app_modules(), _FakeBus (+22 more)
 
 ### Community 227 - "ChatTurnRecord"
 Cohesion: 0.25
 Nodes (17): _clean(), extract_anchors(), _connected_components(), _flatten_anchors(), _iso_day(), _label_for_episode(), _merge_tiny_components(), segment_episodes() (+9 more)
 
 ### Community 228 - "test_fcc_motor_mcp.py"
-Cohesion: 0.08
-Nodes (45): _BlockingAfterLinesStream, _fake_fcc_env(), _FakeProc, _FakeStream, Any, MonkeyPatch, Path, A draft that keeps streaming text without ever finishing the turn must be      k (+37 more)
+Cohesion: 0.09
+Nodes (43): _fake_fcc_env(), _FakeProc, Any, MonkeyPatch, Path, A draft that keeps streaming text without ever finishing the turn must be      k, A normal, well-under-budget turn must not trip the new hard ceiling., A "result" event is the CLI's own signal the turn already finished --      it mu (+35 more)
 
-### Community 229 - "mutation_control_surface.py"
-Cohesion: 0.03
-Nodes (69): FixtureRequest, _connect_timeout_sec(), ControlSurfaceWriteError, _decode_json(), _history_max_rows_per_surface(), _history_row(), Any, datetime (+61 more)
+### Community 229 - "test_control_surface_isolation_guard.py"
+Cohesion: 0.33
+Nodes (3): The suite must be structurally incapable of writing the live control surface.  `, The autouse fixture in conftest.py must survive a test that sets the env     its, test_ambient_database_url_cannot_reach_the_control_surface()
 
 ### Community 230 - "AnswerContract"
-Cohesion: 0.03
-Nodes (175): A 'How are you?' unified turn carries Orion self-context into both passes., test_how_are_you_turn_is_grounded_end_to_end(), harness_motor_instruction(), is_relational_motor_stance(), Deterministic FCC operator briefs for harness motor turns., _stance_slice(), compile_harness_prefix(), _format_autonomy_slice() (+167 more)
+Cohesion: 0.04
+Nodes (169): harness_motor_instruction(), is_relational_motor_stance(), Deterministic FCC operator briefs for harness motor turns., _stance_slice(), compile_harness_prefix(), _format_autonomy_slice(), _format_context_provenance_block(), _format_grounding_self_block() (+161 more)
 
-### Community 231 - "map_recall_bundle_to_substrate"
-Cohesion: 0.11
-Nodes (17): EventNodeV1, TensionNodeV1, _anchor_for_fragment(), _anchor_hint(), _fragment_metadata(), _make_prov(), map_recall_bundle_to_substrate(), _map_sql_timeline_fragment() (+9 more)
+### Community 231 - "_state"
+Cohesion: 0.07
+Nodes (21): budget_state(), BudgetState, day_elapsed_fraction(), A dispatch budget denominated in something that can actually run out.  WHY THE O, Would spending this much be refused, in ENFORCING mode?          Reported in adv, None when no meaningful allowance is configured.      None means "no budget", wh, How far through the budget day we are, in [0, 1]., Where the day stands. Pure arithmetic; the caller supplies the numbers. (+13 more)
 
-### Community 232 - "MindRunResultV1"
+### Community 232 - "MindRunRequestV1"
 Cohesion: 0.09
-Nodes (76): Orion Mind shared contracts (types only; runtime lives in services/orion-mind)., ActiveCognitiveFrontierV1, MindStanceHandoffV1, test_mind_run_request_roundtrip(), test_mind_run_result_roundtrip(), test_universe_snapshot_facets(), MindControlDecisionV1, MindHandoffBriefV1 (+68 more)
+Nodes (45): test_mind_run_request_roundtrip(), MindRunPolicyV1, MindRunRequestV1, MindRunBudget, Wall-clock budget for Cortex-governed Mind LLM phases., Tracks remaining wall time for a single MindRun and caps per-phase timeouts., _llm_fail_open_from_exception(), BaseException (+37 more)
 
 ### Community 233 - "PsuService"
 Cohesion: 0.09
@@ -5273,35 +5297,35 @@ Nodes (25): check_token(), create_app(), create_service(), get_service(), heartb
 
 ### Community 234 - "bootstrap_orion_agent.py"
 Cohesion: 0.07
-Nodes (46): expand_env_path(), load_fcc_env(), Path, build_orion_town_persona(), Project the self-model into a public-safe town persona.      Empty-shell guard:, _truncate(), test_blurb_is_truncated(), test_empty_projection_falls_back() (+38 more)
+Nodes (48): expand_env_path(), load_fcc_env(), Path, build_orion_town_persona(), Project the self-model into a public-safe town persona.      Empty-shell guard:, _truncate(), test_blurb_is_truncated(), test_empty_projection_falls_back() (+40 more)
 
 ### Community 235 - "Service: orion-harness-governor"
 Cohesion: 0.06
 Nodes (38): Channel "orion:actions:trigger:journal.v1" (kind=event, schema=JournalTriggerV1) producers=[orion-actions, orion-embodiment, *] consumers=[orion-actions], Channel "orion:embodiment:intent" (kind=event, schema=EmbodimentIntentV1) producers=[orion-substrate-runtime, orion-harness-governor, orion-cortex-exec] consumers=[orion-embodiment], Channel "orion:embodiment:outcome" (kind=event, schema=EmbodimentOutcomeV1) producers=[orion-embodiment] consumers=[orion-hub], Channel "orion:embodiment:perception" (kind=event, schema=WorldPerceptionV1) producers=[orion-embodiment] consumers=[orion-substrate-runtime, orion-self-state-runtime, orion-cortex-exec], Channel "orion:grammar:accepted-pressure" (kind=event, schema=GrammarEventV1) producers=[orion-substrate-runtime] consumers=[none], Channel "orion:harness:run:artifact" (kind=event, schema=HarnessRunV1) producers=[orion-harness-governor] consumers=[*], Channel "orion:harness:run:cancel" (kind=event, schema=HarnessRunCancelV1) producers=[orion-hub] consumers=[orion-harness-governor], Channel "orion:harness:run:request" (kind=request, schema=HarnessRunRequestV1) producers=[orion-hub] consumers=[orion-harness-governor] (+30 more)
 
 ### Community 236 - "recall.py"
-Cohesion: 0.03
-Nodes (109): Hub legacy label ``recall.v1`` must resolve to structured brain recall, not chat, test_dream_v1_profile_loads(), test_profiles_load_default(), test_recall_v1_hub_alias_maps_to_brain_recall(), Shared contracts for bus message payloads., MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1 (+101 more)
+Cohesion: 0.06
+Nodes (59): Shared contracts for bus message payloads., MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1, BaseModel, Per-fetch-path vector gating outcome (see ``source_policy.recall_vector_allowed`, A single retrieved memory item., Path-keyed vector policy diagnostics attached under ``recall_debug.vector_policy (+51 more)
 
-### Community 237 - "test_worker_attention_self_model_tick.py"
-Cohesion: 0.13
-Nodes (34): _fake_store(), _make_worker(), _pe_node(), SimpleNamespace, Unit tests for the AST/HOT self-model live tick, appended to the tail of `_atten, Regression, review finding 2026-07-29: reduce_attention_self_model()     falls b, The reducer's `broadcast` argument must be the exact same projection     object, Structural check for this doc's core safety property: the self-model     tick mu (+26 more)
-
-### Community 238 - "sql_timeline.py"
+### Community 237 - "test_turn_orchestrator_cockpit_hops.py"
 Cohesion: 0.10
-Nodes (25): _epoch(), _extract_turn_effect_delta(), fetch_exact_fragments(), fetch_recent_fragments(), fetch_related_by_entities(), _filter_excluded_rows(), _is_current_turn_echo(), _memory_filter_clause() (+17 more)
+Nodes (32): advance_seq(), next_seq(), Skip past *n* manually assigned seq slots after ``next_seq``., reset_seq(), test_advance_seq_after_multi_hop_batch(), test_next_seq_monotonic_per_correlation(), emit_motor_hop_from_claude_step(), emit_slice_a_finalize_hops() (+24 more)
+
+### Community 238 - "SelfSnapshotV1"
+Cohesion: 0.10
+Nodes (41): SelfInducedConceptV1, SelfSnapshotV1, _behavioral_concepts(), build_self_concept_rdf_request(), build_self_concept_summary(), build_self_reflection_rdf_request(), build_self_study_rdf_request(), _call_self_study_reflect_llm() (+33 more)
 
 ### Community 239 - "extract_repair_evidence"
 Cohesion: 0.17
 Nodes (25): _clamp01(), extract_repair_evidence(), _extract_text(), _new_evidence_id(), _Phrase, _phrase_hit(), EvidenceKind, Deterministic phrase-match detector for repair evidence.  No LLM. No embeddings. (+17 more)
 
-### Community 240 - "sources.py"
-Cohesion: 0.42
-Nodes (9): _grammar_ref_ids(), Pool, Every grammar id this proposal names, from BOTH carriers, de-duplicated, in orde, Does this grammar event id exist on disk right now?      WHAT THIS REPLACES. The, resolve_crystallization_sources(), resolve_evidence_ref(), resolve_grammar_event_ref(), resolve_memory_card_ref() (+1 more)
+### Community 240 - "CrystallizationEvidenceRefV1"
+Cohesion: 0.17
+Nodes (16): CrystallizationConfidence, infer_confidence(), Deterministic confidence tier from evidence + recurrence. No LLM, no I/O.      R, CrystallizationEvidenceRefV1, _grammar_ref_ids(), Pool, Every grammar id this proposal names, from BOTH carriers, de-duplicated, in orde, Does this grammar event id exist on disk right now?      WHAT THIS REPLACES. The (+8 more)
 
 ### Community 241 - "test_instruments.py"
 Cohesion: 0.04
-Nodes (101): absence_counts(), _apply_excludes(), build_state(), check_repo_presence(), Claim, _claim_from_raw(), ClaimResult, evaluate_claim() (+93 more)
+Nodes (99): absence_counts(), _apply_excludes(), build_state(), check_repo_presence(), Claim, _claim_from_raw(), ClaimResult, evaluate_claim() (+91 more)
 
 ### Community 242 - "test_metric_definition_drift.py"
 Cohesion: 0.04
@@ -5309,35 +5333,35 @@ Nodes (104): build_lock(), _def_key(), DefinitionChange, DefinitionDiff, diff_lo
 
 ### Community 243 - "ConceptProfile"
 Cohesion: 0.05
-Nodes (85): ConceptCluster, ConceptEvidenceRef, ConceptItem, ConceptProfile, ConceptProfileDelta, make_concept_id(), BaseModel, datetime (+77 more)
+Nodes (60): Language, ConceptCluster, ConceptEvidenceRef, ConceptItem, ConceptProfile, ConceptProfileDelta, make_concept_id(), BaseModel (+52 more)
 
 ### Community 244 - "HealthMonitor"
-Cohesion: 0.20
-Nodes (22): _check(), HealthCheck, HealthMonitor, Settings, Severity, Edge-triggered health monitor: fires an orion-notify attention request only, run_checks(), HealthSnapshot (+14 more)
+Cohesion: 0.22
+Nodes (21): _check(), HealthCheck, HealthMonitor, Severity, Edge-triggered health monitor: fires an orion-notify attention request only, run_checks(), HealthSnapshot, _client_mock() (+13 more)
 
 ### Community 245 - "bound_capability_exec.py"
 Cohesion: 0.14
 Nodes (25): ActionSkillManifestEntry, ActionsSkillRegistry, _family_for_skill(), _is_host_mutating_skill(), BaseModel, Path, Normalized orion-actions skill manifest derived from skills.* verb YAMLs., _risk_for_skill() (+17 more)
 
 ### Community 246 - "AffectGptAssessResultPayload"
-Cohesion: 0.02
-Nodes (165): AffectGptAssessRequestPayload, AffectGptAssessResultPayload, AffectReadV1, JuniperMultimodalAffectV1, BaseModel, Bus payload schemas for the AffectGPT multimodal (face+voice) affect worker.  DE, One structured affect read, produced by the ``vision`` backend.      **Why this, min_length=1 alone accepts "   ". A whitespace-only label renders         identi (+157 more)
+Cohesion: 0.05
+Nodes (56): AffectGptAssessRequestPayload, AffectGptAssessResultPayload, JuniperMultimodalAffectV1, BaseModel, Bus payload schemas for the AffectGPT multimodal (face+voice) affect worker.  DE, Domain event published by orion-juniper-affective-state after wrapping     one w, test_juniper_multimodal_affect_defaults(), test_request_forbids_extra_fields() (+48 more)
 
 ### Community 247 - "biometrics_pipeline.py"
 Cohesion: 0.04
-Nodes (92): AmbientAudioSnapshotV1, BaseModel, One validated snapshot from the host ambient audio reader., CabinetSensorFrameV1, One validated NDJSON frame from the Nano ESP32 firmware., EwmaBand, InductionMetricState, InductionTracker (+84 more)
+Nodes (87): AmbientAudioSnapshotV1, BaseModel, One validated snapshot from the host ambient audio reader., CabinetEnvironmentV1, CabinetImuV1, CabinetLidarV1, CabinetMagneticV1, CabinetParticulateV1 (+79 more)
 
 ### Community 248 - "test_falkor_codec.py"
-Cohesion: 0.05
-Nodes (90): _common_node_properties(), decode_concept_node(), decode_edge(), decode_entity_node(), decode_evidence_node(), decode_node(), _dt(), _dynamics_metadata_from_row() (+82 more)
+Cohesion: 0.04
+Nodes (129): EvidenceNodeV1, _common_node_properties(), decode_concept_node(), decode_edge(), decode_entity_node(), decode_evidence_node(), decode_node(), _dt() (+121 more)
 
 ### Community 249 - "ExecutionDispatchRuntimeWorker"
-Cohesion: 0.02
-Nodes (104): budget_state(), BudgetState, day_elapsed_fraction(), A dispatch budget denominated in something that can actually run out.  WHY THE O, Would spending this much be refused, in ENFORCING mode?          Reported in adv, None when no meaningful allowance is configured.      None means "no budget", wh, How far through the budget day we are, in [0, 1]., Where the day stands. Pure arithmetic; the caller supplies the numbers. (+96 more)
-
-### Community 250 - "se"
 Cohesion: 0.03
-Nodes (16): renderResponseFeedbackCategoryOptions(), ae, ce, ee(), ie, le, ne(), oe (+8 more)
+Nodes (84): ExecutionDispatchCortexClient, Thin RPC client sending prepared_for_dispatch envelopes to cortex-exec.      Mir, _empty_result(), extract_final_text(), is_failed_plan_status(), parse_structured_observation(), plan_execution_status(), Any (+76 more)
+
+### Community 250 - "ie"
+Cohesion: 0.05
+Nodes (12): renderResponseFeedbackCategoryOptions(), ae, ce, ee(), ie, le, oe, pe() (+4 more)
 
 ### Community 251 - "test_cortex_request_builder.py"
 Cohesion: 0.05
@@ -5348,24 +5372,24 @@ Cohesion: 0.05
 Nodes (27): _ev(), _facts_fixture(), FakeConn, FakeFetcher, _grounded_llm_content(), _make_bus(), _NullAsyncCtx, Exception (+19 more)
 
 ### Community 253 - "test_atom_signals.py"
-Cohesion: 0.09
-Nodes (38): clamp01(), Any, Thin helpers for populating GrammarAtomV1.uncertainty from existing signals.  Pr, BiometricsSummaryV1.telemetry_error_rate (orion/telemetry/biometrics_pipeline.py, Max metric.volatility across BiometricsInductionV1.metrics., Bus activity EWMA z-score; None when the tracker has no baseline yet., Schema-validation sample mismatch ratio (bus observer)., How far stream depth exceeds the configured backpressure threshold. (+30 more)
+Cohesion: 0.12
+Nodes (32): clamp01(), Any, Thin helpers for populating GrammarAtomV1.uncertainty from existing signals.  Pr, BiometricsSummaryV1.telemetry_error_rate (orion/telemetry/biometrics_pipeline.py, Max metric.volatility across BiometricsInductionV1.metrics., Bus activity EWMA z-score; None when the tracker has no baseline yet., Schema-validation sample mismatch ratio (bus observer)., How far stream depth exceeds the configured backpressure threshold. (+24 more)
 
 ### Community 254 - "AutonomyVerificationHarness"
-Cohesion: 0.17
-Nodes (17): __getattr__(), AutonomyVerificationHarness, CheckResult, GraphDBClient, load_scenarios(), Any, Graph, Path (+9 more)
+Cohesion: 0.16
+Nodes (18): __getattr__(), AutonomyVerificationHarness, CheckResult, GraphDBClient, load_scenarios(), Any, Graph, Path (+10 more)
 
 ### Community 255 - "test_introspection_fixture.py"
 Cohesion: 0.11
 Nodes (32): extract_tool_metrics(), _iter_message_blocks(), load_fixture(), Any, Path, Deterministic scoring for the unified-turn introspection eval.  Experiment artif, Return (passed, failed) assertion id lists for one answer., Fold fcc_motor step frames (raw stream-json events) into navigation metrics. (+24 more)
 
-### Community 256 - "persist_turn_referent"
-Cohesion: 0.29
-Nodes (9): _coalition_ref(), persist_turn_referent(), Any, datetime, Best-effort writer for substrate_turn_referent (reverie semantic lift v1)., test_persist_turn_referent_fail_open_on_db_error(), test_persist_turn_referent_skips_when_excerpts_empty(), test_persist_turn_referent_skips_when_surprise_resolved() (+1 more)
+### Community 256 - "vision_persistence_smoke.py"
+Cohesion: 0.12
+Nodes (37): VisionEventBundleItem, VisionEventPayload, build_intake_envelope(), build_smoke_bundle_item(), build_vision_event_payload(), coerce_sql_row(), _collect_envelopes(), expected_sql_row_fields() (+29 more)
 
-### Community 257 - "test_field_topology_learned_store.py"
+### Community 257 - "VisionResult"
 Cohesion: 0.09
-Nodes (17): AdoptedWeightEntry, datetime, Causal Geometry v1, Rung 2B: HITL queue + adopted-overlay store for field-topolo, The ONLY entry point by which a proposed delta becomes active.          Explicit, Reject a pending proposal. A no-op on an already-adopted proposal --          re, _utc_now(), _proposal(), Path (+9 more)
+Nodes (35): VisionEmbedding, build_artifact_payload(), merge_result_inputs(), Any, Combine task request + meta into the artifact provenance inputs dict.      On ke, Build VisionArtifactPayload from a successful VisionResult, or None if no artifa, False suppresses the broadcast on EITHER of two independent checks:      1. ``ta, True only for a real identity artifact -- the mirror image of     should_broadca (+27 more)
 
 ### Community 258 - "EpisodicFederator"
 Cohesion: 0.11
@@ -5377,27 +5401,27 @@ Nodes (65): main(), _parse_args(), Namespace, build_sft_dataset(), _chat_templat
 
 ### Community 260 - "fit_phi_encoder.py"
 Cohesion: 0.07
-Nodes (78): InnerStateFeaturesV1, CorpusStatsV1, PhiEncoderManifestV1, BaseModel, Phi encoder manifest schemas (Plan 2).  PhiIntrinsicRewardV1 and AttributionV1 (, TrainingStatsV1, Path, Shared contract for JSONL corpus-sink rotation naming and file resolution.  Sing (+70 more)
+Nodes (74): InnerStateFeaturesV1, CorpusStatsV1, PhiEncoderManifestV1, BaseModel, Phi encoder manifest schemas (Plan 2).  PhiIntrinsicRewardV1 and AttributionV1 (, TrainingStatsV1, Path, Shared contract for JSONL corpus-sink rotation naming and file resolution.  Sing (+66 more)
 
 ### Community 261 - "drive_history_reflection_synthesis.py"
-Cohesion: 0.09
-Nodes (42): build_fact_sheet(), _build_narrative_prompt(), _build_reflection_crystallization(), _call_llm_narrative(), _coerce_active_drives(), _coerce_drive_pressures(), _coerce_event_time(), drive_audit_row_to_event() (+34 more)
+Cohesion: 0.08
+Nodes (45): build_fact_sheet(), _build_narrative_prompt(), _build_reflection_crystallization(), _call_llm_narrative(), _coerce_active_drives(), _coerce_drive_pressures(), _coerce_event_time(), drive_audit_row_to_event() (+37 more)
 
-### Community 262 - "CouncilService"
-Cohesion: 0.24
-Nodes (9): stream_key_from_window(), InterpretationParseOutcome, CouncilService, test_finalize_drops_youtube_activity_without_hard_person(), test_finalize_host_fallback_on_parse_failure(), test_finalize_injects_person_when_llm_omits_despite_hard_labels(), test_finalize_preserves_strict_v2_when_host_person_injected_after_grounding(), _window() (+1 more)
+### Community 262 - "InterpretationParseOutcome"
+Cohesion: 0.57
+Nodes (7): InterpretationParseOutcome, test_finalize_drops_youtube_activity_without_hard_person(), test_finalize_host_fallback_on_parse_failure(), test_finalize_injects_person_when_llm_omits_despite_hard_labels(), test_finalize_preserves_strict_v2_when_host_person_injected_after_grounding(), _window(), _youtube_interpretation()
 
 ### Community 263 - "sentience-program.js"
 Cohesion: 0.18
 Nodes (18): buildAgentTraceOverviewNode(), buildAgentTraceRawPayloadsNode(), buildAgentTraceTimelineNode(), buildAgentTraceToolGroupsNode(), clearAgentTraceDebugPanel(), createAgentTracePanel(), openAgentTraceModal(), populateAgentTraceModal() (+10 more)
 
-### Community 264 - "mind_enrichment.py"
-Cohesion: 0.10
-Nodes (34): BaseTransport, Shared Mind contract constants (no runtime / IO)., _clip(), _clip_str_or_none(), _envelope_correlation_id(), _mind_transport(), publish_mind_run_artifact_for_thought(), Any (+26 more)
+### Community 264 - "select_mind_coloring"
+Cohesion: 0.17
+Nodes (22): SelectedFrontierMatterV1, Project the mode-agnostic self/attention subset of a Mind run.      Returns None, select_mind_coloring(), _frontier(), Eval: Mind coloring is mode-agnostic and never leaks task-control into the unifi, _result(), test_no_task_control_leaks_across_all_modes(), test_relational_turn_carries_self_and_curiosity_signal() (+14 more)
 
 ### Community 265 - "main.py"
-Cohesion: 0.05
-Nodes (71): CausalityLink, A single step in a causality chain. Used for Conjourney lineage., CortexExecRequestPayload, CortexExecResultPayload, BaseModel, Typed payload for cortex.exec.request., Typed payload for cortex.exec.result., PlanExecutionResult (+63 more)
+Cohesion: 0.04
+Nodes (79): CausalityLink, Any, UUID, Create a child envelope that extends the causality chain with this message as a, Vacuum Validator:         1. Ensures 'content' is populated from 'text'., A single step in a causality chain. Used for Conjourney lineage., Rabbit, RPC / synchronous pattern.     Listens on a single request channel and replies t (+71 more)
 
 ### Community 266 - "main.py"
 Cohesion: 0.11
@@ -5408,28 +5432,28 @@ Cohesion: 0.05
 Nodes (48): _Clock, _probe(), The theater tripwire must be able to let go.  Regression tests for the 2026-08-2, The original design's stated objection, answered: a coincidentally         good, Tripping must reset the recovery counters, not inherit stale ones.          Asse, At probe time `_recent_dispatch_statuses` is still 10/10 failures.         Judgi, REVERSED after review, because the original behaviour made the whole         re-, The production call order, which the first version of this file did         not (+40 more)
 
 ### Community 268 - "test_situation_perception_context.py"
-Cohesion: 0.07
-Nodes (95): PerceptionContextV1, What Orion's camera saw, summarised, for the situation brief.      **The exposed, _build_perception_context(), Most recent camera percept, gated hard on age.      The staleness gate is the po, bind_identity_ask_cooldown_bus(), coarse_duration(), presence_fragment(), PresenceResolution (+87 more)
+Cohesion: 0.08
+Nodes (85): PerceptionContextV1, What Orion's camera saw, summarised, for the situation brief.      **The exposed, _build_perception_context(), Most recent camera percept, gated hard on age.      The staleness gate is the po, bind_identity_ask_cooldown_bus(), _brief(), _cfg(), _diag() (+77 more)
 
-### Community 269 - "NotificationRequest"
-Cohesion: 0.03
-Nodes (98): UUID, EmailTransport, _split_mime(), ChatAttentionRequest, NotificationAccepted, NotificationRequest, ProxyGet, ProxyPost (+90 more)
+### Community 269 - "Policy"
+Cohesion: 0.19
+Nodes (10): enrich_with_policy(), datetime, should_send_email(), _load_policy(), _parse_time(), Policy, PolicyDecision, Any (+2 more)
 
 ### Community 270 - "SceneBeliefTracker"
-Cohesion: 0.13
-Nodes (14): BeliefObserveResult, Any, Per-stream scene label habituation (observed → believed tier)., Enter votes: empty ring slots inherit last non-empty labels (flicker fix)., Exit votes: count only labels present in each raw observation., SceneBeliefRegistry, SceneBeliefTracker, test_belief_ignores_single_empty_observation() (+6 more)
+Cohesion: 0.17
+Nodes (11): BeliefObserveResult, Per-stream scene label habituation (observed → believed tier)., Enter votes: empty ring slots inherit last non-empty labels (flicker fix)., Exit votes: count only labels present in each raw observation., SceneBeliefTracker, test_belief_ignores_single_empty_observation(), test_belief_requires_enter_votes(), test_belief_requires_exit_votes() (+3 more)
 
 ### Community 271 - "World Pulse Dev Bring-Up"
 Cohesion: 0.10
 Nodes (20): Adding sources for missing sections, Bounded ingestion strategies, Clustering diagnostics, Coverage contract in source config, Coverage status interpretation, Curation and consolidation policy, Deterministic topic clustering, Dev persistence mode (SQL + Hub messages) (+12 more)
 
-### Community 272 - "SocialGifUsageStateV1"
-Cohesion: 0.16
-Nodes (23): SocialGifUsageStateV1, _eligible_summary(), _FakeBus, _FakeCallSyneClient, _FakeHubClient, _FakeSocialMemoryClient, _payload(), _policy_and_message() (+15 more)
+### Community 272 - "test_gif_policy.py"
+Cohesion: 0.15
+Nodes (22): _eligible_summary(), _FakeBus, _FakeCallSyneClient, _FakeHubClient, _FakeSocialMemoryClient, _payload(), _policy_and_message(), _settings() (+14 more)
 
 ### Community 273 - "test_curiosity_study_material.py"
 Cohesion: 0.03
-Nodes (95): _access_section(), _aligned_rows(), _budget_section(), build_kickoff_prompt(), _continuation_section(), _hops_section(), _material_section(), _outcome_section() (+87 more)
+Nodes (98): _access_section(), _aligned_rows(), _budget_section(), build_kickoff_prompt(), _continuation_section(), _hops_section(), _material_section(), _outcome_section() (+90 more)
 
 ### Community 274 - "SignalsInspectCache"
 Cohesion: 0.07
@@ -5440,48 +5464,48 @@ Cohesion: 0.15
 Nodes (30): activateAtlasPanel(), apiFetch(), applyGraphFilters(), destroyCy(), escapeHtml(), fetchTraces(), fitAtlasGraph(), formatTs() (+22 more)
 
 ### Community 276 - "TestClamp"
-Cohesion: 0.15
-Nodes (4): clamp11(), Tests for normalization utilities., TestClamp, TestEwmaBand
+Cohesion: 0.27
+Nodes (3): clamp11(), Tests for normalization utilities., TestClamp
 
 ### Community 277 - "tts.py"
 Cohesion: 0.13
-Nodes (17): Config, BaseSettings, Settings, CoquiBackend, _ensure_torch_load_compat(), _is_xtts_model(), Settings, Single-file view of the above, for callers that only need existence. (+9 more)
+Nodes (18): Config, BaseSettings, Settings, CoquiBackend, _ensure_torch_load_compat(), _is_xtts_model(), Settings, Single-file view of the above, for callers that only need existence. (+10 more)
 
-### Community 278 - "test_workflow_scheduler_bridge.py"
-Cohesion: 0.11
-Nodes (28): _dispatch_request(), The live bug: `health` stays "degraded" for 5 runs, attention must not.      git, A dispatch that never terminates must not silence the attention signal.      `_c, A restart must not hand back a retry budget that was already spent.      The per, Cancel while a dispatch is in flight; the dispatch then fails.      The failure, The operator-facing path must write the copy a dispatch actually reads.      It, A failure the store recovers from on its own is not Juniper's problem.      Pagi, The other half of the blip rule: a genuinely stuck schedule must still page. (+20 more)
+### Community 278 - "WorkflowScheduleStore"
+Cohesion: 0.14
+Nodes (29): WorkflowScheduleStore, _dispatch_request(), The live bug: `health` stays "degraded" for 5 runs, attention must not.      git, A dispatch that never terminates must not silence the attention signal.      `_c, A restart must not hand back a retry budget that was already spent.      The per, Cancel while a dispatch is in flight; the dispatch then fails.      The failure, The operator-facing path must write the copy a dispatch actually reads.      It, A failure the store recovers from on its own is not Juniper's problem.      Pagi (+21 more)
 
 ### Community 279 - "17. Acceptance checks"
 Cohesion: 0.33
 Nodes (6): 17. Acceptance checks, Breadcrumbs, Context Mode, Evaluation, GitNexus, Installation and isolation
 
-### Community 280 - "DailyWorldPulseV1"
-Cohesion: 0.05
-Nodes (84): metabolize_substrate_signals(), _gpu_gap_result(), test_metabolism_skips_covered_sections(), test_metabolism_sparse_gpu_section_raises_predictive(), build_world_pulse_reflective_trigger(), format_world_pulse_curiosity_block(), merge_world_pulse_curiosity_into_draft(), Deterministic gap-fill section for journal body (not LLM-dependent). (+76 more)
+### Community 280 - "CuriosityFollowupV1"
+Cohesion: 0.13
+Nodes (35): outcome_from_followup(), SurpriseSource, Return the followup whose section matches the first gap-section label the     re, Rebuild an ActionOutcomeRefV1 from a world-pulse curiosity followup so the     r, select_reusable_followup(), _followup(), _gap_signal(), # NOTE: anchor_scope / target_zone / task_type_candidate are Literal type (+27 more)
 
 ### Community 281 - "Service: orion-actions"
-Cohesion: 0.11
-Nodes (22): Channel "orion:actions:audit" (kind=event, schema=GenericPayloadV1) producers=[orion-actions] consumers=[none], Channel "orion:actions:manage:result:*" (kind=result, schema=WorkflowScheduleManageResponseV1) producers=[orion-actions] consumers=[orion-cortex-orch], Channel "orion:actions:manage:workflow.v1" (kind=request, schema=WorkflowScheduleManageRequestV1) producers=[orion-cortex-orch] consumers=[orion-actions], Channel "orion:actions:trigger:daily_metacog.v1" (kind=event, schema=GenericPayloadV1) producers=[orion-actions] consumers=[orion-actions], Channel "orion:actions:trigger:daily_pulse.v1" (kind=event, schema=GenericPayloadV1) producers=[orion-actions, orion-cortex-exec] consumers=[orion-actions], Channel "orion:actions:trigger:workflow.v1" (kind=event, schema=WorkflowDispatchRequestV1) producers=[orion-cortex-orch, orion-actions] consumers=[orion-actions], Channel "orion:agent-council:intake" (kind=request, schema=GenericPayloadV1) producers=[orion-hub, orion-cortex-exec] consumers=[orion-agent-council], Channel "orion:agent-council:reply*" (kind=result, schema=GenericPayloadV1) producers=[orion-agent-council] consumers=[orion-hub, orion-cortex-exec] (+14 more)
+Cohesion: 0.08
+Nodes (33): Channel "orion:actions:audit" (kind=event, schema=GenericPayloadV1) producers=[orion-actions] consumers=[none], Channel "orion:actions:manage:result:*" (kind=result, schema=WorkflowScheduleManageResponseV1) producers=[orion-actions] consumers=[orion-cortex-orch], Channel "orion:actions:manage:workflow.v1" (kind=request, schema=WorkflowScheduleManageRequestV1) producers=[orion-cortex-orch] consumers=[orion-actions], Channel "orion:actions:trigger:daily_metacog.v1" (kind=event, schema=GenericPayloadV1) producers=[orion-actions] consumers=[orion-actions], Channel "orion:actions:trigger:daily_pulse.v1" (kind=event, schema=GenericPayloadV1) producers=[orion-actions, orion-cortex-exec] consumers=[orion-actions], Channel "orion:actions:trigger:workflow.v1" (kind=event, schema=WorkflowDispatchRequestV1) producers=[orion-cortex-orch, orion-actions] consumers=[orion-actions], Channel "orion:agent-council:intake" (kind=request, schema=GenericPayloadV1) producers=[orion-hub, orion-cortex-exec] consumers=[orion-agent-council], Channel "orion:agent-council:reply*" (kind=result, schema=GenericPayloadV1) producers=[orion-agent-council] consumers=[orion-hub, orion-cortex-exec] (+25 more)
 
-### Community 282 - "collect_field_channel_pressures"
-Cohesion: 0.02
-Nodes (198): analyse_field_history(), analyse_merge(), Contender, MergeAnalysis, observe_channel_to_dimension(), observe_source_to_channel(), Merge-domination detector: is a low-resolution input masking a high-resolution o, One participant in a merge, over the observed window. (+190 more)
+### Community 282 - "field_state.py"
+Cohesion: 0.05
+Nodes (78): Merge-domination detector: is a low-resolution input masking a high-resolution o, clamp01(), collect_field_channel_pressures(), DimensionContributor, DimensionProvenance, field_pressures_with_provenance(), map_channels_to_dimensions(), map_channels_to_dimensions_with_provenance() (+70 more)
 
 ### Community 283 - "extract_suggest_draft_dict_from_cortex_payload"
 Cohesion: 0.14
 Nodes (27): extract_suggest_draft_dict_from_cortex_payload(), extract_suggest_text_from_cortex_payload(), _openai_choice_message_text(), Any, Extract memory_graph_suggest draft JSON from CortexClientResult-shaped payloads., Parse a SuggestDraftV1 dict from a CortexClientResult-shaped payload., Return best-effort model text containing a suggest draft from a cortex payload., _service_block_text_candidates() (+19 more)
 
-### Community 284 - "bind_session_turn_phase_bus"
-Cohesion: 0.07
-Nodes (72): _build_conversation_phase(), mark_orion_turn(), bind_session_turn_phase_bus(), _key(), _parse_iso(), datetime, NamedTuple, Cross-process, cross-restart storage for "when did the user/Orion last turn in t (+64 more)
+### Community 284 - "test_session_turn_phase.py"
+Cohesion: 0.09
+Nodes (40): _key(), _parse_iso(), datetime, NamedTuple, Cross-process, cross-restart storage for "when did the user/Orion last turn in t, Parse an ISO8601 string, normalizing a tz-naive result to UTC.      `write_sessi, Fail-open read of the last known user/Orion turn timestamps for this     session, Fail-open write of both timestamps as a single JSON payload via one     SETEX ca (+32 more)
 
-### Community 287 - "endogenous_curiosity_candidates"
+### Community 287 - "smoke_substrate_motivation_golden_path.py"
 Cohesion: 0.12
-Nodes (38): Curiosity/gap-driven frontier invocation contracts (Phase 8)., _attention_loop_candidates(), _clamp01(), _coverage_gap_candidates(), endogenous_curiosity_candidates(), EndogenousCuriosityConfig, _env_flag(), _env_float() (+30 more)
+Nodes (40): _attention_loop_candidates(), _clamp01(), _coverage_gap_candidates(), endogenous_curiosity_candidates(), EndogenousCuriosityConfig, _env_flag(), _env_float(), _prediction_error_candidates() (+32 more)
 
-### Community 288 - "context_exec.py"
-Cohesion: 0.04
-Nodes (80): Finding, Finding, FindingsBundle, test_findings_bundle_roundtrip(), BeliefProvenanceReportV1, ContextExecBudgetV1, ContextExecFindingV1, ContextExecOperatorSummaryV1 (+72 more)
+### Community 288 - "test_rlm_eval_fixtures.py"
+Cohesion: 0.13
+Nodes (27): _inner_proposal_artifact(), main(), _quality_pass(), _run(), assert_claim_clean(), assert_engine_runtime_debug(), assert_safety_posture(), blob_text() (+19 more)
 
 ### Community 289 - "proposal_review_client.py"
 Cohesion: 0.15
@@ -5495,13 +5519,13 @@ Nodes (30): build_response_format_for_method(), _chat_payload(), _default_base_u
 Cohesion: 0.15
 Nodes (36): build_interpretation_prompt(), project_interpretation_to_events(), _parse(), Council V2 scene interpretation parsing and projection tests (no live LLM/Redis/, orion-vision-window folds identity_hypothesis into     summary["evidence"] (2026, No identity_hypothesis key at all (the common case: not enrolled, no     face de, Live failure mode: LLM put event_candidates fields under salient_observations., test_build_interpretation_prompt_caps_artifact_bloat() (+28 more)
 
-### Community 292 - "PlanExecutionRequest"
-Cohesion: 0.02
-Nodes (181): build_plan_for_verb(), load_prompt_template(), load_verb_yaml(), Any, ExecutionPlan, Honor explicit `services: []` on a plan step; do not treat it as 'inherit defaul, _resolve_step_services(), Unified async message iterator. Yields dicts with fields similar to redis-py's l (+173 more)
+### Community 292 - "bus_schemas.py"
+Cohesion: 0.01
+Nodes (305): build_plan_for_verb(), load_prompt_template(), load_verb_yaml(), Any, ExecutionPlan, Honor explicit `services: []` on a plan step; do not treat it as 'inherit defaul, _resolve_step_services(), CollapseMirrorPayload (+297 more)
 
 ### Community 293 - "test_attention_schema_surface.py"
-Cohesion: 0.03
-Nodes (107): Cadence, CompositionStatus, duplicates(), InnerStateSignal, Enum, str, Registry of every "what does Orion currently feel/perceive" signal in the repo (, How often a signal is (re)computed. (+99 more)
+Cohesion: 0.04
+Nodes (88): _as_float(), attended_priors_cypher(), AttendedPrior, build_attended_priors(), _fmt(), datetime, Curiosity -> AttentionSchemaV1 projection (write-only adapter).  Settles the des, `[]` means the run touched no prior; `None` means the graph could not answer. (+80 more)
 
 ### Community 294 - "check_single_consumer_channels.py"
 Cohesion: 0.21
@@ -5512,8 +5536,8 @@ Cohesion: 0.04
 Nodes (85): _aware_utc(), channel_regime(), ChannelRegime, _compose(), datetime, Regime readout for a field channel: level, dispersion, drift, saturation, and wh, One channel's regime over one declared window.      Every field is a separate re, Authoritative path: is the newest producer write INSIDE the window?      Three r (+77 more)
 
 ### Community 296 - "main.py"
-Cohesion: 0.06
-Nodes (44): BiometricsContext, BaseModel, RPC request payload for the state read-model service., RPC reply payload from the state read-model service., StateGetLatestRequest, StateLatestReply, BaseModel, datetime (+36 more)
+Cohesion: 0.05
+Nodes (50): BiometricsContext, BaseModel, RPC request payload for the state read-model service., RPC reply payload from the state read-model service., StateGetLatestRequest, StateLatestReply, BaseModel, datetime (+42 more)
 
 ### Community 297 - "memory.js"
 Cohesion: 0.16
@@ -5535,13 +5559,13 @@ Nodes (49): build_answer_grounding_context(), _compose_grounding_context(), deli
 Cohesion: 0.12
 Nodes (20): load_channel_catalog(), Any, Path, ChannelCatalogEnforcer, Any, _assert_channel_wiring(), main(), Path (+12 more)
 
-### Community 302 - "aggregate_borda"
-Cohesion: 0.08
-Nodes (32): aggregate_borda(), _borda_points_for_scorer(), BordaResult, Generic Borda-count rank-aggregation (de Borda 1770) -- combine N independently-, Combine N independent scorers' rankings into one Borda-count total.      Why Bor, Output of one tick's rank-aggregation over `universe`., The single highest-scored target for one scorer's own ballot.     Deterministic, Points one scorer's ballot assigns to every target in `universe`.      Classic B (+24 more)
+### Community 302 - "main.py"
+Cohesion: 0.10
+Nodes (17): VisionTaskRequestPayload, test_host_task_envelope_contract(), build_heartbeat_chassis(), http_task(), lifespan(), Any, FastAPI, Feed one task outcome to the watcher; fire an alert if it asks.          Wrapped (+9 more)
 
 ### Community 303 - "test_metric_lineage_gate.py"
-Cohesion: 0.06
-Nodes (77): Walk the repo once, collecting every access to any token., scan_repo(), check_declared_consumers(), check_orphan_ratchet(), check_registry_integrity(), _declared_callable_missing(), GateResult, _has_surviving_declared_consumer() (+69 more)
+Cohesion: 0.05
+Nodes (81): Walk the repo once, collecting every access to any token., scan_repo(), check_declared_consumers(), check_orphan_ratchet(), check_registry_integrity(), _declared_callable_missing(), GateResult, _has_surviving_declared_consumer() (+73 more)
 
 ### Community 304 - "measure_autonomy_gate.py"
 Cohesion: 0.20
@@ -5551,9 +5575,9 @@ Nodes (15): compute_resource_pressure_stats(), _fmt(), _percentile(), Q(a) drift
 Cohesion: 0.14
 Nodes (31): build_turn_trace(), classify_log_line(), cmd_dump(), cmd_latest(), cmd_live(), _docker_logs(), extract_correlation_id(), _fetch_grammar_summaries() (+23 more)
 
-### Community 306 - "fit_encoder.py"
-Cohesion: 0.04
-Nodes (111): block_bootstrap_ratio_ci(), _block_boundaries(), block_purge_ar1_training_rows(), block_purged_temporal_split(), build_windows(), _build_windows_with_span(), _channel_stat_matrix(), check_corpus_gates() (+103 more)
+### Community 306 - "test_mood_arc_encoder_fit_script.py"
+Cohesion: 0.06
+Nodes (73): _block_boundaries(), block_purge_ar1_training_rows(), block_purged_temporal_split(), fit_ar1_per_channel(), prune_correlated_fields(), _purge_split_indices(), purged_temporal_split(), Union of every channel name observed across `rows`, minus `exclude`,     filtere (+65 more)
 
 ### Community 307 - "mind_provenance.js"
 Cohesion: 0.22
@@ -5568,60 +5592,60 @@ Cohesion: 0.17
 Nodes (29): app_client(), _load_app(), MonkeyPatch, Path, Tests for proposal review API on orion-context-exec., _seed_store(), store_path(), test_context_exec_app_mounts_proposal_review_routes_when_enabled() (+21 more)
 
 ### Community 311 - "substrateReviewFetch"
-Cohesion: 0.10
-Nodes (29): createRecallCanaryReviewArtifact(), hydrateRecallCanaryProfileSelect(), recordRecallCanaryJudgment(), refreshAutonomyConstitutionModal(), refreshAutonomyReadinessPanel(), refreshCognitiveReviewModal(), refreshCognitiveReviewPanelInto(), refreshRecallCanaryModal() (+21 more)
+Cohesion: 0.11
+Nodes (28): createRecallCanaryReviewArtifact(), hydrateRecallCanaryProfileSelect(), recordRecallCanaryJudgment(), refreshAutonomyConstitutionModal(), refreshAutonomyReadinessPanel(), refreshCognitiveReviewModal(), refreshCognitiveReviewPanelInto(), refreshRecallCanaryStatus() (+20 more)
 
 ### Community 312 - "Durable cognition runs, kicked off from cortex"
 Cohesion: 0.07
 Nodes (27): A. LangGraph with the Postgres checkpointer (recommended, narrowly), Acceptance Check 1 on the real rail, Acceptance checks, Arsonist summary, B. Hand-rolled checkpoint table in Hub, C. Do nothing; refund on SIGKILL, Current architecture, Durable cognition runs, kicked off from cortex (+19 more)
 
 ### Community 313 - "SemanticPlanner"
-Cohesion: 0.07
-Nodes (32): main(), create_default_planner(), Path, Convenience helper to construct a SemanticPlanner using the standard     verbs/, ExecutionPlan, ExecutionStep, Any, Path (+24 more)
+Cohesion: 0.11
+Nodes (19): main(), create_default_planner(), Path, Convenience helper to construct a SemanticPlanner using the standard     verbs/, ExecutionPlan, ExecutionStep, Any, Path (+11 more)
 
-### Community 314 - "CrystallizationEvidenceRefV1"
-Cohesion: 0.08
-Nodes (38): CrystallizationConfidence, build_crystallization_from_episode(), _episode_scope(), _episode_summary(), Build a proposed episode crystallization from an autonomy journal entry., _discard_platforms(), _emit_settings(), process_consolidation_crystallization() (+30 more)
+### Community 314 - "process_consolidation_crystallization"
+Cohesion: 0.13
+Nodes (25): build_crystallization_from_episode(), _episode_scope(), _episode_summary(), Build a proposed episode crystallization from an autonomy journal entry., _discard_platforms(), _emit_settings(), process_consolidation_crystallization(), Any (+17 more)
 
-### Community 315 - "test_curiosity_atlas.py"
-Cohesion: 0.04
-Nodes (87): assemble_runs(), AtlasView, _build_revision(), Any, Epoch milliseconds from what Orion actually wrote, ISO string included.      The, Bounded, newline-preserving. Orion writes prose into these properties and     a, Built once per view rather than rescanned per prior.          `to_payload` calls, Every prior closed. Legal, and also the shape of the outage. (+79 more)
+### Community 315 - "worldview.py"
+Cohesion: 0.03
+Nodes (121): assemble_runs(), AtlasPrior, AtlasRevision, AtlasRun, AtlasView, _build_prior(), _build_revision(), Any (+113 more)
 
-### Community 316 - "evaluate_investigation_outcome"
-Cohesion: 0.12
-Nodes (31): _artifact_evidence_count(), artifact_repo_evidence_count(), _blocked_summary(), count_evidence(), evaluate_investigation_outcome(), explicit_fake_run_requested(), grounding_required(), _grounding_sources_attempted() (+23 more)
+### Community 316 - "ContextExecVerbStepV1"
+Cohesion: 0.16
+Nodes (28): ContextExecVerbStepV1, _artifact_evidence_count(), artifact_repo_evidence_count(), _blocked_summary(), count_evidence(), evaluate_investigation_outcome(), explicit_fake_run_requested(), grounding_required() (+20 more)
 
 ### Community 317 - "orion-hub service (README) — browser gateway into the mesh"
 Cohesion: 0.31
 Nodes (9): orion-gpu-cluster-power service (compose), orion-gpu-cluster-power requirements.txt, orion-hub service (README) — browser gateway into the mesh, orion_identity.yaml — Oríon identity/temperament/architecture definition, orion_narrative.yaml — Oríon narrative/relationship/aspiration definition, Pressure Analytics UI panel — substrate mutation pressure/lineage/funnel dashboard, Self Brain UI panel — brain map + region EKG canvas visualizer, Substrate Lattice UI panel — transport proof chain (M3-M5, L6-L11) + threshold simulator (+1 more)
 
-### Community 318 - "ContextExecEventEmitter"
-Cohesion: 0.14
-Nodes (17): ContextExecEventEmitter, _corr_uuid(), Any, ContextExecMode, UUID, Publishes lifecycle events to orion:context_exec:event., _source(), TraceHit (+9 more)
+### Community 318 - "test_falkor_materialization.py"
+Cohesion: 0.11
+Nodes (29): build_falkor_substrate_store(), edge_identity_key(), FalkorMaterializationResult, filter_concept_atlas_record(), materialize_concept_profile_to_falkor(), Any, Protocol, Post-save Concept Atlas materialization via Cypher-native FalkorSubstrateStore. (+21 more)
 
 ### Community 319 - "test_service.py"
 Cohesion: 0.05
-Nodes (71): compute_causal_density(), compute_provenance(), compute_severity(), compute_touches(), _label_for_score(), Discrete severity off real numbers already on the entry -- not a     repeat of c, Topology, not severity: which other real-artifact evidence this entry     actual, Dynamic per-entry provenance, not a hardcoded constant. `source` names     what (+63 more)
+Nodes (69): compute_causal_density(), compute_provenance(), compute_severity(), compute_touches(), _label_for_score(), Discrete severity off real numbers already on the entry -- not a     repeat of c, Topology, not severity: which other real-artifact evidence this entry     actual, Dynamic per-entry provenance, not a hardcoded constant. `source` names     what (+61 more)
 
-### Community 320 - "FieldChannelCorpusRowV1"
-Cohesion: 0.04
-Nodes (75): get(), asof_forward_fill(), enrich_corpus(), _fetch(), fetch_action_warrant(), _fetch_action_warrant_and_attention_series(), fetch_all_series(), fetch_attention_self_model() (+67 more)
+### Community 320 - "test_corpus_enrichment.py"
+Cohesion: 0.05
+Nodes (62): asof_forward_fill(), enrich_corpus(), _fetch(), fetch_action_warrant(), _fetch_action_warrant_and_attention_series(), fetch_all_series(), fetch_attention_self_model(), fetch_codebase_delta() (+54 more)
 
 ### Community 321 - "__init__.py"
 Cohesion: 0.09
 Nodes (17): BiometricsInput, BaseModel, ChatHistoryInput, BaseModel, DreamFragmentMeta, DreamInput, DreamMetrics, BaseModel (+9 more)
 
 ### Community 322 - "query.py"
+Cohesion: 0.08
+Nodes (53): GrammarAtomSQL, GrammarCompactionSQL, GrammarEdgeSQL, GrammarEventSQL, GrammarProjectionSQL, GrammarTemporalHopSQL, GrammarTraceSQL, Canonical layer and dimension enums for Substrate Atlas (spec §5.4–5.5). (+45 more)
+
+### Community 323 - "test_capability_gap_journal.py"
 Cohesion: 0.11
-Nodes (39): GrammarAtomSQL, GrammarCompactionSQL, GrammarEdgeSQL, GrammarEventSQL, GrammarProjectionSQL, GrammarTemporalHopSQL, GrammarTraceSQL, _atom_to_dict() (+31 more)
+Nodes (26): _assert_naive_is_utc(), _item(), Tests for folding capability-absence episodes into the daily journal seed.  The, vision-host announces recovery as `vision_recovered`, not `vision_blind`.      l, Real reason text observed live in the attention store on 2026-08-29., Supersedes an earlier `test_items_outside_the_window_are_excluded`, which     as, `notify_requests.created_at` is `timestamp without time zone` and the API     re, Pin RECOVERY_MARKER against its actual producer.      The attention record carri (+18 more)
 
-### Community 323 - "summarize_capability_gaps"
-Cohesion: 0.05
-Nodes (72): build_daily_seed_payload(), CapabilityGapEpisode, collect_capability_gaps(), _episode_key(), fetch_recent_attention(), _is_liveness_reason(), _is_recovery(), _node_of() (+64 more)
-
-### Community 324 - "ReasoningWriteRequestV1"
-Cohesion: 0.04
-Nodes (133): AnchorScope, ArtifactType, apply_operator_goal_reasoning_promotion(), _goal_to_reasoning_claim(), MentorConstraintsV1, MentorContextSliceV1, MentorGatewayResultV1, MentorProposalItemV1 (+125 more)
+### Community 324 - "__init__.py"
+Cohesion: 0.02
+Nodes (304): AnchorScope, ArtifactType, EndogenousWorkflowTypeV1, apply_operator_goal_reasoning_promotion(), _goal_to_reasoning_claim(), CalibrationAdoptionRequestV1, CalibrationAdoptionResultV1, CalibrationProfileAuditV1 (+296 more)
 
 ### Community 325 - "test_chat_turn_metacog_gate.py"
 Cohesion: 0.07
@@ -5631,21 +5655,21 @@ Nodes (63): build_chat_turn_metacog_trigger(), _capped_grounding_capsule_for_ups
 Cohesion: 0.15
 Nodes (25): evaluate_salience(), datetime, Pure salience gate for town embodiment episodes.  Decides whether a world event, Cross-event memory for the salience gate.      ``seen_players`` dedupes first-en, Decide whether ``event`` is worth journaling.      Salient cases:       - ``conv, SalienceEvaluation, SalienceState, _utcnow() (+17 more)
 
-### Community 327 - "build_social_inspection_snapshot"
-Cohesion: 0.19
-Nodes (22): _append_unique(), build_hub_direct_inspection_sections(), build_social_inspection_snapshot(), _candidate_bucket(), _compact_text(), _make_section(), Any, Materialize hub-local inspection sections when bridge turn-policy surfaces are a (+14 more)
+### Community 327 - "FrontierInvocationSignalV1"
+Cohesion: 0.15
+Nodes (31): AttentionItemV1, AutonomyActiveGoalV1, AutonomyEvidenceRefV1, AutonomyStateDeltaV1, AutonomySummaryV1, CandidateImpulseV1, CapabilityPolicyV1, DriveCompetitionSummaryV1 (+23 more)
 
 ### Community 328 - "autonomy_subject_fanout_from_runtime_ctx"
-Cohesion: 0.22
+Cohesion: 0.24
 Nodes (11): AutonomySubjectFanout, autonomy_subject_fanout_from_runtime_ctx(), Any, Runtime policy for Graph autonomy multi-subject SPARQL fan-out (bounded vs full), Return ``bounded`` only for the default Hub quick lane; deep lanes use ``full``., test_fanout_bounded_chat_kids_story(), test_fanout_bounded_plain_chat_quick(), test_fanout_full_agent_mode_even_if_verb_chat_quick() (+3 more)
 
-### Community 329 - "test_skill_verbs.py"
-Cohesion: 0.05
-Nodes (45): _docker_prune_runner_factory(), _plan_request(), Privacy contract: artifact_uris/upstream_event_ids/meta (raw frame paths,     bu, Regression: 'stale' means aged, not absent -- orion-vision-window's own     http, Schema-drift defense: a top_labels entry that isn't a [label, count] pair     (e, A stream_id containing reserved URL characters must be percent-encoded,     not, End-to-end: the look_at_camera semantic verb's preferred_skill_families     actu, End-to-end: the real skills.perception.look_at_camera.v1.yaml is     auto-discov (+37 more)
+### Community 329 - "get_profile"
+Cohesion: 0.08
+Nodes (24): Hub legacy label ``recall.v1`` must resolve to structured brain recall, not chat, test_dream_v1_profile_loads(), test_profiles_load_default(), test_recall_v1_hub_alias_maps_to_brain_recall(), _canonical_profile_name(), _find_profiles_dir(), get_profile(), load_profiles() (+16 more)
 
 ### Community 330 - "fetch_aitown_status"
-Cohesion: 0.36
-Nodes (7): _convex_base_from_settings(), fetch_aitown_status(), Any, AI Town status probe for Hub API., _Settings, test_fetch_aitown_status_disabled(), test_fetch_aitown_status_missing_convex_url()
+Cohesion: 0.18
+Nodes (13): _convex_base_from_settings(), fetch_aitown_status(), Any, AI Town status probe for Hub API., _aitown_convex_internal_url(), aitown_convex_ws_proxy(), _aitown_convex_ws_url(), aitown_status() (+5 more)
 
 ### Community 332 - "biometrics_preview_routes.py"
 Cohesion: 0.06
@@ -5655,21 +5679,21 @@ Nodes (72): aclose(), api_biometrics_preview_gpu(), api_biometrics_preview_histo
 Cohesion: 0.07
 Nodes (79): _is_real_typed_human_turn(), iter_all_human_messages(), iter_transcript_files(), parse_session_usage_record(), parse_transcript_file(), Path, Every ``*.jsonl`` transcript under ``root``, recursively. Read-only walk --, Yields one ``HumanMessage`` per real typed turn in ``path``. Malformed     JSON (+71 more)
 
-### Community 334 - "sessionmaker"
-Cohesion: 0.04
-Nodes (64): empty_transport_projection(), process_transport_grammar_events(), datetime, ReceiptSaver, apply_sql_file(), assert_grammar_event_indexes_valid(), bus_transport_trace_batch(), _clear_app_namespace() (+56 more)
+### Community 334 - "grammar_integration_helpers.py"
+Cohesion: 0.06
+Nodes (50): empty_transport_projection(), apply_sql_file(), assert_grammar_event_indexes_valid(), bus_transport_trace_batch(), _clear_app_namespace(), delete_trace(), ensure_grammar_schema(), grammar_session_factory() (+42 more)
 
 ### Community 335 - "test_metacog.py"
 Cohesion: 0.13
 Nodes (23): normalize_collapse_entry(), _load_executor_module(), main(), _load_executor_module(), Draft (Step 2) raising aborts the plan before Publish (Step 3) ever runs     --, test_change_type_dict_coercion(), test_fail_fast_skips_downstream_steps_when_draft_fails(), test_metacog_entry_id_differs_from_trigger_corr() (+15 more)
 
-### Community 336 - "graph_structural_delta"
-Cohesion: 0.05
-Nodes (73): graph_structural_delta(), Graphify structural-graph deltas -- the ``graph_delta`` piece of the codebase-ma, Pure diff of two graph snapshots -- no I/O, no state, mirrors     ``git_churn_de, append_snapshot(), graph_snapshot_stats_from_text(), GraphSnapshotStats, parse_graph_report_god_nodes(), Path (+65 more)
+### Community 336 - "GraphSnapshotStats"
+Cohesion: 0.07
+Nodes (45): Graphify structural-graph deltas -- the ``graph_delta`` piece of the codebase-ma, append_snapshot(), graph_snapshot_stats_from_text(), GraphSnapshotStats, parse_graph_report_god_nodes(), Path, Graphify structural-snapshot extraction and an append-only history log -- the ``, Pure function: compute node/edge/community counts from a ``graph.json``     payl (+37 more)
 
 ### Community 337 - "memory_routes.py"
-Cohesion: 0.14
-Nodes (42): MemoryCardStatusChangeV1, get_memory_consolidation_draft(), list_memory_consolidation_drafts(), _need_session(), _pool(), _public_item(), Any, DraftStatus (+34 more)
+Cohesion: 0.26
+Nodes (26): MemoryCardStatusChangeV1, _bus(), _clamp_limit(), _clamp_offset(), _http_if_missing_memory_schema(), _maybe_emit_card_for_crystallizer(), memory_add_edge(), memory_change_status() (+18 more)
 
 ### Community 338 - "rdf_retention.py"
 Cohesion: 0.18
@@ -5685,15 +5709,15 @@ Nodes (23): publish_last_tool_fetch(), Any, Cross-turn continuity, within one se
 
 ### Community 341 - "SystemHealthV1"
 Cohesion: 0.02
-Nodes (135): BaseModel, Versioned heartbeat contract for Titanium bus., SystemHealthV1, get_artifact(), health(), heartbeat_loop(), lifespan(), list_regions() (+127 more)
+Nodes (141): Versioned heartbeat contract for Titanium bus., SystemHealthV1, _decode_envelope(), index(), FileResponse, WebSocket, Publishes a heartbeat every 30 seconds., run_heartbeat() (+133 more)
 
-### Community 342 - "memory_listener.py"
-Cohesion: 0.27
-Nodes (7): mirror_to_buffer(), _norm_payload(), _now_ts(), _pubsub_loop(), _stream_loop(), BaseSettings, Settings
+### Community 342 - "se"
+Cohesion: 0.07
+Nodes (4): ne(), re, se, te()
 
-### Community 343 - "ConceptNodeV1"
-Cohesion: 0.06
-Nodes (81): ConceptNodeV1, DriveNodeV1, OntologyBranchNodeV1, Auto-seed activation/half-life when a producer left `signals.activation`, Batch envelope for canonical substrate writes/reads., StateSnapshotNodeV1, SubstrateGraphRecordV1, Deterministic bounded dynamics operating on the materialized substrate graph. (+73 more)
+### Community 343 - "test_dispatcher.py"
+Cohesion: 0.15
+Nodes (30): VisionTaskResultPayload, extract_host_trigger_labels(), stream_id_from_host_result(), FakeBus, _frame_env(), _host_reply_with_person(), _make_dispatcher(), policy_path() (+22 more)
 
 ### Community 344 - "test_orion_proposal_cli.py"
 Cohesion: 0.20
@@ -5703,13 +5727,13 @@ Nodes (25): CompletedProcess, Path, Tests for operator proposal CLI., _run_cli()
 Cohesion: 0.10
 Nodes (22): datasets (PyPI dependency), fastapi (PyPI dependency), httpx (PyPI dependency), loguru (PyPI dependency), numpy (PyPI dependency), orjson (PyPI dependency), pydantic (PyPI dependency), PyYAML (PyPI dependency) (+14 more)
 
-### Community 347 - "FakeQueue"
-Cohesion: 0.31
-Nodes (5): _env(), FakeQueue, test_enqueue_failure_is_swallowed(), test_enqueue_run_result_stream_selects_run_result_envelope(), test_enqueue_skipped_when_no_run_result_envelope()
+### Community 347 - "test_power_intent_settlement.py"
+Cohesion: 0.12
+Nodes (31): datetime, Settle a declared power intent against a fast GPU sample window.  A workload pub, Open the window, sample, close it, and return the settlement., One instantaneous power reading for one card, or None.      None means "could no, How long to sample: the declared duration, clamped, and never past the deadline., Pure settlement arithmetic. No I/O, no clock., sample_gpu_watts(), settle() (+23 more)
 
 ### Community 348 - "sql_fetch.py"
-Cohesion: 0.12
-Nodes (26): Deterministic discussion-window helpers over persisted chat turns., _ensure_utc(), fetch_discussion_window(), _format_transcript(), Any, datetime, Read bounded discussion windows from chat_history_log (Postgres via SQLAlchemy)., Rows must be sorted ascending by created_at.     Keep the most recent contiguous (+18 more)
+Cohesion: 0.20
+Nodes (16): Deterministic discussion-window helpers over persisted chat turns., _ensure_utc(), fetch_discussion_window(), _format_transcript(), Any, datetime, Read bounded discussion windows from chat_history_log (Postgres via SQLAlchemy)., Rows must be sorted ascending by created_at.     Keep the most recent contiguous (+8 more)
 
 ### Community 349 - "main.py"
 Cohesion: 0.05
@@ -5729,75 +5753,75 @@ Nodes (13): attachFormEditor(), dateInput(), debounce(), defaultCardProjectionDe
 
 ### Community 353 - "test_presence_stream_resolution.py"
 Cohesion: 0.05
-Nodes (56): Comma-separated stream ids -> ordered, de-duplicated list.      Order is preserv, _split_stream_ids(), _dsn(), fetch_latest_percept(), fetch_presence(), fetch_presence_resolved(), _get_engine(), percept_age_seconds() (+48 more)
+Nodes (64): Comma-separated stream ids -> ordered, de-duplicated list.      Order is preserv, _split_stream_ids(), coarse_duration(), _dsn(), fetch_latest_percept(), fetch_presence(), fetch_presence_resolved(), _get_engine() (+56 more)
 
 ### Community 354 - "substrate_observability_routes.py"
-Cohesion: 0.07
-Nodes (45): presence_snapshot(), Any, Hub presence — Orion's chat liveness as a self-state observable.  Records chat-t, Test helper: clear in-process presence state., Presence from in-process turn history; None before the first turn., Record one chat turn; best-effort, never raises, never blocks chat.      The Pos, record_turn(), reset() (+37 more)
+Cohesion: 0.08
+Nodes (43): presence_snapshot(), Any, Hub presence — Orion's chat liveness as a self-state observable.  Records chat-t, Test helper: clear in-process presence state., Presence from in-process turn history; None before the first turn., reset(), _write_snapshot_to_postgres(), _attention_broadcast_section() (+35 more)
 
-### Community 355 - "_staleness_worker"
-Cohesion: 0.11
-Nodes (25): _policy_frame(), _policy_frame_at(), _proposal(), 2026-08-12, found by review. This path builds a frame that computes no     starv, The discard is not a silent drop -- each candidate's template and     decision a, Regression guard for the live incident (2026-07-30, docs/superpowers/     specs/, If even the single newest unprocessed policy frame is already past     the stale, 2026-07-30 perf fix: the cap is now enforced by the LIMIT passed to     the sing (+17 more)
+### Community 355 - "test_tts_streaming_chunks.py"
+Cohesion: 0.09
+Nodes (33): split_sentences(), chunk_text_for_speech(), Split reply text into sentence-aligned chunks for streamed synthesis.      Measu, Synthesize `text` and push audio onto `queue` for the browser.      Streams sent, run_tts_remote(), Regression: _load_grammar_trace reuses grammar_atlas_routes' query     plumbing, test_load_grammar_trace_respects_grammar_atlas_enabled_gate(), _drain() (+25 more)
 
 ### Community 356 - "test_llm_uncertainty.py"
 Cohesion: 0.12
 Nodes (31): _count_unstable_spans(), _entropy_proxy(), extract_llm_uncertainty_from_native_completion(), extract_llm_uncertainty_from_openai_response(), _legacy_completion_entry_to_logprob_entry(), native_completion_probs_to_logprob_content(), Any, Summary-only language-surface stability metrics from OpenAI logprobs. (+23 more)
 
-### Community 357 - "CoreEventV1"
-Cohesion: 0.13
-Nodes (15): CoreEventV1, GenericPayloadV1, BaseModel, Permissive payload schema for wildcard catalog entries., get_current_timestamp(), get_environment_info(), Returns a description of the current runtime environment., Returns ISO-formatted current timestamp in UTC with offset. (+7 more)
+### Community 357 - "appendMessage"
+Cohesion: 0.07
+Nodes (35): appendCockpitButton(), appendExecutionStepsPanel(), appendMessage(), appendTurnTracePanel(), askClaude(), backfillLatestUserTurnIdForGraph(), buildCodePre(), buildResponseInspectPanel() (+27 more)
 
-### Community 358 - "disk_threshold_watchdog.py"
-Cohesion: 0.15
-Nodes (20): _atomic_write_json(), default_state_file(), evaluate_path(), load_state(), main(), measure_path(), _publish_attention(), Any (+12 more)
+### Community 358 - "training.py"
+Cohesion: 0.14
+Nodes (32): RunRecord, RunSpecSnapshot, RunTrainRequest, train_run_endpoint(), Close out every non-terminal run found at process start.      Called once from `, recover_stranded_runs(), _build_run_record(), _compose_model_meta() (+24 more)
 
 ### Community 359 - "IntentionForCausalLM"
 Cohesion: 0.12
 Nodes (12): LlamaForCausalLM, IntentionForCausalLM, _FakeBatch, _FakeTokenizer, dict, LlamaConfig, test_bc_mode_is_deterministic_across_repeated_calls(), test_bc_mode_returns_three_tensors_with_valid_distribution() (+4 more)
 
 ### Community 360 - "FieldChannelAnomalyScorer"
-Cohesion: 0.06
-Nodes (61): FieldChannelAnomalyScoreV1, BaseModel, field_channel_corpus.v1 anomaly-score envelope -- published by orion-field-diges, publish_anomaly_score(), Fresh OrionBusAsync per publish -- this fires at most once per     FIELD_CHANNEL, FieldChannelAnomalyScorer, Any, datetime (+53 more)
+Cohesion: 0.08
+Nodes (51): FieldChannelAnomalyScoreV1, BaseModel, field_channel_corpus.v1 anomaly-score envelope -- published by orion-field-diges, publish_anomaly_score(), Fresh OrionBusAsync per publish -- this fires at most once per     FIELD_CHANNEL, FieldChannelAnomalyScorer, Any, Plain-dict snapshot of this scorer's runtime state, for a health         endpoin (+43 more)
 
-### Community 361 - "chat_stance.py"
+### Community 361 - "ChatStanceBrief"
 Cohesion: 0.03
-Nodes (139): AutonomyGraphReadPlan, log_autonomy_graph_backend_decision(), build_autonomy_repository(), Real backend is LocalAutonomyRepository only -- the graph/shadow backends     (G, strip_graph_credentials(), ChatStanceBrief, BaseModel, Bounded internal stance brief used by chat_general speech pass. (+131 more)
+Nodes (111): ChatStanceBrief, BaseModel, Bounded internal stance brief used by chat_general speech pass., _brief_response_hazards(), build_chat_stance_debug_payload(), build_chat_stance_inputs(), _coerce_stance_brief_obj(), _coerce_str_list_field() (+103 more)
 
 ### Community 362 - "Service: orion-spark-introspector"
 Cohesion: 0.08
 Nodes (25): Channel "orion:cognition:trace" (kind=event, schema=CognitionTracePayload) producers=[orion-cortex-exec] consumers=[orion-spark-introspector, orion-landing-pad, orion-bus-tap], Channel "orion:equilibrium:metacog:trigger" (kind=event, schema=MetacogTriggerV1) producers=[orion-equilibrium-service] consumers=[orion-cortex-orch, orion-sql-writer], Channel "orion:equilibrium:snapshot" (kind=event, schema=EquilibriumSnapshotV1) producers=[orion-equilibrium-service] consumers=[orion-cortex-orch], Channel "orion:metacognition:tick" (kind=telemetry, schema=MetacognitionTickV1) producers=[orion-equilibrium-service] consumers=[orion-sql-writer], Channel "orion:self:inner_features" (kind=telemetry, schema=InnerStateFeaturesV1) producers=[orion-spark-introspector] consumers=[orion-hub, orion-sql-writer], Channel "orion:spark:introspect:candidate" (kind=event, schema=SparkCandidateV1) producers=[orion-cortex-exec] consumers=[orion-spark-introspector], Channel "orion:spark:introspect:candidate:log" (kind=event, schema=SparkCandidateV1) producers=[orion-hub] consumers=[orion-spark-introspector], Channel "orion:spark:introspector:reply:*" (kind=result, schema=GenericPayloadV1) producers=[orion-cortex-orch] consumers=[orion-spark-introspector] (+17 more)
 
-### Community 363 - "SubstrateConceptProfileRepository"
-Cohesion: 0.17
-Nodes (8): Return concept nodes grouped by anchor_scope, or None on failure., Repository seam adapter backed by the live FalkorDB substrate concept region., SubstrateConceptProfileRepository, BrokenSubstrateStore, _concept_node(), FakeSubstrateStore, build_substrate_store_from_env() never raises when SUBSTRATE_STORE_BACKEND, TestSubstrateConceptProfileRepository
+### Community 363 - "test_self_study_analysis_wiring.py"
+Cohesion: 0.11
+Nodes (30): CortexRouteTemplateV1, template_title_description(), _candidate(), _decision(), The substrate_inspect/summarize/observe prompts previously got only a     bare t, test_envelope_includes_real_grounding_data(), test_envelope_includes_refs(), test_envelope_includes_verb_mode_source_dry_run() (+22 more)
 
 ### Community 364 - "PduPoller"
-Cohesion: 0.10
-Nodes (29): _as_number(), fetch_pdu_snapshot(), PduPoller, PduSnapshot, Any, One synchronous SNMP read of this node's outlets. Read-only GETs, never SET., Coerce a puresnmp return to a number, rejecting bool and unparseable types., Background slow-poll loop, same shape and same reasoning as `IloPoller`.      A (+21 more)
+Cohesion: 0.09
+Nodes (30): Client, _as_number(), fetch_pdu_snapshot(), PduPoller, PduSnapshot, Any, One synchronous SNMP read of this node's outlets. Read-only GETs, never SET., Coerce a puresnmp return to a number, rejecting bool and unparseable types. (+22 more)
 
 ### Community 365 - "test_self_study_analysis_runner.py"
-Cohesion: 0.07
-Nodes (56): Pick which of the four inputs to study this run.      THE DEFAULT, not a fallbac, select_least_recently_analysed(), _BusWithRedis, _engine_for(), _FakeConn, _FakeEngine, _FakeRedis, _FakeResult (+48 more)
-
-### Community 366 - "ChatDispatchPlan"
-Cohesion: 0.14
-Nodes (15): BaseModel, SparkCandidateV1, ChatDispatchPlan, Where a chat request is going, decided before any thread is taken.      main.py, _overloaded_result(), Same shape as llm_backend's `llm_route_unavailable` early return: empty text,, GPUConfig, LLMProfile (+7 more)
-
-### Community 367 - "chat_source_tags"
 Cohesion: 0.08
-Nodes (45): chat_source_platform(), chat_source_tags(), Any, Shared ai-town source detection/labeling for every chat_history_log reader.  Roo, Extract (platform, participant_name) from a chat_history_log row's     client_me, User: {prompt}\\nOrion: {response}" style, used by sql_adapter.py and     sql_ti, ExactUserText: "{prompt}"\\nOrionResponse: "{response}"' style, used by     sql_, base_tags plus "aitown" when the row is ai-town-sourced, else base_tags     unch (+37 more)
+Nodes (51): _BusWithRedis, _engine_for(), _FakeEngine, _FakeRedis, _FakeResult, _marks(), _plan_request(), datetime (+43 more)
+
+### Community 366 - "CockpitHopV1"
+Cohesion: 0.16
+Nodes (26): CockpitStageV1, _base_hop(), gap_hop(), _has_draft_appraisal(), _has_finalize(), hop_from_closure(), hop_from_motor_step(), hop_from_outcome() (+18 more)
+
+### Community 367 - "sql_timeline.py"
+Cohesion: 0.05
+Nodes (63): chat_source_platform(), chat_source_tags(), Any, Shared ai-town source detection/labeling for every chat_history_log reader.  Roo, Extract (platform, participant_name) from a chat_history_log row's     client_me, User: {prompt}\\nOrion: {response}" style, used by sql_adapter.py and     sql_ti, ExactUserText: "{prompt}"\\nOrionResponse: "{response}"' style, used by     sql_, base_tags plus "aitown" when the row is ai-town-sourced, else base_tags     unch (+55 more)
 
 ### Community 368 - "orion-vision-scribe event recording service"
 Cohesion: 0.40
 Nodes (5): chromadb dependency (vector store backend), orion-vector-writer service, orion-vision-scribe docker-compose config, orion-vision-scribe event recording service, orion-vision-scribe dependencies (rdflib, fastapi, redis)
 
-### Community 369 - "context_exec_permissions_for_llm_profile"
-Cohesion: 0.06
-Nodes (57): context_exec_permissions_for_llm_profile(), Map Hub compute lane / LLM profile to a context-exec permission envelope., _call_name(), detect_semantic_tools_from_code(), _detect_via_ast(), _detect_via_regex(), Call, Deterministic semantic tool detection for agent_repl code_action telemetry. (+49 more)
+### Community 369 - "test_agent_repl_semantic_telemetry.py"
+Cohesion: 0.18
+Nodes (17): _call_name(), detect_semantic_tools_from_code(), _detect_via_ast(), _detect_via_regex(), Call, Deterministic semantic tool detection for agent_repl code_action telemetry., Return registered workbench tool names found in *code*, first appearance order., Tests for agent_repl semantic tool telemetry (PR 789). (+9 more)
 
 ### Community 370 - "VectorHostEmbeddingProvider"
 Cohesion: 0.14
-Nodes (12): CountVectorizer, capabilities(), VectorHostEmbeddingProvider, build_topic_engine(), _build_vectorizer(), _parse_topic_list(), _parse_zeroshot_list(), Any (+4 more)
+Nodes (13): CountVectorizer, HDBSCAN, capabilities(), VectorHostEmbeddingProvider, build_topic_engine(), _build_vectorizer(), _parse_topic_list(), _parse_zeroshot_list() (+5 more)
 
 ### Community 371 - "test_metacog_publish_lane.py"
 Cohesion: 0.20
@@ -5819,9 +5843,9 @@ Nodes (16): entropy_floor_loss(), fisher_trace_proxy(), ManifoldBatchMetrics, ma
 Cohesion: 0.07
 Nodes (30): filter_temps(), BiometricsCollector, collect_biometrics(), collect_disk_capacity(), _CpuTimes, _DiskStats, _NetStats, Any (+22 more)
 
-### Community 376 - "classify_producer_liveness"
-Cohesion: 0.16
-Nodes (20): classify_producer_liveness(), Producer liveness: tell "genuinely calm" apart from "nobody is writing this".  T, Classify whether anything is still writing this channel.      Verdicts:      - `, _decay(), Producer-liveness classification, including the defect it exists to catch., The defect this module exists for: `orion-biometrics` goes quiet, every     `res, A producer writing the same low rest value repeatedly: non-increasing,     but n, Once a channel has finished decaying its shape carries no information.     Sayin (+12 more)
+### Community 376 - "VisionScheduler"
+Cohesion: 0.09
+Nodes (16): GpuInfo, GpuInspector, Pick GPU with highest free VRAM among candidates, honoring reserve/hard_floor., RuntimeError, Raised when the bounded async queue cannot accept another pending task., Submit a unit of work to the scheduler; returns handler result., Multi-GPU scheduler with:     - global inflight cap     - per-GPU inflight cap, Pending items waiting on the worker (best-effort backlog indicator). (+8 more)
 
 ### Community 377 - "test_store.py"
 Cohesion: 0.06
@@ -5835,17 +5859,17 @@ Nodes (8): _FakeClient, _load_module(), Path, _status_payload(), test_battle_run
 Cohesion: 0.28
 Nodes (11): BaseModelOutputWithPast, Cache, CausalLMOutputWithPast, FloatTensor, LongTensor, multinomial_num_samples_1(), Tensor, r"""         Args:             labels (`torch.LongTensor` of shape `(batch_size, (+3 more)
 
-### Community 380 - "salience.py"
-Cohesion: 0.17
-Nodes (19): gap_terms_from_signals(), Deterministic term-overlap salience scorer for readonly-fetch articles.  Narrow, Public term tokenizer (lowercase alphanumeric). Reused by producers that     nee, Union of tokens from `section:` focal refs across world_coverage_gap signals., Fraction of gap terms present in the article text, clamped to [0, 1]., score_article_salience(), _tokenize(), tokenize_terms() (+11 more)
+### Community 380 - "test_context_mode_hooks_smoke.py"
+Cohesion: 0.11
+Nodes (30): Path, Unit tests for the pure helpers in scripts/context_mode_hooks_smoke.py.  These n, _stream_lines(), test_check_result_json_line_round_trips(), test_dir_diff_detects_added_file(), test_dir_diff_detects_modified_file(), test_exit_code_zero_only_without_fail(), test_extract_final_text_falls_back_to_assistant_text() (+22 more)
 
-### Community 381 - "execute_readonly_fetch"
-Cohesion: 0.08
-Nodes (51): append_action_outcome(), _db_url(), _get_engine(), load_action_outcomes(), _load_from_sql(), _load_raw(), Path, Read the most recent outcomes for a subject from the shared SQL store.      Retu (+43 more)
+### Community 381 - "ActionOutcomeRefV1"
+Cohesion: 0.05
+Nodes (88): append_action_outcome(), _db_url(), _get_engine(), load_action_outcomes(), _load_from_sql(), _load_raw(), Path, Read the most recent outcomes for a subject from the shared SQL store.      Retu (+80 more)
 
-### Community 382 - "looks_like_error_text"
-Cohesion: 0.08
-Nodes (40): cortex_exec_failure_detail(), extract_cortex_payload_text(), looks_like_error_text(), _openai_choice_message_text(), Any, Extract model text / JSON-bearing strings from Cortex PlanExecutionResult-shaped, Return best-effort model text from a cortex exec payload (may be JSON-ish prose), Summarize why a cortex exec payload has no usable model text. (+32 more)
+### Community 382 - "extract_cortex_payload_text"
+Cohesion: 0.12
+Nodes (28): cortex_exec_failure_detail(), extract_cortex_payload_text(), _openai_choice_message_text(), Any, Extract model text / JSON-bearing strings from Cortex PlanExecutionResult-shaped, Return best-effort model text from a cortex exec payload (may be JSON-ish prose), Summarize why a cortex exec payload has no usable model text., _service_block_text_candidates() (+20 more)
 
 ### Community 383 - "bus_synaptic_graph_routes.py"
 Cohesion: 0.16
@@ -5855,9 +5879,9 @@ Nodes (20): _count(), main(), anomalies(), anomaly_propagation(), _client(), cro
 Cohesion: 0.13
 Nodes (22): enableMindModalFocusTrap(), escapeHtml(), fetchMindRunDetail(), formatMindRunsApiError(), formatMindTs(), getMindModalTabbables(), mindJsonPrettyObject(), mindRequestOverviewHtml() (+14 more)
 
-### Community 385 - "ndarray"
-Cohesion: 0.12
-Nodes (33): Adam, deviation_direction(), forward(), init_weights(), mean_signed_deviation(), per_channel_reconstruction_error(), _per_window_losses(), ndarray (+25 more)
+### Community 385 - "fit_encoder.py"
+Cohesion: 0.06
+Nodes (78): Adam, block_bootstrap_ratio_ci(), build_windows(), _build_windows_with_span(), _channel_stat_matrix(), check_corpus_gates(), cmd_detect_anomalies(), cmd_enrich_corpus() (+70 more)
 
 ### Community 386 - "test_single_consumer_channels_gate.py"
 Cohesion: 0.10
@@ -5868,32 +5892,32 @@ Cohesion: 0.11
 Nodes (29): example_value_is_host_placeholder(), main(), main_worktree_root(), parse_kv(), Path, Where the live `.env` files actually live.      `.env` is gitignored, so it exis, Skip syncing template placeholders that must stay host-specific in local .env., Result of syncing one service's .env from its .env_example.      updated: keys a (+21 more)
 
 ### Community 388 - "main.py"
-Cohesion: 0.04
-Nodes (85): extract_message_sections(), new_reply_channel(), build_daily_window(), _build_post_persist_journal_message_payload(), _cfg(), _clamp_daily_metacog_payload(), _daily_metacog_dedupe_key(), _daily_notify_request() (+77 more)
+Cohesion: 0.03
+Nodes (107): JournalDispatchPolicy, Declarative journal notification dispatch policy, keyed off `trigger_kind`.  Con, Fail-closed lookup: an unregistered trigger_kind sends nothing., resolve_policy(), ActionDedupe, dedupe_key_for(), extract_message_sections(), new_reply_channel() (+99 more)
 
 ### Community 389 - "test_orion_bus_observer_rollup.py"
 Cohesion: 0.06
 Nodes (51): EwmaUpdate, ActivityEwmaTracker, build_rollup_from_redis_snapshot(), count_schema_mismatches(), _extract_envelope_raw(), _fetch_redis_snapshot(), load_channel_catalog_names(), load_channel_catalog_schema_ids() (+43 more)
 
 ### Community 390 - "test_presence.py"
-Cohesion: 0.12
-Nodes (27): Tests for embodied presence: `is someone at the camera, and for how long`.  Ever, An 'unsure' hint is the same honesty-preserving no-op as no hint at     all -- t, Nobody believed present -- an identity hint (stale, arrived late for     someone, The subsystem simply not running/no fresh read must render as silence,     not a, Asking about someone who already stepped out of frame is exactly the     awkward, Same present_now guard identity_uncertain already carried: a confirmed     match, Hand-computed: grace_sec=120. Seen at t=0, gone at t=60 -- 60 <= 120., Hand-computed: 121 > 120 = grace_sec. (+19 more)
+Cohesion: 0.08
+Nodes (39): Tests for embodied presence: `is someone at the camera, and for how long`.  Ever, No identity_hint given at all -- the honest default, same as before     identity, An 'unsure' hint is the same honesty-preserving no-op as no hint at     all -- t, Nobody believed present -- an identity hint (stale, arrived late for     someone, The subsystem simply not running/no fresh read must render as silence,     not a, Asking about someone who already stepped out of frame is exactly the     awkward, The gap the old boolean alone could not express: identity_face never     ran (or, Same present_now guard identity_uncertain already carried: a confirmed     match (+31 more)
 
 ### Community 391 - "renderNotifications"
 Cohesion: 0.11
-Nodes (30): addNotification(), dismissAllNotifications(), dismissAllPendingAttention(), focusChatInput(), formatHubLocalTime(), handleAttentionAck(), handleChatMessageReceipt(), isAttentionNotification() (+22 more)
+Nodes (29): addNotification(), dismissAllNotifications(), dismissAllPendingAttention(), focusChatInput(), formatHubLocalTime(), handleAttentionAck(), handleChatMessageReceipt(), isAttentionNotification() (+21 more)
 
-### Community 392 - "test_substrate_review_runtime_hub_debug.py"
-Cohesion: 0.08
-Nodes (3): test_execute_once_endpoint_is_single_cycle_operator_only_and_followup_default_off(), test_execute_once_followup_endpoint_keeps_followup_explicit(), test_mutation_lineage_readonly_endpoints()
+### Community 392 - "bind_session_turn_phase_bus"
+Cohesion: 0.25
+Nodes (26): _build_conversation_phase(), mark_orion_turn(), bind_session_turn_phase_bus(), _FakeBus, _FakeRedis, Phase-bucketing threshold tests for `situation._build_conversation_phase` and th, KNOWN GAP, pre-existing and out of scope for this storage-only     patch (confir, Guards the TTL-sizing rationale directly: even a very old but     still-present (+18 more)
 
 ### Community 393 - "fetch_graph_compression_fragments"
 Cohesion: 0.14
 Nodes (20): _extract_keywords(), fetch_graph_compression_fragments(), _fetch_summary_from_fuseki(), _get_engine(), Any, Query Postgres artifact index, rank by salience + keyword relevance,     fetch s, Simple salience + keyword hit scoring., _score_artifact() (+12 more)
 
-### Community 394 - "SubstrateSignalBundleV1"
-Cohesion: 0.07
-Nodes (76): EntityNodeV1, SubstrateSignalBundleV1, _CountingStore, _engine_with(), The actual end-to-end regression, reproducing the real race: a node's     predic, Regression: the dormancy check must read this tick's freshly computed     recenc, Regression test for the live bug confirmed 2026-07-29: tick()'s write     guard, _steady_node() (+68 more)
+### Community 394 - "test_concept_atlas_routes.py"
+Cohesion: 0.08
+Nodes (66): _build_store(), client(), _concept_atlas_test_app(), _concept_node(), _edge(), _ensure_hub_scripts_import_path(), _entity_edge(), _entity_node() (+58 more)
 
 ### Community 395 - "test_reverie_chain.py"
 Cohesion: 0.14
@@ -5905,43 +5929,47 @@ Nodes (36): _load_streaming_text_tokens(), load_text_file_tokens(), load_tinysto
 
 ### Community 397 - "MotifObservationV1"
 Cohesion: 0.03
-Nodes (173): build_consolidation_frame(), datetime, build_expectations_from_motifs(), _attention_target_pressure(), _detect_attention_saturated_execution(), _detect_blocked_review_loop(), _detect_dry_run_feedback_loop(), detect_motifs() (+165 more)
+Nodes (165): build_consolidation_frame(), datetime, build_expectations_from_motifs(), _attention_target_pressure(), _detect_attention_saturated_execution(), _detect_blocked_review_loop(), _detect_dry_run_feedback_loop(), detect_motifs() (+157 more)
 
 ### Community 398 - "resolve_destination"
 Cohesion: 0.25
 Nodes (20): _match(), _nearest(), _others(), _pos(), Any, Random, resolve_destination(), _resolve_target() (+12 more)
 
 ### Community 400 - "test_memory_extractor.py"
-Cohesion: 0.07
-Nodes (45): _AnnotationSettings, _Env, _FakeBus, _FakeCodec, Exception, The LLM gate: 'worth_saving=false' must mean no card, full stop --     not a low, LLM RPC raising (bus/timeout-style failure) must fall back to today's     regex, asyncio.TimeoutError from the annotation call must be caught and fall     back, (+37 more)
+Cohesion: 0.06
+Nodes (53): CardAnnotationV1, derive_visibility_scope(), Write-time auto-annotation output (2026-07-21 memory-cards substrate     spec, I, Deterministic derivation of visibility_scope FROM sensitivity -- never     an in, _AnnotationSettings, _Env, _FakeBus, _FakeCodec (+45 more)
 
 ### Community 401 - "test_phi_corpus_diag_script.py"
-Cohesion: 0.28
-Nodes (17): _parse_args(), _feature(), _live_corpus(), CompletedProcess, datetime, Path, _load_jsonl raises ValueError on a malformed line -- run_diag must     degrade t, _run_diag() (+9 more)
+Cohesion: 0.23
+Nodes (21): main(), _parse_args(), Namespace, Pure: load + gate-check a corpus, return the full report dict. Never raises., run_diag(), _feature(), _live_corpus(), CompletedProcess (+13 more)
 
 ### Community 402 - "synthesis.py"
-Cohesion: 0.26
-Nodes (21): _claims_list_empty(), _coerce_array_claim_item(), _coerce_evidence_refs(), _coerce_semantic_claim_item(), coerce_semantic_llm_root(), _float_field(), _has_current_claim_shape(), _is_bare_semantic_claim_root() (+13 more)
+Cohesion: 0.18
+Nodes (24): BaseSettings, Path, Settings, _claims_list_empty(), _coerce_array_claim_item(), _coerce_evidence_refs(), _coerce_semantic_claim_item(), coerce_semantic_llm_root() (+16 more)
 
 ### Community 403 - "test_fallback_watch.py"
 Cohesion: 0.05
-Nodes (59): next_alert_threshold(), ``(threshold_to_alert_or_None, new_high_water_mark)``.      The second element i, Highest multiple of ``step`` that ``count`` has reached (0 if none).      Pure., reached_threshold(), _add_fallback_rows(), db(), MonkeyPatch, Tests for the bus_fallback_log backlog watcher.  The watcher decides whether Jun (+51 more)
+Nodes (61): next_alert_threshold(), ``(threshold_to_alert_or_None, new_high_water_mark)``.      The second element i, Highest multiple of ``step`` that ``count`` has reached (0 if none).      Pure., reached_threshold(), _add_fallback_rows(), db(), MonkeyPatch, Tests for the bus_fallback_log backlog watcher.  The watcher decides whether Jun (+53 more)
 
 ### Community 404 - "test_proposal_review_hub.py"
 Cohesion: 0.26
 Nodes (21): _cleanup_hub_path_pollution(), hub_client(), MonkeyPatch, TestClient, Hub proposal review client, routes, and review actions., Prevent hub reload from shadowing orion-context-exec `app` in later tests., _reload_hub_modules(), test_hub_pending_decisions_shows_denver_memory_correction() (+13 more)
 
-### Community 406 - "MindRunBudget"
+### Community 405 - "test_anthropic_passthrough.py"
 Cohesion: 0.13
-Nodes (14): MindRunBudget, Wall-clock budget for Cortex-governed Mind LLM phases., Tracks remaining wall time for a single MindRun and caps per-phase timeouts., _mind_prep(), MonkeyPatch, Wall-clock budget enforcement (loop_budget_exceeded)., Simulate snapshot phase taking longer than policy allows., Regression for fix/mind-enrichment-wall-budget: a 12s wall cannot fit even a (+6 more)
+Nodes (6): configured_routes(), MonkeyPatch, TestClient, test_resolve_anthropic_route_falls_back_when_model_missing(), test_resolve_anthropic_route_missing_returns_error(), TestAnthropicPassthroughHTTP
+
+### Community 406 - "measure_proposal_dimension_variance.py"
+Cohesion: 0.13
+Nodes (26): build_arg_parser(), classify_dimension(), compute_dimension_stats(), DecayArtifactFinding, detect_decay_artifact(), detect_producer_liveness(), DimensionStats, fetch_field_state_summary() (+18 more)
 
 ### Community 407 - "test_metric_generic_consumers.py"
 Cohesion: 0.04
 Nodes (70): _annotation_text(), _generic_use_of(), GenericConsumer, _GenericVisitor, _is_channel_vector_annotation(), module_touches_vectors(), AST, AsyncFunctionDef (+62 more)
 
 ### Community 408 - "enrichment.py"
-Cohesion: 0.22
-Nodes (19): _elapsed_secs(), enqueue_enrichment(), _enrich_segment(), _extract_evidence(), _generate_edges(), _heuristic_enrich(), _llm_enrich(), _load_enrichment_spec() (+11 more)
+Cohesion: 0.16
+Nodes (25): EnrichmentSpec, _build_run_record_for_update(), _elapsed_secs(), enqueue_enrichment(), _enrich_segment(), _extract_evidence(), _generate_edges(), _heuristic_enrich() (+17 more)
 
 ### Community 409 - "test_check_service_env_compose_parity.py"
 Cohesion: 0.13
@@ -5951,13 +5979,13 @@ Nodes (21): _make_service(), Path, Real syntax from services/orion-hub/docker-co
 Cohesion: 0.17
 Nodes (12): 0A. Hard architectural mandates, Context window discipline, Design mode, Deterministic gates over repeated yelling, Event substrate first, Implementation mode, Metric quality gate, No empty-shell cognition (+4 more)
 
-### Community 411 - "main.py"
-Cohesion: 0.09
-Nodes (25): Client, build_heartbeat_chassis(), main(), _main_async(), monitor_ups(), _publish_event(), Own, independent bus connection publishing SystemHealthV1 to orion:system:health, _run_shutdown() (+17 more)
-
-### Community 412 - "is_caption_prompt_echo"
+### Community 411 - "PowerStatus"
 Cohesion: 0.16
-Nodes (19): is_caption_prompt_echo(), _normalize(), True when the model's output is its own input prompt echoed back, not a     real, Removes a *leading* echo of ``prompt`` from ``text``, case-insensitively.      C, strip_echoed_prompt_prefix(), Every pre-existing caller (positional, no `prompt` kwarg) must keep     its exac, A VQA-shaped call: the question is a real question, not CAPTION_PROMPT     -- ch, Reproduces the exact live bug (2026-08-20, VQA's first real smoke     test): a m (+11 more)
+Nodes (10): PowerStatus, BaseModel, Parsed snapshot of UPS state from SNMP., NISUPSClient, Reads APC UPS status from a local or remote apcupsd NIS server (TCP 3551)., Connects to apcupsd and requests the 'status' dump., Async wrapper to fetch and parse status.          (We keep it async to match the, Any (+2 more)
+
+### Community 412 - "Orion Cockpit POV — Soft HUD turn sighting"
+Cohesion: 0.07
+Nodes (28): Acceptance checks, Architecture, Arsonist summary, Canonical stages, Entry, Failure / honesty, Files likely to touch (implementation), Goals (+20 more)
 
 ### Community 413 - "Context-exec beta runtime runbook"
 Cohesion: 0.05
@@ -5971,9 +5999,9 @@ Nodes (15): _frame(), MonkeyPatch, _reset_engine(), test_build_row_none_when_not
 Cohesion: 0.43
 Nodes (6): _clear_transition_env(), MonkeyPatch, Regression test for the 2026-08-23/25 44h-silent-vision-events incident:     a d, test_settings_reads_legacy_skip_enabled_alias(), test_settings_reads_legacy_skip_max_sec_alias(), test_settings_refresh_ttl_default_is_nonzero()
 
-### Community 416 - "test_state_store.py"
-Cohesion: 0.22
-Nodes (18): _db_url(), _get_engine(), load_autonomy_state_v2(), Postgres-backed persistence for the latest AutonomyStateV2 per subject.  Closes, Load the most recently persisted AutonomyStateV2 for a subject.      Returns Non, Upsert the latest AutonomyStateV2 for a subject.      No-ops when no DSN is conf, save_autonomy_state_v2(), _make_db() (+10 more)
+### Community 416 - "AutonomyStateV2"
+Cohesion: 0.21
+Nodes (20): AutonomyStateV2, Graph or reducer-produced autonomy snapshot with evidence, attention, and apprai, _db_url(), _get_engine(), load_autonomy_state_v2(), Postgres-backed persistence for the latest AutonomyStateV2 per subject.  Closes, Load the most recently persisted AutonomyStateV2 for a subject.      Returns Non, Upsert the latest AutonomyStateV2 for a subject.      No-ops when no DSN is conf (+12 more)
 
 ### Community 417 - "intention.py"
 Cohesion: 0.10
@@ -5984,20 +6012,20 @@ Cohesion: 0.06
 Nodes (57): _coerce_ts(), LivenessStateStore, PersistedLivenessState, Any, Durable arm/clear state for the vision liveness watcher.  Why this exists. `Visi, Atomic write via tmp+rename. Returns False on failure, never raises., Watcher state in WALL-CLOCK seconds (`time.time()`), not monotonic., Atomic, best-effort JSON state file. Never raises. (+49 more)
 
 ### Community 419 - "test_disk_threshold_watchdog.py"
-Cohesion: 0.09
-Nodes (29): _fake_notify(), _now(), datetime, Mirrors the real NotifyClient.attention_request() contract: it never     raises, test_evaluate_path_breach_after_recovery_fires_again(), test_evaluate_path_breach_directly_to_error_is_new_event(), test_evaluate_path_breach_is_new_event_first_time(), test_evaluate_path_error_is_new_event() (+21 more)
+Cohesion: 0.06
+Nodes (49): _atomic_write_json(), default_state_file(), evaluate_path(), load_state(), main(), measure_path(), _publish_attention(), Any (+41 more)
 
 ### Community 420 - "normalize_llm_route"
-Cohesion: 0.06
-Nodes (39): normalize_llm_route(), One definition of what an LLM route name is, shared by every service that sends, Canonical route name for `raw`, or None if it is absent, unrecognised, or system, test_harness_is_not_a_valid_general_caller_override(), test_metacog_background_is_a_valid_caller_override(), _normalized_llm_route(), Canonical route for a configured override, or None meaning "do not override"., The configured journal route survives instead of being rewritten to `chat`.  `se (+31 more)
+Cohesion: 0.07
+Nodes (32): fcc_model_for_route(), normalize_llm_route(), One definition of what an LLM route name is, shared by every service that sends, Canonical route name for `raw`, or None if it is absent, unrecognised, or system, The FCC model string that runs a turn on gateway route `raw`, or None.      WHY, test_harness_is_not_a_valid_general_caller_override(), test_metacog_background_is_a_valid_caller_override(), _normalized_llm_route() (+24 more)
 
 ### Community 421 - "world_pulse_journal.py"
 Cohesion: 0.10
 Nodes (25): AuditFn, Cursor, DispatchJournalFn, Config, get_settings(), BaseSettings, Settings, build_world_pulse_journal_trigger() (+17 more)
 
-### Community 422 - "Orion Subagent Development Contract"
-Cohesion: 0.10
-Nodes (20): 0. Prime directive, 10. Dependencies, 12. Review gate, 13. Safety rules, 14. Background jobs and backfills, 15. Confusion protocol, 17. Recommended local gates, 18. PR description template (+12 more)
+### Community 422 - "ReverieMetacogHealthMonitor"
+Cohesion: 0.14
+Nodes (21): Post to the notify service. Returns a short status string for the state row., _send_alert(), _check(), check_reverie_metacog_timeout(), HealthCheck, Reverie metacog-timeout health monitor.  `ORION_REVERIE_METACOG_BACKGROUND_ENABL, Module-level singleton entrypoint called from reverie.py. Never raises., Edge-triggered single-check monitor: healthy unless the most recent reverie tick (+13 more)
 
 ### Community 423 - "self-brain.js"
 Cohesion: 0.15
@@ -6013,23 +6041,23 @@ Nodes (11): apply_structured_output_to_payload(), build_response_format(), Any, 
 
 ### Community 426 - "test_attention_organ_page.py"
 Cohesion: 0.03
-Nodes (77): build_domain_rows(), _engine(), _heartbeat_get(), history(), _load_domain_rows(), _load_latest_self_model(), normalize_history_minutes(), parse_predicted_shift_domain() (+69 more)
+Nodes (78): build_domain_rows(), _engine(), _heartbeat_get(), history(), _load_domain_rows(), _load_latest_self_model(), normalize_history_minutes(), parse_predicted_shift_domain() (+70 more)
 
 ### Community 427 - "orion-substrate-runtime compose config"
 Cohesion: 0.40
 Nodes (5): orion-substrate-runtime compose config, orion-substrate-runtime service (biometrics closed loop, grammar reducers, Layers 1-5), orion-substrate-runtime dependencies (fastapi/sqlalchemy/psycopg2/redis), orion-substrate-telemetry compose config, orion-substrate-telemetry dependencies (fastapi/asyncpg/redis)
 
 ### Community 428 - "drift.py"
-Cohesion: 0.07
-Nodes (39): BaseModel, TopicFoundryDriftAlertV1, TopicFoundryEnrichCompleteV1, TopicFoundryRunCompleteV1, get_bus_publisher(), Any, _safe_run(), TopicFoundryBusPublisher (+31 more)
+Cohesion: 0.08
+Nodes (30): TopicFoundryDriftAlertV1, get_bus_publisher(), Any, _safe_run(), TopicFoundryBusPublisher, _wrap_publish(), _compute_current_distribution(), drift_daemon_loop() (+22 more)
 
 ### Community 429 - "config/mesh_remediation_roster.yaml (auto-remediation roster)"
 Cohesion: 0.13
 Nodes (16): cortex-exec remediation entry, cortex-gateway remediation entry, cortex-orch remediation entry, equilibrium-service remediation entry (auto_remediate: false), landing-pad remediation entry, llm-gateway remediation entry, config/mesh_remediation_roster.yaml (auto-remediation roster), notify remediation entry (auto_remediate: false) (+8 more)
 
 ### Community 430 - "concept_atlas_routes.py"
-Cohesion: 0.05
-Nodes (70): _at_risk_concepts(), _build_graph_analytics(), _classify_typed_concept_relations(), _compute_connected_components(), concept_atlas_ingest_topic_foundry(), concept_atlas_ingest_topic_foundry_aitown(), concept_atlas_ingest_topic_foundry_self(), concept_atlas_neighborhood() (+62 more)
+Cohesion: 0.04
+Nodes (103): _at_risk_concepts(), _build_graph_analytics(), _classify_typed_concept_relations(), _compute_connected_components(), concept_atlas_ingest_topic_foundry(), concept_atlas_ingest_topic_foundry_aitown(), concept_atlas_ingest_topic_foundry_self(), concept_atlas_neighborhood() (+95 more)
 
 ### Community 431 - "bus-core (Redis broker container)"
 Cohesion: 0.40
@@ -6040,8 +6068,8 @@ Cohesion: 0.22
 Nodes (14): test_resolve_persists_outcome_and_suppresses(), _BoomEngine, _Engine, test_latest_salience_for_theme_dict_features(), test_latest_salience_for_theme_no_row(), test_latest_salience_for_theme_string_features(), test_latest_trace_for_theme_db_failure_defaults_to_chat_scope(), test_latest_trace_for_theme_no_row_defaults_to_chat_scope() (+6 more)
 
 ### Community 433 - "consumers.py"
-Cohesion: 0.05
-Nodes (45): Compare, Constant, _callee_name(), ConsumerHit, _contains_whole_token(), _is_ident_char(), _is_test_path(), iter_source_files() (+37 more)
+Cohesion: 0.08
+Nodes (23): Compare, Constant, _callee_name(), ConsumerHit, _contains_whole_token(), _is_ident_char(), iter_source_files(), _MetricVisitor (+15 more)
 
 ### Community 434 - "grammar_atlas_routes.py"
 Cohesion: 0.10
@@ -6052,8 +6080,8 @@ Cohesion: 0.17
 Nodes (14): attach(), coalesceChatSuggestDraft(), coalesceMemoryGraphSuggestEnvelope(), contentLooksLikeGatewayFailureBlurb(), debounce(), draftToCyElements(), emptySuggestDraft(), emptyValidSuggestDraft() (+6 more)
 
 ### Community 436 - "ModelManager"
-Cohesion: 0.08
-Nodes (32): Lock, ModelKey, ModelManager, Any, dtype, Loads GroundingDINO open-vocab detector., Loads the face-detection + embedding pair for identity_face         (docs/superp, Lazy per-(profile,device) loader for torch/transformers models.      - Avoids du (+24 more)
+Cohesion: 0.07
+Nodes (45): Lock, ModelKey, ModelManager, Any, dtype, Loads GroundingDINO open-vocab detector., Loads the face-detection + embedding pair for identity_face         (docs/superp, Lazy per-(profile,device) loader for torch/transformers models.      - Avoids du (+37 more)
 
 ### Community 437 - "🌌 Orion: Emergent Intelligence"
 Cohesion: 0.06
@@ -6076,16 +6104,16 @@ Cohesion: 0.12
 Nodes (31): _active_conversation(), _bresenham_tiles(), build_perception(), _facing_partner(), _has_line_of_sight(), _nearby_landmarks(), Any, Integer grid tiles on the line from (x0,y0) to (x1,y1), inclusive of both ends. (+23 more)
 
 ### Community 442 - "memory_graph_routes.py"
-Cohesion: 0.11
-Nodes (29): card_qualifies_for_crystallizer(), emit_memory_card_active_for_crystallizer(), Notify crystallizer when an active card has high-salience priority., _card(), test_card_qualifies_only_active_high_salience(), test_emit_publishes_qualifying_card(), test_emit_skips_non_qualifying_card(), get_consolidation_draft() (+21 more)
+Cohesion: 0.09
+Nodes (37): card_qualifies_for_crystallizer(), emit_memory_card_active_for_crystallizer(), Notify crystallizer when an active card has high-salience priority., _card(), test_card_qualifies_only_active_high_salience(), test_emit_publishes_qualifying_card(), test_emit_skips_non_qualifying_card(), _consolidation_supplemental_utterance_text() (+29 more)
 
-### Community 444 - "settings"
-Cohesion: 0.04
-Nodes (82): MonkeyPatch, test_legacy_rabbit_enables_concurrent_handlers_by_default(), test_legacy_rabbit_respects_concurrent_handlers_setting(), Inverse of the above: a wide-open chat_turn cooldown must not let the     shared, The bug this fix closes: a shared cooldown timestamp would let a     chat_turn f, Unchanged pre-existing behavior: baseline/manual/pulse/relational/     telemetry, chat_turn's cooldown is independently tunable -- a wide-open shared     cooldown, _service() (+74 more)
+### Community 444 - "test_vision_backend.py"
+Cohesion: 0.09
+Nodes (39): _mirror_decision(), Should this read be allowed to colour a chat turn? (allowed, reason).      Publi, One short line for the chat prompt, built from the structured read.      NOT the, _render_affect_summary(), _build_prompt(), _affect(), _event(), The vision backend, and the gates that decide whether Orion hears about it.  Sev (+31 more)
 
-### Community 445 - "EndogenousRuntimeSqlReader"
-Cohesion: 0.16
-Nodes (7): EndogenousRuntimeSqlReader, datetime, SqlReadResult, _Conn, _Engine, test_calibration_reader_profile_history_query(), test_runtime_reader_filters_and_limit_are_bounded()
+### Community 445 - "build_route_arbitration_grammar_events"
+Cohesion: 0.12
+Nodes (27): build_route_arbitration_grammar_events(), _dt(), _event(), _hash_id(), Any, datetime, Orch route-arbitration grammar event emitter.  Pure builder -- no I/O, no Redis,, Build the two-event shadow trace for one turn's route arbitration.      Pure fun (+19 more)
 
 ### Community 446 - "_project_reverie_glimpse"
 Cohesion: 0.20
@@ -6109,7 +6137,7 @@ Nodes (17): _first_route_key(), LlmLaneRouteDecision, _match_served_by(), _norm_
 
 ### Community 451 - "view_model.py"
 Cohesion: 0.06
-Nodes (76): BaseModel, datetime, Repair pressure evidence schema (bus/registry layer).  Lives under orion.schemas, RepairEvidenceV1, _utcnow(), apply_repair_pressure_contract(), assemble_repair_contract_delta(), _evidence_kinds_from_dimensions() (+68 more)
+Nodes (72): apply_repair_pressure_contract(), assemble_repair_contract_delta(), _evidence_kinds_from_dimensions(), Any, Behavior consumer: repair_pressure signal → response contract mode.  This is int, Return a new contract dict adjusted by the repair_pressure signal.      Spec §11, v2: level gates mode; active kind scores union rules., Substrate-derived appraisers. See docs/plans/substrate/2026-05-23-repair-pressur (+64 more)
 
 ### Community 452 - "receipt_pruner.py"
 Cohesion: 0.25
@@ -6123,29 +6151,29 @@ Nodes (13): DigestReport, main(), _print_report(), Any, _run_digest(), FakeConn,
 Cohesion: 0.67
 Nodes (3): agent-trace.js (plain-text step consumer), Idea 4: Click-through payload cards, Agent Trace inspection modal (Hub UI, fail case screenshot)
 
-### Community 455 - "test_route_catalog_background.py"
-Cohesion: 0.09
-Nodes (21): The catalog must show every route that exists, and say why two share a worker., Nothing configured at all. Every row is `not_configured` -- but a background lan, Each of these is a hole a reviewer found in the first cut of this patch., The probe helpers all rstrip('/'), so keying the dedup on the raw string would t, A route absent from LLM_GATEWAY_ROUTE_TABLE_JSON has no configured priority. Say, Before the URL dedup this was probed, failed, and reported `down` with its ident, It had no callers after the dedup. Leaving it invites reintroducing per-route, Behavioural, not a re-export check: the catalog IS the display order, and the di (+13 more)
+### Community 455 - "RouteTarget"
+Cohesion: 0.05
+Nodes (51): RouteTarget, GPUConfig, LLMProfile, LLMProfileRegistry, BaseModel, # NOTE: orion-llamacpp-host / -neural-host / llama-cola-host still declare, build_routes_response(), _definitional_priority() (+43 more)
 
 ### Community 456 - "test_agent_chain_guards.py"
 Cohesion: 0.18
 Nodes (16): consecutive_tool_count(), plan_action_saturated(), Pure guard logic for agent-chain runtime (Pass 2 testability)., Second or later plan_action in the same chain should become a delivery verb., Count consecutive calls of `candidate` from the tail of tools_called., True when a new plan_action would exceed max_consecutive repeated plan_action ca, Triage is disallowed once any prior delegated step exists., repeated_plan_action_needs_delivery() (+8 more)
 
-### Community 457 - "test_proposal.py"
-Cohesion: 0.24
-Nodes (15): _clamp01(), Phase B — spontaneous thought → governed proposal candidate.  Maps a non-hollow, Convert a thought into a review-gated proposal candidate, or None.      Returns, spontaneous_thought_to_candidate(), _coalition(), Phase B — spontaneous thought → governed proposal candidate.  The security-criti, test_absent_coalition_targets_self_state_without_raising(), test_autoaction_posture_recorded_but_gate_unchanged() (+7 more)
+### Community 457 - "test_hub_grammar_emit.py"
+Cohesion: 0.13
+Nodes (27): build_chat_turn_grammar_events(), build_turn_timeout_grammar_events(), _dt(), _event(), _hash_id(), Any, datetime, Hub chat turn grammar event emitter.  Pure builder — no I/O, no Redis, no SQL. M (+19 more)
 
 ### Community 458 - "BiometricsAdapter"
-Cohesion: 0.20
-Nodes (8): BiometricsAdapter, adapter(), make_induction_payload(), norm_ctx(), Biometrics adapter contract (spec §7.A) — lives under ``orion/signals/adapters/t, test_adapt_leaves_otel_for_gateway(), TestAdapt, TestCanHandle
+Cohesion: 0.09
+Nodes (23): BiometricsAdapter, EquilibriumAdapter, adapter(), make_induction_payload(), norm_ctx(), Biometrics adapter contract (spec §7.A) — lives under ``orion/signals/adapters/t, test_adapt_leaves_otel_for_gateway(), TestAdapt (+15 more)
 
 ### Community 459 - "SemanticTangentAdapter"
 Cohesion: 0.14
 Nodes (9): BlockMoC, HyperbolicCausalSelfAttentionMoC, _jittered_raw_values(), MLP, Tensor, Create inverse-softplus raw parameters with optional multiplicative jitter., Mixture-of-curvature causal self-attention.      v2 learns one curvature/lambda, Tensor (+1 more)
 
 ### Community 460 - "test_situation_curiosity_reverie_context.py"
-Cohesion: 0.10
-Nodes (41): _build_curiosity_context(), _build_reverie_context(), Orion's own open world-priors, gated the same "fail-open, real state,     never, Orion's most recent dream/reverie interpretations. SQL-only (see     `ReverieCon, _dsn(), fetch_recent_reverie_snippets(), _get_engine(), NamedTuple (+33 more)
+Cohesion: 0.11
+Nodes (39): Everything Hub read from Orion's graph for one run's presentation., WorldviewSnapshot, _build_curiosity_context(), _build_reverie_context(), Orion's own open world-priors, gated the same "fail-open, real state,     never, Orion's most recent dream/reverie interpretations. SQL-only (see     `ReverieCon, _dsn(), fetch_recent_reverie_snippets() (+31 more)
 
 ### Community 461 - "test_check_concept_relation_digest_liveness.py"
 Cohesion: 0.14
@@ -6167,9 +6195,9 @@ Nodes (45): _coerce_allow_chat_fallback(), Any, Return True/False if caller set 
 Cohesion: 0.26
 Nodes (13): ApiClient, BattleSummary, build_parser(), _fmt_row(), load_battle_fixture(), _load_operator_token(), main(), print_case_table() (+5 more)
 
-### Community 467 - "build_investigation_journal_entry"
-Cohesion: 0.15
-Nodes (18): build_investigation_journal_entry(), datetime, Orion's own written result.      The title is deliberately NOT derived from a su, _material(), Absent is not zero. A missing elapsed must not render as `in 0s`., A killed turn is exactly the case the number is for., The difference between the two IS the stance+finalize overhead.      Reporting o, An older governor sends no such field. Absent must not render as 0s, and     mus (+10 more)
+### Community 467 - "_material"
+Cohesion: 0.13
+Nodes (15): _material(), Absent is not zero. A missing elapsed must not render as `in 0s`., A killed turn is exactly the case the number is for., The difference between the two IS the stance+finalize overhead.      Reporting o, An older governor sends no such field. Absent must not render as 0s, and     mus, `{}` is "Orion wrote nothing"; `None` is "the graph could not answer".     Print, _relation_row(), _row() (+7 more)
 
 ### Community 468 - "workflow-schedule-ui.js"
 Cohesion: 0.19
@@ -6191,9 +6219,9 @@ Nodes (13): _assert_valid_suggest_draft_shape(), _node_coalesce(), _parse_draft_
 Cohesion: 0.12
 Nodes (7): LlamaPreTrainedModel, IntentionModel, IntentionModel_v1, IntentionModel_v1a, Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer, Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer, Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer
 
-### Community 474 - "EquilibriumSnapshotV1"
-Cohesion: 0.06
-Nodes (46): EquilibriumServiceState, EquilibriumServiceTransitionV1, EquilibriumSnapshotV1, datetime, Current service state used by the Equilibrium snapshot publisher., Aggregate view of system equilibrium and distress., A single service status transition (ok/degraded/down), emitted by     orion-equi, DowntimeTransitionTracker (+38 more)
+### Community 474 - "EquilibriumServiceTransitionV1"
+Cohesion: 0.12
+Nodes (14): EquilibriumServiceTransitionV1, datetime, A single service status transition (ok/degraded/down), emitted by     orion-equi, Shape checks for the equilibrium-service-transition SQL write path (no Postgres, Mirror `_write_row`'s generic filter -- no per-model derivation needed here., Live deployments set SQL_WRITER_SUBSCRIBE_CHANNELS, and the Pydantic     alias R, _row_dict(), test_channel_is_in_env_example_subscribe_channels() (+6 more)
 
 ### Community 475 - "config/vision_frame_router.yaml (baseline vs triggered dispatch)"
 Cohesion: 0.40
@@ -6204,8 +6232,8 @@ Cohesion: 0.06
 Nodes (57): _clean_import_path(), _ensure_hub_scripts_import_path(), _FakeResponse, Any, LogCaptureFixture, MonkeyPatch, Tests for the autonomous topic-foundry training + ingestion scheduler (Gap 5 of, The structural drift closure. A model row freezes windowing_spec at     creation (+49 more)
 
 ### Community 477 - "test_recall_prefetch.py"
-Cohesion: 0.07
-Nodes (53): enrich_projection_context(), identity_kernel_with_fallbacks(), inject_identity_context_for_projection(), _orion_state_from_ctx(), Any, Shared projection-context enrichment for Orch Mind preflight and Exec parity., Apply Exec-parity ctx keys needed by substrate producers before projection build, Compact input summary for Orch vs Exec projection parity comparison. (+45 more)
+Cohesion: 0.06
+Nodes (62): build_identity_context(), load_identity_file(), Any, Path, resolve_identity_path(), enrich_projection_context(), identity_kernel_with_fallbacks(), inject_identity_context_for_projection() (+54 more)
 
 ### Community 478 - "required"
 Cohesion: 0.15
@@ -6215,17 +6243,17 @@ Nodes (17): required, required, can_interrupt_others, category, description, int
 Cohesion: 0.06
 Nodes (48): _bare_ref(), FakeGet, FakeStream, install_client(), make_png(), make_ref(), Any, Vision capability gate + attachment fetch + multimodal assembly.  The load-beari (+40 more)
 
-### Community 480 - "in_window"
-Cohesion: 0.14
-Nodes (17): in_window(), paced_cooldown_sec(), Is a waking window actually in force?      `start == end` disables it, and so do, Length of the waking window, handling a window that spans midnight.      A disab, Is `hour` inside [start, end)? A disabled window admits every hour.      DELEGAT, How far apart runs should actually be.      THE DAILY CAP WAS A BUDGET AND NEVER, The spacing actually enforced -- the configured floor, or the         window spr, window_is_configured() (+9 more)
+### Community 480 - "_FakeEnvelope"
+Cohesion: 0.21
+Nodes (9): extract_bus_event_fact(), extract_verb_step_facts(), Any, Mines ``payload.steps[]`` for real measured per-step latency, if     present. Re, ``envelope`` is a decoded BaseEnvelope (or envelope-shaped object with     ``sou, _FakeEnvelope, _FakeSource, TestExtractBusEventFact (+1 more)
 
-### Community 481 - "stable_hash_id"
-Cohesion: 0.07
-Nodes (58): Dependency-free stable identifiers (hashlib only).  Use from thin services (orio, Return ``{prefix}_{sha256(preimage)[:24]}`` from ordered semantic parts., stable_hash_id(), derive_implicit_verdicts(), ImplicitVerdict, LoopObservation, median_gap(), datetime (+50 more)
+### Community 481 - "derive_implicit_verdicts"
+Cohesion: 0.08
+Nodes (53): derive_implicit_verdicts(), ImplicitVerdict, LoopObservation, median_gap(), datetime, timedelta, Derive the implicit ``decayed_unattended`` attention-loop verdict.  The producer, Return one `ImplicitVerdict` per loop that has decayed unattended.      A loop q (+45 more)
 
-### Community 482 - "WorkflowScheduleStore"
-Cohesion: 0.06
-Nodes (67): BaseModel, WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1, WorkflowScheduleAnalyticsV1, WorkflowScheduleEventRecordV1, WorkflowScheduleRecordV1, WorkflowScheduleRunRecordV1, WorkflowScheduleSpecV1 (+59 more)
+### Community 482 - "next_run_for_recurring_schedule"
+Cohesion: 0.18
+Nodes (9): next_run_for_recurring_schedule(), Any, datetime, How many dispatches in a row have failed since the last success.          Persis, Write notify_on to all three copies. Caller holds the lock and persists., Fail any dispatch still in flight past the claim TTL. Caller holds the lock., Public entry point for changing a schedule's notification policy., Record one failed dispatch and decide whether to retry it.          Caller holds (+1 more)
 
 ### Community 483 - "grammar_truth_gate.py"
 Cohesion: 0.21
@@ -6244,36 +6272,36 @@ Cohesion: 0.17
 Nodes (12): build_orch_concept_profile_settings(), Config, get_orch_concept_profile_settings(), OrchConceptProfileSettings, Any, BaseSettings, Concept-profile repository settings used by Orch runtime.      This adapter inte, Return concept-profile repository config for Orch runtime.      Environment is t (+4 more)
 
 ### Community 487 - "PowerPrior"
-Cohesion: 0.13
-Nodes (20): PowerPrior, What this workload has actually cost, learned from its own settlements.  `PowerI, Bounded, per-workload memory of settled peak draw., The prior, or None if this workload has not been measured enough.          None, _feed(), Power-intent prior pins.  The design claim is that a MEDIAN over a BOUNDED windo, gpu_index is in the key because an index is only meaningful per host     and dif, PowerIntentV1's docstring: None means UNKNOWN and a fabricated constant     woul (+12 more)
+Cohesion: 0.12
+Nodes (21): PowerPrior, What this workload has actually cost, learned from its own settlements.  `PowerI, Bounded, per-workload memory of settled peak draw., Record one settlement. Returns whether it was counted.          Only `settled` c, The prior, or None if this workload has not been measured enough.          None, _feed(), Power-intent prior pins.  The design claim is that a MEDIAN over a BOUNDED windo, gpu_index is in the key because an index is only meaningful per host     and dif (+13 more)
 
 ### Community 488 - "social-inspection.js"
 Cohesion: 0.24
 Nodes (15): buildOperatorSummary(), buildSurfaceModel(), cleanList(), countStateItems(), formatCountLabel(), getSection(), normalizeSection(), normalizeSnapshot() (+7 more)
 
-### Community 490 - "test_concept_region_collector.py"
-Cohesion: 0.09
-Nodes (51): EvidenceNodeV1, _edge_to_fragment(), fetch_concept_region_fragment(), fetch_concept_region_fragment_and_reinforce(), _label_matches(), _node_label(), _node_to_fragment(), Any (+43 more)
+### Community 490 - "SocialRoomBridgeService"
+Cohesion: 0.18
+Nodes (3): Any, SocialRoomBridgeService, _utcnow_iso()
 
-### Community 491 - "MoodArcEncoderManifestV1"
-Cohesion: 0.09
-Nodes (47): promote_encoder(), Path, Copy a trained candidate's artifacts into the durable models_root,     flip its, Reads models_root/active.json (written by promote_encoder(), above) and     retu, resolve_active_encoder_dir(), write_artifacts(), _manifest_kwargs(), 2026-07-17 corpus-swap rework: field selection is now dynamic per     training r (+39 more)
+### Community 491 - "test_mood_arc_promote.py"
+Cohesion: 0.13
+Nodes (33): promote_encoder(), Copy a trained candidate's artifacts into the durable models_root,     flip its, Reads models_root/active.json (written by promote_encoder(), above) and     retu, resolve_active_encoder_dir(), _fake_candidate_dir(), _fake_manifest(), _make_row(), _normal_rows() (+25 more)
 
 ### Community 492 - "test_thought_candidate.py"
 Cohesion: 0.09
 Nodes (15): _FakeQuery, _FakeQueryByModel, _FakeRow, _FakeSession, _FakeSessionByModel, Model-aware fake -- distinct from ``_FakeSession`` above, which     always retur, Regression test: before this fix (code review on the substrate-purge     branch,, Regression test: code review (2026-08-19) found this function's     caller doesn (+7 more)
 
-### Community 493 - "_build_prompt_fragment"
-Cohesion: 0.08
-Nodes (55): AffectContextV1, Juniper's most recent facial+vocal affect read, for the situation brief.      So, _build_affect_context(), _build_prompt_fragment(), Most recent facial+vocal affect read of Juniper, gated hard on age.      Same st, just now" / "N min ago" -- shared by every section below that reads     an obser, _recency_phrase(), _brief() (+47 more)
+### Community 493 - "WorkloadRoute"
+Cohesion: 0.18
+Nodes (22): GraphPersistenceRouter, Graph persistence router: workload → primary/shadow backend selection., Select primary (+ optional shadow) persistence targets per workload., Return the route for ``workload``, optionally overriding primary via hint., _is_route_target(), _is_shadow_target(), load_persistence_routes(), _parse_route_entry() (+14 more)
 
-### Community 494 - "ThoughtSettings"
-Cohesion: 0.08
-Nodes (41): _check(), check_reverie_metacog_timeout(), HealthCheck, Reverie metacog-timeout health monitor.  `ORION_REVERIE_METACOG_BACKGROUND_ENABL, Module-level singleton entrypoint called from reverie.py. Never raises., Edge-triggered single-check monitor: healthy unless the most recent reverie tick, Call once per reverie tick that actually reached the metacog call, with whether, ReverieMetacogHealthMonitor (+33 more)
+### Community 494 - "VisualChainHealthMonitor"
+Cohesion: 0.16
+Nodes (20): _check(), check_visual_chain_staleness(), HealthCheck, Reverie visual-chain staleness health monitor.  Unlike `reverie_health_monitor.p, Module-level singleton entrypoint called from the watchdog loop in     visual_ch, age_min=None (table empty) is NOT flagged as stale -- matching     orion-field-d, Edge-triggered single-check monitor: healthy unless the newest     `reverie_visu, Call once per watchdog tick with the current DB-reported age.         Never rais (+12 more)
 
-### Community 495 - "test_node_availability_alert.py"
-Cohesion: 0.11
-Nodes (26): _annotate_reason(), _check(), _format_local(), HealthCheck, HealthMonitor, _node_availability_checks(), Settings, Severity (+18 more)
+### Community 495 - "HealthMonitor"
+Cohesion: 0.24
+Nodes (9): _annotate_reason(), _check(), _format_local(), HealthCheck, HealthMonitor, Settings, Severity, Edge-triggered health monitor: fires an orion-notify attention request only (+1 more)
 
 ### Community 496 - "test_stt_engine.py"
 Cohesion: 0.10
@@ -6284,24 +6312,24 @@ Cohesion: 0.06
 Nodes (30): A second φ-like signal exists in the substrate, Acceptance checks, Architecture / data flow, Arsonist summary, Build sequence & gate, Channels / registry, Contracts, Core problem (+22 more)
 
 ### Community 499 - "cocreation_signals_routes.py"
-Cohesion: 0.25
-Nodes (18): build_domain_summary(), _coerce_json(), _coerce_json_field(), dev_economics(), _engine(), history(), _load_dev_economics_recent(), _load_latest_baseline() (+10 more)
+Cohesion: 0.22
+Nodes (20): build_domain_summary(), build_history_series(), _coerce_json(), _coerce_json_field(), dev_economics(), _engine(), history(), _load_dev_economics_recent() (+12 more)
 
 ### Community 500 - "properties"
 Cohesion: 0.11
 Nodes (20): description, type, properties, type, description, type, description, items (+12 more)
 
 ### Community 501 - "GraphAnalytics"
-Cohesion: 0.04
-Nodes (94): Component, GraphAnalytics, GraphAnalyticsError, Any, RuntimeError, Structural reads over any FalkorDB graph, using the engine's own algorithms.  WH, A structural read could not be answered., One connected component.      ``sample_labels`` is a bounded sample, not the mem (+86 more)
+Cohesion: 0.03
+Nodes (98): Component, GraphAnalytics, GraphAnalyticsError, Any, RuntimeError, RankedNode, Structural reads over any FalkorDB graph, using the engine's own algorithms.  WH, A structural read could not be answered. (+90 more)
 
-### Community 502 - "JournalEntryWriteV1"
-Cohesion: 0.13
-Nodes (41): JournalEntryWriteV1, BaseModel, SelfConceptInduceResultV1, SelfConceptReflectResultV1, SelfConceptRefV1, SelfRepoInspectResultV1, SelfStudyConsumerPolicyDecisionV1, SelfStudyHarnessResultV1 (+33 more)
+### Community 502 - "collapse_mirror.py"
+Cohesion: 0.14
+Nodes (22): attach_llm_uncertainty_to_collapse_payload(), _canonical_phi_hint(), _extract_first_json_object(), _find_any_string(), find_collapse_entry(), mirror_kind(), _normalize_entry_telemetry(), _normalize_telemetry_key() (+14 more)
 
-### Community 503 - "graph_view.py"
-Cohesion: 0.21
-Nodes (14): Canonical layer and dimension enums for Substrate Atlas (spec §5.4–5.5)., atom_row_to_node(), build_dimension_groups(), build_dimension_summary(), build_layer_groups(), build_layer_summary(), edge_row_to_edge(), layer_index() (+6 more)
+### Community 503 - "main.py"
+Cohesion: 0.12
+Nodes (17): VisionWindowRequestPayload, VisionWindowResultPayload, main(), build_heartbeat_chassis(), _corr_uuid(), lifespan(), FastAPI, UUID (+9 more)
 
 ### Community 504 - "assert_hub_context_exec_routing"
 Cohesion: 0.24
@@ -6312,8 +6340,8 @@ Cohesion: 0.22
 Nodes (13): banner(), classify_failure(), FAIL_LOGS, FAIL_NAMES, record_fail(), record_pass(), record_skip(), require_repo_root() (+5 more)
 
 ### Community 506 - "main.py"
-Cohesion: 0.07
-Nodes (45): BaseModel, HTTP API request model (backwards compatibility)., RecallCompareRequestBody, RecallCompareResponseBody, RecallRequestBody, RecallResponseBody, _check_rdf_endpoint(), entity_graph_bridge_endpoint() (+37 more)
+Cohesion: 0.06
+Nodes (55): BaseModel, HTTP API request model (backwards compatibility)., RecallCompareRequestBody, RecallCompareResponseBody, RecallRequestBody, RecallResponseBody, _check_rdf_endpoint(), entity_graph_bridge_endpoint() (+47 more)
 
 ### Community 507 - "test_harness_attachment_staging.py"
 Cohesion: 0.08
@@ -6321,7 +6349,7 @@ Nodes (52): _default_max_items(), describe_for_prompt(), prune_staging(), Any, P
 
 ### Community 508 - "self_study_analysis.py"
 Cohesion: 0.08
-Nodes (51): AnalysisFindingV1, AnalysisMetricV1, BaseModel, Typed result contract for `skills.self_study.analyze.v1`.  ONE action shape, FOU, One summarised quantity, recent window against the window before it.      `basel, One notability rule that fired, with the numbers that fired it., SelfStudyAnalysisResultV1, SelfWritebackStatusV1 (+43 more)
+Nodes (45): _as_datetime(), _as_float(), build_analysis_journal_entry(), build_metrics(), _clamp_window_hours(), _dsn(), _envelope_correlation_id(), evaluate_rules() (+37 more)
 
 ### Community 509 - "SparkContractMetrics"
 Cohesion: 0.15
@@ -6336,8 +6364,8 @@ Cohesion: 0.27
 Nodes (14): appendLog(), bindTerminalScroll(), connectSocket(), createTerminalState(), diagnosticsHint(), ensureServiceTerminal(), flushTerminal(), loadInventory() (+6 more)
 
 ### Community 512 - "substrate-effect-ui.js"
-Cohesion: 0.33
-Nodes (15): el(), initSubstrateEffectTab(), loadRecentEffects(), openSubstrateEffectModal(), renderBehaviorDelta(), renderCausalChain(), renderEvidenceCards(), renderMoleculeSummaries() (+7 more)
+Cohesion: 0.19
+Nodes (20): el(), initSubstrateEffectTab(), loadRecentEffects(), openSubstrateEffectModal(), renderBehaviorDelta(), renderCausalChain(), renderEvidenceCards(), renderMoleculeSummaries() (+12 more)
 
 ### Community 513 - "test_memory_graph_from_chat_live.py"
 Cohesion: 0.22
@@ -6356,8 +6384,8 @@ Cohesion: 0.17
 Nodes (9): Path, True positive against the actual repo config: Daily Journal reuses Daily     Pul, test_load_cadences_includes_synthetic_daily_journal_entry(), test_main_fail_on_collision_exits_one(), test_main_fail_on_collision_exits_zero_when_below_threshold(), test_main_json_output_contains_collisions(), test_main_report_only_exits_zero_even_with_collision(), test_real_env_example_has_known_daily_pulse_journal_collision() (+1 more)
 
 ### Community 517 - "build_situation_for_ctx"
-Cohesion: 0.06
-Nodes (36): build_situation_for_ctx(), _assert_no_py311_only_utc_import(), Path, Regression guard for the 2026-08-23 production outage: `orion/situational/ conte, Real execution, not just a static check -- proves the datetime     handling in c, test_context_module_actually_builds_a_situation_brief(), test_context_module_does_not_import_py311_only_datetime_utc(), test_situation_grounding_smoke_script_does_not_import_py311_only_datetime_utc() (+28 more)
+Cohesion: 0.11
+Nodes (23): build_situation_for_ctx(), _FakeSessionTurnPhaseBus, _FakeSessionTurnPhaseRedis, _FakeUrlopenResponse, Regression test for a real bug found in review (2026-08-21): the     cache finge, Mimics the `with urlopen(...) as resp: resp.read()` shape `_fetch_weather`     a, Regression guard for the 2026-08-23 "get weather" follow-up:     `_build_environ, # NOTE: build_situation_for_ctx (and, inside it, _build_conversation_phase) (+15 more)
 
 ### Community 518 - "reflect.v1 recall profile"
 Cohesion: 0.13
@@ -6387,17 +6415,17 @@ Nodes (14): _atlas_test_app(), client(), _ensure_hub_scripts_import_path(), _moc
 Cohesion: 0.24
 Nodes (10): _all_rows(), _fake_engine(), datetime, HTTP tests for the self-observability summary route (self-observability v2)., Engine whose execute() keys responses off the table name in the SQL., test_summary_curiosity_signals_capped_and_ranked(), test_summary_each_section_degrades_to_null(), test_summary_full_contract_shape() (+2 more)
 
-### Community 525 - "main.py"
-Cohesion: 0.20
-Nodes (7): build_heartbeat_chassis(), lifespan(), FastAPI, Own, independent bus connection publishing SystemHealthV1 to orion:system:health, BaseSettings, Path, Settings
+### Community 525 - "chat_stance_shared_spine.py"
+Cohesion: 0.18
+Nodes (24): _base_stance_for_shadow(), _build_exec_late_shadow_synthesis(), _env_float(), _inject_projection_debug(), _inline_projection_from_metadata(), install_chat_stance_shared_spine(), _label_for_projection_item(), _projection_debug_bundle() (+16 more)
 
 ### Community 526 - "test_caption_sanitize.py"
-Cohesion: 0.10
-Nodes (29): _degenerate_reason(), Punctuation-stripped, non-empty tokens. Filters on the *stripped*     token, not, Shared quality checks both sanitizers below run against their own     (already e, VQA counterpart to ``sanitize_caption`` -- same echo/degeneracy     checks, but, sanitize_answer(), sanitize_caption(), _tokenize(), Same fix as sanitize_answer's, applied for consistency even though     the 12-ch (+21 more)
+Cohesion: 0.06
+Nodes (48): is_caption_prompt_echo(), _normalize(), True when the model's output is its own input prompt echoed back, not a     real, Removes a *leading* echo of ``prompt`` from ``text``, case-insensitively.      C, strip_echoed_prompt_prefix(), Every pre-existing caller (positional, no `prompt` kwarg) must keep     its exac, A VQA-shaped call: the question is a real question, not CAPTION_PROMPT     -- ch, Reproduces the exact live bug (2026-08-20, VQA's first real smoke     test): a m (+40 more)
 
-### Community 527 - "GraphQueryClient"
-Cohesion: 0.11
-Nodes (33): GoalActionKind, _autonomy_goal_execution_enabled(), build_goal_graph_query_client(), complete_goal(), dismiss_goal(), _escape_sparql(), execute_goal_action(), fetch_goal_by_artifact_id() (+25 more)
+### Community 527 - "goal_actions.py"
+Cohesion: 0.07
+Nodes (44): GoalActionKind, _autonomy_goal_execution_enabled(), build_goal_graph_query_client(), complete_goal(), dismiss_goal(), _escape_sparql(), execute_goal_action(), fetch_goal_by_artifact_id() (+36 more)
 
 ### Community 528 - "test_self_study_analysis_rules.py"
 Cohesion: 0.11
@@ -6411,9 +6439,9 @@ Nodes (10): Acceptance checks, Arsonist summary, Current architecture, Files lik
 Cohesion: 0.12
 Nodes (16): Architecture touched, Current architecture (before this patch), Docker/build/smoke checks, Env/config changes, Evals run, Files changed, Outcome moved, PR link (+8 more)
 
-### Community 531 - "_clean_daydream"
-Cohesion: 0.04
-Nodes (52): _lane(), Eval: is the reverie-daydream lane actually usable against the LIVE corpus?  `se, One fetch shared by every test in this module -- each calling `_rows()`     itse, The lane's real failure mode is silence: if the captioner regresses,     every r, Asserts on the INPUT, not the output (review finding, 2026-08-28).      Checking, Live 2026-08-28: 12 of 290 rendered captions carried the vision     prompt's own, Liveness, not correctness: an empty window means the visual chain     worker is, The floor and the sample minimum are the only two knobs here, and     nothing el (+44 more)
+### Community 531 - "endogenous_outreach.py"
+Cohesion: 0.03
+Nodes (82): _lane(), Eval: is the reverie-daydream lane actually usable against the LIVE corpus?  `se, One fetch shared by every test in this module -- each calling `_rows()`     itse, The lane's real failure mode is silence: if the captioner regresses,     every r, Asserts on the INPUT, not the output (review finding, 2026-08-28).      Checking, Live 2026-08-28: 12 of 290 rendered captions carried the vision     prompt's own, Liveness, not correctness: an empty window means the visual chain     worker is, The floor and the sample minimum are the only two knobs here, and     nothing el (+74 more)
 
 ### Community 532 - "render_aitown_tab_blocks"
 Cohesion: 0.36
@@ -6455,13 +6483,13 @@ Nodes (47): Notes, Rollback, Sunset criteria, Unified-turn Brain shim sunset che
 Cohesion: 0.17
 Nodes (11): Consolidated file/setting reference, Felt-state arc roadmap — dense spec, Item 1 — Post-fix corpus collector, Item 2 — Windowed sequence autoencoder ("mood arc" detector), Item 3 — Anomaly detector on the arc, Item 4 — Unsupervised attractor/cluster discovery, Item 5 — Cross-reference against real external events, Item 6 — Self-report calibration check (+3 more)
 
-### Community 542 - "CabinetAmbientSpikeV1"
-Cohesion: 0.11
-Nodes (24): CabinetAmbientSpikeV1, BaseModel, datetime, Bus contract when cabinet ambient audio activity crosses a sustained threshold., AmbientSpikeDetector, AmbientSpikeDetectorConfig, datetime, Emit at most one spike event per cooldown when activity stays elevated.      Aft (+16 more)
+### Community 542 - "cabinet_ambient_spike_consumer.py"
+Cohesion: 0.09
+Nodes (37): CabinetAmbientSpikeV1, BaseModel, datetime, Bus contract when cabinet ambient audio activity crosses a sustained threshold., apply_cabinet_ambient_spike_bump(), build_cabinet_ambient_spike_grammar_events(), _hash_id(), _merged_activity_hint() (+29 more)
 
-### Community 543 - "resolve_fetch_backend"
-Cohesion: 0.23
-Nodes (14): default_fetch_backend(), resolve_fetch_backend(), resolve_firecrawl_api_key(), firecrawl_search_backend(), Tier B readonly search via Firecrawl REST API., test_default_fetch_backend_raises(), test_resolve_fetch_backend_stub_mode(), test_resolve_fetch_backend_uses_firecrawl_when_key_present() (+6 more)
+### Community 543 - "apply_decay"
+Cohesion: 0.12
+Nodes (24): apply_decay(), _aware_utc(), datetime, Read this service's README ("Decay vs. injection-interval mismatch") and this di, Regression tests for the decay/injection-interval mismatch fix (docs/superpowers, Perturb then immediately call apply_decay in the same tick (now identical     to, A channel with no node_vector_updated_at entry at all (simulating a     never-pe, A channel goes stale (no perturbation for longer than the threshold)     then de (+16 more)
 
 ### Community 544 - "classify_channel_series"
 Cohesion: 0.07
@@ -6469,7 +6497,7 @@ Nodes (48): classify_channel_series(), FieldChannelGlossaryEntry, _glossary_path
 
 ### Community 545 - "OutreachContext"
 Cohesion: 0.07
-Nodes (46): build_outreach_prompt(), grounding_summary(), OutreachContext, Which grounding lanes actually made it into this tick's prompt.      Recorded in, Render the generation prompt from real context.      Returns a prompt only when, current_run(), A real, inspectable reason to reach out -- never fabricated.      `target_id` is, Is Orion's field state, RIGHT NOW, in the middle of a sustained     persistence (+38 more)
+Nodes (45): build_outreach_prompt(), grounding_summary(), OutreachContext, Which grounding lanes actually made it into this tick's prompt.      Recorded in, Render the generation prompt from real context.      Returns a prompt only when, A real, inspectable reason to reach out -- never fabricated.      `target_id` is, TensionTriggerReason, _FakeBus (+37 more)
 
 ### Community 546 - "_FakeSession"
 Cohesion: 0.06
@@ -6493,11 +6521,11 @@ Nodes (43): collector(), _fake_sysfs(), The disk and network sensors measure the
 
 ### Community 551 - "main.py"
 Cohesion: 0.06
-Nodes (37): publish_assistant_embedding(), Any, UUID, _source(), admission_snapshot(), _cfg(), configure_executor(), _debug_len() (+29 more)
+Nodes (42): APIRouter, register_anthropic_passthrough_routes(), get_route_targets(), admission_snapshot(), _cfg(), configure_executor(), _debug_len(), _debug_snippet() (+34 more)
 
 ### Community 552 - "RpcHealthAggregator"
-Cohesion: 0.07
-Nodes (41): _percentile(), build_rpc_health_snapshot_envelope(), Sleeps interval_sec, then drains bus_getter()'s current RPC-health snapshot and, rpc_health_publish_loop(), In-process RPC health aggregator for OrionBusAsync.rpc_request().  Step 2 of doc, Never raises past this boundary: this call sits directly in         `rpc_request, Never raises past this boundary: this call sits directly in         `rpc_request, Atomically read the accumulated window and reset for the next one. (+33 more)
+Cohesion: 0.06
+Nodes (45): Drain this instance's accumulated real rpc_request() outcomes since the, _percentile(), build_rpc_health_snapshot_envelope(), Shared periodic RPC-health snapshot publisher.  Step 3 of docs/superpowers/specs, Sleeps interval_sec, then drains bus_getter()'s current RPC-health snapshot and, rpc_health_publish_loop(), In-process RPC health aggregator for OrionBusAsync.rpc_request().  Step 2 of doc, Never raises past this boundary: this call sits directly in         `rpc_request (+37 more)
 
 ### Community 553 - "action_warrant"
 Cohesion: 0.07
@@ -6513,7 +6541,7 @@ Nodes (9): GPUConfig, LlamaCppConfig, LLMProfile, LLMProfileRegistry, BaseModel,
 
 ### Community 556 - "context.py"
 Cohesion: 0.06
-Nodes (44): bus_worker(), _handle_envelope(), Subscribe to vision artifacts., _source(), AppContext, Single place to construct shared singletons.     Keeps main.py clean and prevent, build_heartbeat_chassis(), on_startup() (+36 more)
+Nodes (42): AppContext, Single place to construct shared singletons.     Keeps main.py clean and prevent, VisionGuard, AlertPayload, AlertSnapshot, Detection, BaseModel, Detection coming from the vision edge service.      - kind: "face", "motion", "y (+34 more)
 
 ### Community 557 - "Orion Signals Roster v1 (mesh service tiers)"
 Cohesion: 0.14
@@ -6565,7 +6593,7 @@ Nodes (29): Anti-Bullshit Guardrail, Authorization, Privacy, and Redaction, Corr
 
 ### Community 569 - "test_metacog_generative_trigger_signals.py"
 Cohesion: 0.06
-Nodes (53): detect_confidence_recovery(), detect_flow_regime(), Return the window's values, or None if any is non-finite.      Fails closed rath, Detect a *sustained* low->high recovery ending at the newest sample.      `sampl, Detect a sustained high-confidence, low-variance regime ("flow").      `samples`, _window_values(), _flow(), _gappy() (+45 more)
+Nodes (55): ConfidenceSample, detect_confidence_recovery(), detect_flow_regime(), One persisted `prediction_error_confidence` tick., Return the window's values, or None if any is non-finite.      Fails closed rath, Detect a *sustained* low->high recovery ending at the newest sample.      `sampl, Detect a sustained high-confidence, low-variance regime ("flow").      `samples`, _window_values() (+47 more)
 
 ### Community 570 - "_FakeProc"
 Cohesion: 0.21
@@ -6616,8 +6644,8 @@ Cohesion: 0.11
 Nodes (27): ContextSourceKind, classify(), ContextKeyProvenance, _entry(), BaseModel, Provenance classification for chat-turn context (``ctx``) keys.  ``executor.py``, Look up a ctx key's provenance. None means unclassified (neither a     registere, Automated safety net: any key executor.py assigns via a literal     ctx["key"] = (+19 more)
 
 ### Community 583 - "test_transcribe.py"
-Cohesion: 0.07
-Nodes (45): keep_only_speech_segments(), measure_wav_peak(), Any, Optional Whisper transcription -- populates ``subtitle`` from ``audio_path`` whe, Drop Whisper segments the model itself judged to be silence.      Deliberately d, Never raises -- any failure (missing file, corrupt wav, Whisper     internal err, The full "what subtitle does the model actually see" decision,     pulled out of, (rms, peak, error) of a 16-bit PCM wav's samples. ``error`` is None on     a rea (+37 more)
+Cohesion: 0.17
+Nodes (19): keep_only_speech_segments(), Drop Whisper segments the model itself judged to be silence.      Deliberately d, loud_wav(), Model-free: exercises the silence gate and result plumbing against real syntheti, The exact shape of the live failure: one confident-silence segment     carrying, Absent evidence is not evidence of silence -- a model returning no     segment s, A garbage prob must not silently discard real speech -- fail toward     keeping, Regression: a non-empty `segments` list whose entries are not dicts (a     Whisp (+11 more)
 
 ### Community 584 - "test_biometrics_view_ui.py"
 Cohesion: 0.04
@@ -6656,8 +6684,8 @@ Cohesion: 0.27
 Nodes (7): collect_up_failures(), is_excluded(), print_failed_logs(), up_all_services_batched.sh script, up_one(), up_one_bg(), wait_for_bus_ready()
 
 ### Community 594 - "dev_economics.py"
-Cohesion: 0.09
-Nodes (45): One normalized ledger record per transcript file. Deliberately one     record pe, SessionUsageRecord, aggregate_session_deltas(), aggregate_session_records(), _delta_cost_usd(), DevEconomicsAggregate, diff_session_record(), has_real_delta() (+37 more)
+Cohesion: 0.08
+Nodes (48): One normalized ledger record per transcript file. Deliberately one     record pe, SessionUsageRecord, aggregate_session_deltas(), aggregate_session_records(), _delta_cost_usd(), DevEconomicsAggregate, diff_session_record(), has_real_delta() (+40 more)
 
 ### Community 595 - "measure_ast_hot_reducer.py"
 Cohesion: 0.08
@@ -6688,8 +6716,8 @@ Cohesion: 0.16
 Nodes (12): _cards(), Backtick / ${...} / backslash must be escaped for a TS backtick literal., Drift guard: the composed Juniper blurb must be spliced into world.ts., test_cards_have_all_expected_ids(), test_compose_identity_uses_job_fields_not_signature(), test_compose_presence_blurb_orion_uses_they(), test_juniper_blurb_present_in_world_ts(), test_live_identities_have_no_light_bait() (+4 more)
 
 ### Community 602 - "test_worker_social.py"
-Cohesion: 0.47
-Nodes (10): _perc(), test_engage_accepts_invite(), test_engage_does_not_stop_when_not_pathfinding(), test_engage_initiates_with_nearby_player(), test_engage_stops_once_to_face_partner_when_pathfinding(), test_engage_walks_to_partner_when_walking_over(), test_initiate_off_when_distance_zero(), test_initiate_respects_cooldown() (+2 more)
+Cohesion: 0.41
+Nodes (11): _perc(), test_engage_accepts_invite(), test_engage_does_not_stop_when_not_pathfinding(), test_engage_initiates_with_nearby_player(), test_engage_stops_once_to_face_partner_when_pathfinding(), test_engage_walks_to_partner_when_walking_over(), test_initiate_off_when_distance_zero(), test_initiate_respects_cooldown() (+3 more)
 
 ### Community 603 - ".__init__"
 Cohesion: 0.19
@@ -6723,17 +6751,17 @@ Nodes (41): atomic_write_json(), audio_device(), build_snapshot(), capture_chann
 Cohesion: 0.10
 Nodes (38): atomic_write_json(), boot_output_path(), device_glob_pattern(), discover_device(), ingest_boot_line(), main(), output_path(), parse_boot_line() (+30 more)
 
-### Community 612 - "test_repair_pressure_appraisal_log.py"
-Cohesion: 0.13
-Nodes (14): BaseModel, RepairPressureAppraisalV1, _appraisal(), RepairPressureAppraisalV1, Shape checks for the repair_pressure appraisal durable-log write path (no Postgr, The whole point of this table: log every appraisal, not just the ones     that c, Mirror `_write_row`'s generic column-name filter., Standalone insert-only table -- avoids the row-creation-timing race a     chat_h (+6 more)
+### Community 612 - ".inspect"
+Cohesion: 0.02
+Nodes (86): grammar_retention_loop(), Settings, Periodic grammar/substrate retention.  Retention already existed and was correct, Yield briefly so a stopping worker thread can observe the stop flag., Run a bounded retention cycle every `grammar_retention_interval_sec`.      This, retention_days_for(), _settle(), Any (+78 more)
 
-### Community 613 - "test_dev_economics_ledger_sql_shape.py"
-Cohesion: 0.17
-Nodes (13): DevEconomicsLedgerV1, BaseModel, Bus payload schema for the dev-economics domain's ``orion:substrate:dev_economic, _make_event(), Shape checks for the dev-economics ledger SQL write path (no Postgres required)., Re-delivery of the same event_id must upsert (one row), not     duplicate -- mir, model_mix is the one deliberate exception: it's a real dict on the     wire sche, A real tick where nothing was priceable -- total_estimated_cost_usd     is None, (+5 more)
+### Community 613 - "test_chat_general_route_mapping.py"
+Cohesion: 0.15
+Nodes (23): ChatResponsePayload, _base_ctx(), Default (CORTEX_CHAT_RETURN_LOGPROBS off): unchanged, no return_logprobs key., Narrow scope: route=quick steps (e.g. the stance-brief pass) never get     retur, A JSON-constrained chat=route reply skips return_logprobs -- constrained decodin, CORTEX_CHAT_RETURN_LOGPROBS on: the real user-facing chat=route reply asks the, test_chat_general_final_step_no_logprobs_when_disabled(), test_chat_general_final_step_requests_logprobs_when_enabled() (+15 more)
 
-### Community 614 - "EndogenousOutreach"
-Cohesion: 0.07
-Nodes (24): EndogenousOutreach, is_pass_response(), Any, date, Queue, Recover today's delivered count from the decision log. Idempotent.          WHY:, Session to persist into: the newest connection that has one., Real trigger check (2026-08-16) -- see module docstring.          Stores the rea (+16 more)
+### Community 614 - "outreach_block_reason"
+Cohesion: 0.05
+Nodes (33): in_quiet_hours(), is_pass_response(), outreach_block_reason(), OutreachGateInputs, Any, date, Queue, Recover today's delivered count from the decision log. Idempotent.          WHY: (+25 more)
 
 ### Community 615 - "test_worker_attention_broadcast_tick.py"
 Cohesion: 0.30
@@ -6771,9 +6799,9 @@ Nodes (33): Acceptance checks, API, Arsonist summary, Backward compatibility, Co
 Cohesion: 0.39
 Nodes (8): Orion Memory Ontology (GraphDB), claim:orion:knowledge-forge:0001 — Forge v1 FastAPI endpoints on port 8630, claim:orion:knowledge-forge:0003 — git-tracked orion-knowledge/ remains source of truth, claim:orion:knowledge-forge:0004 — compile excludes disputed/stale/superseded claims by default, claim:orion:knowledge-forge:0002 — Hub Forge tab proxies /api/knowledge/*, claim:orion:knowledge-forge:0005 — v1 excludes GraphDB/vector search/autonomous rewriting/silent mutation, source:2026-05-20-knowledge-forge-v1-merge (metadata), spec:knowledge-forge-ideation-review-v1 (external spec, referenced)
 
-### Community 624 - "SelfKnowledgeItemLogV1"
-Cohesion: 0.17
-Nodes (14): BaseModel, datetime, Durable, multi-run history of self_study.py's Layer-1 SelfKnowledgeItemV1 items., SelfKnowledgeItemLogV1, _utc_now(), _make_payload(), Compile-time shape checks for the self_knowledge_items SQL write path (no Postgr, Review finding: the tests above never exercise the real write path     (`worker. (+6 more)
+### Community 624 - "test_insight_flow_metacog_gates.py"
+Cohesion: 0.13
+Nodes (23): ConfidenceRecovery, FlowRegime, A sustained low->high transition in `prediction_error_confidence` --     the "in, A sustained high-confidence, low-variance regime -- the "flow" condition., build_flow_metacog_trigger(), Turn a detected `FlowRegime` into a "flow" metacog trigger.      Returns None wh, build_insight_metacog_trigger(), `trigger_kind="insight"` gate -- surprise resolution / confidence recovery.  The (+15 more)
 
 ### Community 625 - "executive_pack: classify/plan/prioritize/evaluate verbs"
 Cohesion: 0.50
@@ -6793,15 +6821,15 @@ Nodes (8): Any, recommend_actions_from_alerts(), summarize_recommended_actions()
 
 ### Community 629 - "concept-atlas.js"
 Cohesion: 0.10
-Nodes (44): activate(), apiFetch(), applyClientPromotionStateFilter(), candidateHint(), collapseEvidenceNodes(), componentShapeLine(), coverageLine(), currentFilters() (+36 more)
+Nodes (45): activate(), apiFetch(), applyClientPromotionStateFilter(), candidateHint(), collapseEvidenceNodes(), componentShapeLine(), coverageLine(), currentFilters() (+37 more)
 
 ### Community 630 - "expmap0"
 Cohesion: 0.20
 Nodes (18): _artanh_clamped(), expmap0(), mobius_add(), poincare_distance(), poincare_distance_pairs(), project_to_ball(), Tensor, Exponential map at origin: tangent vector -> point on ball. (+10 more)
 
 ### Community 631 - "FeedbackFrameV1"
-Cohesion: 0.03
-Nodes (91): FeedbackFrameV1, OutcomeObservationV1, BaseModel, BucketStats, build_arg_parser(), build_bucket_stats(), build_cortex_completion_signals(), compute_verdict() (+83 more)
+Cohesion: 0.04
+Nodes (63): FeedbackFrameV1, OutcomeObservationV1, BaseModel, BucketStats, build_arg_parser(), build_bucket_stats(), build_cortex_completion_signals(), compute_verdict() (+55 more)
 
 ### Community 632 - "test_destructive_git_guard.py"
 Cohesion: 0.09
@@ -6811,9 +6839,9 @@ Nodes (34): _git(), CompletedProcess, MonkeyPatch, Path, Regression: the token m
 Cohesion: 0.18
 Nodes (15): build_falkor_substrate_store_from_env()'s new graph-name parameterization and bu, Captures the FalkorSubstrateStoreConfig it was constructed with., The two builders must resolve independently -- setting only the     primary grap, _RecordingFakeStore, test_aitown_builder_falls_back_to_in_memory_when_uri_missing(), test_aitown_builder_honors_its_own_env_override(), test_aitown_builder_is_independent_of_the_primary_graph_env(), test_aitown_builder_resolves_orion_substrate_aitown_graph_by_default() (+7 more)
 
-### Community 634 - "_score"
-Cohesion: 0.16
-Nodes (18): Replace the real bus RPC with a deterministic text -> vector map.     Records ev, The core regression: before this, everything past the window was     silently dr, Without the chunk index in the doc_id, chunk N would overwrite chunk     0 in th, Two diffs sharing an identical first window but differing in their     tails mus, A dropped chunk must not silently vanish from the comparison and     leave a par, Chunking must not change behavior for hunks that already fit -- these     scores, The replaced field fired True on every real event this repo produced;     a cons, The multi-chunk consequence of the guard above: with 3 chunks where     one fail (+10 more)
+### Community 634 - "test_doc_semantic_drift_chunking.py"
+Cohesion: 0.07
+Nodes (45): _change(), Unit tests for the chunk + max-chunk-pair scoring path in app/producers/doc_sema, The counterpart to the above, and why symmetry was worth having: an     added ch, Symmetric on purpose. A large block of *added* text with no     counterpart on t, One badly-changed section must not be averaged away by neighbours     that barel, A newly-added file has no "before" text -- genuinely undefined, not a     fabric, Replace the real bus RPC with a deterministic text -> vector map.     Records ev, The core regression: before this, everything past the window was     silently dr (+37 more)
 
 ### Community 635 - "compact_vision_scene_interpretation_json_schema"
 Cohesion: 0.21
@@ -6856,8 +6884,8 @@ Cohesion: 0.26
 Nodes (16): _coverage(), _default_active_goal(), _fake_backend(), _goal(), SSP §6 Objective 6 regression: with no real FieldGoalProvenanceV1 currently, SSP §6 Objective 6 (2026-07-30): _gate_open now reads     orion.autonomy.goal_st, test_backend_error_degrades_to_no_followup(), test_capability_denied_returns_empty() (+8 more)
 
 ### Community 648 - "AdmissionLedger"
-Cohesion: 0.08
-Nodes (35): AdmissionLedger, AdmissionRecord, Any, Rolling record of background-admission decisions, so a deferral can be perceived, Thread-safe bounded ledger. One instance per gateway process.      Thread-safe r, Counters over the trailing `window_s`, optionally restricted to one call path., One admission decision. Timings only -- see the module docstring on content., Everything the caller actually waited: the queue, then the polls. (+27 more)
+Cohesion: 0.04
+Nodes (52): AdmissionLedger, AdmissionRecord, Any, Thread-safe bounded ledger. One instance per gateway process.      Thread-safe r, Counters over the trailing `window_s`, optionally restricted to one call path., One admission decision. Timings only -- see the module docstring on content., Everything the caller actually waited: the queue, then the polls., True if the caller was actually made to wait, by either mechanism.          `pol (+44 more)
 
 ### Community 649 - "test_cabinet_ambient_api.py"
 Cohesion: 0.09
@@ -6908,28 +6936,28 @@ Cohesion: 0.04
 Nodes (44): File map, Hub Agent Claude Implementation Plan, Restart required (after full implementation), Risks (from spec — no code change), Spec coverage checklist, Task 10: Hub UI — mode + FCC model dropdown, Task 11: Live Claude step renderer, Task 12: Live smoke script (+36 more)
 
 ### Community 662 - "test_cocreation_signals_page.py"
-Cohesion: 0.08
-Nodes (18): build_history_series(), Split a flat, time-ordered row list into one series per domain.      Kept as a p, _FakeEngine, Cocreation Signals operator tab: pure-logic unit tests + wiring contract.  Same, Some drivers return jsonb as a raw string, not a pre-parsed dict., A future fourth domain landing in Postgres before this module is     updated mus, A domain with zero events is a different, louder fact than a domain     with a c, CodebaseDeltaV1's real wire field is `pr_lifecycle`, not `pr` --     KNOWN_DOMAI (+10 more)
+Cohesion: 0.07
+Nodes (17): _FakeConn, _FakeEngine, Cocreation Signals operator tab: pure-logic unit tests + wiring contract.  Same, Some drivers return jsonb as a raw string, not a pre-parsed dict., A future fourth domain landing in Postgres before this module is     updated mus, A domain with zero events is a different, louder fact than a domain     with a c, CodebaseDeltaV1's real wire field is `pr_lifecycle`, not `pr` --     KNOWN_DOMAI, test_build_domain_summary_includes_every_known_domain_even_with_no_data() (+9 more)
 
 ### Community 663 - "test_room_turn.py"
-Cohesion: 0.14
-Nodes (31): ClaudeTurnResult, _looks_like_missing_session(), One Claude turn, always producing an utterance -- including on failure.      A f, room_key(), run_turn(), _ok(), Session lifecycle and utterance shape for a room turn.  These test the LIFECYCLE, A --resume against a session the CLI no longer has fails identically     forever (+23 more)
+Cohesion: 0.09
+Nodes (47): ClaudeTurnResult, _looks_like_missing_session(), One Claude turn, always producing an utterance -- including on failure.      A f, room_key(), run_turn(), forget_session(), get_session(), peek_or_mint_session() (+39 more)
 
 ### Community 664 - "check_daily_schedule_collisions.py"
 Cohesion: 0.33
 Nodes (9): _find_collisions(), _format_time_of_day(), _load_cadences(), main(), Path, Minimal distance in minutes between two minute-of-day values, generic over     s, Returns {cadence_name: minute_of_day} for all four named cadences (including the, _read_env_example_values() (+1 more)
 
-### Community 665 - "test_reverie_expectation_scoring.py"
-Cohesion: 0.07
-Nodes (38): _broadcast(), _coalition(), _mock_engine(), Path, Movement III — reverie makes a checkable prediction about the room, then finds o, Non-goal: anti-hollow guard stays coalition-only, unchanged., Flag off -> scoring code never runs at all: the pending-load function     must n, Defensive gap the review found: a row with a blank thought_id/expectation     is (+30 more)
+### Community 665 - "Any"
+Cohesion: 0.15
+Nodes (12): _coerce_change_type_payload(), CollapseMirrorCausalDensity, CollapseMirrorConstraints, CollapseMirrorEntryV1, CollapseMirrorNumericSisters, CollapseMirrorWhatChanged, _is_collapse_shape(), _is_v2_shape() (+4 more)
 
 ### Community 666 - "_attempt_mind_handoff_chat_stance_shortcut"
 Cohesion: 0.44
 Nodes (9): _attempt_mind_handoff_chat_stance_shortcut(), If Orch supplied a validated Mind handoff, skip the LLM stance synthesis step., _exec_prep(), ExecutionStep, _step(), test_shortcut_returns_none_when_orch_did_not_authorize_skip(), test_shortcut_returns_none_when_payload_invalid(), test_shortcut_returns_none_when_skip_flag_without_authorization() (+1 more)
 
-### Community 667 - "endogenous_runtime.py"
-Cohesion: 0.05
-Nodes (90): EndogenousWorkflowTypeV1, EndogenousHistoryEntryV1, EndogenousTriggerDebugV1, EndogenousTriggerDecisionV1, EndogenousTriggerRequestV1, EndogenousTriggerSignalV1, EndogenousWorkflowActionV1, EndogenousWorkflowExecutionResultV1 (+82 more)
+### Community 667 - "LocalProfileStore"
+Cohesion: 0.14
+Nodes (10): LocalProfileStore, Any, datetime, True if an autonomy episode has already been composed for this world-pulse run., Minimal JSON-backed store for latest profiles., Read-only historical accessor. The producer (DriveEngine via         orion.spark, Read-only historical accessor. The only writer (GoalProposalEngine         via t, test_episode_run_processed_ignores_empty_run_id() (+2 more)
 
 ### Community 668 - "Orion scarcity: the plant, the ceilings, the unit, the seam"
 Cohesion: 0.04
@@ -6952,8 +6980,8 @@ Cohesion: 0.31
 Nodes (6): _build(), test_context_metadata_mind_enabled_true_passes_through(), test_grounded_small_payload_sets_metadata_mind_enabled_true(), test_missing_mind_enabled_reports_not_requested(), test_string_true_in_context_metadata_is_normalized(), test_top_level_mind_enabled_true_is_normalized()
 
 ### Community 673 - "safe_when"
-Cohesion: 0.10
-Nodes (26): Expression, Any, Evaluation of pipeline step `when:` guards from config/vision_profiles.yaml.  Ke, Attribute view over a request dict, for use inside a `when:` expression.      A, Evaluate a step guard. An empty guard means the step always runs., RequestView, safe_when(), _validate() (+18 more)
+Cohesion: 0.07
+Nodes (34): Expression, Any, Evaluation of pipeline step `when:` guards from config/vision_profiles.yaml.  Ke, Attribute view over a request dict, for use inside a `when:` expression.      A, Evaluate a step guard. An empty guard means the step always runs., RequestView, safe_when(), _validate() (+26 more)
 
 ### Community 674 - "test_projection_starvation.py"
 Cohesion: 0.31
@@ -6964,8 +6992,8 @@ Cohesion: 0.07
 Nodes (41): acl_setuser_argv(), assert_orion_acl(), ensure_graph_exists(), Any, Re-assert Orion's FalkorDB ACL at startup, because it does not survive a restart, Apply the rule. Returns None on success, or a short failure reason.      Never r, The exact `ACL SETUSER` argv, as a list -- never a shell string.      Built as a, Create `graph_name` if FalkorDB has never seen it. Idempotent.      WITHOUT THIS (+33 more)
 
 ### Community 676 - "CodebaseDeltaV1"
-Cohesion: 0.09
-Nodes (39): CodebaseDeltaV1, GitDeltaPayloadV1, GraphDeltaPayloadV1, PrLifecycleDeltaPayloadV1, BaseModel, Bus payload schema for the codebase-mass domain's ``orion:substrate:codebase_del, Enforces the invariant this schema's own docstring only states in         prose, domain='git' but pr_lifecycle is populated instead -- must fail, not     silentl (+31 more)
+Cohesion: 0.10
+Nodes (38): CodebaseDeltaV1, GitDeltaPayloadV1, GraphDeltaPayloadV1, PrLifecycleDeltaPayloadV1, BaseModel, Bus payload schema for the codebase-mass domain's ``orion:substrate:codebase_del, Enforces the invariant this schema's own docstring only states in         prose, domain='git' but pr_lifecycle is populated instead -- must fail, not     silentl (+30 more)
 
 ### Community 677 - "worktree_lib.py"
 Cohesion: 0.09
@@ -6983,13 +7011,13 @@ Nodes (44): _classes(), _html(), _js(), _opening_tag(), Structural guards for th
 Cohesion: 0.05
 Nodes (43): Added, Artifact nodes, Canonical in graph, Canonical node categories, Common artifact edges, Concrete examples, Debug-only, Debug vs Canonical Boundary (+35 more)
 
-### Community 681 - "ActionDedupe"
-Cohesion: 0.09
-Nodes (29): JournalDispatchPolicy, Declarative journal notification dispatch policy, keyed off `trigger_kind`.  Con, Fail-closed lookup: an unregistered trigger_kind sends nothing., resolve_policy(), ActionDedupe, Caller must hold `self._lock`., `ttl_seconds` overrides `self.ttl_seconds` for this key only -- lets a         c, Tiny in-memory dedupe with inflight protection.      Guarded by a lock: `_dispat (+21 more)
+### Community 681 - "test_causal_geometry_report.py"
+Cohesion: 0.14
+Nodes (20): _build(), _default_build(), _fixture_channels(), _fixture_topology(), _perfectly_correlated_two_cluster_channel_buckets(), _points_for(), datetime, ndarray (+12 more)
 
 ### Community 682 - "MetacogTrendStateV1"
 Cohesion: 0.06
-Nodes (71): _chain_id(), _clamp01(), datetime, Hop 0 — sustained metacog trend → governed proposal candidate.  This is the piec, Convert a SUSTAINED metacog trend into a review-gated candidate, or None.      R, Stable, deterministic id for the chain this hop opens.      Keyed on when the el, trend_result_to_candidate(), _candidate() (+63 more)
+Nodes (69): _chain_id(), _clamp01(), datetime, Hop 0 — sustained metacog trend → governed proposal candidate.  This is the piec, Convert a SUSTAINED metacog trend into a review-gated candidate, or None.      R, Stable, deterministic id for the chain this hop opens.      Keyed on when the el, trend_result_to_candidate(), _candidate() (+61 more)
 
 ### Community 683 - "test_agent_board_lib.py"
 Cohesion: 0.13
@@ -7001,7 +7029,7 @@ Nodes (40): _as_float(), _candidate_id(), DecisionRedundancy, _fmt_corr(), is_po
 
 ### Community 685 - "main.py"
 Cohesion: 0.06
-Nodes (42): BaseModel, Payload for TTS synthesis result.     Kind: tts.synthesize.result, Payload for Speech-to-Text (ASR) request.     Kind: stt.transcribe.request, Payload for Speech-to-Text (ASR) result.     Kind: stt.transcribe.result, Payload for TTS synthesis request.     Kind: tts.synthesize.request, STTRequestPayload, STTResultPayload, TTSRequestPayload (+34 more)
+Nodes (41): BaseModel, Payload for TTS synthesis result.     Kind: tts.synthesize.result, Payload for Speech-to-Text (ASR) request.     Kind: stt.transcribe.request, Payload for Speech-to-Text (ASR) result.     Kind: stt.transcribe.result, Payload for TTS synthesis request.     Kind: tts.synthesize.request, STTRequestPayload, STTResultPayload, TTSRequestPayload (+33 more)
 
 ### Community 686 - "record_lane_occupancy.py"
 Cohesion: 0.08
@@ -7047,9 +7075,9 @@ Nodes (27): Acceptance checks, Architecture, Arsonist summary, Component 1 — M
 Cohesion: 0.22
 Nodes (9): Reverie Narrate (Spontaneous Felt-Layer Narration), SpontaneousThoughtV1 (schema), Simulation, Skills — Mesh Presence (Tailscale), Stance React, Story Weave, Substrate Inspect, Substrate Observe (+1 more)
 
-### Community 698 - "_target"
-Cohesion: 0.07
-Nodes (18): Any, MonkeyPatch, Regression coverage for a real bug caught in review: if __aenter__     raises af, ROADMAP A5: every admission decision must reach the ledger, not just the log., Busy, busy, then room: two slept intervals, so polls=3 and it IS a deferral., The bus path (run_llm_chat's caller in main.py) carries 100% of live background, Bookkeeping is not allowed to cost a request. Fail-open is the whole contract he, REVIEW FIX (A5). `background_admission` acquires its permit BEFORE polling /slot (+10 more)
+### Community 698 - "WorkflowDispatchRequestV1"
+Cohesion: 0.23
+Nodes (17): BaseModel, WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1, WorkflowScheduleAnalyticsV1, WorkflowScheduleEventRecordV1, WorkflowScheduleRecordV1, WorkflowScheduleRunRecordV1, WorkflowScheduleSpecV1 (+9 more)
 
 ### Community 699 - "test_recall_signal_resolver.py"
 Cohesion: 0.06
@@ -7076,8 +7104,8 @@ Cohesion: 0.31
 Nodes (8): get(), get_latest(), Any, In-memory store for the latest social-room routing_debug per room.  Hub writes a, Record the latest routing_debug for a completed social-room turn., Return the latest snapshot for a specific room, or None., Return the most recently stored snapshot across all rooms., store()
 
 ### Community 706 - "MetacogTriggerV1"
-Cohesion: 0.05
-Nodes (68): MetacogTriggerV1, BaseModel, MetacognitionTickV1, BaseModel, ConfidenceRecovery, FlowRegime, A sustained low->high transition in `prediction_error_confidence` --     the "in, A sustained high-confidence, low-variance regime -- the "flow" condition. (+60 more)
+Cohesion: 0.10
+Nodes (36): MetacogTriggerV1, BaseModel, `trigger_kind="flow"` gate -- sustained low-variance / low-distress regime.  Sec, build_repair_pressure_metacog_trigger(), Any, Turn a live repair_pressure_v2 appraisal (published on     orion:repair_pressure, build_substrate_metacog_trigger(), Read substrate projections and return a dense/pulse trigger, or None. (+28 more)
 
 ### Community 707 - "test_substrate_biometrics_debug_api.py"
 Cohesion: 0.31
@@ -7092,8 +7120,8 @@ Cohesion: 0.42
 Nodes (6): _atlas_field_state(), _fake_engine_with_field(), test_field_capability_llm_inference(), test_field_latest_not_found(), test_field_latest_returns_parsed_state(), test_field_node_atlas_returns_vector_and_capabilities()
 
 ### Community 710 - "pr_lifecycle_delta"
-Cohesion: 0.08
-Nodes (51): fetch_recent_prs(), _parse_ts(), pr_lifecycle_delta(), datetime, GitHub PR lifecycle counts -- the ``pr_lifecycle`` piece of the codebase-mass do, Categorize already-fetched PR records (``fetch_recent_prs()``'s shape)     into, Shells out to ``gh pr list --state all``, normalized to     ``number``/``created, _dt() (+43 more)
+Cohesion: 0.07
+Nodes (59): fetch_recent_prs(), _parse_ts(), pr_lifecycle_delta(), datetime, GitHub PR lifecycle counts -- the ``pr_lifecycle`` piece of the codebase-mass do, Categorize already-fetched PR records (``fetch_recent_prs()``'s shape)     into, Shells out to ``gh pr list --state all``, normalized to     ``number``/``created, _dt() (+51 more)
 
 ### Community 711 - "test_http_contract.py"
 Cohesion: 0.39
@@ -7191,9 +7219,9 @@ Nodes (20): _FakeConn, _FakeCrystallization, _FakeEvidence, _FakePool, datetime,
 Cohesion: 0.15
 Nodes (37): main(), extract_from_python(), extract_from_yaml(), _extract_str(), main(), merge_inv(), Any, AST (+29 more)
 
-### Community 744 - "session_store.py"
-Cohesion: 0.23
-Nodes (16): forget_session(), get_session(), peek_or_mint_session(), Path, _quarantine(), room_id -> Claude session uuid, persisted across restarts.  One room is one dura, Drop a room's session so the next turn starts fresh.      Needed because a `--re, Best-effort read. Any unreadable/corrupt state degrades to "no sessions     know (+8 more)
+### Community 744 - "Request"
+Cohesion: 0.18
+Nodes (23): aitown_convex_proxy(), aitown_legacy_assets_proxy(), aitown_proxy(), aitown_proxy_root(), aitown_proxy_vite(), aitown_proxy_vite_root(), api_vision_carbon_latest_frame_image(), _proxy_aitown_request() (+15 more)
 
 ### Community 745 - "_load_app"
 Cohesion: 0.57
@@ -7211,13 +7239,13 @@ Nodes (26): _FakeAcquireCtx, _FakeConn, _FakePool, _make_proposal(), BaseExcepti
 Cohesion: 0.08
 Nodes (39): _bindings(), _dict_literal_publishes_to_chat_history(), _is_chat_history_channel(), _is_raw_dict(), _make_run(), _publish_enabled(), Any, AST (+31 more)
 
-### Community 749 - "run_dream"
-Cohesion: 0.07
-Nodes (35): enrich_from_graphdb_ids(), _avg(), fetch_recent_sql_fragments(), Fragment, Returns fragments from:       - collapse_mirror (timestamp is string → cast to t, # NOTE: this SQL-level check mirrors the common case of, Input columns:       - gpu (JSON): {"latest_file":"...", "gpus":[             {", _summarize_biometrics() (+27 more)
+### Community 749 - "utils.py"
+Cohesion: 0.14
+Nodes (16): enrich_from_chroma(), _parse_meta_ts(), Any, Fragment, Accepts multiple timestamp styles:     - meta["ts"] as epoch seconds (float/int), For each input fragment (collapse/chat), retrieve vector neighbors from Chroma,, _recent_enough(), clean_text() (+8 more)
 
 ### Community 750 - "GrammarRetentionState"
 Cohesion: 0.10
-Nodes (43): apply_biometrics_cluster_retention(), _apply_bounded_table_retention(), apply_grammar_atoms_retention(), apply_grammar_edges_retention(), apply_grammar_traces_retention(), apply_power_intent_settled_retention(), apply_substrate_attention_schema_retention(), apply_substrate_durable_run_state_retention() (+35 more)
+Nodes (45): apply_biometrics_cluster_retention(), _apply_bounded_table_retention(), apply_grammar_atoms_retention(), apply_grammar_edges_retention(), apply_grammar_events_retention(), apply_grammar_traces_retention(), apply_power_intent_settled_retention(), apply_substrate_attention_schema_retention() (+37 more)
 
 ### Community 751 - "test_hub_local_time_naive_utc.py"
 Cohesion: 0.43
@@ -7232,12 +7260,12 @@ Cohesion: 0.25
 Nodes (4): mindRunsModal must not live under #scheduleModal.hidden or it never paints., Bare `global` is undefined in browsers and aborts DOMContentLoaded before tab wi, test_app_js_lane_api_uses_global_this_not_node_global(), test_mind_runs_modal_is_sibling_of_schedule_modal_not_nested()
 
 ### Community 754 - "hub_main"
-Cohesion: 0.03
-Nodes (83): api_debug_container_bringup(), Operator-triggered `docker compose build` + `up -d` for one services/<name> dir., _ensure_hub_scripts_import_path(), hub_client(), test_complete_goal_success_when_enabled(), test_dismiss_goal_success_when_enabled(), test_operator_goal_reasoning_promotion_applies_hitl_gate(), test_promote_goal_success_when_enabled() (+75 more)
+Cohesion: 0.06
+Nodes (49): Serves the main Hub UI (index.html)., root(), hub_main(), Fresh import of scripts.main, taken *inside* the test.      tests/conftest.py's, _FakeTTSClient, _FakeTTSResult, 2026-08-27: the HTTP fallback path for `mode=="orion"` now speaks too.  Real inc, The one client-facing toggle that must still work identically to the     WS lane (+41 more)
 
-### Community 755 - "chat_history.py"
-Cohesion: 0.04
-Nodes (69): ChatRole, Envelope, Typed envelope: payload is a Pydantic model.      This is the preferred new path, ChatHistoryMessageEnvelope, ChatHistoryTurnEnvelope, ChatHistoryTurnV1, Versioned Titanium envelope for chat history log entries., Turn-level chat history row (prompt + response) for `chat_history_log`. (+61 more)
+### Community 755 - "RoomClaudeRelay"
+Cohesion: 0.10
+Nodes (14): Claude's reply, plus the evidence that it was really Claude.      `model` and `c, RoomClaudeUtteranceV1, Any, Queue, Hub side of the three-way room: invite Claude, relay what it says.  Hub never sp, Rate gate for auto-invites.          Deliberately time-based rather than turn-ba, Combines the "is there anything to react to" check with the rate         gate, i, Ask the companion for one Claude turn. Returns the request so the         caller (+6 more)
 
 ### Community 756 - "test_self_brain_routes.py"
 Cohesion: 0.33
@@ -7271,9 +7299,9 @@ Nodes (40): hub_settings_to_runtime_namespace(), SimpleNamespace, Adapt orion-hu
 Cohesion: 0.42
 Nodes (8): _compose_sources_env_file(), _load_settings_module(), True when the **sql-writer service block** declares `env_file: - .env`.      Thi, test_evidence_index_wiring_exists_in_settings_env_compose_bus_and_registry(), test_feedback_wiring_exists_in_settings_env_and_compose(), test_journal_index_wiring_exists_in_settings_env_compose_bus_and_registry(), test_markdown_adapter_channel_wiring_exists_in_settings_env_compose_bus_and_registry(), test_parsed_document_channel_wiring_exists_in_settings_env_compose_bus_and_registry()
 
-### Community 764 - "SubstrateIdentityResolver"
-Cohesion: 0.12
-Nodes (25): _cosine(), _is_valid_embedding(), Any, If ``node`` carries a usable embedding and a same-scope/subject existing, The original exact-string concept identity: ``concept_id`` first, then         `, Plain-Python cosine similarity -- copied from     ConceptClusterer._cosine (orio, A concept embedding must be a non-empty list/tuple of real numbers. Anything, Conservative deterministic identity resolver for substrate materialization. (+17 more)
+### Community 764 - "ChatHistorySparkMetaPatchV1"
+Cohesion: 0.14
+Nodes (10): ChatHistorySparkMetaPatchV1, _ExistingRow, _FakeQuery, _FakeSession, test_spark_meta_patch_merges_existing_row(), test_spark_meta_patch_missing_row(), _channels(), test_memory_consolidation_channels_cataloged() (+2 more)
 
 ### Community 765 - "test_check_metric_dead_wiring.py"
 Cohesion: 0.07
@@ -7328,12 +7356,12 @@ Cohesion: 0.43
 Nodes (4): is_excluded(), print_failed_logs(), up_all_services.sh script, up_one()
 
 ### Community 778 - "PresenceRegistry"
-Cohesion: 0.12
-Nodes (14): PresenceRegistry, Per-stream trackers plus the rate-limited Postgres mirror.      `record()` is ca, Update the tracker and return the snapshot ONLY when a Postgres         write is, current_snapshot() must return the fresh subject on every call, not     just on, Hand-computed: write_min_interval=5. First call always due (last_write     defau, Best-effort contract: a presence bug must never break a window flush., Interleaved calls, not just sequential ones -- proves isolation under     the re, test_a_second_streams_writes_are_not_blocked_by_the_first() (+6 more)
+Cohesion: 0.14
+Nodes (13): PresenceRegistry, Per-stream trackers plus the rate-limited Postgres mirror.      `record()` is ca, current_snapshot() must return the fresh subject on every call, not     just on, Hand-computed: write_min_interval=5. First call always due (last_write     defau, Best-effort contract: a presence bug must never break a window flush., Interleaved calls, not just sequential ones -- proves isolation under     the re, test_a_second_streams_writes_are_not_blocked_by_the_first(), test_concurrent_streams_do_not_bleed_into_each_other() (+5 more)
 
-### Community 779 - "Service: orion-rdf-writer"
-Cohesion: 0.05
-Nodes (53): Channel "orion:autonomy:action:outcome" (kind=event, schema=ActionOutcomeEmitV1) producers=[orion-spark-concept-induction, orion-execution-dispatch-runtime] consumers=[orion-sql-writer, *], Channel "orion:chat:social:stored" (kind=event, schema=SocialRoomTurnStoredV1) producers=[orion-sql-writer] consumers=[orion-vector-host, orion-rdf-writer, orion-meta-tags, orion-spark-concept-induction, *], Channel "orion:chat:social:turn" (kind=event, schema=SocialRoomTurnV1) producers=[orion-hub] consumers=[orion-sql-writer], Channel "orion:debug:turn:dossier" (kind=event, schema=TurnDossierV1) producers=[orion-spark-concept-induction] consumers=[orion-rdf-writer, orion-sql-writer, *], Channel "orion:effect:*" (kind=event, schema=VerbEffectV1) producers=[orion-cortex-exec] consumers=[orion-rdf-writer, orion-sql-writer, orion-vector-writer], Channel "orion:exec:request:MetaTagsService" (kind=request, schema=MetaTagsRequestV1) producers=[orion-cortex-exec] consumers=[orion-meta-tags], Channel "orion:exec:result:MetaTagsService" (kind=result, schema=MetaTagsResultV1) producers=[orion-meta-tags] consumers=[orion-cortex-exec], Channel "orion:feedback:frame" (kind=event, schema=FeedbackFrameV1) producers=[orion-feedback-runtime] consumers=[orion-spark-concept-induction] (+45 more)
+### Community 779 - "Service: orion-sql-writer"
+Cohesion: 0.04
+Nodes (88): Channel "orion:autonomy:action:outcome" (kind=event, schema=ActionOutcomeEmitV1) producers=[orion-spark-concept-induction, orion-execution-dispatch-runtime] consumers=[orion-sql-writer, *], Channel "orion:chat:history:spark_meta:patch" (kind=event, schema=ChatHistorySparkMetaPatchV1) producers=[orion-memory-consolidation] consumers=[orion-sql-writer], Channel "orion:chat:response:feedback" (kind=event, schema=ChatResponseFeedbackV1) producers=[orion-hub, *] consumers=[orion-sql-writer], Channel "orion:chat:social:stored" (kind=event, schema=SocialRoomTurnStoredV1) producers=[orion-sql-writer] consumers=[orion-vector-host, orion-rdf-writer, orion-meta-tags, orion-spark-concept-induction, *], Channel "orion:chat:social:turn" (kind=event, schema=SocialRoomTurnV1) producers=[orion-hub] consumers=[orion-sql-writer], Channel "orion:debug:turn:dossier" (kind=event, schema=TurnDossierV1) producers=[orion-spark-concept-induction] consumers=[orion-rdf-writer, orion-sql-writer, *], Channel "orion:effect:*" (kind=event, schema=VerbEffectV1) producers=[orion-cortex-exec] consumers=[orion-rdf-writer, orion-sql-writer, orion-vector-writer], Channel "orion:exec:request:MetaTagsService" (kind=request, schema=MetaTagsRequestV1) producers=[orion-cortex-exec] consumers=[orion-meta-tags] (+80 more)
 
 ### Community 780 - "orion-rdf-writer (bus → triples → RDF store service)"
 Cohesion: 0.67
@@ -7343,9 +7371,9 @@ Nodes (3): orion-rdf-writer (bus → triples → RDF store service), orion-rdf-w
 Cohesion: 0.04
 Nodes (28): _base_url(), BiometricsNodeClientError, fetch_raw_recent(), fetch_snapshot(), _get_json(), Any, ClientTimeout, Exception (+20 more)
 
-### Community 782 - "TestTheCycleBudget"
-Cohesion: 0.07
-Nodes (19): grammar_truth(), Run a real cycle with fake per-table work of known duration.          Returns [(, The old behaviour, kept reachable: max_cycle_elapsed_sec=None is opt-out., The starvation bug this exists to prevent.          grammar_events is FIRST in G, A slow early table shrinks the NEXT share; shares then grow as the divisor falls, A table dropped from a cycle with no log line is indistinguishable from a table, The budget adds a bound; it must not RELAX the existing one., Asserts the VALUE the loop actually hands to run_one_retention_cycle.          T (+11 more)
+### Community 782 - "grammar_truth"
+Cohesion: 0.10
+Nodes (12): grammar_truth(), health(), lifespan(), FastAPI, The `eligible` prefilter is what keeps a partially-configured deployment correct, `/grammar/truth` must report the bound that governed, not the one in settings., grammar_events opts in because reducers consume it directly; grammar_traces, substrate_proposal_frames had no retention at all until 2026-08-20.      Live at (+4 more)
 
 ### Community 783 - "smoke_memory_cognition_loop_e2e.sh"
 Cohesion: 0.43
@@ -7391,13 +7419,13 @@ Nodes (4): _fake_engine_with_frame(), _sample_proposal_frame(), test_proposals_l
 Cohesion: 0.43
 Nodes (6): MonkeyPatch, Mid-turn send raising WebSocketDisconnect must still cancel (not only poller)., test_cancel_in_flight_turn_agent_claude(), test_cancel_in_flight_turn_orion_publishes(), test_run_awaitable_cancel_on_websocket_disconnect_exception(), test_run_awaitable_cancel_on_ws_disconnect()
 
-### Community 797 - "test_situation_cabinet_context.py"
-Cohesion: 0.12
-Nodes (38): CabinetContextV1, Live read of Orion's own physical cabinet sensors (Athena Nano ESP32     node: B, _build_cabinet_context(), _fetch_cabinet_context(), Sync read of Orion's own physical cabinet sensors -- called via     `asyncio.to_, Orion's own physical cabinet sensors -- the real read `LabContextV1`     was alw, _brief(), _cfg() (+30 more)
+### Community 797 - "ParityReadinessThresholds"
+Cohesion: 0.27
+Nodes (14): configure_parity_evidence_store(), ConsumerParityEvidence, get_parity_evidence_snapshot(), ParityEvidenceStore, ParityReadinessThresholds, Any, record_parity_evidence(), reset_parity_evidence_store() (+6 more)
 
 ### Community 798 - "test_world_model_features.py"
 Cohesion: 0.09
-Nodes (38): The first real producer for ``orion:exec:request:WorldModelService``         (se, assemble_world_model_trajectory_step(), build_execution_context_group(), build_vision_embedding_group(), ExecutionContextScalars, Any, datetime, Assembles one ``WorldModelTrajectoryStepV1`` per tick from real state ``Biometri (+30 more)
+Nodes (38): One named feature group's already-computed vector for one trajectory     step (e, WorldModelFeatureGroupV1, The first real producer for ``orion:exec:request:WorldModelService``         (se, assemble_world_model_trajectory_step(), build_execution_context_group(), build_vision_embedding_group(), ExecutionContextScalars, Any (+30 more)
 
 ### Community 799 - "test_sql_chat_self_hit_suppression.py"
 Cohesion: 0.22
@@ -7443,9 +7471,9 @@ Nodes (6): _channel_entry(), Bus catalog coverage for orion-execution-dispatch-r
 Cohesion: 0.09
 Nodes (36): _allowed_hosts(), AttachmentFetchError, build_multimodal_messages(), clear_capability_cache(), fetch_attachment_data_uri(), _probe_ttl(), Any, RuntimeError (+28 more)
 
-### Community 812 - "test_vision_gate_integration.py"
-Cohesion: 0.07
-Nodes (24): body(), _Client, _FetchStream, install_attachment_fetch(), The vision gate inside the backend executors, not just its helpers.  Acceptance, handle_chat forwards result['raw'] plus an explicit key list.      'vision' is n, No attachments -> no probe, no vision key, plain string content., Golden check on the outbound payload for a text-only turn. (+16 more)
+### Community 812 - "AttachmentRefV1"
+Cohesion: 0.06
+Nodes (39): AttachmentRefV1, A reference to caller-supplied binary content, carried beside message text., ChatDispatchPlan, Where a chat request is going, decided before any thread is taken.      main.py, EmbeddingsBody, ExecStepPayload, ExecutionEnvelope, GenerateBody (+31 more)
 
 ### Community 813 - "Reasoning Promotion Phase 3"
 Cohesion: 0.33
@@ -7535,9 +7563,9 @@ Nodes (5): _load_compose(), _parse_env_example(), Guards the fix for the ephemer
 Cohesion: 0.18
 Nodes (10): Behavior, Candidate A precision-weighted salience: persisted EWMA baseline (2026-07-30 fix), Environment, Health monitor, Node-target dominance streak: restart persistence (2026-07-31 fix), orion-attention-runtime, Prerequisites, Run (+2 more)
 
-### Community 841 - "SelfConceptHistoryV1"
-Cohesion: 0.18
-Nodes (12): BaseModel, datetime, Append-only, versioned history of Orion's own self-concept claims -- the identit, SelfConceptHistoryV1, _utc_now(), _make_payload(), Compile-time shape checks for the self_concept_history SQL write path (no Postgr, Current' is defined as the latest row per concept_id by created_at,     not an u (+4 more)
+### Community 841 - "capability_gap_journal.py"
+Cohesion: 0.14
+Nodes (18): CapabilityGapEpisode, collect_capability_gaps(), fetch_recent_attention(), _is_recovery(), _node_of(), _overlaps(), _parse_ts(), Any (+10 more)
 
 ### Community 842 - "fetch_latest_world_context_capsule"
 Cohesion: 0.20
@@ -7549,11 +7577,11 @@ Nodes (5): ORION_ACTIONS_TAILSCALE_PATH, ORION_CONTAINER_TAILSCALE_BIN, ORION_HO
 
 ### Community 844 - "score_message"
 Cohesion: 0.09
-Nodes (36): AffectiveWordScores, aggregate_scores(), count_swear_words(), _normalize_apostrophes(), Pure word-level scoring for the Juniper affective/engagement-state signal (``doc, Apostrophe-normalized word tokens, shared by tokenize() and     _typo_candidates, Lowercased word tokens. Deliberately simple (``[A-Za-z']+``) -- this     is a fr, Matches a bare swear word, or one with a trailing possessive/contracted     ``'s (+28 more)
+Nodes (39): AffectiveWordScores, aggregate_scores(), count_swear_words(), _normalize_apostrophes(), Pure word-level scoring for the Juniper affective/engagement-state signal (``doc, Apostrophe-normalized word tokens, shared by tokenize() and     _typo_candidates, Lowercased word tokens. Deliberately simple (``[A-Za-z']+``) -- this     is a fr, Matches a bare swear word, or one with a trailing possessive/contracted     ``'s (+31 more)
 
 ### Community 845 - "test_cognitive_substrate_topic_foundry_adapter.py"
 Cohesion: 0.09
-Nodes (59): decay_activation(), Half-life activation decay — stdlib only (safe for lightweight service imports)., map_topic_foundry_run_to_substrate(), Convert one topic-foundry run's topic/keyword/segment output into substrate reco, _keywords_by_topic(), _participation_edges(), _participation_inputs(), _participation_record() (+51 more)
+Nodes (57): map_topic_foundry_run_to_substrate(), Convert one topic-foundry run's topic/keyword/segment output into substrate reco, _keywords_by_topic(), _participation_edges(), _participation_inputs(), _participation_record(), Hand-built: topic 0 gets 3 segments (2 orion, 1 juniper), topic 1 gets     1 seg, An edge that merely exists would be uninformative: every topic is     expected t (+49 more)
 
 ### Community 848 - "test_aitown_proxy.py"
 Cohesion: 0.53
@@ -7581,7 +7609,7 @@ Nodes (5): _mind_prep(), _prep(), Any, Mind llm_uncertainty telemetry for semant
 
 ### Community 859 - "CuriosityInvestigation"
 Cohesion: 0.03
-Nodes (73): format_evidence(), format_footprint(), The curiosity journal entry -- Orion's own written result of a run.  Moved VERBA, `{'Prior': 2, 'Hop': 5}` -> `"Hop 5, Prior 2"`. Empty string for {}., A named function rather than an inline conditional so the cases that     matter, build_outreach_composition_prompt(), The second turn: Orion decided a finding is worth saying, and now composes it., Compose a message to Juniper about what this run found.      `finding_text` is t (+65 more)
+Nodes (79): format_evidence(), A named function rather than an inline conditional so the cases that     matter, build_outreach_composition_prompt(), The second turn: Orion decided a finding is worth saying, and now composes it., Compose a message to Juniper about what this run found.      `finding_text` is t, CuriosityMaterialBriefV1, The five facts the journal entry reports about what Orion was shown.     Counts, CuriosityInvestigation (+71 more)
 
 ### Community 860 - "test_cards_scoring.py"
 Cohesion: 0.09
@@ -7728,8 +7756,8 @@ Cohesion: 0.60
 Nodes (4): ensure_orion_cortex_orch_app(), _purge_app_tree(), Side-effect: put ``services/orion-cortex-orch`` first and drop a foreign ``app``, _strip_other_service_paths()
 
 ### Community 901 - "load_merged_cabinet_sensors"
-Cohesion: 0.18
-Nodes (28): CabinetSnapshotSource, _channel_block(), device_label_from_sources(), _is_snapshot_stale(), load_cabinet_snapshot_file(), load_merged_cabinet_sensors(), merge_cabinet_frame_channels(), merge_cabinet_sensors_payload() (+20 more)
+Cohesion: 0.11
+Nodes (46): CabinetSnapshotSource, _channel_block(), device_label_from_sources(), _is_snapshot_stale(), load_cabinet_snapshot_file(), load_merged_cabinet_sensors(), merge_cabinet_frame_channels(), merge_cabinet_sensors_payload() (+38 more)
 
 ### Community 903 - "get_neighborhood"
 Cohesion: 0.60
@@ -7748,8 +7776,8 @@ Cohesion: 0.08
 Nodes (27): Deterministic unit tests for measure_attention_self_model_confidence_baseline.py, Low -> immediately high next tick is the discrete-event signature., Never actually drops to/below low_threshold -- must not fire., Two low->high crossings, correctly counted as two separate events, not one., Review finding 2026-07-29: the smooth-verdict branch (the more     consequential, Middle branch: window clears the trust floor but the signal never     actually c, Docstring claims <=/>= inclusive semantics -- pin it down explicitly., Review finding 2026-07-29: every prior test used a fixture where     confidence (+19 more)
 
 ### Community 910 - "test_crystallization_review_queue_ux.py"
-Cohesion: 0.06
-Nodes (35): _crys(), ctx(), Bulk decide + per-turn evidence removal, and the UI wiring for both.  Backs the, One bad id must not cost the caller the other decisions., Each approve also runs a card/chroma projection and a second write, so a     rej, bulk" must reach the bulk handler, not be read as an id by a sibling     route., A proposal with zero evidence is not reviewable, and validate_proposal     would, Active rows are already projected into cards/chroma/graphiti; removing a     cit (+27 more)
+Cohesion: 0.05
+Nodes (39): Best-effort mtime token so uncommitted UI edits bust browser caches.      Globs, _ui_asset_mtime_token(), _crys(), ctx(), Bulk decide + per-turn evidence removal, and the UI wiring for both.  Backs the, One bad id must not cost the caller the other decisions., Each approve also runs a card/chroma projection and a second write, so a     rej, bulk" must reach the bulk handler, not be read as an id by a sibling     route. (+31 more)
 
 ### Community 912 - "test_social_inspection_api.py"
 Cohesion: 0.60
@@ -7780,12 +7808,12 @@ Cohesion: 0.70
 Nodes (4): _fake_process(), _sign(), test_webhook_accepts_valid_hmac_when_secret_configured(), test_webhook_rejects_invalid_hmac_when_secret_configured()
 
 ### Community 920 - "test_room_claude_relay.py"
-Cohesion: 0.09
-Nodes (35): FakeBus, Hub relay for the three-way room.  Focus is the two things that are easy to get, A brand-new tab's first action can be clicking "Ask Claude" before it     has a, When the caller has a connection_id (both the manual invite route and     the au, A Claude turn takes real wall-clock time. If Juniper refreshes the tab     while, The fallback chain has an end: if the pinned connection is gone AND no     live, Silence is indistinguishable from Claude choosing not to speak, which is     exa, external_responder is the field this feature adds: every stored room     turn un (+27 more)
+Cohesion: 0.11
+Nodes (33): Hub relay for the three-way room.  Focus is the two things that are easy to get, A brand-new tab's first action can be clicking "Ask Claude" before it     has a, When the caller has a connection_id (both the manual invite route and     the au, A Claude turn takes real wall-clock time. If Juniper refreshes the tab     while, The fallback chain has an end: if the pinned connection is gone AND no     live, Silence is indistinguishable from Claude choosing not to speak, which is     exa, external_responder is the field this feature adds: every stored room     turn un, An error banner is not something Claude said; storing it would put     words in (+25 more)
 
 ### Community 921 - "priority_admission.py"
 Cohesion: 0.09
-Nodes (30): get_ledger(), The process-wide ledger. A function, not a bare import, so tests can reach throu, background_admission, _free_slot_count(), _log_and_record(), Semaphore, Background-priority admission gate for llm-gateway routes.  See docs/superpowers, Block until the upstream has enough free slots for background dispatch.      Ret (+22 more)
+Nodes (31): get_ledger(), Rolling record of background-admission decisions, so a deferral can be perceived, The process-wide ledger. A function, not a bare import, so tests can reach throu, background_admission, _free_slot_count(), _log_and_record(), Semaphore, Background-priority admission gate for llm-gateway routes.  See docs/superpowers (+23 more)
 
 ### Community 923 - "conftest.py"
 Cohesion: 0.60
@@ -7795,9 +7823,9 @@ Nodes (4): _ensure_thought_paths(), pytest_configure(), Ensure orion-thought ``a
 Cohesion: 0.70
 Nodes (4): _render(), test_block_absent_without_coloring(), test_block_does_not_introduce_output_keys(), test_block_present_with_coloring()
 
-### Community 925 - "fcc_env_catalog.py"
-Cohesion: 0.23
-Nodes (13): api_fcc_model_labels(), run_turn_from_settings(), catalog_from_settings(), expand_env_path(), load_fcc_env(), model_labels_from_env(), Path, Read FCC operator env for Hub agent-claude model label catalog. (+5 more)
+### Community 925 - "test_async_notify_producers.py"
+Cohesion: 0.16
+Nodes (17): _daily_notify_request(), _publish_workflow_attention_signal(), _schedule_attention_notify_request(), _dispatch_request(), _FakeNotify, `_build_post_persist_journal_message_payload` is still used (by     `_dispatch_j, test_daily_notify_request_includes_email_channel_when_enabled(), test_daily_notify_request_omits_email_channel_when_disabled() (+9 more)
 
 ### Community 926 - "FalkorDB property-graph doctrine + persistence router — design spec"
 Cohesion: 0.05
@@ -7823,9 +7851,9 @@ Nodes (36): $(), activate(), age(), badge(), bindElements(), bootOkSensors(), de
 Cohesion: 0.60
 Nodes (3): AST, test_retina_has_no_detector_imports(), _walk_imports()
 
-### Community 933 - "hub_quick_playwright_live.py"
-Cohesion: 0.60
-Nodes (4): main(), Quick (fast) only: send probe1, wait for reply, immediately send probe2, wait ag, _run_fast_two_turns(), _run_one()
+### Community 933 - "DowntimeTransitionTracker"
+Cohesion: 0.17
+Nodes (19): DowntimeTransitionTracker, datetime, Detects real `status` transitions across successive equilibrium     snapshot tic, Compare each state's current status against the last-observed         status for, _service_key(), ok -> degraded -> ok: two real transitions, neither one a downtime     episode (, Two services (and the same service on two different nodes) must not     share tr, A service can drop out of `states` entirely for one or more ticks     (e.g. purg (+11 more)
 
 ### Community 935 - "Social context window selection"
 Cohesion: 0.33
@@ -7860,7 +7888,7 @@ Cohesion: 0.07
 Nodes (28): 0. Proposal mode, 1.1 Evidence, 1.2 Existing repo convention (reuse, don't invent), 1.3 Fix, 1.4 Gate tests, 1. Root cause A — container-bounce cursor spam (headline fix), 2.1 Evidence, 2.2 Fix (superseded by §3's registry — see below) (+20 more)
 
 ### Community 944 - "resolve_autonomy_graph_read_plan"
-Cohesion: 0.18
+Cohesion: 0.17
 Nodes (23): autonomy_graph_backend_raw(), autonomy_graph_reads_explicitly_enabled(), _env_float(), is_quick_autonomy_graph_lane(), _parse_subjects_csv(), _parse_subqueries_csv(), Any, Autonomy graph read gate: Fuseki/SPARQL by default; explicit GraphDB legacy only (+15 more)
 
 ### Community 945 - "thermal_state"
@@ -7868,8 +7896,8 @@ Cohesion: 0.08
 Nodes (24): A budget denominated in something Orion cannot argue with: the room.  WHY THIS O, True when the verdict rests on no usable reading., Classify the room, with hysteresis, and say whether GPU work may proceed.      `, thermal_state(), ThermalVerdict, _apply_thermal_reading(), evaluate_thermal_gate(), (temp_c, age_sec) from orion-hub's cabinet sensor snapshot.      Returns (None, (+16 more)
 
 ### Community 946 - "compute_tick"
-Cohesion: 0.11
-Nodes (32): compute_tick(), Any, Level-aware significance: turns real, per-tick channel regimes into one [0, 1] s, This window's sustained-load scalar, in [0, 1].      `pressure_equivalent_level`, One window's `loaded_steady` regime read., Read one window's `loaded_steady` regime state.      `voting_regimes` defaults t, sustained_load_pressure(), TickResult (+24 more)
+Cohesion: 0.07
+Nodes (50): compute_tick(), Any, Level-aware significance: turns real, per-tick channel regimes into one [0, 1] s, This window's sustained-load scalar, in [0, 1].      `pressure_equivalent_level`, One window's `loaded_steady` regime read., Read one window's `loaded_steady` regime state.      `voting_regimes` defaults t, sustained_load_pressure(), TickResult (+42 more)
 
 ### Community 947 - "Fact Extraction"
 Cohesion: 0.67
@@ -7905,7 +7933,7 @@ Nodes (3): check_truth(), grammar_production_truth.sh script, validate_truth_jso
 
 ### Community 957 - "test_upstream_admission.py"
 Cohesion: 0.09
-Nodes (22): _body(), MonkeyPatch, One saturated upstream must not stall any other upstream, and the gateway must n, Route table with `quick` and `chat` on different upstreams, cap 2 per lane., The incident shape. 12 slow `quick` requests against a cap of 2 (so 10 queue), o, Order of gates: a background request must poll /slots while holding NOTHING. If, The negative half of the gate-order test: `quick`/`chat` must not touch     back, Review finding: the background route's own concurrency semaphore is a queue too, (+14 more)
+Nodes (21): _body(), MonkeyPatch, One saturated upstream must not stall any other upstream, and the gateway must n, Route table with `quick` and `chat` on different upstreams, cap 2 per lane., The incident shape. 12 slow `quick` requests against a cap of 2 (so 10 queue), o, Order of gates: a background request must poll /slots while holding NOTHING. If, The negative half of the gate-order test: `quick`/`chat` must not touch     back, Review finding: the background route's own concurrency semaphore is a queue too, (+13 more)
 
 ### Community 958 - "run_answer_depth_proof_suite.py"
 Cohesion: 0.83
@@ -7987,9 +8015,9 @@ Nodes (3): run_infer(), run_server_boot(), validate_llamacpp_upgrade.sh script
 Cohesion: 0.50
 Nodes (3): Config, BaseSettings, Settings
 
-### Community 989 - "test_self_concept_history_publish.py"
-Cohesion: 0.24
-Nodes (11): SelfConceptEvidenceRefV1, _FakeBus, _finding(), Tests for self_study.py's Layer-3-to-self_concept_history producer (self-model r, Review finding: _next_self_concept_version() is a blocking SQLAlchemy     call;, test_publish_falls_back_to_reflection_kind_when_no_concept_refs(), test_publish_never_raises_when_bus_fails(), test_publish_one_row_per_concept_kind() (+3 more)
+### Community 989 - "test_ingest_turn.py"
+Cohesion: 0.19
+Nodes (14): _aitown_turn(), _aitown_turn_body(), _FakeBus, _ingest_service(), _NoopService, _post_ingest(), TestClient, test_ingest_http_200_valid_body_publishes_social_turn() (+6 more)
 
 ### Community 990 - "orion-policy-runtime: Layer 8 substrate service evaluating ProposalFrameV1 against SubstratePolicyV1, persists PolicyDecisionFrameV1 (policy is not execution)"
 Cohesion: 0.67
@@ -8076,8 +8104,8 @@ Cohesion: 0.67
 Nodes (3): description, type, description
 
 ### Community 1024 - "test_identity_gallery.py"
-Cohesion: 0.10
-Nodes (31): classify_similarity(), cosine_similarity(), _gallery_path(), load_gallery_embedding(), match_embedding(), Any, ndarray, Path (+23 more)
+Cohesion: 0.09
+Nodes (34): classify_similarity(), cosine_similarity(), _gallery_path(), load_gallery_embedding(), match_embedding(), Any, ndarray, Path (+26 more)
 
 ### Community 1025 - "Concept induction rebuild: topic model -> concept graph"
 Cohesion: 0.06
@@ -8097,7 +8125,7 @@ Nodes (3): Finalize Response, Generate Code Scaffold, GitHub Compactor Digest
 
 ### Community 1029 - "test_identity_ask_cooldown.py"
 Cohesion: 0.12
-Nodes (28): _key(), Cross-process cooldown for the "is that you?" identity clarifying question, so O, Atomically claim the "ask about this camera's identity mismatch"     slot for `s, Keyed by (reason, stream), not stream alone (2026-08-29).      There are now two, reset_identity_ask_cooldown_bus_for_tests(), try_claim_identity_ask(), _FakeBus, _FakeRedis (+20 more)
+Nodes (27): _key(), Atomically claim the "ask about this camera's identity mismatch"     slot for `s, Keyed by (reason, stream), not stream alone (2026-08-29).      There are now two, reset_identity_ask_cooldown_bus_for_tests(), try_claim_identity_ask(), _FakeBus, _FakeRedis, _RaisingRedis (+19 more)
 
 ### Community 1033 - "graph.compressions.v1 recall profile (unified)"
 Cohesion: 0.67
@@ -8115,13 +8143,13 @@ Nodes (32): align_drive_audits_to_field_state(), AlignedTick, build_arg_parser()
 Cohesion: 0.11
 Nodes (31): assign_bin(), bin_accuracy(), BinStat, build_arg_parser(), build_calibration_samples(), CalibrationSample, chronological_split(), fetch_self_model_rows() (+23 more)
 
-### Community 1056 - "test_measure_ast_hot_reducer.py"
-Cohesion: 0.09
-Nodes (23): _broadcast_payload(), _field_payload(), _field_state_payload(), datetime, Deterministic unit tests for measure_ast_hot_reducer.py.  No DB. The replay laye, This is deliberately the OPPOSITE sign of a naive "continue the         recent d, A broadcast row dated AFTER the field tick must not be joined to it --     the r, Real per-tick history join (the fix this test module covers): each     field tic (+15 more)
+### Community 1056 - "AttentionBroadcastProjectionV1"
+Cohesion: 0.02
+Nodes (135): AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1, Any, Current substrate-wide attention (rung 3): the selected coalition of the     lat, broadcast_projection_from_frame(), _node(), SimpleNamespace (+127 more)
 
-### Community 1096 - "TopicFoundryClientError"
-Cohesion: 0.11
-Nodes (31): _ensure_topic_foundry_dataset_and_model(), Idempotent get-or-create for a scheduler dataset+model, by name.      Parameteri, create_dataset(), create_model(), fetch_keywords_for_topic(), fetch_latest_completed_run(), fetch_mention_edges_for_run(), fetch_run_topics_and_keywords() (+23 more)
+### Community 1096 - "__init__.py"
+Cohesion: 0.14
+Nodes (8): DetectorSpec, FaceDetector, build_detectors(), MotionDetector, PresenceDetector, ndarray, Run detection on BGR frame.         Returns list of (x, y, w, h, label, score)., YoloDetector
 
 ### Community 1098 - "find_unrouted_channels"
 Cohesion: 0.10
@@ -8137,11 +8165,11 @@ Nodes (3): orion-notify policy rules (quiet hours, recipient groups, event-kind/
 
 ### Community 1104 - "test_juniper_multimodal_affect_sql_shape.py"
 Cohesion: 0.07
-Nodes (27): _event(), Contract tests for persisting orion:affectgpt:assessment events.  First real per, The class docstring's whole privacy commitment, pinned mechanically:     if a `t, _write_row()'s generic column-filter is what actually enforces the     boundary, The model's own generated read -- not Juniper's words -- is fine to     keep dur, Review finding, 2026-08-25: _write_row()'s column-filter only     protects the S, Extracted as _affectgpt_multimodal_event_id() specifically so this     fallback, Without a declared column, _write_row's column-filter would silently     drop th (+19 more)
+Nodes (26): _event(), Contract tests for persisting orion:affectgpt:assessment events.  First real per, The class docstring's whole privacy commitment, pinned mechanically:     if a `t, _write_row()'s generic column-filter is what actually enforces the     boundary, The model's own generated read -- not Juniper's words -- is fine to     keep dur, Review finding, 2026-08-25: _write_row()'s column-filter only     protects the S, Extracted as _affectgpt_multimodal_event_id() specifically so this     fallback, Without a declared column, _write_row's column-filter would silently     drop th (+18 more)
 
-### Community 1105 - "test_model_shapes.py"
-Cohesion: 0.10
-Nodes (20): FeatureBranch, Tensor, World-model encoder + dynamics model.  **Untrained inference-capable scaffolding, Causal Transformer-encoder dynamics model. Consumes a trajectory     window of f, `trajectory`: `[batch, window, fusion_dim]`, window <= max_window., One small per-group linear projection: Linear -> LayerNorm -> GELU., Small MLP fusion encoder. Not a backbone -- fuses pre-computed     feature-group, `groups` keys must be exactly `FEATURE_GROUP_NAMES`; each value is         `[bat (+12 more)
+### Community 1105 - "FeatureGroupDims"
+Cohesion: 0.09
+Nodes (23): FeatureBranch, FeatureGroupDims, Tensor, World-model encoder + dynamics model.  **Untrained inference-capable scaffolding, Causal Transformer-encoder dynamics model. Consumes a trajectory     window of f, `trajectory`: `[batch, window, fusion_dim]`, window <= max_window., Encoder + dynamics, assembled. `forward` takes a dict of     `group_name -> [bat, One small per-group linear projection: Linear -> LayerNorm -> GELU. (+15 more)
 
 ### Community 1106 - "Orion hears Juniper, and each spoken turn is bracketed by an affect record"
 Cohesion: 0.06
@@ -8149,7 +8177,7 @@ Nodes (33): Architecture touched, Current architecture (before this patch), Dock
 
 ### Community 1110 - "Purpose-conditioned recall (PCR) — read-side cognitive memory"
 Cohesion: 0.06
-Nodes (31): Acceptance checks, Architectural mistake to avoid, Arsonist summary, `chat_general.j2`, `chat_quick.j2`, `chat_stance_brief.j2`, Cognitive need → retrieval (authoritative table), Cortex-exec orchestration (detailed) (+23 more)
+Nodes (35): Acceptance checks, Architectural mistake to avoid, Arsonist summary, `chat_general.j2`, `chat_quick.j2`, `chat_stance_brief.j2`, Cognitive need → retrieval (authoritative table), Cortex-exec orchestration (detailed) (+27 more)
 
 ### Community 1113 - "Handover: the dispatch-starvation arc, and the systemic metric problem underneath it"
 Cohesion: 0.06
@@ -8200,28 +8228,28 @@ Cohesion: 0.22
 Nodes (6): Bootstrap test environments, Existing wrapper scripts, Make targets, Rules, Shared service runner, Testing Contract (Global)
 
 ### Community 1162 - "test_sandbox_sync.py"
-Cohesion: 0.11
-Nodes (34): Best-effort sync of ``workspace`` to ``origin/main``.      Returns a short statu, sync_fcc_sandbox(), _git(), _init_repo_with_main(), _no_real_fcc_env(), origin_and_clone(), `stash push -u`, not plain `stash`: `git clean -fd` runs after the reset,     so, Unpushed commits no longer block the sync -- `checkout main` does not move     r (+26 more)
+Cohesion: 0.05
+Nodes (61): last_sync_state(), Snapshot of sync state, for the Hub status endpoint.      Exists because the wed, Record a skip decided by the *caller* (e.g. an FCC turn already in flight)., Best-effort sync of ``workspace`` to ``origin/main``.      Returns a short statu, record_sync_skip(), sync_fcc_sandbox(), _break_rescue(), _git() (+53 more)
 
 ### Community 1178 - "install_git_safety_hooks.sh"
 Cohesion: 0.70
 Nodes (4): _emit_post_commit_block(), install_one_hook(), install_post_commit_hook(), install_git_safety_hooks.sh script
 
-### Community 1239 - "test_lane_routing.py"
-Cohesion: 0.22
-Nodes (14): LogCaptureFixture, MonkeyPatch, Settings, Regression: direct lane RPC must reuse the same plan as the verb path (router +, Regression: lane/mind/output_mode arbitration facts must reach the caller on, _settings_routing_off(), _settings_routing_on(), _spark_req() (+6 more)
+### Community 1239 - "refreshVisionCapability"
+Cohesion: 0.11
+Nodes (21): applyHubModeSelection(), buildMessageAttachmentStrip(), closeImageLightbox(), effectiveVisionRouteId(), formatComputeRouteLabel(), formatComputeStatusGlyph(), HUB_KNOWN_BACKGROUND_ROUTE_IDS, HUB_KNOWN_SYSTEM_ROUTE_IDS (+13 more)
 
 ### Community 1245 - "chat_turn_trace_routes.py"
-Cohesion: 0.06
-Nodes (54): Durable record of a ThoughtEventV1 stance decision.      Persisted so "did Orion, ThoughtDecisionRecordV1, cortex_exec_trace_id(), parse_execution_trace_id(), Build a cortex.exec trace id.      ``lane`` isolates auxiliary cortex-exec runs, test_trace_id_stable_for_node_and_correlation(), api_chat_turn_trace(), get_fused_chat_turn_trace() (+46 more)
+Cohesion: 0.13
+Nodes (26): api_chat_turn_trace(), get_fused_chat_turn_trace(), _load_cognition_trace(), _load_execution_run(), _load_grammar_trace(), _load_harness_turn_trace(), _load_thought_decision(), _postgres_engine() (+18 more)
 
 ### Community 1261 - "test_juniper_affect_state.py"
 Cohesion: 0.13
 Nodes (27): bind_juniper_affect_state_bus(), JuniperAffectState, _parse_iso(), datetime, NamedTuple, Cross-process storage for "what did Orion most recently see of Juniper's facial+, Parse an ISO8601 string, normalizing a tz-naive result to UTC.      Same reasoni, Fail-open read of the most recent affect capture, or the confirmed-     absent/u (+19 more)
 
-### Community 1262 - "ConfidenceSample"
+### Community 1262 - "test_generative_metacog_gate_evaluation.py"
 Cohesion: 0.11
-Nodes (34): ConfidenceSample, One persisted `prediction_error_confidence` tick., _now_series(), _open_cooldowns(), Service-layer behavior of the two generative gates.  Review finding S3 (2026-07-, Review finding S1: the de-dupe key must be recorded only on a real     publish., Poll cadence and write cadence drift, so the same newest row is polled     twice, A frozen window keeps satisfying both conditions forever, so the poll     loop m (+26 more)
+Nodes (32): _now_series(), _open_cooldowns(), Service-layer behavior of the two generative gates.  Review finding S3 (2026-07-, Review finding S1: the de-dupe key must be recorded only on a real     publish., Poll cadence and write cadence drift, so the same newest row is polled     twice, A frozen window keeps satisfying both conditions forever, so the poll     loop m, Verification finding 2026-07-30: this warning had the same unbounded-repeat, Otherwise a single earlier outage would permanently offset the re-log     cadenc (+24 more)
 
 ### Community 1263 - "test_visual_chain.py"
 Cohesion: 0.06
@@ -8236,20 +8264,20 @@ Cohesion: 0.06
 Nodes (34): 10. Hub UI (high level), 11. Testing and acceptance, 12. Open points for implementation plan only, 13. References (code), 1. Purpose, 2. Goals and non-goals, 3.1 Recommended decomposition, 3.2 Optional evolution (+26 more)
 
 ### Community 1272 - "field-attention.js"
-Cohesion: 0.13
-Nodes (31): $(), contentLooksLikeGatewayFailureBlurb(), extractCortexStepErrorHint(), activate(), age(), badge(), bindElements(), candidateBadgeFor() (+23 more)
+Cohesion: 0.21
+Nodes (24): $(), activate(), age(), badge(), bindElements(), candidateBadgeFor(), confidenceBadge(), deactivate() (+16 more)
 
 ### Community 1301 - "test_velocity.py"
 Cohesion: 0.13
 Nodes (30): _async_iter(), test_read_channel_velocity_fails_open_on_redis_error(), test_read_channel_velocity_sums_buckets_into_rate(), test_read_channel_velocity_treats_missing_buckets_as_zero(), test_read_channel_velocity_zero_window_short_circuits(), test_scan_active_channels_discovers_and_aggregates_per_channel(), test_scan_active_channels_fails_open_on_redis_error(), test_scan_active_channels_ignores_empty_channel_name() (+22 more)
 
-### Community 1302 - "test_fusion_entity_relatedness_boost.py"
-Cohesion: 0.24
-Nodes (14): _entity_relatedness_boost(), Phase 2 of entity-graph-reasoning (docs/superpowers/specs/     2026-07-19-recall, _base_profile(), Phase 2 of entity-graph-reasoning (docs/superpowers/specs/ 2026-07-19-recall-ent, sql_chat's id is a correlation_id/synthetic fallback, not confirmed     to match, End-to-end: a falkor_chat candidate with a lower base score but a real     entit, Callers that don't pass entity_boost_map at all (every existing call     site be, test_entity_relatedness_boost_clamps_raw_score_to_one() (+6 more)
+### Community 1302 - "test_cockpit_turn_sighting_sql_shape.py"
+Cohesion: 0.13
+Nodes (14): append_cockpit_hop(), _coerce_ts(), _insert_ctor(), Any, datetime, Session, Idempotent cockpit_turn_sighting append keyed by (correlation_id, seq).  One bus, Shape checks for the CockpitTurnSightingSQL append path (no Postgres required). (+6 more)
 
-### Community 1303 - "is_chat_template_vlm"
-Cohesion: 0.26
-Nodes (13): is_chat_template_vlm(), is_qwen2_5_vl_model(), is_qwen2_vl_model(), True for any VLM family that expects its prompt built via     ``processor.apply_, The plain "qwen2-vl" substring check must not accidentally also     match "qwen2, test_detection_is_case_insensitive(), test_empty_or_none_model_id_does_not_raise(), test_is_chat_template_vlm_false_for_blip_family() (+5 more)
+### Community 1303 - "test_identity_secondary_dispatch.py"
+Cohesion: 0.20
+Nodes (18): FakeBus, _frame_env(), identity_policy_path(), live_identity_policy_path(), _make_dispatcher(), Path, dispatcher.py's secondary identity_face dispatch -- the actual bus publish + Rou, The real bug a shared corr_id would cause: RouterState.pending is     keyed by c (+10 more)
 
 ### Community 1304 - "BiometricsClusterV1"
 Cohesion: 0.05
@@ -8265,23 +8293,23 @@ Nodes (7): Deterministic unit tests for measure_attention_salience_normalization
 
 ### Community 1375 - "🌀 Orion Hub — Titanium Edition"
 Cohesion: 0.06
-Nodes (34): 1. Check Health, 2. Verify Bus Connection, 3. Test Chat (Simulated), 4. Verify Chat History Bus Traffic, 6. Topic Foundry smokes (via Hub proxy), 7. No-Write Debug Mode (skip memory publishing), 8. Memory cards: how rows get created (Hub vs recall vs auto-extractor), Agent Claude mode (FCC harness) (+26 more)
+Nodes (35): 1. Check Health, 2. Verify Bus Connection, 3. Test Chat (Simulated), 4. Verify Chat History Bus Traffic, 6. Topic Foundry smokes (via Hub proxy), 7. No-Write Debug Mode (skip memory publishing), 8. Memory cards: how rows get created (Hub vs recall vs auto-extractor), Agent Claude mode (FCC harness) (+27 more)
 
 ### Community 1377 - "test_cabinet_sensors_panel.py"
 Cohesion: 0.06
 Nodes (11): Cabinet sensors panel: wiring contract + static-content assertions.  This panel, Distinct subsystem -- a collision would bind DOM lookups to the wrong tab., app.js's old setActiveTab wiring for #cabinet must be fully gone --     a leftov, A stale #cabinet bookmark (pre-relocation link) still falls through to     #hub, Missing frame sub-objects must render as absent, never zero-filled., Relocated into the Biometrics modal -- a reintroduced top-level nav     button/h, test_app_js_no_longer_owns_cabinet_tab_switching(), test_app_js_resets_an_unresolvable_cabinet_hash_to_hub() (+3 more)
 
 ### Community 1389 - "test_concept_relation_classifier.py"
-Cohesion: 0.18
-Nodes (24): _concept_node(), _decode_content_passthrough(), _edge(), _fake_settings(), _FakeBus, _FakeCodec, _FakeDecoded, _install_fake_bus() (+16 more)
+Cohesion: 0.32
+Nodes (20): _concept_node(), _decode_content_passthrough(), _edge(), _fake_settings(), _FakeDecoded, _install_fake_bus(), MonkeyPatch, SimpleNamespace (+12 more)
 
 ### Community 1394 - "test_self_atlas_cluster_history.py"
 Cohesion: 0.08
 Nodes (21): _clean_import_path(), _ensure_hub_scripts_import_path(), _FakeResponse, Any, MonkeyPatch, Tests for Self Atlas's second self_concept_history producer (self-model rebuild, Review finding (2026-09-05): a cluster whose label/keywords are     stable but h, Review finding (2026-09-05): two distinct clusters whose labels     slugify to t (+13 more)
 
-### Community 1395 - "sample_frames"
-Cohesion: 0.12
-Nodes (28): _collect(), _evenly_spaced(), FrameSampleError, RuntimeError, Pick the few frames a VL model actually sees, and measure how good they were.  R, Pass 1: Haar-scan every frame, retaining NONE of them.      Returns (frames_tota, Pass 2: re-decode, keeping ONLY the frames at `wanted` indices.      Sequential, Decode the clip twice, Haar-scan every frame, return `max_frames` stills.      R (+20 more)
+### Community 1395 - "vision_backend.py"
+Cohesion: 0.06
+Nodes (50): AffectReadV1, One structured affect read, produced by the ``vision`` backend.      **Why this, min_length=1 alone accepts "   ". A whitespace-only label renders         identi, _collect(), _evenly_spaced(), FrameSampleError, FrameSampleResult, RuntimeError (+42 more)
 
 ### Community 1413 - "Chat Grammar Lane V1 Implementation Plan"
 Cohesion: 0.06
@@ -8291,9 +8319,9 @@ Nodes (32): Acceptance criteria, Architecture constraints, biometrics_lattice.ya
 Cohesion: 0.06
 Nodes (33): Additive only, Arsonist summary, auto_activate executor (new), Canonical, Current architecture, Deterministic choke points, Encode + store, Env keys (new) (+25 more)
 
-### Community 1416 - "SelfKnowledgeSectionCountsV1"
-Cohesion: 0.09
-Nodes (11): SelfKnowledgeSectionCountsV1, _FakeConn, _FakeEngine, _FakeResult, _FakeRow, dict, Tests for self_study.py's Layer 1 broadening (self-model rebuild arc, 2026-09-05, Mimics a SQLAlchemy RowMapping (dict-like, supports both [] and .get()). (+3 more)
+### Community 1416 - "test_self_study_layer1_broadening.py"
+Cohesion: 0.08
+Nodes (10): _FakeConn, _FakeEngine, _FakeResult, _FakeRow, dict, Tests for self_study.py's Layer 1 broadening (self-model rebuild arc, 2026-09-05, Mimics a SQLAlchemy RowMapping (dict-like, supports both [] and .get())., TestBehavioralItems (+2 more)
 
 ### Community 1417 - "ChatGPT Export Import (Bus Fanout)"
 Cohesion: 0.09
@@ -8321,15 +8349,15 @@ Nodes (30): activate(), cap(), chassisWattsFor(), clear(), deactivate(), el(), f
 
 ### Community 1460 - "test_concept_atlas_traversal_routes.py"
 Cohesion: 0.06
-Nodes (28): RankedNode, client(), _ensure_hub_scripts_import_path(), TestClient, GET /api/substrate/concepts/neighborhood and /path -- engine-side drill-down.  W, Labels are not unique -- three live concepts start with 'Hospital'.     Silently, A neighbourhood cut short at the limit is a different fact from a small     neig, `len(nodes) >= limit` fires when exactly `limit` nodes exist and NONE     were d (+20 more)
+Nodes (25): client(), _ensure_hub_scripts_import_path(), TestClient, GET /api/substrate/concepts/neighborhood and /path -- engine-side drill-down.  W, Labels are not unique -- three live concepts start with 'Hospital'.     Silently, A neighbourhood cut short at the limit is a different fact from a small     neig, `len(nodes) >= limit` fires when exactly `limit` nodes exist and NONE     were d, depth was clamped and limit was not, so ?limit=1000000 returned every     reacha (+17 more)
 
 ### Community 1461 - "test_field_attention_operator_panel.py"
 Cohesion: 0.06
 Nodes (26): Field Attention operator tab: wiring contract + static-content assertions.  This, These are separate globals/ids; a copy-paste error here would make one     tab s, Candidate A/B are derived from reasons[0]'s real text, produced by     orion/att, Design requirement: confidence_score is binary in practice (verified     live: 1, Suppressed targets must stay visible (muted), not hidden -- this is     where an, Review finding (2026-07-30): select_system_targets() in     orion/attention/fiel, Review finding from attention-organ.js's own history (M1): app.js's     setActiv, The backend 404s when no frame has been persisted yet     (substrate_attention_r (+18 more)
 
-### Community 1462 - "Rabbit"
-Cohesion: 0.07
-Nodes (42): create_entry_from_v2(), Rabbit, RPC / synchronous pattern.     Listens on a single request channel and replies t, build_services(), _cfg(), handle_exec_step(), handle_intake(), Any (+34 more)
+### Community 1462 - "Orion Subagent Development Contract"
+Cohesion: 0.10
+Nodes (20): 0. Prime directive, 10. Dependencies, 12. Review gate, 13. Safety rules, 14. Background jobs and backfills, 15. Confusion protocol, 17. Recommended local gates, 18. PR description template (+12 more)
 
 ### Community 1463 - "_query_backends"
 Cohesion: 0.11
@@ -8388,24 +8416,24 @@ Cohesion: 0.12
 Nodes (31): _gate(), Gate behaviour. Fixtures are hand-computed, not read back off the implementation, Regression for the review's HIGH finding.      Live case: `node:atlas` / `memory, The floor is relative, so multiplying a channel by any k>0 scales mu,     sigma, `relative_sigma_floor=0` is legal (it just disables the relative floor);     the, A gate rehydrated from an export must behave identically to the     original, no, The flood-starving property: a constant channel settles to its own mean., 10 observations at 0.10 -> mu=0.10, var=0.0 (delta is exactly 0 each fold). (+23 more)
 
 ### Community 1534 - "__init__.py"
-Cohesion: 0.08
-Nodes (55): _resolve_graph_endpoints(), _derive_fuseki_urls(), _fuseki_base(), _fuseki_dataset(), GraphBackendConfig, is_legacy_graphdb_enabled(), Central graph backend resolution (Fuseki / SPARQL vs explicit GraphDB legacy)., SPARQL query URL for autonomy reads (AUTONOMY_GRAPH_QUERY_URL wins, then RDF_STO (+47 more)
+Cohesion: 0.19
+Nodes (27): _derive_fuseki_urls(), _fuseki_base(), _fuseki_dataset(), GraphBackendConfig, is_legacy_graphdb_enabled(), Central graph backend resolution (Fuseki / SPARQL vs explicit GraphDB legacy)., SPARQL query URL for autonomy reads (AUTONOMY_GRAPH_QUERY_URL wins, then RDF_STO, SPARQL update URL for autonomy writes (AUTONOMY_GRAPH_UPDATE_URL wins, then RDF_ (+19 more)
 
-### Community 1535 - "hydrate_consolidation_draft_dict"
-Cohesion: 0.29
-Nodes (12): _clip(), fetch_turn_text_by_correlation(), format_turn_utterance_text(), hydrate_consolidation_draft_dict(), hydrate_draft_utterance_text(), Any, Pool, Hydrate consolidation suggest drafts with turn text from chat_history_log. (+4 more)
+### Community 1535 - "memory_consolidation_draft_routes.py"
+Cohesion: 0.13
+Nodes (31): _clip(), fetch_turn_text_by_correlation(), format_turn_utterance_text(), hydrate_consolidation_draft_dict(), hydrate_draft_utterance_text(), Any, Pool, Hydrate consolidation suggest drafts with turn text from chat_history_log. (+23 more)
 
 ### Community 1536 - "test_measure_doc_semantic_drift.py"
 Cohesion: 0.12
 Nodes (30): _commit_subject(), conventional_commit_prefix(), _cosine_similarity(), DriftSample, _embed_batch_via_vector_host(), _git_diff_hunks(), _git_show(), _load_sample() (+22 more)
 
-### Community 1537 - "mind_routes.py"
-Cohesion: 0.34
-Nodes (13): get_mind_run(), list_mind_runs(), list_recent_mind_runs(), _mind_run_row_dict(), _need_session(), _pool(), Any, BaseException (+5 more)
+### Community 1537 - "graph_structural_delta"
+Cohesion: 0.22
+Nodes (19): graph_structural_delta(), Pure diff of two graph snapshots -- no I/O, no state, mirrors     ``git_churn_de, Unit tests for ``orion/structural_mass/graph_delta.py``., Regression guard for the 2026-07-30 code-review finding: when a     snapshot's g, Two consecutive parse failures must not average out to 'calm' -- this     is exa, A shrinking graph (a deletion arc, e.g. PR #879->#1486's drives-system     remov, Two snapshots with zero god nodes each represent 'nothing changed,' not     'tot, _snap() (+11 more)
 
 ### Community 1538 - "AttentionRuntimeStore"
 Cohesion: 0.08
-Nodes (22): get_settings(), BaseSettings, Settings, AttentionRuntimeStore, Real, persisted node-target goal-provenance dominance streak         (`orion.att, Persist the node-target dominance streak advanced this tick. See         `load_n, Node ids the substrate's workspace competition currently holds as open         l, Real, ASC-by-time prediction-error history for one reducer (oldest         first (+14 more)
+Nodes (23): health(), get_settings(), BaseSettings, Settings, AttentionRuntimeStore, Real, persisted node-target goal-provenance dominance streak         (`orion.att, Persist the node-target dominance streak advanced this tick. See         `load_n, Node ids the substrate's workspace competition currently holds as open         l (+15 more)
 
 ### Community 1539 - "test_builder_prune_skill.py"
 Cohesion: 0.15
@@ -8416,8 +8444,8 @@ Cohesion: 0.17
 Nodes (20): get_attachment(), load_bytes(), _mime_path_for(), _path_for(), Any, Path, Response, UploadFile (+12 more)
 
 ### Community 1541 - "test_doc_semantic_drift_sql_shape.py"
-Cohesion: 0.10
-Nodes (17): Contract tests for persisting doc_semantic_drift events.  This is the first real, Guards against a schema field being added upstream and silently not     persiste, After the 2026-08-13 skip patch a NULL here means exactly one thing:     a real, `chunk_count_removed == 1 AND chunk_count_added == 1` is the first     query any, `.env_example` is the operator contract, and it is what     scripts/sync_local_e, The scored hunk covers a RANGE, `(base_sha, sha]`, not necessarily a     single, `route_map` merges the env JSON over the code defaults, so a live     .env carry, The unforgiving half: `effective_subscribe_channels` REPLACES the     code defau (+9 more)
+Cohesion: 0.07
+Nodes (29): _event(), Contract tests for persisting doc_semantic_drift events.  This is the first real, Guards against a schema field being added upstream and silently not     persiste, After the 2026-08-13 skip patch a NULL here means exactly one thing:     a real, `chunk_count_removed == 1 AND chunk_count_added == 1` is the first     query any, The reason this is derived rather than a uuid4. The producer re-scores     a who, One commit routinely touches several docs -- they must not collapse     onto a s, A doc edited across two commits is two real observations, not one. (+21 more)
 
 ### Community 1542 - "test_juniper_affective_state_sql_shape.py"
 Cohesion: 0.08
@@ -8451,25 +8479,25 @@ Nodes (30): 10. Phased implementation, 11. Acceptance checks, 12. Non-goals, 13.
 Cohesion: 0.06
 Nodes (30): 10. The exact question for Juniper, 1. The finding this plan exists to act on, 1a. Nothing is scarce, 1b. Nothing is expensive, 1c. The repertoire is four verbs wide, and none are cognitive acts, 1d. Nothing has ever been done, 1e. Why "just add a compute budget" is also wrong, 2. What this supersedes (+22 more)
 
-### Community 1550 - "self_brain_routes.py"
-Cohesion: 0.31
-Nodes (13): _coerce(), _engine(), frames_range(), _frames_range_sync(), frames_tail(), _frames_tail_sync(), Any, Read-only Self-brain API: realtime tail + playback range + window bounds.  Reads (+5 more)
+### Community 1550 - "build_conversations"
+Cohesion: 0.19
+Nodes (17): DatasetPreviewRequest, DatasetPreviewResponse, preview_dataset_endpoint(), apply_overrides(), build_conversations(), OverrideRecord, _parse_ts(), Any (+9 more)
 
 ### Community 1551 - "draft_sanitize.py"
 Cohesion: 0.14
 Nodes (34): _apply_ref_remap_to_draft(), _apply_urn_uuid_remap(), _build_malformed_urn_uuid_remap(), _build_short_local_ref_remap(), _collect_refs(), is_blank_ref(), is_malformed_urn_uuid(), is_resolvable_entity_ref() (+26 more)
 
-### Community 1552 - "SelfStudyRetrievedRecordV1"
-Cohesion: 0.16
-Nodes (31): SelfStudyRetrievalBackendStatusV1, SelfStudyRetrievedRecordV1, SelfStudyRetrieveFiltersV1, _binding_value(), _build_retrieval_result(), _build_self_study_retrieval_records(), _concept_record(), _escape_sparql() (+23 more)
+### Community 1552 - "_graphdb_reflection_records"
+Cohesion: 0.28
+Nodes (18): _binding_value(), _escape_sparql(), _execute_graphdb_select(), _filter_allows_record_type(), _filter_allows_source_kind(), _filter_allows_trust_tier(), _graphdb_auth(), _graphdb_concept_evidence() (+10 more)
 
 ### Community 1553 - "IloPoller"
 Cohesion: 0.12
 Nodes (20): fetch_ilo_snapshot(), IloPoller, IloSnapshot, Any, Background slow-poll loop, decoupled from the fast SystemHealthV1     heartbeat, Synchronous, instant read of the last cached poll -- safe to call         from t, One blocking RedFish pull of thermal/fan/power data from an iLO/BMC.      Standa, _fake_session() (+12 more)
 
 ### Community 1554 - "BusEventFact"
-Cohesion: 0.06
-Nodes (36): BusEventFact, BusSynapticGraphWriter, compute_ewma_update(), EwmaUpdate, extract_bus_event_fact(), extract_verb_step_facts(), OpenChainInfo, OpenChainSummary (+28 more)
+Cohesion: 0.08
+Nodes (27): BusEventFact, BusSynapticGraphWriter, compute_ewma_update(), EwmaUpdate, OpenChainInfo, OpenChainSummary, Bus synaptic graph writer -- Phase 1 foundation + Phase 2 (in-flight chains, per, Pure incremental EWMA mean/variance update, plus a z-score of ``value``     agai (+19 more)
 
 ### Community 1555 - "test_generate.py"
 Cohesion: 0.11
@@ -8493,7 +8521,7 @@ Nodes (26): _client(), _fake_engine_two_queries(), _field_state_row(), TestClien
 
 ### Community 1560 - "test_ctx_overflow.py"
 Cohesion: 0.05
-Nodes (51): build_escalation_ladder(), is_context_overflow(), next_larger_route(), probe_context_size(), Any, Retry a context-overflowed request on a lane that can actually hold it.  WHY THI, Routes ordered by real context size, smallest first. Unprobeable routes are omit, The smallest lane strictly larger than `current_route`. None if nothing is bigge (+43 more)
+Nodes (52): build_escalation_ladder(), is_context_overflow(), next_larger_route(), probe_context_size(), Any, Retry a context-overflowed request on a lane that can actually hold it.  WHY THI, Routes ordered by real context size, smallest first. Unprobeable routes are omit, The smallest lane strictly larger than `current_route`. None if nothing is bigge (+44 more)
 
 ### Community 1561 - "test_biometrics_cluster_sql_shape.py"
 Cohesion: 0.08
@@ -8527,25 +8555,25 @@ Nodes (28): $(), activate(), age(), badge(), bindElements(), card(), deactivate(
 Cohesion: 0.11
 Nodes (27): iter_all_session_usage_records(), Convenience: one ``SessionUsageRecord`` per transcript file under     ``root`` (, CostEstimate, estimate_session_cost_usd(), find_rate(), PricingRate, date, datetime (+19 more)
 
-### Community 1569 - "ChatStanceBeliefLogV1"
-Cohesion: 0.18
-Nodes (13): ChatStanceBeliefLogV1, BaseModel, datetime, Durable per-turn log of chat_stance's real belief computation.  `services/orion-, _utc_now(), _make_payload(), Compile-time shape checks for the chat_stance_belief_log SQL write path (no Post, Review finding: registering a channel/route/model is not the same     as subscri (+5 more)
+### Community 1569 - "ensure_delivery_pack_in_packs"
+Cohesion: 0.17
+Nodes (14): ensure_delivery_pack_in_packs(), Runtime pack merging for agent-chain and orch.  Ensures delivery_pack is present, Return a new pack list with delivery_pack appended when appropriate.      If out, Path, Pass 2: merged packs include delivery verbs (YAML-level, no jinja)., test_implementation_guide_packs_include_write_guide_and_finalize(), _verb_services(), Pass 2: runtime pack merge proves delivery_pack for instructional / code asks. (+6 more)
 
 ### Community 1570 - "RoomClaudeRequestV1"
-Cohesion: 0.11
-Nodes (25): ExternalRoomResponderV1, BaseModel, Room contracts for Claude as a third social-room participant.  Two payloads on t, Who produced a room reply. Mirrors `ExternalRoomParticipantV1`'s     identity fi, One prior utterance, as Claude sees it.      Speaker-shaped rather than prompt/r, Hub asks the companion for one Claude turn.      v1 is explicit-invite only, so, RoomClaudeRequestV1, RoomTranscriptEntryV1 (+17 more)
+Cohesion: 0.13
+Nodes (21): ExternalRoomResponderV1, BaseModel, Room contracts for Claude as a third social-room participant.  Two payloads on t, Who produced a room reply. Mirrors `ExternalRoomParticipantV1`'s     identity fi, One prior utterance, as Claude sees it.      Speaker-shaped rather than prompt/r, Hub asks the companion for one Claude turn.      v1 is explicit-invite only, so, RoomClaudeRequestV1, RoomTranscriptEntryV1 (+13 more)
 
-### Community 1571 - "compute_ewma_update"
-Cohesion: 0.06
-Nodes (54): compute_ewma_update(), EwmaUpdate, Pure incremental EWMA mean/variance/z-score, shared across bus-observing service, Pure incremental EWMA mean/variance update, plus a z-score of ``value``     agai, test_ewma_moves_toward_new_value(), test_first_observation_has_no_zscore(), test_large_deviation_produces_large_zscore(), test_second_observation_computes_zscore_against_prior_baseline() (+46 more)
+### Community 1571 - "FieldStateV1"
+Cohesion: 0.03
+Nodes (111): compute_ewma_update(), Pure incremental EWMA mean/variance/z-score, shared across bus-observing service, Pure incremental EWMA mean/variance update, plus a z-score of ``value``     agai, test_ewma_moves_toward_new_value(), test_first_observation_has_no_zscore(), test_large_deviation_produces_large_zscore(), test_second_observation_computes_zscore_against_prior_baseline(), test_zero_variance_does_not_divide_by_zero() (+103 more)
 
-### Community 1572 - "map_episode_ctx_to_substrate"
-Cohesion: 0.29
-Nodes (11): _coerce(), _make_prov(), map_episode_ctx_to_substrate(), Any, Episodic-continuity adapter — the remembered past enters beliefs.  Rung-4 consum, Map ``ctx['episode_summary']`` → one proposal-marked ``episode:latest`` node., _episode(), test_accepts_json_string_payload() (+3 more)
+### Community 1572 - "stance_handoff.py"
+Cohesion: 0.18
+Nodes (16): test_hash_snapshot_inputs_stable(), test_validate_merged_stance_brief_accepts_minimal(), canonical_json_bytes(), hash_snapshot_inputs(), Any, Pure validators for Mind contracts (no HTTP / service imports beyond schemas)., validate_merged_stance_brief(), validate_merged_stance_brief_optional() (+8 more)
 
 ### Community 1573 - "HeartbeatSubstrate"
-Cohesion: 0.12
-Nodes (20): HeartbeatSubstrate, Owns one quimb MatrixProductState and applies the v0 update rule., One dissipation-ensemble tick: per-site stochastic relaxation         toward thi, Bipartite entanglement entropy at every cut along the chain         (mps.entropy, compute_h1(), _sample_assignment(), test_absorb_actually_changes_the_state(), test_absorb_guards_against_a_site_with_no_right_neighbor() (+12 more)
+Cohesion: 0.09
+Nodes (29): EnsembleH1ResultV1, EnsembleSubstrate: N independent HeartbeatSubstrate trajectories, sharing the sa, Ensemble-level H1 reading. See reconstruction.py's compute_h1_ensemble     for h, HeartbeatSubstrate, HeartbeatSubstrate: the actual tensor-network state.  Design doc: docs/superpowe, Owns one quimb MatrixProductState and applies the v0 update rule., One dissipation-ensemble tick: per-site stochastic relaxation         toward thi, Apply one atom's absorption-and-entangle update. See module docstring. (+21 more)
 
 ### Community 1574 - "test_tension_outreach_trigger.py"
 Cohesion: 0.10
@@ -8564,8 +8592,8 @@ Cohesion: 0.10
 Nodes (18): _no_gpu_allowed(), _persist_spy(), The ambient thermal gate on the visual chain.  GPU work heats the room Juniper s, Asserted at the gate boundary rather than by running the whole chain: the     fa, Fail-open, deliberately: the cost of wrongly allowing is a warm room         for, The kill switch has to actually reach the decision, not just exist., Shape copied verbatim from the running hub on 2026-08-30., The hysteresis tests only ever prove the gate STAYS SHUT. Without this,     muta (+10 more)
 
 ### Community 1578 - "WorldModelService"
-Cohesion: 0.13
-Nodes (11): http_predict(), Any, Tensor, Runs the model forward pass with grad disabled.          Deliberately NOT `with, Tensor build + forward pass, wrapped by `asyncio.wait_for(...,         timeout=W, Runs standalone via `asyncio.create_task` from `_consume_loop`         (fire-and, Optional HTTP entrypoint mirroring vision-host's `/v1/vision/task` --     mainly, ready() (+3 more)
+Cohesion: 0.16
+Nodes (9): http_predict(), Any, Tensor, Runs the model forward pass with grad disabled.          Deliberately NOT `with, Tensor build + forward pass, wrapped by `asyncio.wait_for(...,         timeout=W, Runs standalone via `asyncio.create_task` from `_consume_loop`         (fire-and, Optional HTTP entrypoint mirroring vision-host's `/v1/vision/task` --     mainly, ready() (+1 more)
 
 ### Community 1580 - "test_sql_migration_drift_gate.py"
 Cohesion: 0.07
@@ -8596,8 +8624,8 @@ Cohesion: 0.06
 Nodes (30): 24h read (2026-09-06 19:00Z), A correction to this document's own reverie claim, Acceptance checks, Adapters, not inheritance, Arsonist summary, Correction to the record: it is *not* unconsumed, Cortex is the kickoff (added 2026-09-06), Current architecture (+22 more)
 
 ### Community 1587 - "test_census.py"
-Cohesion: 0.13
-Nodes (27): CensusResult, compute_census(), _is_wildcard(), load_channel_catalog_names(), normalize_channel_name(), Path, Diff the declared channel catalog against channels observed to be     carrying r, Load every declared channel name (exact and wildcard) from     orion/bus/channel (+19 more)
+Cohesion: 0.09
+Nodes (37): CensusResult, compute_census(), _is_wildcard(), load_channel_catalog_names(), normalize_channel_name(), Path, Diff the declared channel catalog against channels observed to be     carrying r, Load every declared channel name (exact and wildcard) from     orion/bus/channel (+29 more)
 
 ### Community 1588 - "proposal_review_routes.py"
 Cohesion: 0.29
@@ -8612,12 +8640,12 @@ Cohesion: 0.11
 Nodes (26): collector(), _rapl_tree(), CPU package power from RAPL (ROADMAP B4).  athena draws 407 W at the PSU with th, The case that actually happens every ~41 minutes. 30 s at ~105 W is 3,150,000,00, After a long stall the counter may have wrapped more than once, and one wrap is, `intel-rapl:0:0` (core) and `intel-rapl:0:1` (dram) are already inside package-0, Reporting the sum without the new socket would silently understate the node by a, A node with no RAPL (or an AMD box on an older kernel) must be ABSENT from the f (+18 more)
 
 ### Community 1591 - "test_doc_semantic_drift_producer.py"
-Cohesion: 0.14
-Nodes (22): _change(), _fake_event(), Unit tests for app/producers/doc_semantic_drift.py's scheduling logic -- cold st, The very first cold-start tick must persist its seeded baseline, not     just ho, Regression guard for the live bug (2026-08-12, real PRs #1571/#1577):     after, A failed publish must not durably record a baseline past the change     that fai, The exact real bug this patch fixes: a redeploy (fresh process, fresh     FakeBu, Regression guard (code review 2026-08-11): the first draft forked a     dedicate (+14 more)
+Cohesion: 0.12
+Nodes (24): _change(), _fake_event(), Unit tests for app/producers/doc_semantic_drift.py's scheduling logic -- cold st, The very first cold-start tick must persist its seeded baseline, not     just ho, Regression guard for the live bug (2026-08-12, real PRs #1571/#1577):     after, A failed publish must not durably record a baseline past the change     that fai, The exact real bug this patch fixes: a redeploy (fresh process, fresh     FakeBu, Regression guard (code review 2026-08-11): the first draft forked a     dedicate (+16 more)
 
 ### Community 1592 - "FieldDigesterWorker"
-Cohesion: 0.08
-Nodes (16): InnerStateCorpusSink, BaseModel, Generic append-only JSONL corpus sink, any pydantic BaseModel payload.  Original, health(), get_settings(), BaseSettings, Settings, FieldDigesterWorker (+8 more)
+Cohesion: 0.07
+Nodes (20): check_field_coherence(), Return 0-1 incoherence score for one node vector., Return per-node incoherence scores (0-1). Empty if no suspicion found., _rule_suspicion(), InnerStateCorpusSink, BaseModel, Generic append-only JSONL corpus sink, any pydantic BaseModel payload.  Original, health() (+12 more)
 
 ### Community 1593 - "test_substrate_mutation_signal_intake.py"
 Cohesion: 0.17
@@ -8660,16 +8688,16 @@ Cohesion: 0.07
 Nodes (27): A consequential action space, and the first budget with a wall behind it, Acceptance checks, Appendix A — power as a continuity cost, Appendix B — candidates considered and rejected, Arsonist summary, Correction: the meter already exists, and it already works — for the wrong box, Current architecture, Files likely to touch (+19 more)
 
 ### Community 1603 - "load_direction_map"
-Cohesion: 0.12
-Nodes (32): DirectionMap, DirectionMapError, load_direction_map(), Path, ValueError, Worse, Load the structural field-channel direction map.  One bit per channel ("which wa, Raised on a malformed map. Loud on purpose: a silently-empty direction map     w (+24 more)
+Cohesion: 0.17
+Nodes (27): DirectionMapError, load_direction_map(), Path, ValueError, Raised on a malformed map. Loud on purpose: a silently-empty direction map     w, Direction map loading. The real shipped YAML is exercised, not only fixtures --, Caught in review 2026-08-14. `unmapped: context_gathering_ratio` (a scalar     i, Regression 2026-08-14. The first version hand-listed availability/     delivery_ (+19 more)
 
-### Community 1604 - "_change"
-Cohesion: 0.15
-Nodes (13): _change(), The embedding host consumes requests serially on CPU (~0.6s each) and     is sha, No "before" text means no cosine. The live batch on 2026-08-13 had 6     of 8 ev, Keyed on the real hunk text, not on change_kind: under --unified=0 a     pure ap, Skipped BEFORE the embedding requests, not after. A 15-chunk new doc     otherwi, A side of only blank lines or spaces is truthy but equally     unmeasurable -- o, test_embedding_requests_are_capped_in_flight(), test_new_file_is_unscoreable() (+5 more)
+### Community 1604 - "test_power_intent_publish.py"
+Cohesion: 0.13
+Nodes (14): _Chassis, Power-intent declaration pins.  This file exists because of a real, live-caught, POWER_INTENT on + bus off is silently fatal to the loop, because     publish() e, A failed chassis start is never retried, so this early return would     otherwis, Bus double whose publish() signature is pinned to the real one., Guard the guard: if OrionBusAsync.publish ever changes arity, this     fails her, The broad except is deliberate -- a failed declaration should cost a     settlem, _RecordingBus (+6 more)
 
 ### Community 1605 - "open_readonly_connection"
-Cohesion: 0.13
-Nodes (17): open_readonly_connection(), Canonical read-only Postgres connection helper.  Moved here 2026-08-19 (review f, Returns a psycopg2 connection with a confirmed read-only session, or     `None`, Shared read-only Postgres connection helper for scripts/analysis/'s measure_*.py, _FakeConn, _FakeCursor, Tests for orion/db_readonly.py -- the canonical read-only Postgres helper.  Move, Existing callers (measure_goal_provenance_streak_distribution.py) that     never (+9 more)
+Cohesion: 0.10
+Nodes (20): open_readonly_connection(), Canonical read-only Postgres connection helper.  Moved here 2026-08-19 (review f, Returns a psycopg2 connection with a confirmed read-only session, or     `None`, Shared read-only Postgres connection helper for scripts/analysis/'s measure_*.py, datetime, Best-effort, per-tick. Returns {} (never raises) on any failure --         the c, Called from _tick() every poll, independent of whether the JSONL         corpus, _FakeConn (+12 more)
 
 ### Community 1606 - "measure_attention_self_model_confidence_baseline.py"
 Cohesion: 0.14
@@ -8683,9 +8711,9 @@ Nodes (27): build_ticks(), CouplingRow, delta_coupling(), fan_rms_analysis(), Fa
 Cohesion: 0.07
 Nodes (27): 1. Clone upstream, 2. Env + compose, 3. Admin key, 4. Deploy Convex functions (one-time), 5. Initialize world, 6. Wire LLM gateway (recommended), 7. Production frontend (stable proxy), Atlas → Circe evacuation (2026-08-29) (+19 more)
 
-### Community 1609 - "test_tension_pressure_baseline.py"
-Cohesion: 0.13
-Nodes (26): _cached_direction_map(), _dump_gate_state(), _load_gate_state(), Producer-side update for `orion.attention.tension`'s deviation gate.  See `orion, Run one real digestion tick through the deviation gate and record the     result, update_tension_pressure(), _empty_state(), Producer-side deviation gate wiring (2026-08-16, docs/superpowers/specs/ 2026-08 (+18 more)
+### Community 1609 - "empty_field_state"
+Cohesion: 0.18
+Nodes (16): empty_field_state(), new_tick_id(), datetime, Field-channel raw-substrate corpus collector (Item 1 v2, roadmap item 1 correcti, append_row() to the anomaly scorer's in-memory buffer is a separate     concern, _read_jsonl(), test_anomaly_scorer_receives_row_even_when_corpus_sink_disabled(), test_field_channel_corpus_appends_with_real_channel_pressures() (+8 more)
 
 ### Community 1610 - "orion-field-digester"
 Cohesion: 0.07
@@ -8696,8 +8724,8 @@ Cohesion: 0.16
 Nodes (25): _FakeFalkorClient, fetch_related_entities / fetch_bridging_turns / fetch_entity_mention_timeline: P, Live-verified shape: 'athena' has a higher raw shared-turn count than     'tesla, Regression: numeric coercion used to happen outside the try/except     wrapping, _run(), test_fetch_bridging_turns_falls_back_to_2hop_bridge(), test_fetch_bridging_turns_no_connection_returns_none_mode(), test_fetch_bridging_turns_none_client_returns_none_mode() (+17 more)
 
 ### Community 1612 - "evidence.py"
-Cohesion: 0.16
-Nodes (19): affected_clusters(), build_evidence_bundle(), _cluster_matches_field(), _cluster_root(), load_graph_nodes_for_clusters(), load_nearby_docs(), Any, Path (+11 more)
+Cohesion: 0.12
+Nodes (25): affected_clusters(), build_evidence_bundle(), _cluster_matches_field(), _cluster_root(), EvidenceBundle, load_graph_nodes_for_clusters(), load_nearby_docs(), Any (+17 more)
 
 ### Community 1613 - "tissue_viz.js"
 Cohesion: 0.09
@@ -8728,16 +8756,16 @@ Cohesion: 0.07
 Nodes (26): 1. Cold start hands Orion's first scarce decision to an action with no evidence, 2. `cost_usd` is notional on a subscription token, 3. The cap cannot be enforced, only observed, 4. The percentage is decoration unless a deferral is written, Acceptance checks, Arsonist summary, Contested scarcity — giving Orion a budget somebody else wants, Current architecture (+18 more)
 
 ### Community 1620 - "derive_workflow_execution_policy"
-Cohesion: 0.18
-Nodes (23): derive_workflow_execution_policy(), _has_explicit_schedule_intent(), _hour_from_token(), next_run_for_recurring_schedule(), _next_weekday_run(), _normalize_prompt(), _one_shot_tonight(), _parse_notify_on() (+15 more)
+Cohesion: 0.26
+Nodes (13): derive_workflow_execution_policy(), _has_explicit_schedule_intent(), _hour_from_token(), _next_weekday_run(), _normalize_prompt(), _one_shot_tonight(), _parse_notify_on(), _parse_time_for_schedule() (+5 more)
 
 ### Community 1621 - "test_substrate_read_contract.py"
 Cohesion: 0.12
 Nodes (25): HostStorageReadV1, BaseModel, `SubstrateReadService` contract — a verb asking the substrate about the real hos, Request published to ``orion:exec:request:SubstrateReadService``., Payload for ``read_kind="host_storage"``., Reply published to ``orion:exec:result:SubstrateReadService:<uuid>``., SubstrateReadQueryV1, SubstrateReadReplyV1 (+17 more)
 
-### Community 1622 - "grammar_retention_loop"
-Cohesion: 0.21
-Nodes (11): grammar_retention_loop(), Settings, Periodic grammar/substrate retention.  Retention already existed and was correct, Yield briefly so a stopping worker thread can observe the stop flag., Run a bounded retention cycle every `grammar_retention_interval_sec`.      This, retention_days_for(), _settle(), health() (+3 more)
+### Community 1622 - "test_worker_endogenous_curiosity_tick.py"
+Cohesion: 0.23
+Nodes (18): _graph_node(), _make_worker(), SimpleNamespace, Unit tests for rung-5 endogenous curiosity tick wiring in substrate-runtime., When no seeds qualify, tick still writes an empty candidate set for observabilit, Evaluator signals are persisted endogenous-first, capped at 8., 2026-07-26 visibility fix: which source/node won a budget slot this     tick mus, A malformed/mocked signal missing focal_node_refs (as several existing     fixtu (+10 more)
 
 ### Community 1623 - "🎛 Profile Knobs (Full Spec)"
 Cohesion: 0.07
@@ -8756,24 +8784,24 @@ Cohesion: 0.17
 Nodes (26): build_import_index(), changed_files(), detect_mesh_host(), _direct_and_one_hop_service_consumers(), discover_services(), _emit_host_summary(), _include_file_for_host(), _load_excludes() (+18 more)
 
 ### Community 1627 - "PowerIntentV1"
-Cohesion: 0.04
-Nodes (78): PowerIntentSettledV1, PowerIntentV1, BaseModel, Power intent and its settlement.  A workload declares what it is about to draw B, A workload announcing an imminent draw, before it starts.      ``expected_watts`, What the meter saw over the intent's window.      THE OUTCOME FIELD EXISTS SO AN, _now(), datetime (+70 more)
+Cohesion: 0.08
+Nodes (35): PowerIntentSettledV1, PowerIntentV1, BaseModel, Power intent and its settlement.  A workload declares what it is about to draw B, A workload announcing an imminent draw, before it starts.      ``expected_watts`, What the meter saw over the intent's window.      THE OUTCOME FIELD EXISTS SO AN, _now(), datetime (+27 more)
 
 ### Community 1628 - "service_logs.py"
-Cohesion: 0.20
-Nodes (20): api_service_logs_services(), build_compose_logs_command(), collect_service_inventory(), discover_loggable_services(), _docker_diagnostics(), Any, Path, Queue (+12 more)
+Cohesion: 0.24
+Nodes (16): api_service_logs_services(), build_compose_logs_command(), collect_service_inventory(), discover_loggable_services(), _docker_diagnostics(), Any, Path, Queue (+8 more)
 
 ### Community 1629 - "test_exo_exploration_routes.py"
 Cohesion: 0.16
 Nodes (14): client(), _ensure_hub_scripts_import_path(), _exo_exploration_test_app(), _FakeResponse, _FakeSession, MonkeyPatch, TestClient, Exo Exploration Hub proxy route tests.  Combines two conventions already in use (+6 more)
 
-### Community 1630 - "main.py"
-Cohesion: 0.07
-Nodes (45): build_llama_server_cmd_and_env(), _ensure_draft_file(), _ensure_hf_gguf_file(), _ensure_mmproj_file(), _ensure_model_file(), _ensure_ngram_file(), _flag_confirmed_supported(), _get_llama_server_build() (+37 more)
+### Community 1630 - "resolve_thinking_launch_policy"
+Cohesion: 0.14
+Nodes (19): GPUConfig, LlamaCppConfig, LLMProfile, LLMProfileRegistry, BaseModel, BaseSettings, LLMProfile, LLMProfileRegistry (+11 more)
 
 ### Community 1631 - "town_continuity.py"
-Cohesion: 0.14
-Nodes (30): TownContinuityReadV1, TownContinuityTurnV1, _created_at_str(), _display_name(), _has_aitown_tag(), _parse_json(), Any, _room_fields() (+22 more)
+Cohesion: 0.13
+Nodes (31): test_slug_for_name_unknown_is_none(), test_thread_id_is_sorted_slugs(), test_thread_id_unknown_is_none(), slug_for_name(), thread_id_for(), Read-back half of conversation memory: the partner's already-synthesized, _created_at_str(), _display_name() (+23 more)
 
 ### Community 1632 - "test_health_monitor.py"
 Cohesion: 0.32
@@ -8795,6 +8823,10 @@ Nodes (25): 1.0 Confirm the host is actually ready, 1.1 Get the repo and clone u
 Cohesion: 0.17
 Nodes (22): _normalize(), _parse_time(), BaseModel, resolve_workflow_schedule_management(), WorkflowScheduleManagementIntent, get_workflow_definition(), _journal_discussion_window_command_intent(), list_workflows() (+14 more)
 
+### Community 1637 - "ScribeService"
+Cohesion: 0.18
+Nodes (8): build_heartbeat_chassis(), lifespan(), Any, FastAPI, Own, independent bus connection publishing SystemHealthV1 to orion:system:health, ScribeService, BaseSettings, Settings
+
 ### Community 1638 - "measure_transport_bus_signal_history.py"
 Cohesion: 0.14
 Nodes (22): build_arg_parser(), BusTick, CadenceStats, compute_baseline(), compute_cadence_stats(), fetch_transport_receipts(), _fmt(), main() (+14 more)
@@ -8803,9 +8835,9 @@ Nodes (22): build_arg_parser(), BusTick, CadenceStats, compute_baseline(), compu
 Cohesion: 0.13
 Nodes (14): _commit(), _init_repo(), Path, Regression test for a real bug found live 2026-08-12: main()'s local     `from o, Regression test for the actual hardest bug in this chain (review     finding, 20, Regression test for the actual root-cause bug this branch spent an     extended, test_changed_paths_noop_when_same_sha(), test_changed_paths_real_git_repo() (+6 more)
 
-### Community 1640 - "0A. Hard architectural mandates"
-Cohesion: 0.17
-Nodes (12): 0A. Hard architectural mandates, Context window discipline, Design mode, Deterministic gates over repeated yelling, Event substrate first, Implementation mode, Metric quality gate, No empty-shell cognition (+4 more)
+### Community 1640 - "check_metric_lineage.py"
+Cohesion: 0.19
+Nodes (16): to_dict(), cmd_drift(), cmd_generic_consumers(), cmd_metric(), cmd_summary(), cmd_unwritten(), _generic_consumers_cached(), _liveness_for_nodes() (+8 more)
 
 ### Community 1641 - "test_dev_economics_producer.py"
 Cohesion: 0.13
@@ -8843,9 +8875,9 @@ Nodes (24): Cortex Exec Substrate Digestion v1 Implementation Plan, End-to-end p
 Cohesion: 0.08
 Nodes (24): Acceptance criteria mapping, File structure, Node-Scoped Biometrics Grammar Ingress Implementation Plan, Phase 1 — Node catalog, Phase 2 — Grammar emitter, Phase 3 — Settings, Docker, bus catalog, Phase 4 — Wire main.py, Phase 5 — Docs and smoke (+16 more)
 
-### Community 1650 - "._publish_conversation_memory"
-Cohesion: 0.27
-Nodes (7): test_slug_for_name_unknown_is_none(), test_thread_id_is_sorted_slugs(), test_thread_id_unknown_is_none(), slug_for_name(), thread_id_for(), Feed one Orion<->partner exchange into two EXISTING hub-owned rails.          Of, Read-back half of conversation memory: the partner's already-synthesized
+### Community 1650 - "attention_escalation.py"
+Cohesion: 0.18
+Nodes (14): ProxyGet, ProxyPost, _build_escalation_request(), _hub_link(), _parse_ts(), Any, datetime, run_attention_escalation_once() (+6 more)
 
 ### Community 1651 - "test_rpc_health_adapter.py"
 Cohesion: 0.16
@@ -8856,8 +8888,8 @@ Cohesion: 0.12
 Nodes (25): _as_utc(), bucket_class_for(), bucket_index(), BucketActivity, build_bucket_activity(), classify_bucket(), _coerce_dt(), fetch_earliest_drive_audit_ts() (+17 more)
 
 ### Community 1653 - "service.py"
-Cohesion: 0.14
-Nodes (17): _import_heartbeat_substrate(), Deferred import: heartbeat's app package isn't a top-level repo     import, and, EnsembleSubstrate: N independent HeartbeatSubstrate trajectories, sharing the sa, ValueError, Site-routing rule for Heartbeat v0's tensor-network substrate.  Resolved this se, Raised when a GrammarEventV1's source_service isn't in the v0 allowlist.      Ca, Raised when an atom_type isn't in ATOM_TYPE_OPERATOR_KIND.      Should be unreac, WHERE + HOW for one GrammarAtomV1. Raises on anything outside v0's     five-orga (+9 more)
+Cohesion: 0.15
+Nodes (16): _import_heartbeat_substrate(), Deferred import: heartbeat's app package isn't a top-level repo     import, and, ValueError, Site-routing rule for Heartbeat v0's tensor-network substrate.  Resolved this se, Raised when a GrammarEventV1's source_service isn't in the v0 allowlist.      Ca, Raised when an atom_type isn't in ATOM_TYPE_OPERATOR_KIND.      Should be unreac, WHERE + HOW for one GrammarAtomV1. Raises on anything outside v0's     five-orga, Mirrors the charter's own ChannelAssignment shape. (+8 more)
 
 ### Community 1654 - "measure_metacog_trend_baseline.py"
 Cohesion: 0.13
@@ -8872,16 +8904,16 @@ Cohesion: 0.14
 Nodes (23): _counts(), _git_show(), _load_path(), loss_pct(), main(), Any, Percent of nodes lost. 0.0 when before is 0 (nothing to lose) or when     the gr, Blob contents at `ref`, or None if it does not exist there. (+15 more)
 
 ### Community 1657 - "test_check_postgres_connection_headroom.py"
-Cohesion: 0.12
-Nodes (20): Headroom, A capacity reading.      `used` and `superuser_used` count CLIENT backends only, Where an ordinary (non-superuser) role is refused., Slots before the postmaster refuses everyone, superusers included., True when the superuser reserve guarantees an operator nothing.          The res, _NotifyAccepted, Tests for the Postgres connection-headroom gate.  Numbers come from the real 202, The reserve does not hold slots back from superusers.      Every client backend (+12 more)
+Cohesion: 0.05
+Nodes (63): connection_params(), Headroom, is_saturation_error(), BaseException, A capacity reading.      `used` and `superuser_used` count CLIENT backends only, Where an ordinary (non-superuser) role is refused., Slots before the postmaster refuses everyone, superusers included., True when the superuser reserve guarantees an operator nothing.          The res (+55 more)
 
 ### Community 1658 - "test_docker_compose_service_bringup.py"
 Cohesion: 0.23
 Nodes (23): _container_row(), _plan_request(), Tests for skills.docker.compose_service_bringup.v1 (DockerComposeServiceBringupV, Real docker output shape, not the same-string-both-places shortcut the other cla, Review finding 2026-08-12: every other classification test (including the short-, A container that looks settled on the first snapshot but has flipped away from r, _run(), _runner_factory() (+15 more)
 
-### Community 1659 - "_offer"
-Cohesion: 0.24
-Nodes (12): _delivered(), _offer(), One tag finds every unsolicited message however it was produced; the     source, From Juniper's end a curiosity message and a tension-triggered outreach     are, The composition prompt explicitly offers this, so it must not be     delivered a, test_a_curiosity_message_is_still_tagged_as_outreach(), test_a_turn_in_flight_blocks_a_curiosity_message_too(), test_empty_text_is_never_shipped() (+4 more)
+### Community 1659 - "_should_request_chat_reply_logprobs"
+Cohesion: 0.28
+Nodes (17): Real, user-facing reply telemetry (CORTEX_CHAT_RETURN_LOGPROBS). Keyed on exact, _should_request_chat_reply_logprobs(), SimpleNamespace, Unit tests for _should_request_chat_reply_logprobs (CORTEX_CHAT_RETURN_LOGPROBS, stance_react/llm_stance_react is the real, live chat-reply mechanism in this, The bug the review caught: harness_finalize_reflect shares llm_route == "chat", The bug the review caught: return_json alone (no response_format) still forces, _step() (+9 more)
 
 ### Community 1660 - "test_allocator_enforcement.py"
 Cohesion: 0.09
@@ -8964,40 +8996,40 @@ Cohesion: 0.08
 Nodes (23): 1. Cast cull + archive, 2. Remaining cards become jobs, 3. Kill the light magnet, 4. Town continuity = existing social-memory, 5. Operator wipe (required for the cull to be real), Acceptance checks, AI Town: cull four NPCs and give the remaining town CallsYne continuity, Arsonist summary (+15 more)
 
 ### Community 1680 - "sandbox_sync.py"
-Cohesion: 0.18
-Nodes (23): _behind_main(), _clear_stale_index_lock(), _configure_push_auth(), _git_or_abort(), _load_fcc_env_value(), CompletedProcess, Path, Refresh Orion's FCC sandbox checkout to current ``origin/main`` on session start (+15 more)
+Cohesion: 0.13
+Nodes (28): _behind_main(), _clear_stale_index_lock(), _configure_push_auth(), _git_or_abort(), _load_fcc_env_value(), CompletedProcess, Exception, Path (+20 more)
 
-### Community 1681 - "test_journal_entry_indexing.py"
-Cohesion: 0.16
-Nodes (21): _as_optional_str(), build_journal_entry_index_payload(), _list_of_str(), Any, Build a denormalized journal retrieval payload.      This stays journal-specific, build_journal_entry_index_select(), Any, datetime (+13 more)
+### Community 1681 - "build_journal_entry_index_select"
+Cohesion: 0.31
+Nodes (8): build_journal_entry_index_select(), Any, datetime, Select, Session, query_journal_entry_index(), _tokens(), test_simple_filtered_retrieval_sql_shape()
 
-### Community 1682 - "test_mood_arc_anomaly_detector.py"
-Cohesion: 0.20
-Nodes (27): detect_anomalies(), load_artifacts(), Inverse of write_artifacts()'s manifest/weights pair (probes.json is     train-t, Reconstruction loss per window, in timestamp order. `fields` must be     the tra, Flags windows whose reconstruction loss exceeds `threshold` --     typically man, score_windows(), _frozen_ratchet_rows(), _make_row() (+19 more)
+### Community 1682 - "FieldChannelCorpusRowV1"
+Cohesion: 0.12
+Nodes (36): get(), detect_anomalies(), Flags windows whose reconstruction loss exceeds `threshold` --     typically man, Regression for a live outage (2026-07-21): orion/mood_arc/fit_encoder.py had a m, The flip side: with scripts/ genuinely available (the normal dev/CLI     environ, test_scripts_import_still_works_lazily_when_available(), _frozen_ratchet_rows(), _make_row() (+28 more)
 
 ### Community 1683 - "main.py"
-Cohesion: 0.16
-Nodes (21): Claude's reply, plus the evidence that it was really Claude.      `model` and `c, RoomClaudeUtteranceV1, build_heartbeat_chassis(), ensure_runtime_dirs(), handle_message(), main(), main_async(), parse_request() (+13 more)
+Cohesion: 0.14
+Nodes (23): build_heartbeat_chassis(), ensure_runtime_dirs(), handle_message(), main(), main_async(), parse_request(), publish_utterance(), Any (+15 more)
 
 ### Community 1684 - "The Sentience Striving Program"
 Cohesion: 0.08
 Nodes (24): 10. Non-goals, 11. Source material, 12. Layer 5 field attention precision-weighted salience — officer review and fix, 2026-07-30, 13. Chat-level/open-loop attention salience — killed and replaced with GWT-coalition Borda rank-aggregation, 2026-07-31, 14. Node-target goal-provenance dominance streak — restart persistence fix, 2026-07-31, 15. Orion's own world-view graph — self-directed enquiry as a program instrument, 2026-08-26, 15a. What it does and does not contribute to the outcomes, 15b. The self-grading problem, named as this program's own failure mode (+16 more)
 
-### Community 1685 - "doc_semantic_drift.py"
-Cohesion: 0.07
-Nodes (59): fork_rpc_client(), Helpers for isolating RPC reply listeners from long-lived bus subscribers., Fork a dedicated bus client with an RPC worker for outbound request/reply traffi, changed_doc_files_with_status(), _commit_subject(), conventional_commit_prefix(), diff_hunks(), doc_semantic_drift_changes() (+51 more)
+### Community 1685 - "test_doc_semantic_drift.py"
+Cohesion: 0.23
+Nodes (23): changed_doc_files_with_status(), (change_kind, path) for every real ``*.md`` file touched between two     commits, _commit(), _git(), _init_repo(), Path, Unit tests for ``orion/structural_mass/doc_semantic_drift.py`` -- built against, The real reason this exists: ``diff_scoped_embedding_diff=None`` has     two str (+15 more)
 
-### Community 1686 - "test_vision_channel_signal.py"
-Cohesion: 0.14
-Nodes (23): perceptual_blindness_pressure(), perceptual_yield(), 0-1 availability pressure from the age of the newest vision artifact.      Answe, Mean detected objects per artifact over a recent window.      A raw observable,, 0-1 pressure for "artifacts are arriving but carry nothing".      The failure th, vision_channel_staleness_pressure(), Unit tests for the perceptual-health signals feeding capability:vision.  An avai, The whole point of gate item 4. At health the newest vision message is a     fra (+15 more)
+### Community 1686 - "TestBusSynapticPredictionError"
+Cohesion: 0.03
+Nodes (68): bus_synaptic_prediction_error(), perceptual_blindness_pressure(), perceptual_yield(), 0-1 score: what FRACTION of live bus-synaptic edges are currently     anomalous, 0-1 availability pressure from the age of the newest vision artifact.      Answe, Mean detected objects per artifact over a recent window.      A raw observable,, 0-1 pressure for "artifacts are arriving but carry nothing".      The failure th, vision_channel_staleness_pressure() (+60 more)
 
 ### Community 1687 - "measure_rpc_health_baseline.py"
 Cohesion: 0.14
 Nodes (19): build_arg_parser(), _channel_prefix(), compute_baseline(), fetch_container_logs(), _fmt(), main(), parse_log_lines(), _percentile() (+11 more)
 
 ### Community 1688 - "main"
-Cohesion: 0.13
-Nodes (19): clear_alarm(), default_state_file(), _load_state(), main(), notify_alarm(), _notify_alarm_locked(), Any, (idle_total, idle_longer_than_stale_hours). Distinguishes churn from a leak. (+11 more)
+Cohesion: 0.08
+Nodes (34): clear_alarm(), default_state_file(), _load_state(), main(), notify_alarm(), _notify_alarm_locked(), Any, (idle_total, idle_longer_than_stale_hours). Distinguishes churn from a leak. (+26 more)
 
 ### Community 1689 - "SchedulerCursorStore"
 Cohesion: 0.14
@@ -9011,9 +9043,9 @@ Nodes (21): InterestRule, Any, Pattern, Keyword/price interest scoring.  Deliber
 Cohesion: 0.18
 Nodes (22): pg_conn(), connection, create_crawl_run(), ensure_tables(), finish_crawl_run(), get_current(), insert_observed(), list_crawl_runs() (+14 more)
 
-### Community 1692 - "_maybe_publish_spark_introspect"
-Cohesion: 0.30
-Nodes (11): _maybe_publish_spark_introspect(), Future, Chat-turn candidates feed spark-introspector; internal RPCs (introspect_spark,, _run_async(), _should_publish_spark_candidate(), _body(), MonkeyPatch, test_maybe_publish_allows_hub_like_chat() (+3 more)
+### Community 1692 - "setupMemoryGraphBridgeModal"
+Cohesion: 0.14
+Nodes (18): applyHashToTab(), buildMemoryGraphSuggestUserContent(), closeMemoryGraphBridgeModal(), collectConversationTurnsUpTo(), ensureMemoryGraphBridgeDraftViz(), ensureOrganSignalsGraph(), flushMemoryGraphBridgeDraftForm(), formatMemoryGraphBridgeDiagnosticsBlock() (+10 more)
 
 ### Community 1693 - "test_topic_foundry_scheduler_policy.py"
 Cohesion: 0.12
@@ -9023,29 +9055,29 @@ Nodes (22): next_wait_seconds(), Any, Pure timing/retry policy for the topic-fou
 Cohesion: 0.24
 Nodes (9): createController(), downscale(), dragCarriesImage(), formatBytes(), imageFilesFrom(), assert, buildDom(), test (+1 more)
 
-### Community 1695 - "settings.py"
-Cohesion: 0.15
-Nodes (13): BaseSettings, Recall service settings.      Source-of-truth precedence:       1) Environment v, Settings, build_vector_policy(), _profile_vector_top_k(), Any, Shared recall source policy — vector removal diagnostics (vector no longer fetch, Vector retrieval was removed from orion-recall; always disabled (diagnostics onl (+5 more)
+### Community 1695 - "recall_v2.py"
+Cohesion: 0.08
+Nodes (30): build_recall_v2_plan(), _contains_any(), _extract_entities(), _extract_exact_anchor_tokens(), _extract_project_anchors(), _pageindex_candidates(), Any, RecallV2Plan (+22 more)
 
-### Community 1696 - "upsert_spark_telemetry"
-Cohesion: 0.23
-Nodes (10): Any, Session, Idempotent spark_telemetry persistence keyed by correlation_id., upsert_spark_telemetry(), Tests for idempotent spark_telemetry persistence., Regression: ON CONFLICT SET must target DB column 'metadata', not Python attr 'm, test_on_conflict_update_uses_metadata_column_not_python_attr(), test_upsert_filters_unknown_keys() (+2 more)
+### Community 1696 - "test_vision_affect_quality_eval.py"
+Cohesion: 0.14
+Nodes (15): _cfg(), _fixture_clip(), SimpleNamespace, Live quality eval for the vision affect backend, NOT a unit test.  Requires a li, The check that would have caught the replaced backend., It was handed stills only. Any audio claim is fabricated., The fixture is noise. detection_rate must say so -- that number is what     the, AffectGPT: ~10-20s inference warm, on top of its own clip handling, to     retur (+7 more)
 
-### Community 1697 - "test_tts_multi_reference_voice.py"
-Cohesion: 0.12
-Nodes (23): Resolve a speaker reference to one or more wav files.      A DIRECTORY means mul, _resolve_speaker_wav_refs(), Multi-reference speaker resolution: a directory of wavs, not just one file.  Why, gpt_cond_len caps the concatenation, so which files come first matters.      Dir, The dir sits under a :ro mount that also holds provenance text., An empty dir must not resolve to "no reference" and fall through.      Falling b, Containment still applies -- a directory must not widen the escape., Containment regression guard for the directory branch.      `glob` does not reso (+15 more)
+### Community 1697 - "_resolve_speaker_wav_refs"
+Cohesion: 0.11
+Nodes (20): _natural_key(), Path, Sort key that orders chunk_2 before chunk_10.      Plain `sorted()` is lexicogra, Resolve a speaker reference to one or more wav files.      A DIRECTORY means mul, _resolve_speaker_wav_refs(), The dir sits under a :ro mount that also holds provenance text., An empty dir must not resolve to "no reference" and fall through.      Falling b, Containment still applies -- a directory must not widen the escape. (+12 more)
 
 ### Community 1698 - "test_stop_worktree_wip_snapshot.py"
 Cohesion: 0.18
 Nodes (18): _git(), _info(), CompletedProcess, Path, Real git repos, not mocks -- this module is fundamentally git-plumbing (write-tr, A real, minimal git repo -- one commit, a clean working tree., repo(), test_changed_dirty_state_produces_a_new_snapshot() (+10 more)
 
-### Community 1699 - "_event"
-Cohesion: 0.17
-Nodes (12): _event(), The reason this is derived rather than a uuid4. The producer re-scores     a who, One commit routinely touches several docs -- they must not collapse     onto a s, A doc edited across two commits is two real observations, not one., The validator fills a blank; it must not clobber a real value from     the wire,, Honest bound on the idempotency claim. `event_id` is (sha, path), so     a retry, test_distinct_files_in_one_commit_get_distinct_keys(), test_event_id_is_derived_from_sha_and_path() (+4 more)
+### Community 1699 - "maybe_send_email"
+Cohesion: 0.19
+Nodes (16): maybe_send_email(), Attempt the email and RETURN what happened.      Previously returned None: the o, _Payload, deferred", not "skipped": attention_escalation.py emails exactly     severity==", It used to return None on four of five paths; a None here silently maps     back, smtplib.send_message raises only when EVERY recipient is refused; on a     parti, The whole point: a failure must not read as success. This is the shape     that, test_a_failed_send_is_never_reported_as_sent() (+8 more)
 
 ### Community 1700 - "test_fleet_roster_coverage.py"
-Cohesion: 0.12
-Nodes (23): _absent(), _catalog(), A fleet total can never quietly shed a whole machine.  `measurements_missing` cl, [] is a current producer saying 'the whole roster reported'. That is a real clai, circe is run intermittently to save cost, so its silence is expected; the same s, Regression guard: this patch must not repurpose the flag it declined to repurpos, The computation under test, as publish_cluster performs it., The live case. athena and atlas reporting, circe down. (+15 more)
+Cohesion: 0.11
+Nodes (25): NodeProfile, Any, _absent(), _catalog(), A fleet total can never quietly shed a whole machine.  `measurements_missing` cl, [] is a current producer saying 'the whole roster reported'. That is a real clai, circe is run intermittently to save cost, so its silence is expected; the same s, Regression guard: this patch must not repurpose the flag it declined to repurpos (+17 more)
 
 ### Community 1701 - "2026-07-07-orion-embodiment-cd.md"
 Cohesion: 0.09
@@ -9075,17 +9107,17 @@ Nodes (22): A.1 Where `/capabilities` is built, A.2 Field-by-field source, defau
 Cohesion: 0.25
 Nodes (8): _assistant_visible_word_count(), HumanMessage, _parse_timestamp(), datetime, Read-only parser for local Claude Code session transcripts (``~/.claude/projects, One real, Juniper-typed turn, already stripped of harness scaffolding., Shared with parse_transcript_file's inline logic -- both need the same     "stri, Word count of only the *visible* text an assistant turn produced --     ``type =
 
-### Community 1708 - "Event"
-Cohesion: 0.03
-Nodes (105): ClosureHandler, JuniperAffectiveStateV1, BaseModel, Bus payload schema for the Juniper affective-state signal's ``orion:substrate:ju, set_active_goal(), build_heartbeat_chassis(), main(), _main_async() (+97 more)
+### Community 1708 - "test_affective_state_producer.py"
+Cohesion: 0.16
+Nodes (17): _fake_event(), datetime, Unit tests for app/producers/affective_state.py's scheduling logic -- publish-ev, A missing/misconfigured mount must not silently publish an empty     window fore, Not mocked -- exercises the real wiring between _score_window,     orion.dev_eco, The first tick's window is cold_start_lookback_sec wide and therefore     OVERLA, The flag clears on a SUCCESSFUL publish, not merely on having ticked.      A fai, A real all-zero window ('checked, no new messages') is a genuine     observation (+9 more)
 
 ### Community 1709 - "WorldModelTaskRequestPayload"
-Cohesion: 0.24
-Nodes (16): Request to run the encoder+dynamics forward pass over a trajectory     window an, WorldModelTaskRequestPayload, _make_worker(), _mock_bus(), Unit tests for the world-model publish tick -- the first real producer for ``ori, The defensive path from a real embedding of the wrong length flowing     all the, Regression guard (review finding): a correctly-dimensioned but STALE     cached, test_world_model_publish_tick_disabled_is_noop() (+8 more)
+Cohesion: 0.30
+Nodes (14): Request to run the encoder+dynamics forward pass over a trajectory     window an, WorldModelTaskRequestPayload, _make_worker(), _mock_bus(), Unit tests for the world-model publish tick -- the first real producer for ``ori, The defensive path from a real embedding of the wrong length flowing     all the, Regression guard (review finding): a correctly-dimensioned but STALE     cached, test_world_model_publish_tick_disabled_is_noop() (+6 more)
 
-### Community 1710 - "WorldModelTrajectoryStepV1"
-Cohesion: 0.16
-Nodes (16): One timestep of the six required feature groups. Callers that lack a     real va, WorldModelTrajectoryStepV1, Validates each step's declared `dim` against the configured encoder     input di, trajectory_steps_to_tensors(), FeatureGroupDims, _dims(), End-to-end (no bus, no HTTP) coverage of the CPU inference path: trajectory payl, WM_TIMEOUT_S was declared in Settings/.env_example but never actually     read a (+8 more)
+### Community 1710 - "test_service_prediction.py"
+Cohesion: 0.13
+Nodes (18): dtype, Validates each step's declared `dim` against the configured encoder     input di, trajectory_steps_to_tensors(), _dims(), End-to-end (no bus, no HTTP) coverage of the CPU inference path: trajectory payl, WM_TIMEOUT_S was declared in Settings/.env_example but never actually     read a, Settings' default WM_DIM_* values must actually build a valid     FeatureGroupDi, Regression test: torch's grad-enabled flag is thread-local, so a bare     `with (+10 more)
 
 ### Community 1711 - "measure_goal_provenance_streak_distribution.py"
 Cohesion: 0.18
@@ -9112,8 +9144,8 @@ Cohesion: 0.20
 Nodes (18): _FakeFalkorClient, _fusion_profile(), fetch_bus_synaptic_anomaly_fragments: fixed anomaly Cypher against orion_bus_syn, Regression test (code review, 2026-09-03): fuse_candidates()'s     low_info_soci, 2026-09-03: the recency filter moved out of this query -- an edge     older than, _recent_epoch(), _run(), test_both_anomaly_kinds_combine_and_respect_max_items() (+10 more)
 
 ### Community 1717 - "fallback_watch.py"
-Cohesion: 0.12
-Nodes (22): build_alert_request(), count_backlog(), evaluate_once(), fallback_watch_loop(), format_alert(), _load_state(), notify_is_configured(), datetime (+14 more)
+Cohesion: 0.17
+Nodes (16): count_backlog(), evaluate_once(), fallback_watch_loop(), format_alert(), _load_state(), notify_is_configured(), datetime, Watcher: alert when the ``bus_fallback_log`` backlog crosses 5, 10, 15, ...  ## (+8 more)
 
 ### Community 1718 - "_resolve"
 Cohesion: 0.14
@@ -9175,41 +9207,41 @@ Nodes (21): Acceptance checks, AGENTS.md pointer, Arsonist summary, CLI — `scr
 Cohesion: 0.09
 Nodes (21): Acceptance checklist, Arsonist summary, Athena cabinet sensory node (Nano ESP32) — design, Automation, Biometrics integration, Current architecture (grounded), Decisions locked, End-to-end data flow (+13 more)
 
-### Community 1733 - "_resolve_latest_frame_path"
-Cohesion: 0.21
-Nodes (11): The "on-demand capture" primitive P1's design doc calls for --     docs/superpow, _resolve_latest_frame_path(), Backward compat: a request with neither image_path/frame_path NOR     use_latest, An explicit image_path always takes priority -- use_latest_frame is     only con, test_load_image_explicit_image_path_wins_over_use_latest_frame(), test_load_image_use_latest_frame_true_resolves_without_image_path(), test_load_image_without_image_path_or_use_latest_frame_still_raises_as_before(), test_resolve_latest_frame_path_empty_dir_raises() (+3 more)
+### Community 1733 - "TestTheCycleBudget"
+Cohesion: 0.15
+Nodes (10): Run a real cycle with fake per-table work of known duration.          Returns [(, The old behaviour, kept reachable: max_cycle_elapsed_sec=None is opt-out., The starvation bug this exists to prevent.          grammar_events is FIRST in G, A slow early table shrinks the NEXT share; shares then grow as the divisor falls, A table dropped from a cycle with no log line is indistinguishable from a table, The budget adds a bound; it must not RELAX the existing one., Asserts the VALUE the loop actually hands to run_one_retention_cycle.          T, Getting this backwards turns a config typo into silently-disabled retention whos (+2 more)
 
 ### Community 1734 - "sanitize_metadata"
 Cohesion: 0.17
 Nodes (20): _log_rejected(), _metadata_byte_size(), PropertyCathedralError, Any, ValueError, Metadata size/key caps to prevent property-graph cathedral bloat., Metadata violates property cathedral caps and fail_closed is enabled., Return sanitized metadata and rejected key names.      Key retention uses **inse (+12 more)
 
-### Community 1735 - "smoke_rdf.py"
-Cohesion: 0.60
-Nodes (3): main(), test_builder(), test_schemas()
+### Community 1735 - "McpPreflightError"
+Cohesion: 0.22
+Nodes (14): cleanup_mcp_config(), _deep_replace(), McpPreflightError, _probe_convex_auth(), _probe_convex_version(), Any, Exception, Path (+6 more)
 
 ### Community 1736 - "test_check_env_template_parity.py"
 Cohesion: 0.13
 Nodes (20): Path, The failure this gate exists for is a key that is PRESENT but short.  2026-09-05, A service with no local .env is not deployable here; do not invent a     failure, The motivating case, reproduced from the real values., 29 services were in this state. Blocking here would make the gate noise,     and, Local overrides are legitimate: secrets, host URLs, tuned thresholds.     A gate, A local list may be a SUPERSET -- an operator adding a channel early is     not, The templates document wrapping these in single quotes for shell safety,     so (+12 more)
 
-### Community 1737 - "test_dead_profiles_removed.py"
-Cohesion: 0.17
-Nodes (8): Not a real regression test on its own -- guards the fixture data     above again, resolve_target() itself never raises -- an unmapped task_type falls     back to, The one profile from the same original batch that is NOT dead weight     -- desi, The only guard that ever named want_pose (pipeline_retina_dense's     pose_estim, test_dead_task_types_no_longer_route_anywhere(), test_identity_face_deliberately_survives(), test_pair_list_names_and_task_types_are_actually_paired(), test_want_pose_removed_from_known_guard_flags()
+### Community 1737 - "test_graph_write_intent.py"
+Cohesion: 0.29
+Nodes (14): GraphWriteCompatibilityV1, GraphWriteEdgePayloadV1, GraphWriteIntentV1, GraphWriteNodePayloadV1, GraphWriteProvenanceV1, BaseModel, datetime, Graph write intent contract for persistence routing. (+6 more)
 
-### Community 1738 - "test_digestion_significance.py"
-Cohesion: 0.17
-Nodes (18): Recompute `state.sustained_load_pressure` if `check_interval_sec` has     elapse, update_significance_pressure(), _empty_state(), _FakeStore, _loaded_steady_payloads(), datetime, _RaisingStore, Producer-side wiring for `orion.field.significance` (2026-08-18, docs/ superpowe (+10 more)
+### Community 1738 - "test_workflow_schedule_store.py"
+Cohesion: 0.29
+Nodes (16): WorkflowScheduleUpdatePatchV1, _analytics_for(), _dispatch(), datetime, test_attention_signals_dedupe_and_recovery(), test_confirmed_success_reports_healthy(), test_durable_create_load(), test_history_includes_lifecycle_events() (+8 more)
 
 ### Community 1739 - "FalkorEpisodicFederator"
-Cohesion: 0.21
-Nodes (14): FalkorEpisodicFederator, Any, Cypher-native replacement for the ``orion:enrichment``/``orion:chat``     slice, _FakeClient, Real orion_recall Entity/Tag .name values are raw free chat text (live     examp, CollapseEvent (services/orion-meta-tags's collapse-triage writer,     2026-07-22, test_fetch_degrades_to_empty_list_on_client_error(), test_fetch_degrades_to_empty_list_when_no_client_configured() (+6 more)
+Cohesion: 0.16
+Nodes (16): FalkorEpisodicFederator, Any, Triple, Cypher-native replacement for the ``orion:enrichment``/``orion:chat``     slice, _to_iri(), _FakeClient, Real orion_recall Entity/Tag .name values are raw free chat text (live     examp, CollapseEvent (services/orion-meta-tags's collapse-triage writer,     2026-07-22 (+8 more)
 
-### Community 1740 - "_fetch_current_daydream"
-Cohesion: 0.11
-Nodes (22): _daydream_age_phrase(), _fetch_current_daydream(), Newest usable reverie-diffusion caption as (age_sec, caption), or None.      Rai, Coarse relative age. Deliberately vague -- the exact minute a daydream     happe, _install_fake_engine(), _install_fake_scripts_pg_engine(), _install_fake_scripts_settings(), `_fetch_embodied_presence` does a local `from scripts.settings import     settin (+14 more)
+### Community 1740 - "WorldPulseStreamConsumer"
+Cohesion: 0.18
+Nodes (7): Handler, Logger, Idempotent handle + ack for a single stream message., Reclaim messages left pending by a crashed/slow consumer; DLQ the poisonous., Read + handle new (never-delivered) messages. Returns count handled., Consumer-group reader for the world-pulse run-result stream.      Delivery contr, WorldPulseStreamConsumer
 
-### Community 1741 - "test_chat_turn_affect.py"
-Cohesion: 0.11
-Nodes (21): 2026-08-25: the per-chat-turn affect bracket's policy and failure handling.  Wha, The post-turn call site is inside a `finally`. If fire() raised there     it wou, A failed pre leg is a reason the post leg is the ONLY read this turn     gets --, The lock and state are module-level singletons shared with the real     ambient, record_state defaults to True -- the manual button and ambient loop     must be, chat_correlation_id must be OMITTED, not sent as null, for the two     pre-exist, Anything not exactly off/voice/all resolves to "off" -- NOT to the     "voice" d, A settings object predating this feature (an older container image     still on (+13 more)
+### Community 1741 - "_run"
+Cohesion: 0.05
+Nodes (50): 2026-08-25: the per-chat-turn affect bracket's policy and failure handling.  Wha, Not just requests.RequestException -- a detached task that dies on a     ValueEr, Never queued, never retried -- and crucially, the caller that already     holds, asyncio holds only a WEAK reference to a running task, and both real     call si, The post-turn call site is inside a `finally`. If fire() raised there     it wou, The finding: _capture_blocking holds the shared lock for the WHOLE     capture (, A failed pre leg is a reason the post leg is the ONLY read this turn     gets --, affect_ambient_loop computes "is a tick due" from     state.last_attempt_at agai (+42 more)
 
 ### Community 1742 - "test_field_digester_client.py"
 Cohesion: 0.13
@@ -9220,8 +9252,8 @@ Cohesion: 0.19
 Nodes (21): _compute_entity_relatedness_boost_map(), Phase 2 of entity-graph-reasoning (docs/superpowers/specs/     2026-07-19-recall, _compute_entity_relatedness_boost_map (Phase 2 of entity-graph-reasoning, docs/s, CRITICAL regression, found in code review: fetch_entity_degrees     returning {}, The actual regression this patch fixes, live-confirmed: 'orion' at     degree 28, A genuinely rare/specific entity (low degree) must NOT be caught by     the same, A turn that mentions the query's entity but was never fetched by the     recency, A genuinely rare direct-matched entity (low degree, confirmed via     fetch_enti (+13 more)
 
 ### Community 1744 - "test_main.py"
-Cohesion: 0.14
-Nodes (19): _bundle(), EvidenceBundle, The other half of the allowlist fix: docker-compose.yml has to put     the real, No CLAUDE_CODE_OAUTH_TOKEN key at all (not even empty) when the     setting is u, If this service is ever deployed (a real .env with a real token     sitting next, A manually pasted `claude setup-token` output commonly picks up     leading/trai, Regression guard at the settings-contract level: no field named     ANTHROPIC_AP, Deterministic check (CLAUDE.md sec 4) on the actual runtime wiring     surface, (+11 more)
+Cohesion: 0.13
+Nodes (21): build_subprocess_env(), Env for the `claude -p` subprocess, built from an allowlist. See the     module-, _bundle(), EvidenceBundle, The other half of the allowlist fix: docker-compose.yml has to put     the real, No CLAUDE_CODE_OAUTH_TOKEN key at all (not even empty) when the     setting is u, If this service is ever deployed (a real .env with a real token     sitting next, A manually pasted `claude setup-token` output commonly picks up     leading/trai (+13 more)
 
 ### Community 1745 - "_evaluate"
 Cohesion: 0.14
@@ -9243,9 +9275,9 @@ Nodes (18): main(), parse_args(), _parse_dt(), datetime, Namespace, Any, Path, w
 Cohesion: 0.14
 Nodes (10): FakeConn, _FakeTxn, datetime, _rows(), test_build_observations_uses_the_row_theme_key_not_the_loop_id(), test_dry_run_reports_but_writes_nothing(), test_live_run_writes_outcome_and_refractory(), test_loop_already_decayed_once_is_not_reported_or_rewritten_on_rerun() (+2 more)
 
-### Community 1750 - "load_identity_file"
-Cohesion: 0.35
-Nodes (9): build_identity_context(), load_identity_file(), Any, Path, resolve_identity_path(), Path, test_build_identity_context_tolerates_missing_sections(), test_load_identity_file_and_build_context() (+1 more)
+### Community 1750 - "model_runtime.py"
+Cohesion: 0.17
+Nodes (8): FaceExtractionResult, AffectGptRuntime, AssessmentResult, Settings, Warm AffectGPT model wrapper.  Ports the exact working sequence proven live 2026, Loads once in `load()`; `assess()` is safe to call repeatedly., BaseSettings, Settings
 
 ### Community 1751 - "db.py"
 Cohesion: 0.38
@@ -9359,9 +9391,9 @@ Nodes (20): Acceptance checks, Arsonist summary, Build findings (phases 1+2, 202
 Cohesion: 0.10
 Nodes (20): Acceptance checks, Analysis verb (separate), Arsonist summary, Current architecture, Enrichment service (commit-triggered, not a cognition loop), Files likely to touch, Layer 1 — inspect, Layer 2 — induce (+12 more)
 
-### Community 1779 - "suggest_runner.py"
-Cohesion: 0.13
-Nodes (31): build_memory_graph_suggest_options(), Any, Try quick lane first, then metacog if draft JSON cannot be extracted., LLM options aligned with Hub memory_graph_suggest structured output., suggest_once(), suggest_with_escalation(), completion_budget_for_transcript(), _lookup_value() (+23 more)
+### Community 1779 - "compact_suggest_draft_json_schema"
+Cohesion: 0.11
+Nodes (26): compact_schema_for_llamacpp(), compact_suggest_draft_json_schema(), Any, Full Pydantic JSON schema (may include $defs / $ref)., Strip Pydantic noise; keep inline object shapes only., Stage-1 schema: top-level keys + array item shapes without $ref/oneOf., suggest_draft_json_schema(), extract_gateway_structured_diagnostics() (+18 more)
 
 ### Community 1780 - "test_causal_geometry_producer.py"
 Cohesion: 0.19
@@ -9371,9 +9403,9 @@ Nodes (19): _divergent_channels(), _field_edges(), _fixture_topology(), _points_
 Cohesion: 0.12
 Nodes (11): _FakeAnchorSlice, _FakeRedisClient, Tests for orion/substrate/chat_stance_belief_bus.py (self-model rebuild arc, 202, Review finding (2026-09-05): this module is called on essentially     every real, Review finding (2026-09-05): every current shift_kind producer     uppercases it, test_build_anchor_summary_real_content_marks_degraded(), test_publish_real_content_reaches_the_client(), test_publish_skips_quietly_when_no_redis() (+3 more)
 
-### Community 1782 - "test_reverie_compaction_request.py"
-Cohesion: 0.27
-Nodes (9): _broadcast(), _chain(), Phase E — compaction request (queue only). A settled chain queues a typed ask; n, test_chain_no_request_when_flag_off(), test_chain_queues_request_when_flag_on(), test_request_evidence_refs_capped(), test_settled_chain_builds_consolidate_request(), test_unknown_theme_yields_no_request() (+1 more)
+### Community 1782 - "load_ambient_audio_snapshot"
+Cohesion: 0.24
+Nodes (15): load_ambient_audio_snapshot(), _parse_received_at(), Any, datetime, Path, Return validated audio levels or ``None`` to omit ``ambient_audio``., Path, Tests for host ambient audio snapshot ingest and biometrics pipeline wiring. (+7 more)
 
 ### Community 1783 - "Contracts"
 Cohesion: 0.10
@@ -9384,16 +9416,16 @@ Cohesion: 0.12
 Nodes (10): build_dev_economics_summary(), Shapes recent ``dev_economics_ledger_log`` rows into a rollup + a     recent-tic, _FakeConn, _FakeEngine, dev-economics ledger section of the Cocreation Signals tab -- first real consume, test_all_unpriced_reports_none_not_fabricated_zero(), test_dev_economics_endpoint_reports_absent_when_no_rows(), test_empty_rows_reports_a_real_absent_fact_not_an_error() (+2 more)
 
 ### Community 1785 - "mood_arc_status_routes.py"
-Cohesion: 0.20
-Nodes (20): _correlated_channel_series_sync(), _design_doc_status(), downstream_triggers(), _downstream_triggers_sync(), _first_sentences(), inference_trace(), _inference_trace_sync(), _iso_utc() (+12 more)
+Cohesion: 0.19
+Nodes (21): _correlated_channel_series_sync(), _design_doc_status(), downstream_triggers(), _downstream_triggers_sync(), _first_sentences(), inference_trace(), _inference_trace_sync(), _iso_utc() (+13 more)
 
 ### Community 1786 - "test_cabinet_sensors_api.py"
 Cohesion: 0.15
 Nodes (12): client(), _frame(), Path, Tests for Hub GET /api/cabinet/sensors/latest (cabinet Nano snapshot)., test_absent_sensor_keys_not_zero_filled(), test_dual_nano_merge_in_latest(), test_fresh_frame_includes_magnetic_and_uv_measurements(), test_missing_boot_returns_boot_null() (+4 more)
 
-### Community 1787 - "_run"
-Cohesion: 0.12
-Nodes (20): Never queued, never retried -- and crucially, the caller that already     holds, The finding: _capture_blocking holds the shared lock for the WHOLE     capture (, affect_ambient_loop computes "is a tick due" from     state.last_attempt_at agai, Scope "all" fires on typed turns too. The subtitle is rendered to the VL     mod, test_chat_capture_does_not_disturb_ambient_scheduling_or_the_panel(), test_fire_sends_trigger_and_chat_correlation_id(), test_losing_the_shared_slot_drops_the_capture(), test_post_leg_waits_for_its_own_pre_leg_instead_of_racing_it() (+12 more)
+### Community 1787 - "RosterEntry"
+Cohesion: 0.28
+Nodes (13): build_compose_build_command(), build_compose_command(), build_compose_up_command(), execute_remediation(), RemediationResult, _run_command(), RosterEntry, _entry() (+5 more)
 
 ### Community 1788 - "test_hub_agent_mode_fcc_routing.py"
 Cohesion: 0.12
@@ -9408,8 +9440,8 @@ Cohesion: 0.10
 Nodes (20): Background admission, and who it now protects (ROADMAP A3), Background-priority routes, Claude Code / free-claude-code (FCC) passthrough, Consumed Channels, Environment Variables, `GET /admission` -- what the gate actually did (ROADMAP A5), Health Check, HTTP endpoints (+12 more)
 
 ### Community 1791 - "ServiceState"
-Cohesion: 0.18
-Nodes (30): _attention_event(), Enum, str, _reset_hour_window(), ServicePhase, ServiceState, transition(), TransitionInput (+22 more)
+Cohesion: 0.19
+Nodes (29): _attention_event(), Enum, str, _reset_hour_window(), ServicePhase, ServiceState, transition(), TransitionInput (+21 more)
 
 ### Community 1792 - "test_sql_chat_fetch_by_id.py"
 Cohesion: 0.15
@@ -9423,9 +9455,9 @@ Nodes (13): _Conn, The floor asks the pipeline's pending markers, not the clock.
 Cohesion: 0.13
 Nodes (17): _domain_map(), AST, The reducer's domain map must not outlive a domain's producer.  CLAUDE.md sectio, Set equality, not subset.      Subset in one direction alone misses the real bug, The AST/HOT replay harness carries a SECOND copy of this map.      `scripts/anal, `transport_prediction_error()` was deleted 2026-07-31, not just unwired.      It, The bypasses code review actually demonstrated, asserted so they stay closed., The exact bypass review reproduced: add the retired domain on a later line. (+9 more)
 
-### Community 1795 - "datetime"
-Cohesion: 0.18
-Nodes (11): datetime, Truly first-ever tick: no baseline row anywhere, and no historical     closed da, Cold-start seeding: n==0, last_day=None, but a real historical closed     day (2, Multiple ticks the same UTC day must not re-derive/re-absorb anything     -- sum, The real day-boundary update: absorbs the prior day's real uncapped     total in, A tiny real variance (e.g. two nearly-identical closed days) must be     floored, test_derive_daily_risk_cap_carries_forward_within_same_day(), test_derive_daily_risk_cap_falls_back_to_static_when_no_history_at_all() (+3 more)
+### Community 1795 - "main.py"
+Cohesion: 0.22
+Nodes (14): build_heartbeat_chassis(), main(), _main_async(), monitor_ups(), _publish_event(), Own, independent bus connection publishing SystemHealthV1 to orion:system:health, _run_shutdown(), setup_logging() (+6 more)
 
 ### Community 1796 - "GpuInspector"
 Cohesion: 0.17
@@ -9519,6 +9551,10 @@ Nodes (19): Acceptance checks, Arsonist summary, Current architecture, Files lik
 Cohesion: 0.10
 Nodes (19): Acceptance checks, Agent self-check (anti-slop), Arsonist summary, Biographical curiosity miss — celebrate without probing, Current architecture, Deeper cut, Deeper cut (follow-on; proposal-mode cognition), Evidence appendix (incident) (+11 more)
 
+### Community 1819 - "ProposalRuntimeWorker"
+Cohesion: 0.15
+Nodes (10): health(), get_settings(), BaseSettings, Settings, ProposalRuntimeWorker, _existing_frame(), _field(), 2026-07-22 (SelfStateV1 burn): the poll trigger is FieldStateV1 directly     now (+2 more)
+
 ### Community 1820 - "Curiosity: Orion's own time, and its own graph"
 Cohesion: 0.10
 Nodes (19): 10. The gates, in order, 11. Files, 12. Inspecting it live, 13. What this does not establish, 14. Configuration, 15. Source material, 1. Why this exists, and the two things it is not, 2. The shape (+11 more)
@@ -9547,9 +9583,9 @@ Nodes (12): Deterministic unit tests for measure_rpc_health_baseline.py.  No doc
 Cohesion: 0.18
 Nodes (19): Path, SimpleNamespace, Tests for the session_stop_agent_board Stop hook's staleness filtering.  Regress, Mode (c), found live 2026-07-28: the nag's own remedy text says     'resolve/par, Mode (b), found live 2026-07-28 (7+ consecutive Stop turns, zero new     user in, `session_id` is attacker-influenceable (arbitrary JSON on stdin, per     `read_s, _run_hook(), _state_with_items() (+11 more)
 
-### Community 1827 - "load_cabinet_sensors_snapshot"
-Cohesion: 0.24
-Nodes (18): load_cabinet_sensors_snapshot(), Any, datetime, Path, Return ``{frame, received_at, stale, sources?}`` or ``None``.      Never raises, _frame(), Path, Tests for host cabinet sensor snapshot ingest (app/cabinet_snapshot.py). (+10 more)
+### Community 1827 - "File structure (locked)"
+Cohesion: 0.12
+Nodes (15): File structure (locked), Follow-on plans (not this PR), Global Constraints, Orion Cockpit POV (Slice A) Implementation Plan, Placeholder scan, Spec coverage self-check, Task 1: CockpitHopV1 schema + registry + bus channel, Task 2: Hop builders + in-process sequencer (+7 more)
 
 ### Community 1828 - "_bare_worker"
 Cohesion: 0.15
@@ -9568,8 +9604,8 @@ Cohesion: 0.13
 Nodes (11): make_gif(), make_jpeg(), make_png(), Store + sniffing tests for chat attachments.  Fixtures are built byte-by-byte he, A .png filename on JPEG bytes stores as image/jpeg, not image/png., test_declared_mime_is_ignored_in_favour_of_magic_bytes(), test_disabled_mime_is_refused_even_when_sniffable(), test_load_resniffs_when_mime_sidecar_is_missing() (+3 more)
 
 ### Community 1832 - "test_orion_unified_turn_tts.py"
-Cohesion: 0.13
-Nodes (19): _fake_tts_client(), 2026-08-26/27: the Orion (unified-turn) chat lane speaks its replies.  Real inci, This is how the classic lane's own `workflow_metadata_only` exclusion     folds, The real regression-proof, replacing the substring-count check: the     orion/ag, Review finding, 2026-08-27: asyncio holds only a WEAK reference to a     running, Placement matters: this must run AFTER run_unified_turn has actually     returne, Synthesizing speech for a socket that already closed is pure waste     -- must r, tts_q is defined once per connection (above the message loop) and     the classi (+11 more)
+Cohesion: 0.08
+Nodes (31): extract_unified_turn_final_text(), Pulls the real assistant reply text out of a run_unified_turn()     frame list,, _fake_tts_client(), 2026-08-26/27: the Orion (unified-turn) chat lane speaks its replies.  Real inci, Defensive: llm_response should always be a string in practice, but a     malform, This is how the classic lane's own `workflow_metadata_only` exclusion     folds, The real regression-proof, replacing the substring-count check: the     orion/ag, Review finding, 2026-08-27: asyncio holds only a WEAK reference to a     running (+23 more)
 
 ### Community 1833 - "test_topic_foundry_self_atlas_scheduler.py"
 Cohesion: 0.15
@@ -9587,9 +9623,9 @@ Nodes (17): _FakeFalkorClient, fetch_falkor_neighborhood_fragments: keyword -> E
 Cohesion: 0.13
 Nodes (13): column_for_schema_version(), Any, Session, Idempotent harness_turn_trace persistence keyed by correlation_id.  Four indepen, upsert_harness_turn_trace(), Shape checks for the HarnessTurnTraceSQL write path (no Postgres required).  Mir, Regression: worker._handle_envelope_body's generic path merges     extra_sql_fie, test_column_for_schema_version_covers_all_four_kinds() (+5 more)
 
-### Community 1837 - "_run"
-Cohesion: 0.12
-Nodes (24): _alarming_conn(), _healthy_conn(), _notify_stub_module(), Stand in for orion.notify.client, which notify_alarm imports lazily., 280 of 300 slots used -> 6.7% free, under the 15% default threshold., Escalation is opt-in; the bare gate must stay usable by hand and in CI., A human acks these cards. Re-firing every 10 minutes is noise, not signal., The rule that is easy to get wrong.      NotifyClient does not raise when orion- (+16 more)
+### Community 1837 - "_load_autonomy_state"
+Cohesion: 0.17
+Nodes (16): AutonomyGraphReadPlan, log_autonomy_graph_backend_decision(), strip_graph_credentials(), _env_int(), _load_autonomy_state(), _load_autonomy_state_fallback_local(), No remote graph HTTP: empty local lookups + YAML-friendly autonomy summary., Parallel subject fan-out for graph autonomy (orion / relationship / juniper). (+8 more)
 
 ### Community 1838 - "test_measure_precision_weighted_salience_probe.py"
 Cohesion: 0.10
@@ -9687,17 +9723,17 @@ Nodes (18): Acceptance checks, Arsonist summary, Current architecture, Current a
 Cohesion: 0.11
 Nodes (18): Acceptance checklist, API, Arsonist summary, Config / Docker, Current architecture (grounded), Decisions locked, End-to-end data flow (new), Files likely to touch (+10 more)
 
-### Community 1862 - "test_fcc_sandbox_sync_test_process_guard.py"
-Cohesion: 0.12
-Nodes (18): last_sync_state(), Snapshot of sync state, for the Hub status endpoint.      Exists because the wed, The wedge was invisible for two days because the only evidence was a log line., test_last_sync_state_keeps_attempt_and_success_apart(), api_fcc_sandbox_sync(), Orion capability: report whether Orion's FCC sandbox is current with main., The connect-time FCC sandbox sync must never fire from a test process.  Regressi, Regression: the route spread sync state over a leading "workspace" key, so the (+10 more)
+### Community 1862 - "looks_like_error_text"
+Cohesion: 0.16
+Nodes (14): looks_like_error_text(), True when generated 'prose' is really a plumbing error report.      Backstop onl, looks_like_error_text -- promoted 2026-08-19 from services/orion-hub/scripts/end, test_error_shaped_text_is_recognised(), test_real_prose_about_errors_is_not_swallowed(), test_error_shaped_text_is_recognised(), test_real_prose_about_errors_is_not_swallowed(), A backend failure must not be recorded as Orion's reasoning.  2026-08-29: a ~45 (+6 more)
 
 ### Community 1863 - "bare_graphify_update_guard.py"
 Cohesion: 0.29
 Nodes (9): _escape_hatch_set(), _evaluate(), _first_graphify_subcommand(), main(), Return graphify's first subcommand token, or None if not invoked., `statement` must already be quote-stripped., Return a short reason for the first bare graphify update statement,     or None, _statement_is_bare_graphify_update() (+1 more)
 
-### Community 1864 - "seed.py"
-Cohesion: 0.18
-Nodes (16): load_seed_concept_nodes(), load_seed_concepts_into_store(), Path, Loader for the golden concept seed fixture (Phase 1, concept-atlas).  Reads `ori, Write the golden seed concepts (+ edges) into `store`.      Returns the number o, Parse the seed fixture into ConceptNodeV1/SubstrateEdgeV1 objects.      Degrades, _seed_provenance(), _seed_temporal() (+8 more)
+### Community 1864 - "generate_turtle_for_all"
+Cohesion: 0.20
+Nodes (13): generate_turtle_for_all(), _load_verbs(), Any, Path, Render a Python value as a Turtle-safe literal.      We only use this for *strin, Yield all verb definitions as dicts from verbs/*.yaml., Return Turtle triples for a single verb and its steps., Generate Turtle for all verbs in base_dir/verbs.      base_dir is typically the (+5 more)
 
 ### Community 1865 - "measure_capability_surprise_success_correlation.py"
 Cohesion: 0.19
@@ -9729,15 +9765,15 @@ Nodes (10): End-to-end smoke test for bus_synaptic polling transport trigger.  T
 
 ### Community 1873 - "get_engine"
 Cohesion: 0.16
-Nodes (16): count_sent_on(), decision_log_enabled(), Any, Durable decision log for endogenous outreach.  Mirrors `hub_presence.py`'s write, Whether the decision log is switched on. Shared by the writer and the     reader, Persist one decision cycle's outcome. Best-effort, never raises,     never block, How many outreaches were already delivered on ``local_date``.      Returns ``Non, record_decision() (+8 more)
+Nodes (15): count_sent_on(), decision_log_enabled(), Any, Durable decision log for endogenous outreach.  Mirrors `hub_presence.py`'s write, Whether the decision log is switched on. Shared by the writer and the     reader, Persist one decision cycle's outcome. Best-effort, never raises,     never block, How many outreaches were already delivered on ``local_date``.      Returns ``Non, record_decision() (+7 more)
 
 ### Community 1874 - "self_atlas_cluster_history.py"
 Cohesion: 0.15
 Nodes (22): _build_self_atlas_cluster_events(), _coerce_evidence_refs(), _database_url(), _get_engine(), _latest_self_concept_history_row(), _publish_events(), publish_self_atlas_cluster_history(), Any (+14 more)
 
-### Community 1875 - "vision_affect_ambient.py"
-Cohesion: 0.16
-Nodes (17): affect_ambient_loop(), AffectAmbientState, call_capture_and_assess(), end_capture(), Any, Ambient (recurring) AffectGPT capture -- the Vision panel's toggle.  Design corr, Non-blocking: returns True if this caller won the exclusive capture     slot (ma, ``record_state`` must match the value the paired try_begin_capture()     was giv (+9 more)
+### Community 1875 - "test_mcp_config.py"
+Cohesion: 0.38
+Nodes (15): mcp_allowed_tool_patterns(), Any, Per-server allow patterns for Claude Code 2.1+ MCP pre-approval.      Use ``mcp_, _patch_all_tools(), MonkeyPatch, Path, _render(), test_render_context_mode_adds_server_with_scoped_env() (+7 more)
 
 ### Community 1876 - "causal-geometry.js"
 Cohesion: 0.23
@@ -9755,9 +9791,9 @@ Nodes (29): PerceptStore, Path, Content-addressed percept blob storage.  Percept
 Cohesion: 0.20
 Nodes (11): _FakeQuery, _FakeSession, _patch_session(), MonkeyPatch, Tests for ``_fetch_chat_turn_for_memory_emit`` in ``services/orion-sql-writer/ap, _Row, test_does_not_check_mirror_table_when_routing_disabled(), test_falls_back_to_mirror_table_when_primary_misses() (+3 more)
 
-### Community 1880 - "TopicFoundryLLMClient"
-Cohesion: 0.38
-Nodes (4): _extract_json(), Any, _run_blocking(), TopicFoundryLLMClient
+### Community 1880 - "test_github_compactor_schedule_bootstrap.py"
+Cohesion: 0.25
+Nodes (15): ensure_github_compactor_daily_schedule(), Idempotently seed daily 06:10 America/Denver GitHub compactor schedule.      Run, _operator_schedule(), Path, Bootstrap is seed-once, so a changed default must still reach live records., Only this bootstrap's own record is reconciled.      An operator-created recurri, A recurring schedule for the same workflow that bootstrap did not create., test_chat_and_github_compactor_bootstraps_coexist_independently() (+7 more)
 
 ### Community 1881 - "test_main_startup_cuda_gating.py"
 Cohesion: 0.16
@@ -9948,8 +9984,8 @@ Cohesion: 0.11
 Nodes (17): 1) Bus‑level ingestion (chat.history.message.v1), 2) Recall check (session‑scoped), 3) Chroma inspection (orion_chat), 4) No‑MiniLM check, Embedding Model Usage, Executive Summary, Notes on Channels & Schemas, PATCH 1 — Metadata Sanitizer (vector-writer) (+9 more)
 
 ### Community 1928 - "PresenceTracker"
-Cohesion: 0.24
-Nodes (6): PresenceTracker, Any, Read-only: the most recent observe() result, or None before the         first ca, ``identity_hint``, when given, is ``{"subject": ..., "state": ...}``         fro, The tracker's most recent observe() result for this stream,         regardless o, One stream's presence state machine. Pure logic, no I/O.
+Cohesion: 0.21
+Nodes (7): PresenceTracker, Any, Read-only: the most recent observe() result, or None before the         first ca, ``identity_hint``, when given, is ``{"subject": ..., "state": ...}``         fro, Update the tracker and return the snapshot ONLY when a Postgres         write is, The tracker's most recent observe() result for this stream,         regardless o, One stream's presence state machine. Pure logic, no I/O.
 
 ### Community 1929 - "check_bus_reply_channels.py"
 Cohesion: 0.36
@@ -9983,9 +10019,9 @@ Nodes (16): collect_gpu_stats(), Read the ".procs.csv" sibling of ``latest_gpu_f
 Cohesion: 0.24
 Nodes (15): _project_self_state_from_beliefs(), Projection helper: fold Orion's self-model condition into stance hazards.      R, _beliefs_with_self_nodes(), _node(), MonkeyPatch, SimpleNamespace, Build a real UnifiedRelationalBeliefSetV1 (not a SimpleNamespace) for the     in, _real_beliefs_with_self_nodes() (+7 more)
 
-### Community 1937 - "test_memory_graph_structured_output.py"
-Cohesion: 0.31
-Nodes (7): _client_result(), _ensure_hub_scripts_import_path(), hub_settings(), _msg_payload(), Any, Hub memory_graph_suggest structured-output request wiring., test_suggest_request_includes_structured_options()
+### Community 1937 - "test_delivery_status.py"
+Cohesion: 0.18
+Nodes (15): EmailOutcome, What actually happened to the email for one notification.      `status` is one o, The persisted notification status must say what actually happened.  Before 2026-, pending" now means what it says -- nothing attempted, nothing known --     rathe, Verified live in the running container on 2026-08-30, BEFORE this fix:     effec, Asserts the handler's stream, not captured output: basicConfig runs at     impor, The 37-of-46 case. `/attention/request` skips immediate email for     severity=", The fallback returns the exact known-bad value this change exists to     remove, (+7 more)
 
 ### Community 1938 - "test_insight_flow_separate_cooldown.py"
 Cohesion: 0.25
@@ -9999,21 +10035,21 @@ Nodes (14): _install_fake_runner(), Tests for app/lane_control.py -- the actual 
 Cohesion: 0.11
 Nodes (17): Channels, Conversation history, Docker socket, Draft length ceiling, Enable and restart, FCC MCP (Orion mode), Flow, Health (+9 more)
 
-### Community 1941 - "reconstruction.py"
+### Community 1941 - "test_power_intent_settled_sql_shape.py"
 Cohesion: 0.16
-Nodes (17): EnsembleH1ResultV1, Ensemble-level H1 reading. See reconstruction.py's compute_h1_ensemble     for h, bulk_penetration_depth(), classify_ensemble_verdict(), compute_h1_ensemble(), H1ResultV1, _normalize_entropy_ratio(), H1 v0: boundary/bulk entanglement as the holographic-encoding signature.  Design (+9 more)
+Nodes (14): _columns(), Column shape and routing for power.intent.settled.v1 -> power_intent_settled.  W, No silent drops -- _write_row filters against the mapper and discards the rest, The blocker that made the sibling table inert: the code default does not survive, A zero in any of these is a MEASUREMENT. Writing one where we mean 'not known', Every actual_* being null is ambiguous on its own; `outcome` is what     disambi, This table is read as a distribution. A redelivered envelope adding a second row, Drives the same filtering _write_row does, against a validated payload. (+6 more)
 
-### Community 1942 - "cabinet_sensor_frame.py"
-Cohesion: 0.43
-Nodes (7): CabinetEnvironmentV1, CabinetImuV1, CabinetLidarV1, CabinetMagneticV1, CabinetParticulateV1, CabinetUvV1, BaseModel
+### Community 1942 - "test_content_addressed_frames.py"
+Cohesion: 0.15
+Nodes (12): Router/host/retina side of the content-addressed frame path.  Lives here rather, Removing the guard entirely would let an addressless request through., A capture agent on a personal laptop must not accumulate a spool of     webcam f, Real FrameDispatchPolicy against the real config file., Behavioural, against the real policy and the real config.      The path checks m, The guard must survive: a local frame whose file is gone is still bad., _router_policy(), test_host_still_requires_an_address() (+4 more)
 
-### Community 1943 - "pressure_evidence_from_eval_suite_rows"
-Cohesion: 0.39
-Nodes (7): eval_row_to_v1_v2_compare(), infer_pressure_category_for_eval_row(), pressure_evidence_from_eval_suite_rows(), Any, Helpers to map recall_eval suite rows into mutation pressure metadata (proposal-, Compact V1 vs V2 summary for MutationPressureEvidenceV1.metadata["v1_v2_compare", Build first-class pressure evidence rows from recall_eval-style dicts (manual in
+### Community 1943 - "rdf_materialization.py"
+Cohesion: 0.22
+Nodes (11): BaseModel, Typed payload describing a Spark ConceptProfile graph materialization write., SparkConceptProfileGraphMaterializationV1, build_concept_profile_rdf_request(), _escape_literal(), _iri(), _literal(), Any (+3 more)
 
-### Community 1944 - "AttentionPublisher"
-Cohesion: 0.24
-Nodes (6): AttentionPublisher, Settings, Config, BaseSettings, Settings, test_attention_publisher_calls_notify_client()
+### Community 1944 - "MeshGuardianService"
+Cohesion: 0.12
+Nodes (10): AttentionPublisher, Settings, MeshGuardianService, Settings, Connect to mesh Redis; retry through transient bring-up races (batched compose u, Config, BaseSettings, Settings (+2 more)
 
 ### Community 1945 - "test_sql_adapter_aitown_tagging.py"
 Cohesion: 0.15
@@ -10348,8 +10384,8 @@ Cohesion: 0.12
 Nodes (16): Acceptance checks, Arsonist summary, Current architecture, Estimator: median of a bounded recent window, Files likely to touch, Filtering, Follow-up at n=9 (2026-08-30 02:43, all autonomous), Live data the design rests on (+8 more)
 
 ### Community 2028 - "_select_device"
-Cohesion: 0.14
-Nodes (18): GpuInspector, _build_dims(), dtype, Settings, Returns e.g. 'cuda:0', or None if no candidate GPU clears the hard     floor (or, `"auto"` resolves to fp32 -- deliberately, not a device-conditional     guess. T, resolve_dtype(), _select_device() (+10 more)
+Cohesion: 0.15
+Nodes (17): GpuInspector, _build_dims(), Settings, Returns e.g. 'cuda:0', or None if no candidate GPU clears the hard     floor (or, `"auto"` resolves to fp32 -- deliberately, not a device-conditional     guess. T, resolve_dtype(), _select_device(), _fake_gpus() (+9 more)
 
 ### Community 2029 - "Drives & Autonomy: origin, theory, and current state (retrospective)"
 Cohesion: 0.12
@@ -10359,13 +10395,13 @@ Nodes (17): 10. Second-round fix: the wiring was dead in production, and V2 is n
 Cohesion: 0.12
 Nodes (16): Bottom line, Cognitive zones, Diagnosis model, Example diagnosis classes, Orion Cognitive Substrate — Detailed Buildout Notes, Review telemetry, Semantic reanchoring and GraphDB preference, Strict-zone conservatism (+8 more)
 
-### Community 2031 - "compute_stale_channel_candidates"
-Cohesion: 0.39
-Nodes (7): compute_stale_channel_candidates(), Pure function: given every Channel node's name + its aggregate     PUBLISHES cou, test_literal_uuid_reply_channel_is_a_candidate(), test_mixed_batch_only_flags_the_stale_ones(), test_real_catalog_entry_is_never_a_candidate(), test_unmatched_literal_channel_with_no_wildcard_is_not_a_candidate(), test_wildcard_node_itself_is_never_a_candidate()
+### Community 2031 - "test_brain_frame_store.py"
+Cohesion: 0.24
+Nodes (9): _frame(), Fake engine returning queued ``.mappings().first()`` values in call order., _RecordingEngine, _store_with(), test_brain_frame_window_reports_bounds_and_phase(), test_load_range_downsamples_to_max_and_ascending(), test_load_tail_returns_ascending(), test_save_brain_frame_inserts_and_prunes() (+1 more)
 
-### Community 2032 - "test_presence_chat_injection.py"
-Cohesion: 0.36
-Nodes (3): _FakeCortexClient, _Store, test_handle_chat_request_injects_session_presence()
+### Community 2032 - "ExternalRoomPostRequestV1"
+Cohesion: 0.19
+Nodes (8): ExternalRoomPostRequestV1, _callsyne_bridge_post_body(), Any, Shape for POST /api/bridge/messages using top-level snake_case fields., _FailingCallSyneClient, _FailingHubClient, test_callsyne_bridge_post_body_minimal_and_media_hint(), test_callsyne_bridge_post_body_numeric_reply_id_only()
 
 ### Community 2033 - "Hyperbolic GPT (research MVP)"
 Cohesion: 0.12
@@ -10379,9 +10415,9 @@ Nodes (16): _counts(), _json_default(), main(), _move(), Any, Connection, Path, 
 Cohesion: 0.14
 Nodes (11): find_orphaned_registry_entries(), find_unregistered_trigger_kinds(), _load(), main(), trigger_kinds the journaler actually understands but the dispatch registry     d, Registry rows for trigger_kinds no longer recognized by the journaler at all, Regression/live check: the actual orion.journaler.worker._TRIGGER_TO_MODE and, test_main_fails_when_a_trigger_kind_is_unregistered() (+3 more)
 
-### Community 2036 - "relay_harness_run_steps"
-Cohesion: 0.38
-Nodes (5): FrameSender, Any, Forward harness governor FCC steps to Hub WS as claude_step frames., relay_harness_run_steps(), test_relay_harness_run_steps_forwards_matching_correlation()
+### Community 2036 - "EquilibriumServiceState"
+Cohesion: 0.25
+Nodes (11): EquilibriumServiceState, Current service state used by the Equilibrium snapshot publisher., _enqueue_snapshot(), equilibrium_status_for_service(), Queue, Return (equilibrium_bad, reason)., watch_equilibrium(), _snapshot() (+3 more)
 
 ### Community 2037 - "🧠 Orion Bus — Mesh Message Backbone"
 Cohesion: 0.12
@@ -10392,7 +10428,7 @@ Cohesion: 0.17
 Nodes (15): content_hash(), external_listing_id_from_url(), normalize_title(), Dedup by KSL's own listing ID, plus a same-run possible-duplicate flag.  Two dis, Parse the canonical KSL listing id out of a listing URL.      KSL's canonical li, Lowercase, collapse whitespace. Must match the SQL-side normalization     in `ap, A stable fingerprint of the fields that matter for "did this listing     change, test_content_hash_changes_when_title_changes() (+7 more)
 
 ### Community 2039 - "CompressionWorker"
-Cohesion: 0.18
+Cohesion: 0.20
 Nodes (6): CompressionWorker, Any, Construct a RegionSummarizer when LLM summarization is viable, else None., LLM summaries require the feature flag, a bus, a running loop, and budget., Return (summary_text, summary_kind). Uses the LLM gateway when budget         al, Bridge the async post-write bus emit from the sync tick thread to the         ev
 
 ### Community 2040 - "test_chat_history_no_vector_write.py"
@@ -10411,9 +10447,9 @@ Nodes (15): activate(), el(), escapeHtml(), fmtTime(), loadText(), loadVisual(),
 Cohesion: 0.12
 Nodes (17): 1. Profiles are the source of truth, Atlas multi-worker compose, Automatic download, Compose usage, Configuration model, GPU pinning model, Manual population, Model loading behavior (+9 more)
 
-### Community 2044 - "main.py"
-Cohesion: 0.13
-Nodes (14): listener_worker(), _listener_worker_async(), heartbeat_worker_thread(), Initializes the vector store and starts the main bus listener thread., Synchronous worker for heartbeats., startup_event(), process_rag_request(), Handles a single RAG request: retrieves context, delegates to the brain,     and (+6 more)
+### Community 2044 - "doc_semantic_drift_changes"
+Cohesion: 0.21
+Nodes (13): _commit_subject(), conventional_commit_prefix(), diff_hunks(), doc_semantic_drift_changes(), DocHunkChange, Path, Pure git-diff-hunk extraction and commit-prefix classification for the doc-seman, (removed_text, added_text) -- just the changed lines between     ``before_rev`` (+5 more)
 
 ### Community 2045 - "TestTheParentTraceRowIsPrunedToo"
 Cohesion: 0.12
@@ -10435,9 +10471,9 @@ Nodes (9): Deterministic unit tests for measure_arena_degeneracy.py.  No DB, no 
 Cohesion: 0.12
 Nodes (17): Finding 1 (CRITICAL): the review's exact input reported P(all busy) 45.45%., Finding 2 (HIGH): --out appends, so span claimed 12 h for 20 min of samples., Finding 5: the dispatcher blocks background at free < reserved, not at all-busy., _rows(), test_accumulate_matches_hand_computed_quick_lane(), test_admission_ceiling_reduces_to_all_busy_when_nothing_reserved(), test_allow_short_reports_but_shouts(), test_contiguous_run_has_no_discontinuities() (+9 more)
 
-### Community 2050 - "fcc_model_mapping.py"
-Cohesion: 0.38
-Nodes (4): label_to_claude_model_id(), Map FCC env key labels to stable Claude tier model ids for claude CLI --model., test_label_to_tier_model_ids(), test_unknown_label_raises()
+### Community 2050 - "run_dream"
+Cohesion: 0.22
+Nodes (11): enrich_from_graphdb_ids(), _clean_one_chat_fragment(), _counts_by_kind(), AsyncClient, Semaphore, Calls the LLM to clean a single chat fragment.     Uses a semaphore to limit con, Safely parses tags, whether they are a list     or a JSON-encoded string of a li, Safely joins tags, whether they are a list     or a JSON-encoded string of a lis (+3 more)
 
 ### Community 2051 - "Orion Context Exec"
 Cohesion: 0.13
@@ -11188,28 +11224,28 @@ Cohesion: 0.12
 Nodes (7): QuotaState, Where the window stands. Pure arithmetic; the caller supplies the rows., True when every derived number here is a bound, not a value.          Re-exposed, Share of the CALIBRATED allowance still unspent, or None if unknown.          No, Spend rate against clock rate; 2.0 is burning the window twice as         fast a, What the window ends at if the current pace holds., Would spending this be refused, if this budget could enforce?          Reported
 
 ### Community 2238 - "detect_tool_provenance_mismatch"
-Cohesion: 0.28
-Nodes (14): _receipt(), test_case_insensitive_matching(), test_flags_fetch_plus_immediacy_language(), test_names_multiple_fetch_tools(), test_no_flag_for_fetch_without_immediacy_language(), test_no_flag_for_generic_use_of_the_word_computing(), test_no_flag_for_immediacy_language_without_fetch(), test_no_flag_for_non_fetch_tool_use() (+6 more)
+Cohesion: 0.37
+Nodes (12): _receipt(), test_case_insensitive_matching(), test_flags_fetch_plus_immediacy_language(), test_names_multiple_fetch_tools(), test_no_flag_for_fetch_without_immediacy_language(), test_no_flag_for_generic_use_of_the_word_computing(), test_no_flag_for_immediacy_language_without_fetch(), test_no_flag_for_non_fetch_tool_use() (+4 more)
 
-### Community 2239 - "EvidenceBundle"
-Cohesion: 0.33
-Nodes (6): EvidenceBundle, Renders the evidence bundle into the exact text sent to the Claude     subproces, No empty-shell cognition (CLAUDE.md): a bundle with nothing real         in it s, render_evidence_prompt(), test_evidence_bundle_is_empty_when_nothing_real(), test_render_evidence_prompt_requires_evidence_grounding()
+### Community 2239 - "test_mps_state.py"
+Cohesion: 0.21
+Nodes (10): _sample_assignment(), test_absorb_actually_changes_the_state(), test_absorb_guards_against_a_site_with_no_right_neighbor(), test_absorb_keeps_state_normalized_and_bond_capped(), test_absorb_reaches_every_bulk_site_not_just_the_nearest_one(), test_decay_reheat_tick_does_not_change_tick_count(), test_decay_reheat_tick_keeps_state_normalized(), test_decay_reheat_tick_raises_before_relaxation_targets_computed() (+2 more)
 
-### Community 2240 - "test_error_severity_is_what_actually_triggers_the_email"
-Cohesion: 0.33
-Nodes (7): _load_notify_module(), Import a module from services/orion-notify/app under a private package name., Asserted against the real gate on the real path.      `POST /notify` -- the hand, End to end without a network call: build the actual request this watcher     sen, test_error_severity_is_what_actually_triggers_the_email(), test_the_real_outbound_request_passes_the_real_email_gate(), _unload_notify_modules()
+### Community 2240 - "build_alert_request"
+Cohesion: 0.20
+Nodes (11): build_alert_request(), The outbound ``NotificationRequest``. Split out so the delivery-critical     fie, _load_notify_module(), Import a module from services/orion-notify/app under a private package name., Asserted against the real gate on the real path.      `POST /notify` -- the hand, End to end without a network call: build the actual request this watcher     sen, `context` is echoed into the Hub card and the durable notify record., test_error_severity_is_what_actually_triggers_the_email() (+3 more)
 
 ### Community 2241 - "main.py"
-Cohesion: 0.04
-Nodes (75): Depends, require_operator_token, require_quarantine_operator_token, clear_tail_seeds_for_tests(), has_cold_start_tail_seed(), has_recent_tail_seed(), Track substrate cursor tail-seeds that skip unreduced history., tail_seed_snapshot() (+67 more)
+Cohesion: 0.03
+Nodes (107): Depends, ReducerHealthClass, require_operator_token, require_quarantine_operator_token, clear_cursor_resets_for_tests(), cursor_reset_snapshot(), CursorResetRecord, last_reset_skipped_history() (+99 more)
 
 ### Community 2242 - "fetch_drive_stats_postgres"
 Cohesion: 0.15
 Nodes (16): apply_dominant_counts(), drive_stats_from_histogram(), DriveStats, fetch_drive_stats_postgres(), is_undefined_table_error(), parse_dominant_rows(), parse_postgres_histogram_rows(), Any (+8 more)
 
-### Community 2243 - "measure_candidate_a_vs_b_head_to_head.py"
-Cohesion: 0.23
-Nodes (12): fetch_reducer_rows(), main(), open_readonly_connection(), parse_prediction_error(), ProgressLog, Any, datetime, Path (+4 more)
+### Community 2243 - "build_hub_ui_asset_version"
+Cohesion: 0.16
+Nodes (14): causal_geometry_page(), HTMLResponse, substrate_atlas_page(), substrate_page(), concept_atlas_page(), HTMLResponse, curiosity_atlas_page(), HTMLResponse (+6 more)
 
 ### Community 2244 - "test_measure_capability_salience_coupling.py"
 Cohesion: 0.14
@@ -11223,9 +11259,9 @@ Nodes (14): Deterministic unit tests for measure_goal_provenance_streak_distribu
 Cohesion: 0.20
 Nodes (15): _awaited_calls(), _direct_blocking_calls(), _is_route(), main(), _noqa_in_span(), AST, AsyncFunctionDef, Path (+7 more)
 
-### Community 2247 - "FakeBus"
-Cohesion: 0.14
-Nodes (9): fake_bus(), FakeBus, FakeRedis, Shared test fixtures for orion-cocreation-signals producer tests., Minimal in-memory stand-in for the real ``aioredis.Redis`` client     exposed by, Records every publish call instead of touching a real Redis connection.     ``en, source(), stop_event() (+1 more)
+### Community 2247 - "Settings"
+Cohesion: 0.15
+Nodes (7): Config, BaseSettings, Path, Normalize MAC to colon-separated lowercase internally.         We'll generate Ci, Cisco SEP filename: 'SEP' + MAC uppercase, no colons + '.cnf.xml'         Exampl, Env-driven config for the Orion VoIP endpoint (Athena).      Reads all VOIP_* va, Settings
 
 ### Community 2248 - "_default_llm_route_for_step"
 Cohesion: 0.21
@@ -11235,13 +11271,13 @@ Nodes (15): _default_llm_route_for_step(), The verb-based `llm_route` default, u
 Cohesion: 0.12
 Nodes (16): Activate staged profile for shadow compare/eval only, Autonomy Constitution / Policy Matrix, Cognitive Proposal Review Ritual (operator-only, draft/stance only), Create production-candidate review artifact (operator-only, no production switch), Evaluate active shadow profile (dry-run / recording), Inspect profile + posture endpoints, Manual Recall Canary Console in Hub, Manual Recall Canary + Operator Judgment (evidence-only) (+8 more)
 
-### Community 2250 - "outreach_block_reason"
-Cohesion: 0.16
-Nodes (16): in_quiet_hours(), outreach_block_reason(), True inside [start, end). ``start == end`` or either < 0 disables., First reason this tick must not reach out, or None if it may.      Order is deli, _passing_gate(), Review finding 6: Hub's container sets no TZ, so naive local == UTC.      18:00, The cap rolls at midnight in the configured zone, not at 00:00 UTC., Baseline that MUST return None; every gate test perturbs one field. (+8 more)
+### Community 2250 - "_dynamics_properties_from_metadata"
+Cohesion: 0.23
+Nodes (11): _dynamics_properties_from_metadata(), Round-trip test for perception_staleness through the FalkorDB codec.  Regression, 0.0 is the healthy reading and must persist as a value, not vanish into     "abs, test_absent_stays_absent_and_is_not_coerced_to_calm(), test_encoder_keeps_a_real_zero_rather_than_dropping_it(), test_encoder_promotes_the_value_to_a_native_property(), test_malformed_value_fails_open_to_absent(), test_prediction_error_still_encodes_alongside_it() (+3 more)
 
-### Community 2251 - "_Result"
-Cohesion: 0.13
-Nodes (3): _Result, _FakeConn, _FakeConn
+### Community 2251 - "summarize_capability_gaps"
+Cohesion: 0.15
+Nodes (13): Pure: attention records in, capability-absence episodes out.      Episodes are b, summarize_capability_gaps(), health_monitor._publish sets severity="info" on recovery, "critical" on alert., The alert message interpolates ', '.join(capability_impacts), which this     mod, Day two of a multi-day outage: the alert is before the window and there is     n, Slicing a chronologically-sorted list dropped the NEWEST episode -- the one, An outage that began before the window still gets recorded.      Without this br, test_a_critical_alert_mentioning_recovered_does_not_close_an_episode() (+5 more)
 
 ### Community 2252 - "Settings"
 Cohesion: 0.33
@@ -11251,9 +11287,9 @@ Nodes (3): BaseSettings, Settings, _split_csv()
 Cohesion: 0.33
 Nodes (5): Checks, Deploy order (consumer-first, learned the hard way on 2026-09-06), Flow, orion-durable-runs, Resume semantics
 
-### Community 2254 - "_make_store"
-Cohesion: 0.53
-Nodes (5): _make_store(), Create a CompressionStore with a mock engine., test_drain_stale_queue_returns_up_to_batch(), test_enqueue_stale_inserts_row(), test_upsert_artifact_idempotent()
+### Community 2254 - "WorkflowScheduleMetrics"
+Cohesion: 0.15
+Nodes (5): Tiny in-process counter surface for schedule hardening signals., WorkflowScheduleMetrics, Path, The whitespace/empty-path fallback is intentionally /tmp/orion-actions/     work, test_resolve_path_whitespace_fallback_stays_tmp()
 
 ### Community 2255 - "test_post_turn_closure_listener.py"
 Cohesion: 0.24
@@ -11263,9 +11299,9 @@ Nodes (12): _make_worker(), Fake graph store that actually persists nodes, so re
 Cohesion: 0.23
 Nodes (15): _client_returning(), _make_worker(), Unit tests for the periodic bus-synaptic-graph tick (feeds ``bus_synaptic_predic, Regression guard for the review finding (2026-07-25): a frozen edge     from a d, Regression guard (2026-07-30): the node write must happen every tick,     includ, A client whose graph_query alternates publishes/causal rows forever,     so it s, test_bus_synaptic_client_is_cached_across_ticks(), test_bus_synaptic_edge_queries_filter_stale_edges() (+7 more)
 
-### Community 2257 - "main.py"
-Cohesion: 0.18
-Nodes (17): Standard request to write data to the vector database., VectorWriteRequest, _cfg(), handle_envelope(), health(), lifespan(), normalize_to_request(), _pick_collection() (+9 more)
+### Community 2257 - "transcribe_audio"
+Cohesion: 0.19
+Nodes (11): Never raises -- any failure (missing file, corrupt wav, Whisper     internal err, transcribe_audio(), _FakeWhisperModel, Records whether .transcribe() was ever called -- the silence gate's     whole jo, Review finding, 2026-08-22: an unreadable wav must NOT be silently     treated a, test_resolve_subtitle_near_silent_with_whisper_available_reports_none(), test_transcribe_audio_never_raises_on_model_error(), test_transcribe_audio_runs_whisper_anyway_when_peak_cannot_be_measured() (+3 more)
 
 ### Community 2258 - "_cand"
 Cohesion: 0.12
@@ -11679,9 +11715,9 @@ Nodes (8): LimitState, LimitObservation, What the transcripts on disk say about 
 Cohesion: 0.30
 Nodes (13): LedgerTick, One row of `dev_economics_ledger_log`.      **This is a DELTA since the previous, load_ticks(), main(), print_replay(), datetime, Pure result of a replay. Printing is separate so this stays testable., Walk a FIXED CLOCK GRID and ask the allocator's question at each point.      Dec (+5 more)
 
-### Community 2362 - "_runner"
-Cohesion: 0.47
-Nodes (5): Review finding, 2026-08-25: this helper now backs 3 call sites     (embedding, d, Doesn't require a real GPU -- ``.to(device="cuda:0", ...)`` on a CPU     tensor, _runner(), test_cast_is_a_noop_off_cuda(), test_cast_moves_floating_tensors_to_model_dtype_on_cuda_string_device()
+### Community 2362 - "extract_autonomy_payload"
+Cohesion: 0.27
+Nodes (10): extract_autonomy_payload(), log_autonomy_payload_extraction(), Any, Diagnostic logging after autonomy extraction on Hub chat ingress paths., test_log_autonomy_payload_extraction_empty(), test_log_autonomy_payload_extraction_present(), test_extract_autonomy_payload_forwards_drive_state_preview_alongside_v2_preview(), test_extract_autonomy_payload_forwards_v2_keys() (+2 more)
 
 ### Community 2363 - "benchmark_rpc_request_logging_overhead.py"
 Cohesion: 0.23
@@ -11703,9 +11739,9 @@ Nodes (14): _is_dirty(), _latest_snapshot_tree(), main(), _prune_old_snapshots()
 Cohesion: 0.13
 Nodes (14): Cabinet ambient audio (Athena USB mic, levels-only), Cabinet sensor node (Athena Nano ESP32), Contracts, Disk capacity telemetry (`details.disk_usage_pct`), Environment Variables, Grammar node `pressure_hints` (consumed by `orion-field-digester`), iLO/BMC hardware telemetry (`details.ilo_*`), Orion Biometrics (+6 more)
 
-### Community 2368 - "16. Orion-specific touched-file checklist"
-Cohesion: 0.40
-Nodes (5): 16. Orion-specific touched-file checklist, Config, Contracts, Runtime and docs, Service code
+### Community 2368 - "substrate_field_routes.py"
+Cohesion: 0.32
+Nodes (12): _build_capability_field_projection(), _build_node_field_projection(), _capability_key(), _engine(), field_capability(), field_latest(), field_node(), _load_latest_field() (+4 more)
 
 ### Community 2369 - "test_metacog_draft_trigger_kind_type_mapping.py"
 Cohesion: 0.29
@@ -11719,9 +11755,9 @@ Nodes (14): `chat_history_compactor_pass`, Compactor workflows, Consumed Channel
 Cohesion: 0.14
 Nodes (11): _fake_generate_request(), FluxLikeFakePipe, A pipe with an EXPLICIT `__call__` signature that has `negative_     prompt` but, A pipe with an EXPLICIT `__call__` signature that has `max_     sequence_length`, The actual regression: the old unconditional `negative_prompt=...`     call woul, SdxlLikeFakePipe, test_pipe_accepts_false_for_a_parameter_the_pipe_does_not_have(), test_pipe_accepts_true_for_a_real_named_parameter() (+3 more)
 
-### Community 2372 - "19. Completion status"
-Cohesion: 0.40
-Nodes (5): 19. Completion status, BLOCKED, DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT
+### Community 2372 - "empty_transcript_error_message"
+Cohesion: 0.27
+Nodes (11): build_audio_debug(), empty_transcript_error_message(), Any, sanitize_client_audio_meta(), test_build_audio_debug(), test_empty_transcript_browser_no_chunks(), test_empty_transcript_low_peak_warn_when_stt_passed(), test_empty_transcript_no_speech_default() (+3 more)
 
 ### Community 2373 - "Orion FalkorDB (operator stack)"
 Cohesion: 0.13
@@ -11744,8 +11780,8 @@ Cohesion: 0.40
 Nodes (3): Regression test: orion.graph package must be importable (including falkor_client, Backward-compat: real SPARQL consumers (requests genuinely installed)     see id, test_sparql_symbols_still_exported_when_requests_present()
 
 ### Community 2378 - "appraisal.py"
-Cohesion: 0.35
-Nodes (14): _coerce_features(), _coerce_matter_item(), _coerce_matter_kind(), _coerce_recommended_effect(), _coerce_string_list(), _extract_selected_raw(), _float_field(), _is_bare_frontier_matter_root() (+6 more)
+Cohesion: 0.11
+Nodes (27): _coerce_features(), _coerce_matter_item(), _coerce_matter_kind(), _coerce_recommended_effect(), _coerce_string_list(), _extract_selected_raw(), _float_field(), _is_bare_frontier_matter_root() (+19 more)
 
 ### Community 2379 - "main.py"
 Cohesion: 0.17
@@ -11771,9 +11807,9 @@ Nodes (12): _check(), _FakeCodec, Eval: reverie VISUAL chain honest-degradation 
 Cohesion: 0.34
 Nodes (11): _candidate_claims(), _last_status_time(), mine_claims_and_resolutions(), _resolution_text(), _resolve_status(), _day(), render_pageindex_markdown(), ClaimResolutionRecord (+3 more)
 
-### Community 2385 - "_chunks"
-Cohesion: 0.18
-Nodes (15): _chunks(), Path, A 7-file voice must not read as an ordinary single-file one., _validate_xtts_defaults runs on lazy engine construction, i.e. on     Orion's fi, The deployed shape: TTS_DEFAULT_SPEAKER_WAV points at a chunk dir., Regression guard: the single-reference path must not change shape.      Every ex, _settings(), test_boot_validation_accepts_a_directory() (+7 more)
+### Community 2385 - "test_tts_multi_reference_voice.py"
+Cohesion: 0.15
+Nodes (23): _chunks(), Path, Multi-reference speaker resolution: a directory of wavs, not just one file.  Why, gpt_cond_len caps the concatenation, so which files come first matters.      Dir, Lexicographic order silently reshuffles a set of ten or more.      Order decides, A 7-file voice must not read as an ordinary single-file one., _validate_xtts_defaults runs on lazy engine construction, i.e. on     Orion's fi, The diagnostic an operator reads first must not be permanently False.      `Path (+15 more)
 
 ### Community 2387 - "Reducer and State Delta Pattern"
 Cohesion: 0.14
@@ -11939,9 +11975,9 @@ Nodes (13): Acceptance checks, Arsonist summary, Capability absence: making Orio
 Cohesion: 0.14
 Nodes (14): Architecture, Channels and Kinds, Cortex Enablement, Envelopes, Frame router dispatch tiers, RPC Channels, Schemas (`orion/schemas/vision.py`), Verbs (+6 more)
 
-### Community 2428 - "mps_state.py"
-Cohesion: 0.18
-Nodes (11): MatrixProductState, OperatorKind, _build_generators(), _hermitian(), ndarray, HeartbeatSubstrate: the actual tensor-network state.  Design doc: docs/superpowe, Dense single-site reduced density matrix, PHYS_DIM x PHYS_DIM. Cheap     (single, Per-site relaxation operator, one per site, each damping THIS         trajectory (+3 more)
+### Community 2428 - "site_reduced_density_matrix"
+Cohesion: 0.25
+Nodes (8): MatrixProductState, OperatorKind, _build_generators(), _hermitian(), ndarray, Dense single-site reduced density matrix, PHYS_DIM x PHYS_DIM. Cheap     (single, Per-site relaxation operator, one per site, each damping THIS         trajectory, site_reduced_density_matrix()
 
 ### Community 2429 - "🧠 Orion Verb Onboarding (Services + Bus Execution)"
 Cohesion: 0.14
@@ -11951,29 +11987,29 @@ Nodes (14): Directory structure, Example: Two-step verb (LLM → deterministic p
 Cohesion: 0.27
 Nodes (12): adapter(), _drift_payload(), norm_ctx(), Topic Foundry adapter — canonical location ``orion/signals/adapters/tests/`` (ph, test_can_handle_real_dotted_kind(), test_different_payloads_produce_different_dimensions(), test_drift_level_tracks_js_divergence(), test_enrich_complete_payload_uses_success_ratio() (+4 more)
 
-### Community 2431 - "DocSemanticDriftV1"
-Cohesion: 0.40
-Nodes (3): DocSemanticDriftV1, BaseModel, Bus payload schema for the doc-semantic-drift domain's ``orion:substrate:doc_sem
+### Community 2431 - "test_cockpit_hud_ui.py"
+Cohesion: 0.19
+Nodes (6): _node_call(), Any, Behavioral tests for the Cockpit Soft HUD modal (cockpit-hud.js).  Runs the real, test_build_shell_includes_soft_hud_hooks(), test_render_fixture_shows_selected_raw_and_visor(), test_render_orders_hops_and_marks_gap()
 
-### Community 2432 - "_FakeBus"
-Cohesion: 0.40
-Nodes (3): _FakeBus, Exercises HubNotificationEvent for real, not a monkeypatched stand-in.      ``me, test_notification_payload_validates_against_the_real_schema()
+### Community 2432 - "0A. Hard architectural mandates"
+Cohesion: 0.17
+Nodes (12): 0A. Hard architectural mandates, Context window discipline, Design mode, Deterministic gates over repeated yelling, Event substrate first, Implementation mode, Metric quality gate, No empty-shell cognition (+4 more)
 
-### Community 2433 - "_runner"
-Cohesion: 0.60
-Nodes (4): Review finding, 2026-08-25: qwen_min_pixels/max_pixels must actually     reach l, _runner(), test_run_caption_frame_passes_settings_qwen_pixel_bounds(), test_run_vlm_vqa_passes_settings_qwen_pixel_bounds()
+### Community 2433 - "parse_journal_discussion_lookback_seconds"
+Cohesion: 0.26
+Nodes (10): test_parse_chat_discussion_default_day(), test_parse_day_variants(), test_parse_hours_variants(), test_parse_minutes_variants(), test_parse_non_journal_returns_none(), parse_journal_discussion_lookback_seconds(), Parse relative journal timeframes from natural language (V1: explicit durations, Return lookback in seconds when the prompt is clearly a journal-discussion reque (+2 more)
 
 ### Community 2434 - "test_check_scripts_dir_no_stdlib_shadow.py"
 Cohesion: 0.15
 Nodes (5): find_stdlib_shadows(), main(), Path, Returns the sorted, deduplicated list of top-level entry names under     scripts, test_main_exits_nonzero_when_a_collision_exists()
 
 ### Community 2435 - "chat_attention_salience_trace.py"
-Cohesion: 0.24
-Nodes (12): _bounded(), build_chat_salience_trace_row(), _dsn(), _flag_enabled(), _get_engine(), persist_chat_attention_salience_trace(), _persist_sync(), Any (+4 more)
+Cohesion: 0.20
+Nodes (13): Dependency-free stable identifiers (hashlib only).  Use from thin services (orio, _bounded(), build_chat_salience_trace_row(), _dsn(), _flag_enabled(), _get_engine(), persist_chat_attention_salience_trace(), _persist_sync() (+5 more)
 
-### Community 2436 - "test_self_study_knowledge_items.py"
-Cohesion: 0.18
-Nodes (8): _FakeBus, Tests for self_study.py's durable self-knowledge item log (self-model rebuild ar, Review finding: if even the first whole key=value pair alone exceeds     the cap, Review finding: a fresh random uuid4() entry_id meant a retried     publish of t, test_flatten_metadata_text_falls_back_to_truncating_a_single_oversized_pair(), test_publish_self_knowledge_items_entry_id_is_deterministic_for_retries(), test_publish_self_knowledge_items_isolates_per_item_failures(), test_publish_self_knowledge_items_publishes_one_message_per_item()
+### Community 2436 - "turn_in_progress"
+Cohesion: 0.26
+Nodes (11): _locked(), Path, PathLike, Cross-container advisory lock protecting Orion's FCC sandbox during a turn.  Two, Hold an exclusive lock across a sandbox sync, or yield False immediately.      N, Locate the lock file for ``workspace``: a sibling of the checkout.      Sibling,, Acquire ``flags`` on the workspace lock. Yields whether it was acquired.      Ne, Hold a shared lock for the duration of an FCC turn.      Shared so concurrent tu (+3 more)
 
 ### Community 2437 - "Phase 0 — Metabolism Adapter (PR 1)"
 Cohesion: 0.50
@@ -11987,9 +12023,9 @@ Nodes (13): Bootstrap (create/update Orion's body), Bus / Redis, Facing the conv
 Cohesion: 0.25
 Nodes (11): _Loop, Service-level tests for the bus_synaptic poll loop's edge/hysteresis state.  Rev, A FalkorDB read failure yields error=None. State must be HELD, not     reset --, Mirrors _bus_synaptic_poll_loop's real bookkeeping, including the     latch-on-p, THE must-fix. The transport cooldown lane is shared with rpc_health and     rpc_, Inside [clear_at, threshold) the previous state is HELD. Without it, a     readi, test_below_threshold_never_publishes(), test_cooldown_suppressed_episode_start_is_retried_not_lost() (+3 more)
 
-### Community 2440 - "Phase T4 — `derive_retrieval_intent`"
-Cohesion: 0.50
-Nodes (4): Deterministic priority (first match wins), Inputs, Phase T4 — `derive_retrieval_intent`, Tests (table-driven)
+### Community 2440 - "main.py"
+Cohesion: 0.27
+Nodes (11): Popen, Start in.tftpd (tftpd-hpa) serving /tftpboot., Start Asterisk in the foreground (we keep the Popen object)., start_asterisk(), start_tftp(), build_action_handlers(), handle_sig(), Define the core actions that both HTTP and bus can invoke. (+3 more)
 
 ### Community 2441 - "exo-exploration.js"
 Cohesion: 0.32
@@ -12003,13 +12039,17 @@ Nodes (13): _nav_targets(), _panels(), Every Hub panel must be reachable from th
 Cohesion: 0.23
 Nodes (11): _node_build_turn_trace_panel(), Any, Behavioral tests for the Turn Trace panel (thought-process.js), the UI surface f, test_error_state_renders_error_copy(), test_loading_state_renders_loading_copy(), test_notes_cognition_trace_present_without_duplicating_step_rendering(), test_renders_draft_molecule_and_substrate_appraisal(), test_renders_execution_run_step_counts() (+3 more)
 
+### Community 2444 - "run_agent_flow_live_matrix.py"
+Cohesion: 0.35
+Nodes (8): _extract_cortex_result(), main(), MatrixRow, _one_row(), ProbeCollector, Any, _service_ref(), _summarize()
+
 ### Community 2445 - "cache.py"
 Cohesion: 0.27
 Nodes (12): cache_path(), CacheLookup, content_hash(), Any, Path, Content-hash-keyed disk cache for enrichment results.  Mirrors `graphify-out/cac, read_cached(), write_cached() (+4 more)
 
-### Community 2446 - "handle_request_payload"
-Cohesion: 0.50
-Nodes (5): build_subprocess_env(), handle_request_payload(), Settings, Env for the `claude -p` subprocess, built from an allowlist. See the     module-, Pure-ish orchestration of one enrichment run -- the one place all the     testab
+### Community 2446 - "main.py"
+Cohesion: 0.26
+Nodes (11): build_heartbeat_chassis(), handle_request_payload(), main(), main_async(), Settings, Pure-ish orchestration of one enrichment run -- the one place all the     testab, run_consumer(), setup_logging() (+3 more)
 
 ### Community 2447 - "orion-substrate-runtime"
 Cohesion: 0.14
@@ -12203,13 +12243,13 @@ Nodes (12): 13.1 V1 lifecycle, 13.2 Later lifecycle, only after success, 13. Ind
 Cohesion: 0.15
 Nodes (12): Acceptance / next step, Brainstorm: the two uncovered mission items, Candidate A: memory / consolidation-pressure, Candidate B: reflection / update-staleness pressure, Drive taxonomy grounding decision, Explicitly not brainstormed here, Mapping each drive to CLAUDE.md's mission list, Non-goals (+4 more)
 
-### Community 2495 - "test_validate_payload_system_error_exemption.py"
-Cohesion: 0.28
-Nodes (12): _bus_with_mock_redis(), _envelope(), Regression test for 2026-08-29: whisper-tts hit a CUDA OOM, tried to     publish, The exemption must be narrow: an actual (non-error) reply that doesn't     match, The redirect only covers a system.error envelope landing on a     *different* ch, The fix redirects validation to SystemErrorV1 rather than skipping it     outrig, orion/harness/finalize.py's emit_harness_finalize_system_error() uses     kind=", test_malformed_system_error_reply_is_still_rejected_on_a_different_schema_channel() (+4 more)
-
-### Community 2496 - "apply_collector_plan"
+### Community 2495 - "smoke_situation_grounding.py"
 Cohesion: 0.23
-Nodes (11): RetrievalIntentV1, apply_collector_plan(), collectors_for_intent(), Any, Return a profile copy with backends disabled when not in the collector plan., test_collectors_for_intent_semantic(), apply_collector_plan must suppress falkor_chat the same way it suppresses rdf_ch, Intents that DO want chat-turn content (rdf_chat: True in the plan)     must not (+3 more)
+Nodes (6): _InMemoryBus, _InMemoryRedis, main(), _print_case(), Standalone-script stand-in for `bus.redis` -- this smoke script has     no live, _settings()
+
+### Community 2496 - "test_bus_consumer.py"
+Cohesion: 0.27
+Nodes (7): FakeBus, FakeCodecDecoded, Exercises the real bus consumer path (_handle_envelope -> codec.decode -> run_as, _request_envelope(), test_handle_envelope_dispatches_and_replies_on_reply_to(), test_handle_envelope_falls_back_to_prefix_when_no_reply_to(), test_handle_envelope_ignores_invalid_payload_without_crashing()
 
 ### Community 2497 - "SelfStateRecord"
 Cohesion: 0.21
@@ -12219,9 +12259,9 @@ Nodes (13): _abs_trajectory_for_row(), compute_self_state_metrics(), dim_score_v
 Cohesion: 0.15
 Nodes (3): Deterministic unit tests for measure_transport_biometrics_prediction_error_corre, Matches the real, currently-observed shape: transport flat, biometrics real., test_compute_correlation_degenerate_transport_reports_which_series()
 
-### Community 2499 - "is_saturation_error"
-Cohesion: 0.21
-Nodes (11): is_saturation_error(), BaseException, True when a connection failed because Postgres had no slot for it., _PgError, Exception, The message a non-superuser gets at max_connections - reserved.      It has neve, test_a_different_sqlstate_is_not_saturation(), test_an_unrelated_connection_error_is_not_mistaken_for_saturation() (+3 more)
+### Community 2499 - "llm_gateway_client.py"
+Cohesion: 0.26
+Nodes (11): api_llm_routes(), _base_url(), fetch_routes(), _normalize_routes_payload(), _priority_for(), Any, ClientTimeout, Hub client for LLM gateway GET /routes catalog. (+3 more)
 
 ### Community 2500 - "check_sql_migrations_applied.py"
 Cohesion: 0.26
@@ -12235,33 +12275,33 @@ Nodes (12): Attention notifications, Core framing (must stay true), Current v1 c
 Cohesion: 0.15
 Nodes (12): 1) Run the service, 2) Expose it via Tailscale (your current setup), CLI alternatives (only when you need them), Common failure modes, Don’t wildcard the whole bus, If bus-tap publishes stats, orion-bus-tap (UI), Quick start (copy/paste) (+4 more)
 
-### Community 2504 - "FeedbackRuntimeWorker"
-Cohesion: 0.17
-Nodes (9): build_heartbeat_chassis(), health(), lifespan(), FastAPI, Own, independent bus connection publishing SystemHealthV1 to orion:system:health, get_settings(), BaseSettings, Settings (+1 more)
+### Community 2504 - "renderMemoryDebugModal"
+Cohesion: 0.26
+Nodes (12): applyDebugTextLayout(), buildMemoryDebugRecallEntryNode(), clearMemoryDebugPanel(), collectRecallEntries(), ensureMemoryDebugModalRootOnBody(), normalizeMemoryDebugModel(), openMemoryDebugModal(), renderMemoryDebugModal() (+4 more)
 
 ### Community 2506 - "chat_turn_affect.py"
 Cohesion: 0.21
 Nodes (11): _capture_blocking(), fire(), Any, Task, Per-chat-turn affect bracket -- one AffectGPT capture before an Orion-mode turn, Normalize AFFECT_CHAT_TURN_SCOPE. An unrecognized value falls back to     "off",, Whether this turn is in scope. Split out from the fire path so a test     can as, Runs in a worker thread (asyncio.to_thread). Claims the shared slot,     calls t (+3 more)
 
-### Community 2508 - "extract_unified_turn_final_text"
-Cohesion: 0.15
-Nodes (13): extract_unified_turn_final_text(), Pulls the real assistant reply text out of a run_unified_turn()     frame list,, Defensive: llm_response should always be a string in practice, but a     malform, _success_frames can prepend substrate_appraisal/reflection frames     before the, turn_deferred/turn_error/turn_degraded-only, or an empty list (e.g. a     cancel, Deliberate: a partial_draft on a turn_error frame is real     assistant-authored, A final frame with no real text (context-overflow edge case, or a     genuinely, test_a_non_string_llm_response_does_not_crash() (+5 more)
+### Community 2508 - "_FailAfterNUpsertsStore"
+Cohesion: 0.18
+Nodes (4): _FailAfterNUpsertsStore, Every node write fails -- e.g. FalkorDB unreachable., Delegating store that succeeds for the first N upserts, then raises.      Used t, _StoreThatRefusesEverything
 
 ### Community 2510 - "test_evidence_bus_synaptic_resolver.py"
 Cohesion: 0.26
 Nodes (11): _bus_synaptic_fragment(), build_evidence_pack()'s resolver branch (2026-09-03).  Spec check 4: a fragment, Check 4: absent a signal_kind, behavior is unchanged., Non-goal: causal_latency_zscore fragments are untouched this pass --     they st, engine.py's call site threads settings through -- confirm the kwargs     actuall, _snapshot_with_fragments(), test_bus_synaptic_fragments_are_not_looped_individually(), test_bus_synaptic_multiple_fragments_collapse_to_one_item() (+3 more)
 
-### Community 2511 - "test_continuous_presence_accumulates_since_sec"
-Cohesion: 0.33
-Nodes (4): No identity_hint given at all -- the honest default, same as before     identity, The whole point: "you've been at that desk five hours" is this number., test_continuous_presence_accumulates_since_sec(), test_subject_stays_unknown_with_no_identity_hint()
+### Community 2511 - "test_turn_stop_command.py"
+Cohesion: 0.24
+Nodes (10): MonkeyPatch, General 'stop chat' command: a per-connection active-turn registry in websocket_, A connection is registered at setup even before any turn starts (correlation_id, The registry stores the active_turn dict by reference: mutating it directly, test_api_chat_turn_cancel_503_when_bus_unavailable(), test_api_chat_turn_cancel_returns_cancelled_correlation_id(), test_cancel_active_turn_for_connection(), test_cancel_active_turn_for_connection_with_no_turn_in_flight_is_noop() (+2 more)
 
 ### Community 2512 - "📚 Orion RAG Service"
 Cohesion: 0.15
 Nodes (12): 1. Configure the Service, 2. Launch the Service, 🧩 How It Works, ✍️ Ingesting New Documents, ⚙️ Key Dependencies, 📚 Orion RAG Service, 🚀 Quick Start, Step 1: Place Your Source File (+4 more)
 
 ### Community 2513 - "_query"
-Cohesion: 0.19
-Nodes (14): _fake_packet(), _query(), test_does_not_log_when_no_crystallization_refs(), test_logs_retrieval_event_when_refs_present(), test_retrieval_event_log_failure_does_not_break_fragments(), _chat_profile(), test_chat_general_instruction_tail_does_not_shift_query_anchor(), test_chat_general_social_turn_keeps_lightweight_behavior() (+6 more)
+Cohesion: 0.29
+Nodes (10): _fake_packet(), _query(), test_does_not_log_when_no_crystallization_refs(), test_logs_retrieval_event_when_refs_present(), test_retrieval_event_log_failure_does_not_break_fragments(), _chat_profile(), test_chat_general_instruction_tail_does_not_shift_query_anchor(), test_chat_general_social_turn_keeps_lightweight_behavior() (+2 more)
 
 ### Community 2514 - "allow_and_record"
 Cohesion: 0.29
@@ -12527,9 +12567,9 @@ Nodes (11): Acceptance checks, Addendum, 2026-08-20 (same day): both ran, decisi
 Cohesion: 0.67
 Nodes (3): Phase completion checklist, Risks, Spec self-review (plan vs spec)
 
-### Community 2581 - "load_skill_manifest"
-Cohesion: 0.32
-Nodes (11): build_compact_skill_catalog(), _default_verbs_dir(), _family_for_skill(), _is_host_mutating_skill(), load_skill_manifest(), BaseModel, Path, _risk_for_skill() (+3 more)
+### Community 2581 - "test_store_observability_writers.py"
+Cohesion: 0.33
+Nodes (11): _projection(), Unit tests for the self-observability store writers (curiosity + dwell)., Same generated_at + projection_id always produces the same log_id, so a     re-d, _signal(), _store_with_conn(), test_save_attention_broadcast_history_idempotent_digest(), test_save_attention_broadcast_history_row_shape_and_prune(), test_save_coalition_dwell_inactive_when_zero_ticks() (+3 more)
 
 ### Community 2582 - "run"
 Cohesion: 0.17
@@ -12551,13 +12591,21 @@ Nodes (5): Deterministic unit tests for measure_capability_surprise_success_corr
 Cohesion: 0.23
 Nodes (6): _FakeGraph, _FakeHit, _FakeNode, Tests for scripts/refresh_metric_lineage_cache.py.  Mocks orion.metrics.{lineage, test_refresh_overwrites_stale_cache_cleanly(), test_refresh_writes_atomic_and_well_shaped_cache()
 
-### Community 2588 - "11. Tests and evals"
-Cohesion: 0.67
-Nodes (3): 11. Tests and evals, Gate tests, Periodic evals
+### Community 2588 - "bus_integration.py"
+Cohesion: 0.27
+Nodes (11): bus_listener_loop(), init_bus(), make_bus_publish(), Any, Settings, Start the bus listener in a daemon thread if the bus is enabled., Initialize OrionBus from settings.bus_redis_url (VOIP_BUS_REDIS_URL)., Return a small helper that publishes structured events to VOIP_BUS_STATUS_CHANNE (+3 more)
+
+### Community 2589 - "test_heartbeat_chassis.py"
+Cohesion: 0.24
+Nodes (11): _make_settings(), Settings, Regression coverage for voip-endpoint's bus-native SystemHealthV1 heartbeat wiri, Heartbeat startup failure must not prevent the rest of the app from starting., service_name/service_version/node_name/orion_bus_url/heartbeat_interval_sec must, End-to-end confirmation (not just constructor kwargs) that the alias= fields act, test_build_heartbeat_chassis_uses_voip_settings(), test_settings_identity_fields_bypass_voip_prefix() (+3 more)
 
 ### Community 2590 - "_project_autonomy_from_beliefs"
 Cohesion: 0.39
 Nodes (11): _project_autonomy_from_beliefs(), Projection helper: reconstruct autonomy dict from unified beliefs.      Aggregat, _anchor_slice(), _drive_node(), SimpleNamespace, Graph snapshot_source=drive_state must not populate drive_state or autonomy summ, _snapshot_node(), test_autonomy_snapshot_source_still_works_without_drive_state_projection() (+3 more)
+
+### Community 2591 - "test_analysis_branches.py"
+Cohesion: 0.55
+Nodes (11): _claim(), _evidence(), _obs(), _previous(), datetime, test_confirmation_branch(), test_contradiction_branch(), test_new_development_branch() (+3 more)
 
 ### Community 2592 - "test_substrate_probe_prompt_grounding.py"
 Cohesion: 0.39
@@ -12567,6 +12615,10 @@ Nodes (11): _base_ctx(), _load_executor_module(), _load_template(), Regression c
 Cohesion: 0.17
 Nodes (11): Architecture, Bus Events, Compression Scopes, FalkorDB federators, HTTP Endpoints, Key Env Vars, orion-graph-compression, Postgres Tables (+3 more)
 
+### Community 2594 - "extract_face_crops"
+Cohesion: 0.25
+Nodes (9): extract_face_crops(), Haar-cascade face-crop extraction -- substitute for real OpenFace.  AffectGPT's, blank_video(), GPU/model-free: exercises the Haar-cascade accounting logic against a synthetic, A short clip of solid-color frames -- Haar cascade should never find     a face, test_as_meta_matches_counters(), test_empty_video_raises(), test_missing_video_raises() (+1 more)
+
 ### Community 2595 - "test_self_brain_region_provenance.py"
 Cohesion: 0.23
 Nodes (10): _client(), TestClient, The one dimension whose true producer differs from the other five --     regress, Second call must not re-resolve the graph -- _region_provenance() is     lru_cac, The other half of the lru_cache contract: cache_clear() must actually     clear, test_cache_clear_forces_a_real_rebuild(), test_field_anomaly_provenance_names_field_digester(), test_other_dimensions_name_substrate_runtime() (+2 more)
@@ -12575,21 +12627,37 @@ Nodes (10): _client(), TestClient, The one dimension whose true producer differs
 Cohesion: 0.17
 Nodes (11): Ambient mode exists now, but it does not live here (2026-08-22), Bus contract, Closing the loop into Orion's own chat turns (2026-08-25), Durable persistence (2026-08-25), Evals, Operator checklist, orion-juniper-affective-state, Tests (+3 more)
 
+### Community 2597 - "transcribe.py"
+Cohesion: 0.18
+Nodes (9): load_whisper_model(), measure_wav_peak(), Optional Whisper transcription -- populates ``subtitle`` from ``audio_path`` whe, Imported lazily (inside the function, not at module top-level) so     importing, (rms, peak, error) of a 16-bit PCM wav's samples. ``error`` is None on     a rea, TranscribeResult, Review finding, 2026-08-22: an unreadable file used to return the     exact same, test_measure_wav_peak_distinguishes_unreadable_from_real_silence() (+1 more)
+
 ### Community 2598 - "Orion Recall Service"
 Cohesion: 0.17
 Nodes (11): 3) Recall Profiles (what changes when you switch profile), 6) Examples: RDF recall in practice, 7) Fusion behavior (why you sometimes miss the right item), 9) Running & Testing, Common profiles, Example 1 — Exact quote from RDF chat turns (CPU context), Example 2 — Deep context chat (heavy profile), General chat test (+3 more)
+
+### Community 2599 - "attention_loops_routes.py"
+Cohesion: 0.31
+Nodes (10): _cards_enabled(), _close(), CloseRequest, dismiss_loop(), list_loops(), publish_loop_outcome(), BaseModel, Operator Pending Attention API — cognitive-loop rows + Resolve/Dismiss.  Flag-ga (+2 more)
 
 ### Community 2600 - "test_fleet_power_landing_eval.py"
 Cohesion: 0.24
 Nodes (11): conn(), _dsn(), _one(), Eval: the fleet power aggregate is actually landing in the live database.  Lives, The check the unit tests structurally cannot make., A row that lands with no watts is a schema-valid payload with no cognitive     c, circe has no LAN path to the PDU and no BMC, so its watts reach the fleet only, test_circe_is_present_via_the_proxy_and_says_so() (+3 more)
 
-### Community 2601 - "FieldGoalProvenanceV1"
+### Community 2601 - "test_goal_provenance_producer.py"
 Cohesion: 0.04
-Nodes (79): ActiveGoalStore, clear_active_goal(), get_active_goal(), _max_goal_age_sec(), Cross-process-local cache of the current real, field-native active goal, for aut, Adopt this goal as the current active goal (latest active wins).          A term, Return the held goal, or None if absent/stale.          Staleness check is read-, set_active_goal() (+71 more)
+Nodes (88): Collection, DominanceStreak, Advance a real-tick dominance streak; returns ``(new_streak, should_emit)``., The highest-salience target among ``frame.node_targets`` that is one of     Cand, top_node_substrate_target(), update_dominance_streak(), DominanceStreakTickV1, BaseModel (+80 more)
 
-### Community 2604 - "SegmentRecord"
-Cohesion: 0.27
-Nodes (8): Any, SegmentRecord, get_segment(), get_segment_facets(), get_segment_raw(), list_segments(), Response, UUID
+### Community 2602 - "main.py"
+Cohesion: 0.29
+Nodes (10): health(), _ingest_token_authorized(), ingest_turn(), inspection(), lifespan(), Any, FastAPI, Request (+2 more)
+
+### Community 2603 - "workflow_scheduler.py"
+Cohesion: 0.53
+Nodes (9): advance_after_dispatch(), _coerce_utc(), due_schedules(), initial_next_run_utc(), datetime, register_schedule(), schedule_label(), ScheduledWorkflowEntry (+1 more)
+
+### Community 2604 - "test_mind_projection_resolver.py"
+Cohesion: 0.62
+Nodes (9): _client_request(), _orch_prep(), _plan_request(), _rich_projection(), test_a_empty_inline_shell_does_not_block_cold_rebuild(), test_b_nonempty_inline_projection_is_reused(), test_c_empty_after_all_sources_becomes_degraded(), test_d_brain_chat_general_mind_enabled_uses_nonempty_projection_when_available() (+1 more)
 
 ### Community 2605 - "Orion Vision Host"
 Cohesion: 0.17
@@ -12607,9 +12675,9 @@ Nodes (11): _image_path(), Review finding, 2026-08-26: MTCNN's own detection ord
 Cohesion: 0.41
 Nodes (11): CompletedProcess, Path, _run(), test_add_and_list_this_worktree_item(), test_add_rejects_juniper_scope_without_note(), test_checkin_prints_three_layer_context(), test_checkout_closes_presence_but_does_not_fail_on_open_items(), test_checkout_counts_only_this_worktree_open_items() (+3 more)
 
-### Community 2609 - "_FakeConn"
-Cohesion: 0.15
-Nodes (16): _fake_psycopg2(), _FakeConn, A gate that dies on saturation goes quiet exactly when it should shout., A wrong password must not page someone about a full database., Deliberate: --verbose is for humans reading output, --gate is for cron.      Any, This script runs against production; it must never be able to write., Refused-because-full is the worst case: the door is already shut., test_an_unrelated_connection_failure_is_not_laundered_into_an_alarm() (+8 more)
+### Community 2609 - "chat_cockpit_routes.py"
+Cohesion: 0.31
+Nodes (9): api_chat_turn_cockpit(), get_cockpit_timeline(), _load_hops(), _postgres_engine(), Any, Cockpit turn sighting timeline read API for Soft HUD rewind.  Append-only hops l, Cockpit timeline lookup: never 404s on empty -- missing hops are gaps., Shared engine for the conjourney Postgres DB -- same POSTGRES_URI     already us (+1 more)
 
 ### Community 2610 - "test_vision_retina_device_contention.py"
 Cohesion: 0.18
@@ -12664,8 +12732,8 @@ Cohesion: 0.18
 Nodes (10): File Map, Non-goals, Orion Heartbeat Pacemaker v1 — Implementation Plan, Self-Review (spec coverage), Task 1: Field-digester idle tick (Phase 1 — the pacemaker), Task 2: Verify downstream free-run (no code change — verification only), Task 3: φ readback into chat stance (Phase 2), Task 4 (optional, lower priority): Whole-self surprise aggregate (Phase 3) (+2 more)
 
 ### Community 2623 - "2026-07-07-drive-attribution-substrate-act.md"
-Cohesion: 0.18
-Nodes (10): Drive Tick Attribution + Substrate Act Implementation Plan, File map, Phase 1 — Drive tick attribution module, Phase 3 — Substrate act path (decouple fetch from goal publish), Schema note (read before coding), Task 1: `drive_attribution.py` core + GPU gap test, Task 2: `DriveAuditV1.tick_attribution` schema, Task 6: Episode intent models (+2 more)
+Cohesion: 0.13
+Nodes (14): Drive Tick Attribution + Substrate Act Implementation Plan, File map, Phase 1 — Drive tick attribution module, Phase 2 — Audit / goals / bus_worker wiring, Phase 4 — Env parity + agent gate, Schema note (read before coding), Spec coverage self-review, Task 10: Code review + smoke (+6 more)
 
 ### Community 2624 - "File map"
 Cohesion: 0.18
@@ -12871,21 +12939,25 @@ Nodes (10): Causal density scoring (downstream), Consumed Channels, Contracts, E
 Cohesion: 0.31
 Nodes (9): MonkeyPatch, _reset_engine(), test_dsn_falls_back_to_endogenous_runtime_url(), test_fetch_disabled_returns_none(), test_fetch_dsn_unset_fail_open(), test_fetch_exception_fail_open(), test_fetch_success(), test_fetch_timeout_fail_open() (+1 more)
 
-### Community 2675 - "._process_scope"
-Cohesion: 0.24
+### Community 2675 - "leiden_cluster"
+Cohesion: 0.25
 Nodes (9): build_graph_from_triples(), leiden_cluster(), Graph, Triple, Three connected triples form at least one community., test_build_graph_from_triples(), test_leiden_cluster_empty_graph_returns_empty(), test_leiden_cluster_single_node() (+1 more)
 
 ### Community 2676 - "_fetch_fresh_candidates"
-Cohesion: 0.24
-Nodes (10): apply_curiosity_hint(), _fetch_fresh_candidates(), format_curiosity_hint(), Any, Curiosity focus hint for the Hub agent lane (self-observability v2).  When the a, Latest curiosity candidate set newer than ``max_age_sec``, else [].      The def, One bounded hint line from the strongest candidate summaries, or None., Prepend the focus hint to ``prompt`` when available; never raises. (+2 more)
+Cohesion: 0.31
+Nodes (8): apply_curiosity_hint(), _fetch_fresh_candidates(), format_curiosity_hint(), Any, Curiosity focus hint for the Hub agent lane (self-observability v2).  When the a, Latest curiosity candidate set newer than ``max_age_sec``, else [].      The def, One bounded hint line from the strongest candidate summaries, or None., Prepend the focus hint to ``prompt`` when available; never raises.
 
 ### Community 2677 - "ServiceLogSession"
-Cohesion: 0.22
-Nodes (5): ServiceLogProcess, ServiceLogSession, WebSocket, service_logs_websocket_endpoint(), StreamReader
+Cohesion: 0.27
+Nodes (3): ServiceLogProcess, ServiceLogSession, StreamReader
 
 ### Community 2678 - "test_handle_tts_fields_frontend.py"
 Cohesion: 0.25
 Nodes (10): 2026-08-27: the `handleTtsFields` refactor and its `shouldAppendOrionWsPayload`, The whole point of the refactor: one function, two call sites (the     live WS o, Regression guard for the actual incident: the old shape     (`if (d.tts_error) r, The extraction must not have dropped any of the three original     behaviors: qu, Placement check: the HTTP fallback's own .then(d => {...}) handler     must actu, _source(), test_handle_tts_fields_is_shared_by_both_delivery_paths(), test_handle_tts_fields_still_queues_audio_and_reports_errors() (+2 more)
+
+### Community 2679 - "CaptureAndAssessRequest"
+Cohesion: 0.20
+Nodes (10): capture_and_assess(), CaptureAndAssessRequest, BaseModel, Real validation for POST /v1/juniper/affect/capture_and_assess's body     -- rev, Live-capture entry point -- this is what Hub's "Check now" button AND     its am, test_capture_and_assess_request_accepts_ambient(), test_capture_and_assess_request_defaults_to_manual(), test_capture_and_assess_request_rejects_unrecognized_trigger() (+2 more)
 
 ### Community 2682 - "orion-proposal-runtime"
 Cohesion: 0.18
@@ -12924,8 +12996,8 @@ Cohesion: 0.31
 Nodes (9): UUID, Tests for kg_edges.py's typed-edge generation.  Regression coverage for the 2026, Direct regression guard for the retirement: the removed     `from app.services.b, _run_row(), _segment(), test_generate_edges_for_run_computes_and_persists_edges(), test_generate_edges_for_run_filters_below_min_confidence(), test_generate_edges_for_run_missing_model_degrades_to_unknown() (+1 more)
 
 ### Community 2691 - "_speaker_wav_refs_exist"
-Cohesion: 0.18
-Nodes (11): _natural_key(), Any, Path, Do all configured reference files exist? Safe for a list or a string.      `spea, Sort key that orders chunk_2 before chunk_10.      Plain `sorted()` is lexicogra, _speaker_wav_refs_exist(), The diagnostic an operator reads first must not be permanently False.      `Path, Above ~85 refs the stringified list exceeds NAME_MAX.      `is_file()` RAISES EN (+3 more)
+Cohesion: 0.33
+Nodes (6): Any, Do all configured reference files exist? Safe for a list or a string.      `spea, _speaker_wav_refs_exist(), Above ~85 refs the stringified list exceeds NAME_MAX.      `is_file()` RAISES EN, test_exists_check_handles_the_single_string_and_none(), test_exists_check_survives_a_reference_list_past_name_max()
 
 ### Community 2693 - "_run_prune"
 Cohesion: 0.40
@@ -12935,13 +13007,17 @@ Nodes (10): CompletedProcess, Path, Regression guard: a merged branch's worktree
 Cohesion: 0.36
 Nodes (10): _init_worktree_repo(), _make_fake_docker(), Path, safe_docker_build.sh must heartbeat the agent board before running a build, so a, The heartbeat is advisory-only -- an agent-board failure must never     block a, A non-shared checkout (linked worktree) so the wrapper's shared-checkout     gua, The Stop/SessionStart hooks need a session_id-tagged presence row to     resolve, test_heartbeat_tags_claude_session_id_when_set() (+2 more)
 
-### Community 2695 - "_FakeCursor"
-Cohesion: 0.22
-Nodes (3): _FakeCursor, test_live_background_processes_are_excluded_from_the_count(), test_live_the_superuser_count_never_exceeds_the_total()
+### Community 2696 - "test_mind_enrichment_fail_open.py"
+Cohesion: 0.47
+Nodes (7): _FakeCortexClient, _request(), _stance_json(), test_enrichment_disabled_is_baseline(), test_enrichment_enabled_but_mind_fails_open(), test_enrichment_enabled_meaningful_injects_coloring(), test_enrichment_selector_raises_fails_open()
 
 ### Community 2697 - "_decision"
 Cohesion: 0.18
 Nodes (11): _decision(), 3 identical frames then 2 different ones -> 2 runs over 5 frames.      Hand-deri, The same decisions in a different order are the SAME decision set.      Dispatch, Same templates, one flipped decision -> a genuinely new frame.      The inverse, An unbroken run of empty frames is exactly as redundant as identical ones., Hand-derived: [X, X, EMPTY, EMPTY, EMPTY, Y] -> runs [2, 3, 1].      empty_runs, test_decision_redundancy_counts_empty_frames_as_a_run(), test_decision_redundancy_counts_identical_runs() (+3 more)
+
+### Community 2698 - "http_api.py"
+Cohesion: 0.27
+Nodes (9): asterisk_cmd(), CompletedProcess, Run an Asterisk CLI command and capture output., build_heartbeat_chassis(), create_app(), FastAPI, Settings, Own, independent bus connection publishing SystemHealthV1 to orion:system:health (+1 more)
 
 ### Community 2699 - "Design"
 Cohesion: 0.20
@@ -13191,25 +13267,29 @@ Nodes (9): Acceptance checks, Arsonist summary, Current architecture, Design: co
 Cohesion: 0.20
 Nodes (9): Better denominator: observe the limit, do not predict it, Calibration finding: dollar-spend-per-window does not predict the limit, Method, Most likely cause, Recommended next patch, Result, What survives, and what does not, What was left open (+1 more)
 
-### Community 2762 - "test_async_service_velocity.py"
-Cohesion: 0.33
-Nodes (9): _bus_with_mock_redis(), MonkeyPatch, test_publish_does_not_track_velocity_when_disabled(), test_publish_skips_velocity_entirely_when_bus_disabled(), test_publish_swallows_velocity_tracking_errors(), test_publish_tracks_velocity_when_enabled(), test_track_velocity_constructor_override_wins_over_env(), test_track_velocity_defaults_off() (+1 more)
+### Community 2761 - "test_apply_causal_density_to_entry.py"
+Cohesion: 0.42
+Nodes (7): _metacog_entry(), A dense/pulse (substrate) trigger's telemetry has no relational upstream --, _relational_state_snapshot(), test_apply_causal_density_blends_relational_evidence_for_relational_trigger(), test_apply_causal_density_ignores_relational_upstream_for_non_relational_trigger(), test_apply_causal_density_self_report_only(), CollapseMirrorStateSnapshot
+
+### Community 2762 - "test_ouroboros_invariants.py"
+Cohesion: 0.31
+Nodes (8): Cross-cutting ouroboros invariants for the reverie/dream/compaction weave.  The, A producer of a weave channel must never also be listed as a consumer of     tha, The memory-touching / dispatch-adjacent channels stay dead-ended: no     service, test_channel_schema_ids_match_the_weave_contract(), test_dangerous_channels_have_no_live_consumer(), test_every_weave_kind_is_registered_and_resolvable(), test_no_process_reads_its_own_output_kind(), _weave_channel_entries()
 
 ### Community 2763 - "memory_crystallizations.sql"
 Cohesion: 0.33
 Nodes (9): memory_concept_relation_decisions, memory_crystallization_claims, memory_crystallization_history, memory_crystallization_links, memory_crystallization_projection_refs, memory_crystallization_quarantine, memory_crystallization_retrieval_events, memory_crystallization_sources (+1 more)
 
-### Community 2764 - "WorldModelFeatureGroupV1"
+### Community 2764 - "WorldModelTrajectoryStepV1"
 Cohesion: 0.12
-Nodes (23): Schema-level registry tests for orion-world-model (2026-08-20 scaffold).  Pins t, _sample_group(), _sample_step(), test_prediction_payload_round_trip_and_defaults_untrained_true(), test_task_request_round_trip_with_real_trajectory(), BaseModel, World-model bus contract — `services/orion-world-model` scaffold.  Encoder + dyn, One named feature group's already-computed vector for one trajectory     step (e (+15 more)
+Nodes (23): Schema-level registry tests for orion-world-model (2026-08-20 scaffold).  Pins t, _sample_group(), _sample_step(), test_prediction_payload_round_trip_and_defaults_untrained_true(), test_task_request_round_trip_with_real_trajectory(), BaseModel, World-model bus contract — `services/orion-world-model` scaffold.  Encoder + dyn, One timestep of the six required feature groups. Callers that lack a     real va (+15 more)
 
 ### Community 2765 - "Brainstorming Session #1 — Appendix Ideas 3–10"
 Cohesion: 0.20
 Nodes (9): Brainstorming Session #1 — Appendix Ideas 3–10, Idea 10 — Predictive substrate (forward model), Idea 3 — Close the action outcome feedback loop, Idea 4 — Bridge autonomy drive pressures → self-state, Idea 5 — Substrate-level surprise signal (prediction error), Idea 6 — Rolling self-state archive, Idea 7 — Drive audit loop, Idea 8 — Identity snapshot (+1 more)
 
-### Community 2766 - "logic.py"
-Cohesion: 0.21
-Nodes (14): ActionSpec, build_cortex_orch_envelope(), collapse_to_fragment(), collapse_to_markdown(), _docker_short_id(), Derive periodic-scheduler finding strings from skills.docker.ps_status.v1 result, scheduler_docker_findings(), test_empty_not_dict() (+6 more)
+### Community 2766 - "ensure_chat_history_compactor_daily_schedule"
+Cohesion: 0.39
+Nodes (8): ensure_chat_history_compactor_daily_schedule(), Idempotently seed daily 06:00 America/Denver chat history compactor schedule., Path, Same policy as the GitHub compactor: an unattended daily job pings on failure on, test_bootstrap_does_not_duplicate_operator_edited_schedule(), test_bootstrap_does_not_resurrect_cancelled_schedule(), test_chat_bootstrap_seeds_failure_only_notifications(), test_chat_history_compactor_schedule_bootstrap_creates_once()
 
 ### Community 2768 - "bus-core cold-standby: cutover / cutback runbook"
 Cohesion: 0.20
@@ -13258,6 +13338,10 @@ Nodes (7): _FakeAiohttpSession, _patch_aiohttp_session(), Stands in for aiohttp.
 ### Community 2779 - "Orion Notify Digest Service"
 Cohesion: 0.20
 Nodes (9): orion-notify-digest docker compose deployment (port 7150, shared postgres with notify, drift alert env), Drift Alerts, Environment, Local run, On-demand run, Orion Notify Digest Service, Scheduling, Smoke test (+1 more)
+
+### Community 2780 - "aggregators_sql.py"
+Cohesion: 0.31
+Nodes (8): _avg(), fetch_recent_sql_fragments(), Fragment, Returns fragments from:       - collapse_mirror (timestamp is string → cast to t, # NOTE: this SQL-level check mirrors the common case of, Input columns:       - gpu (JSON): {"latest_file":"...", "gpus":[             {", _summarize_biometrics(), _to_float()
 
 ### Community 2781 - "2) Environment Variables (high-signal)"
 Cohesion: 0.20
@@ -13540,8 +13624,8 @@ Cohesion: 0.22
 Nodes (8): Idempotency, Inputs, Migration, orion-consolidation-runtime, Outputs, Port, Run, Smoke
 
 ### Community 2852 - "WorldContextCapsuleCache"
-Cohesion: 0.28
-Nodes (5): Any, Latest orion:world_context:daily_capsule payload, updated in-process by the bus, WorldContextCapsuleCache, test_world_context_capsule_cache_set_then_get(), test_world_context_capsule_cache_starts_empty()
+Cohesion: 0.25
+Nodes (6): get_world_context_capsule_cache(), Any, Latest orion:world_context:daily_capsule payload, updated in-process by the bus, WorldContextCapsuleCache, test_world_context_capsule_cache_set_then_get(), test_world_context_capsule_cache_starts_empty()
 
 ### Community 2853 - "test_chat_stance_belief_publish.py"
 Cohesion: 0.28
@@ -13551,13 +13635,25 @@ Nodes (6): _FakeBeliefs, Tests for chat_stance.py's _publish_chat_stance_belief(
 Cohesion: 0.47
 Nodes (8): End-to-end happy path: /runs items already carry model.stage, so the     active, _reset_cache(), _Settings, test_fetch_caches_within_ttl(), test_fetch_fails_open_on_http_error(), test_fetch_finds_active_model_run_and_returns_labels(), test_fetch_returns_empty_when_base_url_unset(), test_fetch_returns_empty_when_no_active_model_run_found()
 
+### Community 2855 - "autonomy_constitution.py"
+Cohesion: 0.47
+Nodes (8): api_substrate_autonomy_constitution(), AutonomyConstitutionV1, AutonomyPolicySurfaceV1, _base_surfaces(), constitution_summary(), load_autonomy_constitution(), BaseModel, validate_autonomy_constitution()
+
 ### Community 2856 - "main.py"
 Cohesion: 0.25
 Nodes (6): h1(), lifespan(), FastAPI, Latest H1 (boundary/bulk entanglement) result -- None until the first     h1_int, BaseSettings, Settings
 
-### Community 2857 - "run_cortex_bus_stack_diagnostic"
-Cohesion: 0.50
-Nodes (5): Any, `own_bus`: when provided (e.g. Hub's connected global bus), reuse it for PING/NU, _redact_redis_url(), _rpc_result_summary(), run_cortex_bus_stack_diagnostic()
+### Community 2857 - "_route_loop"
+Cohesion: 0.22
+Nodes (9): A loop constructed for its lane only. `_loop` stubs `_generate`, which     is ex, `agent` is circe-worker-agent-1 on :8015, not circe-worker-1., Empty means "no override". It must not warn, or the one legitimate way     to as, THE WARNING IS THE PRODUCT HERE, and nothing else pins it.      Falling back to, _route_loop(), test_an_empty_route_is_a_deliberate_default_not_an_error(), test_an_unusable_route_says_so_at_boot(), test_routes_the_vocabulary_refuses_fall_back_rather_than_guess() (+1 more)
+
+### Community 2858 - "_app_request"
+Cohesion: 0.31
+Nodes (9): _app_request(), _drain(), A fake Request whose app.state carries what the handlers read., The load-bearing one: a failure must never persist as success. This is     the s, Behavioural replacement for the source grep that a full revert walked     throug, test_no_endpoint_can_persist_a_hardcoded_pending(), test_notify_endpoint_persists_failed_when_smtp_raises(), test_notify_endpoint_persists_no_email_when_policy_declines() (+1 more)
+
+### Community 2859 - "SceneBeliefRegistry"
+Cohesion: 0.28
+Nodes (3): Any, SceneBeliefRegistry, test_registry_isolates_streams()
 
 ### Community 2860 - "carbon-affect-snapshot.test.js"
 Cohesion: 0.33
@@ -13582,6 +13678,10 @@ Nodes (5): Regression: _next_run_utc() must return a naive datetime.  Found live
 ### Community 2865 - "orion-policy-runtime"
 Cohesion: 0.22
 Nodes (8): Data flow, Idempotency, Liveness telemetry, Migration, Non-goals, orion-policy-runtime, Run, Smoke
+
+### Community 2866 - "test_py310_compat.py"
+Cohesion: 0.32
+Nodes (7): _assert_no_py311_only_utc_import(), Path, Regression guard for the 2026-08-23 production outage: `orion/situational/ conte, Real execution, not just a static check -- proves the datetime     handling in c, test_context_module_actually_builds_a_situation_brief(), test_context_module_does_not_import_py311_only_datetime_utc(), test_situation_grounding_smoke_script_does_not_import_py311_only_datetime_utc()
 
 ### Community 2867 - "test_brain_frame_worker.py"
 Cohesion: 0.42
@@ -13787,9 +13887,21 @@ Nodes (8): Current repo anchors (confirmed), Metacog/Spark Surgical Patch Tracke
 Cohesion: 0.25
 Nodes (8): 1. Semantic material exists, 2. Operator bootstraps the frontier, 3. Queue holds bounded review work, 4. Operator executes one review cycle, 5. Consolidation emits follow-up decisions, 6. Queue is updated for future bounded review, 7. Telemetry and inspector surfaces expose what happened, Review flow as it exists now
 
+### Community 2918 - "resolve_subtitle"
+Cohesion: 0.25
+Nodes (8): Any, The full "what subtitle does the model actually see" decision,     pulled out of, resolve_subtitle(), Review finding, 2026-08-22: a whitespace-only subtitle (e.g. a stray     " ") us, test_resolve_subtitle_caller_text_always_wins_whisper_never_called(), test_resolve_subtitle_no_whisper_model_falls_back_to_none(), test_resolve_subtitle_transcribed_path_reports_meta(), test_resolve_subtitle_whitespace_only_is_treated_as_empty()
+
+### Community 2919 - "test_aitown_substrate_store_singleton.py"
+Cohesion: 0.25
+Nodes (6): AI Town's own concept graph store singleton (``services/orion-hub/scripts/api_ro, Real assertion, not just "doesn't crash on import": the singleton     must exist, The load-bearing guarantee: two independent stores, not one store     aliased un, test_builder_falls_back_to_in_memory_when_backend_not_falkor(), test_singleton_exists_and_is_a_real_store(), test_singleton_is_a_distinct_object_from_the_orion_store()
+
 ### Community 2920 - "orion/mood_arc — felt-state-trajectory autoencoder"
 Cohesion: 0.25
 Nodes (7): orion/mood_arc — felt-state-trajectory autoencoder, Related PRs, Running `detect-anomalies`, Running `train`, Semantic taxonomy of the channels, `v4`: phi-v2 clean-metrics retrain (2026-09-02), What's in this module
+
+### Community 2921 - "models.py"
+Cohesion: 0.36
+Nodes (6): now_utc(), PublishResult, BaseModel, datetime, RunCacheEntry, RunRequest
 
 ### Community 2922 - "Phase 4: ConceptProfile Runtime Cutover (concept_induction_pass)"
 Cohesion: 0.25
@@ -13831,6 +13943,10 @@ Nodes (8): Conflict/stale edit behavior, Creation, Durable identity + revision, 
 Cohesion: 0.25
 Nodes (7): Evals, Model weights, Non-goals (read before extending), Operator checklist, orion-affectgpt-worker, Provenance (read before trusting the numbers), Tests
 
+### Community 2932 - "Channel "orion:chat:gpt:conversation" (kind=event, schema=ChatGptConversationV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host]"
+Cohesion: 0.29
+Nodes (7): Channel "orion:chat:gpt:conversation" (kind=event, schema=ChatGptConversationV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:example" (kind=event, schema=ChatGptDerivedExampleV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:import:run" (kind=event, schema=ChatGptImportRunV1) producers=[chatgpt-import] consumers=[orion-sql-writer], Schema: ChatGptConversationV1, Schema: ChatGptDerivedExampleV1, Schema: ChatGptImportRunV1, Service: chatgpt-import
+
 ### Community 2933 - "Contracts"
 Cohesion: 0.25
 Nodes (7): Consumed Channels, Contracts, Environment Variables, Orion Agent Council, Published Channels, Run via Docker, Running & Testing
@@ -13843,9 +13959,9 @@ Nodes (4): _cards(), Girl names get girl sheets. Boy names get boy sheets. Orion
 Cohesion: 0.25
 Nodes (7): Env vars, orion-cocreation-signals, Producers, Run, Tests, What's real, what's not (as of this patch), Why one service for three producers
 
-### Community 2937 - "api.py"
-Cohesion: 0.09
-Nodes (41): AgentChainRequest, AgentChainResult, Primary entry point for the Agent Chain service., Response from Agent Chain., agent_chain_request_to_context_exec(), context_exec_run_to_agent_chain_result(), _parse_answer_contract(), Any (+33 more)
+### Community 2937 - "Channel "orion:evidence:index:upsert" (kind=event, schema=EvidenceUnitV1) producers=[orion-sql-writer, *] consumers=[orion-evidence-index, orion-sql-writer, *]"
+Cohesion: 0.29
+Nodes (7): Channel "orion:evidence:index:upsert" (kind=event, schema=EvidenceUnitV1) producers=[orion-sql-writer, *] consumers=[orion-evidence-index, orion-sql-writer, *], Channel "orion:evidence:markdown:ingest" (kind=event, schema=MarkdownSpecIngestV1) producers=[*] consumers=[orion-sql-writer, orion-evidence-index], Channel "orion:evidence:parsed:ingest" (kind=event, schema=ParsedDocumentIngestV1) producers=[*] consumers=[orion-sql-writer, orion-evidence-index], Schema: EvidenceUnitV1, Schema: MarkdownSpecIngestV1, Schema: ParsedDocumentIngestV1, Service: orion-evidence-index
 
 ### Community 2938 - "test_metacog_trend_cue_prompt_render.py"
 Cohesion: 0.46
@@ -13867,17 +13983,21 @@ Nodes (7): build_region(), Deterministic region ID from scope + kind + sorted no
 Cohesion: 0.36
 Nodes (7): apply_graphiti_schema(), neighborhood(), Any, Path, Pool, _sql_path(), upsert_episode()
 
-### Community 2943 - "test_http_endpoints.py"
-Cohesion: 0.25
-Nodes (5): FastAPI HTTP surface tests -- review gap: only the underlying svc.stats()/svc.la, A read-only consumer must be able to explain the mechanism from the     RUNNING, `last_reheat` reports what the dissipation loop ACTUALLY fed the     substrate., test_health_endpoint_exposes_live_tuning_and_band_edges(), test_health_last_reheat_is_absent_until_a_real_dissipation_tick()
+### Community 2943 - "verdict_thresholds"
+Cohesion: 0.20
+Nodes (7): The live _HIGH_RATIO/_LOW_RATIO band edges, for read-only surfaces that     need, verdict_thresholds(), FastAPI HTTP surface tests -- review gap: only the underlying svc.stats()/svc.la, A read-only consumer must be able to explain the mechanism from the     RUNNING, `last_reheat` reports what the dissipation loop ACTUALLY fed the     substrate., test_health_endpoint_exposes_live_tuning_and_band_edges(), test_health_last_reheat_is_absent_until_a_real_dissipation_tick()
 
-### Community 2944 - "_seed_concept_ids"
-Cohesion: 0.32
-Nodes (8): _landmark_concept_ids(), ``label.lower() -> node_id`` for every golden seed concept.      Reads the seed, Seed ids for speakers resolvable from provenance, for     ``map_topic_foundry_ru, Seed ids still resolved through ENTITY MENTIONS, for     ``map_topic_foundry_run, _seed_concept_ids(), _speaker_concept_ids(), Both id maps must read the real seed_concepts.yaml fixture (not a     hardcoded, test_seed_ids_read_the_real_fixture_and_split_by_resolution_method()
+### Community 2944 - "EmailTransport"
+Cohesion: 0.29
+Nodes (4): EmailTransport, _split_mime(), Exercises orion/notify/transport.py itself, not a stub that raises.      The ear, test_the_real_transport_treats_a_partial_refusal_as_a_failure()
 
-### Community 2947 - "test_fcc_model_labels_api.py"
-Cohesion: 0.36
-Nodes (7): client(), MonkeyPatch, Path, TestClient, FCC model labels API for agent-claude mode., test_fcc_model_labels_disabled_by_default(), test_fcc_model_labels_reads_fixture_env()
+### Community 2945 - "build_daily_seed_payload"
+Cohesion: 0.29
+Nodes (7): build_daily_seed_payload(), Assemble the daily journal seed, omitting `capability_gaps` when empty.      Liv, The whole point: a day with no outage must not change the prompt at all.      Mi, None and [] must both mean "absent", not "present but empty"., test_quiet_day_seed_is_byte_identical_to_pre_patch(), test_seed_includes_the_key_when_a_gap_exists(), test_seed_omits_the_key_for_every_empty_shape()
+
+### Community 2947 - "_make_worker"
+Cohesion: 0.52
+Nodes (6): _make_worker(), test_anomaly_scorer_gets_startup_grace_from_settings(), test_anomaly_scorer_is_constructed_when_enabled(), test_anomaly_scorer_is_none_when_disabled(), test_anomaly_tick_does_not_publish_when_scorer_returns_none(), test_anomaly_tick_publishes_when_scorer_returns_a_score()
 
 ### Community 2949 - "Atlas quickstart"
 Cohesion: 0.25
@@ -13899,9 +14019,9 @@ Nodes (7): grammar_atoms, grammar_compactions, grammar_edges, grammar_events, gr
 Cohesion: 0.25
 Nodes (4): Config, BaseSettings, Back-compat alias.          Some refactor branches referenced `effective_subscri, Settings
 
-### Community 2954 - "read_recent_vision_events"
-Cohesion: 0.32
-Nodes (6): _database_url(), _get_engine(), Any, Direct read of recent vision events from Postgres, for reverie perception contex, Most recent fresh, narrated vision events, newest first. Never raises.      Each, read_recent_vision_events()
+### Community 2954 - "inject_session_presence"
+Cohesion: 0.48
+Nodes (6): inject_session_presence(), load_session_presence(), _payload_has_presence_context(), Any, Merge stored presence into a chat payload when the client did not send one., Return session-scoped audience presence, or None when unavailable.
 
 ### Community 2955 - "test_settings_env_parity.py"
 Cohesion: 0.32
@@ -14111,9 +14231,17 @@ Nodes (6): Acceptance checks, Arsonist summary, catalog_drift_pressure: mesh-wid
 Cohesion: 0.29
 Nodes (7): 16. Proposed implementation sequence, Patch 1: baseline and security spike, Patch 2: GitNexus through FCC, Patch 3: reviewed unified-turn breadcrumbs, Patch 4: Context Mode MCP-only, Patch 5: Context Mode hooks, Patch 6: optional live-state bridge
 
-### Community 3008 - "test_rpc_timeout_grammar_emit.py"
-Cohesion: 0.43
-Nodes (6): _bus(), Unit tests for OrionBusAsync._emit_rpc_timeout_grammar (Option C of docs/superpo, Fire-and-forget guarantee -- a grammar-publish failure must never surface     as, test_emits_real_grammar_atom_with_correct_semantic_role(), test_never_raises_when_publish_fails(), test_two_calls_produce_distinct_event_ids()
+### Community 3007 - "test_skill_runner_catalogue.py"
+Cohesion: 0.29
+Nodes (4): Hub Skill Runner: exact catalogue prompt -> concrete skill verb (direct exec, no, Guards Hub Skill Runner catalogue against drift from templates/index.html., 20 operator catalogue skills (excludes placeholder, workflows, and free-text row, test_skill_runner_catalogue_entry_count_matches_non_workflow_options()
+
+### Community 3008 - "test_service_logs.py"
+Cohesion: 0.48
+Nodes (6): MonkeyPatch, Path, test_discover_loggable_services_only_returns_dirs_with_compose(), test_discovery_uses_orion_repo_root_env_override(), test_inventory_reports_diagnostics_when_zero_services(), test_repo_root_resolution_tracks_invalid_env_override()
+
+### Community 3009 - "test_notify_attention_ack.py"
+Cohesion: 0.33
+Nodes (4): client(), _make_row(), Regression test: the ack must actually set attention_acked_at/ack_type/     ack_, test_attention_ack_persists_fields_on_notify_requests_row()
 
 ### Community 3010 - "Usage"
 Cohesion: 0.29
@@ -14163,6 +14291,10 @@ Nodes (6): Configuration, Debug surfaces, orion-heartbeat (v0), Run, What it del
 Cohesion: 0.29
 Nodes (5): _FakeFrameCache, test_latest_frame_image_404s_when_no_frame_seen_yet(), test_latest_frame_image_503s_when_percept_store_base_url_unset(), test_latest_frame_route_reports_no_frame_seen_yet(), test_latest_frame_route_returns_the_cached_pointer()
 
+### Community 3026 - "settings.py"
+Cohesion: 0.33
+Nodes (4): Config, BaseSettings, Orion Collapse Mirror settings.     No DB or Chroma dependencies — event-driven, Settings
+
 ### Community 3027 - "orion-percept-store"
 Cohesion: 0.29
 Nodes (6): Contract, Not done yet, Operating, orion-percept-store, The properties that matter, Why this is not Hub
@@ -14187,9 +14319,9 @@ Nodes (6): Architecture, Bus Channels, Configuration, Guard Logic, 🛡 Orion Se
 Cohesion: 0.29
 Nodes (6): API, Config, orion-self-experiments, Responsibilities, Smoke, Tests
 
-### Community 3033 - "test_journal_entry_trigger_kind_filtering.py"
-Cohesion: 0.38
-Nodes (6): Part A.4 verification: does `journal_entries` (the raw append-only SQL table, `a, `JournalEntryWriteV1.model_dump()` now includes `trigger_kind`, but     `Journal, Real end-to-end proof: `_write_row` against an in-memory sqlite     `journal_ent, test_journal_entries_table_has_no_trigger_kind_column(), test_write_row_silently_drops_trigger_kind_for_journal_entries_table(), _write_with_trigger_kind()
+### Community 3033 - "test_ready.py"
+Cohesion: 0.73
+Nodes (5): _load_app(), MonkeyPatch, test_ready_503_when_exec_subscriber_missing(), test_ready_ok_when_intake_and_exec_subscribers_present(), test_ready_reports_unavailable_when_redis_missing()
 
 ### Community 3034 - "build_chat_turn_index"
 Cohesion: 0.71
@@ -14343,6 +14475,10 @@ Nodes (6): **Cognition Packs**, 🧠 Core Concepts, **Prompts**, **RDF Sync**, *
 Cohesion: 0.33
 Nodes (6): `dry_run_plan.py`, `generate_rdf.py`, `list_packs.py`, `show_pack.py`, 🛠 Tool Scripts, `validate_verbs.py`
 
+### Community 3072 - "_day_bucket_from_timestamp"
+Cohesion: 0.33
+Nodes (6): _day_bucket_from_timestamp(), Parse a topic-foundry segment's ``start_at`` (a plain string over the     wire,, test_day_bucket_from_timestamp_garbage_returns_none(), test_day_bucket_from_timestamp_none_returns_none(), test_day_bucket_from_timestamp_parses_offset_iso(), test_day_bucket_from_timestamp_parses_z_suffixed_iso()
+
 ### Community 3073 - "Phase 1: Spark ConceptProfile Graph Materialization"
 Cohesion: 0.33
 Nodes (6): Phase 1: Spark ConceptProfile Graph Materialization note, Failure policy, Graph mapping shape, Intentionally not done in this phase, Phase 1: Spark ConceptProfile Graph Materialization, What was added
@@ -14367,9 +14503,9 @@ Nodes (5): _json_default(), main(), Any, Path, _snapshot()
 Cohesion: 0.73
 Nodes (5): graphify_code_count(), _graphify_python(), main(), Path, tracked_code_count()
 
-### Community 3079 - "connection_params"
-Cohesion: 0.33
-Nodes (6): connection_params(), A DSN string, or psycopg2 kwargs built from the host-side defaults.      Matches, The root .env's POSTGRES_URI is a docker-internal hostname that does not     res, test_an_explicit_dsn_wins_over_the_environment(), test_database_url_is_the_fallback_when_postgres_uri_is_unset(), test_with_nothing_configured_it_targets_the_published_host_port()
+### Community 3079 - "_ensure_hub_scripts_import_path"
+Cohesion: 0.47
+Nodes (5): _ensure_hub_scripts_import_path(), Repo-root ``scripts/`` shadows Hub when pytest mixes repo tests with Hub tests (, memory-graph approve no longer gates on an RDF backend (removed     2026-07-22,, test_memory_graph_approve_requires_named_graph(), test_memory_graph_validate_fixture_roundtrip()
 
 ### Community 3080 - "shared_checkout_edit_guard.py"
 Cohesion: 0.53
@@ -14407,6 +14543,10 @@ Nodes (5): _cortex_exec_volumes(), Deterministic gate for a real live incident (
 Cohesion: 0.33
 Nodes (5): Boundary decision, Concept-profile config adapter in Orch, Seam-owned fields, Why this exists, Why this keeps the seam clean
 
+### Community 3089 - "16. Orion-specific touched-file checklist"
+Cohesion: 0.40
+Nodes (5): 16. Orion-specific touched-file checklist, Config, Contracts, Runtime and docs, Service code
+
 ### Community 3090 - "test_docker_compose_env_parity.py"
 Cohesion: 0.47
 Nodes (5): _compose_environment_list(), Regression for a live gap (2026-07-21): FIELD_CHANNEL_ANOMALY_* was added to .en, Broader check, not just the anomaly keys: every KEY= line in     .env_example sh, test_anomaly_env_keys_are_all_passed_through_docker_compose(), test_env_example_and_compose_do_not_drift_for_any_key()
@@ -14423,9 +14563,9 @@ Nodes (3): assert, containerBringupUi, test
 Cohesion: 0.40
 Nodes (4): formatTurnElapsed(), assert, { formatTurnElapsed }, test
 
-### Community 3094 - "_env_example_value"
-Cohesion: 0.33
-Nodes (6): _env_example_value(), Read one KEY=value line straight out of the checked-in `.env_example`,     witho, A typo in .env_example's TZ degrades silently to UTC.      The constructor's fal, Regression guard, 2026-08-19: 300s was root-caused live as the reason     outrea, test_shipped_timezone_is_a_real_iana_zone(), test_tick_sec_default_is_not_the_root_caused_300s_value()
+### Community 3094 - "19. Completion status"
+Cohesion: 0.40
+Nodes (5): 19. Completion status, BLOCKED, DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT
 
 ### Community 3098 - "Pinned llama.cpp CUDA base image"
 Cohesion: 0.33
@@ -14450,10 +14590,6 @@ Nodes (6): orion-sql-db docker-compose.yml (Postgres 15 + pgAdmin), mem_limit/au
 ### Community 3103 - "manual_migration_biometrics_substrate_loop.sql"
 Cohesion: 0.33
 Nodes (5): substrate_active_node_pressure_projection, substrate_node_biometrics_projection, substrate_organ_emissions, substrate_reduction_cursor, substrate_reduction_receipts
-
-### Community 3104 - "_fallback_counts"
-Cohesion: 0.33
-Nodes (5): _fallback_counts(), Count grammar.event.v1 fallbacks using typed created_at_ts when available., Tests for bus_fallback_log created_at_ts population and truth windows., test_fallback_counts_use_created_at_ts_windows(), test_write_fallback_sets_created_at_ts()
 
 ### Community 3105 - "Evidence index substrate (slice note)"
 Cohesion: 0.33
@@ -14643,6 +14779,10 @@ Nodes (4): Answer, Outcome, Q: FinalizeReflectionV1 world_contact_opportunity co
 Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: grammar_events table readers and retention, Source Nodes
 
+### Community 3154 - "_FixedDatetime"
+Cohesion: 0.40
+Nodes (4): _FixedDatetime, _freeze_real_now(), datetime, `_build_conversation_phase`'s crossed_day_boundary check calls the     real `dat
+
 ### Community 3156 - "Patch Set 21: Spark introspector wildcard publish guard"
 Cohesion: 0.40
 Nodes (5): Goal, Implemented, Notes, Patch Set 21: Spark introspector wildcard publish guard, Testing status
@@ -14674,6 +14814,10 @@ Nodes (4): main(), probe_file(), Returns (verdict, detail). verdict is one of:  
 ### Community 3163 - "resume_compact_convex_data.sh"
 Cohesion: 0.70
 Nodes (4): die(), log(), ok(), resume_compact_convex_data.sh script
+
+### Community 3165 - "Phase 3 — Substrate act path (decouple fetch from goal publish)"
+Cohesion: 0.50
+Nodes (4): Phase 3 — Substrate act path (decouple fetch from goal publish), Task 6: Episode intent models, Task 7: `maybe_execute_substrate_act_after_metabolism`, Task 8: Decouple fetch/journal in `bus_worker.py`
 
 ### Community 3166 - "orion-chat-memory Docker Compose Service"
 Cohesion: 0.40
@@ -14787,13 +14931,13 @@ Nodes (3): Operator notes, Spark Introspection Phase 2 — Exec lane isolation (
 Cohesion: 0.50
 Nodes (3): Changes, Summary, Test plan
 
-### Community 3198 - "Phase 2 — Audit / goals / bus_worker wiring"
+### Community 3197 - "Orion Cockpit POV — Slice B/C follow-on stub"
 Cohesion: 0.50
-Nodes (4): Phase 2 — Audit / goals / bus_worker wiring, Task 3: `build_drive_audit` uses attribution, Task 4: Goal drive origin source `tick_attribution`, Task 5: Wire attribution + metabolism deltas in `bus_worker.py`
+Nodes (3): Orion Cockpit POV — Slice B/C follow-on stub, Slice B — Thick inputs (replace gap hops), Slice C — Offboarding completeness
 
-### Community 3199 - "Phase 4 — Env parity + agent gate"
+### Community 3198 - "_episode_key"
 Cohesion: 0.50
-Nodes (4): Phase 4 — Env parity + agent gate, Spec coverage self-review, Task 10: Code review + smoke, Task 9: Env template + sync script
+Nodes (4): _episode_key(), _is_liveness_reason(), A trailing ':' in the constant means prefix-match; otherwise exact., The alert reason an incoming record belongs to, or None if irrelevant.      A re
 
 ### Community 3200 - "Dual-Nano cabinet sensors — implementation plan"
 Cohesion: 0.50
@@ -14979,14 +15123,6 @@ Nodes (4): description, minimum, type, max_recursion_depth
 Cohesion: 0.50
 Nodes (3): graphiti_edges, graphiti_entities, graphiti_episodes
 
-### Community 3246 - "_SyncAbort"
-Cohesion: 0.50
-Nodes (3): Exception, Raised internally to short-circuit the sync with a status string., _SyncAbort
-
-### Community 3247 - "_break_rescue"
-Cohesion: 0.50
-Nodes (4): _break_rescue(), Make the named git subcommands fail, so a rescue cannot succeed at all., If neither the stash nor the branch fallback can capture the work, a reset     w, test_sync_declines_reset_when_every_rescue_fails()
-
 ### Community 3248 - "Roadmap"
 Cohesion: 0.50
 Nodes (4): Long-Term, Mid-Term, Near-Term, Roadmap
@@ -15091,6 +15227,10 @@ Nodes (3): 4.1 What exists, Graph-backed concept-like entities that exist (diffe
 Cohesion: 0.67
 Nodes (3): 9) Canonical-source recommendation, Not recommended, Recommended long-term source of truth
 
+### Community 3288 - "11. Tests and evals"
+Cohesion: 0.67
+Nodes (3): 11. Tests and evals, Gate tests, Periodic evals
+
 ### Community 3291 - "Scope & Non-goals"
 Cohesion: 0.67
 Nodes (3): In scope (v1), Out of scope (v1), Scope & Non-goals
@@ -15158,10 +15298,6 @@ Nodes (3): requires_gpu, description, type
 ### Community 3308 - "safety_rules"
 Cohesion: 0.67
 Nodes (3): safety_rules, description, type
-
-### Community 3311 - "test_resilience_importable_without_loguru"
-Cohesion: 0.67
-Nodes (3): MonkeyPatch, orion.core.bus.resilience must not crash-on-import when loguru is missing., test_resilience_importable_without_loguru()
 
 ### Community 3313 - "orion-recall (memory retrieval / MemoryBundleV1 fusion service)"
 Cohesion: 0.67
@@ -15251,10 +15387,6 @@ Nodes (3): orion-vision-host docker-compose config (GPU), orion-vision-host GPU 
 Cohesion: 0.67
 Nodes (3): orion-vision-retina docker-compose config, orion-vision-retina canonical visual intake service, orion-vision-retina dependencies (opencv, redis)
 
-### Community 3418 - "test_doc_semantic_drift_chunking.py"
-Cohesion: 0.09
-Nodes (20): Unit tests for the chunk + max-chunk-pair scoring path in app/producers/doc_sema, Defensive: a misconfigured 0/negative window must not spin forever in     the ha, Honest limitation, documented rather than hidden.      Because the score is symm, The counterpart to the above, and why symmetry was worth having: an     added ch, One badly-changed section must not be averaged away by neighbours     that barel, A newly-added file has no "before" text -- genuinely undefined, not a     fabric, The common case, and the one that keeps new scores comparable to the     pre-chu, The whole point is that nothing gets dropped. Rejoining every chunk     must rep (+12 more)
-
 ## Ambiguous Edges - Review These
 - `agent-trace.js (plain-text step consumer)` → `Agent Trace inspection modal (Hub UI, fail case screenshot)`  [AMBIGUOUS]
   .verify-run/hub_agent_trace_timeline.png · relation: conceptually_related_to
@@ -15274,9 +15406,9 @@ Nodes (20): Unit tests for the chunk + max-chunk-pair scoring path in app/produc
   tests/fixtures/knowledge_forge/claims/disputed/claim-test-bad-ref.yaml · relation: references
 
 ## Knowledge Gaps
-- **17322 isolated node(s):** `install-docker.sh script`, `install-utils.sh script`, `orion-bootstrap.sh script`, `GIT_SSH_COMMAND`, `setup-node.sh script` (+17317 more)
+- **17362 isolated node(s):** `install-docker.sh script`, `install-utils.sh script`, `orion-bootstrap.sh script`, `GIT_SSH_COMMAND`, `setup-node.sh script` (+17357 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **1450 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **1447 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Work-memory lessons
 

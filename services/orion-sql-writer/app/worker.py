@@ -96,8 +96,10 @@ from app.models import (
     GrammarEventSQL,
     EquilibriumServiceTransitionSQL,
     HarnessTurnTraceSQL,
+    CockpitTurnSightingSQL,
 )
 from app.harness_turn_trace_persist import upsert_harness_turn_trace
+from app.cockpit_turn_sighting_persist import append_cockpit_hop
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
@@ -143,6 +145,7 @@ from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.thought import ThoughtEventV1
+from orion.schemas.cockpit_sighting import CockpitHopV1
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.chat_gpt_log import (
@@ -457,6 +460,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     # single fixed pydantic model here -- re-validating against one schema
     # class would reject the other three kinds that also route here.
     "HarnessTurnTraceSQL": (HarnessTurnTraceSQL, None),
+    "CockpitTurnSightingSQL": (CockpitTurnSightingSQL, CockpitHopV1),
     "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, None),
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
@@ -1683,6 +1687,9 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             # picks (see app/harness_turn_trace_persist.py).
             return upsert_harness_turn_trace(sess, write_data)
 
+        if sql_model_cls is CockpitTurnSightingSQL:
+            return append_cockpit_hop(sess, write_data)
+
         if sql_model_cls is ChatMessageSQL:
             client_meta = data.get("client_meta")
             if client_meta is not None:
@@ -2735,6 +2742,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 # column dispatch relies on. data_to_process is already the
                 # clean env.payload copy.
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
+            elif sql_model is CockpitTurnSightingSQL:
+                write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             if env.kind == JOURNAL_WRITE_KIND and write_ok:

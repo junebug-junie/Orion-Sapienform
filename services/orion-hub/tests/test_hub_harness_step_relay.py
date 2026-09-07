@@ -25,6 +25,7 @@ async def test_harness_step_relay_dispatches_matching_correlation() -> None:
 
     item = queue.get_nowait()
     assert item["kind"] == "claude_step"
+    assert "hop" not in item
     assert item["mode"] == "orion"
     assert item["correlation_id"] == "corr-1"
     assert item["step_index"] == 0

@@ -2983,6 +2983,16 @@ channels:
     since: "2026-09-06"
     description: "Runner -> Hub: execute this run's harness turn (Hub's unified-turn saga needs Hub-internal clients). Reply on orion:curiosity:turn:reply:<correlation_id> as CuriosityTurnResultV1. The runner re-issues it, same run_id, if Hub goes away mid-turn."
 
+  - name: "orion:curiosity:turn:reply:*"
+    kind: "result"
+    schema_id: "CuriosityTurnResultV1"
+    message_kind: "curiosity.turn.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-09-06"
+    description: "Missing from the initial patch (2026-09-06): Hub's ORION_BUS_ENFORCE_CATALOG=true made every reply publish here raise ValueError, so no harness turn could ever complete -- the runner retried the same run for a full RPC timeout, forever, wasting a real generation each cycle. See orion:curiosity:turn:request above."
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

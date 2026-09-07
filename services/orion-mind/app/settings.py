@@ -51,9 +51,31 @@ class Settings(BaseSettings):
     )
 
     MIND_LLM_SYNTHESIS_ENABLED: bool = Field(default=False, alias="MIND_LLM_SYNTHESIS_ENABLED")
-    MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="quick", alias="MIND_SEMANTIC_MODEL_ROUTE")
+    # 2026-09-07: semantic moved off `quick` (circe 8013, saturated -- 8 inflight
+    # + up to 11 queued, 30-115s waits, timing out Mind's 60s budget on ~97% of
+    # live chat turns) onto `metacog` (circe 8012). stance's code default here
+    # was `chat`, but the live-deployed .env had already overridden it to
+    # `quick` (same saturated lane as semantic, same failure) -- so this moves
+    # it off `quick` for the same reason, not away from `chat`. appraisal was
+    # already on metacog, unchanged.
+    #
+    # metacog was confirmed idle (4/4 slots) via live /slots + zero real
+    # gateway_upstream_queued/overloaded events at the moment of this patch --
+    # NOT load-tested against 3 sequential Mind calls per turn plus whatever
+    # metacog_background traffic is mid-wait. metacog is a real 4-slot shared
+    # resource (memory-consolidation, vision-council, reverie, hub's concept
+    # classifier, and orion-cortex-exec's daily metacog/journal draft all use
+    # it too) and orion-llm-gateway/.env_example's own LLM_GATEWAY_UPSTREAM_
+    # MAX_INFLIGHT comment documents a 2026-09-05 flood that starved metacog
+    # calls for 19 min (a gateway thread-pool sizing issue since fixed by
+    # configure_executor(), not proof metacog itself can't saturate -- but a
+    # sign this lane has been contended before). If chat turns start showing
+    # the same fallback_contract_only pattern this patch fixes, check
+    # `docker logs orion-llm-gateway` for queued/overloaded against metacog's
+    # upstream before assuming semantic_synthesis itself regressed.
+    MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_SEMANTIC_MODEL_ROUTE")
     MIND_APPRAISAL_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_APPRAISAL_MODEL_ROUTE")
-    MIND_STANCE_MODEL_ROUTE: str = Field(default="chat", alias="MIND_STANCE_MODEL_ROUTE")
+    MIND_STANCE_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_STANCE_MODEL_ROUTE")
     MIND_LLM_TIMEOUT_SEC: float = Field(default=60.0, alias="MIND_LLM_TIMEOUT_SEC")
     MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")

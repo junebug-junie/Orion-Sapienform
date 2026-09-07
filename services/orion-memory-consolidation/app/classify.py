@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.llm.routes import METACOG_LLM_ROUTES
 from orion.memory.consolidation_classify import build_classify_prompt
 from orion.memory.turn_change_classify import (
     build_change_only_prompt,
@@ -60,14 +61,16 @@ def _session_window_baseline(prior_turns: list[dict], *, n: int) -> tuple[str, s
     return "session_window", _build_window_transcript(selected, max_turns=n)
 
 
-_CLASSIFY_ROUTES = frozenset({"metacog", "quick"})
+_CLASSIFY_ROUTES = frozenset({"metacog", "metacog_background", "quick"})
 
 
 def _resolve_classify_route(settings) -> str:
-    route = str(getattr(settings, "TURN_CHANGE_CLASSIFY_ROUTE", "metacog") or "metacog").strip().lower()
+    route = str(
+        getattr(settings, "TURN_CHANGE_CLASSIFY_ROUTE", "metacog_background") or "metacog_background"
+    ).strip().lower()
     if route not in _CLASSIFY_ROUTES:
-        logger.warning("invalid TURN_CHANGE_CLASSIFY_ROUTE=%r; falling back to metacog", route)
-        return "metacog"
+        logger.warning("invalid TURN_CHANGE_CLASSIFY_ROUTE=%r; falling back to metacog_background", route)
+        return "metacog_background"
     return route
 
 
@@ -154,7 +157,13 @@ async def _classify_scores(
     primary_route: str,
 ) -> dict:
     """Try primary classify route, then alternate lane, with short per-route retries."""
-    alternate = "quick" if primary_route == "metacog" else "metacog"
+    # 2026-09-07: metacog_background introduced alongside plain metacog (both
+    # count as "the metacog family" here, per orion.llm.routes.METACOG_LLM_ROUTES
+    # -- reused rather than reimplemented, per the route-family drift this set
+    # was centralized to prevent) -- either one's alternate is quick; quick's
+    # alternate stays metacog_background (not plain metacog) so a fallback from
+    # quick still yields rather than competing evenly.
+    alternate = "quick" if primary_route in METACOG_LLM_ROUTES else "metacog_background"
     routes = (primary_route, alternate)
     last_error: Exception | None = None
     for route in routes:

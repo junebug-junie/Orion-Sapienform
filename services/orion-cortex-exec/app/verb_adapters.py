@@ -561,7 +561,10 @@ class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperC
                         ),
                     ],
                     raw_user_text=entry.summary,
-                    route="metacog",
+                    # metacog_background (2026-09-07, not plain metacog): collapse_mirror
+                    # is background journal/reflection work, not a live chat turn -- it
+                    # should yield slot slack to Mind's now-live metacog traffic.
+                    route="metacog_background",
                     profile=settings.atlas_metacog_profile_name,
                     options={"max_tokens": 512, "temperature": 0.3, **_cm_lane},
                     session_id=str(metadata.get("session_id") or "collapse_mirror"),

@@ -61,6 +61,10 @@ Hub tick --(cortex.orch.request, metadata.durable_run)--> cortex-orch --(orion:d
 - `orion/sentience_striving_program/instruments.yaml`: `durable_runs` instrument (`runs_resumed`, `runs_abandoned`).
 - `.github/workflows/orion-durable-runs-tests.yml`: CI for the runner's tests.
 - `config/metrics/metric_definitions.lock.json`: re-locked (three new bus channels).
+- `scripts/check_bus_reply_channels.py` (new) + `tests/test_bus_reply_channel_catalog_coverage.py` (new): the
+  gate for the bug class that broke the live restart test (see Review findings fixed).
+- `orion/bus/channels.yaml`: the missing `orion:curiosity:turn:reply:*` entry, plus two more pre-existing gaps
+  the new gate found (`orion:self_experiments:context_exec:reply:*`, `orion:vision:test:*`).
 
 ## Schema / bus / API changes
 
@@ -221,7 +225,81 @@ repeatedly, since it kept needing to retry. **PASSED.**
 
 ## Review findings fixed
 
-(filled after review)
+`/code-review feat/durable-runs --effort high`, 10 findings, all real (none were the 5 already-fixed live bugs
+above, which the review was told to treat as out of scope).
+
+- Finding: Attention-surface receipt rows collide on `entry_id` across retries of the same node+status
+  (`harness_turn` `resumed`/`failed`) -- confirmed live: `ff8a379217d8`'s 8 attempts left far fewer surface
+  rows than transitions.
+  - Fix: `entry_id` includes the event's own `generated_at` (microsecond precision), `services/orion-durable-runs/app/runner.py`.
+  - Evidence: no test existed for this shape; behavior verified by hand (two `_emit_state` calls a microsecond
+    apart now produce distinct ids).
+
+- Finding: a checkpoint with a missing/unparseable timestamp defaulted resume age to `0.0` ("brand new")
+  instead of "unknown," disabling the one guard meant to stop a stale checkpoint resuming into different
+  material.
+  - Fix: unknown age now reads as infinite (fails toward abandonment, bounded by `max_age_hours`), same file.
+  - Evidence: existing `services/orion-durable-runs/tests` pass unchanged (5/5) -- this only changes the
+    unparseable-timestamp path, which the fixtures don't exercise; the direction is correct by inspection
+    against the module's own stated intent.
+
+- Finding: a crash between the `journal` node publishing and its checkpoint committing re-runs the node with a
+  fresh random `entry_id` -- no dedup on retry despite an already-deterministic `source_ref`.
+  - Fix: `entry_id=f"curiosity-investigation:{run_id}"`, deterministic like `source_ref`, `orion/curiosity/journal.py`.
+  - Evidence: verified by hand -- two calls with the same `run_id` now produce the same `entry_id`
+    (`curiosity-investigation:run-xyz`); `services/orion-hub/tests/test_curiosity_investigation.py` still 129/129.
+
+- Finding: `MaterialCounts` passed where the signature says `StudyMaterial` (`orion/curiosity/journal.py`) --
+  works today by duck typing, silently breaks on any future `StudyMaterial`-only usage.
+  - Fix: widened the type hint to `StudyMaterial | MaterialCounts`.
+  - Evidence: no runtime behavior change; import and construction verified by hand.
+
+- Finding: publishing to `orion:durable:run:request` was reported "accepted" with no confirmation anyone was
+  listening -- a Redis publish with zero subscribers is dropped silently, and Hub had already spent a daily
+  investigation slot before this point.
+  - Fix: best-effort `PUBSUB NUMSUB` check in `dispatch_durable_run` (`services/orion-cortex-orch/app/durable_runs.py`),
+    fails open (never blocks a real dispatch) on any error from the check itself.
+  - Evidence: `services/orion-cortex-orch/tests/test_durable_run_dispatch.py` now 6/6 (2 new: no-subscriber ->
+    `status=fail`; a broken check still reports `accepted`).
+
+- Finding: a `CancelledError` during the RPC to cortex-orch (up to ~20s) skipped the daily-cap/cooldown refund
+  the fallback-turn path already has, since that call sits outside the existing `try/except`.
+  - Fix: wrapped the dispatch call in its own `try/except CancelledError` doing the same refund,
+    `services/orion-hub/scripts/curiosity_investigation.py`.
+  - Evidence: `test_curiosity_investigation.py` 129/129 unchanged; the cancellation path itself has no existing
+    test harness for a mid-RPC SIGTERM, noted as a gap rather than claimed covered.
+
+- Finding: a missing `.env` is not the same as parity, but the gate reported `PASS` either way for an
+  explicitly-named deploy target -- and separately, the branch-new-service fallback checked directory
+  *existence*, not template *completeness*, so a `.env` pre-positioned in the primary checkout ahead of merge
+  (this exact service, this session) made it use an incomplete primary-checkout copy instead of falling back
+  to the worktree.
+  - Fix: both in `scripts/check_env_template_parity.py` -- an explicitly-named service with no `.env` now fails
+    loudly; the fallback now checks for `.env_example` specifically.
+  - Evidence: hand-verified all three cases (real service, missing `.env`, missing `.env_example` with a
+    pre-positioned `.env`) plus the unchanged whole-repo scan (`PASS (84 service(s) compared)`).
+
+- Finding: no gate existed for the bug class that started this whole review cycle -- a forgotten per-correlation
+  reply-channel catalog entry.
+  - Fix: `scripts/check_bus_reply_channels.py` (regex-based, bounded -- resolves the dominant `f"<prefix>:{id}"`
+    shape, skips what it can't confidently resolve rather than guessing) + `tests/test_bus_reply_channel_catalog_coverage.py`
+    wiring it into the normal test run. Running it immediately found two more real, pre-existing gaps
+    (`orion:self_experiments:context_exec:reply:*`, `orion:vision:test:*`) -- both registered in the same
+    patch.
+  - Evidence: `check_bus_reply_channels: 10 reply-channel prefix(es) resolved, 0 uncovered`.
+
+Accepted as documented risk, not fixed (see Risks / concerns):
+- A hard-failing `harness_turn` is retried by the sweep every 2 minutes with no backoff, outside Hub's
+  cooldown/cap system. Bounded by `max_age_hours` (24h); a real fix needs Hub-side coordination across a
+  service boundary, out of scope for the spike.
+- `next_node` is computed from the hardcoded `CURIOSITY_NODES` order rather than the live graph's `snap.next`.
+  Correct today because the graph is a fixed 5-node linear chain (the module's own docstring says so); a real
+  landmine only if a conditional edge is ever added.
+
+Confirmed pre-existing and unrelated to this branch, identical on clean `main`: 34 `orion-cortex-orch`
+`test_workflow_lane.py` failures (test-pollution across the full-suite run, not present in isolation-per-file
+runs of the durable-runs-touched tests) and 1 `orion-sql-writer` `test_journal_entry_payload_boundary.py`
+failure (routes to the wrong table, unrelated to the journal `entry_id` change above).
 
 ## Restart required
 

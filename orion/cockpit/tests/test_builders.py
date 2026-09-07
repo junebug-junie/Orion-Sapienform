@@ -2,6 +2,7 @@ from orion.cockpit.builders import (
     extract_mind_quality_fields,
     gap_hop,
     hop_from_association,
+    hop_from_ingress,
     hop_from_motor_boot,
     hop_from_motor_step,
     hop_from_progress,
@@ -176,11 +177,44 @@ def test_hop_from_motor_boot_carries_exact_prompt():
     assert hop.producer == "orion-harness-governor"
 
 
-def test_gap_hop_ingress_deferred_to_slice_c():
+def test_hop_from_ingress_carries_exact_user_message():
+    hop = hop_from_ingress(
+        correlation_id="c1",
+        seq=0,
+        ingress={
+            "user_message": "hello there",
+            "session_id": "s1",
+            "mode": "orion",
+            "attachment_count": 0,
+            "observation_published": False,
+        },
+    )
+    assert hop.stage == "ingress"
+    assert hop.status == "ok"
+    assert hop.raw["user_message"] == "hello there"
+    assert hop.summary["user_message_len"] == len("hello there")
+    assert hop.summary["session_id"] == "s1"
+    assert hop.summary["mode"] == "orion"
+    assert str(len("hello there")) in hop.visor_line
+    assert hop.raw["observation_published"] is False
+    assert hop.producer == "orion-hub"
+
+
+def test_hop_from_ingress_empty_message():
+    hop = hop_from_ingress(
+        correlation_id="c1",
+        seq=0,
+        ingress={"user_message": "", "attachment_count": 0, "observation_published": False},
+    )
+    assert hop.status == "ok"
+    assert hop.visor_line == "ingress · empty"
+
+
+def test_gap_hop_still_supports_deferred_stages():
     hop = gap_hop(
         correlation_id="c1",
         seq=0,
-        stage="ingress",
+        stage="closure",
         deferred_to="slice_c",
     )
     assert hop.status == "gap"

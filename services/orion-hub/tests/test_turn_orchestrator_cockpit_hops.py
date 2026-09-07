@@ -42,8 +42,12 @@ def test_orchestrator_emits_thick_pre_motor_hops():
     hops = [f["hop"] for f in frames if f["kind"] == "cockpit_hop"]
     stages = [h["stage"] for h in hops]
     assert stages == ["ingress", "association", "stance_inputs", "stance_decision"]
-    assert hops[0]["status"] == "gap"
-    assert hops[0]["summary"]["deferred_to"] == "slice_c"
+    assert hops[0]["status"] == "ok"
+    assert hops[0]["raw"]["user_message"] == "hi"
+    assert hops[0]["summary"]["user_message_len"] == 2
+    assert "2" in hops[0]["visor_line"]
+    assert hops[0]["raw"].get("observation_published") is False
+    assert "deferred_to" not in hops[0].get("summary", {})
     assert hops[1]["status"] == "ok"
     assert hops[1]["raw"]["broadcast_stale"] is True
     assert hops[2]["status"] == "ok"
@@ -55,7 +59,10 @@ def test_orchestrator_emits_thick_pre_motor_hops():
 def test_emit_progress_hop_failed_status():
     from orion.hub.cockpit_emit import begin_cockpit_timeline, emit_progress_hop
 
-    begin_cockpit_timeline("corr-prog")
+    begin_cockpit_timeline(
+        "corr-prog",
+        ingress={"user_message": "x", "attachment_count": 0, "observation_published": False},
+    )
     frame = emit_progress_hop(
         "corr-prog",
         stage="pre_turn_appraisal",
@@ -765,6 +772,16 @@ async def test_execute_unified_turn_streams_progress_before_thought_returns():
         if f.get("kind") == "cockpit_hop" and isinstance(f.get("hop"), dict)
     ]
     assert stages[0] == "ingress"
+    ingress_hops = [
+        f["hop"]
+        for f in collected
+        if f.get("kind") == "cockpit_hop" and f["hop"].get("stage") == "ingress"
+    ]
+    assert len(ingress_hops) == 1
+    assert ingress_hops[0]["status"] == "ok"
+    assert ingress_hops[0]["raw"]["user_message"] == "hello"
+    assert ingress_hops[0]["raw"]["observation_published"] is False
+    assert "deferred_to" not in ingress_hops[0].get("summary", {})
     assert "pre_turn_appraisal" in stages
     assert "association" in stages
     assert "thought_rpc" in stages

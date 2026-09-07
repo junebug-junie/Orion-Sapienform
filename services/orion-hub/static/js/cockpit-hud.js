@@ -160,6 +160,15 @@
           '</div>'
         )
       : '';
+    const userMessageText = (raw && typeof raw.user_message === 'string') ? raw.user_message : '';
+    const userMessageSection = userMessageText
+      ? (
+          '<div class="cockpit-inspector-section" data-cockpit-section="user-message">' +
+            '<div class="cockpit-inspector-section-title">User message</div>' +
+            '<pre class="cockpit-inspector-prompt">' + escapeText(userMessageText) + '</pre>' +
+          '</div>'
+        )
+      : '';
     return [
       '<div class="cockpit-inspector" id="cockpitInspector">',
       '<div class="cockpit-inspector-meta">',
@@ -168,6 +177,7 @@
       '<div data-status="' + escapeHtml(hop.status || '') + '">' + escapeText(hop.status || '') + '</div>',
       '</div>',
       '<div class="cockpit-inspector-summary">' + summaryRows + '</div>',
+      userMessageSection,
       promptSection,
       '<pre class="cockpit-inspector-raw">' + escapeText(JSON.stringify(raw, null, 2)) + '</pre>',
       '</div>',

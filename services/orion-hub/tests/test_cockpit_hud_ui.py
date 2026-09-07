@@ -108,6 +108,31 @@ def test_inspector_shows_prompt_section_for_motor_boot():
     assert "HELLO PREFIX" in html
 
 
+def test_inspector_shows_user_message_section_for_ingress():
+    html = _node_call(
+        "renderFixture",
+        {
+            "hops": [
+                {
+                    "seq": 0,
+                    "stage": "ingress",
+                    "status": "ok",
+                    "visor_line": "ingress · 11 chars",
+                    "summary": {"user_message_len": 11, "attachment_count": 0},
+                    "raw": {
+                        "user_message": "hello world",
+                        "session_id": "s1",
+                        "observation_published": False,
+                    },
+                },
+            ],
+            "selectedSeq": 0,
+        },
+    )
+    assert 'data-cockpit-section="user-message"' in html or "User message" in html
+    assert "hello world" in html
+
+
 def test_render_fixture_shows_selected_raw_and_visor():
     html = _node_call(
         "renderFixture",

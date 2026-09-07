@@ -84,6 +84,72 @@ def _resolve_fcc_model_label(payload: dict[str, Any], mode_tag: str) -> str:
 EmitObservationFn = Callable[..., Any]
 
 
+def _attachment_meta_for_cockpit(raw_attachments: Any) -> list[dict[str, Any]]:
+    """Names/types/sizes only — never binary blobs or data URLs."""
+    if not isinstance(raw_attachments, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for att in raw_attachments:
+        if not isinstance(att, dict):
+            continue
+        meta: dict[str, Any] = {}
+        for key in ("filename", "name", "mime", "content_type", "media_type", "sha256"):
+            val = att.get(key)
+            if val is not None and val != "":
+                meta[key] = val
+        size = att.get("size")
+        if size is None:
+            raw_bytes = att.get("bytes")
+            if isinstance(raw_bytes, (bytes, bytearray)):
+                size = len(raw_bytes)
+            elif isinstance(att.get("byte_len"), (int, float)):
+                size = att.get("byte_len")
+        if size is not None:
+            try:
+                meta["size"] = int(size)
+            except (TypeError, ValueError):
+                pass
+        if meta:
+            out.append(meta)
+    return out
+
+
+def _cockpit_ingress_payload(
+    *,
+    user_message: str,
+    session_id: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the Soft HUD ingress bead payload from turn intake facts."""
+    raw_attachments = payload.get("attachments") or []
+    if not isinstance(raw_attachments, list):
+        raw_attachments = []
+    ingress: dict[str, Any] = {
+        "user_message": user_message,
+        "session_id": session_id,
+        "attachment_count": len(raw_attachments),
+        # emit_observation currently builds a molecule and discards the return;
+        # do not invent a bus publish.
+        "observation_published": False,
+    }
+    mode = payload.get("mode")
+    if mode is not None and mode != "":
+        ingress["mode"] = mode
+    client_mode = payload.get("client_mode")
+    if client_mode is not None and client_mode != "":
+        ingress["client_mode"] = client_mode
+    surface = payload.get("surface")
+    if surface is not None and surface != "":
+        ingress["surface"] = surface
+    surface_context = payload.get("surface_context")
+    if isinstance(surface_context, dict) and surface_context:
+        ingress["surface_context"] = dict(surface_context)
+    attachment_meta = _attachment_meta_for_cockpit(raw_attachments)
+    if attachment_meta:
+        ingress["attachments"] = attachment_meta
+    return ingress
+
+
 class _WebSocketLike(Protocol):
     async def send_json(self, data: dict[str, Any]) -> None: ...
 
@@ -613,7 +679,14 @@ async def execute_unified_turn(
             logger.debug("emit_observation failed corr=%s", correlation_id, exc_info=True)
 
     await _deliver_cockpit_frames(
-        begin_cockpit_timeline(correlation_id),
+        begin_cockpit_timeline(
+            correlation_id,
+            ingress=_cockpit_ingress_payload(
+                user_message=user_message,
+                session_id=session_id,
+                payload=payload,
+            ),
+        ),
         bus=bus,
         cockpit_sink=cockpit_sink,
     )

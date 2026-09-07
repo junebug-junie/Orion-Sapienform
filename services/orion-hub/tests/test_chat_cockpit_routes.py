@@ -49,3 +49,25 @@ async def test_timeline_orders_by_seq_and_shrinks_gaps(monkeypatch):
     assert "stance_decision" not in body["gaps"]
     assert "motor_hop" not in body["gaps"]
     assert "motor_boot" in body["gaps"]
+
+
+@pytest.mark.asyncio
+async def test_ingress_ok_hop_removes_ingress_from_gaps(monkeypatch):
+    monkeypatch.setattr(
+        mod,
+        "_load_hops",
+        lambda cid: [
+            {
+                "correlation_id": cid,
+                "seq": 0,
+                "stage": "ingress",
+                "status": "ok",
+                "visor_line": "ingress · 5 chars",
+                "raw": {"user_message": "hello", "observation_published": False},
+            },
+        ],
+    )
+    body = await mod.get_cockpit_timeline("corr-ingress")
+    assert "ingress" not in body["gaps"]
+    assert body["hops"][0]["status"] == "ok"
+    assert body["hops"][0]["stage"] == "ingress"

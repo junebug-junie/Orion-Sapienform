@@ -6,9 +6,9 @@ from typing import Any
 
 from orion.cockpit.builders import (
     extract_mind_quality_fields,
-    gap_hop,
     hop_from_association,
     hop_from_closure,
+    hop_from_ingress,
     hop_from_motor_boot,
     hop_from_motor_step,
     hop_from_outcome,
@@ -37,17 +37,20 @@ def timeline_complete_frame(correlation_id: str) -> dict[str, Any]:
     return {"kind": "cockpit_timeline_complete", "correlation_id": correlation_id}
 
 
-def begin_cockpit_timeline(correlation_id: str) -> list[dict[str, Any]]:
-    """Reset Hub seq ownership and emit the Slice-C ingress gap once."""
+def begin_cockpit_timeline(
+    correlation_id: str,
+    *,
+    ingress: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Reset Hub seq ownership and emit the real ingress (user intake) hop once."""
     reset_seq(correlation_id)
     return [
         _hop_frame(
             correlation_id,
-            gap_hop(
+            hop_from_ingress(
                 correlation_id=correlation_id,
                 seq=next_seq(correlation_id),
-                stage="ingress",
-                deferred_to="slice_c",
+                ingress=ingress if isinstance(ingress, dict) else {},
             ),
         )
     ]
@@ -162,13 +165,32 @@ def emit_pre_motor_hops(
     *,
     association: dict[str, Any],
     stance_inputs: dict[str, Any],
+    ingress: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Batch helper for tests / late paths that did not stream progress hops.
 
-    Resets seq and emits ingress gap + association + stance_inputs + stance_decision.
+    Resets seq and emits one ingress + association + stance_inputs + stance_decision.
     Live unified-turn path prefers begin_cockpit_timeline + incremental emits.
+    Do not double-emit ingress: this is the only ingress for the batch path.
     """
-    frames = begin_cockpit_timeline(correlation_id)
+    stance = stance_inputs if isinstance(stance_inputs, dict) else {}
+    if isinstance(ingress, dict):
+        ingress_payload = ingress
+    else:
+        try:
+            attachment_count = int(stance.get("attachment_count") or 0)
+        except (TypeError, ValueError):
+            attachment_count = 0
+        ingress_payload = {
+            "user_message": str(stance.get("user_message") or ""),
+            "session_id": stance.get("session_id"),
+            "attachment_count": attachment_count,
+            "observation_published": False,
+        }
+        mode = stance.get("mode") or stance.get("client_mode")
+        if mode is not None:
+            ingress_payload["mode"] = mode
+    frames = begin_cockpit_timeline(correlation_id, ingress=ingress_payload)
     frames.append(emit_association_hop(correlation_id, association))
     frames.extend(
         emit_stance_hops(

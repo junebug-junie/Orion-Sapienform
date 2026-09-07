@@ -156,6 +156,28 @@ substrate_attention_schema    durable-ff8a379217d8-harness_turn-resumed | harnes
 Completion of the resumed run (journal, TurnOutcome, remaining node rows): see the addendum at the end of this
 report, written when the turn finished.
 
+**End-to-end pipeline proof (a different run, same deploy).** While `ff8a379217d8` kept retrying (see bug 4
+above, plus a `no_final_frame` decline -- Orion's harness legitimately declining an unsolicited turn, a real
+pre-existing outcome, not a durable-runs bug), a second run kicked off through the normal tick schedule --
+`4b9621bab74b` -- walked the full graph on its first clean attempt after the fix:
+
+```text
+2026-09-07 03:54:31.864  harness_turn           resumed    -> read_turn_result       resumed_from=harness_turn
+2026-09-07 03:54:31.964  read_turn_result       running    -> publish_attention_row
+2026-09-07 03:54:31.996  publish_attention_row  running    -> journal
+2026-09-07 03:54:32.047  journal                running    -> finish
+2026-09-07 03:54:32.140  finish                 completed  detail.reach_out=false, journal_entry_id=5a172c13-...,
+                                                            attempts=3, finding_text=<real generated content,
+                                                            Orion revising a self-model prior about isolated
+                                                            substrate prediction-error nodes>
+```
+
+One real, substantive `finding_text` (not boilerplate), one `journal_entry_id`, `reach_out` correctly computed
+(`false` -- this run didn't ask to talk to Juniper), `attempts=3` recorded honestly. This proves the graph,
+the journal write, the attention row, and the `finish` node's outcome-shaping all work on the real rail end to
+end -- the missing piece is specifically the *restarted* run reaching the same finish line under the *same*
+`run_id`, tracked below.
+
 ## Review findings fixed
 
 (filled after review)

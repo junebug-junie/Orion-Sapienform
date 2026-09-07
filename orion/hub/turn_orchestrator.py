@@ -1094,21 +1094,31 @@ async def run_unified_turn(
         await _send_ws(frame)
         if frame.get("kind") != "claude_step":
             return
-        hop_frame = emit_motor_hop_from_claude_step(correlation_id, frame)
-        if hop_frame is not None:
-            await cockpit_sink([hop_frame])
+        try:
+            hop_frame = emit_motor_hop_from_claude_step(correlation_id, frame)
+            if hop_frame is not None:
+                await cockpit_sink([hop_frame])
+        except Exception:
+            logger.warning(
+                "cockpit hop emit failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
 
+    drain_stop = asyncio.Event()
     if harness_step_relay is not None:
         step_queue = asyncio.Queue(maxsize=256)
 
         async def _drain_harness_steps() -> None:
             assert step_queue is not None
-            try:
-                while True:
-                    frame = await step_queue.get()
-                    await _emit_relay_frame(frame)
-            except asyncio.CancelledError:
-                pass
+            while True:
+                if drain_stop.is_set() and step_queue.empty():
+                    return
+                try:
+                    frame = await asyncio.wait_for(step_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                await asyncio.shield(_emit_relay_frame(frame))
 
         drain_task = asyncio.create_task(
             _drain_harness_steps(),
@@ -1131,23 +1141,47 @@ async def run_unified_turn(
         )
     finally:
         if harness_step_relay is not None and step_queue is not None:
-            while not step_queue.empty():
+            drain_stop.set()
+            if drain_task is not None:
+                try:
+                    await asyncio.wait_for(drain_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    drain_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await drain_task
+                except Exception:
+                    logger.warning(
+                        "harness step drain failed corr=%s",
+                        correlation_id,
+                        exc_info=True,
+                    )
+            while True:
                 try:
                     frame = step_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                await _emit_relay_frame(frame)
-        if drain_task is not None:
-            drain_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await drain_task
+                try:
+                    await _emit_relay_frame(frame)
+                except Exception:
+                    logger.warning(
+                        "harness step leftover emit failed corr=%s",
+                        correlation_id,
+                        exc_info=True,
+                    )
     for frame in frames:
         await _send_ws(frame)
-    run_dump = cockpit_run_holder.get("run")
-    if isinstance(run_dump, dict) and any(frame.get("type") == "final" for frame in frames):
-        await cockpit_sink(emit_slice_a_finalize_hops(correlation_id, run_dump))
-    else:
-        await cockpit_sink([timeline_complete_frame(correlation_id)])
+    try:
+        run_dump = cockpit_run_holder.get("run")
+        if isinstance(run_dump, dict) and any(frame.get("type") == "final" for frame in frames):
+            await cockpit_sink(emit_slice_a_finalize_hops(correlation_id, run_dump))
+        else:
+            await cockpit_sink([timeline_complete_frame(correlation_id)])
+    except Exception:
+        logger.warning(
+            "cockpit finalize emit failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
     # Mirror the classic lane contract (websocket_handler emits {"state": "idle"} at end of
     # turn): the Hub status line is set to "Sent..." on send and only resets to "Ready." when
     # a frame carries state 'idle'. The unified terminal frames omit state, so emit a trailing

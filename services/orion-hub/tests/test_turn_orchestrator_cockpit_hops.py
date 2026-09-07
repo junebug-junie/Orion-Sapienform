@@ -1,6 +1,7 @@
 """Cockpit hop WS frames built from the unified-turn emit helpers."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -213,4 +214,166 @@ async def test_run_unified_turn_converts_drained_claude_step_to_cockpit_hop():
     assert "motor_hop" in hop_stages
     assert "draft_appraisal" in hop_stages or "finalize" in hop_stages
     assert {"kind": "cockpit_timeline_complete", "correlation_id": "corr-ws"} in sent
+    assert sent[-1] == {"state": "idle"}
+
+
+class _CollectingWS:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    async def send_json(self, frame: dict) -> None:
+        self.sent.append(frame)
+
+
+class _NoopRelay:
+    def register_queue(self, correlation_id: str, queue) -> None:
+        return None
+
+    def unregister_queue(self, correlation_id: str, queue) -> None:
+        return None
+
+    def forget(self, correlation_id: str) -> None:
+        return None
+
+
+_SUCCESS_FINAL = [
+    {
+        "type": "final",
+        "correlation_id": "corr-ws",
+        "mode": "orion",
+        "llm_response": "hi",
+    }
+]
+
+
+def _run_dump() -> dict:
+    return {
+        "draft_text": "draft",
+        "final_text": "hi",
+        "finalize_ran": True,
+        "compliance_verdict": "completed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_finalize_hop_failure_does_not_block_idle_or_success():
+    from orion.hub.turn_orchestrator import run_unified_turn
+
+    ws = _CollectingWS()
+
+    async def _fake_execute(**kwargs):
+        holder = kwargs.get("cockpit_run_holder")
+        if isinstance(holder, dict):
+            holder["run"] = _run_dump()
+        return _SUCCESS_FINAL
+
+    with (
+        patch("orion.hub.turn_orchestrator.execute_unified_turn", _fake_execute),
+        patch(
+            "orion.hub.turn_orchestrator.emit_slice_a_finalize_hops",
+            side_effect=RuntimeError("finalize hop boom"),
+        ),
+    ):
+        await run_unified_turn(
+            ws,
+            bus=MagicMock(),
+            correlation_id="corr-ws",
+            session_id="sess-1",
+            user_message="hello",
+        )
+
+    assert any(f.get("type") == "final" for f in ws.sent)
+    assert ws.sent[-1] == {"state": "idle"}
+
+
+@pytest.mark.asyncio
+async def test_motor_hop_emit_failure_does_not_block_idle_or_success():
+    from orion.hub.turn_orchestrator import run_unified_turn
+
+    ws = _CollectingWS()
+
+    async def _fake_execute(**kwargs):
+        holder = kwargs.get("cockpit_run_holder")
+        if isinstance(holder, dict):
+            holder["run"] = _run_dump()
+        queue = kwargs.get("harness_step_queue")
+        if queue is not None:
+            queue.put_nowait(
+                {
+                    "kind": "claude_step",
+                    "mode": "orion",
+                    "correlation_id": "corr-ws",
+                    "step_index": 0,
+                    "step": {"type": "assistant", "name": "think"},
+                }
+            )
+        return _SUCCESS_FINAL
+
+    with (
+        patch("orion.hub.turn_orchestrator.execute_unified_turn", _fake_execute),
+        patch(
+            "orion.hub.turn_orchestrator.emit_motor_hop_from_claude_step",
+            side_effect=RuntimeError("motor hop boom"),
+        ),
+    ):
+        await run_unified_turn(
+            ws,
+            bus=MagicMock(),
+            correlation_id="corr-ws",
+            session_id="sess-1",
+            user_message="hello",
+            harness_step_relay=_NoopRelay(),
+        )
+
+    assert any(f.get("type") == "final" for f in ws.sent)
+    assert any(f.get("kind") == "claude_step" for f in ws.sent)
+    assert ws.sent[-1] == {"state": "idle"}
+
+
+@pytest.mark.asyncio
+async def test_drain_shutdown_does_not_drop_queued_motor_hop():
+    from orion.hub.turn_orchestrator import run_unified_turn
+
+    sent: list[dict] = []
+    emit_started = asyncio.Event()
+
+    class _SlowMotorHopWS:
+        async def send_json(self, frame: dict) -> None:
+            hop = frame.get("hop") if isinstance(frame.get("hop"), dict) else {}
+            if frame.get("kind") == "cockpit_hop" and hop.get("stage") == "motor_hop":
+                emit_started.set()
+                await asyncio.sleep(0.2)
+            sent.append(frame)
+
+    async def _fake_execute(**kwargs):
+        holder = kwargs.get("cockpit_run_holder")
+        if isinstance(holder, dict):
+            holder["run"] = _run_dump()
+        queue = kwargs.get("harness_step_queue")
+        if queue is not None:
+            queue.put_nowait(
+                {
+                    "kind": "claude_step",
+                    "mode": "orion",
+                    "correlation_id": "corr-ws",
+                    "step_index": 0,
+                    "step": {"type": "assistant", "name": "think"},
+                }
+            )
+            await emit_started.wait()
+        return _SUCCESS_FINAL
+
+    with patch("orion.hub.turn_orchestrator.execute_unified_turn", _fake_execute):
+        await run_unified_turn(
+            _SlowMotorHopWS(),
+            bus=MagicMock(),
+            correlation_id="corr-ws",
+            session_id="sess-1",
+            user_message="hello",
+            harness_step_relay=_NoopRelay(),
+        )
+
+    hop_stages = [f["hop"]["stage"] for f in sent if f.get("kind") == "cockpit_hop"]
+    assert "motor_hop" in hop_stages
+    assert any(f.get("kind") == "claude_step" for f in sent)
     assert sent[-1] == {"state": "idle"}

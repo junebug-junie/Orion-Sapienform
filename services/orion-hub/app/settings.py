@@ -713,6 +713,44 @@ class Settings(BaseSettings):
         default=6, alias="HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE"
     )
 
+    # --- World-pulse Stage 1 concept-read loop ----------------------------
+    # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
+    # different Redis prefix (Wallet A). Default False so an absent key can
+    # never start it; deploy is opt-in after the seed-queue migration.
+    HUB_WORLD_PULSE_READ_ENABLED: bool = Field(
+        default=False, alias="HUB_WORLD_PULSE_READ_ENABLED"
+    )
+    HUB_WORLD_PULSE_READ_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_WORLD_PULSE_READ_TICK_SEC"
+    )
+    HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC: float = Field(
+        default=1800.0, alias="HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC"
+    )
+    # Wallet A daily cap. Independent of HUB_CURIOSITY_INVESTIGATION_DAILY_CAP
+    # — a debit here must not move the curiosity counter, and vice versa.
+    HUB_WORLD_PULSE_READ_DAILY_CAP: int = Field(
+        default=6, alias="HUB_WORLD_PULSE_READ_DAILY_CAP"
+    )
+    # Hours in HUB_ENDOGENOUS_OUTREACH_TZ. START == END or -1 disables the
+    # window. Bounded: an out-of-range hour is a permanent silent deadlock.
+    HUB_WORLD_PULSE_READ_WINDOW_START_HOUR: int = Field(
+        default=8, ge=-1, le=23,
+        alias="HUB_WORLD_PULSE_READ_WINDOW_START_HOUR",
+    )
+    HUB_WORLD_PULSE_READ_WINDOW_END_HOUR: int = Field(
+        default=22, ge=-1, le=23,
+        alias="HUB_WORLD_PULSE_READ_WINDOW_END_HOUR",
+    )
+    HUB_WORLD_PULSE_READ_TIMEOUT_SEC: float = Field(
+        default=3500.0, alias="HUB_WORLD_PULSE_READ_TIMEOUT_SEC"
+    )
+    HUB_WORLD_PULSE_READ_SESSION_ID: str = Field(
+        default="orion_world_pulse_read", alias="HUB_WORLD_PULSE_READ_SESSION_ID"
+    )
+    HUB_WORLD_PULSE_READ_LLM_ROUTE: str = Field(
+        default="agent", alias="HUB_WORLD_PULSE_READ_LLM_ROUTE"
+    )
+
     # --- Orion's own graph ------------------------------------------------
     # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in
     # it needs approval, and Hub only ever reads it back (every Hub query goes

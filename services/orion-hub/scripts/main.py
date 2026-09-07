@@ -26,6 +26,7 @@ from scripts.memory_consolidation_draft_routes import router as memory_consolida
 from scripts.proposal_review_routes import router as proposal_review_router
 from scripts.concept_atlas_routes import router as concept_atlas_router
 from scripts.curiosity_routes import router as curiosity_atlas_router
+from scripts.world_pulse_read_routes import router as world_pulse_read_router
 from scripts.exo_exploration_routes import router as exo_exploration_router
 from scripts.self_brain_routes import router as self_brain_router
 from scripts.chat_attachments import router as chat_attachments_router
@@ -41,6 +42,7 @@ from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
+from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
 from scripts.endogenous_outreach import EndogenousOutreach
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
@@ -284,6 +286,7 @@ bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 
 endogenous_outreach: Optional[EndogenousOutreach] = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
+world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
@@ -572,6 +575,30 @@ async def startup_event():
                 step_relay_provider=lambda: harness_step_relay,
             )
             await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
+
+            # World-pulse Stage 1 concept-read. Same lifecycle and the same
+            # real unified-turn pipeline as curiosity above, isolated Wallet A
+            # Redis keys. Default enabled=False — deploy is opt-in.
+            world_pulse_read_pipeline = WorldPulseReadPipeline(
+                enabled=settings.HUB_WORLD_PULSE_READ_ENABLED,
+                tick_interval_sec=settings.HUB_WORLD_PULSE_READ_TICK_SEC,
+                min_cooldown_sec=settings.HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC,
+                daily_cap=settings.HUB_WORLD_PULSE_READ_DAILY_CAP,
+                window_start_hour=settings.HUB_WORLD_PULSE_READ_WINDOW_START_HOUR,
+                window_end_hour=settings.HUB_WORLD_PULSE_READ_WINDOW_END_HOUR,
+                timeout_sec=settings.HUB_WORLD_PULSE_READ_TIMEOUT_SEC,
+                session_id=settings.HUB_WORLD_PULSE_READ_SESSION_ID,
+                llm_route=settings.HUB_WORLD_PULSE_READ_LLM_ROUTE,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=ServiceRef(
+                    name=settings.SERVICE_NAME,
+                    version=settings.SERVICE_VERSION,
+                    node=settings.NODE_NAME,
+                ),
+                step_relay_provider=lambda: harness_step_relay,
+            )
+            await world_pulse_read_pipeline.start(bus, harness_rpc_bus=rpc_bus)
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the
@@ -1271,6 +1298,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_investigation_stop_failed", exc_info=True)
         curiosity_investigation = None
+    if world_pulse_read_pipeline is not None:
+        try:
+            await world_pulse_read_pipeline.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_pipeline_stop_failed", exc_info=True)
+        world_pulse_read_pipeline = None
     if endogenous_outreach is not None:
         try:
             await endogenous_outreach.stop()
@@ -1330,6 +1363,7 @@ app.include_router(memory_consolidation_draft_router)
 app.include_router(proposal_review_router)
 app.include_router(concept_atlas_router)
 app.include_router(curiosity_atlas_router)
+app.include_router(world_pulse_read_router)
 app.include_router(exo_exploration_router)
 app.include_router(self_brain_router)
 app.include_router(chat_attachments_router)

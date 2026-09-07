@@ -40,7 +40,7 @@ Hub tick --(cortex.orch.request, metadata.durable_run)--> cortex-orch --(orion:d
 ## Files changed
 
 - `services/orion-durable-runs/` (new): `app/graph.py` (the StateGraph, testable with fakes), `app/runner.py` (checkpointer, deps, state events, resume sweep), `app/main.py`, `app/settings.py`, `Dockerfile`, `docker-compose.yml`, `requirements.txt` (langgraph 1.2.11, langgraph-checkpoint-postgres 3.1.2), `.env_example`, `README.md`, `tests/test_curiosity_graph_resume.py`.
-- `orion/schemas/durable_run.py` (new): four schemas, three channel names, the node list. `orion/schemas/registry.py`: both maps. `orion/bus/channels.yaml`: three channels (request and turn are `single_consumer`).
+- `orion/schemas/durable_run.py` (new): four schemas, three channel names, the node list. `orion/schemas/registry.py`: both maps. `orion/bus/channels.yaml`: four channel entries -- `orion:durable:run:request`, `orion:durable:run:state`, `orion:curiosity:turn:request` (all in the original patch) plus `orion:curiosity:turn:reply:*` (missing from the original patch, added 2026-09-07 after it broke every run in production -- see bug 4 below).
 - `orion/schemas/attention_schema.py`: `durable_run` lane.
 - `orion/curiosity/journal.py` (new, moved verbatim from Hub).
 - `services/orion-cortex-orch/app/durable_runs.py` (new) + `app/main.py` branch + `tests/test_durable_run_dispatch.py`.
@@ -118,6 +118,22 @@ All from this worktree via `scripts/safe_docker_build.sh`, consumer-first.
                    activity (bug 3: aget_state nested inside alist -> saver lock). Probed connect/pool/setup
                    inside the container with timeouts: all instant, so the hang was the caller's nesting.
        01:21Z  runner redeployed with the listing materialised -> resume on boot, below.
+2026-09-07 02:21Z-03:21Z  the resumed run's RPC timed out at the full 3600s, three times in a row, each time
+                   after Hub had already run a real multi-minute generation to completion (bug 4: the reply
+                   channel Hub publishes on, `orion:curiosity:turn:reply:<corr_id>`, was never added to
+                   `orion/bus/channels.yaml`; Hub's `ORION_BUS_ENFORCE_CATALOG=true` made every reply publish
+                   raise `ValueError: Channel not found in catalog` before it ever reached the runner. Three
+                   full harness turns -- real GPU time, real generation -- were computed and thrown away.
+                   Root-caused from Hub's own container logs (`curiosity_turn_request_failed` /
+                   `ValueError: Channel not found in catalog: orion:curiosity:turn:reply:...`), confirmed by
+                   loading the catalog directly and checking `entry_for()` against the exact channel name.
+                   Fixed by adding a wildcard entry (`orion:curiosity:turn:reply:*`, `kind: result`, matching
+                   the style already used for every other per-correlation reply channel in the file, e.g.
+                   `orion:harness:run:result:*`) and rebuilding + redeploying Hub at 02:43Z. The redeploy itself
+                   landed mid-generation on the run's second retry and killed that attempt too (bad luck on
+                   timing, not a repeat of the bug) -- the run resumed again and its next attempt (03:21Z) went
+                   through end-to-end: Hub generated, Hub replied, the runner received the reply, no
+                   catalog error. See the completion addendum below for what that attempt actually produced.
 ```
 
 ## Live restart test
@@ -170,7 +186,16 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 - Severity: low
   Concern: LangGraph is a new dependency, confined to one small service.
   Mitigation: the fallback (design doc option B) reuses every contract here except the checkpointer.
+- Severity: low (fixed, recorded for the pattern)
+  Concern: a per-correlation RPC reply channel (`orion:curiosity:turn:reply:<uuid>`) is easy to leave out of
+  `orion/bus/channels.yaml` because only the base request channel is obviously "the new channel" -- nothing
+  fails until a producer with `ORION_BUS_ENFORCE_CATALOG=true` tries to reply, and by then the compute behind
+  that reply is already spent. Every existing RPC pattern in the file registers both sides (`orion:harness:run:
+  result:*`, `orion:cortex:pre_turn_appraisal:result:*`, `orion:mind:llm:reply:*`) as a `kind: result` wildcard.
+  Mitigation: added `orion:curiosity:turn:reply:*` (this patch). Worth a static gate: any `reply_to`/`rpc_request`
+  call site whose channel isn't covered by an existing catalog entry, checked before merge, not after a live run
+  burns an hour finding out.
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2128

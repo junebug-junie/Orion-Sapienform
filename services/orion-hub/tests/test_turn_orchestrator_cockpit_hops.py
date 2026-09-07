@@ -138,6 +138,59 @@ async def test_publish_cockpit_frames_skips_when_bus_missing():
 
 
 @pytest.mark.asyncio
+async def test_deliver_cockpit_frames_fail_open_on_sink_error():
+    from orion.hub.turn_orchestrator import _deliver_cockpit_frames
+
+    async def boom(_frames: list[dict]) -> None:
+        raise RuntimeError("websocket closed")
+
+    await _deliver_cockpit_frames(
+        [{"kind": "cockpit_hop", "correlation_id": "corr-ws"}],
+        bus=MagicMock(),
+        cockpit_sink=boom,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pre_motor_ws_send_failure_does_not_abort_turn():
+    from orion.hub.cockpit_emit import emit_slice_a_pre_motor_hops
+    from orion.hub.turn_orchestrator import run_unified_turn
+
+    class _BoomOnPreMotor:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send_json(self, frame: dict) -> None:
+            hop = frame.get("hop") if isinstance(frame.get("hop"), dict) else {}
+            if frame.get("kind") == "cockpit_hop" and hop.get("stage") == "ingress":
+                raise RuntimeError("websocket closed")
+            self.sent.append(frame)
+
+    ws = _BoomOnPreMotor()
+
+    async def _fake_execute(**kwargs):
+        holder = kwargs.get("cockpit_run_holder")
+        if isinstance(holder, dict):
+            holder["run"] = _run_dump()
+        sink = kwargs.get("cockpit_sink")
+        if sink is not None:
+            await sink(emit_slice_a_pre_motor_hops("corr-ws", _THOUGHT))
+        return _SUCCESS_FINAL
+
+    with patch("orion.hub.turn_orchestrator.execute_unified_turn", _fake_execute):
+        await run_unified_turn(
+            ws,
+            bus=MagicMock(),
+            correlation_id="corr-ws",
+            session_id="sess-1",
+            user_message="hello",
+        )
+
+    assert any(f.get("type") == "final" for f in ws.sent)
+    assert ws.sent[-1] == {"state": "idle"}
+
+
+@pytest.mark.asyncio
 async def test_run_unified_turn_converts_drained_claude_step_to_cockpit_hop():
     from orion.hub.turn_orchestrator import run_unified_turn
 

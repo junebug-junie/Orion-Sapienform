@@ -153,3 +153,60 @@ def test_app_js_wires_cockpit_beside_turn_trace() -> None:
     block = text[start:end]
     assert "thoughtProcessApi.resolveCorrelationId" in block
     assert "mindCorrelationFromMeta" in block
+
+
+def test_open_ignores_stale_fetch_after_correlation_changes() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available for cockpit HUD behavioral tests")
+    if not COCKPIT_HUD_JS_PATH.is_file():
+        raise AssertionError(f"missing {COCKPIT_HUD_JS_PATH}")
+    script = f"""
+const fs = require('fs');
+global.window = {{}};
+eval(fs.readFileSync({json.dumps(str(COCKPIT_HUD_JS_PATH))}, 'utf8'));
+const api = window.OrionCockpitHud;
+
+(async () => {{
+  let resolveA;
+  const pendingA = new Promise((resolve) => {{ resolveA = resolve; }});
+  global.fetch = async function (url) {{
+    if (String(url).includes('corr-A')) {{
+      const payload = await pendingA;
+      return {{ ok: true, json: async () => payload }};
+    }}
+    return {{
+      ok: true,
+      json: async () => ({{
+        hops: [{{seq: 0, stage: 'ingress-B', status: 'ok', visor_line: 'from-B'}}],
+        complete: true,
+      }}),
+    }};
+  }};
+  const pA = api.open({{ correlationId: 'corr-A', apiBaseUrl: '' }});
+  const pB = api.open({{ correlationId: 'corr-B', apiBaseUrl: '' }});
+  resolveA({{
+    hops: [{{seq: 0, stage: 'ingress-A', status: 'ok', visor_line: 'from-A'}}],
+    complete: true,
+  }});
+  await Promise.all([pA, pB]);
+  const html = api.render();
+  if (html.includes('from-A') || html.includes('ingress-A')) {{
+    throw new Error('stale A hops ingested');
+  }}
+  if (!html.includes('corr-B')) {{
+    throw new Error('expected corr-B in render');
+  }}
+  if (!html.includes('from-B') && !html.includes('ingress-B')) {{
+    throw new Error('expected B hops in render');
+  }}
+  console.log('ok');
+}})().catch((err) => {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, check=False, timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr or proc.stdout or "node stale open fetch failed")
+    assert "ok" in proc.stdout

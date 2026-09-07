@@ -500,10 +500,14 @@ async def _deliver_cockpit_frames(
     bus: Any,
     cockpit_sink: Callable[[list[dict[str, Any]]], Awaitable[None]] | None,
 ) -> None:
-    if cockpit_sink is not None:
-        await cockpit_sink(frames)
-        return
-    await publish_cockpit_frames(bus, frames)
+    """Deliver cockpit frames without aborting the chat turn."""
+    try:
+        if cockpit_sink is not None:
+            await cockpit_sink(frames)
+            return
+        await publish_cockpit_frames(bus, frames)
+    except Exception:
+        logger.warning("cockpit frame deliver failed", exc_info=True)
 
 
 async def execute_unified_turn(
@@ -1088,7 +1092,15 @@ async def run_unified_turn(
     async def cockpit_sink(frames: list[dict[str, Any]]) -> None:
         await publish_cockpit_frames(bus, frames)
         for frame in frames:
-            await _send_ws(frame)
+            try:
+                await _send_ws(frame)
+            except Exception:
+                logger.warning(
+                    "cockpit ws send failed corr=%s kind=%s",
+                    correlation_id,
+                    frame.get("kind"),
+                    exc_info=True,
+                )
 
     async def _emit_relay_frame(frame: dict[str, Any]) -> None:
         await _send_ws(frame)
@@ -1118,7 +1130,11 @@ async def run_unified_turn(
                     frame = await asyncio.wait_for(step_queue.get(), timeout=0.05)
                 except asyncio.TimeoutError:
                     continue
-                await asyncio.shield(_emit_relay_frame(frame))
+                # Await on the drain task itself so stop+flush finishes the
+                # current hop (including next_seq) before finalize. Do not
+                # shield: a drain cancel would otherwise leave next_seq
+                # running in the background racing finalize hops.
+                await _emit_relay_frame(frame)
 
         drain_task = asyncio.create_task(
             _drain_harness_steps(),

@@ -359,14 +359,17 @@
     try {
       const url = joinApi(apiBaseUrl, '/api/chat/turn/' + encodeURIComponent(correlationId) + '/cockpit');
       const response = await fetch(url);
+      if (state.correlationId !== correlationId) return;
       if (!response.ok) throw new Error('http_' + response.status);
       const body = await response.json();
+      if (state.correlationId !== correlationId) return;
       const hops = (body && Array.isArray(body.hops)) ? body.hops : [];
       hops.forEach(function (hop) { ingestInto(state, hop); });
       if (body && body.complete) state.complete = true;
       state.loading = false;
       state.error = null;
     } catch (err) {
+      if (state.correlationId !== correlationId) return;
       state.loading = false;
       state.error = (err && err.message) ? err.message : 'fetch_failed';
     }

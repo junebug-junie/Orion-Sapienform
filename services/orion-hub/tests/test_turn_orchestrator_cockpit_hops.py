@@ -766,7 +766,11 @@ async def test_execute_unified_turn_streams_progress_before_thought_returns():
 
     assert harness_entered.is_set()
     assert "harness_dispatch" in stages_before_harness
-    assert stages_before_harness[-1] == "harness_dispatch"
+    assert "motor_boot" in stages_before_harness
+    assert stages_before_harness.index("harness_dispatch") < stages_before_harness.index(
+        "motor_boot"
+    )
+    assert stages_before_harness[-1] == "motor_boot"
     harness_hops = [
         f["hop"]
         for f in collected

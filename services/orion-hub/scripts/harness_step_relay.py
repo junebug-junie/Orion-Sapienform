@@ -93,33 +93,44 @@ class HarnessStepRelay:
     async def _run(self) -> None:
         if not self._bus:
             return
-        logger.info("Subscribing to harness FCC steps: %s", self.channel)
-        try:
-            async with self._bus.subscribe(self.channel) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    decoded = self._bus.codec.decode(msg.get("data"))
-                    if not decoded.ok:
-                        continue
-                    env = decoded.envelope
-                    if str(env.kind) != HARNESS_RUN_STEP_KIND:
-                        continue
-                    payload = env.payload
-                    if not isinstance(payload, dict):
-                        continue
-                    try:
-                        step_event = HarnessRunStepV1.model_validate(payload)
-                    except Exception:
-                        logger.debug(
-                            "harness step relay skipped invalid payload corr=%s",
-                            payload.get("correlation_id"),
-                            exc_info=True,
-                        )
-                        continue
-                    await self._dispatch_step(step_event)
-        except asyncio.CancelledError:
-            logger.info("Harness step relay cancelled.")
-        except Exception as exc:
-            logger.error("Harness step relay loop failed: %s", exc, exc_info=True)
+        # Restart the subscribe loop on unexpected errors so a single decode/
+        # dispatch failure cannot permanently silence motor Soft HUD hops for
+        # the life of the Hub process (live 2026-09-07: motor_hop went dark
+        # after 08:14 while harness_dispatch kept firing).
+        while True:
+            logger.info("Subscribing to harness FCC steps: %s", self.channel)
+            try:
+                async with self._bus.subscribe(self.channel) as pubsub:
+                    async for msg in self._bus.iter_messages(pubsub):
+                        decoded = self._bus.codec.decode(msg.get("data"))
+                        if not decoded.ok:
+                            continue
+                        env = decoded.envelope
+                        if str(env.kind) != HARNESS_RUN_STEP_KIND:
+                            continue
+                        payload = env.payload
+                        if not isinstance(payload, dict):
+                            continue
+                        try:
+                            step_event = HarnessRunStepV1.model_validate(payload)
+                        except Exception:
+                            logger.debug(
+                                "harness step relay skipped invalid payload corr=%s",
+                                payload.get("correlation_id"),
+                                exc_info=True,
+                            )
+                            continue
+                        await self._dispatch_step(step_event)
+            except asyncio.CancelledError:
+                logger.info("Harness step relay cancelled.")
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Harness step relay loop failed; restarting in 1s: %s",
+                    exc,
+                    exc_info=True,
+                )
+                await asyncio.sleep(1.0)
 
     async def _dispatch_step(self, step_event: HarnessRunStepV1) -> None:
         cid = str(step_event.correlation_id)
@@ -131,6 +142,13 @@ class HarnessStepRelay:
         self._sweep_last_seen(now=now)
         queues = self._queues.get(cid)
         if not queues:
+            # INFO not debug: Soft HUD going dark for motor hops is exactly
+            # this condition (step arrived after unregister, or never registered).
+            logger.info(
+                "harness_step relay drop: no queue for corr=%s step_index=%s",
+                cid,
+                step_event.step_index,
+            )
             return
         item = {
             "kind": "claude_step",
@@ -143,7 +161,7 @@ class HarnessStepRelay:
             try:
                 queue.put_nowait(item)
             except asyncio.QueueFull:
-                logger.debug(
+                logger.warning(
                     "harness_step relay queue full corr=%s; dropping frame",
                     cid,
                 )

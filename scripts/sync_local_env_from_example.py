@@ -158,6 +158,10 @@ SYNC_PREFIXES = (
     # then silently not synced, with the run reporting no changes. Every
     # HUB_CURIOSITY_* key already in the live .env got there by hand.
     "HUB_CURIOSITY_",
+    # World-pulse Stage 1 Wallet A. Same failure shape as HUB_CURIOSITY_ above:
+    # without this prefix the default sync reports "no changes" and the keys
+    # never land in the live .env.
+    "HUB_WORLD_PULSE_READ_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",
     "HUB_AGENT_CONTEXT_EXEC_",

@@ -96,6 +96,15 @@ def test_main_wires_pipeline_from_settings_opt_in() -> None:
     assert "step_relay_provider=lambda: harness_step_relay" in src
     assert "harness_rpc_bus=rpc_bus" in src
     assert "world_pulse_read_router" in src or "world_pulse_read_routes" in src
+    # Module-global must be declared in startup/shutdown global lists (UnboundLocalError otherwise).
+    startup_block = src.split("async def startup_event", 1)[1].split("\nasync def ", 1)[0]
+    shutdown_block = src.split("async def shutdown_event", 1)[1].split("\nasync def ", 1)[0]
+    startup_global = re.search(r"^\s*global (.+)$", startup_block, re.MULTILINE)
+    shutdown_global = re.search(r"^\s*global (.+)$", shutdown_block, re.MULTILINE)
+    assert startup_global is not None
+    assert shutdown_global is not None
+    assert "world_pulse_read_pipeline" in startup_global.group(1)
+    assert "world_pulse_read_pipeline" in shutdown_global.group(1)
 
 
 class _FakeRedis:

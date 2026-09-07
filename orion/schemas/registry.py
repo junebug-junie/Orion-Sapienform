@@ -602,6 +602,12 @@ from orion.schemas.attention_frame import (
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
+from orion.schemas.durable_run import (
+    CuriosityTurnRequestV1,
+    CuriosityTurnResultV1,
+    DurableRunRequestV1,
+    DurableRunStateV1,
+)
 from orion.schemas.attention_salience import (
     AttentionLoopOutcomeV1,
     AttentionSalienceTraceV1,
@@ -906,6 +912,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
     "AttentionSchemaV1": AttentionSchemaV1,
+    "DurableRunRequestV1": DurableRunRequestV1,
+    "DurableRunStateV1": DurableRunStateV1,
+    "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
+    "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "AttentionSalienceTraceV1": AttentionSalienceTraceV1,
     "AttentionLoopOutcomeV1": AttentionLoopOutcomeV1,
     "PendingAttentionCardV1": PendingAttentionCardV1,
@@ -1645,6 +1655,13 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=AttentionSchemaV1,
         kind="attention.schema.v1",
     ),
+    # Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-
+    # cognition-runs-from-cortex-design.md): cortex-orch -> orion-durable-runs
+    # request, runner -> everyone state, runner <-> Hub turn RPC.
+    "DurableRunRequestV1": SchemaRegistration(model=DurableRunRequestV1, kind="durable.run.request.v1"),
+    "DurableRunStateV1": SchemaRegistration(model=DurableRunStateV1, kind="durable.run.state.v1"),
+    "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
+    "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(
         model=SelfStudyEnrichmentRequestV1,
         kind="self_study.enrichment.request.v1",

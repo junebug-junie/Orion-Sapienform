@@ -792,6 +792,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_CURIOSITY_OUTREACH_ENABLED"
     )
+    # Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-
+    # cognition-runs-from-cortex-design.md). True = the curiosity tick still
+    # owns scheduling, material, worldview and the prompt, but hands the run to
+    # cortex (orion:cortex:request, context.metadata.durable_run) instead of
+    # running the turn itself; orion-durable-runs checkpoints it and calls back
+    # here for the harness turn. False (default) = today's direct path, exactly.
+    HUB_CURIOSITY_KICKOFF_VIA_CORTEX: bool = Field(
+        default=False, alias="HUB_CURIOSITY_KICKOFF_VIA_CORTEX"
+    )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"

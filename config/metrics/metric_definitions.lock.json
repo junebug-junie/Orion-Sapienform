@@ -1,12 +1,17 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 637,
+  "metric_count": 643,
   "_last_change": {
-    "base": "merge base cedec905e (origin/main)",
-    "change_count": 0,
+    "base": "merge base 258d0b703 (origin/main)",
+    "change_count": 6,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-context-exec/orion:self_experiments:context_exec:reply:*",
+      "medium added metric://bus_channel/orion-cortex-orch/orion:durable:run:request",
+      "medium added metric://bus_channel/orion-durable-runs/orion:curiosity:turn:request",
+      "medium added metric://bus_channel/orion-durable-runs/orion:durable:run:state",
+      "medium added metric://bus_channel/orion-hub/orion:curiosity:turn:reply:*",
+      "medium added metric://bus_channel/orion-vision-window/orion:vision:test:*"
     ]
   },
   "definitions": {
@@ -683,6 +688,17 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-context-exec/orion:self_experiments:context_exec:reply:*": {
+      "schema_id": "ContextExecRunV1",
+      "all_producers": [
+        "orion-context-exec"
+      ],
+      "declared_consumers": [
+        "orion-self-experiments"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-cortex-exec/orion:agent-council:intake": {
       "schema_id": "GenericPayloadV1",
       "all_producers": [
@@ -1111,6 +1127,17 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-cortex-orch/orion:durable:run:request": {
+      "schema_id": "DurableRunRequestV1",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-cortex-orch/orion:mind:artifact": {
       "schema_id": "MindRunArtifactV1",
       "all_producers": [
@@ -1162,6 +1189,29 @@
         "orion-cortex-orch"
       ],
       "notes": "kind=event stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:curiosity:turn:request": {
+      "schema_id": "CuriosityTurnRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:durable:run:state": {
+      "schema_id": "DurableRunStateV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-embodiment/orion:chat:history:turn": {
@@ -1528,6 +1578,17 @@
         "orion-cortex-exec"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:curiosity:turn:reply:*": {
+      "schema_id": "CuriosityTurnResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:exec:request:CouncilService": {
@@ -2965,6 +3026,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:vision:test:*": {
+      "schema_id": "VisionWindowResultPayload",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-vision-window/orion:vision:windows": {

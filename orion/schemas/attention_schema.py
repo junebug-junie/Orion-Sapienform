@@ -57,6 +57,12 @@ AttentionSchemaProcessV1 = Literal[
     "reverie",
     "curiosity",
     "cortex_turn",
+    # 2026-09-06: the durable-run state machine (orion-durable-runs) is the
+    # fifth lane -- one row per node transition, so the sequencing is visible
+    # on the same table as the processes it sequences. CONSUMER-FIRST: the
+    # live sql-writer validates against this Literal, so it must be rebuilt
+    # before the runner publishes, or every durable_run row is rejected.
+    "durable_run",
 ]
 
 NarrativeKindV1 = Literal["computed", "self_report"]

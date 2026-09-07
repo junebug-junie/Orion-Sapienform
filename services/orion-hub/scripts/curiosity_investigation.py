@@ -114,19 +114,39 @@ from orion.curiosity.worldview import (
 )
 from orion.llm.routes import fcc_model_for_route
 from orion.journaler.schemas import JournalEntryWriteV1
+from orion.curiosity.journal import (  # moved 2026-09-06; names unchanged for callers/tests
+    INVESTIGATION_TAG,
+    OUTREACH_TAG,
+    _AUTHOR,
+    _JOURNAL_SOURCE_KIND,
+    build_investigation_journal_entry,
+    format_evidence,
+    format_footprint,
+)
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
+from orion.schemas.durable_run import (
+    CURIOSITY_TURN_REQUEST_CHANNEL,
+    CURIOSITY_TURN_RESULT_KIND,
+    DURABLE_RUN_STATE_CHANNEL,
+    CuriosityMaterialBriefV1,
+    CuriosityRunBriefV1,
+    CuriosityTurnRequestV1,
+    CuriosityTurnResultV1,
+    DurableRunRequestV1,
+    DurableRunStateV1,
+)
 
 logger = logging.getLogger("orion-hub.curiosity_investigation")
 
-INVESTIGATION_TAG = "curiosity_investigation"
-OUTREACH_TAG = "curiosity_outreach"
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 # Upper bound on the attention-surface graph read that precedes the journal
 # write (see _publish_attention_schema). Above the reader's 5s socket_timeout
 # so a merely slow read completes; below the ~10s a dead host would cost.
 ATTENTION_SCHEMA_GRAPH_READ_TIMEOUT_SEC = 6.0
-_JOURNAL_SOURCE_KIND = "self_study"
-_AUTHOR = "orion"
+# How long a finished harness-turn result is served to a re-issued request for
+# the same run_id (a runner that restarted mid-turn asks again). One hour
+# covers the longest turn plus the runner's own RPC timeout.
+TURN_RESULT_CACHE_SEC = 3600.0
 
 # Cooldown/daily-count state lives in Redis, not in the process. Review finding
 # 2026-08-26: both were plain instance fields, so every Hub restart reset the
@@ -352,170 +372,10 @@ def signal_block_reason(inp: SignalGateInputs) -> Optional[str]:
     return None
 
 
-def format_footprint(footprint: dict[str, int]) -> str:
-    """`{'Prior': 2, 'Hop': 5}` -> `"Hop 5, Prior 2"`. Empty string for {}."""
-    return ", ".join(f"{label} {n}" for label, n in sorted(footprint.items()))
 
 
-def format_evidence(
-    evidence: Optional[FindingConnectivity], *, graph_configured: bool = True
-) -> str:
-    """A named function rather than an inline conditional so the cases that
-    matter are testable. `None` renders "unreadable", NOT "0/0 joined".
-
-    Those two would be indistinguishable in the log while meaning opposite
-    things -- "the graph did not answer" versus "Orion wrote findings and
-    joined none of them" -- and the second is the live reading this metric was
-    built to catch, so collapsing them would blind the one instrument watching
-    for it. Same rule `format_footprint`'s caller applies one field over.
-
-    `graph_configured=False` is the THIRD state and it is not an outage.
-    `HUB_CURIOSITY_GRAPH_ORION_PASSWORD` ships blank in `.env_example`, so a
-    default install has no reader at all and `_read_turn_result` short-circuits
-    to all-empty. Rendering that as "unreadable" would have an operator
-    watching for FalkorDB to come back from an outage that was never happening
-    -- which is this field's own conflation, one level out, on the deployment
-    that is most likely to be someone's first.
-    """
-    if not graph_configured:
-        return "no graph"
-    return "unreadable" if evidence is None else evidence.summary()
 
 
-def build_investigation_journal_entry(
-    *,
-    material: StudyMaterial,
-    body_text: str,
-    correlation_id: str,
-    run_id: str,
-    harness_step_count: Optional[int] = None,
-    harness_grounding_status: Optional[str] = None,
-    harness_elapsed_sec: Optional[float] = None,
-    harness_fcc_elapsed_sec: Optional[float] = None,
-    graph_footprint: Optional[dict[str, int]] = None,
-    hop_notes: Optional[list[tuple[int, str]]] = None,
-    created_at: Optional[datetime] = None,
-) -> JournalEntryWriteV1:
-    """Orion's own written result.
-
-    The title is deliberately NOT derived from a subject, because code no
-    longer knows the subject -- Orion chose it inside the turn and it lives in
-    the prose. Deriving one here would mean re-inferring Orion's choice with a
-    heuristic, which is the exact move this rewrite exists to delete.
-
-    THE FOOTPRINT IS THE EVIDENCE, and it is reported whether or not it is
-    flattering. `graph_footprint` counts what Orion actually created in its own
-    graph during THIS run; a run that wrote nothing says so in plain words
-    rather than letting fluent prose imply that structure was formed. Same
-    contract as the harness step count next to it: if Orion says it worked
-    something out, there is an inspectable artifact behind the claim.
-
-    `None` means the footprint could not be read (no graph configured, or the
-    graph did not answer) and prints NOTHING, which is different from `{}`
-    meaning Orion genuinely wrote nothing and saying so.
-    """
-    stamp = created_at or datetime.now(timezone.utc)
-    offered = ", ".join(
-        f"{kind} {count}" for kind, count in sorted(material.approved_by_kind.items())
-    )
-    lines = [body_text.strip()]
-
-    if hop_notes:
-        lines += ["", "---", "", "The path, as it was recorded at each stop:", ""]
-        lines += [f"{n}. {note}" for n, note in hop_notes]
-
-    lines += [
-        "",
-        f"(Offered {len(material.crystallizations)} of "
-        f"{material.approved_total} approved concepts [{offered}] and "
-        f"{len(material.relations)} of {material.relation_total} relation "
-        "judgements, all sampled at random.",
-    ]
-    if harness_step_count is not None:
-        # The evidence that this was a lookup and not a recollection, kept in
-        # the artifact so the claim stays checkable after the fact.
-        lines[-1] += (
-            f" Investigated over {harness_step_count} harness steps"
-            + (f", grounding: {harness_grounding_status}" if harness_grounding_status else "")
-            + (
-                # WHOLE-TURN WALL TIME, HUB SIDE, AND IT IS NOT THE BUDGET THE
-                # `fcc_timeout` LABEL REFERS TO. Three nested deadlines are in
-                # play and only the innermost one ever kills a run that gets
-                # this far (all three confirmed against the live containers,
-                # 2026-09-01; raised again 2026-09-03 alongside the move to the
-                # slower `agent` lane -- see HARNESS_FCC_TIMEOUT_SEC's own
-                # comment in orion-harness-governor/.env_example):
-                #
-                #   HARNESS_FCC_TIMEOUT_SEC          2400s  governor process
-                #   HUB_HARNESS_GOVERNOR_RPC_TIMEOUT 2960s  hub
-                #   HUB_CURIOSITY_INVESTIGATION_...  3500s  hub, this clock
-                #
-                # `fcc_timeout` is emitted by the GOVERNOR at 2400s
-                # (`orion/harness/fcc_motor.py`), which then yields its partial
-                # draft as an ordinary final frame -- which is the only reason
-                # a timed-out run has a journal at all. The 3500s budget
-                # structurally cannot kill a journaled run: if it fires,
-                # `_generate` returns no text and `_investigate` bails at
-                # `empty_generation` before anything is written. So every entry
-                # carrying this number came from a turn where 3500s was slack.
-                #
-                # It is therefore NOT the investigation's duration. It spans
-                # all four legs -- stance (<=400s), governor queue, the FCC
-                # turn, and the finalize chain (<=485s) -- so up to ~885s of it
-                # is provably not investigation, and the legs are not measured
-                # separately anywhere. Named in the text rather than left to
-                # position, because `in 3499s` sitting after "harness steps"
-                # reads as the harness leg and is not.
-                #
-                # What it is good for: a `grounded` run's distance from the
-                # 2400s FCC ceiling is real headroom, and until now the number
-                # survived only for runs that FAILED to journal (logged in the
-                # debug dict at `curiosity_investigation_no_text`) and was lost
-                # for every run that succeeded. Read it as an upper bound on
-                # the FCC leg, never as the leg itself.
-                f", whole turn {harness_elapsed_sec:.0f}s "
-                "(stance + harness + finalize)"
-                if harness_elapsed_sec is not None
-                else ""
-            )
-            + (
-                # THE LEG THE TIMEOUT ACTUALLY GOVERNS. `whole turn` above
-                # bounds it; this is it. Reported second and only when known,
-                # so the difference between the two IS the stance+finalize
-                # overhead and nobody has to infer it. A `grounded` run's
-                # distance from HARNESS_FCC_TIMEOUT_SEC (2400s) is the real
-                # headroom figure -- the thing that decides whether the budget
-                # is genuinely too small or the turn simply never converged.
-                f", of which harness {harness_fcc_elapsed_sec:.0f}s"
-                if harness_fcc_elapsed_sec is not None
-                else ""
-            )
-        )
-    if graph_footprint is not None:
-        # `{}` and `None` are DIFFERENT here, and the distinction lands in the
-        # one artifact Juniper actually reads: `{}` is "Orion wrote nothing",
-        # `None` is "the graph could not answer", and printing the former for
-        # the latter would put a false claim about Orion's own work in its
-        # journal. `read_run_footprint` keeps them apart for this reason.
-        lines[-1] += (
-            f" Wrote to its own graph: {format_footprint(graph_footprint)}"
-            if graph_footprint
-            else " Wrote nothing to its own graph this run"
-        )
-    lines[-1] += ".)"
-    return JournalEntryWriteV1(
-        created_at=stamp,
-        author=_AUTHOR,
-        mode="manual",
-        title="Curiosity",
-        body="\n".join(lines),
-        source_kind=_JOURNAL_SOURCE_KIND,
-        # Namespaced away from the four self-study analysis sources, whose own
-        # cooldown matches on a `<source>:` prefix. Keyed on the run rather
-        # than on a subject, since there is no code-known subject any more.
-        source_ref=f"curiosity:{run_id}",
-        correlation_id=correlation_id,
-    )
 
 
 def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
@@ -576,7 +436,26 @@ class CuriosityInvestigation:
         # main.py assigned during startup, after this object is constructed.
         step_relay_provider: Optional[Callable[[], Any]] = None,
         reader: Optional[WorldviewReader] = None,
+        kickoff_via_cortex: bool = False,
+        cortex_request_channel: str = "orion:cortex:request",
+        cortex_result_prefix: str = "orion:cortex:result",
     ) -> None:
+        # Durable runs: when on, `_investigate` builds the same prompt and
+        # hands the run to cortex instead of running the turn here; the
+        # runner calls back on `orion:curiosity:turn:request` for the turn and
+        # reports completion on `orion:durable:run:state` (outreach stays here).
+        self.kickoff_via_cortex = bool(kickoff_via_cortex)
+        self.cortex_request_channel = cortex_request_channel
+        self.cortex_result_prefix = cortex_result_prefix
+        self._turn_listener_task: Optional[asyncio.Task] = None
+        self._state_listener_task: Optional[asyncio.Task] = None
+        # Turn dedup by run_id. A runner restart mid-turn re-issues the turn
+        # while the first one is still running here; without this, one run
+        # would cost two FCC turns and the first result would be orphaned.
+        # In-flight: the second request awaits the first's future. Finished
+        # within TURN_RESULT_CACHE_SEC: the cached result is replied as-is.
+        self._turn_inflight: dict[str, asyncio.Future] = {}
+        self._turn_results: dict[str, tuple[CuriosityTurnResultV1, float]] = {}
         self.enabled = enabled
         self.tick_interval_sec = tick_interval_sec
         self.min_cooldown_sec = min_cooldown_sec
@@ -708,6 +587,14 @@ class CuriosityInvestigation:
             await self._assert_acl()
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
+        if self.kickoff_via_cortex:
+            self._turn_listener_task = asyncio.create_task(self._turn_request_loop())
+            self._state_listener_task = asyncio.create_task(self._run_state_loop())
+            logger.info(
+                "curiosity_durable_listeners started turn=%s state=%s",
+                CURIOSITY_TURN_REQUEST_CHANNEL,
+                DURABLE_RUN_STATE_CHANNEL,
+            )
         logger.info(
             "curiosity_investigation started tick=%ss cooldown=%ss(floor=%ss) "
             "cap=%s window=%s sample=%s+%s graph=%s hops=%s outreach=%s",
@@ -730,6 +617,15 @@ class CuriosityInvestigation:
 
     async def stop(self) -> None:
         self._stop.set()
+        for attr in ("_turn_listener_task", "_state_listener_task"):
+            task = getattr(self, attr, None)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                setattr(self, attr, None)
         if self._task is not None:
             self._task.cancel()
             try:
@@ -1302,8 +1198,50 @@ class CuriosityInvestigation:
             # them here would silence the disclosure -- see build_kickoff_prompt.
             graph_enabled=self.graph_enabled,
         )
+        if self.kickoff_via_cortex:
+            try:
+                dispatched = await self._dispatch_durable_run(
+                    run_id=run_id,
+                    correlation_id=correlation_id,
+                    prompt=prompt,
+                    material=material,
+                )
+            except asyncio.CancelledError:
+                # Hub going away mid-dispatch (the RPC to cortex-orch can take
+                # up to ~20s) is the same shutdown case the fallback-turn path
+                # below refunds -- this call sits outside that try/except, so
+                # without this a cancellation here left the cap slot and
+                # cooldown stamp spent for a run cortex never confirmed.
+                await self._refund_investigation(previous_stamp)
+                raise
+            if dispatched:
+                return "dispatched"
+            # A failed dispatch falls back to the direct path so the run this
+            # tick already paid for still happens; the log line says so.
+            logger.warning(
+                "curiosity_durable_dispatch_fell_back run=%s -- running the turn in-process",
+                run_id,
+            )
         try:
-            text, debug = await self._generate(prompt, correlation_id)
+            if self.kickoff_via_cortex:
+                # Fallback after a failed dispatch: go through the same
+                # per-run_id dedup the runner's turn RPC uses, so if the
+                # dispatch did land after all, the runner's request joins
+                # this turn instead of starting a second one.
+                turn = await self._turn_result_for(
+                    CuriosityTurnRequestV1(
+                        run_id=run_id,
+                        correlation_id=correlation_id,
+                        prompt=prompt,
+                        fcc_model_label=self._fcc_model_label,
+                        timeout_sec=float(self.timeout_sec),
+                        source_tag=INVESTIGATION_TAG,
+                    ),
+                    hold_lock=False,  # tick already holds _run_lock
+                )
+                text, debug = turn.text, dict(turn.debug)
+            else:
+                text, debug = await self._generate(prompt, correlation_id)
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
@@ -1564,6 +1502,222 @@ class CuriosityInvestigation:
             result.get("reason"),
         )
         return None if result.get("outreach") else str(result.get("reason") or "not_sent")
+
+    # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
+
+    def _run_brief(self, *, prompt: str, material: StudyMaterial) -> CuriosityRunBriefV1:
+        return CuriosityRunBriefV1(
+            prompt=prompt,
+            session_id=self.session_id,
+            fcc_model_label=self._fcc_model_label,
+            timeout_sec=float(self.timeout_sec),
+            graph_configured=self._reader is not None,
+            material=CuriosityMaterialBriefV1(
+                approved_total=int(material.approved_total),
+                approved_by_kind=dict(material.approved_by_kind or {}),
+                crystallization_count=len(material.crystallizations),
+                relation_total=int(material.relation_total),
+                relation_count=len(material.relations),
+            ),
+            source_tag=INVESTIGATION_TAG,
+        )
+
+    async def _dispatch_durable_run(
+        self, *, run_id: str, correlation_id: str, prompt: str, material: StudyMaterial
+    ) -> bool:
+        """Hand the run to cortex. True only when cortex replied `accepted`."""
+        if self._bus is None:
+            return False
+        request = DurableRunRequestV1(
+            run_id=run_id,
+            workflow="curiosity.investigate",
+            correlation_id=correlation_id,
+            brief=self._run_brief(prompt=prompt, material=material),
+        )
+        payload = {
+            "mode": "brain",
+            "context": {
+                "messages": [{"role": "user", "content": "curiosity.investigate"}],
+                "user_message": "curiosity.investigate",
+                "session_id": self.session_id,
+                "metadata": {"durable_run": request.model_dump(mode="json")},
+            },
+        }
+        reply_channel = f"{self.cortex_result_prefix}:{correlation_id}"
+        envelope = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=self._source_ref,
+            correlation_id=uuid5(NAMESPACE_URL, f"durable_kickoff:{run_id}"),
+            reply_to=reply_channel,
+            payload=payload,
+        )
+        try:
+            raw = await self._bus.rpc_request(
+                self.cortex_request_channel, envelope, reply_channel=reply_channel, timeout_sec=20.0
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_durable_dispatch_failed run=%s err=%s", run_id, exc)
+            return False
+        # rpc_request hands back the raw pubsub message; decode the envelope.
+        # (Live 2026-09-06 20:52Z: reading `payload` off the raw message read
+        # nothing, every kickoff logged status=no_reply and fell back to the
+        # in-process turn while the runner ALSO ran the run -- two turns.)
+        try:
+            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+            result = decoded.envelope.payload if decoded.ok else None
+        except Exception:  # noqa: BLE001
+            result = None
+        status = str((result or {}).get("status") or "")
+        accepted = status == "accepted"
+        logger.info(
+            "curiosity_durable_dispatched run=%s corr=%s status=%s", run_id, correlation_id, status or "no_reply"
+        )
+        return accepted
+
+    async def _turn_request_loop(self) -> None:
+        """Serve the runner's harness-turn requests. One at a time, under the
+        same lock the tick holds, so a resumed turn and a fresh tick cannot
+        overlap (the reason the cooldown exists)."""
+        if self._bus is None:
+            return
+        try:
+            async with self._bus.subscribe(CURIOSITY_TURN_REQUEST_CHANNEL) as pubsub:
+                async for msg in self._bus.iter_messages(pubsub):
+                    try:
+                        await self._handle_turn_request(msg)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("curiosity_turn_request_failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("curiosity_turn_request_loop_failed")
+
+    async def _handle_turn_request(self, msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            request = CuriosityTurnRequestV1.model_validate(env.payload or {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_turn_request_invalid err=%s", exc)
+            return
+        logger.info(
+            "curiosity_turn_request run=%s attempt=%s corr=%s", request.run_id, request.attempt, request.correlation_id
+        )
+        result = await self._turn_result_for(request, hold_lock=True)
+        if env.reply_to:
+            await self._bus.publish(
+                env.reply_to,
+                BaseEnvelope(
+                    kind=CURIOSITY_TURN_RESULT_KIND,
+                    source=self._source_ref,
+                    correlation_id=env.correlation_id,
+                    payload=result.model_dump(mode="json"),
+                ),
+            )
+
+    async def _turn_result_for(
+        self, request: CuriosityTurnRequestV1, *, hold_lock: bool
+    ) -> CuriosityTurnResultV1:
+        """One harness turn per run_id, however many times it is asked for.
+
+        `hold_lock=True` from the RPC listener (serialise with the tick);
+        `False` from inside the tick, which already holds `_run_lock`
+        (asyncio.Lock is not re-entrant)."""
+        now = time.monotonic()
+        cached = self._turn_results.get(request.run_id)
+        if cached is not None and now - cached[1] <= TURN_RESULT_CACHE_SEC and cached[0].ok:
+            logger.info("curiosity_turn_request_served_from_cache run=%s attempt=%s", request.run_id, request.attempt)
+            return cached[0]
+        inflight = self._turn_inflight.get(request.run_id)
+        if inflight is not None and not inflight.done():
+            logger.info("curiosity_turn_request_joined_inflight run=%s attempt=%s", request.run_id, request.attempt)
+            return await inflight
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._turn_inflight[request.run_id] = future
+
+        async def _run_turn() -> CuriosityTurnResultV1:
+            try:
+                text, debug = await self._generate(
+                    request.prompt, request.correlation_id, source=request.source_tag
+                )
+                return CuriosityTurnResultV1(
+                    run_id=request.run_id,
+                    correlation_id=request.correlation_id,
+                    text=text or "",
+                    debug=dict(debug or {}),
+                    ok=bool(text),
+                    error=None if text else str((debug or {}).get("error") or "empty_generation"),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                return CuriosityTurnResultV1(
+                    run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
+                )
+
+        try:
+            if hold_lock:
+                async with self._run_lock:
+                    result = await _run_turn()
+            else:
+                result = await _run_turn()
+            self._turn_results[request.run_id] = (result, time.monotonic())
+            # Bounded: forget results older than the cache window.
+            cutoff = time.monotonic() - TURN_RESULT_CACHE_SEC
+            for rid in [r for r, (_, ts) in self._turn_results.items() if ts < cutoff]:
+                self._turn_results.pop(rid, None)
+            if not future.done():
+                future.set_result(result)
+            return result
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+            raise
+        finally:
+            self._turn_inflight.pop(request.run_id, None)
+
+    async def _run_state_loop(self) -> None:
+        """Outreach stays here: a `completed` run whose outcome asked to reach
+        out goes through the same second turn and the same gates as before."""
+        if self._bus is None:
+            return
+        try:
+            async with self._bus.subscribe(DURABLE_RUN_STATE_CHANNEL) as pubsub:
+                async for msg in self._bus.iter_messages(pubsub):
+                    try:
+                        await self._handle_run_state(msg)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("curiosity_run_state_failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("curiosity_run_state_loop_failed")
+
+    async def _handle_run_state(self, msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        try:
+            state = DurableRunStateV1.model_validate(decoded.envelope.payload or {})
+        except Exception:  # noqa: BLE001
+            return
+        if state.workflow != "curiosity.investigate" or state.status != "completed":
+            return
+        detail = state.detail or {}
+        if not detail.get("reach_out"):
+            return
+        outcome = TurnOutcome(
+            run_id=state.run_id,
+            continue_line=bool(detail.get("continue_line")),
+            continue_note="",
+            reach_out=True,
+            reach_out_why=str(detail.get("reach_out_why") or ""),
+        )
+        await self._maybe_reach_out(
+            outcome=outcome, finding_text=str(detail.get("finding_text") or ""), run_id=state.run_id
+        )
 
     async def _publish_attention_schema(
         self,

@@ -73,7 +73,7 @@ Legacy spark introspection channels/kinds are disabled by default; you can re-ad
 
 `grammar_events`, `grammar_edges`, `grammar_atoms`, `substrate_organ_emissions`,
 `grammar_traces`, `substrate_proposal_frames`, `orion_biometrics_cluster`,
-`power_intent_settled` and `substrate_attention_schema` all get bounded retention
+`power_intent_settled`, `substrate_attention_schema` and `substrate_durable_run_state` all get bounded retention
 (`*_RETENTION_DAYS` env keys, **default 3** for the grammar tables, **10** for
 `substrate_proposal_frames`, **30/90/90** for the last three). Each is a batched `DELETE ... LIMIT batch_size` loop
 (`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`,

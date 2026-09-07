@@ -207,6 +207,59 @@ instruments:
           the design doc forbids. The question is scoped to the retained
           window on purpose (Missing Question 4).
 
+  - id: durable_runs
+    title: "Durable cognition runs (curiosity investigation under a checkpointer, kicked off from cortex)"
+    theory: "Continuity of cognition across process death -- a run is a thing that can be resumed, not a stack frame"
+    program_ref: "README.md section 6 item 2; docs/superpowers/specs/2026-09-06-durable-cognition-runs-from-cortex-design.md"
+    module: orion/schemas/durable_run.py
+    outcome: O3
+    storage:
+      kind: append_only
+      table: substrate_durable_run_state
+      ts_column: created_at
+      retention_setting: SUBSTRATE_DURABLE_RUN_STATE_RETENTION_DAYS
+      retention_service: orion-sql-writer
+    metrics:
+      - metric://bus_channel/orion-durable-runs/orion:durable:run:state
+    unlock: >-
+      Step 3 of the attention-schema-surface ordering, reframed by evidence
+      from the surface itself: on 2026-09-06 three curiosity runs started and
+      none finished (daily cap 3/3 spent; last run traced into cortex at
+      18:49Z, Hub recreated 19:01Z). A run whose only state is a process's
+      memory dies with the process and leaves nothing to resume. This
+      instrument reads the runner's state rows: which runs resumed, from
+      which node, how many were abandoned. It says nothing about what Orion
+      thought -- only whether the thinking survived.
+    last_reviewed: 2026-09-06
+    claims:
+      - id: runs_resumed
+        question: "How many durable runs have resumed after a restart (a state row with resumed_from_node set) in the retained window?"
+        sql: >-
+          SELECT count(DISTINCT run_id) FROM substrate_durable_run_state
+          WHERE resumed_from_node IS NOT NULL
+        recorded: 2
+        recorded_at: 2026-09-07
+        blocks: O3
+        note: >-
+          Acceptance check passed live: run ff8a379217d8 was container-restarted
+          4.5h into a harness_turn, resumed under the same run_id, and finished
+          (journal + finish-detail) 2026-09-07 04:37:29Z after 8 attempts (2 RPC
+          timeouts from a missing bus-catalog entry, then legitimate no_final_frame
+          declines, then a real turn). run 4b9621bab74b also resumed once (an
+          in-flight RPC lost to the Hub redeploy that shipped the catalog fix) and
+          finished clean on its next attempt. Both counted here.
+      - id: runs_abandoned
+        question: "How many durable runs were abandoned (checkpoint older than DURABLE_RUNS_MAX_AGE_HOURS) in the retained window?"
+        sql: >-
+          SELECT count(DISTINCT run_id) FROM substrate_durable_run_state
+          WHERE status = 'abandoned'
+        recorded: 0
+        recorded_at: 2026-09-07
+        note: >-
+          Still zero after the first real resume cycle. Should stay near zero.
+          A rising count means runs are dying and NOT being picked up within a
+          day -- the failure this service exists to prevent, measured on itself.
+
   - id: prediction_error_domains
     title: "Predictive-processing prediction-error domains"
     theory: "Predictive Processing / Active Inference"

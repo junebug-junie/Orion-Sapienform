@@ -117,19 +117,49 @@ def main() -> int:
     root = main_worktree_root()
     argv = [a for a in sys.argv[1:] if not a.startswith("-")]
     if argv:
-        dirs = [root / "services" / a for a in argv]
-        for d in dirs:
-            if not d.is_dir():
-                print(f"env parity: no such service {d.name}", file=sys.stderr)
-                return 1
+        dirs = []
+        for a in argv:
+            d = root / "services" / a
+            if not (d / ".env_example").is_file():
+                # A service that exists only on this branch has no COMPLETE
+                # directory in the primary checkout yet (2026-09-06,
+                # orion-durable-runs): its .env_example AND its operator .env
+                # both live in the worktree being deployed from. Checking
+                # `d.is_dir()` alone was not enough -- a `.env` pre-positioned
+                # in the primary checkout ahead of merge (this exact service,
+                # this exact session) makes the directory exist with no
+                # template inside it, which fell through as "0 compared,
+                # PASS" instead of falling back. Check for the template file
+                # itself, the thing this whole script exists to compare
+                # against.
+                local = Path.cwd() / "services" / a
+                if (local / ".env_example").is_file():
+                    print(f"env parity: {a} is new on this branch; comparing the worktree-local .env", file=sys.stderr)
+                    d = local
+                elif not d.is_dir():
+                    print(f"env parity: no such service {d.name}", file=sys.stderr)
+                    return 1
+            dirs.append(d)
     else:
         dirs = sorted(p for p in (root / "services").iterdir() if p.is_dir())
 
     blocked: dict[str, list[str]] = {}
     warned: dict[str, list[str]] = {}
     compared = 0
+    no_env: list[str] = []
     for d in dirs:
         if not (d / ".env").is_file() or not (d / ".env_example").is_file():
+            # A blanket scan of every services/* directory silently skips
+            # non-services here and always has -- fine. But when a service
+            # was NAMED explicitly (the real deploy-time call, from
+            # safe_docker_build.sh), a missing .env means there is nothing to
+            # compare, which "PASS (N compared)" then reported identically to
+            # genuine parity. Confirmed as the exact gap in the fallback added
+            # for a branch-new service (2026-09-06, orion-durable-runs) whose
+            # env is hand-bootstrapped outside the normal sync -- this is the
+            # window where that bootstrap hasn't happened yet.
+            if argv and not (d / ".env").is_file():
+                no_env.append(d.name)
             continue
         compared += 1
         blocking, warnings = check_service(d)
@@ -145,11 +175,20 @@ def main() -> int:
         print(f"env parity: {len(warned)} service(s) missing whole keys -- not blocking; "
               f"`python scripts/sync_local_env_from_example.py` adds these.")
 
+    allowed = os.environ.get("ORION_ALLOW_ENV_DRIFT") == "1"
+
+    if no_env:
+        verdict = "ALLOWED by ORION_ALLOW_ENV_DRIFT=1" if allowed else "FAIL"
+        print(f"env template parity: {verdict} -- {', '.join(sorted(no_env))} has no .env "
+              f"at all -- there is nothing to compare, which is not the same as parity")
+        if not allowed:
+            print("Deliberate exception: ORION_ALLOW_ENV_DRIFT=1")
+            return 1
+
     if not blocked:
         print(f"env template parity: PASS ({compared} service(s) compared)")
         return 0
 
-    allowed = os.environ.get("ORION_ALLOW_ENV_DRIFT") == "1"
     verdict = "ALLOWED by ORION_ALLOW_ENV_DRIFT=1" if allowed else "FAIL"
     print(f"env template parity: {verdict} -- {len(blocked)} service(s) have a "
           f"structured value short of its contract")

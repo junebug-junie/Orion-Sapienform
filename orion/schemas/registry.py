@@ -561,6 +561,7 @@ from orion.schemas.notify import (
     RecipientProfile,
     RecipientProfileUpdate,
 )
+from orion.schemas.cockpit_sighting import CockpitHopV1
 from orion.schemas.harness_finalize import (
     FinalizeReflectionV1,
     GrammarReceiptV1,
@@ -1368,6 +1369,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "HarnessRunRequestV1": HarnessRunRequestV1,
     "HarnessRunCancelV1": HarnessRunCancelV1,
     "HarnessRunStepV1": HarnessRunStepV1,
+    "CockpitHopV1": CockpitHopV1,
     "HarnessRunV1": HarnessRunV1,
     "EmbodimentIntentV1": EmbodimentIntentV1,
     "EmbodimentOutcomeV1": EmbodimentOutcomeV1,
@@ -1573,6 +1575,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HarnessRunStepV1": SchemaRegistration(
         model=HarnessRunStepV1,
         kind="harness.run.step.v1",
+    ),
+    "CockpitHopV1": SchemaRegistration(
+        model=CockpitHopV1,
+        kind="cockpit.hop.v1",
     ),
     "HarnessRunV1": SchemaRegistration(
         model=HarnessRunV1,

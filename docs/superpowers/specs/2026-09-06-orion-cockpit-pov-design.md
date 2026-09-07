@@ -1,7 +1,7 @@
 # Orion Cockpit POV — Soft HUD turn sighting
 
 **Date:** 2026-09-06  
-**Status:** Design approved (brainstorm) — awaiting implementation plan  
+**Status:** Slice A planned/landed; B/C follow-on plans  
 **Branch intent:** `docs/cockpit-pov-design`  
 **Related:** Unified Orion turn (`docs/superpowers/specs/2026-07-05-unified-orion-turn-design.md`), fused Turn Trace (`services/orion-hub/scripts/chat_turn_trace_routes.py`), harness step bus (`orion:harness:run:step`)
 

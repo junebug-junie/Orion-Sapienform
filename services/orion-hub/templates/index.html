@@ -183,6 +183,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Self</a>
+          <a
+            id="hubSurfaceTabButton"
+            href="#hub-surface"
+            data-hash-target="#hub-surface"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Hub Surface</a>
         </nav>
       </div>
       <div class="flex items-center gap-3 shrink-0">
@@ -1050,6 +1057,30 @@
             class="w-full h-full border-0 min-h-[40rem]"
             loading="lazy"
             title="Self Brain"
+          ></iframe>
+        </div>
+      </section>
+
+      <section id="hub-surface" data-panel="hub-surface" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Hub Surface</h2>
+            <p class="text-xs text-gray-400 max-w-xl">
+              Decision points the attention-schema-surface / goal-bridge / durable-runs arc introduced — what's possible, what's live, and what actually happened because of it.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button id="hubSurfacePanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="hubSurfacePanelStandaloneLink" href="/hub-surface" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe
+            id="hubSurfacePanelFrame"
+            src="/hub-surface"
+            class="w-full h-full border-0 min-h-[40rem]"
+            loading="lazy"
+            title="Hub Surface"
           ></iframe>
         </div>
       </section>
@@ -4026,6 +4057,7 @@
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/hub_surface_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <!--
     Vendored, not CDN. chat-markdown.js is the first place the Hub renders
     innerHTML instead of textContent, and what it renders is model output.

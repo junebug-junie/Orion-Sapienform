@@ -164,22 +164,26 @@ instruments:
         question: "How many distinct processes have emitted a row in the retained window? (Acceptance Check 1: all four, or it is a failure -- a lane that emits zero rows is reported, not omitted.)"
         sql: >-
           SELECT count(DISTINCT process) FROM substrate_attention_schema
-        recorded: 3
-        recorded_at: 2026-09-06
+        recorded: 5
+        recorded_at: 2026-09-07
         blocks: O3
         note: >-
-          24h read (2026-09-06 19:00Z): substrate_attention 2082 rows,
-          reverie 163, cortex_turn 871, curiosity 0. The curiosity lane is a
-          FAILURE per Acceptance Check 1, and the surface's own cross-lane
-          join shows why: three runs were started today (redis daily count 3)
-          and none finished (no TurnOutcome since 2026-09-05, no journal);
-          the last one reached cortex at 18:49:11Z (cortex_turn row with the
-          run's correlation id) and the hub was recreated ~19:01Z. Whether
-          the runs were killed or failed is UNVERIFIED -- the logs did not
-          survive the recreate. Step 3 of the surface design (durable runs
-          from cortex, docs/superpowers/specs/2026-09-06-durable-cognition-
-          runs-from-cortex-design.md) is the fix; this claim drifts to 4 on
-          the first run that finishes.
+          Curiosity lane FAILURE resolved: PR #2128 (durable cognition runs
+          via orion-durable-runs, kicked off from cortex) merged 05:31Z.
+          24h read (2026-09-07 05:40Z, since HUB_CURIOSITY_KICKOFF_VIA_CORTEX
+          was flipped true): substrate_attention 2718, cortex_turn 1497,
+          reverie 215, curiosity 3 (was 0), plus a new fifth lane durable_run
+          12 (the sequencing itself, one row per node transition). Two
+          distinct runs both reached finish/completed today, one of them
+          after surviving a real container restart (Acceptance Check 1 of
+          the durable-runs design, docs/superpowers/specs/2026-09-06-durable-
+          cognition-runs-from-cortex-design.md, PASSED live). This is the
+          FIRST read since the flag went live in normal (not manually
+          triggered) operation -- acceptance checks 2-6 of that design
+          (cortex sees every kickoff, cap not burned by a restart, nothing
+          else moved, kill switch still works) need a proper 24h read once a
+          full day of organic tick-driven runs has accumulated, not just
+          today's two manually-triggered test runs.
       - id: cortex_lane_is_constant
         question: "How many distinct reason_narrative strings has the cortex_turn lane emitted? (Acceptance Check 4, per lane: 2 means the lane is a constant, not an instrument.)"
         sql: >-

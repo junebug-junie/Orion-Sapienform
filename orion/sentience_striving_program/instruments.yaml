@@ -237,24 +237,28 @@ instruments:
         sql: >-
           SELECT count(DISTINCT run_id) FROM substrate_durable_run_state
           WHERE resumed_from_node IS NOT NULL
-        recorded: 0
-        recorded_at: 2026-09-06
+        recorded: 2
+        recorded_at: 2026-09-07
         blocks: O3
         note: >-
-          Recorded 0 at PR time, before the live restart test. The spike's
-          acceptance check is exactly this number becoming 1 with the same
-          run_id finishing (journal + TurnOutcome) after a container restart.
+          Acceptance check passed live: run ff8a379217d8 was container-restarted
+          4.5h into a harness_turn, resumed under the same run_id, and finished
+          (journal + finish-detail) 2026-09-07 04:37:29Z after 8 attempts (2 RPC
+          timeouts from a missing bus-catalog entry, then legitimate no_final_frame
+          declines, then a real turn). run 4b9621bab74b also resumed once (an
+          in-flight RPC lost to the Hub redeploy that shipped the catalog fix) and
+          finished clean on its next attempt. Both counted here.
       - id: runs_abandoned
         question: "How many durable runs were abandoned (checkpoint older than DURABLE_RUNS_MAX_AGE_HOURS) in the retained window?"
         sql: >-
           SELECT count(DISTINCT run_id) FROM substrate_durable_run_state
           WHERE status = 'abandoned'
         recorded: 0
-        recorded_at: 2026-09-06
+        recorded_at: 2026-09-07
         note: >-
-          Should stay near zero. A rising count means runs are dying and
-          NOT being picked up within a day -- the failure this service
-          exists to prevent, measured on itself.
+          Still zero after the first real resume cycle. Should stay near zero.
+          A rising count means runs are dying and NOT being picked up within a
+          day -- the failure this service exists to prevent, measured on itself.
 
   - id: prediction_error_domains
     title: "Predictive-processing prediction-error domains"

@@ -4096,6 +4096,17 @@ async def call_step_services(
                     else "{}"
                 )
 
+                # Recent attention cue: Oríon's own ambient sense of its last
+                # few moments of attention, read from substrate_attention_schema
+                # (five producers: cortex_turn, curiosity, reverie,
+                # substrate_attention, durable_run). Rendered into
+                # chat_stance_brief.j2's `recent_attention` SOURCES entry.
+                # Bounded + fail-open, same posture as recent_trend_signals above.
+                from app.recent_attention_reader import fetch_recent_attention_cue
+
+                recent_attention = await fetch_recent_attention_cue(correlation_id)
+                ctx["recent_attention"] = recent_attention or {}
+
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

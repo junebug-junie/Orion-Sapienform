@@ -273,6 +273,11 @@ SYNC_PREFIXES = (
     # invisible to `should_sync_key()`, missing-key or not, despite this
     # module's own docstring claiming missing keys are "always" auto-added).
     "FIELD_DIGESTER_",
+    # "Recent attention" ambient cue for chat_stance_brief.j2 (orion-cortex-exec),
+    # 2026-09-07. Same known blind spot as HUB_CURIOSITY_/HUB_WORLD_PULSE_READ_
+    # above: without an explicit prefix here, RECENT_ATTENTION_CUE_* keys added
+    # to .env_example are silently invisible to should_sync_key().
+    "RECENT_ATTENTION_CUE_",
 )
 
 SYNC_EXACT = frozenset(
@@ -344,6 +349,12 @@ SYNC_EXACT = frozenset(
         # (CHANNEL_VISION_HOST_REQUEST/CHANNEL_VISION_REPLY_PREFIX already
         # match the existing CHANNEL_VISION_ prefix, no entry needed here.)
         "ORION_DIFFUSION_HOST_BASE_URL",
+        # "Recent attention" ambient cue master switch -- ENABLE_ prefix is too
+        # generic to add wholesale, so this one key is listed explicitly
+        # (mirrors ENABLE_METACOG_TREND_CUE's own exact-key gap, left as-is
+        # rather than expanded here since fixing that pre-existing gap is out
+        # of scope for this patch).
+        "ENABLE_RECENT_ATTENTION_CUE",
     }
 )
 

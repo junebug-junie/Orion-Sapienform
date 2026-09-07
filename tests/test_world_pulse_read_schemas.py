@@ -5,6 +5,7 @@ from orion.schemas.world_pulse_read import (
     WorldPulseReadHandoffV1,
     WorldPulseReadPriorCandidateV1,
     WorldPulseReadSeedV1,
+    WorldPulseReadStage2ResultV1,
 )
 
 
@@ -45,3 +46,16 @@ def test_handoff_requires_seed_ref_and_trace():
     assert re.producer_hint == "world_pulse_read_pipeline"
     assert re.concept_candidates[0].label == "advanced packaging"
     assert re.trace_id == "tr-1"
+
+
+def test_stage2_result_round_trip():
+    result = WorldPulseReadStage2ResultV1(
+        summary="Priors formed.",
+        need_stage1_urls=["https://example.com/more"],
+        trace_id="tr-s2",
+        created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        seed_id="finding:run-1:abcd",
+    )
+    re = WorldPulseReadStage2ResultV1.model_validate(result.model_dump(mode="json"))
+    assert re.producer_hint == "world_pulse_read_stage2"
+    assert re.need_stage1_urls == ["https://example.com/more"]

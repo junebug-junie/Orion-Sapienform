@@ -42,3 +42,14 @@ class WorldPulseReadHandoffV1(_Base):
     trace_id: str = Field(min_length=1)
     created_at: datetime
     producer_hint: Literal["world_pulse_read_pipeline"] = "world_pulse_read_pipeline"
+
+
+class WorldPulseReadStage2ResultV1(_Base):
+    """Stage 2 FCC result. ``need_stage1_urls`` may trigger Stage 1 re-entry."""
+
+    summary: str = Field(min_length=1)
+    need_stage1_urls: list[str] = Field(default_factory=list)
+    trace_id: str = Field(min_length=1)
+    created_at: datetime
+    seed_id: str = ""
+    producer_hint: Literal["world_pulse_read_stage2"] = "world_pulse_read_stage2"

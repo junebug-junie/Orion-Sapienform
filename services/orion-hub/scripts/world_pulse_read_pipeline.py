@@ -239,7 +239,9 @@ class WorldPulseReadPipeline:
 
             await self._journal(handoff)
             await self._with_conn(
-                lambda conn: mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id)
+                lambda conn: mark_seed_done(
+                    conn, seed.seed_id, trace_id=handoff.trace_id, handoff=handoff
+                )
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(

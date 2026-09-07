@@ -392,17 +392,18 @@ def test_background_lanes_are_refused(lane: str) -> None:
 #
 # Confirmed live 2026-09-07: one shared governor dispatch queue let a
 # 40-minute agent-lane run (curiosity) block a real chat turn for its whole
-# duration. `_is_agent_compute_lane` is what HarnessGovernorClient.run() keys
-# `is_agent_lane` on, so it decides which of the governor's two independent
-# dispatch queues a turn's request goes out on. It must be keyed on the
-# resolved model, not on `mode_tag`/`llm_route` individually or on "who
-# called this" -- those three disagree about curiosity's own turns.
+# duration. `orion.llm.routes.is_agent_route_model_label` is what
+# `HarnessGovernorClient.run()` reads `request.fcc_model_label` through to
+# decide which of the governor's two independent dispatch queues a turn's
+# request goes out on. It must be keyed on the resolved model, not on
+# `mode_tag`/`llm_route` individually or on "who called this" -- those three
+# disagree about curiosity's own turns.
 
 def test_agent_mode_agent_lane_selects_the_agent_dispatch_queue() -> None:
-    from orion.hub.turn_orchestrator import _is_agent_compute_lane
+    from orion.llm.routes import is_agent_route_model_label
 
     resolved = _resolve_fcc_model_label({"llm_route": "agent"}, "agent")
-    assert _is_agent_compute_lane(resolved) is True
+    assert is_agent_route_model_label(resolved) is True
 
 
 def test_curiositys_explicit_label_also_selects_the_agent_dispatch_queue() -> None:
@@ -412,13 +413,13 @@ def test_curiositys_explicit_label_also_selects_the_agent_dispatch_queue() -> No
     LANE without touching `mode`". The dispatch-lane selector must still
     recognise it, because it is keyed on the resolved label, not on
     `mode_tag` or `llm_route`."""
-    from orion.hub.turn_orchestrator import _is_agent_compute_lane
+    from orion.llm.routes import is_agent_route_model_label
 
     resolved = _resolve_fcc_model_label(
         {"fcc_model_label": fcc_model_for_route("agent"), "no_write": True}, "orion"
     )
     assert resolved == "llamacpp/agent"
-    assert _is_agent_compute_lane(resolved) is True
+    assert is_agent_route_model_label(resolved) is True
 
 
 @pytest.mark.parametrize(
@@ -434,7 +435,17 @@ def test_curiositys_explicit_label_also_selects_the_agent_dispatch_queue() -> No
 def test_chat_and_default_turns_never_select_the_agent_dispatch_queue(
     payload: dict, mode_tag: str
 ) -> None:
-    from orion.hub.turn_orchestrator import _is_agent_compute_lane
+    from orion.llm.routes import is_agent_route_model_label
 
     resolved = _resolve_fcc_model_label(payload, mode_tag)
-    assert _is_agent_compute_lane(resolved) is False
+    assert is_agent_route_model_label(resolved) is False
+
+
+def test_agent_route_model_label_is_a_stable_non_none_constant() -> None:
+    """Pins the assert-at-import invariant in `orion/llm/routes.py`: "agent" is
+    accepted, not background, not system-only, so this can only be a real
+    string -- never the silent-`None`-makes-everything-look-like-chat failure
+    mode a defensive `bool(...) and ...` guard would otherwise hide."""
+    from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+    assert AGENT_ROUTE_FCC_MODEL_LABEL == "llamacpp/agent"

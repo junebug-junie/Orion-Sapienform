@@ -162,3 +162,90 @@ async def test_a_slow_agent_lane_turn_does_not_delay_the_chat_lane(monkeypatch) 
     # single shared loop this would be impossible -- chat could not even be
     # read until the agent-lane turn's 0.3s "run" returned.
     assert order == ["chat", "agent"]
+
+
+@pytest.mark.asyncio
+async def test_lane_alone_resolves_the_correct_channel_with_no_explicit_channel(monkeypatch) -> None:
+    """The real caller (main.py) never passes `channel` explicitly -- `lane`
+    alone must resolve to the matching settings channel, so there is no way
+    for the two to be handed a mismatched pair by hand."""
+    monkeypatch.setattr(bus_listener.settings, "channel_harness_run_request", "chat:channel")
+    monkeypatch.setattr(bus_listener.settings, "channel_harness_run_request_agent", "agent:channel")
+    agent_queue: asyncio.Queue = asyncio.Queue()
+    bus = _FakeBus({"agent:channel": agent_queue})
+    monkeypatch.setattr(bus_listener, "OrionBusAsync", lambda url: bus)
+    monkeypatch.setattr(bus_listener.settings, "orion_bus_enabled", True)
+    monkeypatch.setattr(bus_listener.settings, "orion_harness_governor_enabled", True)
+
+    seen: list[dict] = []
+
+    async def _record(_bus, msg) -> None:
+        seen.append(msg)
+
+    monkeypatch.setattr(bus_listener, "_handle_bus_message", _record)
+
+    await agent_queue.put({"type": "message", "lane_marker": "agent"})
+    stop_event = asyncio.Event()
+
+    async def _stop_soon() -> None:
+        await asyncio.sleep(0.1)
+        stop_event.set()
+
+    # No `channel=` at all -- exactly how main.py calls this for real.
+    await asyncio.gather(
+        bus_listener.run_bus_worker(stop_event=stop_event, lane="agent"),
+        _stop_soon(),
+    )
+
+    assert seen == [{"type": "message", "lane_marker": "agent"}]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_agent_channel_refuses_to_start_rather_than_defaulting_to_chat(monkeypatch) -> None:
+    """A blank CHANNEL_HARNESS_RUN_REQUEST_AGENT must never fall back to the
+    chat channel -- that channel is single_consumer in channels.yaml, so a
+    second worker silently subscribing to it would double-process every real
+    chat turn. Regression test for exactly that `x or default` shape of bug."""
+    monkeypatch.setattr(bus_listener.settings, "channel_harness_run_request_agent", "")
+    monkeypatch.setattr(bus_listener.settings, "orion_bus_enabled", True)
+    monkeypatch.setattr(bus_listener.settings, "orion_harness_governor_enabled", True)
+
+    def _boom(url: str) -> None:
+        raise AssertionError("must refuse before ever constructing a bus connection")
+
+    monkeypatch.setattr(bus_listener, "OrionBusAsync", _boom)
+
+    # Must return cleanly (not hang, not raise, and never touch the chat channel).
+    await bus_listener.run_bus_worker(stop_event=asyncio.Event(), lane="agent")
+
+
+@pytest.mark.asyncio
+async def test_shared_bus_is_used_directly_and_never_closed_by_the_worker(monkeypatch) -> None:
+    """main.py passes one connected OrionBusAsync to both lanes' loops so they
+    share a command connection; the loop that didn't construct it must not be
+    the one that tears it down out from under the other lane."""
+    chat_queue: asyncio.Queue = asyncio.Queue()
+    shared_bus = _FakeBus({"chat:channel": chat_queue})
+    close_calls = 0
+    orig_close = shared_bus.close
+
+    async def _counting_close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await orig_close()
+
+    shared_bus.close = _counting_close  # type: ignore[assignment]
+
+    def _boom(url: str) -> None:
+        raise AssertionError("a shared bus must not be reconstructed internally")
+
+    monkeypatch.setattr(bus_listener, "OrionBusAsync", _boom)
+    monkeypatch.setattr(bus_listener.settings, "orion_bus_enabled", True)
+    monkeypatch.setattr(bus_listener.settings, "orion_harness_governor_enabled", True)
+    monkeypatch.setattr(bus_listener, "_handle_bus_message", lambda *_a, **_k: None)
+
+    stop_event = asyncio.Event()
+    stop_event.set()  # loop body must exit almost immediately
+    await bus_listener.run_bus_worker("chat:channel", stop_event, lane="chat", bus=shared_bus)
+
+    assert close_calls == 0, "the worker does not own this bus and must not close it"

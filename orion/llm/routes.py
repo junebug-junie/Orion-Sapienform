@@ -281,3 +281,36 @@ def fcc_model_for_route(raw: object) -> Optional[str]:
     if route in BACKGROUND_LLM_ROUTES:
         return None
     return f"{FCC_LLAMACPP_MODEL_PREFIX}{route}"
+
+
+#: The literal model label the "agent" route resolves to (e.g. "llamacpp/agent"),
+#: computed once here rather than re-derived by each caller -- this module's whole
+#: stated purpose is being the single owner of the route vocabulary, so a second
+#: independent "is this the agent lane" classifier is exactly the kind of drift
+#: its own docstring describes happening three times before. `assert`, not a
+#: defensive `if`: "agent" is a real entry in ACCEPTED_LLM_ROUTES and is neither
+#: system-only nor background, so this can only ever be None if that invariant is
+#: broken -- which should fail loudly at import, the same way LLM_ROUTE_DISPLAY_ORDER's
+#: own consistency check above does, not silently make every caller see "not agent".
+AGENT_ROUTE_FCC_MODEL_LABEL = fcc_model_for_route("agent")
+assert AGENT_ROUTE_FCC_MODEL_LABEL, "'agent' must resolve to a real FCC model label"
+
+
+def is_agent_route_model_label(resolved_fcc_model_label: object) -> bool:
+    """Is `resolved_fcc_model_label` the agent compute lane's model?
+
+    Callers pass the FULLY RESOLVED label (e.g. `HarnessRunRequestV1.fcc_model_label`
+    after `orion.hub.turn_orchestrator._resolve_fcc_model_label`'s precedence chain
+    has already run) -- never `mode_tag` or a raw `llm_route`. Those disagree about
+    curiosity's own turns: curiosity sends this exact resolved label as an EXPLICIT
+    `fcc_model_label` (so it steers the model without touching `mode`), while a
+    human's Mode=Agent+Compute=Agent chat turn reaches the identical label by
+    deriving it from `llm_route` instead. This is the one thing both paths agree
+    on, which is what lets `HarnessGovernorClient.run()` route both of them to the
+    SAME governor dispatch queue -- correct, since they already share one physical
+    GPU -- while ordinary chat (whose resolved label is `MODEL_SONNET`/`MODEL_OPUS`,
+    never this literal) keeps its own queue, untouched by either. Confirmed live
+    2026-09-07: a single shared dispatch queue let one long agent-lane run block a
+    real chat turn for its whole duration.
+    """
+    return resolved_fcc_model_label == AGENT_ROUTE_FCC_MODEL_LABEL

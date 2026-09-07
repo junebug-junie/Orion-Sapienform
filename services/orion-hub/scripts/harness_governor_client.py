@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.llm.routes import is_agent_route_model_label
 from orion.schemas.harness_finalize import HarnessRunCancelV1, HarnessRunRequestV1, HarnessRunV1
 from scripts.settings import settings
 
@@ -63,23 +64,28 @@ class HarnessGovernorClient:
         correlation_id: Optional[str] = None,
         timeout_sec: float | None = None,
         liveness_check: LivenessCheckFn | None = None,
-        is_agent_lane: bool = False,
     ) -> HarnessRunV1 | None:
         """Dispatch a harness run and wait for its reply.
 
-        `is_agent_lane` picks which governor dispatch queue the request goes
-        out on -- CHANNEL_HARNESS_RUN_REQUEST_AGENT vs the default
-        CHANNEL_HARNESS_RUN_REQUEST. Both are consumed by the same governor
-        code (two independent loops, see bus_listener.run_bus_worker), so
-        this only changes which queue a turn waits in, never how it runs.
-        Callers should pass the SAME compute-lane decision that already picks
-        the turn's model (see turn_orchestrator._is_agent_compute_lane) --
-        keying this on anything else (e.g. "is this curiosity calling")
-        would let a manual Mode=Agent+Compute=Agent chat turn land on the
-        chat queue while sharing the agent lane's model server anyway.
+        Which governor dispatch queue the request goes out on
+        (CHANNEL_HARNESS_RUN_REQUEST vs CHANNEL_HARNESS_RUN_REQUEST_AGENT) is
+        derived here from `request.fcc_model_label` -- the SAME field that
+        already picked the turn's model -- via
+        `orion.llm.routes.is_agent_route_model_label`, not passed in
+        separately. That is deliberate: it is the one fact every caller
+        already has to set correctly (the model would be wrong otherwise), so
+        there is nothing left for a second, independently-computed flag to
+        get out of sync with. Both queues are consumed by the same governor
+        code (two independent loops, see bus_listener.run_bus_worker) -- this
+        only changes which queue a turn waits in, never how it runs. See
+        is_agent_route_model_label's own docstring for why curiosity and a
+        manual Mode=Agent+Compute=Agent chat turn both land on the agent
+        queue (they already share one physical GPU) while ordinary chat keeps
+        its own queue untouched by either.
         """
         correlation_id = correlation_id or request.correlation_id or str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_HARNESS_RESULT_PREFIX}{correlation_id}"
+        is_agent_lane = is_agent_route_model_label(request.fcc_model_label)
         request_channel = (
             settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT if is_agent_lane else settings.CHANNEL_HARNESS_RUN_REQUEST
         )

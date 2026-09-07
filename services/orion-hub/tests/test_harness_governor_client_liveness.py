@@ -19,6 +19,7 @@ for candidate in (REPO_ROOT, HUB_ROOT):
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
 from orion.core.bus.codec import OrionCodec  # noqa: E402
+from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL  # noqa: E402
 from orion.schemas.cognition.answer_contract import AnswerContract  # noqa: E402
 from orion.schemas.context_exec import ContextExecPermissionV1  # noqa: E402
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1  # noqa: E402
@@ -30,7 +31,7 @@ from scripts.settings import settings  # noqa: E402
 _CORR_ID = "00000000-0000-4000-8000-000000000301"
 
 
-def _request() -> HarnessRunRequestV1:
+def _request(fcc_model_label: str | None = None) -> HarnessRunRequestV1:
     thought = ThoughtEventV1(
         event_id="t-1",
         correlation_id=_CORR_ID,
@@ -53,6 +54,7 @@ def _request() -> HarnessRunRequestV1:
         user_message="hello",
         permissions=ContextExecPermissionV1(),
         answer_contract=AnswerContract(),
+        fcc_model_label=fcc_model_label,
     )
 
 
@@ -342,13 +344,15 @@ class _FakeWorkerBus:
                 fut.set_result(msg)
 
 
-# --- is_agent_lane picks which governor queue the request goes out on ------
+# --- request.fcc_model_label picks which governor queue gets published to --
 #
 # Confirmed live 2026-09-07: both lanes shared one governor dispatch queue,
 # so a long agent-lane turn (curiosity) silently blocked a real chat turn for
-# its whole duration. `is_agent_lane` is what turn_orchestrator computes from
-# the turn's resolved model (`_is_agent_compute_lane`), passed straight
-# through here to decide which channel gets published to.
+# its whole duration. `HarnessGovernorClient.run()` derives the dispatch
+# queue from `request.fcc_model_label` via
+# `orion.llm.routes.is_agent_route_model_label` -- the SAME field that
+# already picked the turn's model -- rather than a second, independently
+# passed flag that a caller could get out of sync with the model.
 
 @pytest.mark.asyncio
 async def test_run_publishes_to_the_chat_channel_by_default() -> None:
@@ -368,17 +372,16 @@ async def test_run_publishes_to_the_chat_channel_by_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_publishes_to_the_agent_channel_when_asked() -> None:
+async def test_run_publishes_to_the_agent_channel_when_the_request_targets_the_agent_model() -> None:
     poll_sec = 0.05
     bus = _FakeBus(reply_after_sec=poll_sec * 2.5, reply_payload=_run_payload())
     client = HarnessGovernorClient(bus)
 
     result = await client.run(
-        _request(),
+        _request(fcc_model_label=AGENT_ROUTE_FCC_MODEL_LABEL),
         correlation_id=_CORR_ID,
         timeout_sec=poll_sec,
         liveness_check=lambda _within_sec: True,
-        is_agent_lane=True,
     )
 
     assert result is not None
@@ -387,7 +390,7 @@ async def test_run_publishes_to_the_agent_channel_when_asked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_via_worker_path_also_respects_is_agent_lane() -> None:
+async def test_run_via_worker_path_also_derives_the_lane_from_the_request() -> None:
     """Same selection, the shared-worker-connection path (`_run_via_worker`)
     instead of the ad-hoc subscribe path exercised above."""
     poll_sec = 0.05
@@ -401,11 +404,10 @@ async def test_run_via_worker_path_also_respects_is_agent_lane() -> None:
         client = HarnessGovernorClient(bus)
 
         result = await client.run(
-            _request(),
+            _request(fcc_model_label=AGENT_ROUTE_FCC_MODEL_LABEL),
             correlation_id=_CORR_ID,
             timeout_sec=poll_sec,
             liveness_check=lambda _within_sec: True,
-            is_agent_lane=True,
         )
 
         assert result is not None

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -522,23 +522,44 @@ async def _reply_and_artifact(
     )
 
 
+# Single source of truth for lane -> default channel, so a real caller (main.py)
+# can pick a lane by NAME and never has to independently spell out the matching
+# channel by hand -- there is then nothing for the two to disagree about. Explicit
+# `channel=` (tests use this with synthetic channel names) always overrides.
+_LANE_DEFAULT_CHANNELS: dict[str, Callable[[], str]] = {
+    "chat": lambda: settings.channel_harness_run_request,
+    "agent": lambda: settings.channel_harness_run_request_agent,
+}
+
+
 async def run_bus_worker(
     channel: str | None = None,
     stop_event: asyncio.Event | None = None,
     *,
     lane: str = "chat",
+    bus: OrionBusAsync | None = None,
 ) -> None:
     """Consume one harness-run-request channel to completion, one turn at a time.
 
-    `channel` defaults to the chat lane for backward compatibility (existing
-    tests, and anyone still calling this with the old single-arg signature).
-    `main.py`'s lifespan runs TWO of these concurrently -- one per lane, each
-    with its own channel -- so a long agent-lane turn (curiosity,
-    Mode=Agent+Compute=Agent) can never make a chat-lane turn wait behind it,
-    or vice versa. Confirmed live 2026-09-07 that a single shared loop let a
-    40-minute agent-lane turn block a real chat turn for its whole duration.
-    Everything below this line is identical for both lanes -- only which
-    channel feeds the loop differs.
+    `main.py`'s lifespan runs TWO of these concurrently -- one per lane -- so a
+    long agent-lane turn (curiosity, Mode=Agent+Compute=Agent) can never make a
+    chat-lane turn wait behind it, or vice versa. Confirmed live 2026-09-07 that
+    a single shared loop let a 40-minute agent-lane turn block a real chat turn
+    for its whole duration. Everything below this line is identical for both
+    lanes -- only which channel feeds the loop differs.
+
+    `channel` is normally omitted: it is resolved from `lane` via
+    `_LANE_DEFAULT_CHANNELS`, so `main.py`'s two call sites can never pass a
+    lane/channel pair that disagree with each other. Pass `channel` explicitly
+    only for tests that need a synthetic channel name.
+
+    `bus` lets `main.py` share ONE connected `OrionBusAsync` (its own command
+    connection, reused for every reply/artifact publish) across both lanes'
+    loops -- each still opens its OWN dedicated pubsub connection via
+    `bus.subscribe()` below, which is what actually lets the two loops poll
+    independently, so sharing costs nothing here. Passing none (tests, or a
+    standalone run) makes this function own a private connection end to end,
+    closed in `finally` -- same as before this parameter existed.
     """
     if not settings.orion_bus_enabled:
         logger.info("Bus disabled; worker not started lane=%s", lane)
@@ -546,9 +567,21 @@ async def run_bus_worker(
     if not settings.orion_harness_governor_enabled:
         logger.info("Harness governor disabled; worker not started lane=%s", lane)
         return
+    if channel is None:
+        default_channel_fn = _LANE_DEFAULT_CHANNELS.get(lane)
+        channel = default_channel_fn() if default_channel_fn is not None else settings.channel_harness_run_request
+    if not channel:
+        # A blank CHANNEL_HARNESS_RUN_REQUEST_AGENT (unset, stray override) must
+        # never fall back to the chat channel: that channel is single_consumer in
+        # channels.yaml, and a second worker silently subscribing to it would
+        # double-process every chat turn (double FCC motor run, double reply)
+        # with nothing in the logs to explain why. Refuse instead of guessing.
+        logger.error("run_bus_worker refusing to start: empty channel lane=%s", lane)
+        return
 
-    bus = OrionBusAsync(url=settings.orion_bus_url)
-    channel = channel or settings.channel_harness_run_request
+    owns_bus = bus is None
+    if bus is None:
+        bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
     logger.info("subscribed lane=%s channel=%s", lane, channel)
 
@@ -573,8 +606,9 @@ async def run_bus_worker(
     except asyncio.CancelledError:
         raise
     finally:
-        with suppress(Exception):
-            await bus.close()
+        if owns_bus:
+            with suppress(Exception):
+                await bus.close()
 
 
 async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> None:

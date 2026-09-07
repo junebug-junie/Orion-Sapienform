@@ -1449,8 +1449,8 @@ class Settings(BaseSettings):
     # wait behind it in the same single-flight queue. Confirmed live
     # 2026-09-07: both lanes shared this one channel and one governor worker
     # loop, so a 40-minute curiosity run silently blocked a real chat turn for
-    # its whole duration. See HarnessGovernorClient.run()'s `is_agent_lane`
-    # and orion.hub.turn_orchestrator._is_agent_compute_lane for the selector.
+    # its whole duration. HarnessGovernorClient.run() derives which queue to
+    # use from request.fcc_model_label via orion.llm.routes.is_agent_route_model_label.
     CHANNEL_HARNESS_RUN_REQUEST_AGENT: str = Field(
         default="orion:harness:run:request:agent",
         alias="CHANNEL_HARNESS_RUN_REQUEST_AGENT",

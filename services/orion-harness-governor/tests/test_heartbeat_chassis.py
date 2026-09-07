@@ -20,6 +20,33 @@ import app.main as governor_main
 from orion.core.bus.bus_service_chassis import HeartbeatOnly
 
 
+class _FakeTask:
+    def __init__(self, done: bool) -> None:
+        self._done = done
+
+    def done(self) -> bool:
+        return self._done
+
+
+def test_lane_alive_is_none_when_disabled_not_false(monkeypatch) -> None:
+    """`lane_chat_alive`/`lane_agent_alive` must distinguish "turned off on
+    purpose" from "the dispatch loop died" -- both make the task `done()`,
+    but only one is a problem. `None` (not `False`) is the "not applicable"
+    signal a dashboard/alert has to check for separately from a real crash."""
+    monkeypatch.setattr(governor_main.settings, "orion_bus_enabled", False)
+    monkeypatch.setattr(governor_main.settings, "orion_harness_governor_enabled", True)
+    assert governor_main._lane_alive(_FakeTask(done=True)) is None
+    assert governor_main._lane_alive(None) is None
+
+
+def test_lane_alive_is_a_real_bool_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(governor_main.settings, "orion_bus_enabled", True)
+    monkeypatch.setattr(governor_main.settings, "orion_harness_governor_enabled", True)
+    assert governor_main._lane_alive(_FakeTask(done=False)) is True
+    assert governor_main._lane_alive(_FakeTask(done=True)) is False
+    assert governor_main._lane_alive(None) is False
+
+
 def test_build_heartbeat_chassis_uses_governor_settings() -> None:
     chassis = governor_main.build_heartbeat_chassis()
     assert isinstance(chassis, HeartbeatOnly)
@@ -32,23 +59,24 @@ def test_build_heartbeat_chassis_uses_governor_settings() -> None:
     assert chassis.cfg.health_channel == "orion:system:health"
 
 
-async def _wait_for_stop(
-    first: str | asyncio.Event, second: asyncio.Event | None = None, *, lane: str = "chat"
-) -> None:
-    """Stands in for both `run_bus_worker(channel, stop_event, lane=...)` and
-    `run_cancel_worker(stop_event)` -- their calling shapes differ, so `stop_event`
-    is whichever of the two positional args is actually the Event."""
-    stop_event = second if second is not None else first
-    await stop_event.wait()  # type: ignore[union-attr]
+async def _wait_for_stop(*args: object, stop_event: asyncio.Event | None = None, **kwargs: object) -> None:
+    """Stands in for both `run_bus_worker(stop_event=..., lane=..., bus=...)`
+    (all-keyword, no positional args at all) and `run_cancel_worker(stop_event)`
+    (one positional arg) -- their calling shapes differ, so `stop_event` is
+    whichever of "the keyword" or "the first positional arg" is actually present."""
+    event = stop_event if stop_event is not None else args[0]
+    await event.wait()  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
 async def test_lifespan_starts_and_stops_heartbeat_chassis(monkeypatch) -> None:
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     monkeypatch.setattr(governor_main, "build_heartbeat_chassis", lambda: fake_chassis)
-    # Real bus workers are exercised by test_harness_governor_rpc.py -- here they are
-    # replaced with a stop-event-only no-op so this test stays scoped to heartbeat wiring
-    # and never opens a real bus connection.
+    # Bus disabled so lifespan's own `dispatch_bus.connect()` (shared across both
+    # lanes) no-ops instead of opening a real connection -- run_bus_worker/
+    # run_cancel_worker are ALSO replaced below, so this test stays scoped to
+    # heartbeat wiring and never touches a real bus at all.
+    monkeypatch.setattr(governor_main.settings, "orion_bus_enabled", False)
     monkeypatch.setattr(governor_main, "run_bus_worker", _wait_for_stop)
     monkeypatch.setattr(governor_main, "run_cancel_worker", _wait_for_stop)
 
@@ -66,6 +94,7 @@ async def test_lifespan_survives_heartbeat_start_failure(monkeypatch) -> None:
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     fake_chassis.start_background.side_effect = RuntimeError("bus unreachable")
     monkeypatch.setattr(governor_main, "build_heartbeat_chassis", lambda: fake_chassis)
+    monkeypatch.setattr(governor_main.settings, "orion_bus_enabled", False)
     monkeypatch.setattr(governor_main, "run_bus_worker", _wait_for_stop)
     monkeypatch.setattr(governor_main, "run_cancel_worker", _wait_for_stop)
 

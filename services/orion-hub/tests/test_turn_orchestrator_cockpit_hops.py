@@ -52,6 +52,24 @@ def test_orchestrator_emits_thick_pre_motor_hops():
     assert hops[3]["seq"] == 3
 
 
+def test_emit_progress_hop_failed_status():
+    from orion.hub.cockpit_emit import begin_cockpit_timeline, emit_progress_hop
+
+    begin_cockpit_timeline("corr-prog")
+    frame = emit_progress_hop(
+        "corr-prog",
+        stage="pre_turn_appraisal",
+        status="failed",
+        visor_line="appraisal · FAILED TimeoutError",
+        summary={"error": "TimeoutError"},
+        raw={"error": "TimeoutError"},
+    )
+    assert frame["hop"]["stage"] == "pre_turn_appraisal"
+    assert frame["hop"]["status"] == "failed"
+    assert frame["hop"]["seq"] == 1
+    assert "FAILED" in frame["hop"]["visor_line"]
+
+
 def test_motor_hop_from_drained_claude_step_increments_seq():
     from orion.hub.cockpit_emit import (
         emit_motor_hop_from_claude_step,
@@ -574,3 +592,194 @@ async def test_motor_boot_claude_step_not_relayed_to_live_ws():
     ]
     assert boot_claude == []
     assert sent[-1] == {"state": "idle"}
+
+
+def _ensure_hub_paths() -> None:
+    import os
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    hub = Path(__file__).resolve().parents[1]
+    for key in list(sys.modules):
+        if key == "scripts" or key.startswith("scripts."):
+            del sys.modules[key]
+    for candidate in (repo, hub):
+        try:
+            sys.path.remove(str(candidate))
+        except ValueError:
+            pass
+    sys.path.insert(0, str(repo))
+    sys.path.insert(0, str(hub))
+    os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
+    os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
+    os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
+    os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
+    os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
+
+
+def _live_thought():
+    from datetime import datetime, timezone
+
+    from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
+
+    return ThoughtEventV1(
+        event_id="t-cockpit-1",
+        correlation_id="00000000-0000-4000-8000-000000000301",
+        session_id="sess-1",
+        created_at=datetime.now(timezone.utc),
+        imperative="Answer.",
+        tone="calm",
+        strain_refs=["n-1"],
+        evidence_refs=["n-1"],
+        disposition="proceed",
+        disposition_reasons=[],
+        stance_harness_slice=StanceHarnessSliceV1(
+            task_mode="direct_response",
+            conversation_frame="mixed",
+            answer_strategy="direct",
+        ),
+    )
+
+
+def _live_association():
+    from orion.schemas.thought import HubAssociationBundleV1
+
+    return HubAssociationBundleV1(
+        correlation_id="00000000-0000-4000-8000-000000000301",
+        broadcast=None,
+        broadcast_stale=True,
+        read_source="felt_state_reader",
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_unified_turn_streams_progress_before_thought_returns():
+    """Association + thought_rpc started land before ThoughtClient.react returns."""
+    _ensure_hub_paths()
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from orion.hub.turn_orchestrator import execute_unified_turn
+    from orion.schemas.harness_finalize import HarnessRunV1
+    import scripts.harness_governor_client as harness_governor_client
+    import scripts.thought_client as thought_client
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    corr = "00000000-0000-4000-8000-000000000301"
+    collected: list[dict] = []
+
+    async def sink(frames: list[dict]) -> None:
+        collected.extend(frames)
+
+    async def slow_react(*_a, **_k):
+        stages_so_far = [
+            f["hop"]["stage"]
+            for f in collected
+            if f.get("kind") == "cockpit_hop" and isinstance(f.get("hop"), dict)
+        ]
+        assert "association" in stages_so_far
+        assert "thought_rpc" in stages_so_far
+        thought_hops = [
+            f["hop"]
+            for f in collected
+            if f.get("kind") == "cockpit_hop" and f["hop"].get("stage") == "thought_rpc"
+        ]
+        assert thought_hops[-1]["status"] == "started"
+        return thought_client.ThoughtReactResult(thought=_live_thought())
+
+    harness_entered = asyncio.Event()
+    stages_before_harness: list[str] = []
+
+    async def harness_run(*_a, **_k):
+        stages_before_harness.extend(
+            f["hop"]["stage"]
+            for f in collected
+            if f.get("kind") == "cockpit_hop" and isinstance(f.get("hop"), dict)
+        )
+        harness_entered.set()
+        return HarnessRunV1(
+            correlation_id=corr,
+            final_text="hi",
+            finalize_ran=True,
+            step_count=1,
+            compliance_verdict="completed",
+            grounding_status="grounded",
+        )
+
+    settings = SimpleNamespace(
+        ENABLE_PRE_TURN_APPRAISAL=True,
+        PRE_TURN_APPRAISAL_PARADIGMS="repair_pressure",
+        PRE_TURN_APPRAISAL_TIMEOUT_MS=800,
+        ENABLE_UNIFIED_TURN_CHAT_GRAMMAR=False,
+    )
+
+    with (
+        patch(
+            "orion.hub.turn_orchestrator.build_hub_association_bundle",
+            return_value=_live_association(),
+        ),
+        patch.object(
+            pta_client_mod.PreTurnAppraisalClient,
+            "appraise",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "scripts.pre_turn_appraisal_wiring._publish_repair_pressure_appraisal",
+            AsyncMock(),
+        ),
+        patch.object(thought_client.ThoughtClient, "react", slow_react),
+        patch.object(harness_governor_client.HarnessGovernorClient, "run", harness_run),
+        patch(
+            "orion.hub.turn_orchestrator._publish_unified_turn_chat_grammar",
+            AsyncMock(),
+        ),
+        patch(
+            "orion.hub.turn_orchestrator._build_situation_prompt_fragment",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=corr,
+            session_id="sess-1",
+            user_message="hello",
+            settings=settings,
+            cockpit_sink=sink,
+        )
+
+    assert harness_entered.is_set()
+    assert "harness_dispatch" in stages_before_harness
+    assert stages_before_harness[-1] == "harness_dispatch"
+    harness_hops = [
+        f["hop"]
+        for f in collected
+        if f.get("kind") == "cockpit_hop" and f["hop"].get("stage") == "harness_dispatch"
+    ]
+    assert harness_hops
+    assert harness_hops[0]["status"] == "ok"
+    assert "contacting governor" in harness_hops[0]["visor_line"]
+    stages = [
+        f["hop"]["stage"]
+        for f in collected
+        if f.get("kind") == "cockpit_hop" and isinstance(f.get("hop"), dict)
+    ]
+    assert stages[0] == "ingress"
+    assert "pre_turn_appraisal" in stages
+    assert "association" in stages
+    assert "thought_rpc" in stages
+    assert "mind_enrichment" in stages
+    assert "stance_inputs" in stages
+    assert "stance_decision" in stages
+    assert "harness_dispatch" in stages
+    assert stages.index("association") < stages.index("thought_rpc")
+    failed_appraisal = [
+        f["hop"]
+        for f in collected
+        if f.get("kind") == "cockpit_hop"
+        and f["hop"].get("stage") == "pre_turn_appraisal"
+        and f["hop"].get("status") == "failed"
+    ]
+    assert failed_appraisal
+    assert "FAILED" in failed_appraisal[0]["visor_line"]
+    assert "appraisal_unavailable" in failed_appraisal[0]["visor_line"]

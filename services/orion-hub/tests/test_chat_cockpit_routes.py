@@ -29,6 +29,9 @@ async def test_empty_timeline_reports_all_canonical_gaps(monkeypatch):
     assert body["complete"] is False
     assert "stance_decision" in body["gaps"]
     assert "motor_hop" in body["gaps"]
+    assert "pre_turn_appraisal" in body["gaps"]
+    assert "thought_rpc" in body["gaps"]
+    assert "harness_dispatch" in body["gaps"]
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,27 @@ def test_render_orders_hops_and_marks_gap():
     assert "cockpit-hop-gap" in html or 'status="gap"' in html or 'data-status="gap"' in html
 
 
+def test_render_marks_failed_progress_hop():
+    html = _node_call(
+        "renderFixture",
+        {
+            "hops": [
+                {
+                    "seq": 1,
+                    "stage": "pre_turn_appraisal",
+                    "status": "failed",
+                    "visor_line": "appraisal · FAILED TimeoutError",
+                    "raw": {"error": "TimeoutError"},
+                },
+            ],
+            "selectedSeq": 1,
+        },
+    )
+    assert "pre_turn_appraisal" in html
+    assert "FAILED" in html
+    assert "cockpit-hop-failed" in html or 'data-status="failed"' in html
+
+
 def test_inspector_shows_prompt_section_for_motor_boot():
     html = _node_call(
         "renderFixture",

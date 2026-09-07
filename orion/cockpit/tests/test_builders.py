@@ -1,8 +1,10 @@
 from orion.cockpit.builders import (
+    extract_mind_quality_fields,
     gap_hop,
     hop_from_association,
     hop_from_motor_boot,
     hop_from_motor_step,
+    hop_from_progress,
     hop_from_run_artifact,
     hop_from_stance_inputs,
     hop_from_thought,
@@ -25,6 +27,36 @@ def test_hop_from_thought_proceed():
     assert "proceed" in hop.visor_line
     assert hop.raw["disposition"] == "proceed"
     assert hop.producer == "orion-hub"
+
+
+def test_hop_from_progress_failed_appraisal():
+    hop = hop_from_progress(
+        correlation_id="c1",
+        seq=1,
+        stage="pre_turn_appraisal",
+        status="failed",
+        visor_line="appraisal · FAILED TimeoutError",
+        summary={"error": "TimeoutError", "failed_paradigms": ["repair_pressure"]},
+        raw={"error": "TimeoutError", "failed_paradigms": ["repair_pressure"]},
+    )
+    assert hop.stage == "pre_turn_appraisal"
+    assert hop.status == "failed"
+    assert "FAILED" in hop.visor_line
+    assert hop.raw["error"] == "TimeoutError"
+
+
+def test_hop_from_progress_harness_dispatch_started():
+    hop = hop_from_progress(
+        correlation_id="c1",
+        seq=7,
+        stage="harness_dispatch",
+        status="started",
+        visor_line="harness_dispatch · contacting governor",
+        summary={"phase": "started"},
+        raw={"phase": "started"},
+    )
+    assert hop.stage == "harness_dispatch"
+    assert hop.status == "started"
 
 
 def test_hop_from_motor_step():
@@ -87,6 +119,27 @@ def test_hop_from_association_ok():
     assert hop.producer == "orion-hub"
 
 
+def test_hop_from_association_fresh_hollow():
+    association = {
+        "broadcast_stale": False,
+        "read_source": "felt_state_reader",
+        "broadcast": {
+            "frame": {
+                "open_loops": [],
+                "debug": {"signal_count": 0},
+            }
+        },
+    }
+    hop = hop_from_association(
+        correlation_id="c1",
+        seq=2,
+        association=association,
+    )
+    assert hop.summary["hollow"] is True
+    assert hop.summary["signal_count"] == 0
+    assert "empty" in hop.visor_line
+
+
 def test_hop_from_stance_inputs_ok():
     payload = {
         "user_message": "hello there",
@@ -133,3 +186,20 @@ def test_gap_hop_ingress_deferred_to_slice_c():
     assert hop.status == "gap"
     assert hop.summary["deferred_to"] == "slice_c"
     assert "slice_c" in hop.visor_line
+
+
+def test_extract_mind_quality_fields_nested():
+    assert extract_mind_quality_fields({"disposition": "proceed"}) is None
+    found = extract_mind_quality_fields(
+        {
+            "mind": {
+                "mind_quality": "fallback_contract_only",
+                "authorized_for_stance_use": False,
+                "coloring_skipped": True,
+            }
+        }
+    )
+    assert found is not None
+    assert found["mind_quality"] == "fallback_contract_only"
+    assert found["authorized_for_stance_use"] is False
+    assert found["coloring_skipped"] is True

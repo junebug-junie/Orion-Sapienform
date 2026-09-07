@@ -1,16 +1,18 @@
-"""Build and publish Slice-A cockpit hop WS frames for a unified turn."""
+"""Build and publish cockpit hop WS frames for a unified turn."""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
 from orion.cockpit.builders import (
+    extract_mind_quality_fields,
     gap_hop,
     hop_from_association,
     hop_from_closure,
     hop_from_motor_boot,
     hop_from_motor_step,
     hop_from_outcome,
+    hop_from_progress,
     hop_from_run_artifact,
     hop_from_stance_inputs,
     hop_from_thought,
@@ -18,7 +20,7 @@ from orion.cockpit.builders import (
 from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
 from orion.cockpit.publish import publish_cockpit_hop
 from orion.cockpit.sequencer import advance_seq, next_seq, reset_seq
-from orion.schemas.cockpit_sighting import CockpitHopV1
+from orion.schemas.cockpit_sighting import CockpitHopStatusV1, CockpitHopV1, CockpitStageV1
 
 logger = logging.getLogger("orion.hub.cockpit_emit")
 
@@ -35,16 +37,10 @@ def timeline_complete_frame(correlation_id: str) -> dict[str, Any]:
     return {"kind": "cockpit_timeline_complete", "correlation_id": correlation_id}
 
 
-def emit_pre_motor_hops(
-    correlation_id: str,
-    thought: dict[str, Any],
-    *,
-    association: dict[str, Any],
-    stance_inputs: dict[str, Any],
-) -> list[dict[str, Any]]:
+def begin_cockpit_timeline(correlation_id: str) -> list[dict[str, Any]]:
+    """Reset Hub seq ownership and emit the Slice-C ingress gap once."""
     reset_seq(correlation_id)
-    frames: list[dict[str, Any]] = []
-    frames.append(
+    return [
         _hop_frame(
             correlation_id,
             gap_hop(
@@ -54,17 +50,52 @@ def emit_pre_motor_hops(
                 deferred_to="slice_c",
             ),
         )
+    ]
+
+
+def emit_progress_hop(
+    correlation_id: str,
+    *,
+    stage: CockpitStageV1,
+    status: CockpitHopStatusV1,
+    visor_line: str,
+    summary: dict[str, Any] | None = None,
+    raw: dict[str, Any] | None = None,
+    producer: str = "orion-hub",
+) -> dict[str, Any]:
+    hop = hop_from_progress(
+        correlation_id=correlation_id,
+        seq=next_seq(correlation_id),
+        stage=stage,
+        status=status,
+        visor_line=visor_line,
+        summary=summary,
+        raw=raw,
+        producer=producer,
     )
-    frames.append(
-        _hop_frame(
-            correlation_id,
-            hop_from_association(
-                correlation_id=correlation_id,
-                seq=next_seq(correlation_id),
-                association=association if isinstance(association, dict) else {},
-            ),
-        )
+    return _hop_frame(correlation_id, hop)
+
+
+def emit_association_hop(
+    correlation_id: str,
+    association: dict[str, Any],
+) -> dict[str, Any]:
+    hop = hop_from_association(
+        correlation_id=correlation_id,
+        seq=next_seq(correlation_id),
+        association=association if isinstance(association, dict) else {},
     )
+    return _hop_frame(correlation_id, hop)
+
+
+def emit_stance_hops(
+    correlation_id: str,
+    thought: dict[str, Any],
+    *,
+    stance_inputs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Stance input + decision hops. Does not reset seq (progress hops already ran)."""
+    frames: list[dict[str, Any]] = []
     frames.append(
         _hop_frame(
             correlation_id,
@@ -83,6 +114,67 @@ def emit_pre_motor_hops(
                 seq=next_seq(correlation_id),
                 thought=thought,
             ),
+        )
+    )
+    return frames
+
+
+def emit_mind_enrichment_hop(
+    correlation_id: str,
+    thought_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Emit Mind quality when present on the Thought reply; else honest unavailable."""
+    mind = extract_mind_quality_fields(thought_payload)
+    if mind is None:
+        return emit_progress_hop(
+            correlation_id,
+            stage="mind_enrichment",
+            status="skipped",
+            visor_line="mind · details_unavailable",
+            summary={"mind_details_unavailable": True},
+            raw={"mind_details_unavailable": True},
+        )
+    bits: list[str] = []
+    quality = mind.get("mind_quality")
+    if quality:
+        bits.append(str(quality))
+    if mind.get("fallback_contract_only"):
+        bits.append("fallback_contract_only")
+    if mind.get("coloring_skipped"):
+        bits.append("coloring skipped")
+    if mind.get("authorized_for_stance_use") is False:
+        bits.append("not authorized for stance")
+    label = " · ".join(bits) if bits else "present"
+    status: CockpitHopStatusV1 = "ok"
+    return emit_progress_hop(
+        correlation_id,
+        stage="mind_enrichment",
+        status=status,
+        visor_line=f"mind · {label}",
+        summary={k: mind[k] for k in mind},
+        raw=dict(mind),
+    )
+
+
+def emit_pre_motor_hops(
+    correlation_id: str,
+    thought: dict[str, Any],
+    *,
+    association: dict[str, Any],
+    stance_inputs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Batch helper for tests / late paths that did not stream progress hops.
+
+    Resets seq and emits ingress gap + association + stance_inputs + stance_decision.
+    Live unified-turn path prefers begin_cockpit_timeline + incremental emits.
+    """
+    frames = begin_cockpit_timeline(correlation_id)
+    frames.append(emit_association_hop(correlation_id, association))
+    frames.extend(
+        emit_stance_hops(
+            correlation_id,
+            thought,
+            stance_inputs=stance_inputs,
         )
     )
     return frames

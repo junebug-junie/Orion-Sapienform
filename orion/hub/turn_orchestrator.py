@@ -8,11 +8,16 @@ from typing import Any, Awaitable, Callable, Protocol
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
+from orion.cockpit.builders import extract_mind_quality_fields
 from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
 from orion.hub.cockpit_emit import (
+    begin_cockpit_timeline,
+    emit_association_hop,
+    emit_mind_enrichment_hop,
     emit_motor_hop_from_claude_step,
-    emit_pre_motor_hops,
+    emit_progress_hop,
     emit_slice_a_finalize_hops,
+    emit_stance_hops,
     publish_cockpit_frames,
     timeline_complete_frame,
 )
@@ -361,9 +366,26 @@ async def _run_pre_turn_appraisal(
     user_message: str,
     continuity_messages: list[dict[str, Any]] | None,
     settings: Any,
-) -> TurnAppraisalBundleV1 | None:
-    if bus is None or not getattr(settings, "ENABLE_PRE_TURN_APPRAISAL", False):
-        return None
+) -> tuple[TurnAppraisalBundleV1 | None, dict[str, Any]]:
+    """Run pre-turn appraisal and return (bundle, cockpit_texture).
+
+    Texture is honest Hub-boundary detail for Soft HUD progress hops — never
+    fabricated cognition. Keys: status, error, failed_paradigms, elapsed_ms,
+    skipped_reason.
+    """
+    texture: dict[str, Any] = {
+        "status": "skipped",
+        "error": None,
+        "failed_paradigms": [],
+        "elapsed_ms": None,
+        "skipped_reason": None,
+    }
+    if bus is None:
+        texture["skipped_reason"] = "bus_unavailable"
+        return None, texture
+    if not getattr(settings, "ENABLE_PRE_TURN_APPRAISAL", False):
+        texture["skipped_reason"] = "disabled"
+        return None, texture
     from scripts.pre_turn_appraisal_client import PreTurnAppraisalClient
     from scripts.pre_turn_appraisal_wiring import (
         _publish_repair_pressure_appraisal,
@@ -375,17 +397,47 @@ async def _run_pre_turn_appraisal(
     )
     paradigms = str(getattr(settings, "PRE_TURN_APPRAISAL_PARADIGMS", "repair_pressure"))
     timeout_ms = int(getattr(settings, "PRE_TURN_APPRAISAL_TIMEOUT_MS", 60000))
-    bundle = await PreTurnAppraisalClient(bus).appraise(
-        PreTurnAppraisalRequestV1(
+    started = asyncio.get_running_loop().time()
+    try:
+        bundle = await PreTurnAppraisalClient(bus).appraise(
+            PreTurnAppraisalRequestV1(
+                correlation_id=correlation_id,
+                session_id=str(session_id or "anonymous"),
+                turn_window=turn_window,
+                paradigms_requested=[p.strip() for p in paradigms.split(",") if p.strip()],
+                contract_before={"mode": "default"},
+                options=PreTurnAppraisalOptionsV1(timeout_ms=timeout_ms),
+            ),
             correlation_id=correlation_id,
-            session_id=str(session_id or "anonymous"),
-            turn_window=turn_window,
-            paradigms_requested=[p.strip() for p in paradigms.split(",") if p.strip()],
-            contract_before={"mode": "default"},
-            options=PreTurnAppraisalOptionsV1(timeout_ms=timeout_ms),
-        ),
-        correlation_id=correlation_id,
-    )
+        )
+    except Exception as exc:  # noqa: BLE001 — appraisal must not abort the turn
+        texture["status"] = "failed"
+        texture["error"] = f"{type(exc).__name__}: {exc}"
+        texture["elapsed_ms"] = int((asyncio.get_running_loop().time() - started) * 1000)
+        logger.warning(
+            "pre_turn_appraisal raised corr=%s err=%s",
+            correlation_id,
+            texture["error"],
+            exc_info=True,
+        )
+        return None, texture
+
+    texture["elapsed_ms"] = int((asyncio.get_running_loop().time() - started) * 1000)
+    if bundle is None:
+        # Client returns None on RPC timeout OR decode / empty payload — Hub
+        # cannot honestly claim TimeoutError without a typed client reason.
+        texture["status"] = "failed"
+        texture["error"] = "appraisal_unavailable"
+        return None, texture
+
+    failed = list(bundle.failed_paradigms or [])
+    texture["failed_paradigms"] = failed
+    if failed:
+        texture["status"] = "failed"
+        texture["error"] = f"failed_paradigms={','.join(failed)}"
+    else:
+        texture["status"] = "ok"
+
     # Unified-turn (mode="orion"/harness-governor) is a second, independent
     # caller of PreTurnAppraisalClient alongside pre_turn_appraisal_wiring's
     # websocket/HTTP "brain" path. Both must publish, or
@@ -401,7 +453,7 @@ async def _run_pre_turn_appraisal(
             correlation_id=correlation_id,
             summary=summary,
         )
-    return bundle
+    return bundle, texture
 
 
 async def _build_situation_prompt_fragment(
@@ -560,13 +612,72 @@ async def execute_unified_turn(
         except Exception:
             logger.debug("emit_observation failed corr=%s", correlation_id, exc_info=True)
 
-    repair_bundle = await _run_pre_turn_appraisal(
+    await _deliver_cockpit_frames(
+        begin_cockpit_timeline(correlation_id),
+        bus=bus,
+        cockpit_sink=cockpit_sink,
+    )
+
+    await _deliver_cockpit_frames(
+        [
+            emit_progress_hop(
+                correlation_id,
+                stage="pre_turn_appraisal",
+                status="started",
+                visor_line="appraisal · started",
+                summary={"phase": "started"},
+                raw={"phase": "started"},
+            )
+        ],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
+    )
+    repair_bundle, appraisal_texture = await _run_pre_turn_appraisal(
         bus=bus,
         correlation_id=correlation_id,
         session_id=session_id,
         user_message=user_message,
         continuity_messages=continuity_messages,
         settings=cfg,
+    )
+    appraisal_status = str(appraisal_texture.get("status") or "skipped")
+    appraisal_error = appraisal_texture.get("error")
+    if appraisal_status == "failed":
+        err_label = str(appraisal_error or "failed")
+        appraisal_visor = f"appraisal · FAILED {err_label}"
+    elif appraisal_status == "skipped":
+        reason = appraisal_texture.get("skipped_reason") or "skipped"
+        appraisal_visor = f"appraisal · skipped ({reason})"
+    else:
+        appraisal_visor = "appraisal · ok"
+    await _deliver_cockpit_frames(
+        [
+            emit_progress_hop(
+                correlation_id,
+                stage="pre_turn_appraisal",
+                status=appraisal_status,  # type: ignore[arg-type]
+                visor_line=appraisal_visor[:512],
+                summary={
+                    "phase": "done",
+                    "status": appraisal_status,
+                    "failed_paradigms": list(appraisal_texture.get("failed_paradigms") or []),
+                    "elapsed_ms": appraisal_texture.get("elapsed_ms"),
+                    "error": appraisal_error,
+                    "skipped_reason": appraisal_texture.get("skipped_reason"),
+                },
+                raw={
+                    "phase": "done",
+                    **dict(appraisal_texture),
+                    "bundle": (
+                        repair_bundle.model_dump(mode="json")
+                        if repair_bundle is not None and hasattr(repair_bundle, "model_dump")
+                        else None
+                    ),
+                },
+            )
+        ],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
     )
     build_orion_turn_request(
         correlation_id=correlation_id,
@@ -577,6 +688,16 @@ async def execute_unified_turn(
     association = build_hub_association_bundle(
         correlation_id=correlation_id,
         repair_bundle=repair_bundle,
+    )
+    association_dump = (
+        association.model_dump(mode="json")
+        if hasattr(association, "model_dump")
+        else dict(association or {})
+    )
+    await _deliver_cockpit_frames(
+        [emit_association_hop(correlation_id, association_dump)],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
     )
 
     if bus is None:
@@ -600,29 +721,88 @@ async def execute_unified_turn(
         repair_bundle=repair_bundle,
         stance_inputs={"user_message": user_message},
     )
+    await _deliver_cockpit_frames(
+        [
+            emit_progress_hop(
+                correlation_id,
+                stage="thought_rpc",
+                status="started",
+                visor_line="thought_rpc · started",
+                summary={"phase": "started"},
+                raw={"phase": "started"},
+            )
+        ],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
+    )
+    thought_started = asyncio.get_running_loop().time()
     react_result = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
+    thought_elapsed_ms = int((asyncio.get_running_loop().time() - thought_started) * 1000)
     thought = react_result.thought
+    thought_dump = _thought_as_cockpit_dict(
+        thought,
+        fallback_disposition=react_result.failure_reason or "stance_timeout",
+        fallback_reasons=[react_result.failure_reason] if react_result.failure_reason else [],
+    )
+    if thought is None:
+        thought_visor = f"thought_rpc · FAILED {react_result.failure_reason or 'failed'}"
+        thought_status = "failed"
+    else:
+        thought_visor = f"thought_rpc · ok · {thought_elapsed_ms}ms"
+        thought_status = "ok"
+    thought_raw: dict[str, Any] = {
+        "phase": "done",
+        "elapsed_ms": thought_elapsed_ms,
+        "failure_reason": react_result.failure_reason,
+        "mind_details_unavailable": True,
+    }
+    # ThoughtEventV1 currently carries no Mind quality fields; scan anyway so
+    # a future mirror lands here without inventing details Hub never saw.
+    mind_fields = extract_mind_quality_fields(thought_dump if thought is not None else None)
+    if mind_fields is not None:
+        thought_raw["mind_details_unavailable"] = False
+        thought_raw["mind"] = mind_fields
+    await _deliver_cockpit_frames(
+        [
+            emit_progress_hop(
+                correlation_id,
+                stage="thought_rpc",
+                status=thought_status,  # type: ignore[arg-type]
+                visor_line=thought_visor[:512],
+                summary={
+                    "phase": "done",
+                    "elapsed_ms": thought_elapsed_ms,
+                    "failure_reason": react_result.failure_reason,
+                    "mind_details_unavailable": thought_raw["mind_details_unavailable"],
+                },
+                raw=thought_raw,
+            )
+        ],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
+    )
 
-    async def _emit_pre_motor(
+    async def _emit_stance_cockpit(
         thought_obj: ThoughtEventV1 | None,
         *,
         disposition: str,
         reasons: list[str],
         close: bool = False,
     ) -> None:
+        payload_thought = _thought_as_cockpit_dict(
+            thought_obj,
+            fallback_disposition=disposition,
+            fallback_reasons=reasons,
+        )
         await _deliver_cockpit_frames(
-            emit_pre_motor_hops(
+            [emit_mind_enrichment_hop(correlation_id, payload_thought if thought_obj is not None else None)],
+            bus=bus,
+            cockpit_sink=cockpit_sink,
+        )
+        await _deliver_cockpit_frames(
+            emit_stance_hops(
                 correlation_id,
-                _thought_as_cockpit_dict(
-                    thought_obj,
-                    fallback_disposition=disposition,
-                    fallback_reasons=reasons,
-                ),
-                association=(
-                    association.model_dump(mode="json")
-                    if hasattr(association, "model_dump")
-                    else dict(association or {})
-                ),
+                payload_thought,
                 stance_inputs={
                     "user_message": user_message,
                     "session_id": session_id,
@@ -649,7 +829,7 @@ async def execute_unified_turn(
             stance_boundary_register=False,
             settings=cfg,
         )
-        await _emit_pre_motor(
+        await _emit_stance_cockpit(
             None,
             disposition="stance_timeout",
             reasons=[timeout_reason],
@@ -674,7 +854,7 @@ async def execute_unified_turn(
             stance_boundary_register=bool(thought.boundary_register),
             settings=cfg,
         )
-        await _emit_pre_motor(
+        await _emit_stance_cockpit(
             thought,
             disposition=thought.disposition,
             reasons=list(thought.disposition_reasons),
@@ -693,7 +873,7 @@ async def execute_unified_turn(
         stance_boundary_register=bool(thought.boundary_register),
         settings=cfg,
     )
-    await _emit_pre_motor(
+    await _emit_stance_cockpit(
         thought,
         disposition=thought.disposition,
         reasons=list(thought.disposition_reasons),
@@ -813,6 +993,20 @@ async def execute_unified_turn(
         else None
     )
     _harness_run_completed = False
+    await _deliver_cockpit_frames(
+        [
+            emit_progress_hop(
+                correlation_id,
+                stage="harness_dispatch",
+                status="ok",
+                visor_line="harness_dispatch · contacting governor",
+                summary={"phase": "contacted", "mode": mode_tag},
+                raw={"phase": "contacted", "mode": mode_tag},
+            )
+        ],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
+    )
     try:
         run = await HarnessGovernorClient(harness_bus).run(
             harness_req,

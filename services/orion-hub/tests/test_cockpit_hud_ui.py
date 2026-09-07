@@ -108,6 +108,30 @@ def test_inspector_shows_prompt_section_for_motor_boot():
     assert "HELLO PREFIX" in html
 
 
+def test_inspector_shows_situation_section_for_situation_hop():
+    html = _node_call(
+        "renderFixture",
+        {
+            "hops": [
+                {
+                    "seq": 5,
+                    "stage": "situation",
+                    "status": "ok",
+                    "visor_line": "situation · cabinet+weather",
+                    "summary": {"has_fragment": True, "cabinet_mentioned": True},
+                    "raw": {
+                        "compact_text": "Situation:\n- Your cabinet sensors: temp=30C",
+                        "has_fragment": True,
+                    },
+                },
+            ],
+            "selectedSeq": 5,
+        },
+    )
+    assert 'data-cockpit-section="prompt"' in html or "Situation" in html
+    assert "cabinet sensors" in html
+
+
 def test_inspector_shows_user_message_section_for_ingress():
     html = _node_call(
         "renderFixture",

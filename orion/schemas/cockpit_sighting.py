@@ -15,6 +15,7 @@ CockpitStageV1 = Literal[
     "mind_enrichment",
     "stance_inputs",
     "stance_decision",
+    "situation",
     "harness_dispatch",
     "motor_boot",
     "motor_hop",

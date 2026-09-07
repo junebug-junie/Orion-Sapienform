@@ -16,6 +16,7 @@ from orion.hub.cockpit_emit import (
     emit_mind_enrichment_hop,
     emit_motor_hop_from_claude_step,
     emit_progress_hop,
+    emit_situation_hop,
     emit_slice_a_finalize_hops,
     emit_stance_hops,
     publish_cockpit_frames,
@@ -529,7 +530,7 @@ async def _build_situation_prompt_fragment(
     payload: dict[str, Any],
     settings: Any,
     correlation_id: str,
-) -> str | None:
+) -> dict[str, Any]:
     """Orion capability: local time-of-day/day-phase/conversation-phase/presence
     context for the unified-turn prompt.
 
@@ -546,9 +547,25 @@ async def _build_situation_prompt_fragment(
     Runtime evidence: `HarnessRunRequestV1.situation_prompt_fragment` on the
     request this builds, and the "Situation:" block it produces in the
     compiled harness prefix (orion/harness/prefix.py::compile_harness_prefix).
+
+    Returns a dict for both the harness fragment and the Cockpit situation hop:
+    compact_text, status (ok|empty|failed|skipped), provider_status,
+    source_summary, perception_enabled, diagnostics.
     """
+    empty: dict[str, Any] = {
+        "compact_text": None,
+        "status": "empty",
+        "provider_status": {},
+        "source_summary": {},
+        "perception_enabled": None,
+        "diagnostics": {},
+    }
     try:
         situation_runtime_ns = hub_settings_to_runtime_namespace(settings)
+        perception_enabled = bool(
+            getattr(situation_runtime_ns, "orion_situation_perception_enabled", False)
+        )
+        empty["perception_enabled"] = perception_enabled
         situation_ctx: dict[str, Any] = {
             "session_id": session_id or "anonymous",
             "raw_user_text": user_message,
@@ -591,12 +608,49 @@ async def _build_situation_prompt_fragment(
                 presence_context = None
         if isinstance(presence_context, dict):
             situation_ctx["presence_context"] = presence_context
-        _, situation_fragment = await build_situation_for_ctx(situation_ctx, situation_runtime_ns)
-        compact_text = situation_fragment.get("compact_text") if situation_fragment else None
-        return str(compact_text) if compact_text else None
+        situation_brief, situation_fragment = await build_situation_for_ctx(
+            situation_ctx, situation_runtime_ns
+        )
+        if not situation_brief and not situation_fragment:
+            return {
+                **empty,
+                "status": "skipped",
+                "diagnostics": {"reason": "situation_disabled_or_empty"},
+            }
+        compact_text = (
+            situation_fragment.get("compact_text") if isinstance(situation_fragment, dict) else None
+        )
+        text = str(compact_text) if compact_text else None
+        diagnostics = {}
+        provider_status: dict[str, Any] = {}
+        source_summary: dict[str, Any] = {}
+        if isinstance(situation_brief, dict):
+            source_summary = (
+                dict(situation_brief.get("source_summary") or {})
+                if isinstance(situation_brief.get("source_summary"), dict)
+                else {}
+            )
+            brief_diag = situation_brief.get("diagnostics")
+            if isinstance(brief_diag, dict):
+                diagnostics = dict(brief_diag)
+                ps = brief_diag.get("provider_status")
+                if isinstance(ps, dict):
+                    provider_status = dict(ps)
+        return {
+            "compact_text": text,
+            "status": "ok" if (text and text.strip()) else "empty",
+            "provider_status": provider_status,
+            "source_summary": source_summary,
+            "perception_enabled": perception_enabled,
+            "diagnostics": diagnostics,
+        }
     except Exception:
         logger.warning("unified_turn_situation_context_failed corr=%s", correlation_id, exc_info=True)
-        return None
+        return {
+            **empty,
+            "status": "failed",
+            "diagnostics": {"reason": "situation_build_exception"},
+        }
 
 
 def _thought_as_cockpit_dict(
@@ -952,12 +1006,42 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
-    situation_prompt_fragment = await _build_situation_prompt_fragment(
+    situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,
         user_message=user_message,
         payload=payload,
         settings=cfg,
         correlation_id=correlation_id,
+    )
+    situation_prompt_fragment = situation_bundle.get("compact_text")
+    if isinstance(situation_prompt_fragment, str) and not situation_prompt_fragment.strip():
+        situation_prompt_fragment = None
+    # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
+    situation_hop_status = str(situation_bundle.get("status") or "ok")
+    if situation_hop_status == "empty":
+        situation_hop_status = "ok"
+    elif situation_hop_status not in {"ok", "failed", "skipped", "started", "gap"}:
+        situation_hop_status = "ok"
+    await _deliver_cockpit_frames(
+        [
+            emit_situation_hop(
+                correlation_id,
+                compact_text=situation_bundle.get("compact_text"),
+                status=situation_hop_status,  # type: ignore[arg-type]
+                provider_status=situation_bundle.get("provider_status")
+                if isinstance(situation_bundle.get("provider_status"), dict)
+                else None,
+                source_summary=situation_bundle.get("source_summary")
+                if isinstance(situation_bundle.get("source_summary"), dict)
+                else None,
+                perception_enabled=situation_bundle.get("perception_enabled"),
+                diagnostics=situation_bundle.get("diagnostics")
+                if isinstance(situation_bundle.get("diagnostics"), dict)
+                else None,
+            )
+        ],
+        bus=bus,
+        cockpit_sink=cockpit_sink,
     )
 
     # Stage any attached images into the FCC sandbox BEFORE dispatch. The Hub is

@@ -280,6 +280,74 @@ async def test_turn_orchestrator_threads_situation_prompt_fragment_into_harness_
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_emits_situation_cockpit_hop() -> None:
+    """Situation fragment that rides on the harness request must also land as a Soft HUD hop."""
+    _ensure_hub_import_paths()
+    import orion.hub.turn_orchestrator as turn_orchestrator_mod
+
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    collected: list[dict] = []
+
+    async def sink(frames):
+        collected.extend(frames)
+
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    fragment = "Situation:\n- Your cabinet sensors (read just now): temp=30.1C"
+    build_situation_mock = AsyncMock(
+        return_value=(
+            {
+                "source_summary": {"cabinet": "file", "weather": "openmeteo"},
+                "diagnostics": {"provider_status": {"cabinet": "ok", "weather": "ok"}},
+            },
+            {"compact_text": fragment},
+        )
+    )
+    settings = SimpleNamespace(
+        ORION_SITUATION_ENABLED=True,
+        ORION_SITUATION_TTL_SECONDS=300,
+        ORION_SITUATION_TIMEZONE="America/Denver",
+        ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
+        ORION_PRESENCE_PERSIST_ALLOWED=False,
+        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
+        orion_situation_perception_enabled=False,
+    )
+    with patches[0], patches[1], patches[2], patch.object(
+        turn_orchestrator_mod, "build_situation_for_ctx", build_situation_mock
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hi",
+            payload={},
+            settings=settings,
+            emit_observation_fn=lambda **_kwargs: None,
+            cockpit_sink=sink,
+        )
+
+    situation_hops = [
+        f["hop"]
+        for f in collected
+        if f.get("kind") == "cockpit_hop" and f.get("hop", {}).get("stage") == "situation"
+    ]
+    assert situation_hops, "expected a situation cockpit hop"
+    assert situation_hops[0]["raw"]["compact_text"] == fragment
+    assert situation_hops[0]["status"] == "ok"
+    assert "cabinet" in situation_hops[0]["visor_line"]
+    req = harness_client_run.await_args.args[0]
+    assert req.situation_prompt_fragment == fragment
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_situation_context_failure_degrades_to_none() -> None:
     """Fail-open: a broken situation builder must never break the turn --
     same contract as every other situation provider."""

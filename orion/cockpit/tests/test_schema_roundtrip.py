@@ -26,6 +26,7 @@ def test_progress_stages_roundtrip():
         "pre_turn_appraisal",
         "thought_rpc",
         "mind_enrichment",
+        "situation",
         "harness_dispatch",
     ):
         hop = CockpitHopV1(

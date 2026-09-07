@@ -1,7 +1,7 @@
 # Orion Cockpit POV — Soft HUD turn sighting
 
 **Date:** 2026-09-06
-**Status:** Slice A+B landed; Rank-1 pre-motor progress hops live; C stubbed
+**Status:** Slice A+B landed; Rank-1 pre-motor progress hops live; **situation hop + motor_boot exact prompt** (option 3) in flight — Soft HUD must show body-sense Situation fragment as its own bead and record real `motor_boot`. Slice C stubbed.
 **Branch intent:** `docs/cockpit-pov-design`
 **Related:** Unified Orion turn (`docs/superpowers/specs/2026-07-05-unified-orion-turn-design.md`), fused Turn Trace (`services/orion-hub/scripts/chat_turn_trace_routes.py`), harness step bus (`orion:harness:run:step`)
 
@@ -112,12 +112,13 @@ Each hop includes at least:
 5. **mind_enrichment** — Mind quality flags when Hub has them; otherwise honest `mind_details_unavailable`
 6. **stance_inputs** — full bundle fed into stance
 7. **stance_decision** — proceed / defer / refuse + reasons + felt slice
-8. **harness_dispatch** — governor contacted (pre-motor → motor handoff)
-9. **motor_boot** — full system/prefix context given to the FCC motor
-10. **motor_hop** — each tool/thought step (call + result); many rows per turn
-11. **draft_appraisal** — draft text + substrate appraisal
-12. **finalize** — reflection, Orion voice pass, compliance
-13. **closure** — outcome / post-turn closure / inspectable side-effects
+8. **situation** — exact Situation compact_text Hub puts on the harness request (cabinet / weather / time / presence / perception gate / affect / reverie / …), emitted right after stance and before harness_dispatch
+9. **harness_dispatch** — governor contacted (pre-motor → motor handoff)
+10. **motor_boot** — full system/prefix context given to the FCC motor
+11. **motor_hop** — each tool/thought step (call + result); many rows per turn
+12. **draft_appraisal** — draft text + substrate appraisal
+13. **finalize** — reflection, Orion voice pass, compliance
+14. **closure** — outcome / post-turn closure / inspectable side-effects
 
 Missing instrumentation shows as an explicit **gap** bead — never a fabricated hop.
 

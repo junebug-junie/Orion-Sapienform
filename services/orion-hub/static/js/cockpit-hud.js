@@ -152,11 +152,14 @@
       }).join('')
       : '<div class="cockpit-inspector-muted">No summary fields.</div>';
     const promptText = (raw && typeof raw.prompt === 'string') ? raw.prompt : '';
-    const promptSection = promptText
+    const situationText = (raw && typeof raw.compact_text === 'string') ? raw.compact_text : '';
+    const promptBody = promptText || situationText;
+    const promptTitle = promptText ? 'Prompt/Prefix' : (situationText ? 'Situation' : '');
+    const promptSection = promptBody
       ? (
           '<div class="cockpit-inspector-section" data-cockpit-section="prompt">' +
-            '<div class="cockpit-inspector-section-title">Prompt/Prefix</div>' +
-            '<pre class="cockpit-inspector-prompt">' + escapeText(promptText) + '</pre>' +
+            '<div class="cockpit-inspector-section-title">' + escapeText(promptTitle) + '</div>' +
+            '<pre class="cockpit-inspector-prompt">' + escapeText(promptBody) + '</pre>' +
           '</div>'
         )
       : '';

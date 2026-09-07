@@ -26,6 +26,7 @@ from orion.world_pulse_read.queue import (
     enqueue_from_recent_digests,
     mark_seed_done,
     mark_seed_failed,
+    reclaim_stale_claimed,
 )
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
@@ -105,6 +106,7 @@ class WorldPulseReadPipeline:
         self._source_ref = source_ref
         self._step_relay_provider = step_relay_provider
         self._store_provider = store_provider
+        self._startup_reclaim_done = False
         self._bus: Any = None
         self._harness_rpc_bus: Any = None
         self._task: Optional[asyncio.Task] = None
@@ -172,6 +174,7 @@ class WorldPulseReadPipeline:
 
     async def tick(self, *, force: bool = False) -> str | None:
         now = datetime.now(timezone.utc)
+        await self._reclaim_stale_claimed()
         await self._maybe_enqueue_recent()
 
         redis = self._redis()
@@ -230,8 +233,9 @@ class WorldPulseReadPipeline:
             record = map_world_pulse_read_handoff_to_substrate(handoff)
             if record.nodes:
                 store = self._store_provider() if self._store_provider else None
-                if store is not None:
-                    SubstrateGraphMaterializer(store=store).apply_record(record)
+                if store is None:
+                    raise RuntimeError("concept_atlas_store_unavailable")
+                SubstrateGraphMaterializer(store=store).apply_record(record)
 
             await self._journal(handoff)
             await self._with_conn(
@@ -244,6 +248,30 @@ class WorldPulseReadPipeline:
             await self._fail_seed(seed.seed_id, str(exc) or "post_read_failed")
             return "post_read_failed"
         return None
+
+    async def _reclaim_stale_claimed(self) -> None:
+        # First tick after start: free every leftover claimed row (Hub
+        # just came up; the previous process is gone). Later ticks only
+        # reclaim claims older than timeout_sec so a live FCC turn is
+        # not stolen. Pool is created after pipeline.start() in Hub
+        # startup, so start() itself cannot do this.
+        older = 0.0 if not self._startup_reclaim_done else float(self.timeout_sec)
+        try:
+            reclaimed = await self._with_conn(
+                lambda conn: reclaim_stale_claimed(conn, older_than_sec=older)
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_reclaim_failed", exc_info=True)
+            return
+        if reclaimed is None:
+            return
+        self._startup_reclaim_done = True
+        if reclaimed:
+            logger.info(
+                "world_pulse_read_reclaimed n=%s older_than_sec=%s",
+                reclaimed,
+                older,
+            )
 
     async def _maybe_enqueue_recent(self) -> None:
         try:

@@ -58,6 +58,14 @@ WHERE seed_id = (
 RETURNING seed_id, kind, run_id, url, title, section, item_id
 """
 
+RECLAIM_STALE_CLAIMED_SQL = """
+UPDATE world_pulse_read_seed
+SET status = 'pending', claimed_at = NULL
+WHERE status = 'claimed'
+  AND claimed_at IS NOT NULL
+  AND claimed_at < now() - ($1 * interval '1 second')
+"""
+
 
 async def ensure_seed_queue_schema(conn: Any) -> None:
     await conn.execute(ENSURE_TABLE_SQL)
@@ -99,6 +107,28 @@ async def claim_next_seed(conn: Any) -> WorldPulseReadSeedV1 | None:
         section=row["section"] or "",
         item_id=row["item_id"],
     )
+
+
+def _update_rowcount(status: Any) -> int:
+    if isinstance(status, int):
+        return status
+    if isinstance(status, str) and status.upper().startswith("UPDATE"):
+        tail = status.split()[-1]
+        if tail.isdigit():
+            return int(tail)
+    return 0
+
+
+async def reclaim_stale_claimed(conn: Any, *, older_than_sec: float) -> int:
+    """Return stuck ``claimed`` rows to ``pending`` after Hub/FCC death.
+
+    ``claimed_at`` older than ``older_than_sec`` is the live-tick guard:
+    a turn still running inside ``timeout_sec`` is left alone. Pass
+    ``older_than_sec=0`` on the first tick after Hub start so a restart
+    immediately frees leftovers from the previous process.
+    """
+    status = await conn.execute(RECLAIM_STALE_CLAIMED_SQL, float(older_than_sec))
+    return _update_rowcount(status)
 
 
 async def mark_seed_done(conn: Any, seed_id: str, *, trace_id: str) -> None:

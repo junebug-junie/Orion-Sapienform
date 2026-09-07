@@ -94,6 +94,11 @@ def test_main_wires_pipeline_from_settings_opt_in() -> None:
     assert "timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ" in src
     assert "pool_provider=lambda: getattr(app.state, \"memory_pg_pool\", None)" in src
     assert "step_relay_provider=lambda: harness_step_relay" in src
+    ctor = src.split("world_pulse_read_pipeline = WorldPulseReadPipeline(", 1)[1].split(
+        "await world_pulse_read_pipeline.start", 1
+    )[0]
+    assert "store_provider=" in ctor
+    assert "_get_substrate_store" in ctor
     assert "harness_rpc_bus=rpc_bus" in src
     assert "world_pulse_read_router" in src or "world_pulse_read_routes" in src
     # Module-global must be declared in startup/shutdown global lists (UnboundLocalError otherwise).

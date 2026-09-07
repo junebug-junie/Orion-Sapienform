@@ -597,6 +597,10 @@ async def startup_event():
                     node=settings.NODE_NAME,
                 ),
                 step_relay_provider=lambda: harness_step_relay,
+                # Same Orion Concept Atlas store curiosity / topic-foundry /
+                # atlas routes already use. Callable so we never build a
+                # second orphan store.
+                store_provider=concept_atlas_routes_runtime._get_substrate_store,
             )
             await world_pulse_read_pipeline.start(bus, harness_rpc_bus=rpc_bus)
 

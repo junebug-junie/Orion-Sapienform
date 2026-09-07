@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.world_pulse_read import (
@@ -81,6 +81,7 @@ class _FakeConn:
             return None
         row = pending[0]
         row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc)
         self.claimed_ids.append(row["seed_id"])
         return row
 
@@ -116,8 +117,28 @@ class _FakeConn:
                 "trace_id": None,
                 "last_error": None,
                 "created_at": self._created_seq,
+                "claimed_at": None,
             }
             return "INSERT 0 1"
+        if (
+            "UPDATE world_pulse_read_seed" in sql_n
+            and "SET status = 'pending'" in sql_n
+            and "status = 'claimed'" in sql_n
+        ):
+            older = float(args[0]) if args else 0.0
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=older)
+            n = 0
+            for row in self.rows.values():
+                claimed_at = row.get("claimed_at")
+                if (
+                    row["status"] == "claimed"
+                    and claimed_at is not None
+                    and claimed_at < cutoff
+                ):
+                    row["status"] = "pending"
+                    row["claimed_at"] = None
+                    n += 1
+            return f"UPDATE {n}"
         if "UPDATE world_pulse_read_seed" in sql_n and "status = 'done'" in sql_n:
             seed_id, trace_id = args[0], args[1]
             if seed_id in self.rows:
@@ -340,6 +361,57 @@ def test_stage1_parse_failure_marks_seed_failed_after_debit() -> None:
     assert bus.redis.store[_count_key()] == "1"
     assert store.snapshot().nodes == {}
     assert bus.journal == []
+
+
+def test_missing_store_fails_seed_when_nodes_exist() -> None:
+    """Enablement without Atlas must not mark the seed done."""
+    for over in ({"store_provider": None}, {"store_provider": lambda: None}):
+        bus = _FakeBus()
+        conn = _FakeConn()
+        store = InMemorySubstrateGraphStore()
+        pipe = _pipeline(bus, conn, store, **over)
+        handoff = _handoff()
+
+        async def _fake_read(seed):
+            return handoff
+
+        pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+        async def _run():
+            await _seed_queue(conn)
+            return await pipe.tick(force=True)
+
+        reason = asyncio.run(_run())
+        assert reason == "post_read_failed"
+        assert conn.rows["finding:r1:x"]["status"] == "failed"
+        assert conn.rows["finding:r1:x"]["last_error"] == "concept_atlas_store_unavailable"
+        assert store.snapshot().nodes == {}
+        assert bus.journal == []
+
+
+def test_tick_reclaims_stale_claimed_seed() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    handoff = _handoff()
+
+    async def _fake_read(seed):
+        return handoff
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+    async def _run():
+        await _seed_queue(conn)
+        row = conn.rows["finding:r1:x"]
+        row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert conn.rows["finding:r1:x"]["status"] == "done"
+    assert conn.claimed_ids == ["finding:r1:x"]
+    assert store.snapshot().nodes
 
 
 def test_generate_passes_stage1_correlation_id_to_unified_turn() -> None:

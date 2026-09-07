@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orion.schemas.world_pulse_read import WorldPulseReadSeedV1
@@ -9,6 +10,7 @@ from orion.world_pulse_read.queue import (
     ensure_seed_queue_schema,
     mark_seed_done,
     mark_seed_failed,
+    reclaim_stale_claimed,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -42,6 +44,7 @@ class _FakeConn:
             return None
         row = pending[0]
         row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc)
         return row
 
     def _returning(self, row: dict) -> dict:
@@ -76,8 +79,28 @@ class _FakeConn:
                 "trace_id": None,
                 "last_error": None,
                 "created_at": self._created_seq,
+                "claimed_at": None,
             }
             return "INSERT 0 1"
+        if (
+            "UPDATE world_pulse_read_seed" in sql_n
+            and "SET status = 'pending'" in sql_n
+            and "status = 'claimed'" in sql_n
+        ):
+            older = float(args[0]) if args else 0.0
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=older)
+            n = 0
+            for row in self.rows.values():
+                claimed_at = row.get("claimed_at")
+                if (
+                    row["status"] == "claimed"
+                    and claimed_at is not None
+                    and claimed_at < cutoff
+                ):
+                    row["status"] = "pending"
+                    row["claimed_at"] = None
+                    n += 1
+            return f"UPDATE {n}"
         if "UPDATE world_pulse_read_seed" in sql_n and "status = 'claimed'" in sql_n:
             row = self._claim_pending()
             return "UPDATE 1" if row else "UPDATE 0"
@@ -187,6 +210,30 @@ def test_claim_returns_none_when_empty():
         return await claim_next_seed(_FakeConn())
 
     assert asyncio.run(_run()) is None
+
+
+def test_reclaim_stale_claimed_makes_seed_claimable_again():
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        row = conn.rows["finding:r1:x"]
+        row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
+        assert await claim_next_seed(conn) is None
+        fresh_id = "finding:r1:fresh"
+        await enqueue_seeds(conn, [_finding(seed_id=fresh_id)])
+        conn.rows[fresh_id]["status"] = "claimed"
+        conn.rows[fresh_id]["claimed_at"] = datetime.now(timezone.utc)
+        n = await reclaim_stale_claimed(conn, older_than_sec=3500)
+        claimed = await claim_next_seed(conn)
+        return n, claimed
+
+    n, claimed = asyncio.run(_run())
+    assert n == 1
+    assert claimed is not None
+    assert claimed.seed_id == "finding:r1:x"
+    assert conn.rows["finding:r1:fresh"]["status"] == "claimed"
 
 
 def test_mark_seed_done_and_failed():

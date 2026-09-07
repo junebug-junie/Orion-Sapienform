@@ -519,3 +519,58 @@ async def test_drain_shutdown_does_not_drop_queued_motor_hop():
     assert "motor_hop" in hop_stages
     assert any(f.get("kind") == "claude_step" for f in sent)
     assert sent[-1] == {"state": "idle"}
+
+
+@pytest.mark.asyncio
+async def test_motor_boot_claude_step_not_relayed_to_live_ws():
+    """Synthetic motor_boot steps must become cockpit hops, not live FCC steps."""
+    from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+    from orion.hub.turn_orchestrator import run_unified_turn
+
+    sent: list[dict] = []
+
+    class _FakeWS:
+        async def send_json(self, frame: dict) -> None:
+            sent.append(frame)
+
+    async def _fake_execute(**kwargs):
+        holder = kwargs.get("cockpit_run_holder")
+        if isinstance(holder, dict):
+            holder["run"] = _run_dump()
+        queue = kwargs.get("harness_step_queue")
+        if queue is not None:
+            queue.put_nowait(
+                {
+                    "kind": "claude_step",
+                    "mode": "orion",
+                    "correlation_id": "corr-boot-ws",
+                    "step_index": -1,
+                    "step": {
+                        "_cockpit": COCKPIT_MOTOR_BOOT_MARKER,
+                        "prompt": "SYSTEM\n\nUSER\nhi",
+                    },
+                }
+            )
+        return _SUCCESS_FINAL
+
+    with patch("orion.hub.turn_orchestrator.execute_unified_turn", _fake_execute):
+        await run_unified_turn(
+            _FakeWS(),
+            bus=MagicMock(),
+            correlation_id="corr-boot-ws",
+            session_id="sess-1",
+            user_message="hello",
+            harness_step_relay=_NoopRelay(),
+        )
+
+    hop_stages = [f["hop"]["stage"] for f in sent if f.get("kind") == "cockpit_hop"]
+    assert "motor_boot" in hop_stages
+    boot_claude = [
+        f
+        for f in sent
+        if f.get("kind") == "claude_step"
+        and isinstance(f.get("step"), dict)
+        and f["step"].get("_cockpit") == COCKPIT_MOTOR_BOOT_MARKER
+    ]
+    assert boot_claude == []
+    assert sent[-1] == {"state": "idle"}

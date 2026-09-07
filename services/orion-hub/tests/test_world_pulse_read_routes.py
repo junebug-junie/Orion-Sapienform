@@ -25,7 +25,7 @@ MAIN_PY = HUB_ROOT / "scripts" / "main.py"
 ROUTES_PY = HUB_ROOT / "scripts" / "world_pulse_read_routes.py"
 
 _EXPECTED_DEFAULTS = {
-    "HUB_WORLD_PULSE_READ_ENABLED": ("bool", "False"),
+    "HUB_WORLD_PULSE_READ_ENABLED": ("bool", "True"),
     "HUB_WORLD_PULSE_READ_TICK_SEC": ("float", "300"),
     "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC": ("float", "1800"),
     "HUB_WORLD_PULSE_READ_DAILY_CAP": ("int", "6"),
@@ -46,7 +46,7 @@ def _field_default(src: str, name: str, typ: str) -> str:
     return match.group(1).strip()
 
 
-def test_settings_defaults_match_wallet_a_opt_in_contract() -> None:
+def test_settings_defaults_match_wallet_a_live_contract() -> None:
     src = SETTINGS_PY.read_text(encoding="utf-8")
     for name, (typ, expected) in _EXPECTED_DEFAULTS.items():
         got = _field_default(src, name, typ)
@@ -62,8 +62,8 @@ def test_env_example_ships_keys_and_keeps_wallet_a_independent() -> None:
         assert re.search(rf"^{re.escape(name)}=", text, re.M), f"{name} missing from .env_example"
     enabled = re.search(r"^HUB_WORLD_PULSE_READ_ENABLED=(.+)$", text, re.M)
     assert enabled, "HUB_WORLD_PULSE_READ_ENABLED missing"
-    assert enabled.group(1).strip().lower() in {"false", "0", "no"}, (
-        "deploy must stay opt-in; .env_example enabled=%r" % enabled.group(1)
+    assert enabled.group(1).strip().lower() in {"true", "1", "yes"}, (
+        "deploy default is on after migration; .env_example enabled=%r" % enabled.group(1)
     )
     cap = re.search(r"^HUB_WORLD_PULSE_READ_DAILY_CAP=(.+)$", text, re.M)
     assert cap and int(float(cap.group(1).strip())) == 6

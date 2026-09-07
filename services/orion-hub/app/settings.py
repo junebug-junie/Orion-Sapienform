@@ -715,10 +715,10 @@ class Settings(BaseSettings):
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
     # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
-    # different Redis prefix (Wallet A). Default False so an absent key can
-    # never start it; deploy is opt-in after the seed-queue migration.
+    # different Redis prefix (Wallet A). Default True once the seed-queue
+    # migration is applied (operator can still set false to pause).
     HUB_WORLD_PULSE_READ_ENABLED: bool = Field(
-        default=False, alias="HUB_WORLD_PULSE_READ_ENABLED"
+        default=True, alias="HUB_WORLD_PULSE_READ_ENABLED"
     )
     HUB_WORLD_PULSE_READ_TICK_SEC: float = Field(
         default=300.0, alias="HUB_WORLD_PULSE_READ_TICK_SEC"

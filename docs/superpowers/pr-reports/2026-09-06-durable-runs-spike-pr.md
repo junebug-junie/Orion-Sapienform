@@ -16,7 +16,18 @@
 
 ## Outcome moved
 
-(filled after the live restart test -- the design doc's Acceptance Check 1: a run survives a container restart on the real rail with the same `run_id`, one journal, one `TurnOutcome`, and a state row with `resumed_from_node` set.)
+**Acceptance Check 1: PASSED, on the real rail, no simulation.** Run `ff8a379217d8` was kicked off through
+cortex 2026-09-06 20:52:13Z; the runner was container-recreated 4.5h later, mid-turn; it resumed at
+`harness_turn` with `resumed_from_node=harness_turn` and finished 2026-09-07 04:37:29Z -- **same `run_id`,
+one journal entry** (`substrate_durable_run_state` has exactly one `node=journal` row for this run despite
+8 total attempts; LangGraph's checkpoint means a re-run only re-executes the node it failed at, never a node
+already past), real `finding_text`, `reach_out` correctly computed. Before this patch, a Hub redeploy mid-turn
+killed the run outright, with nothing to resume; today it survived a redeploy plus 4 more hours of retries
+against a real, separate bug (bug 4 below) and still finished under its original identity.
+
+Concretely: before this patch, three curiosity runs had started that day and *none* had finished (the design
+doc's opening line). Today, both runs in flight when this patch was verified finished cleanly -- including the
+one that was deliberately killed mid-turn.
 
 ## Current architecture
 
@@ -177,6 +188,36 @@ One real, substantive `finding_text` (not boilerplate), one `journal_entry_id`, 
 the journal write, the attention row, and the `finish` node's outcome-shaping all work on the real rail end to
 end -- the missing piece is specifically the *restarted* run reaching the same finish line under the *same*
 `run_id`, tracked below.
+
+### Completion addendum -- `ff8a379217d8` finished, 2026-09-07 04:37:29Z
+
+The restarted run itself reached `finish/completed` after 8 total `harness_turn` attempts (2 pre-fix RPC
+timeouts from bug 4, 4 post-fix `no_final_frame` declines -- a real, legitimate outcome, not an error; Orion's
+harness can decline an unsolicited turn -- and the 8th attempt producing real output):
+
+```text
+04:37:29.530  harness_turn           resumed    -> read_turn_result       resumed_from=harness_turn
+04:37:29.556  read_turn_result       running    -> publish_attention_row
+04:37:29.571  publish_attention_row  running    -> journal
+04:37:29.591  journal                running    -> finish
+04:37:29.652  finish                 completed  detail: {reach_out: false, reach_out_why: "", continue_line:
+                                                 false, attempts: 8,
+                                                 journal_entry_id: "0aa7e55e-a3ba-4339-91d4-8ed09fc93c4e",
+                                                 finding_text: <real content -- Orion closing a 10-run cycle,
+                                                 revising the atlas_prediction_error_territory prior down after
+                                                 re-checking live substrate node values>}
+```
+
+Verified this is genuinely one journal entry, not eight: `SELECT count(*) FROM substrate_durable_run_state
+WHERE run_id='ff8a379217d8' AND node='journal'` -> `1`. LangGraph's checkpoint means a resumed run only
+re-executes the node it actually failed at (`harness_turn`, every time) -- `read_turn_result`, `publish_
+attention_row`, `journal`, and `finish` each ran exactly once, on the attempt that finally produced a final
+frame. `substrate_attention_schema` carries 6 rows for this run (one per `harness_turn` transition plus the
+tail four), all `process=durable_run`.
+
+Acceptance Check 1, in full: same `run_id` across a real container restart -- yes. One journal entry -- yes.
+One `TurnOutcome`-shaped `finish` detail -- yes. A state row with `resumed_from_node=harness_turn` -- yes,
+repeatedly, since it kept needing to retry. **PASSED.**
 
 ## Review findings fixed
 

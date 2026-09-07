@@ -743,7 +743,16 @@ async def test_execute_unified_turn_streams_progress_before_thought_returns():
         ),
         patch(
             "orion.hub.turn_orchestrator._build_situation_prompt_fragment",
-            AsyncMock(return_value=None),
+            AsyncMock(
+                return_value={
+                    "compact_text": None,
+                    "status": "empty",
+                    "provider_status": {},
+                    "source_summary": {},
+                    "perception_enabled": False,
+                    "diagnostics": {},
+                }
+            ),
         ),
     ):
         await execute_unified_turn(

@@ -14,6 +14,7 @@ from orion.cockpit.builders import (
     hop_from_outcome,
     hop_from_progress,
     hop_from_run_artifact,
+    hop_from_situation,
     hop_from_stance_inputs,
     hop_from_thought,
 )
@@ -157,6 +158,29 @@ def emit_mind_enrichment_hop(
         summary={k: mind[k] for k in mind},
         raw=dict(mind),
     )
+
+
+def emit_situation_hop(
+    correlation_id: str,
+    *,
+    compact_text: str | None,
+    status: CockpitHopStatusV1 = "ok",
+    provider_status: dict[str, Any] | None = None,
+    source_summary: dict[str, Any] | None = None,
+    perception_enabled: bool | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    hop = hop_from_situation(
+        correlation_id=correlation_id,
+        seq=next_seq(correlation_id),
+        compact_text=compact_text,
+        status=status,
+        provider_status=provider_status,
+        source_summary=source_summary,
+        perception_enabled=perception_enabled,
+        diagnostics=diagnostics,
+    )
+    return _hop_frame(correlation_id, hop)
 
 
 def emit_pre_motor_hops(

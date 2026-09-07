@@ -177,6 +177,42 @@ def test_hop_from_motor_boot_carries_exact_prompt():
     assert hop.producer == "orion-harness-governor"
 
 
+def test_hop_from_situation_carries_exact_compact_text():
+    from orion.cockpit.builders import hop_from_situation
+
+    text = "Situation:\n- Your cabinet sensors (read just now): temp=30.1C"
+    hop = hop_from_situation(
+        correlation_id="c1",
+        seq=5,
+        compact_text=text,
+        provider_status={"cabinet": "ok", "weather": "ok", "perception": "disabled"},
+        source_summary={"cabinet": "file", "weather": "openmeteo"},
+        perception_enabled=False,
+    )
+    assert hop.stage == "situation"
+    assert hop.status == "ok"
+    assert hop.raw["compact_text"] == text
+    assert hop.summary["has_fragment"] is True
+    assert hop.summary["cabinet_mentioned"] is True
+    assert hop.summary["perception_enabled"] is False
+    assert "cabinet" in hop.visor_line
+
+
+def test_hop_from_situation_failed_and_empty():
+    from orion.cockpit.builders import hop_from_situation
+
+    failed = hop_from_situation(
+        correlation_id="c1", seq=1, compact_text=None, status="failed"
+    )
+    assert failed.status == "failed"
+    assert "failed" in failed.visor_line
+
+    empty = hop_from_situation(correlation_id="c1", seq=2, compact_text="", status="ok")
+    assert empty.status == "ok"
+    assert "empty" in empty.visor_line
+    assert empty.summary["has_fragment"] is False
+
+
 def test_hop_from_ingress_carries_exact_user_message():
     hop = hop_from_ingress(
         correlation_id="c1",

@@ -181,6 +181,124 @@ def hop_from_motor_boot(
     )
 
 
+_SITUATION_VISOR_CHANNELS = (
+    "cabinet",
+    "weather",
+    "time",
+    "presence",
+    "perception",
+    "affect",
+    "curiosity",
+    "reverie",
+    "runtime",
+    "surface",
+)
+
+
+def _situation_visor_bits(
+    *,
+    compact_text: str,
+    provider_status: dict[str, Any] | None,
+    source_summary: dict[str, Any] | None,
+) -> list[str]:
+    """Name channels that honestly contributed, for the helmet line."""
+    bits: list[str] = []
+    status = provider_status if isinstance(provider_status, dict) else {}
+    sources = source_summary if isinstance(source_summary, dict) else {}
+    text_l = compact_text.lower()
+    for name in _SITUATION_VISOR_CHANNELS:
+        st = str(status.get(name) or "").lower()
+        src = str(sources.get(name) or "").lower()
+        if st in {"ok", "partial"} or (
+            src
+            and src
+            not in {
+                "disabled",
+                "unavailable",
+                "unconfigured",
+                "empty",
+                "error",
+                "stub",
+            }
+        ):
+            bits.append(name)
+            continue
+        # Heuristic fallback when diagnostics are thin but compact_text names it.
+        if name in text_l or (name == "weather" and "weather" in text_l):
+            bits.append(name)
+    return bits
+
+
+def hop_from_situation(
+    *,
+    correlation_id: str,
+    seq: int,
+    compact_text: str | None,
+    status: CockpitHopStatusV1 = "ok",
+    provider_status: dict[str, Any] | None = None,
+    source_summary: dict[str, Any] | None = None,
+    perception_enabled: bool | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> CockpitHopV1:
+    """Situation fragment hop: exact compact_text that rides on the harness request."""
+    text = compact_text if isinstance(compact_text, str) else ""
+    has_fragment = bool(text.strip())
+    cabinet_mentioned = "cabinet" in text.lower()
+    if status == "failed":
+        visor_line = "situation · failed"
+        hop_status: CockpitHopStatusV1 = "failed"
+    elif status == "skipped":
+        visor_line = "situation · skipped"
+        hop_status = "skipped"
+    elif not has_fragment:
+        visor_line = "situation · empty"
+        hop_status = "ok" if status == "ok" else status
+    else:
+        bits = _situation_visor_bits(
+            compact_text=text,
+            provider_status=provider_status,
+            source_summary=source_summary,
+        )
+        visor_line = (
+            f"situation · {'+'.join(bits)}" if bits else f"situation · {len(text)} chars"
+        )
+        hop_status = "ok"
+
+    summary: dict[str, Any] = {
+        "compact_text_len": len(text),
+        "has_fragment": has_fragment,
+        "cabinet_mentioned": cabinet_mentioned,
+    }
+    if perception_enabled is not None:
+        summary["perception_enabled"] = bool(perception_enabled)
+    if isinstance(provider_status, dict) and provider_status:
+        summary["provider_status"] = dict(provider_status)
+
+    raw: dict[str, Any] = {
+        "compact_text": text,
+        "has_fragment": has_fragment,
+        "cabinet_mentioned": cabinet_mentioned,
+    }
+    if perception_enabled is not None:
+        raw["perception_enabled"] = bool(perception_enabled)
+    if isinstance(provider_status, dict):
+        raw["provider_status"] = dict(provider_status)
+    if isinstance(source_summary, dict):
+        raw["source_summary"] = dict(source_summary)
+    if isinstance(diagnostics, dict) and diagnostics:
+        raw["diagnostics"] = dict(diagnostics)
+
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage="situation",
+        visor_line=visor_line,
+        status=hop_status,
+        summary=summary,
+        raw=raw,
+    )
+
+
 def hop_from_thought(
     *,
     correlation_id: str,

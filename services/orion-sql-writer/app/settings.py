@@ -54,6 +54,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "journal.entry.write.v1": "JournalEntrySQL",
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "attention.schema.v1": "AttentionSchemaSQL",
+    "durable.run.state.v1": "DurableRunStateSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
@@ -165,6 +166,7 @@ class Settings(BaseSettings):
             "orion:journal:write",
             "orion:self_study:items:write",
             "orion:attention:schema",
+            "orion:durable:run:state",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
             "orion:journal:index",
@@ -385,6 +387,11 @@ class Settings(BaseSettings):
     substrate_attention_schema_retention_days: int = Field(
         90, alias="SUBSTRATE_ATTENTION_SCHEMA_RETENTION_DAYS"
     )
+    # substrate_durable_run_state: a handful of rows per curiosity run (5 nodes,
+    # plus resumes/failures), a few runs a day. 90 days like its sibling.
+    substrate_durable_run_state_retention_days: int = Field(
+        90, alias="SUBSTRATE_DURABLE_RUN_STATE_RETENTION_DAYS"
+    )
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
@@ -582,6 +589,10 @@ class Settings(BaseSettings):
         # nowhere.
         if "orion:cockpit:hop" not in channels:
             channels.append("orion:cockpit:hop")
+        # Same guarantee, same reason (durable.run.state.v1 is a code-default
+        # route with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
+        if "orion:durable:run:state" not in channels:
+            channels.append("orion:durable:run:state")
         return channels
 
     @property

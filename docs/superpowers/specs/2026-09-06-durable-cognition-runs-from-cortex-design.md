@@ -302,3 +302,51 @@ Two deterministic follow-ups belong to *this* branch, not the spike, and ship wi
   today did not finish), and a new claim naming the cortex lane's thinness (871 rows, 2
   distinct narratives -- `select_actions` suppresses the same already-known target every turn).
 - The surface design doc gets its 24h read.
+
+---
+
+## The spike (shipped 2026-09-06/07, branch `feat/durable-runs`)
+
+Option A, as chosen. Service name `orion-durable-runs` (Juniper: not "workflow", cortex already
+owns that word). What was built, in the order the design asked for:
+
+- `orion-durable-runs`: the curiosity run as a LangGraph `StateGraph`
+  (`harness_turn -> read_turn_result -> publish_attention_row -> journal -> finish`) under
+  `AsyncPostgresSaver` on a connection pool in `conjourney`; resume-on-boot and a 2-minute sweep
+  for any thread whose snapshot still has a next node; abandon past 24h; one `DurableRunStateV1`
+  per transition and one attention-surface row (`process=durable_run`).
+- **Where the turn lives, corrected from this document's own sketch.** The plan above had the
+  runner call `execute_unified_turn`. It cannot: that orchestrator imports a dozen Hub-internal
+  `scripts.*` modules, and sec 5 forbids reaching into them. So Hub keeps the one node only Hub
+  can execute behind `orion:curiosity:turn:request`, the runner calls it, and Hub dedups by
+  `run_id` (in-flight join + 1h result cache) so a runner restart mid-turn never buys a second
+  turn. What survives a Hub death is the run's identity, cap slot, continuation and everything
+  after the turn; an interrupted turn's FCC minutes are re-spent (MQ2, stated plainly).
+- Cortex is the kickoff: Hub builds the same prompt and hands the run to `orion:cortex:request`
+  (`context.metadata.durable_run`); cortex-orch dispatches to the runner and answers `accepted`.
+  Behind `HUB_CURIOSITY_KICKOFF_VIA_CORTEX` (default false = the old path exactly).
+- The journal builders moved verbatim to `orion/curiosity/journal.py`; the runner writes the
+  identical entry.
+
+### What the real rail taught in the first four hours
+
+Every one of these was invisible to the unit tests and found only by running it:
+
+1. `rpc_request` returns the raw pubsub message, not an envelope; reading `payload` off it
+   reads nothing. Hub logged `status=no_reply` on every kickoff and fell back to the in-process
+   turn while the runner also ran the run.
+2. The saver's `from_conn_string` is one psycopg connection; a one-hour node await plus a
+   concurrent `aget_state` froze the runner silently. Now a pool.
+3. The saver serialises every cursor behind one `asyncio.Lock`; `alist` holds it while yielding,
+   so a state read nested in the listing deadlocked boot the first time a checkpoint existed.
+4. A Hub wiring typo (`settings.CORTEX_REQUEST_CHANNEL`, the env alias, not the attribute) sat
+   inside Hub's bus-init block and took Hub's bus down for ~2.5 minutes until the redeploy.
+
+### Acceptance Check 1 on the real rail
+
+Run `ff8a379217d8`, kicked off through cortex at 20:52Z on 2026-09-06 and stranded by the
+first-day bugs above. Runner redeployed 01:21Z on 2026-09-07 with the fixes: boot found the
+4.5-hour-old checkpoint at `harness_turn`, wrote a `resumed` state row and surface row, re-issued
+the turn, and Hub accepted it under the same `run_id`. The rest of the run's evidence is in the
+PR report. The old pre-bridge behaviour would have lost this run entirely.
+

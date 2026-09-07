@@ -57,6 +57,7 @@ from app.models import (
     JournalEntrySQL,
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
+    DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SocialRoomTurnSQL,
@@ -103,6 +104,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.attention_schema import AttentionSchemaV1
+from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 
@@ -216,8 +218,10 @@ COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
+    DurableRunStateSQL,
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
+    DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SocialRoomTurnSQL,
@@ -469,6 +473,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
     "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "AttentionSchemaSQL": (AttentionSchemaSQL, AttentionSchemaV1),
+    "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),

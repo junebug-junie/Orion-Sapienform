@@ -226,14 +226,23 @@ class WorldPulseReadPipeline:
             await self._fail_seed(seed.seed_id, "empty_generation")
             return "empty_generation"
 
-        record = map_world_pulse_read_handoff_to_substrate(handoff)
-        if record.nodes:
-            store = self._store_provider() if self._store_provider else None
-            if store is not None:
-                SubstrateGraphMaterializer(store=store).apply_record(record)
+        try:
+            record = map_world_pulse_read_handoff_to_substrate(handoff)
+            if record.nodes:
+                store = self._store_provider() if self._store_provider else None
+                if store is not None:
+                    SubstrateGraphMaterializer(store=store).apply_record(record)
 
-        await self._journal(handoff)
-        await self._with_conn(lambda conn: mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id))
+            await self._journal(handoff)
+            await self._with_conn(
+                lambda conn: mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "world_pulse_read_post_read_failed seed=%s err=%s", seed.seed_id, exc
+            )
+            await self._fail_seed(seed.seed_id, str(exc) or "post_read_failed")
+            return "post_read_failed"
         return None
 
     async def _maybe_enqueue_recent(self) -> None:
@@ -301,7 +310,7 @@ class WorldPulseReadPipeline:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
                     bus=self._bus,
-                    correlation_id=str(uuid4()),
+                    correlation_id=correlation_id,
                     session_id=self.session_id,
                     user_message=prompt,
                     payload=_turn_payload(PIPELINE_TAG, self._fcc_model_label),

@@ -267,6 +267,10 @@ def test_pipeline_happy_path_writes_concept_and_ignores_curiosity_wallet() -> No
     nodes = list(store.snapshot().nodes.values())
     assert len(nodes) == 1
     assert nodes[0].provenance.producer == "world_pulse_read_pipeline"
+    assert nodes[0].provenance.source_kind == "world_pulse.read"
+    assert "https://ex.com/a" in nodes[0].provenance.evidence_refs
+    assert "r1" in nodes[0].provenance.evidence_refs
+    assert "tr-pipeline-1" in nodes[0].provenance.evidence_refs
     assert nodes[0].label == "advanced packaging"
     assert len(bus.journal) == 1
     channel, envelope = bus.journal[0]
@@ -336,3 +340,57 @@ def test_stage1_parse_failure_marks_seed_failed_after_debit() -> None:
     assert bus.redis.store[_count_key()] == "1"
     assert store.snapshot().nodes == {}
     assert bus.journal == []
+
+
+def test_generate_passes_stage1_correlation_id_to_unified_turn() -> None:
+    from unittest.mock import patch
+
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    captured: dict = {}
+
+    async def _fake_turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": '{"what_i_learned": "ok"}'}]
+
+    async def _run():
+        with patch(
+            "orion.hub.turn_orchestrator.execute_unified_turn",
+            _fake_turn,
+        ):
+            return await pipe._generate("read this", "tr-stage1-shared")
+
+    text = asyncio.run(_run())
+    assert text == '{"what_i_learned": "ok"}'
+    assert captured["correlation_id"] == "tr-stage1-shared"
+
+
+def test_post_read_crash_marks_seed_failed_not_claimed() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    handoff = _handoff()
+
+    async def _fake_read(seed):
+        return handoff
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+    class _BoomStore:
+        def get_node_id_by_identity(self, *args, **kwargs):
+            raise RuntimeError("atlas write failed")
+
+    pipe._store_provider = lambda: _BoomStore()  # type: ignore[method-assign]
+
+    async def _run():
+        await _seed_queue(conn)
+        return await pipe.tick(force=True)
+
+    reason = asyncio.run(_run())
+    assert reason == "post_read_failed"
+    assert conn.rows["finding:r1:x"]["status"] == "failed"
+    assert conn.rows["finding:r1:x"]["last_error"] == "atlas write failed"
+    assert bus.redis.store[_count_key()] == "1"

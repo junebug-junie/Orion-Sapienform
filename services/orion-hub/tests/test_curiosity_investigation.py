@@ -2160,14 +2160,19 @@ class _CortexBus(_FakeBus):
         super().__init__()
         self.codec = OrionCodec()
         self.rpc_calls: list = []
-        self.reply = reply if reply is not None else {"payload": {"status": "accepted"}}
+        self.reply_payload = reply if reply is not None else {"status": "accepted"}
         self.raise_on_rpc = raise_on_rpc
 
     async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec=60.0):
+        """Like the real bus: hands back the raw pubsub message whose `data`
+        is an encoded envelope (the live bug was reading `payload` off it)."""
+        from orion.core.bus.bus_schemas import BaseEnvelope
+
         self.rpc_calls.append((channel, envelope, reply_channel))
         if self.raise_on_rpc:
             raise RuntimeError("cortex down")
-        return self.reply
+        out = BaseEnvelope(kind="cortex.orch.result", source=SOURCE, correlation_id=envelope.correlation_id, payload=self.reply_payload)
+        return {"channel": reply_channel, "data": self.codec.encode(out)}
 
 
 def test_durable_kickoff_hands_the_run_to_cortex_and_does_not_run_the_turn() -> None:
@@ -2307,3 +2312,41 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
     for ch in ("r1", "r2", "r3"):
         reply = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == ch][0].payload)
         assert reply.ok and reply.text == "the finding"
+
+
+def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
+    """Cortex was unreachable at dispatch time but the runner got the run
+    anyway (or Hub misread the reply): the tick's in-process fallback and the
+    runner's later RPC for the same run_id must be ONE harness turn."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.durable_run import CuriosityTurnResultV1
+
+    bus = _CortexBus(raise_on_rpc=True)
+    loop = _loop(bus, kickoff_via_cortex=True, text="the finding")
+    calls = []
+    gate = asyncio.Event()
+
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True):
+        calls.append(correlation_id)
+        await gate.wait()
+        return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
+
+    loop._generate = slow_generate  # type: ignore[assignment]
+
+    async def scenario():
+        tick = asyncio.create_task(loop.tick())
+        await asyncio.sleep(0.05)  # tick is inside its in-process fallback turn
+        assert len(calls) == 1 and len(loop._turn_inflight) == 1
+        run_id = next(iter(loop._turn_inflight))
+        env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to="r-runner",
+                           payload={"run_id": run_id, "correlation_id": calls[0], "prompt": "p", "timeout_sec": 10.0, "attempt": 1})
+        rpc = asyncio.create_task(loop._handle_turn_request({"data": bus.codec.encode(env)}))
+        await asyncio.sleep(0.02)
+        gate.set()
+        await asyncio.gather(tick, rpc)
+
+    asyncio.run(scenario())
+    assert len(calls) == 1  # one turn served both the tick and the runner
+    assert len(bus.journal) == 1
+    reply = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "r-runner"][0].payload)
+    assert reply.ok and reply.text == "the finding"

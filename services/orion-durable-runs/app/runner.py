@@ -122,8 +122,12 @@ class DurableRunner:
         except Exception as exc:  # noqa: BLE001 -- surfaced as a failed node, retried by the sweep
             logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=%s", request.run_id, request.attempt, exc)
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"rpc:{type(exc).__name__}")
-        payload = raw.get("payload") if isinstance(raw, dict) else None
+        # rpc_request hands back the raw pubsub message; the envelope is in
+        # `data` and must be decoded (live finding 2026-09-06: reading a
+        # `payload` key off the raw message reads nothing).
         try:
+            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+            payload = decoded.envelope.payload if decoded.ok else None
             return CuriosityTurnResultV1.model_validate(payload or {})
         except Exception as exc:  # noqa: BLE001
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"bad_reply:{exc}")

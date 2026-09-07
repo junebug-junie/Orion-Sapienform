@@ -1214,7 +1214,25 @@ class CuriosityInvestigation:
                 run_id,
             )
         try:
-            text, debug = await self._generate(prompt, correlation_id)
+            if self.kickoff_via_cortex:
+                # Fallback after a failed dispatch: go through the same
+                # per-run_id dedup the runner's turn RPC uses, so if the
+                # dispatch did land after all, the runner's request joins
+                # this turn instead of starting a second one.
+                turn = await self._turn_result_for(
+                    CuriosityTurnRequestV1(
+                        run_id=run_id,
+                        correlation_id=correlation_id,
+                        prompt=prompt,
+                        fcc_model_label=self._fcc_model_label,
+                        timeout_sec=float(self.timeout_sec),
+                        source_tag=INVESTIGATION_TAG,
+                    ),
+                    hold_lock=False,  # tick already holds _run_lock
+                )
+                text, debug = turn.text, dict(turn.debug)
+            else:
+                text, debug = await self._generate(prompt, correlation_id)
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
@@ -1531,7 +1549,15 @@ class CuriosityInvestigation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_durable_dispatch_failed run=%s err=%s", run_id, exc)
             return False
-        result = raw.get("payload") if isinstance(raw, dict) else None
+        # rpc_request hands back the raw pubsub message; decode the envelope.
+        # (Live 2026-09-06 20:52Z: reading `payload` off the raw message read
+        # nothing, every kickoff logged status=no_reply and fell back to the
+        # in-process turn while the runner ALSO ran the run -- two turns.)
+        try:
+            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+            result = decoded.envelope.payload if decoded.ok else None
+        except Exception:  # noqa: BLE001
+            result = None
         status = str((result or {}).get("status") or "")
         accepted = status == "accepted"
         logger.info(
@@ -1570,7 +1596,7 @@ class CuriosityInvestigation:
         logger.info(
             "curiosity_turn_request run=%s attempt=%s corr=%s", request.run_id, request.attempt, request.correlation_id
         )
-        result = await self._turn_result_for(request)
+        result = await self._turn_result_for(request, hold_lock=True)
         if env.reply_to:
             await self._bus.publish(
                 env.reply_to,
@@ -1582,8 +1608,14 @@ class CuriosityInvestigation:
                 ),
             )
 
-    async def _turn_result_for(self, request: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
-        """One harness turn per run_id, however many times it is asked for."""
+    async def _turn_result_for(
+        self, request: CuriosityTurnRequestV1, *, hold_lock: bool
+    ) -> CuriosityTurnResultV1:
+        """One harness turn per run_id, however many times it is asked for.
+
+        `hold_lock=True` from the RPC listener (serialise with the tick);
+        `False` from inside the tick, which already holds `_run_lock`
+        (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
         cached = self._turn_results.get(request.run_id)
         if cached is not None and now - cached[1] <= TURN_RESULT_CACHE_SEC and cached[0].ok:
@@ -1595,26 +1627,33 @@ class CuriosityInvestigation:
             return await inflight
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._turn_inflight[request.run_id] = future
+
+        async def _run_turn() -> CuriosityTurnResultV1:
+            try:
+                text, debug = await self._generate(
+                    request.prompt, request.correlation_id, source=request.source_tag
+                )
+                return CuriosityTurnResultV1(
+                    run_id=request.run_id,
+                    correlation_id=request.correlation_id,
+                    text=text or "",
+                    debug=dict(debug or {}),
+                    ok=bool(text),
+                    error=None if text else str((debug or {}).get("error") or "empty_generation"),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                return CuriosityTurnResultV1(
+                    run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
+                )
+
         try:
-            async with self._run_lock:
-                try:
-                    text, debug = await self._generate(
-                        request.prompt, request.correlation_id, source=request.source_tag
-                    )
-                    result = CuriosityTurnResultV1(
-                        run_id=request.run_id,
-                        correlation_id=request.correlation_id,
-                        text=text or "",
-                        debug=dict(debug or {}),
-                        ok=bool(text),
-                        error=None if text else str((debug or {}).get("error") or "empty_generation"),
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    result = CuriosityTurnResultV1(
-                        run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
-                    )
+            if hold_lock:
+                async with self._run_lock:
+                    result = await _run_turn()
+            else:
+                result = await _run_turn()
             self._turn_results[request.run_id] = (result, time.monotonic())
             # Bounded: forget results older than the cache window.
             cutoff = time.monotonic() - TURN_RESULT_CACHE_SEC

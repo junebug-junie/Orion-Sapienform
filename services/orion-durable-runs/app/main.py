@@ -56,13 +56,31 @@ async def _handle_request(env: BaseEnvelope) -> None:
 
 
 async def _open_checkpointer():
-    """LangGraph's Postgres saver, tables created on first boot. Its context
-    manager owns the connection pool; we hold it open for the process life."""
+    """LangGraph's Postgres saver on a CONNECTION POOL, tables created on
+    first boot.
+
+    Live incident 2026-09-06 20:52Z: `from_conn_string` gives the saver ONE
+    psycopg async connection. A node that awaits for an hour (the harness
+    turn RPC) and a concurrent `aget_state` (a second run's kickoff, the
+    failure handler) contend for that single connection and the runner
+    deadlocked -- no state rows, second request never seeded, health still
+    listing the first run as active. Concurrency here is the norm, not the
+    exception, so the saver gets a pool (LangGraph's own recommendation).
+    """
     global _checkpointer_cm
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
 
-    _checkpointer_cm = AsyncPostgresSaver.from_conn_string(_settings.postgres_uri)
-    saver = await _checkpointer_cm.__aenter__()
+    _checkpointer_cm = AsyncConnectionPool(
+        conninfo=_settings.postgres_uri,
+        min_size=1,
+        max_size=8,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    )
+    await _checkpointer_cm.open()
+    saver = AsyncPostgresSaver(_checkpointer_cm)
     await saver.setup()
     return saver
 
@@ -119,7 +137,7 @@ async def lifespan(app: FastAPI):
                 pass
         if _checkpointer_cm is not None:
             try:
-                await _checkpointer_cm.__aexit__(None, None, None)
+                await _checkpointer_cm.close()
             except Exception:  # noqa: BLE001
                 pass
 

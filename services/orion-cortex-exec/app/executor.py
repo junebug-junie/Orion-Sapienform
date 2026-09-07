@@ -3343,7 +3343,11 @@ async def call_step_services(
                         profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                         messages=messages_payload,
                         raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
-                        route="metacog",
+                        # metacog_background (2026-09-07, not plain metacog): the daily
+                        # metacog/journal draft is background reflection work, not a live
+                        # chat turn -- it should yield slot slack to Mind's now-live
+                        # metacog traffic instead of competing evenly.
+                        route="metacog_background",
                         options=md_options,
                     )
 
@@ -3412,7 +3416,9 @@ async def call_step_services(
                                 profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                                 messages=_metacog_uncertainty_probe_messages(patch_model),
                                 raw_user_text="metacog_uncertainty_probe",
-                                route="metacog",
+                                # metacog_background: same draft-quality reflection work as
+                                # the request above, same reasoning for yielding.
+                                route="metacog_background",
                                 options=probe_options,
                             )
                             try:

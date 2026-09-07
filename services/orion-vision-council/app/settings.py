@@ -28,7 +28,11 @@ class Settings(BaseSettings):
 
     # Config
     COUNCIL_MODEL: str = "llama-3-8b-instruct-q4_k_m"
-    COUNCIL_LLM_ROUTE: str = "metacog"
+    # metacog_background (not plain metacog) as of 2026-09-07: this is background
+    # perception work, not a live chat turn -- it should yield slot slack to Mind's
+    # now-live metacog traffic via the gateway's existing priority_admission.py,
+    # not compete evenly with it. See docs/superpowers/pr-reports/ for this patch.
+    COUNCIL_LLM_ROUTE: str = "metacog_background"
     COUNCIL_LLM_MAX_TOKENS: int = 1024
     COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
     COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"

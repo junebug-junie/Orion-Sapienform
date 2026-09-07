@@ -35,7 +35,11 @@ class Settings(BaseSettings):
     MEMORY_CONSOLIDATION_ENABLED: bool = Field(default=True, alias="MEMORY_CONSOLIDATION_ENABLED")
     MEMORY_CLASSIFY_TIMEOUT_SEC: float = Field(default=8.0, alias="MEMORY_CLASSIFY_TIMEOUT_SEC")
     # Gateway route for turn-change classify RPC (metacog = instruct-only; avoid thinking lanes).
-    TURN_CHANGE_CLASSIFY_ROUTE: str = Field(default="metacog", alias="TURN_CHANGE_CLASSIFY_ROUTE")
+    # metacog_background (2026-09-07, not plain metacog): this is background turn
+    # classification, not live-turn work -- it should yield slot slack to Mind's
+    # now-live metacog traffic via the gateway's priority_admission.py, not compete
+    # evenly with it. See docs/superpowers/pr-reports/ for this patch.
+    TURN_CHANGE_CLASSIFY_ROUTE: str = Field(default="metacog_background", alias="TURN_CHANGE_CLASSIFY_ROUTE")
     # Margin on novelty_score (0-1) for session-window reappraisal; also minimum confidence for substrate emit.
     TURN_CHANGE_CONFIDENCE_MARGIN: float = Field(default=0.15, alias="TURN_CHANGE_CONFIDENCE_MARGIN")
     TURN_CHANGE_SUBSTRATE_THRESHOLD: float = Field(default=0.65, alias="TURN_CHANGE_SUBSTRATE_THRESHOLD")

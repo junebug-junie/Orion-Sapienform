@@ -269,3 +269,7 @@ this report that hadn't been directly checked against source: that
 `MetacogContextService` (order 0) really does run before
 `synthesize_chat_stance_brief` (order 1) for `chat_general` -- confirmed
 directly in `orion/cognition/verbs/chat_general.yaml` lines 37-38.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2141

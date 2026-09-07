@@ -221,6 +221,30 @@
   font-size: 12px;
 }
 
+.cockpit-inspector-section {
+  margin-bottom: 0.7rem;
+}
+
+.cockpit-inspector-section-title {
+  font-size: 11px;
+  color: #9aabbc;
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cockpit-inspector-prompt {
+  margin: 0;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #c5d0db;
+}
+
 .cockpit-inspector-raw {
   margin: 0;
   white-space: pre-wrap;

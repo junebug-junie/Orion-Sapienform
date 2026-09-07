@@ -284,6 +284,19 @@ async def mark_seed_failed(conn: Any, seed_id: str, *, error: str) -> None:
     )
 
 
+async def mark_seed_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
+    """Mark without a Stage 1 debit — used for section-index URLs etc."""
+    await conn.execute(
+        """
+        UPDATE world_pulse_read_seed
+        SET status = 'skipped', last_error = $2, completed_at = now()
+        WHERE seed_id = $1
+        """,
+        seed_id,
+        reason[:2000],
+    )
+
+
 async def claim_next_stage2_seed(conn: Any) -> Stage2Claim | None:
     row = await conn.fetchrow(CLAIM_STAGE2_SQL)
     if not row:

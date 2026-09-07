@@ -161,6 +161,12 @@ class _FakeConn:
                 self.rows[seed_id]["status"] = "failed"
                 self.rows[seed_id]["last_error"] = error
             return "UPDATE 1"
+        if "UPDATE world_pulse_read_seed" in sql_n and "status = 'skipped'" in sql_n:
+            seed_id, reason = args[0], args[1]
+            if seed_id in self.rows:
+                self.rows[seed_id]["status"] = "skipped"
+                self.rows[seed_id]["last_error"] = reason
+            return "UPDATE 1"
         return "OK"
 
     async def fetchrow(self, sql: str, *args):
@@ -372,6 +378,43 @@ def test_stage1_parse_failure_marks_seed_failed_after_debit() -> None:
     assert bus.redis.store[_count_key()] == "1"
     assert store.snapshot().nodes == {}
     assert bus.journal == []
+
+
+def test_section_index_url_skipped_without_wallet_debit() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    called = {"n": 0}
+
+    async def _fake_read(seed):
+        called["n"] += 1
+        return _handoff()
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(
+            conn,
+            [
+                WorldPulseReadSeedV1(
+                    seed_id="finding:r1:index",
+                    kind="finding",
+                    run_id="r1",
+                    url="https://www.tomshardware.com/news",
+                    title="News index",
+                    section="hardware_compute_gpu",
+                )
+            ],
+        )
+        return await pipe.tick(force=True)
+
+    reason = asyncio.run(_run())
+    assert reason == "skipped_index_url"
+    assert conn.rows["finding:r1:index"]["status"] == "skipped"
+    assert _count_key() not in bus.redis.store
+    assert called["n"] == 0
+    assert store.snapshot().nodes == {}
 
 
 def test_missing_store_fails_seed_when_nodes_exist() -> None:

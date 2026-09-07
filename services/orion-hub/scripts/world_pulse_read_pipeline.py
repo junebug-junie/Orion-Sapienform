@@ -26,8 +26,10 @@ from orion.world_pulse_read.queue import (
     enqueue_from_recent_digests,
     mark_seed_done,
     mark_seed_failed,
+    mark_seed_skipped,
     reclaim_stale_claimed,
 )
+from orion.world_pulse_read.url_filters import url_looks_like_section_index
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     debit_wallet_a,
@@ -54,14 +56,22 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
 
 def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
     return (
-        "Read this world-pulse article and return ONE JSON object — no prose "
-        "outside a fenced JSON block.\n"
+        "Read this world-pulse article and return ONLY one fenced ```json block "
+        "(no greeting, no Juniper-facing prose).\n"
         f"seed_id={seed.seed_id} kind={seed.kind} run_id={seed.run_id}\n"
         f"url={seed.url}\ntitle={seed.title}\nsection={seed.section}\n"
-        "Fields: seed_ref (echo the seed), what_i_learned (non-empty), "
-        "candidate_priors, concept_candidates (label + optional definition), "
-        f"open_threads, trace_id={trace_id!r}, created_at (ISO-8601 UTC), "
-        "producer_hint=world_pulse_read_pipeline."
+        "Required JSON shape:\n"
+        "{\n"
+        '  "what_i_learned": "non-empty prose",\n'
+        '  "candidate_priors": [{"claim": "string", "confidence": 0.5}],\n'
+        '  "concept_candidates": [{"label": "string", "definition": "optional"}],\n'
+        '  "open_threads": ["string"],\n'
+        f'  "trace_id": {trace_id!r},\n'
+        '  "created_at": "ISO-8601 UTC"\n'
+        "}\n"
+        "candidate_priors MUST be objects with claim (not bare strings). "
+        "If the URL is thin/teaser-only, still return the JSON with low-confidence "
+        "priors and note gaps in open_threads. producer_hint is forced server-side."
     )
 
 
@@ -215,6 +225,18 @@ class WorldPulseReadPipeline:
         seed = await self._with_conn(claim_next_seed)
         if seed is None:
             return "empty_queue"
+
+        # Skip listing pages before debit — live Wallet A waste on /news indexes.
+        if url_looks_like_section_index(seed.url):
+            await self._with_conn(
+                lambda conn: mark_seed_skipped(
+                    conn, seed.seed_id, reason="section_index_url"
+                )
+            )
+            logger.info(
+                "world_pulse_read_skipped_index seed=%s url=%s", seed.seed_id, seed.url
+            )
+            return "skipped_index_url"
 
         if redis is not None:
             await debit_wallet_a(redis, now=now, timezone_name=self.timezone_name)

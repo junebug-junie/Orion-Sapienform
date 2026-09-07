@@ -48,6 +48,40 @@ def test_handoff_requires_seed_ref_and_trace():
     assert re.trace_id == "tr-1"
 
 
+def test_handoff_coerces_string_priors_and_concepts():
+    """Live FCC returned bare strings for priors — must not burn the seed."""
+    seed = {
+        "seed_id": "finding:run-1:abcd",
+        "kind": "finding",
+        "run_id": "run-1",
+        "url": "https://example.com/a",
+        "title": "A",
+        "section": "ai_technology",
+    }
+    handoff = WorldPulseReadHandoffV1.model_validate(
+        {
+            "seed_ref": seed,
+            "what_i_learned": "Learned from a YouTube teaser.",
+            "candidate_priors": [
+                "Nvidia is returning to MSRP Founders Edition sales",
+                {"claim": "RAM shortages constrain GPUs", "confidence": 0.4},
+            ],
+            "concept_candidates": [
+                "RTX 50-series",
+                {"label": "Vera Rubin", "definition": "platform"},
+            ],
+            "open_threads": ["Need full article body"],
+            "trace_id": "tr-coerce",
+            "created_at": "2026-09-07T00:00:00+00:00",
+        }
+    )
+    assert handoff.candidate_priors[0].claim.startswith("Nvidia")
+    assert handoff.candidate_priors[0].confidence == 0.5
+    assert handoff.candidate_priors[1].confidence == 0.4
+    assert handoff.concept_candidates[0].label == "RTX 50-series"
+    assert handoff.concept_candidates[1].definition == "platform"
+
+
 def test_stage2_result_round_trip():
     result = WorldPulseReadStage2ResultV1(
         summary="Priors formed.",

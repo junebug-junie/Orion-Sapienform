@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 637,
+  "metric_count": 638,
   "_last_change": {
-    "base": "merge base cedec905e (origin/main)",
-    "change_count": 0,
+    "base": "merge base 258d0b703 (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-hub/orion:cockpit:hop"
     ]
   },
   "definitions": {
@@ -1493,6 +1493,18 @@
         "orion-spark-concept-induction",
         "orion-sql-writer",
         "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:cockpit:hop": {
+      "schema_id": "CockpitHopV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

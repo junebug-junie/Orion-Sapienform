@@ -31,6 +31,10 @@ PANELS_WITHOUT_APP_JS_TAB = {
     # Has a nav entry, but routes itself: self_observability.js owns this
     # panel's show/hide and hash handling instead of app.js's setActiveTab.
     "self-observability",
+    # Has a nav entry, but routes itself: hub_surface_tab.js owns this
+    # panel's show/hide and hash handling instead of app.js's setActiveTab
+    # (same pattern as self-observability above).
+    "hub-surface",
 }
 
 

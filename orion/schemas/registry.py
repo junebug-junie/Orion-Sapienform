@@ -696,6 +696,12 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleRunRecordV1,
     WorkflowScheduleSpecV1,
 )
+from orion.schemas.world_pulse_read import (
+    WorldPulseReadConceptCandidateV1,
+    WorldPulseReadHandoffV1,
+    WorldPulseReadPriorCandidateV1,
+    WorldPulseReadSeedV1,
+)
 from orion.schemas.world_pulse import (
     ArticleClusterV1,
     ArticleRecordV1,
@@ -1296,6 +1302,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorthReadingItemV1": WorthReadingItemV1,
     "WorthWatchingItemV1": WorthWatchingItemV1,
     "DailyWorldPulseV1": DailyWorldPulseV1,
+    "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
+    "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,
+    "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
+    "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,
     "WorldContextCapsuleV1": WorldContextCapsuleV1,
     "WorldPulseRunV1": WorldPulseRunV1,
     "WorldPulseRunResultV1": WorldPulseRunResultV1,

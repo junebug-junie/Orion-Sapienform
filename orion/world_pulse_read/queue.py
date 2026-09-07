@@ -8,7 +8,7 @@ from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "digest_item": 10}
 
-ENSURE_SQL = """
+ENSURE_TABLE_SQL = """
 create table if not exists world_pulse_read_seed (
     seed_id text primary key,
     kind text not null check (kind in ('finding', 'digest_item')),
@@ -25,9 +25,17 @@ create table if not exists world_pulse_read_seed (
     created_at timestamptz not null default now(),
     claimed_at timestamptz null,
     completed_at timestamptz null
-);
+)
+"""
+
+ENSURE_CLAIM_INDEX_SQL = """
 create index if not exists idx_world_pulse_read_seed_claim
-    on world_pulse_read_seed (status, priority, created_at);
+    on world_pulse_read_seed (status, priority, created_at)
+"""
+
+ENSURE_RUN_INDEX_SQL = """
+create index if not exists idx_world_pulse_read_seed_run
+    on world_pulse_read_seed (run_id)
 """
 
 INSERT_SQL = """
@@ -43,7 +51,7 @@ SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
-    ORDER BY priority ASC, created_at ASC
+    ORDER BY priority ASC, created_at ASC, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -52,7 +60,9 @@ RETURNING seed_id, kind, run_id, url, title, section, item_id
 
 
 async def ensure_seed_queue_schema(conn: Any) -> None:
-    await conn.execute(ENSURE_SQL)
+    await conn.execute(ENSURE_TABLE_SQL)
+    await conn.execute(ENSURE_CLAIM_INDEX_SQL)
+    await conn.execute(ENSURE_RUN_INDEX_SQL)
 
 
 async def enqueue_seeds(conn: Any, seeds: Sequence[WorldPulseReadSeedV1]) -> int:

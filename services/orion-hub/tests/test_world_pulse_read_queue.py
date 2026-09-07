@@ -211,7 +211,11 @@ def test_ensure_seed_queue_schema_emits_create():
         await ensure_seed_queue_schema(conn)
 
     asyncio.run(_run())
-    assert any("create table if not exists world_pulse_read_seed" in sql for sql, _ in conn.executed)
+    executed_sql = [sql for sql, _ in conn.executed]
+    assert len(executed_sql) == 3
+    assert any("create table if not exists world_pulse_read_seed" in sql for sql in executed_sql)
+    assert any("idx_world_pulse_read_seed_claim" in sql for sql in executed_sql)
+    assert any("idx_world_pulse_read_seed_run" in sql for sql in executed_sql)
 
 
 def test_enqueue_from_recent_digests_loads_digest_and_article_rows():

@@ -2277,6 +2277,28 @@ def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) 
         ctx["prior_stance"] = prior
 
 
+def _inject_recent_attention_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:
+    """Copy the recent-attention cue into stance inputs, when present and
+    non-empty, so it reaches the Cockpit HUD's `stance_inputs` hop
+    (`orion.cockpit.builders.hop_from_stance_inputs`, via the separate
+    `stance_inputs` dict `orion/hub/turn_orchestrator.py` forwards there) --
+    Juniper can then see what Oríon's ambient attention sense looked like for
+    a given turn without a direct DB query.
+
+    DEPENDS ON PR #2141 (`recent_attention_reader.py` / `recent_attention_cue.py`
+    / executor.py's MetacogContextService wiring, at time of writing an open,
+    unmerged sibling branch): only that patch ever sets `ctx["recent_attention"]`
+    in the first place (that is also what makes `ctx["recent_attention"]`
+    reach `chat_stance_brief.j2` directly via `ctx.copy()` -- unrelated to
+    this function, which only feeds the Cockpit hop). Until #2141 merges,
+    `ctx.get("recent_attention")` is always `None` here and this function is
+    an intentional, tested no-op -- not a bug, but also not yet live. See
+    this branch's PR report for the merge-order note."""
+    recent_attention = ctx.get("recent_attention")
+    if isinstance(recent_attention, dict) and recent_attention:
+        inputs["recent_attention"] = recent_attention
+
+
 async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
     # identity, orionmem, recall, and social lanes.
@@ -2451,6 +2473,7 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning("attention_schema_publish_call_failed error=%s", exc)
 
     _inject_prior_stance_to_inputs(ctx, inputs)
+    _inject_recent_attention_to_inputs(ctx, inputs)
     continuity_digest = ctx.get("continuity_digest")
     if not isinstance(continuity_digest, str):
         continuity_digest = ""

@@ -161,6 +161,36 @@ def test_hop_from_stance_inputs_ok():
     assert hop.producer == "orion-hub"
 
 
+def test_hop_from_stance_inputs_surfaces_recent_attention_summary():
+    payload = {
+        "user_message": "hello there",
+        "session_id": "s1",
+        "llm_profile": "brain",
+        "stance_inputs": {
+            "user_message": "hello there",
+            "recent_attention": {
+                "items": [{"process": "cortex_turn", "narrative": "x", "age_label": "moments ago"}],
+                "stale": False,
+                "as_of": "2026-09-07T12:00:00+00:00",
+            },
+        },
+    }
+    hop = hop_from_stance_inputs(correlation_id="c1", seq=2, stance_inputs=payload)
+    assert hop.summary["recent_attention_items"] == 1
+    assert hop.summary["recent_attention_stale"] is False
+    assert hop.raw["stance_inputs"]["recent_attention"]["items"][0]["process"] == "cortex_turn"
+
+
+def test_hop_from_stance_inputs_omits_recent_attention_summary_when_absent():
+    payload = {
+        "user_message": "hello there",
+        "stance_inputs": {"user_message": "hello there"},
+    }
+    hop = hop_from_stance_inputs(correlation_id="c1", seq=2, stance_inputs=payload)
+    assert "recent_attention_items" not in hop.summary
+    assert "recent_attention_stale" not in hop.summary
+
+
 def test_hop_from_motor_boot_carries_exact_prompt():
     prompt = "WHO YOU ARE\n...\nUSER: hi"
     hop = hop_from_motor_boot(

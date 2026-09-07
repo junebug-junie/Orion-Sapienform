@@ -26,6 +26,9 @@ SOURCES (bounded internal inputs)
 {% if chat_reverie_glimpse %}
 - reverie_glimpse: {{ chat_reverie_glimpse }}
 {% endif %}
+{% if recent_attention %}
+- recent_attention: {{ recent_attention }}
+{% endif %}
 {% if chat_situation_summary %}
 - situation_summary: {{ chat_situation_summary }}
 {% endif %}
@@ -66,6 +69,9 @@ REQUIREMENTS
 - Attention frame is an inspectable policy artifact: use selected_action, suppressions, and open_loops to shape response_priorities/response_hazards.
 - Never add curiosity merely because Juniper asked a question; generic reversal questions must remain suppressed when listed.
 - If selected_action.action_type is ask, include a compact priority like curiosity:ask_selected; otherwise prefer curiosity:watch/defer/none and do not force a question.
+{% endif %}
+{% if recent_attention %}
+- recent_attention is Oríon's own background sense of what it's just been attending to -- like a person's background awareness of a heartbeat or a headache, not a status report. Only let it shape stance_summary/response_priorities/reflective_themes when it is actually relevant to this turn. Never manufacture a reason to mention it, never recite it as a status report, and do not treat recent_attention.stale as something to apologize for -- it just means nothing new to notice.
 {% endif %}
 {% if chat_situation_summary %}
 - Situation grounding is context, not mandatory content; only influence stance when relevant.

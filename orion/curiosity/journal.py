@@ -55,7 +55,7 @@ def format_evidence(
 
 def build_investigation_journal_entry(
     *,
-    material: StudyMaterial,
+    material: StudyMaterial | MaterialCounts,
     body_text: str,
     correlation_id: str,
     run_id: str,
@@ -175,6 +175,14 @@ def build_investigation_journal_entry(
         )
     lines[-1] += ".)"
     return JournalEntryWriteV1(
+        # Deterministic, keyed on the run: a durable run whose journal node
+        # publishes successfully but crashes before its checkpoint commits
+        # gets re-run from scratch by the resume sweep. A random entry_id
+        # (the model's own default) would make that a second, distinct row
+        # sharing the same source_ref below, with nothing to catch the
+        # duplicate. Same run_id -> same entry_id -> the writer's own
+        # primary-key dedup makes the retry a no-op instead of a duplicate.
+        entry_id=f"curiosity-investigation:{run_id}",
         created_at=stamp,
         author=_AUTHOR,
         mode="manual",

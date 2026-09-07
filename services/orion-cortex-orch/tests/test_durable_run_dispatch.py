@@ -58,8 +58,19 @@ def test_a_malformed_kickoff_fails_loudly() -> None:
         durable_run_request_from(_req({"durable_run": {"run_id": "x"}}))
 
 
-def test_dispatch_publishes_the_request_and_replies_accepted() -> None:
+def _bus_with_subscriber(count: int = 1) -> AsyncMock:
+    """A bus mock whose `.redis.pubsub_numsub(channel)` answers like a real
+    Redis client would -- `[(channel, count)]`. A bare `AsyncMock()` used to
+    be enough here; adding the subscriber check (below) means the fixture
+    has to actually look like the thing being checked, or the mock silently
+    validates nothing."""
     bus = AsyncMock()
+    bus.redis.pubsub_numsub = AsyncMock(return_value=[(DURABLE_RUN_REQUEST_CHANNEL, count)])
+    return bus
+
+
+def test_dispatch_publishes_the_request_and_replies_accepted() -> None:
+    bus = _bus_with_subscriber(1)
     req = _req({"durable_run": _durable_payload()})
     assert has_durable_run_request(req)
     result = asyncio.run(dispatch_durable_run(bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=req, correlation_id="corr-1"))
@@ -75,8 +86,30 @@ def test_dispatch_publishes_the_request_and_replies_accepted() -> None:
 
 
 def test_dispatch_failure_is_a_failed_result_not_an_exception() -> None:
-    bus = AsyncMock()
+    bus = _bus_with_subscriber(1)
     bus.publish.side_effect = RuntimeError("bus down")
     result = asyncio.run(dispatch_durable_run(bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": _durable_payload()}), correlation_id="corr-1"))
     assert result.ok is False and result.status == "fail"
     assert result.metadata["durable_run"]["status"] == "dispatch_failed"
+
+
+def test_a_publish_with_no_subscriber_is_a_failed_result_not_accepted() -> None:
+    """A successful publish is not proof the run started: Redis drops a
+    message with no subscriber, silently. Confirmed as a real gap 2026-09-07
+    -- this used to report status="accepted" for a run that had just
+    vanished."""
+    bus = _bus_with_subscriber(0)
+    result = asyncio.run(dispatch_durable_run(bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": _durable_payload()}), correlation_id="corr-1"))
+    bus.publish.assert_awaited_once()
+    assert result.ok is False and result.status == "fail"
+    assert result.metadata["durable_run"]["status"] == "no_subscriber"
+
+
+def test_a_subscriber_check_that_errors_fails_open_to_accepted() -> None:
+    """The check itself is diagnostic, not load-bearing -- if it cannot run
+    (a Redis client shape this script doesn't recognize, a transient error),
+    a real dispatch must not be turned into a false "fail"."""
+    bus = _bus_with_subscriber(1)
+    bus.redis.pubsub_numsub.side_effect = RuntimeError("NUMSUB not supported")
+    result = asyncio.run(dispatch_durable_run(bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": _durable_payload()}), correlation_id="corr-1"))
+    assert result.ok is True and result.status == "accepted"

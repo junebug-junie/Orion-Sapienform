@@ -1199,12 +1199,21 @@ class CuriosityInvestigation:
             graph_enabled=self.graph_enabled,
         )
         if self.kickoff_via_cortex:
-            dispatched = await self._dispatch_durable_run(
-                run_id=run_id,
-                correlation_id=correlation_id,
-                prompt=prompt,
-                material=material,
-            )
+            try:
+                dispatched = await self._dispatch_durable_run(
+                    run_id=run_id,
+                    correlation_id=correlation_id,
+                    prompt=prompt,
+                    material=material,
+                )
+            except asyncio.CancelledError:
+                # Hub going away mid-dispatch (the RPC to cortex-orch can take
+                # up to ~20s) is the same shutdown case the fallback-turn path
+                # below refunds -- this call sits outside that try/except, so
+                # without this a cancellation here left the cap slot and
+                # cooldown stamp spent for a run cortex never confirmed.
+                await self._refund_investigation(previous_stamp)
+                raise
             if dispatched:
                 return "dispatched"
             # A failed dispatch falls back to the direct path so the run this

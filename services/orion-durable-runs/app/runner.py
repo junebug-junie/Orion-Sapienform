@@ -244,9 +244,17 @@ class DurableRunner:
             await self._publish(self._settings.state_channel, DURABLE_RUN_STATE_KIND, event, _corr_uuid(event.correlation_id))
         # The surface sees the sequencing: one row per transition, this lane's
         # own vocabulary is the node name.
+        # `generated_at` (microsecond precision, one per call) keeps this
+        # unique across repeats of the same node+status -- a run that fails
+        # and resumes at `harness_turn` several times hits `resumed`/`failed`
+        # at that node every time. Without it every retry after the first
+        # collided on the same entry_id and sql-writer's PK dedup silently
+        # dropped the row -- confirmed live 2026-09-07: a run with 8
+        # `harness_turn` attempts left only one `resumed` surface row.
+        ts_suffix = event.generated_at.strftime("%Y%m%dT%H%M%S%f")
         row, corr = bind_correlation(
             AttentionSchemaV1(
-                entry_id=f"durable-{run_id}-{node}-{status}",
+                entry_id=f"durable-{run_id}-{node}-{status}-{ts_suffix}",
                 process="durable_run",
                 correlation_id=event.correlation_id,
                 attended_id=run_id,
@@ -375,7 +383,13 @@ class DurableRunner:
             if thread_id in self._active:
                 counts["active"] += 1
                 continue
-            age_h = ((now - ts).total_seconds() / 3600.0) if ts is not None else 0.0
+            # An unparseable/missing checkpoint timestamp is UNKNOWN age, not
+            # zero age -- treating it as brand new disabled the one guard that
+            # stops a stale checkpoint from resuming into a different day's
+            # material. Unknown is the unsafe case, so it fails toward
+            # abandonment (bounded by max_age_hours), never toward a silent
+            # immediate resume.
+            age_h = ((now - ts).total_seconds() / 3600.0) if ts is not None else float("inf")
             if age_h > self._settings.max_age_hours:
                 snap = await self._graph.aget_state(self._config(thread_id))
                 state = dict(snap.values) if snap and snap.values else {"run_id": thread_id, "correlation_id": ""}

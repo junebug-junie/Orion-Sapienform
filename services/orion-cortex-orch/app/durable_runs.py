@@ -95,6 +95,28 @@ async def dispatch_durable_run(
             correlation_id=correlation_id,
             metadata=_meta(request, "dispatch_failed"),
         )
+    # A successful publish is not proof anyone heard it: Redis pub/sub drops a
+    # message with no subscriber, silently, and the caller above already
+    # spent a daily investigation slot on this run before ever reaching here.
+    # Best-effort only -- a failure of the check itself must not turn a good
+    # dispatch into a false "fail", so it fails open (subscribed=True) on any
+    # error from the check itself.
+    subscribed = await _has_subscriber(bus, channel)
+    if not subscribed:
+        logger.warning("durable_run_dispatch_no_subscriber run=%s channel=%s", request.run_id, channel)
+        return CortexClientResult(
+            ok=False,
+            mode=str(req.mode),
+            verb=verb,
+            status="fail",
+            final_text=None,
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            error={"message": "no subscriber on request channel", "type": "NoSubscriber", "run_id": request.run_id},
+            correlation_id=correlation_id,
+            metadata=_meta(request, "no_subscriber"),
+        )
     logger.info(
         "durable_run_dispatched run=%s workflow=%s corr=%s channel=%s",
         request.run_id,
@@ -114,6 +136,32 @@ async def dispatch_durable_run(
         correlation_id=correlation_id,
         metadata=_meta(request, "dispatched"),
     )
+
+
+async def _has_subscriber(bus: Any, channel: str) -> bool:
+    """True unless we can positively confirm nobody is listening. A publish
+    with zero subscribers is dropped by Redis with no error, which is exactly
+    how a run kicked off while orion-durable-runs is down or mid-restart used
+    to vanish with Hub still told "accepted".
+
+    Diagnostic only, never load-bearing: ANY failure to get a confidently
+    parsed `(channel, count)` back -- a transport error, an unrecognized
+    client shape, a mocked bus in a test -- fails open (True) rather than
+    turning a real dispatch into a false "fail". A real `PUBSUB NUMSUB
+    <channel>` always echoes exactly one entry for the one channel asked
+    about, so the only way this confidently returns False is finding that
+    exact entry with a count of zero."""
+    try:
+        counts = await bus.redis.pubsub_numsub(channel)
+        for entry in counts:
+            name = entry[0] if isinstance(entry, (list, tuple)) and entry else None
+            count = entry[1] if isinstance(entry, (list, tuple)) and len(entry) > 1 else None
+            decoded = name.decode() if isinstance(name, bytes) else name
+            if decoded == channel and isinstance(count, int):
+                return count > 0
+    except Exception:  # noqa: BLE001 -- diagnostic only, never blocks a real dispatch
+        pass
+    return True
 
 
 def _meta(request: DurableRunRequestV1, status: str) -> Dict[str, Any]:

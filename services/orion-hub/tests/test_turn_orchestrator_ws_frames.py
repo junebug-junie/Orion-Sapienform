@@ -149,7 +149,7 @@ async def test_run_pre_turn_appraisal_publishes_repair_pressure_appraisal() -> N
     ), patch(
         "scripts.pre_turn_appraisal_wiring._publish_repair_pressure_appraisal", publish_mock
     ):
-        result = await _run_pre_turn_appraisal(
+        result, texture = await _run_pre_turn_appraisal(
             bus=MagicMock(),
             correlation_id=_CORR_ID,
             session_id="sess-1",
@@ -159,6 +159,7 @@ async def test_run_pre_turn_appraisal_publishes_repair_pressure_appraisal() -> N
         )
 
     assert result is bundle
+    assert texture["status"] == "ok"
     publish_mock.assert_awaited_once()
     _, kwargs = publish_mock.await_args
     assert kwargs["correlation_id"] == _CORR_ID

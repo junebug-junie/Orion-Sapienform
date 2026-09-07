@@ -1,8 +1,8 @@
 # Orion Cockpit POV — Soft HUD turn sighting
 
-**Date:** 2026-09-06  
-**Status:** Slice A landed; Slice B planned; C stubbed 
-**Branch intent:** `docs/cockpit-pov-design`  
+**Date:** 2026-09-06
+**Status:** Slice A+B landed; Rank-1 pre-motor progress hops live; C stubbed
+**Branch intent:** `docs/cockpit-pov-design`
 **Related:** Unified Orion turn (`docs/superpowers/specs/2026-07-05-unified-orion-turn-design.md`), fused Turn Trace (`services/orion-hub/scripts/chat_turn_trace_routes.py`), harness step bus (`orion:harness:run:step`)
 
 ---
@@ -105,17 +105,23 @@ Each hop includes at least:
 
 ### Canonical stages
 
-1. **ingress** — user message, attachments, observation molecule  
-2. **association** — attention / open loops / repair / trajectory slice  
-3. **stance_inputs** — full bundle fed into stance  
-4. **stance_decision** — proceed / defer / refuse + reasons + felt slice  
-5. **motor_boot** — full system/prefix context given to the FCC motor  
-6. **motor_hop** — each tool/thought step (call + result); many rows per turn  
-7. **draft_appraisal** — draft text + substrate appraisal  
-8. **finalize** — reflection, Orion voice pass, compliance  
-9. **closure** — outcome / post-turn closure / inspectable side-effects  
+1. **ingress** — user message, attachments, observation molecule
+2. **pre_turn_appraisal** — Hub boundary progress (started / ok / failed / skipped) for repair_pressure etc.
+3. **association** — attention / open loops / repair / trajectory slice (emitted as soon as built; hollow-fresh called out when `signal_count=0`)
+4. **thought_rpc** — Thought stance RPC started + done (elapsed / failure); Mind quality when present on the reply
+5. **mind_enrichment** — Mind quality flags when Hub has them; otherwise honest `mind_details_unavailable`
+6. **stance_inputs** — full bundle fed into stance
+7. **stance_decision** — proceed / defer / refuse + reasons + felt slice
+8. **harness_dispatch** — governor contacted (pre-motor → motor handoff)
+9. **motor_boot** — full system/prefix context given to the FCC motor
+10. **motor_hop** — each tool/thought step (call + result); many rows per turn
+11. **draft_appraisal** — draft text + substrate appraisal
+12. **finalize** — reflection, Orion voice pass, compliance
+13. **closure** — outcome / post-turn closure / inspectable side-effects
 
 Missing instrumentation shows as an explicit **gap** bead — never a fabricated hop.
+
+**Pre-motor progress (Rank-1, live):** Soft HUD streams honest Hub-boundary hops for dying appraisal / Thought / Mind / felt-state phases while the unified turn waits. This is not Slice C ingress thickness — it is live sighting of timeouts, hollow association, and Mind fallback flags when Hub actually has them.
 
 ### Producers (emit as the turn runs)
 
@@ -123,12 +129,12 @@ Prefer appending from real path code, reusing existing bus facts where they alre
 
 Likely touch points (implementation plan will pin exact functions):
 
-- `orion/hub/turn_orchestrator.py` — ingress, association handoff, WS mirror into cockpit frames  
-- Stance / thought path — stance_inputs + stance_decision  
-- `orion-harness-governor` / `orion/harness/fcc_motor.py` / runner — motor_boot + motor_hop  
-- `orion/harness/finalize.py` — draft_appraisal, finalize, closure  
-- `orion-sql-writer` — durable timeline persist  
-- `services/orion-hub` static JS — Cockpit modal UI  
+- `orion/hub/turn_orchestrator.py` — ingress, association handoff, WS mirror into cockpit frames
+- Stance / thought path — stance_inputs + stance_decision
+- `orion-harness-governor` / `orion/harness/fcc_motor.py` / runner — motor_boot + motor_hop
+- `orion/harness/finalize.py` — draft_appraisal, finalize, closure
+- `orion-sql-writer` — durable timeline persist
+- `services/orion-hub` static JS — Cockpit modal UI
 
 ### Storage
 
@@ -146,10 +152,10 @@ Likely touch points (implementation plan will pin exact functions):
 
 ### Failure / honesty
 
-- Store/API down → cockpit shows degraded; Turn Trace may still partially work  
-- Zero hops → empty cockpit, not a fake “complete”  
-- Failed stage → hop with `status=failed` + error in `raw`  
-- No empty-shell success states  
+- Store/API down → cockpit shows degraded; Turn Trace may still partially work
+- Zero hops → empty cockpit, not a fake “complete”
+- Failed stage → hop with `status=failed` + error in `raw`
+- No empty-shell success states
 
 ---
 
@@ -177,9 +183,9 @@ Slices are delivery cuts, not permission to ship a hollow helmet.
 
 ## Privacy / ops
 
-- Operator Hub debug surface only  
-- Retention: same class as harness turn-trace / grammar traces unless a shorter cockpit TTL is set later  
-- Do not invent a new public unauthenticated dump of prompts  
+- Operator Hub debug surface only
+- Retention: same class as harness turn-trace / grammar traces unless a shorter cockpit TTL is set later
+- Do not invent a new public unauthenticated dump of prompts
 
 ---
 
@@ -187,15 +193,15 @@ Slices are delivery cuts, not permission to ship a hollow helmet.
 
 **Gate tests**
 
-- Producer emits hop with expected `stage` + required raw keys  
-- Timeline fetch returns strict `seq` order  
-- WS frame shape for `cockpit_hop`  
-- UI smoke: Cockpit control → modal → bead click loads inspector  
-- Regression: Turn Trace panel still mounts  
+- Producer emits hop with expected `stage` + required raw keys
+- Timeline fetch returns strict `seq` order
+- WS frame shape for `cockpit_hop`
+- UI smoke: Cockpit control → modal → bead click loads inspector
+- Regression: Turn Trace panel still mounts
 
 **Eval / smoke**
 
-- One live unified-turn smoke: open Cockpit mid-turn, confirm hops append; after complete, rewind to motor_boot and confirm prefix present (Slice B+)  
+- One live unified-turn smoke: open Cockpit mid-turn, confirm hops append; after complete, rewind to motor_boot and confirm prefix present (Slice B+)
 
 ---
 
@@ -212,15 +218,15 @@ Slices are delivery cuts, not permission to ship a hollow helmet.
 
 ## Files likely to touch (implementation)
 
-- `orion/schemas/` — Turn Sighting / cockpit hop schema + registry  
-- `orion/bus/channels.yaml` — if a dedicated persist/stream channel is added  
-- `orion/hub/turn_orchestrator.py` — emit/mirror hops + WS  
-- `orion/harness/*` / `services/orion-harness-governor/` — motor_boot / motor_hop  
-- `orion/harness/finalize.py` — finalize / closure hops  
-- `services/orion-sql-writer/` — persist timeline  
-- `services/orion-hub/scripts/` — cockpit API routes  
-- `services/orion-hub/static/js/` — Cockpit Soft HUD modal  
-- Hub tests + harness/sql-writer tests  
+- `orion/schemas/` — Turn Sighting / cockpit hop schema + registry
+- `orion/bus/channels.yaml` — if a dedicated persist/stream channel is added
+- `orion/hub/turn_orchestrator.py` — emit/mirror hops + WS
+- `orion/harness/*` / `services/orion-harness-governor/` — motor_boot / motor_hop
+- `orion/harness/finalize.py` — finalize / closure hops
+- `services/orion-sql-writer/` — persist timeline
+- `services/orion-hub/scripts/` — cockpit API routes
+- `services/orion-hub/static/js/` — Cockpit Soft HUD modal
+- Hub tests + harness/sql-writer tests
 
 Exact file list locked in the implementation plan.
 
@@ -228,12 +234,12 @@ Exact file list locked in the implementation plan.
 
 ## Acceptance checks
 
-1. From a Hub unified-turn chat bubble, Cockpit opens Soft HUD modal  
-2. Live: hops appear without refresh while the turn runs  
-3. After: scrubber can rewind to an earlier hop; inspector shows that hop’s raw payload  
-4. motor_boot (once Slice B lands) shows the real system/prefix text Orion was given  
-5. Missing stages show as gaps, not silent omission  
-6. Turn Trace still present and functional  
+1. From a Hub unified-turn chat bubble, Cockpit opens Soft HUD modal
+2. Live: hops appear without refresh while the turn runs
+3. After: scrubber can rewind to an earlier hop; inspector shows that hop’s raw payload
+4. motor_boot (once Slice B lands) shows the real system/prefix text Orion was given
+5. Missing stages show as gaps, not silent omission
+6. Turn Trace still present and functional
 
 ---
 

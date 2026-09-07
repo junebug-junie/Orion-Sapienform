@@ -9,9 +9,13 @@ COCKPIT_HOP_CHANNEL = "orion:cockpit:hop"
 
 CockpitStageV1 = Literal[
     "ingress",
+    "pre_turn_appraisal",
     "association",
+    "thought_rpc",
+    "mind_enrichment",
     "stance_inputs",
     "stance_decision",
+    "harness_dispatch",
     "motor_boot",
     "motor_hop",
     "draft_appraisal",

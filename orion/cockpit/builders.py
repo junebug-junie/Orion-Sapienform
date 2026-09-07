@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from orion.schemas.cockpit_sighting import CockpitHopV1, CockpitStageV1
+from orion.schemas.cockpit_sighting import CockpitHopStatusV1, CockpitHopV1, CockpitStageV1
 
 _HUB_PRODUCER = "orion-hub"
 
@@ -30,6 +30,50 @@ def _base_hop(
     )
 
 
+def hop_from_progress(
+    *,
+    correlation_id: str,
+    seq: int,
+    stage: CockpitStageV1,
+    status: CockpitHopStatusV1,
+    visor_line: str,
+    summary: dict[str, Any] | None = None,
+    raw: dict[str, Any] | None = None,
+    producer: str = _HUB_PRODUCER,
+) -> CockpitHopV1:
+    """Honest pre-motor / boundary progress hop from a real Hub event."""
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage=stage,
+        visor_line=visor_line,
+        status=status,
+        summary=summary,
+        raw=raw,
+        producer=producer,
+    )
+
+
+def _association_signal_count(association: dict[str, Any]) -> int | None:
+    """Best-effort signal_count from broadcast.frame.debug, else open_loops len."""
+    broadcast = association.get("broadcast")
+    if not isinstance(broadcast, dict):
+        return None
+    frame = broadcast.get("frame")
+    if not isinstance(frame, dict):
+        return None
+    debug = frame.get("debug")
+    if isinstance(debug, dict) and "signal_count" in debug:
+        try:
+            return int(debug["signal_count"])
+        except (TypeError, ValueError):
+            pass
+    open_loops = frame.get("open_loops")
+    if isinstance(open_loops, list):
+        return len(open_loops)
+    return None
+
+
 def hop_from_association(
     *,
     correlation_id: str,
@@ -38,16 +82,26 @@ def hop_from_association(
 ) -> CockpitHopV1:
     stale = bool(association.get("broadcast_stale"))
     label = "stale" if stale else "fresh"
+    signal_count = _association_signal_count(association)
+    hollow = (not stale) and signal_count == 0
+    if hollow:
+        visor_line = f"association · {label} · empty"
+    else:
+        visor_line = f"association · {label}"
+    summary: dict[str, Any] = {
+        "broadcast_stale": stale,
+        "read_source": association.get("read_source"),
+    }
+    if signal_count is not None:
+        summary["signal_count"] = signal_count
+        summary["hollow"] = hollow
     return _base_hop(
         correlation_id=correlation_id,
         seq=seq,
         stage="association",
-        visor_line=f"association · {label}",
+        visor_line=visor_line,
         status="ok",
-        summary={
-            "broadcast_stale": stale,
-            "read_source": association.get("read_source"),
-        },
+        summary=summary,
         raw=dict(association),
     )
 
@@ -233,3 +287,33 @@ def gap_hop(
         summary={"deferred_to": deferred_to},
         raw={},
     )
+
+
+def extract_mind_quality_fields(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pull Mind quality flags from a Thought reply / nested artifact if present.
+
+    ThoughtEventV1 does not currently carry these fields. Returns None when Hub
+    has nothing honest to show (caller should emit mind_details_unavailable).
+    """
+    if not isinstance(payload, dict):
+        return None
+    candidates: list[dict[str, Any]] = [payload]
+    for key in ("mind", "mind_run", "mind_brief", "brief", "mind_coloring", "metadata"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    keys = (
+        "mind_quality",
+        "fallback_contract_only",
+        "authorized_for_stance_use",
+        "coloring_skipped",
+    )
+    found: dict[str, Any] = {}
+    for blob in candidates:
+        for key in keys:
+            if key in blob and key not in found:
+                found[key] = blob[key]
+        mq = blob.get("mind_quality")
+        if mq == "fallback_contract_only" and "fallback_contract_only" not in found:
+            found["fallback_contract_only"] = True
+    return found or None

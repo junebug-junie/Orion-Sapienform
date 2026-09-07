@@ -156,6 +156,20 @@
   opacity: 0.42;
 }
 
+.cockpit-visor-line-failed {
+  color: #e8b4b4;
+}
+
+.cockpit-hop-failed {
+  border-color: rgba(220, 140, 140, 0.45);
+  color: #e8c4c4;
+}
+
+.cockpit-hop-started {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
 .cockpit-rail {
   display: flex;
   flex-direction: column;

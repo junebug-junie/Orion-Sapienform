@@ -21,6 +21,26 @@ def test_cockpit_hop_roundtrip_and_registry():
     assert resolve("CockpitHopV1") is CockpitHopV1
 
 
+def test_progress_stages_roundtrip():
+    for stage in (
+        "pre_turn_appraisal",
+        "thought_rpc",
+        "mind_enrichment",
+        "harness_dispatch",
+    ):
+        hop = CockpitHopV1(
+            correlation_id="corr-1",
+            seq=0,
+            stage=stage,  # type: ignore[arg-type]
+            visor_line=f"{stage} · ok",
+            status="started",
+            summary={},
+            raw={},
+            producer="orion-hub",
+        )
+        assert CockpitHopV1.model_validate(hop.model_dump(mode="json")).stage == stage
+
+
 def test_gap_status_allowed():
     hop = CockpitHopV1(
         correlation_id="corr-1",

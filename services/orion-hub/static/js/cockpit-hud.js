@@ -94,8 +94,12 @@
     else if (current) line = current.visor_line || current.stage || line;
     const stream = hops.slice(-8).map(function (hop) {
       const gap = hop.status === 'gap';
+      const failed = hop.status === 'failed';
       const isCurrent = current && hop.seq === current.seq;
-      const cls = 'cockpit-visor-line' + (gap ? ' cockpit-visor-line-gap' : '') + (isCurrent ? ' is-current' : '');
+      const cls = 'cockpit-visor-line'
+        + (gap ? ' cockpit-visor-line-gap' : '')
+        + (failed ? ' cockpit-visor-line-failed' : '')
+        + (isCurrent ? ' is-current' : '');
       return '<div class="' + cls + '">' + escapeText(hop.visor_line || hop.stage || '') + '</div>';
     }).join('');
     return [
@@ -112,10 +116,14 @@
     const current = selectedHop(snapshot);
     const beads = hops.map(function (hop) {
       const gap = hop.status === 'gap';
+      const failed = hop.status === 'failed';
+      const started = hop.status === 'started';
       const selected = current && hop.seq === current.seq;
       const cls = [
         'cockpit-hop',
         gap ? 'cockpit-hop-gap' : '',
+        failed ? 'cockpit-hop-failed' : '',
+        started ? 'cockpit-hop-started' : '',
         selected ? 'is-selected' : '',
       ].filter(Boolean).join(' ');
       return (
@@ -123,7 +131,7 @@
         + ' data-seq="' + escapeHtml(String(hop.seq)) + '"'
         + ' data-status="' + escapeHtml(hop.status || '') + '"'
         + ' data-stage="' + escapeHtml(hop.stage || '') + '"'
-        + ' title="' + escapeHtml(hop.stage || '') + '"'
+        + ' title="' + escapeHtml((hop.visor_line || hop.stage || '')) + '"'
         + '>' + escapeText(hop.stage || String(hop.seq)) + '</button>'
       );
     }).join('');

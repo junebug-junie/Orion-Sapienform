@@ -212,7 +212,15 @@ class DurableRunner:
 
     # --- state events -------------------------------------------------------
 
-    async def _emit_state(self, state: CuriosityRunState, *, node: str, status: str, detail: dict[str, Any] | None = None) -> None:
+    async def _emit_state(
+        self,
+        state: CuriosityRunState,
+        *,
+        node: str,
+        status: str,
+        detail: dict[str, Any] | None = None,
+        resumed_from: str | None = None,
+    ) -> None:
         run_id = state["run_id"]
         idx = CURIOSITY_NODES.index(node) if node in CURIOSITY_NODES else -1
         next_node = CURIOSITY_NODES[idx + 1] if 0 <= idx < len(CURIOSITY_NODES) - 1 else None
@@ -225,7 +233,10 @@ class DurableRunner:
             node=node,
             next_node=next_node,
             status=status,  # type: ignore[arg-type]
-            resumed_from_node=self._resumed_from.pop(run_id, None),
+            # The immediate `resumed` receipt passes resumed_from explicitly and
+            # leaves the marker in place, so the first node that completes
+            # after the resume carries it too; that completion pops it.
+            resumed_from_node=resumed_from if resumed_from is not None else self._resumed_from.pop(run_id, None),
             correlation_id=state["correlation_id"],
             detail=detail or {},
         )
@@ -367,6 +378,12 @@ class DurableRunner:
                 counts["abandoned"] += 1
                 continue
             logger.info("durable_run_resume run=%s from=%s age_h=%.1f", thread_id, next_node, age_h)
+            snap = await self._graph.aget_state(self._config(thread_id))
+            state = dict(snap.values) if snap and snap.values else {"run_id": thread_id, "correlation_id": ""}
+            # Receipt at the moment of pickup -- a resumed harness_turn takes
+            # 10-40 minutes to complete, and the table should say "resumed"
+            # before then, not after.
+            await self._emit_state(state, node=next_node, status="resumed", resumed_from=next_node)
             self._spawn(thread_id, None, resumed_from=next_node)
             counts["resumed"] += 1
         return counts

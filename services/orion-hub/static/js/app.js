@@ -293,6 +293,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const mindRunsModalStatus = document.getElementById('mindRunsModalStatus');
   const mindRunsModalList = document.getElementById('mindRunsModalList');
   const mindRunsModalDetails = document.getElementById('mindRunsModalDetails');
+  const cockpitHudRoot = document.getElementById('cockpitHudRoot');
   const agentTraceDebugPanel = document.getElementById('agentTraceDebugPanel');
   const agentTraceDebugToggle = document.getElementById('agentTraceDebugToggle');
   const agentTraceDebugOpenModal = document.getElementById('agentTraceDebugOpenModal');
@@ -3423,9 +3424,12 @@ document.addEventListener("DOMContentLoaded", () => {
       || isModalVisible(autonomyReadinessModalRoot)
       || isModalVisible(debugPanelModalRoot)
       || isModalVisible(biometricsModalRoot)
-      || isModalVisible(agentTraceModal);
+      || isModalVisible(agentTraceModal)
+      || isModalVisible(cockpitHudRoot);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
+
+  window.syncDebugModalScrollLock = syncDebugModalScrollLock;
 
   function ensureBiometricsModalRootOnBody() {
     if (!biometricsModalRoot || !document.body) return;
@@ -6938,6 +6942,35 @@ document.addEventListener("DOMContentLoaded", () => {
       meta,
       apiBaseUrl: API_BASE_URL,
     });
+    appendCockpitButton(parent, meta);
+  }
+
+  function cockpitHudOpenForCorrelation(correlationId) {
+    const root = cockpitHudRoot || document.getElementById('cockpitHudRoot');
+    if (!root || root.classList.contains('hidden')) return false;
+    const corr = String(correlationId || '').trim();
+    if (!corr) return false;
+    const hud = root.querySelector('[data-correlation-id]');
+    return !!(hud && String(hud.getAttribute('data-correlation-id') || '').trim() === corr);
+  }
+
+  function appendCockpitButton(parent, meta = {}) {
+    if (!parent) return;
+    const correlationId = mindCorrelationFromMeta(meta);
+    const hud = window.OrionCockpitHud;
+    if (!correlationId || !hud || typeof hud.open !== 'function') return;
+    const row = document.createElement('div');
+    row.className = 'mt-2 flex items-center gap-2';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/20';
+    btn.textContent = 'Cockpit';
+    btn.addEventListener('click', () => {
+      hud.open({ correlationId, apiBaseUrl: API_BASE_URL });
+      syncDebugModalScrollLock();
+    });
+    row.appendChild(btn);
+    parent.appendChild(row);
   }
 
   function renderThoughtProcessSection(thoughtState = {}, meta = {}) {
@@ -11369,6 +11402,24 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           if (d.kind === 'claude_step' && d.step) {
             try { appendLiveClaudeStep(d.correlation_id, d.step); } catch (err) { console.warn('claude_step render failed', err); }
+            return;
+          }
+          if (d.kind === 'cockpit_hop' && d.hop) {
+            try {
+              if (window.OrionCockpitHud && typeof window.OrionCockpitHud.ingestHop === 'function'
+                  && cockpitHudOpenForCorrelation(d.correlation_id)) {
+                window.OrionCockpitHud.ingestHop(d.hop);
+              }
+            } catch (err) { console.warn('cockpit_hop ingest failed', err); }
+            return;
+          }
+          if (d.kind === 'cockpit_timeline_complete') {
+            try {
+              if (window.OrionCockpitHud && typeof window.OrionCockpitHud.markComplete === 'function'
+                  && cockpitHudOpenForCorrelation(d.correlation_id)) {
+                window.OrionCockpitHud.markComplete();
+              }
+            } catch (err) { console.warn('cockpit_timeline_complete failed', err); }
             return;
           }
           if (d.memory_digest || d.recall_debug || typeof d.memory_used === 'boolean') {

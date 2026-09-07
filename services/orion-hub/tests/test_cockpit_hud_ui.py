@@ -141,3 +141,10 @@ def test_css_is_soft_hud_not_neon() -> None:
     assert "#00ff00" not in lowered
     assert "#39ff14" not in lowered
     assert "neon" not in lowered
+
+
+def test_app_js_wires_cockpit_beside_turn_trace() -> None:
+    text = (REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "appendTurnTracePanel" in text
+    assert "OrionCockpitHud" in text
+    assert "cockpit_hop" in text

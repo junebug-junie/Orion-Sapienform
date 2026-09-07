@@ -347,6 +347,9 @@
       root.style.zIndex = '2147483646';
     }
     paint();
+    if (typeof window.syncDebugModalScrollLock === 'function') {
+      window.syncDebugModalScrollLock();
+    }
     if (!correlationId) {
       state.loading = false;
       state.error = 'missing_correlation_id';
@@ -377,6 +380,9 @@
       root.classList.add('hidden');
       root.setAttribute('aria-hidden', 'true');
       root.innerHTML = '';
+    }
+    if (typeof window.syncDebugModalScrollLock === 'function') {
+      window.syncDebugModalScrollLock();
     }
   }
 

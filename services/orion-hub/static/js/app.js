@@ -6956,7 +6956,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function appendCockpitButton(parent, meta = {}) {
     if (!parent) return;
-    const correlationId = mindCorrelationFromMeta(meta);
+    const correlationId = (typeof thoughtProcessApi.resolveCorrelationId === 'function'
+      ? thoughtProcessApi.resolveCorrelationId(meta)
+      : '') || mindCorrelationFromMeta(meta);
     const hud = window.OrionCockpitHud;
     if (!correlationId || !hud || typeof hud.open !== 'function') return;
     const row = document.createElement('div');

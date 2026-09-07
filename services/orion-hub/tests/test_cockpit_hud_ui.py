@@ -148,3 +148,8 @@ def test_app_js_wires_cockpit_beside_turn_trace() -> None:
     assert "appendTurnTracePanel" in text
     assert "OrionCockpitHud" in text
     assert "cockpit_hop" in text
+    start = text.index("function appendCockpitButton")
+    end = text.index("function renderThoughtProcessSection", start)
+    block = text[start:end]
+    assert "thoughtProcessApi.resolveCorrelationId" in block
+    assert "mindCorrelationFromMeta" in block

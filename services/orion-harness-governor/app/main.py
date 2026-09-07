@@ -45,7 +45,18 @@ async def lifespan(app: FastAPI):
         settings.port,
     )
     app.state.bus_stop_event = asyncio.Event()
-    app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
+    # Two independent dispatch loops, same code, one per compute lane -- see
+    # bus_listener.run_bus_worker's docstring. A long agent-lane turn
+    # (curiosity, Mode=Agent+Compute=Agent) and a chat-lane turn each get
+    # their own queue now, instead of sharing the one line that let a
+    # 40-minute agent-lane run silently block real chat (confirmed live
+    # 2026-09-07).
+    app.state.bus_task_chat = asyncio.create_task(
+        run_bus_worker(settings.channel_harness_run_request, app.state.bus_stop_event, lane="chat")
+    )
+    app.state.bus_task_agent = asyncio.create_task(
+        run_bus_worker(settings.channel_harness_run_request_agent, app.state.bus_stop_event, lane="agent")
+    )
     app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.bus_stop_event))
     app.state.heartbeat_chassis = build_heartbeat_chassis()
     try:
@@ -60,7 +71,11 @@ async def lifespan(app: FastAPI):
         app.state.heartbeat_chassis = None
     yield
     app.state.bus_stop_event.set()
-    for task in (app.state.bus_task, getattr(app.state, "cancel_task", None)):
+    for task in (
+        app.state.bus_task_chat,
+        app.state.bus_task_agent,
+        getattr(app.state, "cancel_task", None),
+    ):
         if task is None:
             continue
         task.cancel()
@@ -79,6 +94,8 @@ app = FastAPI(title="Orion Harness Governor", lifespan=lifespan, version=setting
 
 @app.get("/health")
 async def health() -> JSONResponse:
+    bus_task_chat = getattr(app.state, "bus_task_chat", None)
+    bus_task_agent = getattr(app.state, "bus_task_agent", None)
     return JSONResponse(
         {
             "ok": True,
@@ -87,6 +104,12 @@ async def health() -> JSONResponse:
             "bus_enabled": settings.orion_bus_enabled,
             "governor_enabled": settings.orion_harness_governor_enabled,
             "channel_harness_run_request": settings.channel_harness_run_request,
+            "channel_harness_run_request_agent": settings.channel_harness_run_request_agent,
+            # A done-but-not-cancelled task means that lane's dispatch loop
+            # died silently -- worth surfacing directly rather than only as
+            # an absence of processed turns some time later.
+            "lane_chat_alive": bus_task_chat is not None and not bus_task_chat.done(),
+            "lane_agent_alive": bus_task_agent is not None and not bus_task_agent.done(),
         }
     )
 

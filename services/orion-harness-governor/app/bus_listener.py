@@ -522,18 +522,35 @@ async def _reply_and_artifact(
     )
 
 
-async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
+async def run_bus_worker(
+    channel: str | None = None,
+    stop_event: asyncio.Event | None = None,
+    *,
+    lane: str = "chat",
+) -> None:
+    """Consume one harness-run-request channel to completion, one turn at a time.
+
+    `channel` defaults to the chat lane for backward compatibility (existing
+    tests, and anyone still calling this with the old single-arg signature).
+    `main.py`'s lifespan runs TWO of these concurrently -- one per lane, each
+    with its own channel -- so a long agent-lane turn (curiosity,
+    Mode=Agent+Compute=Agent) can never make a chat-lane turn wait behind it,
+    or vice versa. Confirmed live 2026-09-07 that a single shared loop let a
+    40-minute agent-lane turn block a real chat turn for its whole duration.
+    Everything below this line is identical for both lanes -- only which
+    channel feeds the loop differs.
+    """
     if not settings.orion_bus_enabled:
-        logger.info("Bus disabled; worker not started")
+        logger.info("Bus disabled; worker not started lane=%s", lane)
         return
     if not settings.orion_harness_governor_enabled:
-        logger.info("Harness governor disabled; worker not started")
+        logger.info("Harness governor disabled; worker not started lane=%s", lane)
         return
 
     bus = OrionBusAsync(url=settings.orion_bus_url)
-    channel = settings.channel_harness_run_request
+    channel = channel or settings.channel_harness_run_request
     await bus.connect()
-    logger.info("subscribed channel=%s", channel)
+    logger.info("subscribed lane=%s channel=%s", lane, channel)
 
     try:
         async with bus.subscribe(channel) as pubsub:
@@ -552,7 +569,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                 try:
                     await _handle_bus_message(bus, msg)
                 except Exception:
-                    logger.exception("unhandled bus worker error")
+                    logger.exception("unhandled bus worker error lane=%s", lane)
     except asyncio.CancelledError:
         raise
     finally:

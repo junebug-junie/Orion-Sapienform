@@ -63,9 +63,26 @@ class HarnessGovernorClient:
         correlation_id: Optional[str] = None,
         timeout_sec: float | None = None,
         liveness_check: LivenessCheckFn | None = None,
+        is_agent_lane: bool = False,
     ) -> HarnessRunV1 | None:
+        """Dispatch a harness run and wait for its reply.
+
+        `is_agent_lane` picks which governor dispatch queue the request goes
+        out on -- CHANNEL_HARNESS_RUN_REQUEST_AGENT vs the default
+        CHANNEL_HARNESS_RUN_REQUEST. Both are consumed by the same governor
+        code (two independent loops, see bus_listener.run_bus_worker), so
+        this only changes which queue a turn waits in, never how it runs.
+        Callers should pass the SAME compute-lane decision that already picks
+        the turn's model (see turn_orchestrator._is_agent_compute_lane) --
+        keying this on anything else (e.g. "is this curiosity calling")
+        would let a manual Mode=Agent+Compute=Agent chat turn land on the
+        chat queue while sharing the agent lane's model server anyway.
+        """
         correlation_id = correlation_id or request.correlation_id or str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_HARNESS_RESULT_PREFIX}{correlation_id}"
+        request_channel = (
+            settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT if is_agent_lane else settings.CHANNEL_HARNESS_RUN_REQUEST
+        )
         poll_sec = max(
             0.1,
             float(
@@ -101,6 +118,7 @@ class HarnessGovernorClient:
             # maxclients / hub file descriptors.
             msg = await self._run_via_worker(
                 envelope,
+                request_channel=request_channel,
                 reply_to=reply_to,
                 poll_sec=poll_sec,
                 max_wait_sec=max_wait_sec,
@@ -112,6 +130,7 @@ class HarnessGovernorClient:
         else:
             msg = await self._run_via_ad_hoc_subscribe(
                 envelope,
+                request_channel=request_channel,
                 reply_to=reply_to,
                 poll_sec=poll_sec,
                 max_wait_sec=max_wait_sec,
@@ -146,6 +165,7 @@ class HarnessGovernorClient:
         self,
         envelope: BaseEnvelope,
         *,
+        request_channel: str,
         reply_to: str,
         poll_sec: float,
         max_wait_sec: float,
@@ -161,7 +181,7 @@ class HarnessGovernorClient:
         try:
             async with self.bus._rpc_lock:
                 await self.bus._rpc_subscribe(reply_to)
-            await self.bus.publish(settings.CHANNEL_HARNESS_RUN_REQUEST, envelope)
+            await self.bus.publish(request_channel, envelope)
             wait = poll_sec
             while True:
                 try:
@@ -196,6 +216,7 @@ class HarnessGovernorClient:
         self,
         envelope: BaseEnvelope,
         *,
+        request_channel: str,
         reply_to: str,
         poll_sec: float,
         max_wait_sec: float,
@@ -205,7 +226,7 @@ class HarnessGovernorClient:
         started: float,
     ) -> dict | None:
         async with self.bus.subscribe(reply_to) as pubsub:
-            await self.bus.publish(settings.CHANNEL_HARNESS_RUN_REQUEST, envelope)
+            await self.bus.publish(request_channel, envelope)
             wait = poll_sec
             while True:
                 # _get_message_within's own timeout (not asyncio.wait_for cancelling an

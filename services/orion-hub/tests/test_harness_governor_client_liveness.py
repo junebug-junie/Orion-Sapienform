@@ -96,12 +96,14 @@ class _FakeBus:
     def __init__(self, *, reply_after_sec: float, reply_payload: dict | None) -> None:
         self.codec = OrionCodec()
         self.publish_calls = 0
+        self.published_channels: list[str] = []
         self._reply_after_sec = reply_after_sec
         self._reply_payload = reply_payload
         self._published_at: float | None = None
 
     async def publish(self, channel: str, envelope: BaseEnvelope) -> None:
         self.publish_calls += 1
+        self.published_channels.append(channel)
         if self._published_at is None:
             self._published_at = asyncio.get_event_loop().time()
 
@@ -308,6 +310,7 @@ class _FakeWorkerBus:
     def __init__(self, *, rpc_worker_task: "asyncio.Task", reply_after_sec: float, reply_payload: dict) -> None:
         self.codec = OrionCodec()
         self.publish_calls = 0
+        self.published_channels: list[str] = []
         self.subscribe_calls = 0
         self._rpc_worker_task = rpc_worker_task
         self._rpc_lock = asyncio.Lock()
@@ -323,6 +326,7 @@ class _FakeWorkerBus:
 
     async def publish(self, channel: str, envelope: BaseEnvelope) -> None:
         self.publish_calls += 1
+        self.published_channels.append(channel)
         asyncio.get_event_loop().call_later(self._reply_after_sec, self._resolve_pending)
 
     def _resolve_pending(self) -> None:
@@ -336,6 +340,80 @@ class _FakeWorkerBus:
         for fut in list(self._pending_rpc.values()):
             if not fut.done():
                 fut.set_result(msg)
+
+
+# --- is_agent_lane picks which governor queue the request goes out on ------
+#
+# Confirmed live 2026-09-07: both lanes shared one governor dispatch queue,
+# so a long agent-lane turn (curiosity) silently blocked a real chat turn for
+# its whole duration. `is_agent_lane` is what turn_orchestrator computes from
+# the turn's resolved model (`_is_agent_compute_lane`), passed straight
+# through here to decide which channel gets published to.
+
+@pytest.mark.asyncio
+async def test_run_publishes_to_the_chat_channel_by_default() -> None:
+    poll_sec = 0.05
+    bus = _FakeBus(reply_after_sec=poll_sec * 2.5, reply_payload=_run_payload())
+    client = HarnessGovernorClient(bus)
+
+    result = await client.run(
+        _request(),
+        correlation_id=_CORR_ID,
+        timeout_sec=poll_sec,
+        liveness_check=lambda _within_sec: True,
+    )
+
+    assert result is not None
+    assert bus.published_channels == [settings.CHANNEL_HARNESS_RUN_REQUEST]
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_to_the_agent_channel_when_asked() -> None:
+    poll_sec = 0.05
+    bus = _FakeBus(reply_after_sec=poll_sec * 2.5, reply_payload=_run_payload())
+    client = HarnessGovernorClient(bus)
+
+    result = await client.run(
+        _request(),
+        correlation_id=_CORR_ID,
+        timeout_sec=poll_sec,
+        liveness_check=lambda _within_sec: True,
+        is_agent_lane=True,
+    )
+
+    assert result is not None
+    assert bus.published_channels == [settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT]
+    assert settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT != settings.CHANNEL_HARNESS_RUN_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_run_via_worker_path_also_respects_is_agent_lane() -> None:
+    """Same selection, the shared-worker-connection path (`_run_via_worker`)
+    instead of the ad-hoc subscribe path exercised above."""
+    poll_sec = 0.05
+    worker_task = asyncio.ensure_future(asyncio.sleep(1000))
+    try:
+        bus = _FakeWorkerBus(
+            rpc_worker_task=worker_task,
+            reply_after_sec=poll_sec * 2.5,
+            reply_payload=_run_payload(),
+        )
+        client = HarnessGovernorClient(bus)
+
+        result = await client.run(
+            _request(),
+            correlation_id=_CORR_ID,
+            timeout_sec=poll_sec,
+            liveness_check=lambda _within_sec: True,
+            is_agent_lane=True,
+        )
+
+        assert result is not None
+        assert bus.published_channels == [settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT]
+    finally:
+        worker_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker_task
 
 
 @pytest.mark.asyncio

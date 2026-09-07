@@ -1,24 +1,43 @@
 # orion-harness-governor
 
-Bus worker for unified Hub turns. Listens on `orion:harness:run:request`, runs fcc motor + three-beat finalize (5a/5b/5c), replies with `HarnessRunV1`, and publishes audit artifacts.
+Bus worker for unified Hub turns. Listens on `orion:harness:run:request` (chat compute lane)
+**and** `orion:harness:run:request:agent` (agent compute lane) via two independent dispatch
+loops — same handler code either way, just two separate queues so a long agent-lane turn
+(curiosity, Mode=Agent+Compute=Agent) can never make a chat-lane turn wait behind it. Runs fcc
+motor + three-beat finalize (5a/5b/5c), replies with `HarnessRunV1`, and publishes audit
+artifacts.
+
+**Lane split (2026-09-07).** Before this, both lanes shared one dispatch loop that processed
+turns strictly one at a time regardless of source — confirmed live that a single 40-minute
+agent-lane run left a real chat turn waiting the entire time with no visible error until Hub's
+RPC timeout. Which lane a turn's request goes out on is decided once, Hub-side, from the SAME
+resolved model label that already picks the turn's model (`orion.hub.turn_orchestrator
+._is_agent_compute_lane`) — not from "who called it" — so a manual Mode=Agent+Compute=Agent chat
+turn shares the agent lane with curiosity (they already share one GPU), while ordinary chat never
+waits behind either. See `orion/fcc/turn_lock.py` for why concurrent turns sharing the FCC
+sandbox checkout is already a supported, pre-existing case, not a new risk this introduces.
 
 ## Channels
 
 | Env key | Default | Role |
 |---------|---------|------|
-| `CHANNEL_HARNESS_RUN_REQUEST` | `orion:harness:run:request` | RPC intake from Hub |
-| `CHANNEL_HARNESS_RESULT_PREFIX` | `orion:harness:run:result:` | Reply channel prefix |
+| `CHANNEL_HARNESS_RUN_REQUEST` | `orion:harness:run:request` | RPC intake from Hub — chat compute lane |
+| `CHANNEL_HARNESS_RUN_REQUEST_AGENT` | `orion:harness:run:request:agent` | RPC intake from Hub — agent compute lane (independent dispatch loop) |
+| `CHANNEL_HARNESS_RESULT_PREFIX` | `orion:harness:run:result:` | Reply channel prefix (shared — keyed by correlation ID, not lane) |
 | `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Audit publish after each run |
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
 
 Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
 `HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.
+`GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
+silently is visible immediately rather than inferred later from turns going unanswered.
 
 ## Flow
 
 ```text
-LISTEN orion:harness:run:request
+LISTEN orion:harness:run:request          (chat lane, one loop)
+LISTEN orion:harness:run:request:agent    (agent lane, another loop — same code)
   → validate HarnessRunRequestV1 + thought disposition
   → HarnessRunner.run() — fcc motor + grammar receipts + draft_text
   → run_harness_finalize_chain() — 5a substrate / 5b reflect / 5c voice / 6b outcome

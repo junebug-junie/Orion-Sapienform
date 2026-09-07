@@ -32,8 +32,14 @@ def test_build_heartbeat_chassis_uses_governor_settings() -> None:
     assert chassis.cfg.health_channel == "orion:system:health"
 
 
-async def _wait_for_stop(stop_event: asyncio.Event) -> None:
-    await stop_event.wait()
+async def _wait_for_stop(
+    first: str | asyncio.Event, second: asyncio.Event | None = None, *, lane: str = "chat"
+) -> None:
+    """Stands in for both `run_bus_worker(channel, stop_event, lane=...)` and
+    `run_cancel_worker(stop_event)` -- their calling shapes differ, so `stop_event`
+    is whichever of the two positional args is actually the Event."""
+    stop_event = second if second is not None else first
+    await stop_event.wait()  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
@@ -66,4 +72,5 @@ async def test_lifespan_survives_heartbeat_start_failure(monkeypatch) -> None:
     app = FastAPI()
     async with governor_main.lifespan(app):
         assert app.state.heartbeat_chassis is None
-        assert not app.state.bus_task.done()
+        assert not app.state.bus_task_chat.done()
+        assert not app.state.bus_task_agent.done()

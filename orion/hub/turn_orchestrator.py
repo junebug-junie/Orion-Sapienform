@@ -85,6 +85,35 @@ def _resolve_fcc_model_label(payload: dict[str, Any], mode_tag: str) -> str:
             return lane_model
     return DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL
 
+
+# The literal model string the "agent" route resolves to (e.g. "llamacpp/agent"),
+# computed once from the same table `_resolve_fcc_model_label` uses -- not a second
+# name for the same thing. See `_is_agent_compute_lane`.
+_AGENT_LANE_FCC_MODEL_LABEL = fcc_model_for_route("agent")
+
+
+def _is_agent_compute_lane(resolved_fcc_model_label: str) -> bool:
+    """Is this turn's FULLY RESOLVED model on the agent compute lane (circe GPU1,
+    the 27B)?
+
+    Deliberately keyed on the resolved model label, not on `mode_tag`, `llm_route`,
+    or "did curiosity call this" -- those three disagree about curiosity's own
+    turns (curiosity sends an explicit `fcc_model_label`, branch 1 of
+    `_resolve_fcc_model_label`, precisely so it does NOT touch `mode`; see
+    `curiosity_investigation.py`'s own comment on that call). The resolved label is
+    the one thing every path -- curiosity, and a human's Mode=Agent+Compute=Agent
+    chat turn -- agrees on when they are both actually calling the agent model.
+    That agreement is load-bearing: it is what sends both of them to the SAME
+    governor dispatch queue (`HarnessGovernorClient.run(is_agent_lane=...)`), which
+    is correct -- they already share one physical GPU slot -- while an ordinary
+    chat turn (whose resolved label is `MODEL_SONNET`/`MODEL_OPUS`, never this
+    literal) keeps its own queue and never waits behind either of them. Confirmed
+    live 2026-09-07: a single shared queue let one long agent-lane run block a real
+    chat turn for its whole duration.
+    """
+    return bool(_AGENT_LANE_FCC_MODEL_LABEL) and resolved_fcc_model_label == _AGENT_LANE_FCC_MODEL_LABEL
+
+
 EmitObservationFn = Callable[..., Any]
 
 
@@ -1123,6 +1152,10 @@ async def execute_unified_turn(
     # live 2026-09-03 via Hub's own /api/chat/turn/{corr}/trace endpoint on a
     # real Mode: Agent turn.
     mode_tag = str(payload.get("mode") or "orion").strip().lower()
+    # Computed once and reused for both the request itself and the governor
+    # dispatch-lane decision below (`_is_agent_compute_lane`) -- one resolution,
+    # not two independent guesses that could disagree.
+    resolved_fcc_model_label = _resolve_fcc_model_label(payload, mode_tag)
 
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
@@ -1140,7 +1173,7 @@ async def execute_unified_turn(
         ),
         answer_contract=AnswerContract(),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
-        fcc_model_label=_resolve_fcc_model_label(payload, mode_tag),
+        fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
         situation_prompt_fragment=situation_prompt_fragment,
     )
@@ -1201,6 +1234,7 @@ async def execute_unified_turn(
             harness_req,
             correlation_id=correlation_id,
             liveness_check=liveness_check,
+            is_agent_lane=_is_agent_compute_lane(resolved_fcc_model_label),
         )
         # `run is None` means an RPC timeout with no cancel published -- the
         # motor may still be mid-turn, so this stays False and we leave the

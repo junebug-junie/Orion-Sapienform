@@ -30,6 +30,17 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:harness:run:request",
         alias="CHANNEL_HARNESS_RUN_REQUEST",
     )
+    # Agent compute lane's own request channel -- a second, independent
+    # `run_bus_worker` loop subscribes here (see main.py's lifespan) so a long
+    # agent-lane turn (curiosity, Mode=Agent+Compute=Agent) never sits behind
+    # a chat-lane turn, or vice versa, in the same queue. Same handler code
+    # (`_handle_bus_message` / `handle_harness_run_request`) either way --
+    # only which channel feeds it differs. Must match Hub's
+    # CHANNEL_HARNESS_RUN_REQUEST_AGENT exactly, same as the chat channel above.
+    channel_harness_run_request_agent: str = Field(
+        "orion:harness:run:request:agent",
+        alias="CHANNEL_HARNESS_RUN_REQUEST_AGENT",
+    )
     channel_harness_run_artifact: str = Field(
         "orion:harness:run:artifact",
         alias="CHANNEL_HARNESS_RUN_ARTIFACT",

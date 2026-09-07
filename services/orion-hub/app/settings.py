@@ -1441,6 +1441,20 @@ class Settings(BaseSettings):
         default="orion:harness:run:request",
         alias="CHANNEL_HARNESS_RUN_REQUEST",
     )
+    # Second dispatcher for the harness governor's agent compute lane (circe
+    # GPU1, the 27B curiosity/Mode=Agent+Compute=Agent model) -- same governor
+    # code, same request/reply schema, independent request channel so a long
+    # agent-lane turn (curiosity investigations, up to
+    # HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC) never makes a chat-lane turn
+    # wait behind it in the same single-flight queue. Confirmed live
+    # 2026-09-07: both lanes shared this one channel and one governor worker
+    # loop, so a 40-minute curiosity run silently blocked a real chat turn for
+    # its whole duration. See HarnessGovernorClient.run()'s `is_agent_lane`
+    # and orion.hub.turn_orchestrator._is_agent_compute_lane for the selector.
+    CHANNEL_HARNESS_RUN_REQUEST_AGENT: str = Field(
+        default="orion:harness:run:request:agent",
+        alias="CHANNEL_HARNESS_RUN_REQUEST_AGENT",
+    )
     CHANNEL_HARNESS_RESULT_PREFIX: str = Field(
         default="orion:harness:run:result:",
         alias="CHANNEL_HARNESS_RESULT_PREFIX",

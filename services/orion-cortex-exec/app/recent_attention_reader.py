@@ -26,7 +26,10 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 
-from orion.substrate.recent_attention_cue import build_recent_attention_cue
+from orion.substrate.recent_attention_cue import (
+    RECENT_ATTENTION_QUERY_SQL,
+    build_recent_attention_cue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,20 +113,7 @@ def _fetch_sync() -> dict[str, Any] | None:
     limit = _limit()
     with engine.connect() as conn:
         rows = (
-            conn.execute(
-                text(
-                    "SELECT process, reason_narrative, generated_at "
-                    "FROM substrate_attention_schema "
-                    # reason_narrative is NOT NULL DEFAULT '' on the live table
-                    # (not absent, just empty) -- filtered here, before LIMIT,
-                    # so an empty-narrative burst in the most recent rows can't
-                    # silently starve the cue of real narrated rows sitting
-                    # just past the window. Confirmed at review 2026-09-07.
-                    "WHERE reason_narrative <> '' "
-                    "ORDER BY generated_at DESC LIMIT :limit"
-                ),
-                {"limit": limit},
-            )
+            conn.execute(text(RECENT_ATTENTION_QUERY_SQL), {"limit": limit})
             .mappings()
             .all()
         )

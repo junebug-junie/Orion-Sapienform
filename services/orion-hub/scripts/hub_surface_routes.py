@@ -24,6 +24,7 @@ Mockup this was built from: https://claude.ai/code/artifact/8e8e2dbc-1b66-4bbf-b
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any
@@ -33,6 +34,12 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import create_engine, text
 
 from app.settings import settings
+from orion.substrate.recent_attention_cue import (
+    RECENT_ATTENTION_QUERY_SQL,
+    build_recent_attention_cue,
+)
+
+logger = logging.getLogger(__name__)
 
 # /api/hub-surface/* -- the data. `page_router` (below, no prefix) serves the
 # page itself, matching how substrate.html / causal_geometry.html are served
@@ -55,6 +62,14 @@ def _engine():
 
 ALLOWED_WINDOW_MINUTES: frozenset[int] = frozenset({60, 360, 1440})
 DEFAULT_WINDOW_MINUTES: int = 1440
+
+# Mirrors orion-cortex-exec's RECENT_ATTENTION_CUE_LIMIT / _STALE_AFTER_SEC
+# defaults (services/orion-cortex-exec/app/recent_attention_reader.py) -- NOT
+# read live from that service's env, since it's a different service's config
+# and Hub has no cross-service settings read for it. If those defaults are
+# ever tuned on cortex-exec, update these two constants to match by hand.
+RECENT_ATTENTION_LIMIT: int = 3
+RECENT_ATTENTION_STALE_AFTER_SEC: float = 900.0
 
 
 def normalize_window_minutes(raw: int) -> int:
@@ -378,6 +393,51 @@ def durable_runs_trend() -> dict[str, Any]:
         cumulative += by_day[day]
         series.append({"day": day, "cumulative_completed": cumulative})
     return {"series": series, "milestones": HUB_SURFACE_MILESTONES}
+
+
+@router.get("/recent-attention")
+def recent_attention() -> dict[str, Any]:
+    """Live replay of the exact ambient cue a real chat turn's stance
+    synthesis sees right now (PR #2141, `chat_stance_brief.j2`'s
+    `recent_attention` SOURCES entry) -- calls the SAME shared query text and
+    pure builder cortex-exec's `recent_attention_reader.py` calls
+    (`orion.substrate.recent_attention_cue`), not a reimplementation, so the
+    row data itself can never silently drift from what chat actually sees.
+    Exists because the Cockpit HUD's live-turn-only window is easy to miss
+    (PR #2144 attempted to surface it there and could not -- the Cockpit's
+    `stance_inputs` hop is fed by an unrelated Hub-side request object, not
+    this cue; see that PR's report for the full diagnosis).
+
+    Fail-open by contract, unlike this file's other routes (a pre-existing
+    gap in `bridge`/`durable_runs`/`activity`, not introduced here and not
+    fixed here -- out of scope for this patch): `hub-surface.js`'s `loadAll()`
+    fetches all panels in one `Promise.all`, so an unhandled exception here
+    would blank out every OTHER panel too, not just this one. The underlying
+    builder's own contract is "never be the reason a chat turn fails"; the
+    same posture belongs here for the same reason, one level up."""
+    try:
+        with _engine().connect() as conn:
+            rows = (
+                conn.execute(text(RECENT_ATTENTION_QUERY_SQL), {"limit": RECENT_ATTENTION_LIMIT})
+                .mappings()
+                .all()
+            )
+        cue = build_recent_attention_cue(
+            [dict(r) for r in rows],
+            limit=RECENT_ATTENTION_LIMIT,
+            stale_after_sec=RECENT_ATTENTION_STALE_AFTER_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract, see docstring
+        logger.warning("hub_surface_recent_attention_fetch_failed error=%s", exc)
+        cue = {"items": [], "stale": True, "as_of": None}
+    # RECENT_ATTENTION_LIMIT/_STALE_AFTER_SEC are hand-mirrored copies of
+    # cortex-exec's own env-configurable defaults (see their definition above)
+    # -- not live-synced. Disclosed in the response itself, not just a code
+    # comment, so a stale/fresh verdict that disagrees with a real chat turn
+    # is traceable to "someone tuned cortex-exec's env and forgot this," not
+    # mistaken for a bug in the shared query/builder.
+    cue["mirrors_cortex_exec_defaults"] = True
+    return cue
 
 
 @router.get("/activity")

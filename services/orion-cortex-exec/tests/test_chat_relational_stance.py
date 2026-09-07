@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.chat_stance import (
     _inject_prior_stance_to_inputs,
+    _inject_recent_attention_to_inputs,
     compile_speech_contract,
     enforce_chat_stance_quality,
     strip_identity_recital_leadin,
@@ -368,6 +369,28 @@ def test_inject_prior_stance_to_inputs_noop_for_empty_dict() -> None:
     inputs: dict = {}
     _inject_prior_stance_to_inputs(ctx, inputs)
     assert "prior_stance" not in inputs
+
+
+def test_inject_recent_attention_to_inputs_when_present() -> None:
+    cue = {"items": [{"process": "cortex_turn", "narrative": "x", "age_label": "moments ago"}], "stale": False}
+    ctx = {"recent_attention": cue}
+    inputs: dict = {}
+    _inject_recent_attention_to_inputs(ctx, inputs)
+    assert inputs.get("recent_attention") == cue
+
+
+def test_inject_recent_attention_to_inputs_noop_when_absent() -> None:
+    ctx: dict = {}
+    inputs: dict = {}
+    _inject_recent_attention_to_inputs(ctx, inputs)
+    assert "recent_attention" not in inputs
+
+
+def test_inject_recent_attention_to_inputs_noop_for_empty_dict() -> None:
+    ctx = {"recent_attention": {}}
+    inputs: dict = {}
+    _inject_recent_attention_to_inputs(ctx, inputs)
+    assert "recent_attention" not in inputs
 
 
 def test_stance_brief_prompt_has_prior_stance_and_regime_fields() -> None:

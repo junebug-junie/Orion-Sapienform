@@ -43,6 +43,7 @@ from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
+from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
 from scripts.endogenous_outreach import EndogenousOutreach
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
@@ -287,6 +288,7 @@ bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 endogenous_outreach: Optional[EndogenousOutreach] = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
 world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
+world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
@@ -391,7 +393,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -606,6 +608,33 @@ async def startup_event():
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
             )
             await world_pulse_read_pipeline.start(bus, harness_rpc_bus=rpc_bus)
+
+            world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(
+                enabled=settings.HUB_WORLD_PULSE_READ_STAGE2_ENABLED,
+                tick_interval_sec=settings.HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC,
+                min_cooldown_sec=settings.HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC,
+                daily_cap=settings.HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP,
+                window_start_hour=settings.HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR,
+                window_end_hour=settings.HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR,
+                timeout_sec=settings.HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC,
+                session_id=settings.HUB_WORLD_PULSE_READ_STAGE2_SESSION_ID,
+                llm_route=settings.HUB_WORLD_PULSE_READ_STAGE2_LLM_ROUTE,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                max_round_trips=settings.HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS,
+                wallet_a_daily_cap=settings.HUB_WORLD_PULSE_READ_DAILY_CAP,
+                wallet_a_min_cooldown_sec=settings.HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC,
+                wallet_a_window_start_hour=settings.HUB_WORLD_PULSE_READ_WINDOW_START_HOUR,
+                wallet_a_window_end_hour=settings.HUB_WORLD_PULSE_READ_WINDOW_END_HOUR,
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=ServiceRef(
+                    name=settings.SERVICE_NAME,
+                    version=settings.SERVICE_VERSION,
+                    node=settings.NODE_NAME,
+                ),
+                step_relay_provider=lambda: harness_step_relay,
+                store_provider=concept_atlas_routes_runtime._get_substrate_store,
+            )
+            await world_pulse_read_stage2.start(bus, harness_rpc_bus=rpc_bus)
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the
@@ -1232,7 +1261,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1311,6 +1340,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_pipeline_stop_failed", exc_info=True)
         world_pulse_read_pipeline = None
+    if world_pulse_read_stage2 is not None:
+        try:
+            await world_pulse_read_stage2.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_stage2_stop_failed", exc_info=True)
+        world_pulse_read_stage2 = None
     if endogenous_outreach is not None:
         try:
             await endogenous_outreach.stop()

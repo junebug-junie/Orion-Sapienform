@@ -715,10 +715,10 @@ class Settings(BaseSettings):
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
     # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
-    # different Redis prefix (Wallet A). Default False so an absent key can
-    # never start it; deploy is opt-in after the seed-queue migration.
+    # different Redis prefix (Wallet A). Default True once the seed-queue
+    # migration is applied (operator can still set false to pause).
     HUB_WORLD_PULSE_READ_ENABLED: bool = Field(
-        default=False, alias="HUB_WORLD_PULSE_READ_ENABLED"
+        default=True, alias="HUB_WORLD_PULSE_READ_ENABLED"
     )
     HUB_WORLD_PULSE_READ_TICK_SEC: float = Field(
         default=300.0, alias="HUB_WORLD_PULSE_READ_TICK_SEC"
@@ -749,6 +749,42 @@ class Settings(BaseSettings):
     )
     HUB_WORLD_PULSE_READ_LLM_ROUTE: str = Field(
         default="agent", alias="HUB_WORLD_PULSE_READ_LLM_ROUTE"
+    )
+    # --- World-pulse Stage 2 (Wallet B) -----------------------------------
+    # Sibling of Stage 1. Isolated Redis prefix orion:wp_read:wallet_b:*.
+    # Default True alongside Stage 1; operator can set false to pause.
+    HUB_WORLD_PULSE_READ_STAGE2_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_STAGE2_ENABLED"
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC"
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC: float = Field(
+        default=1800.0, alias="HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC"
+    )
+    HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP: int = Field(
+        default=6, alias="HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR: int = Field(
+        default=8, ge=-1, le=23,
+        alias="HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR",
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR: int = Field(
+        default=22, ge=-1, le=23,
+        alias="HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR",
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC: float = Field(
+        default=3500.0, alias="HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC"
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_SESSION_ID: str = Field(
+        default="orion_world_pulse_read_stage2",
+        alias="HUB_WORLD_PULSE_READ_STAGE2_SESSION_ID",
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_LLM_ROUTE: str = Field(
+        default="agent", alias="HUB_WORLD_PULSE_READ_STAGE2_LLM_ROUTE"
+    )
+    HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS: int = Field(
+        default=5, alias="HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS"
     )
 
     # --- Orion's own graph ------------------------------------------------

@@ -139,12 +139,21 @@ class _FakeConn:
                     row["claimed_at"] = None
                     n += 1
             return f"UPDATE {n}"
-        if "UPDATE world_pulse_read_seed" in sql_n and "status = 'done'" in sql_n:
+        if "UPDATE world_pulse_read_seed" in sql_n and "SET status = 'done'" in sql_n:
             seed_id, trace_id = args[0], args[1]
+            handoff_json = args[2] if len(args) > 2 else None
             if seed_id in self.rows:
                 self.rows[seed_id]["status"] = "done"
                 self.rows[seed_id]["trace_id"] = trace_id
                 self.rows[seed_id]["last_error"] = None
+                if handoff_json is not None:
+                    payload = handoff_json
+                    if isinstance(payload, str):
+                        import json as _json
+
+                        payload = _json.loads(payload)
+                    self.rows[seed_id]["handoff_json"] = payload
+                    self.rows[seed_id]["handoff_at"] = datetime.now(timezone.utc)
             return "UPDATE 1"
         if "UPDATE world_pulse_read_seed" in sql_n and "status = 'failed'" in sql_n:
             seed_id, error = args[0], args[1]
@@ -303,6 +312,8 @@ def test_pipeline_happy_path_writes_concept_and_ignores_curiosity_wallet() -> No
     assert "https://ex.com/a" in payload["body"]
     assert conn.rows["finding:r1:x"]["status"] == "done"
     assert conn.rows["finding:r1:x"]["trace_id"] == "tr-pipeline-1"
+    assert conn.rows["finding:r1:x"]["handoff_json"]["what_i_learned"] == "Learned about packaging."
+    assert conn.rows["finding:r1:x"]["handoff_json"]["trace_id"] == "tr-pipeline-1"
     curiosity_after = {
         k: v for k, v in bus.redis.store.items() if k.startswith("orion:curiosity:")
     }

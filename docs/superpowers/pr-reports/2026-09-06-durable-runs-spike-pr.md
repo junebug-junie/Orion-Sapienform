@@ -92,11 +92,53 @@ instrument's `runs_resumed` claim.
 
 ## Docker/build/smoke checks
 
-(filled after deploy)
+All from this worktree via `scripts/safe_docker_build.sh`, consumer-first.
+
+```text
+2026-09-06 20:44Z  sql-writer REFUSED by the env-drift gate: live SUBSCRIBE_CHANNELS / ROUTE_MAP_JSON lists
+                   were missing the new members (the gate does what it says; fixed the live .env by hand,
+                   deterministically: json-append the example's missing members).
+                   runner: "network orion-athena-net not found" -> the external network is plainly `app-net`;
+                   host port 8121 is orion-execution-dispatch-runtime -> 8124.
+       20:46Z  sql-writer + runner up. LangGraph created checkpoints/checkpoint_blobs/checkpoint_writes/
+                   checkpoint_migrations; sql-writer created substrate_durable_run_state and subscribed to
+                   orion:durable:run:state; runner listening on orion:durable:run:request; /health ok.
+       20:48Z  cortex-orch + Hub (flag on). Hub's bus FAILED to init: my wiring referenced
+                   settings.CORTEX_REQUEST_CHANNEL (the env alias; the attribute is CORTEX_ORCH_REQUEST_CHANNEL)
+                   inside Hub's bus-init block. Hub degraded ~2.5 min; hot-fixed and redeployed 20:51:17Z
+                   ("curiosity_durable_listeners started", "curiosity_investigation started").
+       20:52Z  POST /curiosity/api/run-now -> run ff8a379217d8:
+                   Hub: curiosity_durable_dispatched status=no_reply -> fell back in-process   (bug 1: undecoded reply)
+                   cortex-orch: durable_run_dispatched run=ff8a... channel=orion:durable:run:request   (cortex saw it)
+                   runner: durable_run_request run=ff8a...; turn RPC published; Hub: curiosity_turn_request run=ff8a...
+                   -> two turns for one run; the runner's RPC timed out at 3600s and the runner then froze
+                   (bug 2: single-connection saver). Hub's tick started c67b1a10fb93 at 21:09Z the same way and
+                   finished it in-process (journaled) -- the old path still works with the flag on.
+2026-09-07 01:14Z  fixes deployed (pool, decoded replies, shared dedup). Runner froze at boot with zero Postgres
+                   activity (bug 3: aget_state nested inside alist -> saver lock). Probed connect/pool/setup
+                   inside the container with timeouts: all instant, so the hang was the caller's nesting.
+       01:21Z  runner redeployed with the listing materialised -> resume on boot, below.
+```
 
 ## Live restart test
 
-(filled)
+Acceptance Check 1: a run survives a container restart on the real rail, same `run_id`.
+
+```text
+run ff8a379217d8   kicked off through cortex 2026-09-06 20:52:13Z; checkpoint at harness_turn (ts 20:52:13Z)
+runner redeployed  2026-09-07 01:21:07Z (a full container recreate, 4.5h after the checkpoint)
+runner boot        durable_run_resume run=ff8a379217d8 from=harness_turn age_h=4.5
+                   durable_run_state run=ff8a379217d8 node=harness_turn status=resumed next=read_turn_result resumed_from=harness_turn
+                   durable_runs_resume_on_boot {'resumed': 1, 'abandoned': 0, 'active': 0}
+                   [rpc] publish success corr_id=f7a34fe9-... request_channel=orion:curiosity:turn:request
+Hub                curiosity_turn_request run=ff8a379217d8 attempt=1
+substrate_durable_run_state   ff8a379217d8 | harness_turn | resumed | next read_turn_result | resumed_from harness_turn | 01:21:26Z
+substrate_attention_schema    durable-ff8a379217d8-harness_turn-resumed | harness_turn:resumed | predicted_next read_turn_result
+/runs/unfinished   [{thread_id: ff8a379217d8, next_node: harness_turn, checkpoint_ts: 2026-09-06T20:52:13Z}]
+```
+
+Completion of the resumed run (journal, TurnOutcome, remaining node rows): see the addendum at the end of this
+report, written when the turn finished.
 
 ## Review findings fixed
 

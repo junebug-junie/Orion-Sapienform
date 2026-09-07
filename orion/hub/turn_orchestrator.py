@@ -85,6 +85,7 @@ def _resolve_fcc_model_label(payload: dict[str, Any], mode_tag: str) -> str:
             return lane_model
     return DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL
 
+
 EmitObservationFn = Callable[..., Any]
 
 
@@ -1140,6 +1141,9 @@ async def execute_unified_turn(
         ),
         answer_contract=AnswerContract(),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
+        # HarnessGovernorClient.run() reads this same field back off the request
+        # to pick its governor dispatch queue (orion.llm.routes.is_agent_route_model_label)
+        # -- one fact, not two independently-computed ones that could disagree.
         fcc_model_label=_resolve_fcc_model_label(payload, mode_tag),
         mode=mode_tag,
         situation_prompt_fragment=situation_prompt_fragment,

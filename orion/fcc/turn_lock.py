@@ -4,9 +4,17 @@ Two containers write to the same checkout (``/mnt/orion-fcc/repo``):
 
 - ``orion-athena-hub`` spawns claude in-process via ``fcc_claude_bridge``
 - ``orion-athena-harness-governor`` spawns claude via ``orion/harness/fcc_motor.py``,
-  driven by ``orion:harness:run:request`` (autonomy, endogenous runs, and — confirmed
-  live on 2026-08-14 — ordinary unified-chat turns, which dispatch through the
-  governor's bus RPC path, not hub's in-process bridge)
+  driven by ``orion:harness:run:request`` and, since 2026-09-07,
+  ``orion:harness:run:request:agent`` (two independent dispatch loops, one per
+  compute lane, so a long agent-lane turn cannot block a chat-lane one — see
+  ``orion.llm.routes.is_agent_route_model_label``, which
+  ``HarnessGovernorClient.run()`` reads off the request to pick the queue).
+  Confirmed live on 2026-08-14 that this path also carries ordinary
+  unified-chat turns (dispatched through the governor's bus RPC path, not
+  hub's in-process bridge), and both dispatch loops write to the SAME shared
+  checkout below — the split changes which queue a turn waits in, not the
+  workspace it runs in, and makes governor-vs-governor concurrent writes here
+  the common case rather than the rare one.
 
 Hub's sandbox sync used to gate on ``fcc_claude_bridge.active_turns()``, a dict local
 to the *hub process*. It cannot see a governor turn, and since the live chat path is

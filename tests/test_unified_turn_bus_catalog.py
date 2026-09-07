@@ -16,6 +16,11 @@ UNIFIED_TURN_CHANNELS: dict[str, str] = {
     "orion:thought:result:*": "ThoughtEventV1",
     "orion:thought:artifact": "ThoughtEventV1",
     "orion:harness:run:request": "HarnessRunRequestV1",
+    # Agent compute lane's own request channel, added 2026-09-07 so curiosity/
+    # Mode=Agent+Compute=Agent turns get an independent governor dispatch queue
+    # (see orion.hub.turn_orchestrator, harness_governor_client.py). Same
+    # schema as the chat channel above -- only the queue differs.
+    "orion:harness:run:request:agent": "HarnessRunRequestV1",
     "orion:harness:run:result:*": "HarnessRunV1",
     "orion:harness:run:artifact": "HarnessRunV1",
     "orion:harness:run:step": "HarnessRunStepV1",

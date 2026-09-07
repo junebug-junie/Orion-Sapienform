@@ -3020,6 +3020,18 @@ channels:
     single_consumer: true
     stability: "experimental"
     since: "2026-07-05"
+    description: "Chat compute lane only. Split from the shared channel below on 2026-09-07 so a long agent-lane turn (curiosity, Mode=Agent+Compute=Agent) can never make a chat-lane turn wait behind it in the same dispatch queue -- confirmed live that day that a 40-minute agent-lane run did exactly that. Same schema, same consumer service, same handler code as orion:harness:run:request:agent -- only which of the governor's two independent dispatch loops reads it differs."
+
+  - name: "orion:harness:run:request:agent"
+    kind: "request"
+    schema_id: "HarnessRunRequestV1"
+    message_kind: "harness.run.request.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-harness-governor"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-07"
+    description: "Agent compute lane's own request channel (curiosity investigations, Mode=Agent+Compute=Agent chat turns -- anything whose resolved fcc_model_label targets the agent route, see orion.hub.turn_orchestrator._is_agent_compute_lane). Sibling of orion:harness:run:request, not a replacement; the governor runs one independent dispatch loop per channel."
 
   - name: "orion:harness:run:cancel"
     kind: "event"

@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.llm.routes import is_agent_route_model_label
 from orion.schemas.harness_finalize import HarnessRunCancelV1, HarnessRunRequestV1, HarnessRunV1
 from scripts.settings import settings
 
@@ -64,8 +65,30 @@ class HarnessGovernorClient:
         timeout_sec: float | None = None,
         liveness_check: LivenessCheckFn | None = None,
     ) -> HarnessRunV1 | None:
+        """Dispatch a harness run and wait for its reply.
+
+        Which governor dispatch queue the request goes out on
+        (CHANNEL_HARNESS_RUN_REQUEST vs CHANNEL_HARNESS_RUN_REQUEST_AGENT) is
+        derived here from `request.fcc_model_label` -- the SAME field that
+        already picked the turn's model -- via
+        `orion.llm.routes.is_agent_route_model_label`, not passed in
+        separately. That is deliberate: it is the one fact every caller
+        already has to set correctly (the model would be wrong otherwise), so
+        there is nothing left for a second, independently-computed flag to
+        get out of sync with. Both queues are consumed by the same governor
+        code (two independent loops, see bus_listener.run_bus_worker) -- this
+        only changes which queue a turn waits in, never how it runs. See
+        is_agent_route_model_label's own docstring for why curiosity and a
+        manual Mode=Agent+Compute=Agent chat turn both land on the agent
+        queue (they already share one physical GPU) while ordinary chat keeps
+        its own queue untouched by either.
+        """
         correlation_id = correlation_id or request.correlation_id or str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_HARNESS_RESULT_PREFIX}{correlation_id}"
+        is_agent_lane = is_agent_route_model_label(request.fcc_model_label)
+        request_channel = (
+            settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT if is_agent_lane else settings.CHANNEL_HARNESS_RUN_REQUEST
+        )
         poll_sec = max(
             0.1,
             float(
@@ -101,6 +124,7 @@ class HarnessGovernorClient:
             # maxclients / hub file descriptors.
             msg = await self._run_via_worker(
                 envelope,
+                request_channel=request_channel,
                 reply_to=reply_to,
                 poll_sec=poll_sec,
                 max_wait_sec=max_wait_sec,
@@ -112,6 +136,7 @@ class HarnessGovernorClient:
         else:
             msg = await self._run_via_ad_hoc_subscribe(
                 envelope,
+                request_channel=request_channel,
                 reply_to=reply_to,
                 poll_sec=poll_sec,
                 max_wait_sec=max_wait_sec,
@@ -146,6 +171,7 @@ class HarnessGovernorClient:
         self,
         envelope: BaseEnvelope,
         *,
+        request_channel: str,
         reply_to: str,
         poll_sec: float,
         max_wait_sec: float,
@@ -161,7 +187,7 @@ class HarnessGovernorClient:
         try:
             async with self.bus._rpc_lock:
                 await self.bus._rpc_subscribe(reply_to)
-            await self.bus.publish(settings.CHANNEL_HARNESS_RUN_REQUEST, envelope)
+            await self.bus.publish(request_channel, envelope)
             wait = poll_sec
             while True:
                 try:
@@ -196,6 +222,7 @@ class HarnessGovernorClient:
         self,
         envelope: BaseEnvelope,
         *,
+        request_channel: str,
         reply_to: str,
         poll_sec: float,
         max_wait_sec: float,
@@ -205,7 +232,7 @@ class HarnessGovernorClient:
         started: float,
     ) -> dict | None:
         async with self.bus.subscribe(reply_to) as pubsub:
-            await self.bus.publish(settings.CHANNEL_HARNESS_RUN_REQUEST, envelope)
+            await self.bus.publish(request_channel, envelope)
             wait = poll_sec
             while True:
                 # _get_message_within's own timeout (not asyncio.wait_for cancelling an

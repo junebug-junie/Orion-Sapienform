@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orion Hub — Hub Surface</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
+</head>
+<body class="bg-black text-gray-200 min-h-screen p-6">
+  <div class="max-w-4xl mx-auto space-y-4">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-semibold">Hub Surface</h1>
+        <p class="text-xs text-gray-400 mt-1 max-w-xl">
+          Every decision point the attention-schema-surface / goal-bridge / durable-runs
+          arc introduced — what's possible, what's live, what's structurally off the
+          table, and what actually happened because of it.
+        </p>
+      </div>
+      <div class="flex gap-2 flex-shrink-0">
+        <button id="hubSurfaceRefreshButton" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Refresh</button>
+        <a href="/" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Back to Hub</a>
+      </div>
+    </div>
+
+    <div id="hubSurfaceError" class="hidden text-xs text-red-300 bg-red-950/40 border border-red-800 rounded p-2"></div>
+
+    <div class="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-3 pt-2">
+      <span>Decision points</span><span class="flex-1 h-px bg-gray-800"></span>
+    </div>
+
+    <!-- DECISION 1: goal bridge -->
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <div class="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div class="text-[10px] uppercase tracking-wide text-teal-400 font-semibold mb-1">Decision point</div>
+          <h2 class="font-medium text-sm max-w-md">Does the goal producer's pick actually win Orion's attention?</h2>
+        </div>
+        <div class="text-[11px] font-mono px-2 py-1 rounded border border-gray-700 bg-gray-950 text-gray-400 whitespace-nowrap flex-shrink-0">
+          gated by <span class="text-gray-300">ORION_GOAL_PROVENANCE_READS_COMPETITION</span> (orion-attention-runtime)
+        </div>
+      </div>
+      <div id="bridgeBranches" class="text-xs text-gray-500">Loading…</div>
+      <div id="bridgeCallouts"></div>
+    </section>
+
+    <!-- DECISION 2: durable runs -->
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <div class="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div class="text-[10px] uppercase tracking-wide text-teal-400 font-semibold mb-1">Decision point</div>
+          <h2 class="font-medium text-sm max-w-md">Does a long investigation survive to actually finish?</h2>
+        </div>
+        <div id="durableSwitchPill" class="text-[11px] font-mono px-2 py-1 rounded border whitespace-nowrap flex-shrink-0">…</div>
+      </div>
+      <div id="durableLifecycle" class="text-xs text-gray-500">Loading…</div>
+    </section>
+
+    <div class="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-3 pt-4">
+      <span>Over time</span><span class="flex-1 h-px bg-gray-800"></span>
+    </div>
+
+    <div class="text-[11px] text-gray-400 bg-gray-900 border border-gray-800 rounded p-3">
+      <b class="text-gray-300">Early days, shown honestly:</b> both mechanisms are less
+      than a week old. This isn't a mature trend yet — it's the first few readings, plotted
+      so drift is visible the moment there's enough data to show it.
+    </div>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-medium text-sm">Goal-bridge branch share, by day</h3>
+      </div>
+      <svg id="chartBridge" class="w-full h-auto mt-2" viewBox="0 0 640 220"></svg>
+      <div id="chartBridgeLegend" class="flex flex-wrap gap-4 mt-2 text-[11px] text-gray-400"></div>
+      <div id="chartBridgeNote" class="text-[11px] text-amber-300/90 bg-amber-900/20 border border-amber-800/60 rounded p-2 mt-3"></div>
+    </section>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h3 class="font-medium text-sm mb-1">Durable runs: cumulative completions</h3>
+      <svg id="chartDurable" class="w-full h-auto mt-2" viewBox="0 0 640 180"></svg>
+      <div id="chartDurableLegend" class="flex flex-wrap gap-4 mt-2 text-[11px] text-gray-400"></div>
+    </section>
+
+    <div class="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-3 pt-4">
+      <span>Activity log</span><span class="flex-1 h-px bg-gray-800"></span>
+    </div>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="font-medium text-sm">Recent activity, all lanes</h3>
+        <span class="text-[11px] text-gray-500">newest first</span>
+      </div>
+      <div id="activityLog" class="text-xs text-gray-500 max-h-96 overflow-y-auto">Loading…</div>
+    </section>
+
+  </div>
+
+  <script src="/static/js/hub-surface.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

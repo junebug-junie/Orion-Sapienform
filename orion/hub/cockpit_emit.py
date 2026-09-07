@@ -226,9 +226,42 @@ def emit_pre_motor_hops(
     return frames
 
 
+def emit_motor_boot_hop(
+    correlation_id: str,
+    *,
+    prompt: str,
+    producer: str = "orion-hub",
+    assembled_by: str = "hub_pre_dispatch",
+) -> dict[str, Any]:
+    """Record the motor prompt Soft HUD should show before/with harness dispatch.
+
+    Prefer Hub assembly of the same ``build_harness_prompt`` inputs that ride on
+    ``HarnessRunRequestV1`` so Soft HUD is not dependent on the pub/sub step
+    relay for the boot bead. Governor may still publish a marker step; Hub
+    drain skips a duplicate motor_boot once this hop already exists for the
+    turn (see ``emit_motor_hop_from_claude_step``).
+    """
+    text = prompt if isinstance(prompt, str) else ""
+    hop = hop_from_motor_boot(
+        correlation_id=correlation_id,
+        seq=next_seq(correlation_id),
+        prompt=text,
+        producer=producer,
+    )
+    hop = hop.model_copy(
+        update={
+            "summary": {**hop.summary, "assembled_by": assembled_by},
+            "raw": {**hop.raw, "assembled_by": assembled_by},
+        }
+    )
+    return _hop_frame(correlation_id, hop)
+
+
 def emit_motor_hop_from_claude_step(
     correlation_id: str,
     item: dict[str, Any],
+    *,
+    motor_boot_already_recorded: bool = False,
 ) -> dict[str, Any] | None:
     if item.get("kind") != "claude_step":
         return None
@@ -236,6 +269,8 @@ def emit_motor_hop_from_claude_step(
     if not isinstance(step, dict):
         step = {}
     if step.get("_cockpit") == COCKPIT_MOTOR_BOOT_MARKER:
+        if motor_boot_already_recorded:
+            return None
         prompt = step.get("prompt")
         hop = hop_from_motor_boot(
             correlation_id=correlation_id,

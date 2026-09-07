@@ -14,6 +14,7 @@ from orion.hub.cockpit_emit import (
     begin_cockpit_timeline,
     emit_association_hop,
     emit_mind_enrichment_hop,
+    emit_motor_boot_hop,
     emit_motor_hop_from_claude_step,
     emit_progress_hop,
     emit_situation_hop,
@@ -26,6 +27,8 @@ from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.situational.context import build_situation_for_ctx, hub_settings_to_runtime_namespace
 from orion.harness.attachment_staging import prune_staging, stage_attachments
+from orion.harness.repair import map_repair_pressure_contract
+from orion.harness.runner import build_harness_prompt
 from orion.schemas.harness_finalize import (
     HARNESS_RECENT_TURNS_MAX,
     HarnessAttachmentV1,
@@ -1150,6 +1153,27 @@ async def execute_unified_turn(
         else None
     )
     _harness_run_completed = False
+    # Soft HUD motor_boot: assemble the same prompt function the governor uses,
+    # from the same HarnessRunRequestV1 fields, BEFORE RPC. Pub/sub relay has
+    # been dropping motor hops live (2026-09-07); Hub-owned emit keeps the
+    # boot bead inspectable even when the step channel is quiet.
+    try:
+        motor_boot_prompt = build_harness_prompt(
+            thought=thought,
+            user_message=user_message,
+            repair_overlay=map_repair_pressure_contract(harness_req.repair_pressure_contract),
+            answer_contract=harness_req.answer_contract,
+            attachments=list(harness_req.attachments or []),
+            recent_turns=list(harness_req.recent_turns or []),
+            situation_prompt_fragment=harness_req.situation_prompt_fragment,
+        )
+    except Exception:
+        logger.warning(
+            "hub motor_boot prompt assemble failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
+        motor_boot_prompt = ""
     await _deliver_cockpit_frames(
         [
             emit_progress_hop(
@@ -1159,11 +1183,19 @@ async def execute_unified_turn(
                 visor_line="harness_dispatch · contacting governor",
                 summary={"phase": "contacted", "mode": mode_tag},
                 raw={"phase": "contacted", "mode": mode_tag},
-            )
+            ),
+            emit_motor_boot_hop(
+                correlation_id,
+                prompt=motor_boot_prompt,
+                producer="orion-hub",
+                assembled_by="hub_pre_dispatch",
+            ),
         ],
         bus=bus,
         cockpit_sink=cockpit_sink,
     )
+    if cockpit_run_holder is not None:
+        cockpit_run_holder["motor_boot_recorded"] = True
     try:
         run = await HarnessGovernorClient(harness_bus).run(
             harness_req,
@@ -1175,10 +1207,9 @@ async def execute_unified_turn(
         # staged files alone rather than yanking them from a live reader.
         _harness_run_completed = run is not None
     finally:
-        if harness_step_relay is not None and harness_step_queue is not None:
-            harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
-        if harness_step_relay is not None:
-            harness_step_relay.forget(correlation_id)
+        # Do NOT unregister the step queue here. Governor may still be publishing
+        # trailing motor hops (and Soft HUD needs them) until run_unified_turn
+        # finishes draining. Unregister + forget happen there after drain flush.
         # Staged images are per-turn scratch; without cleanup they accumulate in
         # the sandbox forever. The bytes still live in the content-addressed
         # store, so a follow-up turn about the same image just re-stages it.
@@ -1473,7 +1504,15 @@ async def run_unified_turn(
             if not is_motor_boot:
                 await _send_ws(frame)
             try:
-                hop_frame = emit_motor_hop_from_claude_step(correlation_id, frame)
+                # Hub already recorded motor_boot pre-dispatch; ignore governor's
+                # duplicate marker step so Soft HUD does not get two boot beads.
+                hop_frame = emit_motor_hop_from_claude_step(
+                    correlation_id,
+                    frame,
+                    motor_boot_already_recorded=bool(
+                        cockpit_run_holder.get("motor_boot_recorded")
+                    ),
+                )
                 if hop_frame is not None:
                     await cockpit_sink([hop_frame])
             except Exception:
@@ -1552,6 +1591,10 @@ async def run_unified_turn(
                         correlation_id,
                         exc_info=True,
                     )
+            # Unregister only AFTER drain flush so late governor steps that
+            # arrived while RPC was returning still land in Soft HUD.
+            harness_step_relay.unregister_queue(correlation_id, step_queue)
+            harness_step_relay.forget(correlation_id)
     for frame in frames:
         await _send_ws(frame)
     try:

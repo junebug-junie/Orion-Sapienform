@@ -8,12 +8,14 @@ from orion.cockpit.builders import (
     gap_hop,
     hop_from_association,
     hop_from_closure,
+    hop_from_motor_boot,
     hop_from_motor_step,
     hop_from_outcome,
     hop_from_run_artifact,
     hop_from_stance_inputs,
     hop_from_thought,
 )
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
 from orion.cockpit.publish import publish_cockpit_hop
 from orion.cockpit.sequencer import advance_seq, next_seq, reset_seq
 from orion.schemas.cockpit_sighting import CockpitHopV1
@@ -93,11 +95,21 @@ def emit_motor_hop_from_claude_step(
     if item.get("kind") != "claude_step":
         return None
     step = item.get("step")
+    if not isinstance(step, dict):
+        step = {}
+    if step.get("_cockpit") == COCKPIT_MOTOR_BOOT_MARKER:
+        prompt = step.get("prompt")
+        hop = hop_from_motor_boot(
+            correlation_id=correlation_id,
+            seq=next_seq(correlation_id),
+            prompt=prompt if isinstance(prompt, str) else "",
+        )
+        return _hop_frame(correlation_id, hop)
     hop = hop_from_motor_step(
         correlation_id=correlation_id,
         seq=next_seq(correlation_id),
         step_index=int(item.get("step_index") or 0),
-        step=step if isinstance(step, dict) else {},
+        step=step,
     )
     return _hop_frame(correlation_id, hop)
 

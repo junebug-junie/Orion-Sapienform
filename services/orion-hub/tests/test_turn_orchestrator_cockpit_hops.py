@@ -78,6 +78,49 @@ def test_motor_hop_from_drained_claude_step_increments_seq():
     assert frame["hop"]["summary"]["step_index"] == 2
 
 
+def test_motor_boot_from_drained_claude_step_before_motor_hop():
+    from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+    from orion.hub.cockpit_emit import (
+        emit_motor_hop_from_claude_step,
+        emit_pre_motor_hops,
+    )
+
+    emit_pre_motor_hops(
+        "corr-boot",
+        _THOUGHT,
+        association={"broadcast_stale": True, "read_source": "felt_state_reader"},
+        stance_inputs={"user_message": "hi", "stance_inputs": {"user_message": "hi"}},
+    )
+    boot = emit_motor_hop_from_claude_step(
+        "corr-boot",
+        {
+            "kind": "claude_step",
+            "step_index": -1,
+            "step": {
+                "_cockpit": COCKPIT_MOTOR_BOOT_MARKER,
+                "prompt": "EXACT PREFIX\nUSER: hi",
+                "prompt_char_len": len("EXACT PREFIX\nUSER: hi"),
+            },
+        },
+    )
+    assert boot is not None
+    assert boot["hop"]["stage"] == "motor_boot"
+    assert boot["hop"]["raw"]["prompt"] == "EXACT PREFIX\nUSER: hi"
+    assert boot["hop"]["seq"] == 4
+    assert boot["hop"]["producer"] == "orion-harness-governor"
+
+    hop = emit_motor_hop_from_claude_step(
+        "corr-boot",
+        {
+            "kind": "claude_step",
+            "step_index": 0,
+            "step": {"type": "tool_use", "name": "Read"},
+        },
+    )
+    assert hop["hop"]["stage"] == "motor_hop"
+    assert hop["hop"]["seq"] == 5
+
+
 def test_motor_hop_helper_ignores_non_claude_step():
     from orion.hub.cockpit_emit import (
         emit_motor_hop_from_claude_step,

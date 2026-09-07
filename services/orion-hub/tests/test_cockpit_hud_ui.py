@@ -155,6 +155,40 @@ def test_app_js_wires_cockpit_beside_turn_trace() -> None:
     assert "mindCorrelationFromMeta" in block
 
 
+def test_app_js_wires_midturn_cockpit_from_turn_started() -> None:
+    """Mid-turn Cockpit: turn_started (or first hop) exposes live corr id + open path."""
+    text = (REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "let liveTurnCorrelationId" in text
+    assert "getElementById('cockpitLiveButton')" in text
+    assert "function setLiveTurnCorrelationId" in text
+    assert "function openLiveCockpit" in text
+    assert "d.kind === 'turn_started'" in text
+    assert "setLiveTurnCorrelationId(d.correlation_id)" in text
+    assert "cockpitLiveButton.addEventListener('click', openLiveCockpit)" in text
+    open_fn = text.split("function openLiveCockpit()", 1)[1].split("\n  }\n", 1)[0]
+    assert "OrionCockpitHud" in open_fn
+    assert "correlationId: corr" in open_fn or "correlationId: liveTurnCorrelationId" in open_fn
+    assert "apiBaseUrl: API_BASE_URL" in open_fn
+    assert "syncDebugModalScrollLock" in open_fn
+    # Belt-and-suspenders: first cockpit_hop / claude_step also sets live corr id.
+    hop_block = text.split("d.kind === 'cockpit_hop'", 1)[1].split("d.kind === 'cockpit_timeline_complete'", 1)[0]
+    assert "setLiveTurnCorrelationId" in hop_block
+    claude_block = text.split("d.kind === 'claude_step'", 1)[1].split("d.kind === 'cockpit_hop'", 1)[0]
+    assert "setLiveTurnCorrelationId" in claude_block
+    # Idle / setTurnInFlight(false) clears the live id.
+    set_fn = text.split("function setTurnInFlight(", 1)[1].split("\n  }\n", 1)[0]
+    assert "liveTurnCorrelationId = null" in set_fn
+
+
+def test_index_has_midturn_cockpit_button_beside_stop() -> None:
+    html = INDEX_HTML_PATH.read_text(encoding="utf-8")
+    assert 'id="cockpitLiveButton"' in html
+    assert "hidden" in html.split('id="cockpitLiveButton"', 1)[1].split(">", 1)[0]
+    stop_pos = html.index('id="stopButton"')
+    live_pos = html.index('id="cockpitLiveButton"')
+    assert stop_pos < live_pos
+
+
 def test_open_ignores_stale_fetch_after_correlation_changes() -> None:
     node = shutil.which("node")
     if not node:

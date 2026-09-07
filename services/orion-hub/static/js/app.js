@@ -92,6 +92,9 @@ let orionState = 'idle';
 // {"state": "idle"} arrives for that turn. orionState alone isn't a reliable signal
 // here — the server only pushes "processing" for voice/STT, not typed WS turns.
 let turnInFlight = false;
+// Live correlation id for the in-flight unified turn (from turn_started /
+// first cockpit_hop / claude_step). Null when idle. Lets Cockpit open mid-turn.
+let liveTurnCorrelationId = null;
 // Set from the WS "connection_ready" frame. Deliberately NOT orionSessionId: that's
 // persisted in localStorage and shared across every browser tab on the same origin,
 // so a stop request keyed on it could cancel a different tab's turn. connection_id
@@ -230,6 +233,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatInputExpandModalSend = document.getElementById('chatInputExpandModalSend');
   const sendButton = document.getElementById('sendButton');
   const stopButton = document.getElementById('stopButton');
+  const cockpitLiveButton = document.getElementById('cockpitLiveButton');
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
   const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
@@ -3150,11 +3154,44 @@ document.addEventListener("DOMContentLoaded", () => {
     chatTurnTimer.classList.add('text-gray-400');
   }
 
+  function syncCockpitLiveButton() {
+    if (!cockpitLiveButton) return;
+    const show = turnInFlight && !!String(liveTurnCorrelationId || '').trim();
+    cockpitLiveButton.classList.toggle('hidden', !show);
+  }
+
+  function setLiveTurnCorrelationId(corrId) {
+    const corr = String(corrId || '').trim();
+    if (!corr) return;
+    liveTurnCorrelationId = corr;
+    syncCockpitLiveButton();
+  }
+
+  function clearLiveTurnCorrelationId() {
+    liveTurnCorrelationId = null;
+    syncCockpitLiveButton();
+  }
+
+  function openLiveCockpit() {
+    const corr = String(liveTurnCorrelationId || '').trim();
+    const hud = window.OrionCockpitHud;
+    if (!corr || !hud || typeof hud.open !== 'function') return;
+    hud.open({ correlationId: corr, apiBaseUrl: API_BASE_URL });
+    syncDebugModalScrollLock();
+  }
+
   function setTurnInFlight(next, owner = 'ws') {
     turnInFlight = Boolean(next);
-    if (turnInFlight) startTurnTimer(owner);
-    else stopTurnTimer(owner);
+    if (turnInFlight) {
+      startTurnTimer(owner);
+      // New turn: wait for turn_started (or first hop) before exposing Cockpit.
+      liveTurnCorrelationId = null;
+    } else {
+      stopTurnTimer(owner);
+      liveTurnCorrelationId = null;
+    }
     if (stopButton) stopButton.classList.toggle('hidden', !turnInFlight);
+    syncCockpitLiveButton();
   }
 
   function updateStatusBasedOnState() {
@@ -3163,6 +3200,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (orionState === 'processing') updateStatus('Processing...');
     if (orionState === 'idle') setTurnInFlight(false);
     if (stopButton) stopButton.classList.toggle('hidden', !turnInFlight);
+    syncCockpitLiveButton();
   }
 
   function updateRoutingDebugPanel(data) {
@@ -9661,6 +9699,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
+  if (cockpitLiveButton) cockpitLiveButton.addEventListener('click', openLiveCockpit);
   if (chatInput) {
     chatInput.addEventListener('input', () => {
       if (!chatInputExpandModalRoot || chatInputExpandModalRoot.classList.contains('hidden')) return;
@@ -11245,6 +11284,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setTurnInFlight(false);
         activeConnectionId = null;
         if (stopButton) stopButton.classList.add('hidden');
+        clearLiveTurnCorrelationId();
     };
 
     socket.onmessage = (e) => {
@@ -11395,6 +11435,10 @@ document.addEventListener("DOMContentLoaded", () => {
               }
             }
           }
+          if (d.kind === 'turn_started' && d.correlation_id) {
+            setLiveTurnCorrelationId(d.correlation_id);
+            return;
+          }
           if (d.kind === 'notification' && d.notification) {
             addNotification(d.notification);
           }
@@ -11403,10 +11447,14 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
           if (d.kind === 'claude_step' && d.step) {
+            // Belt-and-suspenders: if turn_started was missed, first claude_step
+            // still exposes the live correlation id for mid-turn Cockpit.
+            if (d.correlation_id) setLiveTurnCorrelationId(d.correlation_id);
             try { appendLiveClaudeStep(d.correlation_id, d.step); } catch (err) { console.warn('claude_step render failed', err); }
             return;
           }
           if (d.kind === 'cockpit_hop' && d.hop) {
+            if (d.correlation_id) setLiveTurnCorrelationId(d.correlation_id);
             try {
               if (window.OrionCockpitHud && typeof window.OrionCockpitHud.ingestHop === 'function'
                   && cockpitHudOpenForCorrelation(d.correlation_id)) {

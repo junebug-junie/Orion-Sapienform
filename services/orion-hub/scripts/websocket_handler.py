@@ -1451,6 +1451,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 active_turn["correlation_id"] = trace_id
+                # Mid-turn Cockpit entry: expose correlation_id as soon as the
+                # unified turn is committed (before hops/reply). Fail-open —
+                # a missed frame must not abort the turn.
+                await _safe_ws_send_json(
+                    websocket,
+                    await _with_biometrics(
+                        {
+                            "kind": "turn_started",
+                            "correlation_id": trace_id,
+                            "mode": client_mode,
+                        },
+                        cache=biometrics_cache,
+                    ),
+                )
                 # "orion" or "agent" -- both are FCC-via-governor turns now;
                 # turn_cancel.py's cancel_in_flight_turn() already treats
                 # any kind other than "agent-claude"/"agent_claude" as "the

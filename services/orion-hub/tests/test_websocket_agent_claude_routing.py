@@ -55,3 +55,25 @@ def test_turn_orchestrator_import_is_guarded_and_reports_a_client_facing_error()
     assert '"phase": "import"' in following
     assert "_safe_ws_send_json" in following
     assert "history.pop()" in following
+
+
+def test_unified_path_emits_turn_started_after_correlation_id() -> None:
+    """Mid-turn Cockpit needs the client to learn correlation_id before reply.
+
+    Static guard (same convention as other websocket_handler checks here):
+    right after active_turn correlation_id is set on the unified path, Hub
+    must fail-open send a turn_started frame via _safe_ws_send_json.
+    """
+    source = WS_PATH.read_text(encoding="utf-8")
+    marker = 'active_turn["correlation_id"] = trace_id'
+    # Unified Orion/agent path is the first assignment after the import guard.
+    idx = source.index(marker)
+    following = source[idx : idx + 900]
+    assert '"kind": "turn_started"' in following
+    assert '"correlation_id": trace_id' in following
+    assert '"mode": client_mode' in following
+    assert "_safe_ws_send_json" in following
+    # turn_started must land before run_unified_turn is invoked.
+    run_idx = source.index("run_unified_turn(", idx + len(marker))
+    started_idx = source.index('"kind": "turn_started"', idx)
+    assert started_idx < run_idx

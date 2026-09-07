@@ -1,6 +1,7 @@
 from orion.cockpit.builders import (
     gap_hop,
     hop_from_motor_step,
+    hop_from_run_artifact,
     hop_from_thought,
 )
 
@@ -39,3 +40,22 @@ def test_gap_hop_motor_boot():
     hop = gap_hop(correlation_id="c1", seq=1, stage="motor_boot")
     assert hop.status == "gap"
     assert hop.stage == "motor_boot"
+
+
+def test_hop_from_run_artifact_draft_and_finalize_consecutive_seq():
+    hops = hop_from_run_artifact(
+        correlation_id="c1",
+        seq=0,
+        run={
+            "draft_text": "substrate read",
+            "reflection": "wrapped up",
+            "compliance_verdict": "pass",
+        },
+    )
+    assert len(hops) == 2
+    assert hops[0].seq == 0
+    assert hops[0].stage == "draft_appraisal"
+    assert hops[1].seq == 1
+    assert hops[1].stage == "finalize"
+    assert hops[0].producer == "orion-hub"
+    assert hops[1].producer == "orion-hub"

@@ -8,6 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/style.css?v=1.1.0" />
   <link rel="stylesheet" href="/static/css/substrate-effect.css" />
+  <link rel="stylesheet" href="/static/css/cockpit-hud.css?v={{HUB_UI_ASSET_VERSION}}" />
 </head>
 <body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}" data-ui-version="{{HUB_UI_ASSET_VERSION}}">
   <div
@@ -3437,6 +3438,8 @@
     </div>
   </div>
 
+  <div id="cockpitHudRoot" class="hidden cockpit-hud-root" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true"></div>
+
   <div id="operatorToolsModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="operatorToolsModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
     <div id="operatorToolsModalDialog" class="fixed inset-x-4 top-16 bottom-16 z-[121] mx-auto flex w-auto max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
@@ -4036,6 +4039,7 @@
   <script src="/static/js/chat-attachments.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cognitive-loop-card.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/turn-timer.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cockpit-hud.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

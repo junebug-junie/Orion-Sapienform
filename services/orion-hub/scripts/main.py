@@ -30,6 +30,7 @@ from scripts.world_pulse_read_routes import router as world_pulse_read_router
 from scripts.exo_exploration_routes import router as exo_exploration_router
 from scripts.self_brain_routes import router as self_brain_router
 from scripts.chat_attachments import router as chat_attachments_router
+from scripts.hub_surface_routes import router as hub_surface_router, page_router as hub_surface_page_router
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 import scripts.self_atlas_cluster_history as self_atlas_cluster_history_runtime
@@ -1409,6 +1410,8 @@ app.include_router(world_pulse_read_router)
 app.include_router(exo_exploration_router)
 app.include_router(self_brain_router)
 app.include_router(chat_attachments_router)
+app.include_router(hub_surface_router)
+app.include_router(hub_surface_page_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

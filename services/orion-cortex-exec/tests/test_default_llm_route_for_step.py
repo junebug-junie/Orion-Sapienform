@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.executor import _default_llm_route_for_step
+from app.executor import _default_llm_route_for_step, _resolve_llm_route_override
 
 
 def test_stance_react_routes_chat_not_none():
@@ -63,3 +63,39 @@ def test_metacog_mode_routes_metacog_regardless_of_verb():
 def test_unknown_verb_and_mode_falls_through_to_none():
     assert _default_llm_route_for_step(verb_name="totally_unmapped_verb", step_name="x", mode="brain") is None
     assert _default_llm_route_for_step(verb_name=None, step_name=None, mode=None) is None
+
+
+def _selected_route(ctx: dict, *, verb_name: str, step_name: str, mode: str | None = None) -> str | None:
+    """Mirrors the real precedence at app/executor.py's run-loop (~line
+    4257-4263): an accepted ctx override always wins; only when there is
+    none does the verb-based default apply."""
+    accepted, _attempted = _resolve_llm_route_override(ctx)
+    if accepted is not None:
+        return accepted
+    return _default_llm_route_for_step(verb_name=verb_name, step_name=step_name, mode=mode)
+
+
+def test_stance_react_ctx_override_wins_over_hardcoded_chat_default():
+    """2026-09-08 outreach-agent-lane-precedence: gap this closes. Before
+    orion.hub.turn_orchestrator threaded StanceReactRequestV1.llm_route into
+    ctx["llm_route"] (via services/orion-thought/app/bus_listener.py's
+    build_stance_react_context), an outreach-flagged stance_react call had NO
+    way to avoid _default_llm_route_for_step's hardcoded "chat" -- this test
+    proves the override path this session added actually reaches the agent
+    route end to end (resolver + default combined), not just that each half
+    works in isolation (test_executor_llm_route_override.py and the tests
+    above already cover those halves separately)."""
+    ctx = {"llm_route": "agent"}
+    route = _selected_route(ctx, verb_name="stance_react", step_name="llm_stance_react", mode="brain")
+    assert route == "agent"
+
+
+def test_stance_react_with_no_override_still_defaults_to_chat():
+    """Unchanged-behaviour guard: an ordinary stance_react call (no
+    caller-supplied llm_route -- every call site before this session's
+    change, and every outreach call whose agent-lane attempt already
+    succeeded or timed out into the chat-lane fallback) must still resolve
+    to "chat", not silently pick up some other default."""
+    ctx: dict = {}
+    route = _selected_route(ctx, verb_name="stance_react", step_name="llm_stance_react", mode="brain")
+    assert route == "chat"

@@ -42,7 +42,7 @@ from orion.schemas.pre_turn_appraisal import (
 )
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.substrate.appraisal.turn_window import build_turn_window
-from orion.llm.routes import fcc_model_for_route
+from orion.llm.routes import fcc_model_for_route, is_agent_route_model_label
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     is_context_overflow_text,
@@ -723,6 +723,18 @@ async def execute_unified_turn(
     cfg = settings or hub_settings
     payload = dict(payload or {})
 
+    # Resolved once, here, rather than at the two places that used to each
+    # compute it independently (the stance_react RPC below, and
+    # HarnessRunRequestV1's fcc_model_label further down) -- see
+    # is_agent_route_model_label's own docstring for the exact live
+    # divergence (2026-09-03) a second independently-computed "is this turn
+    # on the agent lane" copy already caused once before. mode_tag used to
+    # be computed just above HarnessRunRequestV1 instead; moved up because
+    # both it and resolved_fcc_model_label only depend on `payload`, which is
+    # already final by this point.
+    mode_tag = str(payload.get("mode") or "orion").strip().lower()
+    resolved_fcc_model_label = _resolve_fcc_model_label(payload, mode_tag)
+
     if emit_observation_fn is not None:
         try:
             emit_observation_fn(surface_text=user_message, source_id=session_id or "anonymous")
@@ -851,6 +863,13 @@ async def execute_unified_turn(
         association=association,
         repair_bundle=repair_bundle,
         stance_inputs={"user_message": user_message},
+        # Same fact HarnessRunRequestV1.fcc_model_label carries further down
+        # (resolved_fcc_model_label, computed once above) -- stance_react's
+        # own gateway route has no other way to hear "this turn prefers the
+        # agent lane" (see StanceReactRequestV1.llm_route's own docstring).
+        # None (the default) means today's unchanged behaviour: cortex-exec's
+        # _default_llm_route_for_step still hardcodes stance_react -> "chat".
+        llm_route="agent" if is_agent_route_model_label(resolved_fcc_model_label) else None,
     )
     await _deliver_cockpit_frames(
         [
@@ -1116,14 +1135,13 @@ async def execute_unified_turn(
             history_only = history_only[:-1]
     recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
 
-    # "orion" or "agent" -- computed once here (not just at the two
-    # _success_frames call sites below) so it can also ride on
-    # HarnessRunRequestV1.mode: without this, orion-harness-governor's own
-    # grammar trace (orion/harness/grammar_emit.py) has no way to know which
-    # Hub mode started the run at all and always says "mode=orion" -- caught
-    # live 2026-09-03 via Hub's own /api/chat/turn/{corr}/trace endpoint on a
-    # real Mode: Agent turn.
-    mode_tag = str(payload.get("mode") or "orion").strip().lower()
+    # "orion" or "agent" -- computed once, up near the top of this function
+    # (alongside resolved_fcc_model_label; see that block's own comment) so
+    # it can also ride on HarnessRunRequestV1.mode: without this,
+    # orion-harness-governor's own grammar trace (orion/harness/grammar_emit.py)
+    # has no way to know which Hub mode started the run at all and always
+    # says "mode=orion" -- caught live 2026-09-03 via Hub's own
+    # /api/chat/turn/{corr}/trace endpoint on a real Mode: Agent turn.
 
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
@@ -1144,7 +1162,9 @@ async def execute_unified_turn(
         # HarnessGovernorClient.run() reads this same field back off the request
         # to pick its governor dispatch queue (orion.llm.routes.is_agent_route_model_label)
         # -- one fact, not two independently-computed ones that could disagree.
-        fcc_model_label=_resolve_fcc_model_label(payload, mode_tag),
+        # (resolved_fcc_model_label computed once, near the top of this
+        # function -- also what stance_req.llm_route above was derived from.)
+        fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
         situation_prompt_fragment=situation_prompt_fragment,
     )

@@ -8,6 +8,7 @@ away from a known-passing baseline, so a test that passes for the wrong reason
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -617,6 +618,11 @@ def _outreach(**overrides) -> EndogenousOutreach:
         quiet_start_hour=-1,
         quiet_end_hour=-1,
         timeout_sec=5.0,
+        # Small, test-scale default so a real (unstubbed) _generate() call
+        # that hits the agent-lane attempt does not wait the production
+        # default (210s) before any test relying on it can even reach the
+        # fallback path.
+        agent_lane_timeout_sec=5.0,
         notify_channel="orion:notify:in_app",
         fallback_session_id="orion_outreach",
         trigger_evaluator=_always_fires,
@@ -918,7 +924,11 @@ def test_active_turn_is_held_by_reference() -> None:
 
 
 def test_generation_timeout_returns_empty_not_raise(monkeypatch) -> None:
-    outreach = _outreach(timeout_sec=0.01)
+    """Both attempts (agent-lane first, chat-lane fallback) time out here --
+    fake_execute sleeps regardless of which correlation_id/route it is
+    called with, so this covers the "message genuinely cannot be delivered
+    on either lane" end state, not just the first attempt alone."""
+    outreach = _outreach(timeout_sec=0.01, agent_lane_timeout_sec=0.01)
     outreach._bus = object()
 
     async def fake_execute(**kwargs):
@@ -927,12 +937,169 @@ def test_generation_timeout_returns_empty_not_raise(monkeypatch) -> None:
 
     _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
+    cancel_mock = AsyncMock()
+    monkeypatch.setattr(
+        "scripts.harness_governor_client.HarnessGovernorClient.cancel", cancel_mock
+    )
 
     result = asyncio.run(outreach.maybe_outreach())
 
     assert result["outreach"] is False
     assert result["reason"] == "empty_generation"
     assert result["generation"]["error"] == "timeout"
+    # Fallback actually ran (lane=chat_fallback, agent_lane_timeout=True),
+    # and the abandoned agent-lane attempt was cancelled best-effort.
+    assert result["generation"]["lane"] == "chat_fallback"
+    assert result["generation"]["agent_lane_timeout"] is True
+    cancel_mock.assert_awaited_once()
+    assert cancel_mock.await_args.kwargs["reason"] == "outreach_agent_lane_timeout"
+
+
+def test_agent_lane_success_requests_agent_route_and_skips_fallback(monkeypatch) -> None:
+    """Precedence, happy path: the FIRST attempt asks for the agent lane
+    (payload["fcc_model_label"] == AGENT_ROUTE_FCC_MODEL_LABEL) and, once it
+    succeeds, no second (chat-lane) attempt ever runs."""
+    from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+    outreach = _outreach()
+    outreach._bus = object()
+    calls: list[dict] = []
+
+    async def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return [_final_frame("an agent-lane thought", correlation_id=kwargs["correlation_id"])]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert len(calls) == 1
+    assert calls[0]["payload"]["fcc_model_label"] == AGENT_ROUTE_FCC_MODEL_LABEL
+
+
+def test_agent_lane_timeout_falls_back_to_chat_on_fresh_correlation_id(monkeypatch) -> None:
+    """Full precedence/fallback flow: agent-lane attempt times out; the
+    fallback attempt uses a FRESH correlation_id (never the abandoned one)
+    with no route override, delivers successfully, and the abandoned
+    attempt gets a best-effort cancel. Also the no-duplicate-delivery
+    contract: _deliver (via _publish_history) fires exactly once, carrying
+    the fallback's correlation_id, never the abandoned one."""
+    from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+    outreach = _outreach(agent_lane_timeout_sec=0.01)
+    outreach._bus = object()
+    seen_correlation_ids: list[str] = []
+
+    async def fake_execute(**kwargs):
+        seen_correlation_ids.append(kwargs["correlation_id"])
+        if kwargs["payload"].get("fcc_model_label") == AGENT_ROUTE_FCC_MODEL_LABEL:
+            await asyncio.sleep(5)  # never returns before the short agent-lane timeout
+            return []  # unreachable
+        assert "fcc_model_label" not in kwargs["payload"]
+        return [_final_frame("delivered on chat fallback", correlation_id=kwargs["correlation_id"])]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    cancel_mock = AsyncMock()
+    monkeypatch.setattr("scripts.harness_governor_client.HarnessGovernorClient.cancel", cancel_mock)
+    publish_history_calls: list[dict] = []
+
+    async def fake_publish_history(self, **kwargs):
+        publish_history_calls.append(kwargs)
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_publish_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert len(seen_correlation_ids) == 2
+    agent_corr, chat_corr = seen_correlation_ids
+    assert agent_corr != chat_corr
+
+    # Delivered/audited exactly once, on the fallback's correlation_id --
+    # never the abandoned agent-lane attempt's, and never both.
+    assert result["correlation_id"] == chat_corr
+    assert len(publish_history_calls) == 1
+    assert publish_history_calls[0]["correlation_id"] == chat_corr
+
+    cancel_mock.assert_awaited_once()
+    assert cancel_mock.await_args.kwargs["correlation_id"] == agent_corr
+
+
+def test_agent_lane_context_overflow_falls_back_to_chat_without_cancelling(monkeypatch) -> None:
+    """Widened-fallback regression (2026-09-08 review finding): a non-timeout
+    agent-lane failure -- context_overflow here, a real newly-reachable
+    failure shape since this is the first time outreach ever touches the
+    agent lane's smaller model -- must ALSO fall back to chat, not just a
+    literal timeout. Also asserts cancel is NOT called: the first attempt
+    already returned (nothing left running to cancel)."""
+    from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+    outreach = _outreach()
+    outreach._bus = object()
+    seen_correlation_ids: list[str] = []
+
+    async def fake_execute(**kwargs):
+        seen_correlation_ids.append(kwargs["correlation_id"])
+        if kwargs["payload"].get("fcc_model_label") == AGENT_ROUTE_FCC_MODEL_LABEL:
+            return [
+                _final_frame(
+                    "[context window exceeded]",
+                    correlation_id=kwargs["correlation_id"],
+                    context_overflow=True,
+                )
+            ]
+        return [_final_frame("delivered on chat fallback", correlation_id=kwargs["correlation_id"])]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    cancel_mock = AsyncMock()
+    monkeypatch.setattr("scripts.harness_governor_client.HarnessGovernorClient.cancel", cancel_mock)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert len(seen_correlation_ids) == 2
+    assert result["generation"]["lane"] == "chat_fallback"
+    assert result["generation"]["agent_lane_error"] == "context_overflow"
+    assert result["generation"]["agent_lane_timeout"] is False
+    cancel_mock.assert_not_awaited()
+
+
+def test_cancel_failure_does_not_break_the_fallback_delivery(monkeypatch) -> None:
+    """SHOULD finding (2026-09-08 review): _cancel_abandoned_attempt's own
+    try/except must actually be exercised, not just look correct by
+    inspection -- proves a raising HarnessGovernorClient.cancel() still lets
+    the tick complete and deliver via the chat-lane fallback."""
+    from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+    outreach = _outreach(agent_lane_timeout_sec=0.01)
+    outreach._bus = object()
+
+    async def fake_execute(**kwargs):
+        if kwargs["payload"].get("fcc_model_label") == AGENT_ROUTE_FCC_MODEL_LABEL:
+            await asyncio.sleep(5)
+            return []  # unreachable
+        return [_final_frame("delivered despite a raising cancel", correlation_id=kwargs["correlation_id"])]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    cancel_mock = AsyncMock(side_effect=RuntimeError("bus publish failed"))
+    monkeypatch.setattr("scripts.harness_governor_client.HarnessGovernorClient.cancel", cancel_mock)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    cancel_mock.assert_awaited_once()
 
 
 def test_generation_calls_the_real_unified_turn_pipeline(monkeypatch) -> None:

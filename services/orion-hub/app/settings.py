@@ -1020,6 +1020,38 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC: float = Field(
         default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
     )
+    # Short budget for the FIRST generation attempt only (2026-09-08 --
+    # see endogenous_outreach.py's own module docstring, "AGENT LANE FOR
+    # OUTREACH'S OWN DELIVERY, BOUNDED FALLBACK"). That attempt prefers the
+    # agent-lane GPU worker instead of the single-slot chat lane a real
+    # Juniper turn also uses -- but the agent lane is ALSO single-slot, and
+    # curiosity's own investigations can hold it for up to ~40 minutes, so
+    # this must be short enough that outreach degrades to a second,
+    # chat-lane attempt (HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC, full budget,
+    # fresh correlation_id) instead of making Juniper wait on a busy lane.
+    #
+    # 210.0 is a REASONED, not yet a measured-from-a-real-distribution,
+    # middle ground -- same "don't trust a guess longer than necessary"
+    # caveat HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC's own comment above already
+    # applies to its number. Derivation: a real stance_react prompt has
+    # legitimately run 100+ seconds even on the faster chat lane (this
+    # file's own HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC comment records the
+    # live case where the stance step alone was still in flight at ~33s of
+    # a 60s attempt that then timed out). The agent lane's 27B model is
+    # measured ~1.9x slower than the chat lane's 35B for prompt processing
+    # (491 vs 944 tok/s at an 18k-token prompt -- PR #2067,
+    # docs/superpowers/pr-reports/2026-09-03-curiosity-off-the-chat-lane-pr.md),
+    # so ~100s legitimate chat-lane latency projects to roughly ~190s on the
+    # agent lane for a comparable prompt. 210s gives that ceiling modest
+    # headroom (so ordinary agent-lane latency does not spuriously trip the
+    # fallback) while staying meaningfully below the module's own full
+    # HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC=300s budget -- the two-attempt
+    # design is meant to bound the first attempt, not silently double it by
+    # default. Re-derive from real observed elapsed_sec once this has
+    # actually fired (and, ideally, timed out) live a few times.
+    HUB_ENDOGENOUS_OUTREACH_AGENT_LANE_TIMEOUT_SEC: float = Field(
+        default=210.0, alias="HUB_ENDOGENOUS_OUTREACH_AGENT_LANE_TIMEOUT_SEC"
+    )
     # Session used for chat-history persistence when no live socket has
     # reported one (session_id lives in browser localStorage).
     HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID: str = Field(

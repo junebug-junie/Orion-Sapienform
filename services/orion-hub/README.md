@@ -558,9 +558,35 @@ old direct-call path's own options ever were. `payload={"no_write": True}`
 suppresses only the governor's OWN chat-history persistence — this module's
 three delivery rails below (unchanged) remain the sole persistence path, so
 an outreach turn keeps its `endogenous_outreach` tag instead of landing as
-an untagged duplicate. `HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE` is gone (killed,
-not deprecated) — route selection is the harness governor's call now,
-identically for outreach and real chat.
+an untagged duplicate. `HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE` was removed
+2026-08-19 because route selection was not Hub's decision to make — that
+part still holds. What changed 2026-09-08: outreach's own delivery turn now
+carries a real, bounded lane *preference* again, for a different reason —
+see "Agent lane first, bounded chat fallback" below.
+
+**Agent lane first, bounded chat fallback (2026-09-08).** `stance_react` —
+the stance-evaluation step every unified turn runs first, including this
+one — is hardcoded to the single-slot "chat" lane with no fallback
+(`services/orion-cortex-exec/app/executor.py`'s
+`_default_llm_route_for_step`), the SAME lane a real, typed-in Juniper turn
+uses. Live-confirmed 2026-09-08: that lane failing under contention
+surfaced as the gateway's own timeout string landing in the response text.
+Meanwhile curiosity's own deep investigations already moved to a separate
+agent-lane GPU worker with its own harness-governor dispatch queue (PR
+#2067, 2026-09-07) — proven safe. Outreach's own delivery turn now prefers
+that same agent lane instead of contending with Juniper's chat turn for the
+chat lane's one slot, bounded by a SHORT budget
+(`HUB_ENDOGENOUS_OUTREACH_AGENT_LANE_TIMEOUT_SEC`, default 210s) — because
+the agent lane is ALSO single-slot and curiosity can hold it for up to
+~40 minutes. On timeout, the abandoned attempt is cancelled best-effort and
+a second attempt runs on a fresh correlation_id, no route override (the
+existing chat-lane default), with the module's full
+`HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` budget — so a busy agent lane costs
+one bounded wait, never a dropped message. Nothing about the turn's
+generation quality, permissions, or stance-gating changes; it is still the
+identical `execute_unified_turn` pipeline described above. Curiosity's own
+investigation is never preempted or cancelled by this. See
+`endogenous_outreach.py`'s module docstring for the full account.
 
 Pipeline:
 
@@ -845,7 +871,7 @@ it back into every chat turn as the first line of `orion_identity_summary`
 Turning it on is two steps: the flag (`HUB_CURIOSITY_SELF_INQUIRY_ENABLED`)
 and the SQL grants. Until the grants are applied every tick logs
 `curiosity_self_inquiry_blocked reason=pg_grants_missing tables=...`.
-Operator trigger: `POST /api/curiosity/api/self-inquiry/run-now`. Full
+Operator trigger: `POST /curiosity/api/self-inquiry/run-now`. Full
 contract and inspection queries: `orion/curiosity/README.md` §13.
 
 ### 3. Speech-to-Text (ASR)

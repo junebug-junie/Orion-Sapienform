@@ -500,6 +500,7 @@ async def startup_event():
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
                 timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
+                agent_lane_timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_AGENT_LANE_TIMEOUT_SEC,
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
                 fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,

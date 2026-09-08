@@ -67,6 +67,7 @@ async def monitor_ups() -> None:
     on_battery_started_monotonic: Optional[float] = None
     last_on_battery: bool = False
     grace_event_sent: bool = False
+    shutdown_task: Optional[asyncio.Task] = None
 
     if bus.enabled:
         await bus.connect()
@@ -136,8 +137,20 @@ async def monitor_ups() -> None:
                     grace_sec,
                 )
 
-                if settings.POWER_GUARD_ENABLE_SHUTDOWN:
-                    _run_shutdown(settings.POWER_GUARD_SHUTDOWN_CMD)
+            # Retry every poll cycle (not just once) while still on battery past
+            # grace, as long as no attempt is currently in flight -- a single
+            # transient SSH/network failure must not permanently forfeit the
+            # shutdown for the rest of the outage. Runs in a thread so a slow
+            # SSH round-trip can't stall this loop's next poll or the
+            # independent heartbeat chassis.
+            if (
+                elapsed >= grace_sec
+                and settings.POWER_GUARD_ENABLE_SHUTDOWN
+                and (shutdown_task is None or shutdown_task.done())
+            ):
+                shutdown_task = asyncio.create_task(
+                    _attempt_shutdown(bus, settings, status, elapsed)
+                )
 
         # Transition ONBATT -> ONLINE
         if not status.on_battery and last_on_battery:
@@ -187,17 +200,49 @@ async def _publish_event(bus: OrionBusAsync, settings, channel: str, event: Powe
         logger.exception(f"Failed to publish power event kind={event.kind} channel={channel}")
 
 
-def _run_shutdown(cmd: str) -> None:
+def _run_shutdown(cmd: str) -> tuple[bool, str]:
+    """Run the (blocking) shutdown command. Returns (success, detail) instead
+    of just logging, so the caller can publish the outcome to the bus --
+    previously a failed shutdown attempt was indistinguishable from a
+    successful one to anything watching orion:power:events."""
     import subprocess
 
     logger.warning(f"Executing shutdown command: {cmd}")
     try:
-        subprocess.run(cmd, shell=True, check=True)
+        subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, timeout=30)
         logger.warning("Shutdown command executed successfully.")
+        return True, "shutdown command executed successfully"
     except subprocess.CalledProcessError as exc:
-        logger.error(f"Shutdown command failed: {exc}")
-    except Exception:
+        stderr = (exc.stderr or "").strip()
+        detail = f"shutdown command failed (exit={exc.returncode}): {stderr or exc}"
+        logger.error(detail)
+        return False, detail
+    except subprocess.TimeoutExpired:
+        detail = "shutdown command timed out after 30s"
+        logger.error(detail)
+        return False, detail
+    except Exception as exc:
         logger.exception("Unexpected error while running shutdown command.")
+        return False, f"unexpected error running shutdown command: {exc}"
+
+
+async def _attempt_shutdown(
+    bus: OrionBusAsync, settings, status, elapsed_sec: float
+) -> None:
+    """Run the shutdown command off the event loop thread (a live SSH round-trip
+    can take real seconds -- running it inline previously would have stalled
+    this poll loop and the independent heartbeat chassis for that long), then
+    publish the outcome so a failed attempt is visible on the bus instead of
+    silently indistinguishable from a successful one."""
+    success, detail = await asyncio.to_thread(_run_shutdown, settings.POWER_GUARD_SHUTDOWN_CMD)
+    event = PowerEvent(
+        kind="power.guard.shutdown_issued" if success else "power.guard.shutdown_failed",
+        node=settings.POWER_GUARD_NODE_NAME,
+        ups_name=settings.POWER_GUARD_UPS_NAME,
+        status=status,
+        details={"message": detail, "elapsed_sec": elapsed_sec},
+    )
+    await _publish_event(bus, settings, settings.CHANNEL_POWER_EVENTS, event)
 
 
 def build_heartbeat_chassis(settings=None) -> HeartbeatOnly:

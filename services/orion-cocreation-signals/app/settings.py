@@ -7,6 +7,50 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _parse_claude_limit_specs(raw: str) -> tuple[tuple[str, float, float], ...]:
+    """Parse `kind:hours:interval_sec` triples into validated specs.
+
+    Shared by the validator and the property so the two can never disagree
+    about what a given string means. Returns () for anything unusable -- the
+    validator turns that into a boot failure, and the property can then trust
+    its own output.
+
+    The KIND is required, not inferred from the window size. `LimitObservation.
+    state` reads the chronologically last event regardless of kind, so a
+    published series that does not say which limit it is about is one a
+    consumer cannot use without re-merging the two pools.
+    """
+    valid_kinds = ("session_limit", "weekly_limit")
+    out: list[tuple[str, float, float]] = []
+    seen: set[tuple[str, float]] = set()
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [p.strip() for p in chunk.split(":")]
+        if len(parts) != 3:
+            return ()
+        kind, hours_raw, interval_raw = parts
+        if kind not in valid_kinds:
+            return ()
+        try:
+            hours = float(hours_raw)
+            interval = float(interval_raw)
+        except ValueError:
+            return ()
+        if hours <= 0 or interval <= 0:
+            return ()
+        key = (kind, hours)
+        if key in seen:
+            # A duplicate series would publish the same fact twice per tick and
+            # double whatever a consumer counts. Refuse rather than dedupe
+            # silently: it is a config typo, not an intent worth guessing at.
+            return ()
+        seen.add(key)
+        out.append((kind, hours, interval))
+    return tuple(out)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -61,6 +105,7 @@ class Settings(BaseSettings):
         default="orion:substrate:juniper_affective_state"
     )
     CHANNEL_DEV_ECONOMICS_LEDGER: str = Field(default="orion:substrate:dev_economics_ledger")
+    CHANNEL_CLAUDE_LIMIT: str = Field(default="orion:substrate:claude_limit")
 
     # ── Producer enable flags (each independently toggleable -- a GitHub
     # API/rate-limit problem for pr_lifecycle must never block git_delta or
@@ -78,6 +123,13 @@ class Settings(BaseSettings):
     # Default OFF, same reasoning as affective_state above -- pure shadow
     # write, flip on deliberately once the live stream has had a sanity pass.
     COCREATION_SIGNALS_DEV_ECONOMICS_ENABLED: bool = Field(default=False)
+    # Default OFF like its two transcript-scanning neighbours, but for a
+    # different reason: this one is NOT a shadow write -- orion-hub consumes it
+    # from day one (orion/bus/channels.yaml). Off by default because it reads
+    # Juniper's transcript tree and the operator should turn that on knowingly,
+    # not because the signal is unproven. rate_limit_events.py has been correct
+    # since it shipped; what was missing was a consumer, not confidence.
+    COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED: bool = Field(default=False)
 
     # ── Producer intervals, one per real cadence (see spec's "Producer
     # scheduling" section) ──────────────────────────────────────────────
@@ -92,6 +144,19 @@ class Settings(BaseSettings):
     # Same cadence and reasoning as affective_state above -- both scan the
     # same real transcript tree, just extracting different signals from it.
     COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC: float = Field(default=900.0)
+    # `kind:hours:interval_sec` triples, one per published series. The kind is
+    # required rather than inferred: `LimitObservation.state` reads the last
+    # event in the window regardless of kind, so a weekly limit still in force
+    # reads `clear` the moment a spent session limit lands after it.
+    #
+    # The two intervals differ on purpose. Measured on the real tree, the 168h
+    # scan reads 429 files / 462MB / 2.4s while the 5h scan reads 42 / 110MB.
+    # The tight cadence exists because a session limit's stated reset time
+    # expires; a weekly window's answer moves on a day scale, and re-reading
+    # 460MB every five minutes for it would be ~165GB/day of pure waste.
+    COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS: str = Field(
+        default="session_limit:5:300,weekly_limit:168:3600"
+    )
 
     # Real, acknowledged gap (code review 2026-07-30): unlike git_delta/
     # graph_delta (diff-based, self-healing across a restart -- a missed
@@ -204,6 +269,27 @@ class Settings(BaseSettings):
         if v <= 0:
             raise ValueError("Poll interval/lookback must be positive")
         return v
+
+    @field_validator("COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS")
+    @classmethod
+    def _ensure_windows_parse(cls, v: str) -> str:
+        # Validated here rather than at the call site so a typo fails at boot
+        # with the offending value named, instead of starting a producer that
+        # publishes nothing and logs "no windows configured" forever.
+        if not _parse_claude_limit_specs(v):
+            raise ValueError(
+                "COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS must be comma-separated "
+                "kind:hours:interval_sec triples, kind in (session_limit, weekly_limit), "
+                f"hours and interval positive, no duplicate kind+hours; got {v!r}"
+            )
+        return v
+
+    @property
+    def claude_limit_specs(self) -> tuple[tuple[str, float, float], ...]:
+        """Parsed, in configured order. Not sorted: the operator's order is the
+        publish order, and there is no cross-series ordering guarantee to
+        preserve now that each series runs on its own task and cadence."""
+        return _parse_claude_limit_specs(self.COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS)
 
     @field_validator("COCREATION_SIGNALS_PR_FETCH_LIMIT")
     @classmethod

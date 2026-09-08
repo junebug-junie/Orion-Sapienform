@@ -121,6 +121,13 @@ SYNC_PREFIXES = (
     "CUDA_WATCHDOG_",
     "CRYSTALLIZER_",
     "ACTIVATION_",
+    # orion-cocreation-signals, added 2026-09-08 alongside the service's
+    # DEFAULT_SERVICES entry below. Both halves are required: the service list
+    # decides which .env files are visited, the prefix decides which keys are
+    # considered once there, and missing either one is silent.
+    "COCREATION_SIGNALS_",
+    "CHANNEL_CLAUDE_LIMIT",
+    "CHANNEL_DEV_ECONOMICS_",
     "MEMORY_FORMATION_",
     "GRAPHITI_",
     "FALKORDB_",
@@ -389,6 +396,13 @@ DEFAULT_SERVICES = (
     "orion-signals",
     "orion-whisper-tts",
     "orion-exo-exploration",
+    # Added 2026-09-08 with the claude_limit producer. Same blind spot as
+    # orion-whisper-tts above (PR #1956): the service was absent here AND no
+    # SYNC_PREFIXES entry matched any of its keys, so a default invocation
+    # considered zero of them while printing a clean report. Found the same way
+    # -- by adding four real keys to its .env_example and watching the sync say
+    # nothing was needed.
+    "orion-cocreation-signals",
 )
 
 

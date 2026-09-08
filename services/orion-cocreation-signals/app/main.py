@@ -11,6 +11,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
 from .producers.affective_state import affective_state_loop
+from .producers.claude_limit import WindowSpec, claude_limit_loop
 from .producers.dev_economics import dev_economics_loop
 from .producers.doc_semantic_drift import doc_semantic_drift_loop
 from .producers.git_delta import git_delta_loop
@@ -176,6 +177,23 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
         )
     else:
         logger.info("cocreation_dev_economics_disabled")
+
+    if settings.COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED:
+        tasks.append(
+            asyncio.create_task(
+                claude_limit_loop(
+                    bus=bus,
+                    channel=settings.CHANNEL_CLAUDE_LIMIT,
+                    source=source,
+                    claude_projects_path=settings.COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH,
+                    specs=tuple(WindowSpec(*spec) for spec in settings.claude_limit_specs),
+                    stop=stop,
+                ),
+                name="claude_limit_loop",
+            )
+        )
+    else:
+        logger.info("cocreation_claude_limit_disabled")
 
     if not tasks:
         logger.warning("cocreation_signals_no_producers_enabled")

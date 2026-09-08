@@ -1,0 +1,14 @@
+[Unit]
+Description=Record an ask_claude dry-run decision every 30 minutes
+
+[Timer]
+# 30min, not the producer's 300s. This log is read by a human over days, and
+# the decision only changes when a prior's times_tested moves (a curiosity run,
+# hours apart) or the limit state flips. A tighter cadence would grow the log
+# without adding a distinct fact.
+OnCalendar=*:07,37
+Persistent=true
+Unit=orion-ask-claude-dry-run.service
+
+[Install]
+WantedBy=timers.target

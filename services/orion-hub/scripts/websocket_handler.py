@@ -2222,57 +2222,24 @@ async def websocket_endpoint(websocket: WebSocket):
                     ws_payload["council_debug"] = council_debug
             await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
 
-            # Auto-invite Claude to react to the turn that just landed. Fired
-            # after the payload is sent so Orion's reply always renders first
-            # -- Claude is reacting to the room, not racing it.
+            # NO AUTO-INVITE TO CLAUDE HERE, DELIBERATELY. Removed 2026-09-08
+            # on Juniper's call: this block used to ship every Orion reply --
+            # and Juniper's own preceding message -- to `orion-room-companion`
+            # so Claude could react to it. Her words: "I just dont want all my
+            # private chat turns going to claude ... like it was incorrectly
+            # designed initially."
             #
-            # Fire-and-forget: a room companion that is slow, down, or
-            # rate-gated must never delay or fail Orion's own turn.
-            try:
-                _room_relay = getattr(scripts.main, "room_claude_relay", None)
-                _orion_said = str(ws_payload.get("llm_response") or "").strip()
-                if (
-                    _room_relay is not None
-                    and _room_relay.enabled
-                    # should_fire_auto_invite checks _orion_said before touching
-                    # the rate gate -- see its docstring for why the ordering
-                    # matters (a workflow-only turn must not burn the window).
-                    and _room_relay.should_fire_auto_invite(_orion_said, session_id, time.time())
-                ):
-                    # Send the EXCHANGE, not just Orion's half. Sending only
-                    # Orion's reply left Claude watching a one-sided
-                    # monologue with no idea what had been asked -- it could
-                    # only react to Orion's tone, which is what "generic
-                    # Claude responses" actually was. Confirmed by reading
-                    # Claude's own session transcript.
-                    #
-                    # `prompt` is the raw reply: build_turn_prompt adds the
-                    # speaker prefix, and prefixing here too produced
-                    # "Or\u00edon: Or\u00edon: ..." in the live transcript.
-                    _juniper_said = str(transcript or "").strip()
-                    _exchange = (
-                        [{
-                            "speaker_id": "juniper",
-                            "speaker_name": "Juniper",
-                            "speaker_kind": "human",
-                            "text": _juniper_said,
-                        }]
-                        if _juniper_said
-                        else []
-                    )
-                    asyncio.create_task(
-                        _room_relay.invite(
-                            prompt=_orion_said,
-                            invited_by="Or\u00edon",
-                            session_id=session_id,
-                            room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
-                            trigger="auto",
-                            transcript=_exchange,
-                            connection_id=connection_id,
-                        )
-                    )
-            except Exception:
-                logger.debug("room_claude_auto_invite_failed", exc_info=True)
+            # It billed a Claude call per chat turn (a `[pass]` costs the same
+            # tokens as a reply), and it inverted the room: Claude reacted to
+            # Orion instead of Orion choosing to reach out. Orion can still
+            # invite Claude -- the "Ask Claude" button (api_routes.py), and the
+            # endogenous stuck-prior trigger in orion/autonomy/
+            # ask_claude_trigger.py once it is armed. Both are deliberate acts
+            # with a subject; this was a firehose.
+            #
+            # If you are adding a Claude call back into the live chat path,
+            # that is a cognition/privacy change and needs Juniper first
+            # (CLAUDE.md 0A, proposal mode).
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write and not workflow_metadata_only:

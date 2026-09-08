@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 
 import pytest
 
@@ -335,41 +336,47 @@ async def test_a_pass_produces_no_bubble_but_is_still_logged_as_cost():
     assert published == [], "a pass must not be stored as something Claude said"
 
 
-def test_auto_invite_is_rate_gated_per_session():
-    """The failure worth preventing is a burst of rapid turns each billing a
-    Claude call."""
-    relay = _relay(auto_respond=True, auto_min_gap_sec=10.0)
-    assert relay.should_auto_invite("sess-1", 1000.0) is True
-    assert relay.should_auto_invite("sess-1", 1005.0) is False, "inside the gap"
-    assert relay.should_auto_invite("sess-1", 1011.0) is True, "past the gap"
-    # Sessions are gated independently -- one busy room must not mute another.
-    assert relay.should_auto_invite("sess-2", 1005.0) is True
+def test_the_relay_has_no_auto_invite_surface_at_all():
+    """The post-turn auto-invite is GONE, not merely disabled.
+
+    Removed 2026-09-08: it shipped every private Hub chat turn to Claude and
+    billed a call per turn. A config flag left off would have been one .env
+    line away from coming back, so the rate gate, the flag and the
+    `_last_auto_invite` bookkeeping are all deleted. This test fails if any of
+    them is reintroduced without a deliberate decision.
+    """
+    relay = _relay()
+    for gone in ("should_auto_invite", "should_fire_auto_invite",
+                 "auto_respond", "auto_min_gap_sec", "_last_auto_invite"):
+        assert not hasattr(relay, gone), f"{gone} is back -- see CLAUDE.md 0A, proposal mode"
 
 
-def test_empty_reply_does_not_consume_the_auto_invite_gate():
-    """should_auto_invite() stamps the rate gate as soon as it returns True.
-    Calling it for a workflow-only turn (no llm_response) before checking the
-    text would burn the next window for a turn that never actually invited
-    Claude. should_fire_auto_invite checks the text first."""
-    relay = _relay(auto_respond=True, auto_min_gap_sec=10.0)
-    assert relay.should_fire_auto_invite("", "sess-1", 1000.0) is False, "empty text: no invite, no gate consumed"
-    # A real turn one second later is still eligible -- the empty turn above
-    # must not have stamped _last_auto_invite.
-    assert relay.should_fire_auto_invite("Orion actually said something", "sess-1", 1001.0) is True
-    # Now the gate IS consumed by the real invite.
-    assert relay.should_fire_auto_invite("another reply", "sess-1", 1002.0) is False, "inside the gap"
+def test_the_live_chat_path_does_not_invite_claude():
+    """The caller side of the same kill.
 
-
-def test_auto_invite_is_off_unless_enabled():
-    relay = _relay(auto_respond=False)
-    assert relay.should_auto_invite("sess-1", 1000.0) is False
+    Asserted against the source rather than by driving a websocket turn: the
+    handler is ~2,300 lines into a coroutine that needs a full turn's worth of
+    fixtures, and what matters here is simply that no invite call survives in
+    it. A grep-shaped test is honest about being a grep.
+    """
+    handler = (
+        pathlib.Path(__file__).resolve().parents[1] / "scripts" / "websocket_handler.py"
+    ).read_text()
+    assert "should_fire_auto_invite" not in handler
+    assert "room_claude_auto_invite_failed" not in handler
+    # `_room_relay.invite(` was the actual spend call.
+    assert "_room_relay.invite(" not in handler
 
 
 @pytest.mark.asyncio
 async def test_auto_trigger_is_marked_on_the_request():
     """The companion needs to know an invite was automatic, because that is
-    what licenses Claude to stay quiet."""
-    relay = _relay(auto_respond=True)
+    what licenses Claude to stay quiet.
+
+    Kept after the post-turn hook was removed: nothing produces `trigger="auto"`
+    today, but the endogenous stuck-prior trigger will, and it needs the same
+    pass licence. The contract outlives its first producer."""
+    relay = _relay()
     auto = await relay.invite(
         prompt="Orion: something", invited_by="Orion", session_id="s",
         room_id="hub-direct", trigger="auto",

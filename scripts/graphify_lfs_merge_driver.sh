@@ -29,9 +29,20 @@
 # the installed package: cli.py's merge-driver branch loads "_current_path"
 # and "_other_path" only) and writes its merged result onto the %A path it
 # was given. Because we hand it *temporary, resolved* paths rather than the
-# originals, its result lands in a temp file -- that result is copied back
-# onto the ORIGINAL %A path here, since that's what git reads back as the
-# merge result.
+# originals, its result lands in a temp file.
+#
+# Custom merge drivers bypass git's normal clean-filter pipeline: confirmed
+# by direct repro that whatever content is at %A when this script exits
+# becomes the committed blob VERBATIM -- git does NOT re-run the LFS clean
+# filter on a merge driver's output the way a plain `git add` or a built-in
+# (non-driver) text merge would. Writing the real merged JSON straight back
+# would silently re-introduce a full-size (~100MB) blob into history on every
+# merge, defeating the entire point of this migration. So the real merged
+# content is passed through `git lfs clean` here, and THAT pointer -- not the
+# real JSON -- is what gets copied back onto the ORIGINAL %A path. Git then
+# checks the merge result out into the actual working-tree file the normal
+# way, which smudges the pointer back into real content there (verified: see
+# the PR report's merge-driver evidence section).
 #
 # POSIX sh only -- no bashisms.
 
@@ -94,7 +105,15 @@ STATUS=$?
 set -e
 
 if [ "$STATUS" -eq 0 ] && [ -f "$RESOLVED_A" ]; then
-    cp "$RESOLVED_A" "$ORIG_A"
+    # Re-clean the real merged content back into an LFS pointer before
+    # writing it to the path git treats as the merge result -- see the
+    # header comment above for why this step is required, not optional.
+    if ! git lfs clean -- "$ORIG_A" < "$RESOLVED_A" > "$WORKDIR/A.pointer" 2>"$WORKDIR/clean.err"; then
+        echo "graphify_lfs_merge_driver: git lfs clean failed for $ORIG_A:" >&2
+        cat "$WORKDIR/clean.err" >&2
+        exit 1
+    fi
+    cp "$WORKDIR/A.pointer" "$ORIG_A"
 fi
 
 exit "$STATUS"

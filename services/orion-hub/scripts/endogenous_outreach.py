@@ -41,6 +41,32 @@ Juniper's explicit call after rejecting the latter shape. See that module's
 own docstring for the registry sources and why only compound names are ever
 matched.
 
+SECOND DELIVERY DOOR, SAME GUARD (2026-09-08 follow-up). `offer_message`
+(below) is a second, independent path to Juniper's inbox -- the curiosity
+loop (`scripts/curiosity_investigation.py`) composes its own text via its own
+separate LLM call and hands the finished string straight to `offer_message`,
+which never went through `_generate()`/`build_outreach_prompt` above at all.
+Originally only `_outreach_once` ran the guard, so a curiosity investigation
+that fabricated an internal-telemetry claim would have sailed through with
+zero check -- same failure shape, the other door. `offer_message` now runs
+the identical check (`EndogenousOutreach._named_ungrounded_terms`, shared
+with `_outreach_once` so the two cannot diverge) against a FRESH trigger-
+evaluator read taken inside that call, not `self._last_tension_reason`
+(`_should_roll()`'s own field, which can be stale by the time an arbitrary
+investigation calls `offer_message` minutes later).
+
+"Same guard" means the same enforcement function and the same closed
+registry, not identical freshness guarantees end to end: `_outreach_once`'s
+own `tension_reason` is still the one `_should_roll()` captured before
+`_gather_context()`/`_generate()` ran, and `_generate()` is a bus RPC with
+up to a 60s timeout (see that gate's own "re-check immediately before
+delivery" comment a few paragraphs below) -- so that path can itself check
+against a reading that is tens of seconds old by the time the checked text
+actually ships. `offer_message`'s fresh-read fix does not retroactively
+close that older path's narrower staleness window; a fresh re-fetch
+immediately before delivery in `_outreach_once` too is a real, separate
+follow-up, not done here.
+
 NAMES THE CHANNEL NOW, NOT JUST "A CHANNEL" (2026-09-07). Root-caused live:
 Orion sent Juniper an unprompted message naming a specific internal channel
 ("harness_closure prediction error") that was never in the context it was
@@ -1253,10 +1279,53 @@ class EndogenousOutreach:
         try:
             reason = await asyncio.to_thread(self._trigger_evaluator)
         except Exception as exc:  # noqa: BLE001 - a broken trigger must not crash the tick
-            logger.warning("endogenous_outreach_trigger_evaluator_failed err=%s", exc)
+            logger.warning(
+                "endogenous_outreach_trigger_evaluator_failed caller=should_roll err=%s", exc
+            )
             reason = None
         self._last_tension_reason = reason
         return reason is not None
+
+    async def _fetch_fresh_tension_reason(self) -> Optional[Any]:
+        """A live, uncached trigger-evaluator read for a caller that is not
+        the periodic tick.
+
+        `offer_message` (below) can be called minutes after the last organic
+        tick -- `self._last_tension_reason` is `_should_roll()`'s field, only
+        as fresh as the last periodic run, and unlocked shared state a
+        concurrent tick can overwrite. Grounding a fabrication check in a
+        stale reason would license naming a signal that was true minutes ago
+        but is not true for THIS message. Same evaluator, same never-raise,
+        degrade-to-None-on-failure contract as `_should_roll()`'s own call --
+        deliberately does not read or write `self._last_tension_reason`.
+        """
+        try:
+            return await asyncio.to_thread(self._trigger_evaluator)
+        except Exception as exc:  # noqa: BLE001 - a broken trigger must not block a send
+            logger.warning(
+                "endogenous_outreach_trigger_evaluator_failed caller=offer_message err=%s", exc
+            )
+            return None
+
+    def _named_ungrounded_terms(
+        self, text: str, tension_reason: Optional[Any], correlation_id: str
+    ) -> List[str]:
+        """Shared closed-vocabulary grounding check (see module docstring's
+        "CLOSED-VOCABULARY GROUNDING GUARD" section) -- both delivery paths
+        (`_outreach_once` and `offer_message`) call this so the enforcement
+        cannot diverge between them. Logs and returns the offending terms;
+        the caller decides what to do with a non-empty result.
+        """
+        offending_terms = find_ungrounded_signal_mentions(
+            text, grounded_signal_names(tension_reason)
+        )
+        if offending_terms:
+            logger.warning(
+                "endogenous_outreach_named_ungrounded_signal corr=%s terms=%s",
+                correlation_id,
+                offending_terms,
+            )
+        return offending_terms
 
     # -- the tick ----------------------------------------------------------
 
@@ -1375,15 +1444,8 @@ class EndogenousOutreach:
         # turn. This is deterministic closed-vocabulary schema enforcement
         # against `scripts.outreach_vocabulary`'s registry, not a fuzzy
         # "does this look suspicious" text classifier.
-        offending_terms = find_ungrounded_signal_mentions(
-            text, grounded_signal_names(tension_reason)
-        )
+        offending_terms = self._named_ungrounded_terms(text, tension_reason, correlation_id)
         if offending_terms:
-            logger.warning(
-                "endogenous_outreach_named_ungrounded_signal corr=%s terms=%s",
-                correlation_id,
-                offending_terms,
-            )
             return self._record(
                 {
                     "outreach": False,
@@ -1485,6 +1547,15 @@ class EndogenousOutreach:
         tension-triggered outreach both count, because from the receiving end
         they are the same interruption.
 
+        The closed-vocabulary grounding guard (2026-09-08 -- see module
+        docstring's "CLOSED-VOCABULARY GROUNDING GUARD" section) is ALSO not
+        optional here: this caller composes text via its own separate LLM
+        call, entirely outside `_generate()`, so nothing else in this module
+        checks it for a fabricated internal-signal claim before this method
+        runs. Grounded against a FRESH trigger-evaluator read taken inside
+        this call, not `self._last_tension_reason` (that field belongs to the
+        periodic tick and can be stale by the time this is called).
+
         Returns the same status-dict shape `maybe_outreach` does, and records a
         decision-log row identically, so an operator sees one outreach history
         rather than two.
@@ -1519,6 +1590,29 @@ class EndogenousOutreach:
                 return self._record(
                     {"outreach": False, "reason": blocked, "source": tag},
                     forced=False,
+                )
+            # Closed-vocabulary grounding guard (2026-09-08) -- see module
+            # docstring's "CLOSED-VOCABULARY GROUNDING GUARD" section. This
+            # loop composes its own text entirely outside `_generate()`
+            # (`curiosity_investigation.py`'s own LLM call), so without this
+            # check a fabricated internal-signal claim in a curiosity
+            # finding would sail straight through -- the exact failure shape
+            # the guard was built for, via the other delivery door. A FRESH
+            # evaluator read, not `self._last_tension_reason`: that field
+            # belongs to the periodic tick and can be stale by the time an
+            # arbitrary investigation calls this.
+            tension_reason = await self._fetch_fresh_tension_reason()
+            offending_terms = self._named_ungrounded_terms(body, tension_reason, correlation_id)
+            if offending_terms:
+                return self._record(
+                    {
+                        "outreach": False,
+                        "reason": "named_ungrounded_signal",
+                        "source": tag,
+                        "offending_terms": offending_terms,
+                    },
+                    forced=False,
+                    tension_reason=tension_reason,
                 )
             session_id = self._active_session_id()
             await self._deliver(

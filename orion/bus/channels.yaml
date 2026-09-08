@@ -2694,6 +2694,27 @@ channels:
     stability: "experimental"
     since: "2026-08-28"
 
+  # The one Claude budget signal that is real. orion/dev_economics/
+  # rate_limit_events.py reads the constraint's own first-party announcement
+  # ("You've hit your session limit - resets 3:30am (UTC)") including the reset
+  # time, and had ZERO consumers from the day it shipped until this channel.
+  # It replaces the dollar-denominated quota_budget.py allowance, whose
+  # denominator was measured and refuted (2026-08-27-quota-window-calibration-
+  # finding.md): no dollar threshold separates limited from not-limited.
+  # Produced here rather than in orion-hub because this service already mounts
+  # ~/.claude/projects read-only for dev_economics/affective_state, and Hub
+  # must not: Hub runs as root with the docker socket and Orion's own FCC turns
+  # execute in it, so mounting Juniper's whole transcript tree there would be a
+  # real expansion of what a Hub-resident agent can read.
+  - name: "orion:substrate:claude_limit"
+    kind: "event"
+    schema_id: "ClaudeLimitObservationV1"
+    message_kind: "substrate.claude_limit.v1"
+    producer_services: ["orion-cocreation-signals"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-09-08"
+
   - name: "orion:substrate:dev_economics_ledger"
     kind: "event"
     schema_id: "DevEconomicsLedgerV1"

@@ -7,6 +7,26 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _parse_window_hours(raw: str) -> tuple[float, ...]:
+    """Shared by the validator and the property so the two can never disagree
+    about what a given string means. Returns () for anything unusable -- the
+    validator turns that into a boot failure, and the property can then trust
+    its own output."""
+    out: list[float] = []
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            hours = float(chunk)
+        except ValueError:
+            return ()
+        if hours <= 0:
+            return ()
+        out.append(hours)
+    return tuple(sorted(set(out)))
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -61,6 +81,7 @@ class Settings(BaseSettings):
         default="orion:substrate:juniper_affective_state"
     )
     CHANNEL_DEV_ECONOMICS_LEDGER: str = Field(default="orion:substrate:dev_economics_ledger")
+    CHANNEL_CLAUDE_LIMIT: str = Field(default="orion:substrate:claude_limit")
 
     # ── Producer enable flags (each independently toggleable -- a GitHub
     # API/rate-limit problem for pr_lifecycle must never block git_delta or
@@ -78,6 +99,13 @@ class Settings(BaseSettings):
     # Default OFF, same reasoning as affective_state above -- pure shadow
     # write, flip on deliberately once the live stream has had a sanity pass.
     COCREATION_SIGNALS_DEV_ECONOMICS_ENABLED: bool = Field(default=False)
+    # Default OFF like its two transcript-scanning neighbours, but for a
+    # different reason: this one is NOT a shadow write -- orion-hub consumes it
+    # from day one (orion/bus/channels.yaml). Off by default because it reads
+    # Juniper's transcript tree and the operator should turn that on knowingly,
+    # not because the signal is unproven. rate_limit_events.py has been correct
+    # since it shipped; what was missing was a consumer, not confidence.
+    COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED: bool = Field(default=False)
 
     # ── Producer intervals, one per real cadence (see spec's "Producer
     # scheduling" section) ──────────────────────────────────────────────
@@ -92,6 +120,20 @@ class Settings(BaseSettings):
     # Same cadence and reasoning as affective_state above -- both scan the
     # same real transcript tree, just extracting different signals from it.
     COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC: float = Field(default=900.0)
+    # 300s, five times tighter than its transcript-scanning neighbours, and the
+    # cadence is load-bearing rather than a preference. This is the only one of
+    # the three whose answer expires: a `limited` reading with a stated reset
+    # time goes stale the moment that time passes, and a consumer deciding
+    # whether Orion may speak *now* against a 15-minute-old observation is
+    # deciding against a window that may already have refilled. Cheap enough to
+    # justify: the scan is bounded by mtime (see rate_limit_events.candidate_
+    # files) so a quiet window touches almost no files.
+    COCREATION_SIGNALS_CLAUDE_LIMIT_POLL_INTERVAL_SEC: float = Field(default=300.0)
+    # The two real limit shapes Claude announces, as trailing-window hours:
+    # `session limit` (5h) and `weekly limit` (168h). Comma-separated so an
+    # operator can add a window without a code change; each one publishes its
+    # own event, distinguished by `window_hours`.
+    COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS: str = Field(default="5,168")
 
     # Real, acknowledged gap (code review 2026-07-30): unlike git_delta/
     # graph_delta (diff-based, self-healing across a restart -- a missed
@@ -198,12 +240,34 @@ class Settings(BaseSettings):
         "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC",
         "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC",
         "COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC",
+        "COCREATION_SIGNALS_CLAUDE_LIMIT_POLL_INTERVAL_SEC",
     )
     @classmethod
     def _ensure_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("Poll interval/lookback must be positive")
         return v
+
+    @field_validator("COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS")
+    @classmethod
+    def _ensure_windows_parse(cls, v: str) -> str:
+        # Validated here rather than at the call site so a typo fails at boot
+        # with the offending value named, instead of starting a producer that
+        # publishes nothing and logs "no windows configured" forever.
+        if not _parse_window_hours(v):
+            raise ValueError(
+                "COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS must be a comma-separated "
+                f"list of positive numbers of hours; got {v!r}"
+            )
+        return v
+
+    @property
+    def claude_limit_window_hours(self) -> tuple[float, ...]:
+        """Parsed, deduplicated, ascending. Ascending so the tightest window --
+        the one a "may Orion speak now" decision needs -- is published first on
+        every tick, and a consumer reading mid-tick sees it rather than waiting
+        behind a 168h scan."""
+        return _parse_window_hours(self.COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS)
 
     @field_validator("COCREATION_SIGNALS_PR_FETCH_LIMIT")
     @classmethod

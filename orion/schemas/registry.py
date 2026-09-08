@@ -133,6 +133,7 @@ from orion.schemas.self_experiments import (
 from orion.schemas.affective_state import JuniperAffectiveStateV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
+from orion.schemas.claude_limit import ClaudeLimitObservationV1
 from orion.schemas.power import PowerIntentSettledV1, PowerIntentV1
 from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.schemas.organ_emission import OrganEmissionV1
@@ -788,6 +789,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JuniperAffectiveStateV1": JuniperAffectiveStateV1,
     "DocSemanticDriftV1": DocSemanticDriftV1,
     "DevEconomicsLedgerV1": DevEconomicsLedgerV1,
+    "ClaudeLimitObservationV1": ClaudeLimitObservationV1,
     "PowerIntentV1": PowerIntentV1,
     "PowerIntentSettledV1": PowerIntentSettledV1,
     "CortexClientRequest": CortexClientRequest,

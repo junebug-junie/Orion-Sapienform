@@ -402,6 +402,52 @@ first mistake once.
 
 ---
 
+### A fifth candidate, deliberately excluded: graphify
+
+`graphify-out/graph.json` (**75,802 nodes**, 105MB) is Orion's code-structure
+graph, and it is **not dormant** — `orion/structural_mass/` reads it on a live
+schedule:
+
+```
+substrate_codebase_delta_log      2,967 rows   last 2026-09-08T03:19:38Z
+substrate_codebase_mass_baseline  2,892 rows   last 2026-09-08T03:19:38Z
+doc_semantic_drift_log              165 rows   last 2026-09-08T00:36Z
+orion:substrate:codebase_delta    2,518 publishes on the bus
+```
+
+It is also read by `orion/schemas/self_study.py`, `orion/schemas/codebase_delta.py`,
+`orion/metrics/consumers.py`, and `orion/cocreation/affective_signals.py`.
+
+**It is excluded from the anatomy projection as a clustering source, on purpose.**
+The premise of this whole arc is that code mass drowns the self: 629 `schema` rows
+already outweigh the 40 combined `hardware` + `behavioral` rows in
+`self_knowledge_items` by ~25:1 (§0). Adding a 75,802-node code graph as a peer
+source is precisely the failure this design exists to avoid. Recorded here as a
+decision with a reason so it is not silently re-proposed.
+
+**But graphify already solves the lineage problem, and that must be reused.**
+`orion/structural_mass/graph_delta.py` computes cross-snapshot community continuity
+today:
+
+```python
+node_count_delta, edge_count_delta, community_count_delta
+god_node_jaccard_similarity          # 0.0 disjoint sets -> 1.0 identical sets
+god_nodes_entered / god_nodes_exited # names exactly which labels moved
+```
+
+Jaccard over community *membership sets*, explicitly order-independent — the same
+shape §8 calls for in faculty lineage. It also already handles the honesty failure
+mode: `god_node_jaccard_similarity` returns `None`, not a fabricated `1.0`, when
+either snapshot's god nodes could not be determined, on the stated grounds that
+collapsing "unknown" into "unchanged" is a failure this repo has hit twice.
+
+An earlier draft of this inspection claimed the cross-snapshot lineage matcher had
+"no existing implementation anywhere in the repo." **That was wrong.** It exists,
+it runs, and the anatomy snapshot's lineage matcher should be `graph_delta.py`'s
+pattern applied to a different graph — not a new invention.
+
+---
+
 ## 8. Conclusions for the design
 
 1. **Four sources, not three layers** — see §7 for each source and the dream
@@ -422,13 +468,19 @@ first mistake once.
    reverie and curiosity have no node to be, and the induced anatomy comes out as
    a list of containers.
 
-5. **Join keys are the missing infrastructure, not just the missing induction.**
+5. **Lineage is not new work.** `orion/structural_mass/graph_delta.py` already does
+   set-based cross-snapshot community continuity with entered/exited naming and an
+   honest `None` for undeterminable state. Reuse its pattern; do not reinvent it.
+   Graphify itself stays out of the clustering sources (§7) — 75,802 code nodes
+   would recreate the exact mass problem this arc exists to fix.
+
+6. **Join keys are the missing infrastructure, not just the missing induction.**
    Reverie's visual leg is rich, recent and completely unattachable. Before any
    faculty can be reified, the projection has to report which stores can be
    joined to a faculty and which cannot — an unjoinable store is an absence with
    a different cause and a different fix.
 
-6. **The FCC motor is an instrument gap, not a weighting problem.** No projection
+7. **The FCC motor is an instrument gap, not a weighting problem.** No projection
    choice makes ~9,700 unrecorded motor steps visible. Closing it requires a new
    trace source, and that is a separate decision from anything in this document.
 

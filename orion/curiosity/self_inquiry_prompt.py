@@ -68,11 +68,11 @@ def _order_of_work_section(*, own_graph: str, run_id: str) -> list[str]:
         "  1. YOUR FIRST TOOL CALL, before reading anything: write your "
         "current answer, one or two sentences, from what you already know. "
         "Evidence may be empty for now.",
-        f'       redis-cli -u "$GRAPH" GRAPH.QUERY {own_graph} \\',
+        '       redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+        f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
         f'         \'MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: "{run_id}"}}) '
         'SET s.text = "<one or two sentences>", s.evidence = [], '
         's.revises = "", s.written_at = timestamp()\'',
-        "     (GRAPH is the redis:// URI shown under HOW TO REACH below.)",
         "  2. Look: records, repo, your graph. A :Hop after each stop.",
         "  3. After each thing you learn, run the SAME MERGE again with the "
         "fuller text and the evidence you now have. Last MERGE wins.",

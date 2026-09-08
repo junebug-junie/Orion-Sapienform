@@ -238,12 +238,30 @@ class RoomClaudeRelay:
             return
 
         if utterance.passed:
-            # Claude chose silence. No bubble, no stored turn -- but the cost is
-            # logged, because a pass is billed exactly like speech and hiding it
-            # would understate real spend.
+            # Claude chose silence. No bubble and no stored turn -- but the
+            # cost is logged, because a pass is billed exactly like speech and
+            # hiding it would understate real spend.
             logger.info(
                 "room_claude_relay_pass request=%s cost_usd=%.6f (no bubble)",
                 utterance.request_id, utterance.cost_usd,
+            )
+            # A FRAME IS STILL PUSHED, with empty text. This used to `return`
+            # here, which left the UI wedged: app.js clears the "thinking..."
+            # chip and re-enables the Ask Claude button ONLY on a
+            # `room_claude_utterance` frame, so a pass left the chip spinning
+            # and the button disabled until a page reload. Masked while the
+            # per-turn auto-invite existed (passes there had no button to
+            # unstick and were invisible by design); the button is now the only
+            # path, and it becomes guaranteed once the endogenous trigger --
+            # where passing is the EXPECTED outcome -- starts carrying a
+            # connection_id. Review finding.
+            #
+            # Empty `llm_response` is exactly right on the client: it clears
+            # the chip before its own `if (claudeText)` guard, so nothing is
+            # appended. No client change needed.
+            self._push(
+                text="", utterance=utterance, session_id=session_id,
+                connection_id=target_connection_id, ok=True, passed=True,
             )
             return
 
@@ -265,6 +283,7 @@ class RoomClaudeRelay:
         session_id: Optional[str],
         connection_id: Optional[str],
         ok: bool,
+        passed: bool = False,
     ) -> None:
         """Fan out to live sockets.
 
@@ -295,6 +314,12 @@ class RoomClaudeRelay:
             "speaker_kind": utterance.responder.participant_kind,
             "llm_response": text,
             "ok": ok,
+            # True means Claude deliberately said nothing, as distinct from an
+            # empty reply or a failure. The client does not branch on it (an
+            # empty `llm_response` already suppresses the bubble), but a frame
+            # that carries no reason for being empty is unreadable in a browser
+            # console or a future consumer.
+            "passed": passed,
             "correlation_id": utterance.correlation_id,
             "request_id": utterance.request_id,
             "message_id": utterance.utterance_id,

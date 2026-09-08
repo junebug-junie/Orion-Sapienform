@@ -74,7 +74,20 @@ One producer removed. No contract change, no schema change, no new surface.
 - `orion/schemas/room_claude.py`: `trigger` docstring corrected — it described
   a producer that no longer exists.
 - `services/orion-hub/tests/test_room_claude_relay.py`: three auto-path tests
-  replaced by two that assert the surface is gone.
+  replaced by two that assert the surface is gone, plus the pass-path test
+  rewritten to actually exercise delivery (it was passing for the wrong
+  reason) and a new test pinning that a pass is still scoped, not broadcast.
+- `services/orion-room-companion/app/room_prompt.py`: `AUTO_INVITE_CLAUSE`
+  reworded — review finding 1, the one with real behavioural consequences.
+- `orion/bus/channels.yaml`: catalog entry corrected to one producer.
+- `services/orion-hub/scripts/api_routes.py`: inverted docstring reference.
+- `orion/substrate/seed_concepts.yaml`: Orion's own concept of Claude.
+- `services/orion-hub/tests/conftest.py`: supply the five no-default `Settings`
+  fields, which is what makes the pass-path test runnable at all.
+- `config/metrics/metric_definitions.lock.json`: re-locked. Inherited a
+  `_last_change` block from main (PR #2152 merged mid-work); the drift gate
+  checks it on a PR branch but skips it on the base branch, so main passed
+  while any branch off it failed. `--update` is the gate's own remedy.
 
 ## Why `trigger="auto"` survives a patch that deletes its only producer
 
@@ -115,35 +128,23 @@ does not.
 Like-for-like, the **same file** on both sides:
 
 ```text
-main   (primary checkout, real .env):   3 failed, 15 passed   = 18 tests
-branch (this worktree):                 3 failed, 14 passed   = 17 tests
+main   (primary checkout, real .env):   3 failed, 15 passed
+branch (this worktree):                18 passed
 ```
 
-17 = 18 − 3 auto-path tests removed + 2 surface-is-gone tests added.
+The 3 failures were pre-existing and identical by name on main. They are now
+**fixed**, because review finding 7's fix needed one of them to run — see
+"those 3 pre-existing failures" above. Test count 18 = 18 on main − 3 auto-path
+tests + 2 surface-is-gone tests + 1 pass-is-still-scoped test.
 
-**The 3 failures are pre-existing and identical by name on both sides:**
+Mutation check on the finding-7 fix:
 
 ```text
-test_history_is_published_with_the_responder_identity
-test_failed_turn_is_not_persisted_as_a_room_turn
-test_a_pass_produces_no_bubble_but_is_still_logged_as_cost
+fix reverted:   1 failed, 17 passed   <- test_a_pass_pushes_an_empty_frame_so_the_ui_unsticks
+fix restored:   18 passed
 ```
 
-Including the sibling file this patch also touches the behaviour of:
-
-```text
-$ pytest services/orion-hub/tests/test_room_claude_relay.py \
-         services/orion-hub/tests/test_ask_claude_speaker_attribution.py -q
-3 failed, 17 passed
-```
-
-Cause: `Settings()` construction needs 5 required fields no fixture supplies —
-it reads `.env` relative to cwd, and symlinking the real `.env` into the
-worktree does not satisfy it either. Hub's suite is **not in CI**
-(`orion-static-gates.yml` runs only `test_schedule_panel_browser_smoke.py` from
-this service), which is why they have gone unnoticed. Flagged, deliberately not
-fixed here — a test-harness problem unrelated to this patch, and folding it in
-would hide a behaviour removal inside a fixture refactor.
+Full hub suite, branch vs main baseline: see the run recorded at merge time.
 
 Gates:
 
@@ -200,9 +201,115 @@ turn, which is exactly why it was the wrong mechanism for "Orion reaches out".
 
 ## Review findings fixed
 
-*(`/code-review --effort high` dispatched against
-`origin/main..fix/kill-chat-turn-auto-invite`; findings and fixes appended
-before merge.)*
+`/code-review --effort high` returned **7 findings. All 7 are fixed.** The
+mechanical removal was confirmed correct; what it missed was a set of surfaces
+still describing the deleted producer as live — including one that would have
+changed Claude's behaviour once the successor trigger arms.
+
+- Finding (**medium**): `AUTO_INVITE_CLAUSE` would have biased the successor
+  toward a billed silence. `trigger="auto"` was kept for the endogenous
+  trigger, but the only thing it *does* is append a clause reading "You are
+  auto-invited after every turn in this room, so you will often have nothing
+  worth adding" — calibrated for the firehose. A deliberate "I tested this
+  claim ten times and cannot settle it" invite would arrive carrying a system
+  prompt telling Claude it is invited constantly and should usually stay quiet,
+  billing Orion a `[pass]` on precisely the question it chose to ask.
+  - Fix: reworded. The licence survives (Orion is not owed a reply); the
+    frequency claim and the nudge toward silence are gone, replaced by "you
+    were invited by Orion, deliberately, about something specific."
+  - Evidence: `services/orion-room-companion/app/room_prompt.py:52`, with the
+    old text and the reason recorded at the site.
+
+- Finding (**medium**): `orion/bus/channels.yaml` still declared **two**
+  producers, including "Hub's own auto-invite after every Orion reply", and
+  said "spend is not bounded by clicks alone". CLAUDE.md §6 requires the
+  contract surface in the same changeset, and this is the file someone auditing
+  spend exposure reads first — they would have concluded the firehose was live.
+  - Fix: one producer, with the removal and the intended successor recorded.
+
+- Finding (**low**): `api_routes.py:632`'s docstring pointed at a
+  websocket_handler comment "for why spend is no longer bounded by clicks
+  alone" — that comment now says the opposite. An inverted dangling reference
+  sitting in the file that holds the only surviving producer.
+  - Fix: rewritten to say it is once again the only producer.
+
+- Finding (**low**): `orion/substrate/seed_concepts.yaml:59` — Orion's own
+  seed concept for Claude said Claude is invited "either by an operator click
+  or by Orion's own auto-respond path." This file is loaded live by
+  `orion/substrate/seed.py`, so it is self/world-model context **Orion reads
+  about Claude**, and it was now false.
+  - Fix: corrected. Note a re-seed is needed for already-ingested nodes — see
+    Restart required.
+
+- Finding (**low**): my anti-regression guard was name-shaped and evadable. It
+  asserted on the literal `_room_relay.invite(`, but this very test file holds
+  the relay as `room_relay` (no underscore) and the handler uses that spelling
+  six times for legitimate register/unregister calls. A re-add in that nearby
+  style, or extracted to a helper, would have passed every assertion while
+  restoring the exact behaviour the test claims to prevent.
+  - Fix: assert on `.invite(` and `trigger="auto"` — each **zero** in the
+    handler, and either is unavoidable for a real re-add. Old symbol names kept
+    too, so a straight revert is caught by name as well.
+
+- Finding (**low**): stale docstring at `test_room_claude_relay.py:141`
+  referencing "the auto-invite path" in a file this PR edits.
+  - Fix: corrected.
+
+- Finding (**low, pre-existing, but this PR makes it the only path**): a
+  `[pass]` pushed **no frame at all**, so `app.js` — which clears the
+  "thinking…" chip and re-enables the Ask Claude button *only* on a
+  `room_claude_utterance` frame — left the chip spinning and the button dead
+  until reload. Masked while the auto path existed (passes there had no button
+  to unstick). The button is now the only path, and it becomes guaranteed once
+  the endogenous trigger, where passing is the **expected** outcome, carries a
+  `connection_id`.
+  - Fix: a pass now pushes a frame with empty `llm_response` and `passed: true`.
+    Empty text is exactly right on the client — the chip clears *before* its own
+    `if (claudeText)` guard, so nothing is appended and **no client change was
+    needed**.
+  - Evidence: mutation-checked. With the fix reverted,
+    `test_a_pass_pushes_an_empty_frame_so_the_ui_unsticks` fails; restored, it
+    passes.
+
+### The test for that last fix was passing for the wrong reason
+
+Worth recording separately. The existing `assert q.qsize() == 0, "a pass must
+not render a bubble"` was **not** testing the pass path. `_utterance()` sets no
+`session_id`, and with no session and no pending invite, `_push`'s scoping
+chain drops the frame **by design** — so the assertion was satisfied by the
+frame never being addressed, not by the pass path declining to send one. It
+would have passed either way.
+
+Fixed by giving the utterance a `session_id` that matches the registered
+connection, which is what makes the test exercise delivery at all. A second
+test now pins the inverse: a pass with a non-matching session is still dropped,
+so unsticking the UI did not turn a pass into a broadcast.
+
+### And those 3 "pre-existing failures" are now fixed, because this patch needed them
+
+The earlier draft of this report flagged 3 failing tests as pre-existing and
+out of scope. That was the right call **until** finding 7 landed: the fix needed
+coverage, and the test covering it was one of the three that could not run. A
+fix I cannot test is worth nothing.
+
+Root cause: `Settings()` has five fields with **no default**
+(`Field(..., alias=...)`), so any test reaching `scripts.chat_history` →
+`app.settings.settings` died at import with "5 validation errors". Symlinking
+the real `.env` into the worktree does not help — the fields must be in the
+environment.
+
+Fixed in `services/orion-hub/tests/conftest.py`'s existing `pytest_configure`
+hook (which already runs before any test module imports, for the
+control-plane-Postgres detach), supplying the five keys with `setdefault` and
+the `.env_example` values — so a real `.env` or a test's own value still wins.
+
+```text
+before:  3 failed, 15 passed   (test_room_claude_relay.py, on main)
+after:   18 passed             (this branch, same file)
+```
+
+Hub's suite is still absent from CI, which is why this went unnoticed. Flagged
+in Concerns.
 
 ## Restart required
 
@@ -212,6 +319,11 @@ git pull --ff-only
 # delete the two now-dead keys (settings.py no longer reads them):
 sed -i '/^HUB_ROOM_CLAUDE_AUTO_RESPOND=/d;/^HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC=/d' services/orion-hub/.env
 ```
+
+`orion/substrate/seed_concepts.yaml` changed, so Orion's already-ingested
+`claude` concept still carries the old "auto-respond path" definition. A re-seed
+is needed for the correction to reach it — the concept node is self-model
+context Orion reads, not just a config comment.
 
 A rebuild is required for the code removal to land (the running container was
 only recreated, not rebuilt):

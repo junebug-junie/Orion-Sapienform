@@ -80,8 +80,33 @@ def _detach_control_plane_from_live_postgres() -> None:
     )
 
 
+# Settings() has five fields with NO default (`Field(..., alias=...)`), so
+# constructing it raises unless these are in the environment. Any test that
+# reaches `scripts.chat_history` -> `app.settings.settings` therefore died at
+# import with "5 validation errors for Settings" -- 3 tests in
+# test_room_claude_relay.py were failing this way on main, and hub's suite is
+# absent from CI so nothing reported it.
+#
+# `setdefault`, not assignment: a real service .env or a test that installs its
+# own value must still win. Values match services/orion-hub/.env_example, so a
+# test reading them sees the same channel names production does.
+_REQUIRED_SETTINGS_ENV = {
+    "CHANNEL_VOICE_TRANSCRIPT": "orion:voice:transcript",
+    "CHANNEL_VOICE_LLM": "orion:voice:llm",
+    "CHANNEL_VOICE_TTS": "orion:voice:tts",
+    "CHANNEL_COLLAPSE_INTAKE": "orion:collapse:intake",
+    "CHANNEL_COLLAPSE_TRIAGE": "orion:collapse:triage",
+}
+
+
+def _supply_required_settings_env() -> None:
+    for key, value in _REQUIRED_SETTINGS_ENV.items():
+        os.environ.setdefault(key, value)
+
+
 def pytest_configure() -> None:
     _detach_control_plane_from_live_postgres()
+    _supply_required_settings_env()
     _ensure_hub_paths()
 
 

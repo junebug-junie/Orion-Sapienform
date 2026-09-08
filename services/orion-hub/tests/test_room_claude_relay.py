@@ -138,9 +138,9 @@ async def test_falsy_session_id_does_not_broadcast_to_every_open_tab():
 
 @pytest.mark.asyncio
 async def test_connection_id_pins_the_reply_regardless_of_session_id():
-    """When the caller has a connection_id (both the manual invite route and
-    the auto-invite path now always pass one), it is authoritative -- a stale
-    or mismatched noted session_id on the target socket must not matter."""
+    """When the caller has a connection_id (the manual invite route always
+    passes one), it is authoritative -- a stale or mismatched noted session_id
+    on the target socket must not matter."""
     relay = _relay()
     target: asyncio.Queue = asyncio.Queue()
     other: asyncio.Queue = asyncio.Queue()
@@ -308,9 +308,21 @@ async def test_unregistered_connection_stops_receiving():
 
 
 @pytest.mark.asyncio
-async def test_a_pass_produces_no_bubble_but_is_still_logged_as_cost():
-    """Claude choosing silence is a real, billed turn. No bubble, no stored
-    turn -- but the spend must not vanish, or the meter understates reality."""
+async def test_a_pass_pushes_an_empty_frame_so_the_ui_unsticks():
+    """Claude choosing silence is a real, billed turn. No bubble and no stored
+    turn -- but a frame MUST still reach the socket.
+
+    app.js clears the "thinking..." chip and re-enables the Ask Claude button
+    only on a `room_claude_utterance` frame, so returning early on a pass left
+    the chip spinning and the button dead until reload. Review finding.
+
+    NOTE ON `session_id="sess-1"`: without it this test passed for the wrong
+    reason. `_utterance()` sets no session_id, and with no session and no
+    pending invite `_push`'s scoping chain drops the frame by design -- so the
+    old `assert q.qsize() == 0` was satisfied by the frame never being
+    addressed, not by the pass path declining to send one. Matching the
+    registered connection is what makes this test exercise delivery at all.
+    """
     relay = _relay()
     q: asyncio.Queue = asyncio.Queue()
     relay.register_connection("c", q)
@@ -327,13 +339,40 @@ async def test_a_pass_produces_no_bubble_but_is_still_logged_as_cost():
     chat_history.publish_chat_history = _fake_publish
     try:
         await relay._handle_utterance(
-            {"payload": _utterance(text="", passed=True, cost_usd=0.0041).model_dump(mode="json")}
+            {"payload": _utterance(
+                text="", passed=True, cost_usd=0.0041, session_id="sess-1",
+            ).model_dump(mode="json")}
         )
     finally:
         chat_history.publish_chat_history = original
 
-    assert q.qsize() == 0, "a pass must not render a bubble"
+    assert q.qsize() == 1, "a pass must still unstick the UI"
+    frame = q.get_nowait()
+    assert frame["kind"] == "room_claude_utterance", "the chip only clears on this kind"
+    # Empty text is what suppresses the bubble on the client, before its own
+    # `if (claudeText)` guard -- so no client change was needed.
+    assert frame["llm_response"] == "", "a pass must not render a bubble"
+    assert frame["passed"] is True
+    assert frame["ok"] is True, "a pass is not a failure"
     assert published == [], "a pass must not be stored as something Claude said"
+
+
+@pytest.mark.asyncio
+async def test_a_pass_is_still_dropped_when_no_socket_matches():
+    """The scoping chain still applies to a pass -- it is a normal frame, not
+    a broadcast. Guards the inverse of the bug above: unsticking the UI must
+    not mean pushing to every open tab."""
+    relay = _relay()
+    q: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("c", q)
+    relay.note_session("c", "sess-1")
+
+    await relay._handle_utterance(
+        {"payload": _utterance(
+            text="", passed=True, cost_usd=0.0041, session_id="someone-elses-session",
+        ).model_dump(mode="json")}
+    )
+    assert q.qsize() == 0
 
 
 def test_the_relay_has_no_auto_invite_surface_at_all():
@@ -362,10 +401,22 @@ def test_the_live_chat_path_does_not_invite_claude():
     handler = (
         pathlib.Path(__file__).resolve().parents[1] / "scripts" / "websocket_handler.py"
     ).read_text()
+    # BEHAVIOUR-SHAPED, NOT NAME-SHAPED. An earlier version of this test
+    # asserted on `_room_relay.invite(` -- but this very file holds the relay
+    # as `room_relay` (no underscore) elsewhere, and the handler uses that
+    # spelling six times for its legitimate register/unregister calls. A
+    # re-added invite written in that nearby style, or extracted into a
+    # helper, would have passed every assertion while restoring exactly the
+    # behaviour this test claims to prevent. Review finding.
+    #
+    # `.invite(` and `trigger="auto"` are each ZERO in the handler, and either
+    # one is unavoidable for a real re-add: you cannot invite Claude without
+    # calling invite, and you cannot get the pass licence without the trigger.
+    assert ".invite(" not in handler, "something in the live chat path invites Claude again"
+    assert 'trigger="auto"' not in handler
+    # The old symbols too, so a straight revert is caught by name as well.
     assert "should_fire_auto_invite" not in handler
     assert "room_claude_auto_invite_failed" not in handler
-    # `_room_relay.invite(` was the actual spend call.
-    assert "_room_relay.invite(" not in handler
 
 
 @pytest.mark.asyncio

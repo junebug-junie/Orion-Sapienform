@@ -150,6 +150,70 @@ def _direct_graph_consolidation_proposal(
     )
 
 
+def test_graph_consolidation_apply_stages_a_real_policy_profile(tmp_path) -> None:
+    """apply() with a policy_store writes a real, staged (not activated) profile.
+
+    Before this, every graph_consolidation_param_patch adoption's actual
+    write landed in `self.surfaces` -- a plain dict nothing in production
+    ever reads back (confirmed: `SUBSTRATE_MUTATION_SURFACES` in
+    services/orion-hub/scripts/api_routes.py). This is the loop's first
+    real, live-read target: `SubstratePolicyProfileStore`, the same store
+    `GraphReviewRuntimeExecutor._resolve_policy()` consults.
+
+    Staged, not activated: the store is documented as manual/operator-
+    controlled, and resolve() only ever matches an *active* profile -- so
+    this adoption alone must not change any live review behavior.
+    """
+    from orion.substrate.policy_profiles import SubstratePolicyProfileStore
+
+    store = SubstratePolicyProfileStore(sql_db_path=str(tmp_path / "policy.sqlite3"))
+    applier = PatchApplier(surfaces={}, policy_store=store)
+    proposal = _direct_graph_consolidation_proposal(target_value=96, rollback_value=64)
+    decision = MutationDecisionV1(
+        proposal_id=proposal.proposal_id,
+        action="auto_promote",
+        reason="test",
+    )
+
+    adoption = applier.apply(proposal=proposal, decision=decision)
+
+    assert adoption is not None
+    profile_id = adoption.rollback_payload.get("policy_profile_id")
+    assert profile_id is not None
+    profile = store.get_profile(profile_id)
+    assert profile is not None
+    assert profile.activation_state == "staged"
+    assert profile.policy_overrides.query_limit_nodes == 96
+    # Scoped to the real evidence source, not the default empty/"matches
+    # everything" scope -- an unscoped profile would apply globally to every
+    # review, everywhere, the moment an operator ever promotes it.
+    assert profile.rollout_scope.target_zones == ["world_ontology"]
+    assert profile.rollout_scope.invocation_surfaces == ["operator_review"]
+    inspection = store.inspect()
+    assert profile_id in {p.profile_id for p in inspection.staged_profiles}
+    assert profile_id not in {p.profile_id for p in inspection.active_profiles}
+
+    # rollback() must not blow up on a staged-only adoption -- there is
+    # nothing live to restore, and the profile is simply left staged. It must
+    # also not write a second, decorative record into the surfaces dict.
+    applier.rollback(adoption=adoption)
+    assert store.get_profile(profile_id).activation_state == "staged"
+    assert applier.surfaces == {}
+
+
+def test_graph_consolidation_apply_without_policy_store_keeps_old_dict_behavior() -> None:
+    """policy_store=None (every existing caller) must be unaffected."""
+    applier = PatchApplier(surfaces={})
+    proposal = _direct_graph_consolidation_proposal(target_value=96, rollback_value=64)
+    decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote", reason="test")
+
+    adoption = applier.apply(proposal=proposal, decision=decision)
+
+    assert adoption is not None
+    assert "policy_profile_id" not in adoption.rollback_payload
+    assert applier.surfaces["graph_consolidation"]["query_limit_nodes"] == 96
+
+
 def test_signal_to_pressure_pipeline_filters_parked_routing_signals() -> None:
     """autonomy_graph review telemetry no longer produces a "routing" signal.
 

@@ -134,6 +134,7 @@ from orion.substrate import build_substrate_policy_store_from_env, build_substra
 from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
+from orion.substrate.policy_profiles import SubstratePolicyProfileStore
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_bootstrap import GraphReviewBootstrapper
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
@@ -4608,8 +4609,15 @@ def _resolve_operator_token(request: Request | None, token: str | None) -> str |
 
 
 class _ManualCyclePatchApplier(PatchApplier):
-    def __init__(self, *, surfaces: dict[str, dict[str, Any]], allow_apply: bool, blocked_reason: str | None = None) -> None:
-        super().__init__(surfaces=surfaces)
+    def __init__(
+        self,
+        *,
+        surfaces: dict[str, dict[str, Any]],
+        allow_apply: bool,
+        blocked_reason: str | None = None,
+        policy_store: SubstratePolicyProfileStore | None = None,
+    ) -> None:
+        super().__init__(surfaces=surfaces, policy_store=policy_store)
         self.allow_apply = bool(allow_apply)
         self.blocked_reason = blocked_reason
         self.attempted = 0
@@ -4639,8 +4647,9 @@ class _ScheduledCyclePatchApplier(PatchApplier):
         surfaces: dict[str, dict[str, Any]],
         allow_apply: bool,
         allowed_classes: set[str] | None = None,
+        policy_store: SubstratePolicyProfileStore | None = None,
     ) -> None:
-        super().__init__(surfaces=surfaces)
+        super().__init__(surfaces=surfaces, policy_store=policy_store)
         self.allow_apply = bool(allow_apply)
         self.allowed_classes = set(allowed_classes or set())
         self.attempted = 0
@@ -4931,7 +4940,15 @@ def execute_substrate_mutation_scheduled_cycle(
         applier = _ScheduledCyclePatchApplier(
             surfaces=SUBSTRATE_MUTATION_SURFACES,
             allow_apply=apply_enabled,
-            allowed_classes={"routing_threshold_patch"},
+            # routing_threshold_patch is retired (RETIRED_MUTATION_CLASSES) and
+            # can never reach a real apply regardless of this allowlist --
+            # graph_consolidation_param_patch is the only class that currently
+            # can. Left pointed at the retired class, this scheduled/unattended
+            # cycle could never apply anything for real; the env flags below
+            # keep their historical "routing" names (a live Hub API response
+            # reads them by these keys -- renaming is a separate follow-up).
+            allowed_classes={"graph_consolidation_param_patch"},
+            policy_store=SUBSTRATE_POLICY_STORE,
         )
         corpus = ReplayCorpusRegistry(
             corpus_by_class={
@@ -4973,8 +4990,26 @@ def execute_substrate_mutation_scheduled_cycle(
             trace_logger=traces.append,
         )
 
-        # Narrow ramp scope: scheduler-driven mutation autonomy is routing-class only.
-        allowed_zones = {"autonomy_graph"}
+        # Narrow ramp scope: was routing-class only (zone "autonomy_graph"),
+        # retired 2026-09-05 (RETIRED_MUTATION_CLASSES) -- that zone's BASE
+        # signal is a permanent no-op now (_RETIRED_TELEMETRY_ZONES), so this
+        # filter alone made the scheduled cycle apply nothing for real,
+        # regardless of allowed_classes below. "world_ontology" is
+        # graph_consolidation's real zone (TARGET_SURFACE_BY_ZONE) and is
+        # live in production today (confirmed: 141 operator_review/
+        # world_ontology rows in the last 14 days, 2026-09-08) -- this is
+        # the loop's actual real surface now.
+        #
+        # "autonomy_graph" stays in the set too: pressure-event-derived
+        # signals (_signals_from_pressure_events) target a surface from the
+        # event's own category, not from target_zone -- they don't care
+        # which zone the row is tagged with, and the only production rows
+        # ever seen carrying pressure_events (orion-recall, 2 rows,
+        # confirmed live 2026-09-08) happen to be tagged autonomy_graph.
+        # Dropping the zone here would have silently cut that real, if
+        # small, recall-proposal pathway -- its own BASE signal stays a
+        # no-op regardless, via _RETIRED_TELEMETRY_ZONES above.
+        allowed_zones = {"world_ontology", "autonomy_graph"}
         if cognitive_proposals_enabled:
             allowed_zones.add("self_relationship_graph")
 
@@ -5178,6 +5213,7 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         surfaces=SUBSTRATE_MUTATION_SURFACES,
         allow_apply=apply_allowed,
         blocked_reason=";".join(apply_blockers) if apply_blockers else None,
+        policy_store=SUBSTRATE_POLICY_STORE,
     )
     corpus = ReplayCorpusRegistry(
         corpus_by_class={

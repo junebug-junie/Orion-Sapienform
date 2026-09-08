@@ -152,6 +152,18 @@ class StanceReactRequestV1(BaseModel):
     repair_bundle: TurnAppraisalBundleV1 | None
     stance_inputs: dict[str, Any]
     llm_profile: str = "brain"
+    # Optional caller-supplied override for stance_react's own LLM gateway
+    # route (orion.llm.routes.ACCEPTED_LLM_ROUTES), e.g. "agent". None means
+    # "no override" -- the pipeline keeps its existing hardcoded default
+    # (services/orion-cortex-exec/app/executor.py's
+    # _default_llm_route_for_step maps stance_react -> "chat" unconditionally
+    # and has no other way to hear a turn-level lane preference; see
+    # orion.hub.turn_orchestrator's stance_req construction for the one
+    # caller that sets this today). Additive field on a model with no
+    # `extra="forbid"` (pydantic's default is "ignore"), so an older producer
+    # that omits it, or an older consumer reading a payload that carries it,
+    # both continue to work unchanged.
+    llm_route: str | None = None
 
 
 def __getattr__(name: str) -> object:

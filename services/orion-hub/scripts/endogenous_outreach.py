@@ -132,9 +132,69 @@ list) -- outreach has no live browser turn to build one from.
 TEXT itself via ``_fetch_recent_turns`` (unchanged), so this is a narrower,
 not an absent, substitute.
 
-``llm_route``/``HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE`` are gone (killed, not
-deprecated) -- route selection is no longer Hub's decision to make; it is
-whatever the harness governor picks for a real turn, identically.
+``llm_route``/``HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE`` were removed 2026-08-19
+for the reason stated then: route selection was not Hub's decision to make,
+it was whatever the harness governor picked for a real turn, identically.
+That is SUPERSEDED by the section below -- outreach's own delivery turn now
+carries a real, bounded lane PREFERENCE again, for a different reason than
+the old key existed for (this was never a return to "outreach picks an
+arbitrary route"; see that section for what actually changed and why the
+2026-08-19 reasoning above still holds for everything else about this path).
+
+AGENT LANE FOR OUTREACH'S OWN DELIVERY, BOUNDED FALLBACK (2026-09-08).
+Root-caused live: outreach's ``ThoughtClient.react()`` stance-evaluation
+call (the first real step inside ``execute_unified_turn``, run by every
+unified turn including this one) is hardcoded to the single-slot "chat"
+llama.cpp lane
+(``services/orion-cortex-exec/app/executor.py``'s
+``_default_llm_route_for_step``) with no fallback -- and that lane is the
+SAME one a real, typed-in Juniper turn uses. Live logs (2026-09-08) showed
+it failing repeatedly with the gateway's own timeout string
+(``"[Error: llamacpp timed out after waiting]"``) landing in the response
+text as if it were real content, because the chat lane's one slot was busy
+when the request arrived; one fully-traced failure was itself an
+outreach-triggered turn. Meanwhile ``scripts/curiosity_investigation.py``'s
+own deep-investigation compute already moved to a separate agent-lane GPU
+worker (PR #2067) with its own independent harness-governor dispatch queue
+(``feat(harness-governor): split chat/agent compute lanes``, 2026-09-07),
+proven live and safe.
+
+This section makes outreach's OWN delivery turn prefer that same agent
+lane instead of contending with a live Juniper turn for the chat lane's one
+slot -- nothing about the turn's generation quality, permissions, or
+stance-gating changes; it is still the exact same ``execute_unified_turn``
+pipeline described above. But the agent lane is ALSO single-slot, and
+curiosity's own investigations can hold it for up to ~40 minutes -- so
+outreach cannot simply switch lanes, it needs precedence with a bound:
+
+  1. First attempt: agent-lane routing (``fcc_model_label`` for the
+     ``HarnessGovernorClient.run()`` dispatch, and a new
+     ``StanceReactRequestV1.llm_route`` field so stance_react's own gateway
+     call follows the same preference -- see that field's own docstring for
+     why it had to be added; ``fcc_model_label`` alone only ever steered the
+     harness dispatch, never stance_react), bounded by the short
+     ``HUB_ENDOGENOUS_OUTREACH_AGENT_LANE_TIMEOUT_SEC``
+     (``self.agent_lane_timeout_sec``).
+  2. On ANY failure of attempt 1 (not just a timeout -- widened after
+     2026-09-08 review found a narrower condition left agent-lane-specific
+     failure shapes like context_overflow undelivered for the whole tick):
+     a SECOND, independent attempt runs on a FRESH correlation_id, with no
+     route override (falls through to the existing hardcoded chat-lane
+     default) and the module's full ``self.timeout_sec`` budget. The
+     message is never silently dropped for an agent-lane-specific reason --
+     see ``_generate()``'s own docstring for the exact precedence and why a
+     fresh correlation_id means a late reply on the abandoned attempt's own
+     reply channel is orphaned, not delivered twice. On a literal timeout
+     specifically, the abandoned attempt is ALSO cancelled best-effort
+     (``HarnessGovernorClient.cancel()``) -- but that only reaches a run
+     that already got past stance_react into the harness governor's own
+     dispatch; orion-thought (which owns stance_react, the pipeline's
+     FIRST step and the most likely place a busy agent lane actually
+     blocks) has no cancel listener at all, confirmed live in review. See
+     ``_cancel_abandoned_attempt``'s own docstring for the full account --
+     this is a real, not-yet-closed gap, not a solved problem.
+  3. Curiosity's own investigation is never preempted or cancelled by this
+     -- this section only ever touches outreach's own dispatch.
 
 Delivery (all three already existed before this module; none are new rails):
 
@@ -969,6 +1029,7 @@ class EndogenousOutreach:
         fallback_session_id: str,
         timezone_name: str = "UTC",
         trigger_evaluator: Optional[Callable[[], Any]] = None,
+        agent_lane_timeout_sec: float = 210.0,
     ) -> None:
         self.enabled = enabled
         self.tick_interval_sec = max(5.0, float(tick_interval_sec))
@@ -977,6 +1038,10 @@ class EndogenousOutreach:
         self.quiet_start_hour = int(quiet_start_hour)
         self.quiet_end_hour = int(quiet_end_hour)
         self.timeout_sec = max(1.0, float(timeout_sec))
+        # Short budget for the FIRST generation attempt, which prefers the
+        # agent-lane GPU worker (see _generate()'s own docstring for the
+        # precedence/fallback this implements and the default's derivation).
+        self.agent_lane_timeout_sec = max(1.0, float(agent_lane_timeout_sec))
         self.notify_channel = notify_channel
         self.fallback_session_id = fallback_session_id
         # Quiet hours and the daily cap are wall-clock policy about Juniper's
@@ -1416,6 +1481,14 @@ class EndogenousOutreach:
 
         correlation_id = str(uuid4())
         raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
+        # _generate() may have fallen back to a SECOND attempt on a fresh
+        # correlation_id (agent-lane timeout -> chat retry, see its own
+        # docstring) -- gen_debug["correlation_id"] names whichever attempt
+        # actually produced this result, so delivery/audit below stay
+        # attached to the real generation, not the abandoned one. Falls back
+        # to the original local var for callers/tests that stub _generate()
+        # and never set this key.
+        correlation_id = str(gen_debug.get("correlation_id") or correlation_id)
         # Strip here as well as in _generate: this is where the ship/drop
         # decision is made, so whitespace-only output must not slip past on the
         # assumption that the producer already normalized it.
@@ -1730,11 +1803,169 @@ class EndogenousOutreach:
         over a false positive" contract the old direct-call path used,
         fed by the real pipeline's own richer frame-typed failure signals
         instead of a bare ok/error boolean.
+
+        AGENT-LANE FIRST, BOUNDED, CHAT FALLBACK (2026-09-08). See module
+        docstring's "AGENT LANE FOR OUTREACH'S OWN DELIVERY, BOUNDED
+        FALLBACK" section for the decision this implements. The first
+        attempt asks for the agent-lane GPU worker (both the
+        HarnessGovernorClient.run() dispatch queue and stance_react's own
+        gateway route -- see orion.hub.turn_orchestrator's
+        resolved_fcc_model_label/stance_req.llm_route), bounded by the
+        short `self.agent_lane_timeout_sec`. That lane is a single slot
+        curiosity's own investigations can hold for up to ~40 minutes, so a
+        SHORT budget matters.
+
+        Fallback fires on ANY empty-text outcome from the first attempt, not
+        only a literal timeout (widened per 2026-09-08 review: a narrower
+        "only retry on timeout" condition would have left context_overflow,
+        error_shaped_text, and raw dispatch exceptions -- all newly
+        REACHABLE failure shapes because this is the first time outreach's
+        own turn ever touches the agent lane at all -- undelivered for the
+        whole tick even though the identical prompt might succeed on chat).
+        The one exception this does NOT special-case: a genuine Thought
+        defer/refuse (`no_final_frame`) is retried too, on the theory that
+        "never silently drop the message" outweighs the small extra cost of
+        one more RPC that will very likely also decline -- see the SECOND
+        attempt's own budget below, which is what actually bounds that cost.
+
+        On a literal timeout specifically (and ONLY then -- see
+        `_cancel_abandoned_attempt`'s own docstring for exactly what this
+        does and does NOT cover), the abandoned attempt is cancelled
+        best-effort. Every fallback path runs on a FRESH correlation_id --
+        so a stale reply arriving on the abandoned attempt's own reply
+        channel later is simply orphaned, not delivered as a duplicate
+        (nothing keeps listening on that channel; see ThoughtClient.react/
+        HarnessGovernorClient.run's own bus-RPC reply-channel handling) --
+        with no route override (falls through to the existing chat-lane
+        default) and the module's full `self.timeout_sec` budget. Worst
+        case (agent lane exhausts its full budget with no reply, THEN chat
+        also exhausts its full budget) is roughly
+        `agent_lane_timeout_sec + timeout_sec` -- ~510s at today's defaults,
+        not the ~300s single-attempt ceiling this module had before. The
+        message is never silently dropped: only a fully-failed SECOND
+        attempt ends this tick without delivering.
         """
         if self._bus is None:
             return "", {"error": "no_bus"}
 
+        from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+        text, debug = await self._attempt_unified_turn(
+            prompt=prompt,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            fcc_model_label=AGENT_ROUTE_FCC_MODEL_LABEL,
+            timeout_sec=self.agent_lane_timeout_sec,
+        )
+        debug["lane"] = "agent"
+        debug["correlation_id"] = correlation_id
+        if text:
+            return text, debug
+
+        agent_lane_error = debug.get("error")
+        logger.info(
+            "endogenous_outreach_agent_lane_attempt_failed_fallback_to_chat corr=%s "
+            "agent_lane_error=%s agent_lane_timeout_sec=%s",
+            correlation_id,
+            agent_lane_error,
+            self.agent_lane_timeout_sec,
+        )
+        if agent_lane_error == "timeout":
+            # Only a literal timeout means the attempt could plausibly still
+            # be running/queued somewhere -- every other failure shape here
+            # (context_overflow, error_shaped_text, no_final_frame, a raw
+            # exception) means execute_unified_turn already returned, so
+            # there is nothing left in flight to cancel.
+            await self._cancel_abandoned_attempt(correlation_id)
+
+        fallback_correlation_id = str(uuid4())
+        fb_text, fb_debug = await self._attempt_unified_turn(
+            prompt=prompt,
+            session_id=session_id,
+            correlation_id=fallback_correlation_id,
+            fcc_model_label=None,
+            timeout_sec=self.timeout_sec,
+        )
+        fb_debug["lane"] = "chat_fallback"
+        fb_debug["correlation_id"] = fallback_correlation_id
+        fb_debug["agent_lane_timeout"] = agent_lane_error == "timeout"
+        fb_debug["agent_lane_error"] = agent_lane_error
+        fb_debug["abandoned_correlation_id"] = correlation_id
+        return fb_text, fb_debug
+
+    async def _cancel_abandoned_attempt(self, correlation_id: str) -> None:
+        """Best-effort release of an agent-lane attempt this module has
+        stopped waiting on. Called ONLY on a literal timeout (see
+        `_generate`'s own call site) -- every other failure shape means
+        execute_unified_turn already returned, so there is nothing in
+        flight left to cancel.
+
+        WHAT THIS ACTUALLY COVERS (corrected 2026-09-08 review; the original
+        version of this docstring overclaimed). HarnessGovernorClient.cancel()
+        publishes to the harness governor's own cancel channel
+        (orion-harness-governor's cancel_listener), which only affects a run
+        that has ALREADY reached HarnessGovernorClient.run()'s dispatch --
+        i.e. AFTER stance_react has already completed. It is safe to call
+        whether or not the run ever reached that point (fire-and-forget; a
+        correlation_id nobody is tracking is simply a no-op), and orion.
+        harness.fcc_motor's own pending-cancel path tolerates a
+        correlation_id that never spawns a process. If the abandoned
+        attempt WAS already queued or running past stance_react on the
+        single-slot agent lane, this frees that slot.
+
+        WHAT THIS DOES NOT COVER: stance_react itself is the FIRST step of
+        execute_unified_turn and runs on orion-thought, a separate service
+        from orion-harness-governor -- confirmed live (2026-09-08 review):
+        orion-thought's bus_listener.py has no cancel-channel consumer at
+        all. So if the abandoned attempt is still stuck INSIDE
+        ThoughtClient.react()'s own RPC wait when this fires (the most
+        likely place for a busy single-slot agent lane to actually block,
+        since it is the pipeline's first LLM call), this cancel has no
+        effect on it -- the abandoned stance_react request keeps running/
+        queuing on the agent lane to completion server-side, this module's
+        own `asyncio.wait_for` giving up on it notwithstanding. A real fix
+        needs a cancel path orion-thought actually listens to; not built
+        here (see PR report's Risks/concerns). Until then, a tick that
+        times out on the agent lane can leave one more orphaned stance_react
+        request parked on that lane -- worth watching for repeated,
+        back-to-back agent-lane timeouts in production logs.
+        """
+        try:
+            from scripts.harness_governor_client import HarnessGovernorClient
+
+            await HarnessGovernorClient(self._harness_rpc_bus or self._bus).cancel(
+                correlation_id=correlation_id, reason="outreach_agent_lane_timeout"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "endogenous_outreach_agent_lane_cancel_failed corr=%s", correlation_id, exc_info=True
+            )
+
+    async def _attempt_unified_turn(
+        self,
+        *,
+        prompt: str,
+        session_id: str,
+        correlation_id: str,
+        fcc_model_label: Optional[str],
+        timeout_sec: float,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """One execute_unified_turn attempt. Returns ("", debug) on any
+        failure, defer, timeout, or degraded run -- see _generate()'s own
+        docstring for how its two callers (agent-lane first attempt,
+        chat-lane fallback) use this."""
         from orion.hub.turn_orchestrator import execute_unified_turn
+
+        request_payload: Dict[str, Any] = {
+            # no_write: this module's own _deliver() below is the sole
+            # persistence path (proper OUTREACH_TAG/client_meta) -- see
+            # module docstring for why the governor's own persistence step
+            # is suppressed rather than reused.
+            "no_write": True,
+            "source": OUTREACH_TAG,
+        }
+        if fcc_model_label:
+            request_payload["fcc_model_label"] = fcc_model_label
 
         started = time.monotonic()
         try:
@@ -1744,20 +1975,16 @@ class EndogenousOutreach:
                     correlation_id=correlation_id,
                     session_id=session_id,
                     user_message=prompt,
-                    # no_write: this module's own _deliver() below is the
-                    # sole persistence path (proper OUTREACH_TAG/client_meta)
-                    # -- see module docstring for why the governor's own
-                    # persistence step is suppressed rather than reused.
-                    payload={"no_write": True, "source": OUTREACH_TAG},
+                    payload=request_payload,
                     continuity_messages=None,
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,
                     harness_step_relay=None,
                     harness_step_queue=None,
                 ),
-                timeout=self.timeout_sec,
+                timeout=timeout_sec,
             )
         except (TimeoutError, asyncio.TimeoutError):
-            return "", {"error": "timeout", "timeout_sec": self.timeout_sec}
+            return "", {"error": "timeout", "timeout_sec": timeout_sec}
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_generate_failed corr=%s err=%s", correlation_id, exc)
             return "", {"error": type(exc).__name__, "detail": str(exc)[:240]}

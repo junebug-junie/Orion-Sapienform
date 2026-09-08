@@ -293,5 +293,4 @@ runtime config was touched.
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/new/fix/graph-json-lfs
-(filled in below once opened via `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2161

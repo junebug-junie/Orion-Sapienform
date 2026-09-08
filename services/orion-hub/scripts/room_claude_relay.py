@@ -16,14 +16,23 @@ The socket-injection half is modelled on `endogenous_outreach.py`, which
 already solves the same problem (get an unsolicited message into an open
 chat) including the busy/idle guards that stop a bubble landing mid-turn.
 
-`invite()` now has two callers: the operator route (api_routes.py, a human
-clicking "Ask Claude") and the auto-respond path in websocket_handler.py
-(fired after every Orion reply, no click). That auto path is the "Orion
-inviting Claude itself" scenario this module originally called v2 and treated
-as the trigger for real budget enforcement -- it shipped without that
-enforcement landing first. See the README's phase-2 watchdog section: it is
-still a design, not code. `trigger` on the request distinguishes the two
-(licenses `[pass]` on auto only); it does not cap spend on either.
+`invite()` has ONE caller as of 2026-09-08: the operator route
+(api_routes.py, a human clicking "Ask Claude").
+
+The post-turn auto-invite in websocket_handler.py is GONE -- removed on
+Juniper's call because it shipped every private Hub chat turn to Claude to
+react to, billed a Claude call per turn (a `[pass]` costs the same tokens as a
+reply), and inverted the room: Claude reacting to Orion rather than Orion
+choosing to reach out. It was the "Orion inviting Claude itself" scenario this
+module originally called v2, and it landed without the budget enforcement that
+was supposed to gate it. See the README's phase-2 watchdog section -- still a
+design, not code.
+
+`trigger` on the request survives and still licenses `[pass]`, but nothing
+produces `trigger="auto"` today. Its next producer is the endogenous
+stuck-prior trigger (`orion/autonomy/ask_claude_trigger.py`), which is
+read-only until deliberately armed -- Orion reaching out about a specific
+claim it could not settle alone, not a firehose of Juniper's conversations.
 """
 
 from __future__ import annotations
@@ -62,8 +71,6 @@ class RoomClaudeRelay:
         request_channel: str,
         utterance_channel: str,
         participant_name: str = "Claude",
-        auto_respond: bool = False,
-        auto_min_gap_sec: float = 8.0,
         service_name: str = "orion-hub",
         service_version: str = "0.1.0",
         node_name: str = "athena",
@@ -73,9 +80,6 @@ class RoomClaudeRelay:
         self.utterance_channel = utterance_channel
         self.participant_name = participant_name
         self.enabled = enabled
-        self.auto_respond = auto_respond
-        self.auto_min_gap_sec = auto_min_gap_sec
-        self._last_auto_invite: Dict[str, float] = {}
         self._service_name = service_name
         self._service_version = service_version
         self._node_name = node_name
@@ -121,34 +125,6 @@ class RoomClaudeRelay:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._task = None
-
-    def should_auto_invite(self, session_id: Optional[str], now: float) -> bool:
-        """Rate gate for auto-invites.
-
-        Deliberately time-based rather than turn-based: the failure worth
-        preventing is a burst of rapid turns each billing a Claude call, and a
-        turn counter would not stop that.
-        """
-        if not self.auto_respond:
-            return False
-        key = session_id or "-"
-        last = self._last_auto_invite.get(key)
-        if last is not None and (now - last) < self.auto_min_gap_sec:
-            return False
-        self._last_auto_invite[key] = now
-        return True
-
-    def should_fire_auto_invite(self, orion_said: str, session_id: Optional[str], now: float) -> bool:
-        """Combines the "is there anything to react to" check with the rate
-        gate, in the order that matters.
-
-        `should_auto_invite` stamps the rate gate as a side effect of
-        returning True. Calling it before checking `orion_said` would let a
-        workflow-only turn (real, empty-`llm_response` case -- see app.js's
-        `workflowOnlyTurn`) consume the next `auto_min_gap_sec` window for
-        nothing, muting Claude for a turn that never actually invited it.
-        """
-        return bool(orion_said.strip()) and self.should_auto_invite(session_id, now)
 
     # -- outbound: invite --------------------------------------------------
 
@@ -262,12 +238,30 @@ class RoomClaudeRelay:
             return
 
         if utterance.passed:
-            # Claude chose silence. No bubble, no stored turn -- but the cost is
-            # logged, because a pass is billed exactly like speech and hiding it
-            # would understate real spend.
+            # Claude chose silence. No bubble and no stored turn -- but the
+            # cost is logged, because a pass is billed exactly like speech and
+            # hiding it would understate real spend.
             logger.info(
                 "room_claude_relay_pass request=%s cost_usd=%.6f (no bubble)",
                 utterance.request_id, utterance.cost_usd,
+            )
+            # A FRAME IS STILL PUSHED, with empty text. This used to `return`
+            # here, which left the UI wedged: app.js clears the "thinking..."
+            # chip and re-enables the Ask Claude button ONLY on a
+            # `room_claude_utterance` frame, so a pass left the chip spinning
+            # and the button disabled until a page reload. Masked while the
+            # per-turn auto-invite existed (passes there had no button to
+            # unstick and were invisible by design); the button is now the only
+            # path, and it becomes guaranteed once the endogenous trigger --
+            # where passing is the EXPECTED outcome -- starts carrying a
+            # connection_id. Review finding.
+            #
+            # Empty `llm_response` is exactly right on the client: it clears
+            # the chip before its own `if (claudeText)` guard, so nothing is
+            # appended. No client change needed.
+            self._push(
+                text="", utterance=utterance, session_id=session_id,
+                connection_id=target_connection_id, ok=True, passed=True,
             )
             return
 
@@ -289,6 +283,7 @@ class RoomClaudeRelay:
         session_id: Optional[str],
         connection_id: Optional[str],
         ok: bool,
+        passed: bool = False,
     ) -> None:
         """Fan out to live sockets.
 
@@ -319,6 +314,12 @@ class RoomClaudeRelay:
             "speaker_kind": utterance.responder.participant_kind,
             "llm_response": text,
             "ok": ok,
+            # True means Claude deliberately said nothing, as distinct from an
+            # empty reply or a failure. The client does not branch on it (an
+            # empty `llm_response` already suppresses the bubble), but a frame
+            # that carries no reason for being empty is unreadable in a browser
+            # console or a future consumer.
+            "passed": passed,
             "correlation_id": utterance.correlation_id,
             "request_id": utterance.request_id,
             "message_id": utterance.utterance_id,

@@ -629,10 +629,13 @@ class ChatTurnCancelRequest(BaseModel):
 
 
 class RoomClaudeInviteRequest(BaseModel):
-    """Operator-triggered invite. Originally the ONLY producer of
-    orion:room:claude:request; auto-respond (websocket_handler.py) added a
-    second, non-human-click producer -- see that module's comment for why
-    spend is no longer bounded by clicks alone."""
+    """Operator-triggered invite, and once again the ONLY producer of
+    orion:room:claude:request.
+
+    A post-turn auto-invite in websocket_handler.py was briefly a second,
+    non-human-click producer; it was removed 2026-09-08 because it shipped
+    every private Hub chat turn to Claude. That module now carries a comment
+    explaining why nothing there invites Claude."""
 
     prompt: str
     session_id: Optional[str] = None

@@ -79,10 +79,17 @@ class RoomClaudeRequestV1(BaseModel):
     room_id: str
     session_id: Optional[str] = None
     invited_by: str
-    # "manual" = a human clicked Ask Claude. "auto" = fired after a room turn.
-    # The companion uses this to decide whether Claude is allowed to stay
-    # quiet: an auto-invite arrives after EVERY turn, so most of them deserve
-    # silence, while a manual invite is someone actually asking.
+    # "manual" = a human clicked Ask Claude. "auto" = Claude was invited
+    # without a human in the loop, and is therefore licensed to stay quiet
+    # (`passed=True`) rather than owing a reply to a direct question.
+    #
+    # NOTHING PRODUCES "auto" TODAY. Its only producer was a post-turn hook in
+    # websocket_handler.py that fired after EVERY Hub chat turn; that was
+    # removed 2026-09-08 because it shipped Juniper's private conversations to
+    # Claude and billed a call per turn. The next producer is the endogenous
+    # stuck-prior trigger (orion/autonomy/ask_claude_trigger.py), read-only
+    # until deliberately armed -- which is why the field and the pass licence
+    # both survive rather than being deleted with the hook.
     trigger: Literal["manual", "auto"] = "manual"
     prompt: str
     transcript: List[RoomTranscriptEntryV1] = Field(default_factory=list)

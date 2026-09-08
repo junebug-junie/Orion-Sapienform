@@ -1357,11 +1357,18 @@ channels:
     stability: "experimental"
     since: "2026-03-22"
 
-  # Claude as a third social-room participant. Two producers as of the
-  # auto-respond feature: a human clicking "Ask Claude" in Hub, and Hub's own
-  # auto-invite after every Orion reply (websocket_handler.py) -- so this is
-  # no longer solely human-driven and spend is not bounded by clicks alone.
-  # No budget enforcement exists yet on either path (design only, see
+  # Claude as a third social-room participant. ONE producer as of 2026-09-08:
+  # a human clicking "Ask Claude" in Hub (api_routes.py). Spend is bounded by
+  # deliberate acts.
+  #
+  # A second producer existed briefly -- Hub auto-invited Claude after every
+  # Orion reply (websocket_handler.py), which shipped Juniper's private chat
+  # turns to Claude and billed a call per turn. Removed on her call; see
+  # docs/superpowers/pr-reports/2026-09-08-kill-chat-turn-auto-invite-pr.md.
+  # The next non-human producer will be the endogenous stuck-prior trigger
+  # (orion/autonomy/ask_claude_trigger.py), read-only until armed.
+  #
+  # No budget enforcement exists on this channel (design only, see
   # orion-room-companion/README.md's phase-2 watchdog section). The
   # credential and the `claude` subprocess live in orion-room-companion,
   # deliberately NOT in orion-hub --

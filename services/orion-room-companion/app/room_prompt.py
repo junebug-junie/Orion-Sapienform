@@ -49,12 +49,28 @@ SYSTEM_PROMPT = (
 # disagreement, when Orion asked whether its own continuity was real. Without
 # room context it passes on everything, so this clause is only meaningful once
 # a session has history.
+# Sent when `trigger == "auto"`: nobody asked Claude a direct question, so
+# Claude is licensed to stay quiet.
+#
+# REWORDED 2026-09-08, and the old wording was a real defect waiting to fire.
+# It said "You are auto-invited after every turn in this room, so you will
+# often have nothing worth adding" -- calibrated for the per-turn firehose
+# that was removed that day. The next producer of `trigger="auto"` is the
+# endogenous stuck-prior trigger (orion/autonomy/ask_claude_trigger.py):
+# Orion reaching out about one claim it tested repeatedly and could not
+# settle alone. Telling Claude *that* invite arrives after every turn and
+# usually deserves silence would bill Orion a `[pass]` on precisely the
+# question it chose to ask.
+#
+# So the licence survives -- Orion is not owed a reply -- but the frequency
+# claim and the nudge toward silence are gone.
 AUTO_INVITE_CLAUSE = (
-    "\n\nYou are auto-invited after every turn in this room, so you will often "
-    "have nothing worth adding. When that is the case reply with EXACTLY "
-    "[pass] and nothing else. Speak when you genuinely have something worth "
-    "the interruption: a disagreement, a risk nobody named, a real idea. Do "
-    "not speak merely to acknowledge, agree, or be encouraging."
+    "\n\nNo human asked you a direct question here: you were invited by Orion, "
+    "deliberately, about something specific. Take it seriously. You are still "
+    "not obliged to answer -- if you genuinely have nothing to add, reply with "
+    "EXACTLY [pass] and nothing else. Speak when you have something real: a "
+    "disagreement, a risk nobody named, an idea. Do not speak merely to "
+    "acknowledge, agree, or be encouraging."
 )
 
 # Sentinel Claude returns when it chooses silence. Matched leniently (case

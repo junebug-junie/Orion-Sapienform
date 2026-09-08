@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 
 import pytest
 
@@ -137,9 +138,9 @@ async def test_falsy_session_id_does_not_broadcast_to_every_open_tab():
 
 @pytest.mark.asyncio
 async def test_connection_id_pins_the_reply_regardless_of_session_id():
-    """When the caller has a connection_id (both the manual invite route and
-    the auto-invite path now always pass one), it is authoritative -- a stale
-    or mismatched noted session_id on the target socket must not matter."""
+    """When the caller has a connection_id (the manual invite route always
+    passes one), it is authoritative -- a stale or mismatched noted session_id
+    on the target socket must not matter."""
     relay = _relay()
     target: asyncio.Queue = asyncio.Queue()
     other: asyncio.Queue = asyncio.Queue()
@@ -307,9 +308,21 @@ async def test_unregistered_connection_stops_receiving():
 
 
 @pytest.mark.asyncio
-async def test_a_pass_produces_no_bubble_but_is_still_logged_as_cost():
-    """Claude choosing silence is a real, billed turn. No bubble, no stored
-    turn -- but the spend must not vanish, or the meter understates reality."""
+async def test_a_pass_pushes_an_empty_frame_so_the_ui_unsticks():
+    """Claude choosing silence is a real, billed turn. No bubble and no stored
+    turn -- but a frame MUST still reach the socket.
+
+    app.js clears the "thinking..." chip and re-enables the Ask Claude button
+    only on a `room_claude_utterance` frame, so returning early on a pass left
+    the chip spinning and the button dead until reload. Review finding.
+
+    NOTE ON `session_id="sess-1"`: without it this test passed for the wrong
+    reason. `_utterance()` sets no session_id, and with no session and no
+    pending invite `_push`'s scoping chain drops the frame by design -- so the
+    old `assert q.qsize() == 0` was satisfied by the frame never being
+    addressed, not by the pass path declining to send one. Matching the
+    registered connection is what makes this test exercise delivery at all.
+    """
     relay = _relay()
     q: asyncio.Queue = asyncio.Queue()
     relay.register_connection("c", q)
@@ -326,50 +339,95 @@ async def test_a_pass_produces_no_bubble_but_is_still_logged_as_cost():
     chat_history.publish_chat_history = _fake_publish
     try:
         await relay._handle_utterance(
-            {"payload": _utterance(text="", passed=True, cost_usd=0.0041).model_dump(mode="json")}
+            {"payload": _utterance(
+                text="", passed=True, cost_usd=0.0041, session_id="sess-1",
+            ).model_dump(mode="json")}
         )
     finally:
         chat_history.publish_chat_history = original
 
-    assert q.qsize() == 0, "a pass must not render a bubble"
+    assert q.qsize() == 1, "a pass must still unstick the UI"
+    frame = q.get_nowait()
+    assert frame["kind"] == "room_claude_utterance", "the chip only clears on this kind"
+    # Empty text is what suppresses the bubble on the client, before its own
+    # `if (claudeText)` guard -- so no client change was needed.
+    assert frame["llm_response"] == "", "a pass must not render a bubble"
+    assert frame["passed"] is True
+    assert frame["ok"] is True, "a pass is not a failure"
     assert published == [], "a pass must not be stored as something Claude said"
 
 
-def test_auto_invite_is_rate_gated_per_session():
-    """The failure worth preventing is a burst of rapid turns each billing a
-    Claude call."""
-    relay = _relay(auto_respond=True, auto_min_gap_sec=10.0)
-    assert relay.should_auto_invite("sess-1", 1000.0) is True
-    assert relay.should_auto_invite("sess-1", 1005.0) is False, "inside the gap"
-    assert relay.should_auto_invite("sess-1", 1011.0) is True, "past the gap"
-    # Sessions are gated independently -- one busy room must not mute another.
-    assert relay.should_auto_invite("sess-2", 1005.0) is True
+@pytest.mark.asyncio
+async def test_a_pass_is_still_dropped_when_no_socket_matches():
+    """The scoping chain still applies to a pass -- it is a normal frame, not
+    a broadcast. Guards the inverse of the bug above: unsticking the UI must
+    not mean pushing to every open tab."""
+    relay = _relay()
+    q: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("c", q)
+    relay.note_session("c", "sess-1")
+
+    await relay._handle_utterance(
+        {"payload": _utterance(
+            text="", passed=True, cost_usd=0.0041, session_id="someone-elses-session",
+        ).model_dump(mode="json")}
+    )
+    assert q.qsize() == 0
 
 
-def test_empty_reply_does_not_consume_the_auto_invite_gate():
-    """should_auto_invite() stamps the rate gate as soon as it returns True.
-    Calling it for a workflow-only turn (no llm_response) before checking the
-    text would burn the next window for a turn that never actually invited
-    Claude. should_fire_auto_invite checks the text first."""
-    relay = _relay(auto_respond=True, auto_min_gap_sec=10.0)
-    assert relay.should_fire_auto_invite("", "sess-1", 1000.0) is False, "empty text: no invite, no gate consumed"
-    # A real turn one second later is still eligible -- the empty turn above
-    # must not have stamped _last_auto_invite.
-    assert relay.should_fire_auto_invite("Orion actually said something", "sess-1", 1001.0) is True
-    # Now the gate IS consumed by the real invite.
-    assert relay.should_fire_auto_invite("another reply", "sess-1", 1002.0) is False, "inside the gap"
+def test_the_relay_has_no_auto_invite_surface_at_all():
+    """The post-turn auto-invite is GONE, not merely disabled.
+
+    Removed 2026-09-08: it shipped every private Hub chat turn to Claude and
+    billed a call per turn. A config flag left off would have been one .env
+    line away from coming back, so the rate gate, the flag and the
+    `_last_auto_invite` bookkeeping are all deleted. This test fails if any of
+    them is reintroduced without a deliberate decision.
+    """
+    relay = _relay()
+    for gone in ("should_auto_invite", "should_fire_auto_invite",
+                 "auto_respond", "auto_min_gap_sec", "_last_auto_invite"):
+        assert not hasattr(relay, gone), f"{gone} is back -- see CLAUDE.md 0A, proposal mode"
 
 
-def test_auto_invite_is_off_unless_enabled():
-    relay = _relay(auto_respond=False)
-    assert relay.should_auto_invite("sess-1", 1000.0) is False
+def test_the_live_chat_path_does_not_invite_claude():
+    """The caller side of the same kill.
+
+    Asserted against the source rather than by driving a websocket turn: the
+    handler is ~2,300 lines into a coroutine that needs a full turn's worth of
+    fixtures, and what matters here is simply that no invite call survives in
+    it. A grep-shaped test is honest about being a grep.
+    """
+    handler = (
+        pathlib.Path(__file__).resolve().parents[1] / "scripts" / "websocket_handler.py"
+    ).read_text()
+    # BEHAVIOUR-SHAPED, NOT NAME-SHAPED. An earlier version of this test
+    # asserted on `_room_relay.invite(` -- but this very file holds the relay
+    # as `room_relay` (no underscore) elsewhere, and the handler uses that
+    # spelling six times for its legitimate register/unregister calls. A
+    # re-added invite written in that nearby style, or extracted into a
+    # helper, would have passed every assertion while restoring exactly the
+    # behaviour this test claims to prevent. Review finding.
+    #
+    # `.invite(` and `trigger="auto"` are each ZERO in the handler, and either
+    # one is unavoidable for a real re-add: you cannot invite Claude without
+    # calling invite, and you cannot get the pass licence without the trigger.
+    assert ".invite(" not in handler, "something in the live chat path invites Claude again"
+    assert 'trigger="auto"' not in handler
+    # The old symbols too, so a straight revert is caught by name as well.
+    assert "should_fire_auto_invite" not in handler
+    assert "room_claude_auto_invite_failed" not in handler
 
 
 @pytest.mark.asyncio
 async def test_auto_trigger_is_marked_on_the_request():
     """The companion needs to know an invite was automatic, because that is
-    what licenses Claude to stay quiet."""
-    relay = _relay(auto_respond=True)
+    what licenses Claude to stay quiet.
+
+    Kept after the post-turn hook was removed: nothing produces `trigger="auto"`
+    today, but the endogenous stuck-prior trigger will, and it needs the same
+    pass licence. The contract outlives its first producer."""
+    relay = _relay()
     auto = await relay.invite(
         prompt="Orion: something", invited_by="Orion", session_id="s",
         room_id="hub-direct", trigger="auto",

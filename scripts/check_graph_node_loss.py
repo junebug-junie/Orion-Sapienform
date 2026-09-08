@@ -76,8 +76,67 @@ def _load_path(path: str) -> Any:
         return json.load(fh)
 
 
+# graphify-out/graph.json became git-LFS-tracked in fix/graph-json-lfs
+# (2026-09-08, GitHub's 100MB per-blob push cap). `git show <ref>:<path>`
+# returns whatever git actually stores for that blob -- for an LFS-tracked
+# path that is the ~130-byte pointer stub text (first line
+# "version https://git-lfs.github.com/spec/v1"), NOT the real file content.
+# LFS only smudges on checkout; `git show`/the index are raw blob reads, same
+# as a merge driver receiving raw blobs (see scripts/graphify_lfs_merge_driver.sh).
+# Without this, both HEAD's committed graph.json and the staged graph.json
+# would read as ~130-byte pointer stubs the moment either side is a real LFS
+# commit, and this gate would compare pointer-stub "graphs" (0 nodes either
+# side) instead of real content.
+_LFS_POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1"
+
+
+def _is_lfs_pointer(raw: str) -> bool:
+    return raw.startswith(_LFS_POINTER_PREFIX)
+
+
+# This gate runs on every commit (via the pre-commit hook), so a hang here
+# hangs every commit, not just ones touching graph.json. `git lfs smudge` can
+# legitimately hit the network (fetching an object not yet in the local LFS
+# cache -- exactly why smudge, not a local object-store read, is used).
+# Override with GRAPHIFY_LFS_SMUDGE_TIMEOUT (seconds).
+_LFS_SMUDGE_TIMEOUT = float(os.environ.get("GRAPHIFY_LFS_SMUDGE_TIMEOUT", "60"))
+
+
+def _lfs_smudge(raw: str, path_hint: str) -> str:
+    """Resolve LFS pointer-stub text to real file content via `git lfs smudge`.
+
+    This fetches the object on demand if it is not already in the local LFS
+    cache -- exactly what's needed for HEAD's version, which may not have
+    been pulled yet in a shallow or partial LFS checkout.
+    """
+    # GIT_LFS_SKIP_SMUDGE unset explicitly: if set to 1 in the invoking
+    # environment (a common CI/large-repo speed optimization), `git lfs
+    # smudge` would pass the pointer text through unchanged instead of
+    # fetching real content -- this gate needs real content unconditionally.
+    env = dict(os.environ)
+    env.pop("GIT_LFS_SKIP_SMUDGE", None)
+    try:
+        proc = subprocess.run(
+            ["git", "lfs", "smudge", "--", path_hint],
+            input=raw,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_LFS_SMUDGE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(
+            f"git lfs smudge timed out after {_LFS_SMUDGE_TIMEOUT}s for {path_hint}"
+        ) from exc
+    if proc.returncode != 0:
+        raise ValueError(f"git lfs smudge failed for {path_hint}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
 def _git_show(ref: str) -> str | None:
-    """Blob contents at `ref`, or None if it does not exist there."""
+    """Blob contents at `ref`, smudged if it is an LFS pointer stub, or None
+    if it does not exist there."""
     proc = subprocess.run(
         ["git", "show", ref],
         capture_output=True,
@@ -86,7 +145,10 @@ def _git_show(ref: str) -> str | None:
     )
     if proc.returncode != 0:
         return None
-    return proc.stdout
+    raw = proc.stdout
+    if _is_lfs_pointer(raw):
+        raw = _lfs_smudge(raw, GRAPH_PATH)
+    return raw
 
 
 def _staged_paths() -> list[str]:

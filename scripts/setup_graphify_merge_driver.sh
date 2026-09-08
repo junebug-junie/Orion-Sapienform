@@ -16,8 +16,18 @@
 
 set -eu
 
-EXPECTED_DRIVER='graphify merge-driver %O %A %B'
-ATTR_LINE='graphify-out/graph.json merge=graphify'
+# The driver command is the LFS-aware wrapper, NOT `graphify merge-driver`
+# directly: since graphify-out/graph.json is git-LFS-tracked, git hands a
+# merge driver the raw LFS pointer stub text for %O/%A/%B, never the smudged
+# real content (LFS only smudges on checkout). The wrapper resolves each
+# argument to real content via `git lfs smudge` before calling
+# `graphify merge-driver`, and copies the real merged result back onto the
+# path git expects it at. See scripts/graphify_lfs_merge_driver.sh for the
+# full explanation and scripts/setup_graphify_merge_driver.sh's own git
+# history for the pre-LFS driver command this replaced.
+SCRIPT_DIR_FOR_DRIVER="$(cd "$(dirname "$0")" && pwd)"
+EXPECTED_DRIVER="$SCRIPT_DIR_FOR_DRIVER/graphify_lfs_merge_driver.sh %O %A %B"
+ATTR_LINE='graphify-out/graph.json filter=lfs diff=lfs merge=graphify -text'
 
 if [ "${1:-}" != "" ]; then
     start_dir="$1"
@@ -66,6 +76,27 @@ if ! command -v graphify >/dev/null 2>&1; then
     echo "  Install it with: uv tool install graphifyy   (or: pip install graphifyy" >&2
     echo "  if you're not using uv -- check which one this machine actually has" >&2
     echo "  on PATH before picking a command)." >&2
+    exit 1
+fi
+
+# 1b. Confirm the LFS-aware wrapper this driver command points at actually
+# exists and is executable -- a missing/non-executable wrapper would
+# otherwise only surface as a cryptic failure the next time git tries to
+# merge graphify-out/graph.json.
+if [ ! -x "$SCRIPT_DIR_FOR_DRIVER/graphify_lfs_merge_driver.sh" ]; then
+    echo "error: expected wrapper not found or not executable: $SCRIPT_DIR_FOR_DRIVER/graphify_lfs_merge_driver.sh" >&2
+    exit 1
+fi
+
+# 1c. Confirm git-lfs itself is on PATH -- the wrapper depends on
+# `git lfs smudge`/`git lfs clean` at merge time. Catching a missing
+# git-lfs install here (setup time) is far easier to diagnose than letting
+# it surface as a `command not found` buried inside the wrapper's stderr
+# during someone's first real merge.
+if ! command -v git-lfs >/dev/null 2>&1; then
+    echo "error: 'git-lfs' is not on PATH. The merge driver this script configures" >&2
+    echo "  depends on it. Install it (e.g. 'apt install git-lfs' or see" >&2
+    echo "  https://git-lfs.com), then re-run this script." >&2
     exit 1
 fi
 

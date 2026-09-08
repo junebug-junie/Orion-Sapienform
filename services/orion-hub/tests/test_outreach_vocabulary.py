@@ -44,6 +44,46 @@ def test_registry_contains_a_node_identity_in_both_forms() -> None:
     assert "node:athena" in known_real_signal_names()
 
 
+def test_registry_total_failure_logs_loudly_instead_of_a_silent_no_op(monkeypatch, caplog) -> None:
+    """Review finding, 2026-09-08: if every registry source fails to load,
+    this must not be indistinguishable from four quiet per-source warnings
+    -- it must log at ERROR so a genuine total failure is loud."""
+    import logging
+
+    from scripts import outreach_vocabulary as vocab
+
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("orion.field.channel_glossary.load_glossary", boom)
+    monkeypatch.setattr(vocab, "_metric_lock_names", boom)
+    monkeypatch.delattr(
+        "orion.substrate.attention_self_model.ACTIVE_INFERENCE_DOMAINS", raising=False
+    )
+    monkeypatch.setattr(vocab, "_node_catalog_ids", boom)
+
+    with caplog.at_level(logging.ERROR, logger="orion-hub.outreach_vocabulary"):
+        result = vocab.known_real_signal_names.__wrapped__()
+
+    assert any("outreach_vocabulary_registry_empty" in r.message for r in caplog.records)
+    # The hardcoded literal still lands even when every real source fails --
+    # this asserts the log fires despite that, not that the result is empty.
+    assert result == frozenset({"harness_closure"})
+
+
+def test_wildcard_bus_channel_names_lose_the_asterisk_and_colon_cleanly() -> None:
+    """Regression test (review finding, 2026-09-08): a naive `.rstrip("*")`
+    on a wildcard bus-channel URN (`orion:exec:result:*`) left a dangling
+    trailing colon (`"orion:exec:result:"`), which could never equal the
+    clean form real generated text (and `find_ungrounded_signal_mentions`'s
+    own token extractor) would actually produce. The clean form must be in
+    the registry; the dangling-colon form must not."""
+    names = known_real_signal_names()
+    assert "orion:exec:result" in names
+    assert "orion:exec:result:" not in names
+    assert not any(n.endswith(":") for n in names)
+
+
 # --------------------------------------------------------------------------
 # grounded_signal_names
 # --------------------------------------------------------------------------

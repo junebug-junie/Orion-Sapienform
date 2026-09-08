@@ -26,21 +26,24 @@ is not.
 TWO SEPARATE SETS, NOT ONE:
 
   * `known_real_signal_names()` -- the closed UNIVERSE of every internal-
-    signal identifier that is ever real anywhere in this system. Anything a
-    generated message names that is OUTSIDE this set is definitely
-    fabricated vocabulary (a made-up-sounding name, not a real one).
+    signal identifier that is ever real anywhere in this system.
   * `grounded_signal_names(tension_reason)` -- the small subset of that
-    universe that is ACTUALLY TRUE this specific tick. Anything inside the
+    universe that is ACTUALLY TRUE this specific tick. A name inside the
     universe but outside this set is a real name being asserted about a
     moment it was not real for -- exactly the `harness_closure` incident:
     the name is genuine, the claim that it is happening RIGHT NOW is not.
 
-Membership in the universe is necessary but not sufficient to say something
-in the prompt; membership in the per-tick grounded set is what actually
-licenses a claim of current fact. `find_ungrounded_signal_mentions` (used by
-`endogenous_outreach._outreach_once` after `_generate()`, before `_deliver()`)
-is the enforcement: a real-registry name in the generated text that is not
-in this tick's grounded set blocks the send.
+`find_ungrounded_signal_mentions` (used by `endogenous_outreach.
+_outreach_once` after `_generate()`, before `_deliver()`) is the
+enforcement it licenses: a name that IS in `known_real_signal_names()` but
+is NOT in this tick's `grounded_signal_names()` blocks the send. Note what
+this deliberately does NOT do: a token that is not in the closed universe
+at all (invented from nothing, not merely misapplied) is never flagged --
+both real incidents this guard closes reused the real, registered name
+`harness_closure`, not a wholesale invention, so that is the shape being
+guarded against here. Catching pure invention would need a different,
+harder mechanism (there is no closed set of "things that sound technical");
+not attempted in this patch.
 
 REGISTRY SOURCES (existing-mechanism check, CLAUDE.md 0A -- none of these
 were built for this purpose; all four already exist for their own reasons):
@@ -156,7 +159,16 @@ def _metric_lock_names() -> set[str]:
         tail = str(urn).rsplit("/", 1)[-1]
         base, _, frag = tail.partition("#")
         for candidate in (base, frag):
-            candidate = candidate.rstrip("*").strip().lower()
+            # Review finding, 2026-09-08: `.rstrip("*")` alone left a
+            # dangling trailing ":" on every wildcard bus-channel entry
+            # (`orion:exec:result:*` -> `"orion:exec:result:"`, not
+            # `"orion:exec:result"`), which can never equal the clean form
+            # `find_ungrounded_signal_mentions`'s own token extractor
+            # produces (it strips trailing ":" as sentence punctuation) --
+            # 27 real compound channel names were silently unmatchable.
+            # `rstrip("*:")` strips both characters, in either order, so
+            # the wildcard suffix is fully removed either way.
+            candidate = candidate.rstrip("*:").strip().lower()
             if candidate and _is_compound(candidate):
                 names.add(candidate)
     return names
@@ -204,6 +216,12 @@ def known_real_signal_names() -> frozenset[str]:
     config/code artifacts, not live data.
     """
     names: set[str] = set()
+    # Tracks whether ANY of the four fallible sources below actually loaded --
+    # NOT `bool(names)`. `_EXTRA_KNOWN_DOMAINS` (`"harness_closure"`) is a
+    # hardcoded literal added unconditionally below, so `names` can never be
+    # truly empty even if every real source fails; checking emptiness would
+    # make the loud-failure branch below unreachable dead code.
+    any_source_loaded = False
 
     try:
         from orion.field.channel_glossary import load_glossary
@@ -214,11 +232,13 @@ def known_real_signal_names() -> frozenset[str]:
             for e in glossary["entries"]
             if _is_compound(str(e.channel))
         )
+        any_source_loaded = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("outreach_vocabulary_channel_glossary_failed err=%s", exc)
 
     try:
         names.update(_metric_lock_names())
+        any_source_loaded = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("outreach_vocabulary_metric_lock_failed err=%s", exc)
 
@@ -226,15 +246,45 @@ def known_real_signal_names() -> frozenset[str]:
         from orion.substrate.attention_self_model import ACTIVE_INFERENCE_DOMAINS
 
         names.update(str(d).strip().lower() for d in ACTIVE_INFERENCE_DOMAINS)
+        any_source_loaded = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("outreach_vocabulary_active_inference_domains_failed err=%s", exc)
     names.update(_EXTRA_KNOWN_DOMAINS)
 
     try:
         names.update(_node_catalog_ids())
+        any_source_loaded = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("outreach_vocabulary_node_catalog_failed err=%s", exc)
 
+    if not any_source_loaded:
+        # Review finding, 2026-09-08: each source above already logs its OWN
+        # failure at `warning`, but if every single one fails (e.g. `config/`
+        # genuinely missing from this deploy), this function still returns a
+        # valid-looking frozenset (just `{"harness_closure"}`, from the
+        # unconditional literal above) with no exception raised --
+        # `find_ungrounded_signal_mentions` then has almost nothing real to
+        # compare against and silently flags almost nothing. That is a
+        # disclosed, deliberate fail-OPEN (this module never blocks a tick on
+        # its own inability to load config -- matching this file's existing
+        # "never crash a tick" convention), not a fail-closed. Failing closed
+        # instead (blocking every outreach whenever the registry can't load)
+        # was considered and rejected: it would turn a config-loading hiccup
+        # into "Orion goes fully silent", a bigger behavior change than this
+        # guard's own scope, and in practice this specific total-failure
+        # shape requires the `orion` package itself to be unimportable --
+        # `_generate()`'s own `execute_unified_turn` call depends on far more
+        # of that package than this module does, so it would already have
+        # failed and returned "" before a tick ever reaches this check.
+        # Logged at `error`, not `warning`, so a genuine total failure is
+        # loud rather than buried in four separate per-source lines.
+        logger.error(
+            "outreach_vocabulary_registry_empty -- every registry source "
+            "failed to load; the closed-vocabulary grounding guard is nearly "
+            "a silent no-op until this is fixed (see the per-source "
+            "outreach_vocabulary_*_failed warnings above for which "
+            "source(s) failed)"
+        )
     return frozenset(n for n in names if n)
 
 

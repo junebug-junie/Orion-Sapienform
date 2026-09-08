@@ -516,3 +516,37 @@ def test_paced_self_cooldown_derives_from_the_self_cap_not_the_investigation_cap
     )
     assert loop.effective_cooldown_sec == 14 * 3600 / 6
     assert loop.effective_self_inquiry_cooldown_sec == 14 * 3600 / 3
+
+
+def test_evidence_is_read_element_wise_because_falkordb_stringifies_lists() -> None:
+    """Live 2026-09-08: s.evidence came back as one '[a, b, c]' string."""
+    from orion.curiosity.self_inquiry import read_self_definition
+
+    class _R(_FakeReader):
+        def query(self, cypher):
+            self.queries.append(cypher)
+            if "UNWIND s.evidence" in cypher:
+                return [{"e": "README.md#Project Overview: raised toward personhood"}, {"e": "dreams (18 rows, 2026-07-31->09-08)"}, {"e": ""}]
+            if "(s:SelfDefinition) WHERE" in cypher:
+                return [{"run_id": RUN, "text": "I am", "evidence": "[README.md#Project Overview: raised toward personhood, dreams (18 rows, 2026-07-31->09-08)]", "revises": "", "written_at": 1}]
+            return []
+
+    d = read_self_definition(_R(), RUN)
+    assert d is not None
+    assert d.evidence == ["README.md#Project Overview: raised toward personhood", "dreams (18 rows, 2026-07-31->09-08)"]
+
+
+def test_evidence_falls_back_to_the_stringified_list_when_unwind_fails() -> None:
+    from orion.curiosity.self_inquiry import read_self_definition
+    from orion.curiosity.worldview import WorldviewUnavailable
+
+    class _R(_FakeReader):
+        def query(self, cypher):
+            if "UNWIND s.evidence" in cypher:
+                raise WorldviewUnavailable("boom")
+            if "(s:SelfDefinition) WHERE" in cypher:
+                return [{"run_id": RUN, "text": "I am", "evidence": "[a, b]", "revises": "", "written_at": 1}]
+            return []
+
+    d = read_self_definition(_R(), RUN)
+    assert d is not None and d.evidence == ["[a, b]"], "still substantive: the citations are all there, in one string"

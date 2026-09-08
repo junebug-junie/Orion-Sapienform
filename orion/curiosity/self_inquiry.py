@@ -252,13 +252,57 @@ def build_self_definition(row: dict[str, Any]) -> Optional[SelfDefinition]:
     )
 
 
+def self_definition_evidence_cypher(run_id: str) -> str:
+    """One row per evidence entry. FalkorDB's default (non-compact) reply
+    renders a list property as ONE bracketed string -- confirmed live on run
+    282fbb9a08e4 (2026-09-08): eight citations came back as a single
+    `[a, b, ...]` string and the mirror counted one. Entries themselves
+    contain commas, so splitting the string is not an option; UNWIND is."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (s:{LABEL_SELF_DEFINITION}) WHERE s.run_id = '{rid}' "
+        "WITH s ORDER BY s.written_at DESC LIMIT 1 "
+        "UNWIND s.evidence AS e RETURN e"
+    )
+
+
+def _read_evidence_rows(reader: WorldviewReader, run_id: str) -> Optional[list[str]]:
+    """The evidence list, one element per row, or None if the query failed."""
+    try:
+        rows = reader.query(self_definition_evidence_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return None
+    out: list[str] = []
+    for r in rows:
+        text = str(r.get("e") or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out[:SELF_DEFINITION_EVIDENCE_CAP]
+
+
 def read_self_definition(reader: WorldviewReader, run_id: str) -> Optional[SelfDefinition]:
-    """This run's definition, or None. Never raises -- None is the safe default."""
+    """This run's definition, or None. Never raises -- None is the safe default.
+
+    Evidence is read element-wise with a second query (see
+    `self_definition_evidence_cypher`); the stringified list from the first
+    query is the fallback when that second read fails."""
     try:
         rows = reader.query(self_definition_for_run_cypher(run_id))
     except (WorldviewUnavailable, ValueError):
         return None
-    return build_self_definition(rows[0]) if rows else None
+    definition = build_self_definition(rows[0]) if rows else None
+    if definition is None:
+        return None
+    unwound = _read_evidence_rows(reader, run_id)
+    if unwound:
+        return SelfDefinition(
+            run_id=definition.run_id,
+            text=definition.text,
+            evidence=unwound,
+            revises=definition.revises,
+            written_at=definition.written_at,
+        )
+    return definition
 
 
 def read_latest_self_definition(reader: WorldviewReader) -> Optional[SelfDefinition]:

@@ -14,7 +14,6 @@ from typing import Optional
 import pytest
 
 from orion.autonomy.ask_claude_trigger import (
-    MAX_LIMIT_STALENESS_SEC,
     MAX_SETTLED_CONFIDENCE,
     MIN_TIMES_TESTED,
     decide,
@@ -72,19 +71,21 @@ def test_unknown_state_with_observation_still_refuses():
     assert d.refused == "budget_unknown"
 
 
-def test_stale_clear_reading_refuses():
-    d = decide(
-        priors=_stuck_pop(),
-        limit=FakeLimit(staleness_sec=MAX_LIMIT_STALENESS_SEC + 1),
-    )
-    assert d.refused == "budget_observation_stale"
+def test_a_long_quiet_period_does_NOT_refuse():
+    # The review finding this pins. `staleness_sec` is time since anyone last
+    # used Claude Code, so a large value means the shared pool is UNcontended
+    # -- refusing on it blocks the trigger exactly when spending is safest, and
+    # would have made the overnight dry-run ticks log a refusal every time.
+    d = decide(priors=_stuck_pop(), limit=FakeLimit(staleness_sec=6 * 3600))
+    assert d.would_ask is True
+    assert d.refused is None
 
 
-def test_none_staleness_on_an_observed_window_refuses():
-    # Observed messages but no freshest timestamp is a producer contradiction,
-    # not a fresh reading.
+def test_none_staleness_on_an_observed_window_refuses_as_incoherent():
+    # Observed messages but no freshest timestamp cannot both be true -- that
+    # is a self-inconsistent meter, not a stale one.
     d = decide(priors=_stuck_pop(), limit=FakeLimit(staleness_sec=None))
-    assert d.refused == "budget_observation_stale"
+    assert d.refused == "budget_observation_incoherent"
 
 
 def test_fresh_clear_reading_admits():
@@ -118,6 +119,21 @@ def test_no_live_priors_is_distinct_from_no_stuck_prior():
     settled = decide(priors=[_prior(tested=9, conf=0.99)], limit=FakeLimit())
     assert empty.refused == "no_live_priors"
     assert settled.refused == "no_stuck_prior"
+
+
+def test_an_unreachable_worldview_is_distinct_from_an_empty_one():
+    # Absence versus empty, again. A week of FalkorDB ACL breakage recorded as
+    # "no_live_priors" aggregates as "Orion has formed no priors", which is a
+    # different and false claim about Orion.
+    d = decide(priors=[], limit=FakeLimit(), worldview_unavailable="NOPERM no access")
+    assert d.refused == "worldview_unavailable"
+
+
+def test_worldview_unavailable_is_checked_after_the_budget():
+    # Budget first, so a refused tick still reports the meter fact that
+    # actually stopped it rather than a downstream symptom.
+    d = decide(priors=[], limit=FakeLimit(state="limited"), worldview_unavailable="boom")
+    assert d.refused == "budget_limited"
 
 
 def test_confidence_none_reads_as_unsettled_not_settled():

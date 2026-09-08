@@ -170,12 +170,11 @@ to synthetic cases built to make it pass.
 ## Env/config changes
 
 - **Added keys** (`services/orion-cocreation-signals/.env_example`):
-  `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=true`,
-  `COCREATION_SIGNALS_CLAUDE_LIMIT_POLL_INTERVAL_SEC=300.0`,
-  `COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS=5,168`,
+  `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false`,
+  `COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS=session_limit:5:300,weekly_limit:168:3600`,
   `CHANNEL_CLAUDE_LIMIT=orion:substrate:claude_limit`
 - **Removed / renamed**: none.
-- **local `.env` synced**: yes, all four keys, verified present.
+- **local `.env` synced**: yes, all three keys, verified present and `ENABLED=false`.
 - **Skipped keys requiring operator action**: none.
 
 **The sync did not work until it was fixed, and that is the finding.**
@@ -183,15 +182,15 @@ to synthetic cases built to make it pass.
 `SYNC_PREFIXES` entry matched any `COCREATION_SIGNALS_*` key. Both halves are
 required -- the service list decides which `.env` files are visited, the prefix
 decides which keys are considered once there -- so the first run considered
-**zero** of the four new keys while printing a clean report. Identical in shape
+**zero** of the new keys while printing a clean report. Identical in shape
 to the `orion-whisper-tts` hole from PR #1956. Both halves added; the re-run
-then added all four for real.
+then added them for real.
 
 ## Tests run
 
 ```text
 $ pytest orion/autonomy/tests services/orion-cocreation-signals/tests -q
-291 passed in 6.16s
+298 passed in 5.71s   (after all 9 review fixes)
 
 $ pytest orion/autonomy/tests/test_ask_claude_trigger.py -q
 17 passed
@@ -200,7 +199,8 @@ $ pytest services/orion-cocreation-signals/tests/test_claude_limit_producer.py -
 16 passed
 ```
 
-CI static gates, all 12 from `.github/workflows/orion-static-gates.yml`:
+CI static gates -- all 12 from `.github/workflows/orion-static-gates.yml`,
+plus three more the touched surfaces make relevant:
 
 ```text
 check_metric_lineage.py --gate                PASS
@@ -215,6 +215,9 @@ check_daily_schedule_collisions.py            PASS
 check_system_health_producers.py              PASS
 check_control_surface_store_parity.py         PASS
 check_async_routes_not_blocking.py            PASS
+check_env_template_parity.py                  PASS
+check_metric_dead_wiring.py                   PASS
+check_env_key_single_source.py                PASS
 ```
 
 ## Evals run
@@ -299,22 +302,138 @@ The exact `ExecStart` line was run as-is and appends valid JSON to
 
 ## Review findings fixed
 
-- Finding: *(pending -- `/code-review --effort high` was dispatched against
-  `origin/main..feat/ask-claude-dry-run`; findings and fixes appended before
-  merge.)*
+`/code-review --effort high` against `origin/main..feat/ask-claude-dry-run`
+returned **9 findings. All 9 are fixed.** Two were real logic errors that would
+have made this patch's own output wrong.
 
-Two defects were found and fixed during development, both in the new test file
-rather than the code:
+- Finding (**high**): the 168h window reported `clear` while a weekly limit was
+  still in force. `LimitObservation.state` keys off the chronologically last
+  event **regardless of kind**, so a spent session limit landing after a
+  binding weekly one masked it — defeating the entire reason the wide window
+  existed. `ClaudeLimitObservationV1` also could not disambiguate the two.
+  - Fix: `kind` is now required on the wire, config is `kind:hours:interval_sec`
+    triples, and `_to_event` narrows the observation's events to one kind
+    (`dataclasses.replace`, so a new field is carried rather than dropped)
+    before reading `state`/`resets_at`/`event_count`.
+  - Evidence: `test_a_spent_session_limit_does_not_mask_a_still_binding_weekly_limit`
+    asserts the unfiltered observation reports `clear` and the kind-filtered
+    weekly event reports `limited` with its real reset time. A second test pins
+    that filtering does *not* touch the activity timestamps, which `state`'s
+    recovery path reads.
+
+- Finding (**high**): the staleness gate measured the wrong thing and refused
+  when the pool was *least* contended. `staleness_sec` is `window_end −
+  latest_activity_at` — time since any human or agent last used Claude Code,
+  not observation age. The 30-minute timer would have logged
+  `budget_observation_stale` on every overnight tick.
+  - Fix: threshold removed entirely, with the reasoning recorded at the site so
+    it is not reinstated. Only the self-contradictory case survives
+    (`observed=True` with `staleness_sec=None`), renamed
+    `budget_observation_incoherent` because it is incoherence, not staleness.
+    Observation-age gating belongs with the Hub consumer that introduces a
+    delay; the dry-run path calls `observe()` directly and is fresh by
+    construction.
+  - Evidence: `test_a_long_quiet_period_does_NOT_refuse` — 6 hours of quiet now
+    admits.
+
+- Finding (**medium/high**): `int(row.get("times_tested") or 0)` would traceback
+  the whole report. `worldview.py:434` records that Orion writes this graph by
+  hand and sometimes quotes a number; the call site sits outside
+  `_read_priors`' try/except, so `'3.0'` would kill `main()` and the timer
+  would append nothing — a silent hole in the week of data this patch exists to
+  collect.
+  - Fix: use `worldview._as_int`, the tolerant reader provided for exactly this.
+  - Evidence: `'3.0'`/`'3x'`/`'three'` all raised `ValueError` before; the
+    report runs clean after.
+
+- Finding (**medium**): the eval's `always_all` criterion was defeated by a
+  single outage tick. `all(c == t and t > 0 ...)` read one zero-prior run as
+  evidence *against* the always-all mode, so 59 runs at 7-of-7 plus one
+  FalkorDB blip reported PASS — one blip in a week silently disarming the eval.
+  - Fix: judge only runs with readable priors, and require `min_runs` of
+    *those*, so a PASS cannot rest on 3 real ticks amid 57 outages.
+  - Evidence: the exact repro (59 × 7-of-7 + 1 outage) now returns FAIL;
+    `test_a_single_outage_tick_cannot_disarm_the_always_all_criterion` and
+    `test_a_pass_cannot_rest_on_a_few_real_runs_amid_outages` pin both.
+
+- Finding (**medium**): the report measured a prior population including forks,
+  unlike the one Orion is shown. `LIVE_PRIORS_CYPHER` is `MATCH (p:Prior)` with
+  no `DISTINCT`, and forked `prior_id`s are known-live in this graph. A fork
+  inflates the population the knobs are calibrated against and can hand the
+  subject slot to a stale copy.
+  - Fix: `collapse_duplicate_priors` (the same collapse `read_snapshot` runs),
+    and the fork census is printed rather than silently applied.
+  - Evidence: report output unchanged on today's fork-free graph; the collapse
+    is now the same code path Orion's own presentation uses.
+
+- Finding (**medium**): `.env_example` shipped the producer **ON**,
+  contradicting `settings.py`'s own default and this report's stated mitigation
+  — and the sync had already propagated `true` to the live `.env`. The next
+  restart would have started a full-tree transcript scan publishing into a
+  channel with no consumer.
+  - Fix: `.env_example=false`, with the reason recorded inline. Live `.env`
+    corrected to `false`.
+  - Evidence: `services/orion-cocreation-signals/.env:69` now reads `false`;
+    the report's "off by default" claim is true again.
+
+- Finding (**low**): an unreachable worldview was recorded as
+  `refused: "no_live_priors"` — the absence-versus-empty conflation the
+  function's own docstring forbids. A week of ACL breakage would aggregate as
+  "Orion has formed no priors."
+  - Fix: `worldview_unavailable` added to `RefusalReason` and threaded from the
+    report; checked *after* the budget so a refused tick still names the meter
+    fact that actually stopped it.
+  - Evidence: `test_an_unreachable_worldview_is_distinct_from_an_empty_one`,
+    `test_worldview_unavailable_is_checked_after_the_budget`.
+
+- Finding (**low**): the test constructed `RateLimitEvent(kind="session")`,
+  not a valid `EventKind` (`session_limit`/`weekly_limit`). The dataclass
+  validates nothing, so the one test covering a live limit event exercised a
+  shape the producer can never see — and it is exactly the coverage finding 1's
+  fix needs.
+  - Fix: valid kinds throughout, with a note on why the invalid one passed.
+  - Evidence: the masking regression test above depends on real kinds.
+
+- Finding (**low**): both windows shared one 300s interval, re-reading ~460MB
+  every five minutes (~165GB/day) for an answer that moves on a day scale. The
+  tight cadence is justified by the session limit's expiring reset time, which
+  does not apply to the weekly window.
+  - Fix: each series is its own asyncio task with its own interval;
+    `weekly_limit` runs at 3600s. Also isolates a raising scan to its own
+    series.
+  - Evidence: `session_limit:5:300,weekly_limit:168:3600` is the default;
+    parser tests cover malformed and duplicate specs.
+
+Two further defects were found and fixed during development, both in the new
+test file rather than the code:
 
 - Finding: `_obs(latest_activity=None)` silently substituted the default.
   - Fix: sentinel object instead of `x if x is not None else default`.
   - Evidence: `test_an_unobserved_window_publishes_unknown_rather_than_nothing`
-    failed with `assert 5.0 is None`; passes after. The unobserved case is the
-    one this suite exists to construct, so a helper that cannot express it was
-    testing nothing.
-- Finding: `RateLimitEvent` was constructed without its required `source`.
-  - Fix: pass it.
-  - Evidence: `TypeError` on collection; passes after.
+    failed with `assert 5.0 is None`. The unobserved case is the one that suite
+    exists to construct, so a helper that could not express it was testing
+    nothing.
+- Finding: `RateLimitEvent` constructed without its required `source`.
+  - Fix: pass it. Evidence: `TypeError` on collection.
+
+### An operator-env mistake I made and corrected
+
+While flipping the ENABLED default I ran `sync_local_env_from_example.py
+--force`, which is not scoped to one key. It flattened two unrelated live
+values in `services/orion-cocreation-signals/.env`:
+`COCREATION_SIGNALS_GH_TOKEN` (a real credential) to empty, and
+`COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED` from `true` to `false`.
+
+Both restored, verified against `docker inspect
+orion-athena-cocreation-signals` rather than from memory — the running
+container's env is the authority for what the live values were. Both now read
+as "Diverged" in a plain sync run, exactly as they did before. Two stale
+renamed keys (`..._POLL_INTERVAL_SEC`, `..._WINDOW_HOURS`) were also removed,
+which the sync does not do on its own.
+
+The lesson worth keeping: `--force` is a whole-file operation, and this file
+holds a secret whose `.env_example` counterpart is deliberately empty. It is
+the wrong tool for changing one key.
 
 ## Restart required
 
@@ -353,10 +472,10 @@ python3 scripts/report_ask_claude_dry_run.py
   Concern: `channels.yaml` declares `orion-hub` a consumer of
   `orion:substrate:claude_limit`, but the Hub-side reader is not in this patch.
   The declaration is ahead of the code.
-  Mitigation: stated here rather than hidden. The channel is off by default, so
-  nothing publishes into a void unless an operator turns it on. The Hub panel is
-  the natural next patch and it is what makes the budget visible in the UI
-  rather than only in a script.
+  Mitigation: the channel is off by default in `.env_example` *and* in the live
+  `.env` — review caught that an earlier draft shipped it on, which would have
+  made this mitigation false. The Hub panel is the natural next patch and it is
+  what makes the budget visible in the UI rather than only in a script.
 
 - Severity: **medium**
   Concern: the knobs are uncalibrated, by design. The trigger currently selects
@@ -371,9 +490,11 @@ python3 scripts/report_ask_claude_dry_run.py
   stricter than `rate_limit_events`' own docstring suggests for a human caller,
   where `unknown` usually means nobody has used Claude recently.
   Mitigation: deliberate and documented at the refusal site. An unread meter and
-  a full tank must not authorise the same autonomous spend. If the week of logs
-  shows `budget_unobserved` dominating, that is a real finding about the mount,
-  not a reason to loosen the gate.
+  a full tank must not authorise the same autonomous spend. Note this is about
+  `state == "unknown"` (nothing observed at all), *not* about a long quiet
+  period — review caught that conflation and the staleness threshold is gone.
+  If the week of logs shows `budget_unobserved` dominating, that is a real
+  finding about the mount, not a reason to loosen the gate.
 
 - Severity: **low**
   Concern: no cooldown, daily cap or quiet hours in the trigger module.

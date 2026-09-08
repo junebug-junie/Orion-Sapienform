@@ -20,8 +20,12 @@ refused tick. Collapsing both into one PASS/FAIL would let a week of
 `budget_unobserved` (a broken transcript mount) read as "the trigger is dead"
 when the trigger was never consulted.
 
-  PRIOR SIDE   PASS when the stuck-count is neither always 0 nor always N.
-               Both extremes mean the knobs carry no information.
+  PRIOR SIDE   PASS when the stuck-count is neither always 0 nor always N,
+               judged over the runs that actually saw priors. Both extremes
+               mean the knobs carry no information. Outage ticks (worldview
+               unreachable) are EXCLUDED rather than counted against either
+               mode -- counting them in let one FalkorDB blip disarm the
+               criterion entirely.
   BUDGET SIDE  Reported, never failed on. A week of `clear` is a real fact
                about how contended the pool is, not a defect in this trigger.
 """
@@ -100,21 +104,36 @@ def run(argv: list[str] | None = None) -> int:
         if d.get("subject_prior_id"):
             subjects[d["subject_prior_id"]] += 1
 
-    if not any(totals):
-        # No priors were ever readable. That is a worldview/ACL problem, not a
-        # verdict on the knobs -- do not let it read as FAIL.
-        print("\nprior side")
-        print("  no live priors observed in any run (worldview unreachable, or genuinely empty)")
+    # JUDGE ONLY THE RUNS THAT ACTUALLY SAW PRIORS.
+    #
+    # An outage tick (worldview unreachable, `t == 0`) is not evidence about
+    # the knobs, and mixing it in defeats the criterion outright: the original
+    # `all(c == t and t > 0 ...)` treated ONE zero-prior run as evidence
+    # against the always-all mode, so 59 runs at 7-of-7 plus a single FalkorDB
+    # blip reported PASS. Verified in review. FalkorDB restarts are a
+    # documented reality in worldview.py, so one blip in a week would have
+    # silently disarmed the whole eval.
+    real = [(c, t) for c, t in zip(stuck_counts, totals) if t > 0]
+    outages = len(totals) - len(real)
+    if outages:
+        print(f"\nruns with no readable priors (excluded from the criterion): {outages}")
+    if len(real) < args.min_runs:
+        # A PASS must not rest on a handful of real data points while most of
+        # the window was outage.
+        print(f"runs with readable priors: {len(real)} (need >= {args.min_runs})")
         print("RESULT: insufficient data")
         return 0
 
-    always_none = all(c == 0 for c in stuck_counts)
-    always_all = all(c == t and t > 0 for c, t in zip(stuck_counts, totals))
+    real_stuck = [c for c, _ in real]
+    real_totals = [t for _, t in real]
+    always_none = all(c == 0 for c in real_stuck)
+    always_all = all(c == t for c, t in real)
     passed = not (always_none or always_all)
 
     print("\nprior side (the criterion)")
-    print(f"  live priors per run : min={min(totals)} max={max(totals)}")
-    print(f"  stuck per run       : min={min(stuck_counts)} max={max(stuck_counts)}")
+    print(f"  runs judged         : {len(real)}")
+    print(f"  live priors per run : min={min(real_totals)} max={max(real_totals)}")
+    print(f"  stuck per run       : min={min(real_stuck)} max={max(real_stuck)}")
     print(f"  distinct subjects   : {dict(subjects)}")
     if always_none:
         print("  FAILURE MODE: the knobs never selected a prior. Too strict, or no prior "

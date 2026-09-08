@@ -73,17 +73,28 @@ MIN_TIMES_TESTED = 3
 # that has been looked at several times and STILL has not moved to a verdict
 # is one a peer could unstick.
 MAX_SETTLED_CONFIDENCE = 0.7
-# A `clear` reading whose freshest observation is older than this is not
-# evidence the pool is still clear. Half the producer's 300s cadence would be
-# too tight to survive one missed tick; 15 minutes tolerates two.
-MAX_LIMIT_STALENESS_SEC = 900.0
+# THERE IS DELIBERATELY NO STALENESS THRESHOLD. An earlier version of this
+# module refused when `limit.staleness_sec` exceeded 900s, described as
+# "observation freshness". It is not: `staleness_sec` is `window_end -
+# latest_activity_at`, the age of the freshest transcript MESSAGE -- i.e. how
+# long since any human or agent last used Claude Code. Refusing on it means
+# refusing precisely when nobody has been using Claude, which is when the
+# shared pool is LEAST contended. Exactly backwards for a contention budget,
+# and it would have made the 30-minute dry-run timer log a refusal on every
+# overnight tick. Caught in review before this shipped.
+#
+# Observation AGE is a real concern, but it is `observed_at` age, not this
+# field, and it only arises on a bus-delivered observation. The dry-run path
+# calls `observe()` directly, so its reading is fresh by construction. That
+# gate belongs with the Hub consumer that introduces the delay.
 
 RefusalReason = Literal[
     "budget_limited",
     "budget_unknown",
     "budget_unobserved",
     "budget_observation_missing",
-    "budget_observation_stale",
+    "budget_observation_incoherent",
+    "worldview_unavailable",
     "no_live_priors",
     "no_stuck_prior",
 ]
@@ -168,16 +179,25 @@ def _budget_refusal(limit) -> Optional[RefusalReason]:
         return "budget_limited"
     if limit.state != "clear":
         return "budget_unknown"
-    staleness = limit.staleness_sec
-    if staleness is None or staleness > MAX_LIMIT_STALENESS_SEC:
-        # `None` here means observed messages but no freshest timestamp, which
-        # is a producer contradiction rather than a fresh reading. Refuse.
-        return "budget_observation_stale"
+    if limit.staleness_sec is None:
+        # Observed messages but no freshest timestamp is a producer
+        # contradiction, not a fresh reading -- `staleness_sec` is None only
+        # when `latest_activity_at` is None, which cannot coexist with
+        # `observed == True`. Refuse rather than trust a self-inconsistent
+        # meter. This is NOT a staleness threshold; see the note above.
+        return "budget_observation_incoherent"
     return None
 
 
-def decide(*, priors: Sequence, limit) -> AskClaudeDecision:
+def decide(*, priors: Sequence, limit, worldview_unavailable: Optional[str] = None) -> AskClaudeDecision:
     """One dry-run decision. Never raises.
+
+    `worldview_unavailable` carries the reason the prior graph could not be
+    read, and it is NOT the same as an empty `priors`. An unreachable graph
+    (a FalkorDB restart, a broken ACL) reported as `no_live_priors` would
+    aggregate over a week as "Orion has formed no priors" -- the exact
+    absence-versus-empty conflation `read_snapshot` exists to prevent, and
+    the eval's refusal tally reads this field.
 
     Order matters and is deliberate: priors are scored FIRST, even when the
     budget has already refused. Scoring only after the budget clears would
@@ -205,6 +225,8 @@ def decide(*, priors: Sequence, limit) -> AskClaudeDecision:
     budget = _budget_refusal(limit)
     if budget is not None:
         return _no(budget)
+    if worldview_unavailable:
+        return _no("worldview_unavailable")
     if not assessments:
         return _no("no_live_priors")
 

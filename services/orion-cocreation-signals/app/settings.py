@@ -7,24 +7,48 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _parse_window_hours(raw: str) -> tuple[float, ...]:
-    """Shared by the validator and the property so the two can never disagree
+def _parse_claude_limit_specs(raw: str) -> tuple[tuple[str, float, float], ...]:
+    """Parse `kind:hours:interval_sec` triples into validated specs.
+
+    Shared by the validator and the property so the two can never disagree
     about what a given string means. Returns () for anything unusable -- the
     validator turns that into a boot failure, and the property can then trust
-    its own output."""
-    out: list[float] = []
+    its own output.
+
+    The KIND is required, not inferred from the window size. `LimitObservation.
+    state` reads the chronologically last event regardless of kind, so a
+    published series that does not say which limit it is about is one a
+    consumer cannot use without re-merging the two pools.
+    """
+    valid_kinds = ("session_limit", "weekly_limit")
+    out: list[tuple[str, float, float]] = []
+    seen: set[tuple[str, float]] = set()
     for chunk in (raw or "").split(","):
         chunk = chunk.strip()
         if not chunk:
             continue
+        parts = [p.strip() for p in chunk.split(":")]
+        if len(parts) != 3:
+            return ()
+        kind, hours_raw, interval_raw = parts
+        if kind not in valid_kinds:
+            return ()
         try:
-            hours = float(chunk)
+            hours = float(hours_raw)
+            interval = float(interval_raw)
         except ValueError:
             return ()
-        if hours <= 0:
+        if hours <= 0 or interval <= 0:
             return ()
-        out.append(hours)
-    return tuple(sorted(set(out)))
+        key = (kind, hours)
+        if key in seen:
+            # A duplicate series would publish the same fact twice per tick and
+            # double whatever a consumer counts. Refuse rather than dedupe
+            # silently: it is a config typo, not an intent worth guessing at.
+            return ()
+        seen.add(key)
+        out.append((kind, hours, interval))
+    return tuple(out)
 
 
 class Settings(BaseSettings):
@@ -120,20 +144,19 @@ class Settings(BaseSettings):
     # Same cadence and reasoning as affective_state above -- both scan the
     # same real transcript tree, just extracting different signals from it.
     COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC: float = Field(default=900.0)
-    # 300s, five times tighter than its transcript-scanning neighbours, and the
-    # cadence is load-bearing rather than a preference. This is the only one of
-    # the three whose answer expires: a `limited` reading with a stated reset
-    # time goes stale the moment that time passes, and a consumer deciding
-    # whether Orion may speak *now* against a 15-minute-old observation is
-    # deciding against a window that may already have refilled. Cheap enough to
-    # justify: the scan is bounded by mtime (see rate_limit_events.candidate_
-    # files) so a quiet window touches almost no files.
-    COCREATION_SIGNALS_CLAUDE_LIMIT_POLL_INTERVAL_SEC: float = Field(default=300.0)
-    # The two real limit shapes Claude announces, as trailing-window hours:
-    # `session limit` (5h) and `weekly limit` (168h). Comma-separated so an
-    # operator can add a window without a code change; each one publishes its
-    # own event, distinguished by `window_hours`.
-    COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS: str = Field(default="5,168")
+    # `kind:hours:interval_sec` triples, one per published series. The kind is
+    # required rather than inferred: `LimitObservation.state` reads the last
+    # event in the window regardless of kind, so a weekly limit still in force
+    # reads `clear` the moment a spent session limit lands after it.
+    #
+    # The two intervals differ on purpose. Measured on the real tree, the 168h
+    # scan reads 429 files / 462MB / 2.4s while the 5h scan reads 42 / 110MB.
+    # The tight cadence exists because a session limit's stated reset time
+    # expires; a weekly window's answer moves on a day scale, and re-reading
+    # 460MB every five minutes for it would be ~165GB/day of pure waste.
+    COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS: str = Field(
+        default="session_limit:5:300,weekly_limit:168:3600"
+    )
 
     # Real, acknowledged gap (code review 2026-07-30): unlike git_delta/
     # graph_delta (diff-based, self-healing across a restart -- a missed
@@ -240,7 +263,6 @@ class Settings(BaseSettings):
         "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC",
         "COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC",
         "COCREATION_SIGNALS_DEV_ECONOMICS_POLL_INTERVAL_SEC",
-        "COCREATION_SIGNALS_CLAUDE_LIMIT_POLL_INTERVAL_SEC",
     )
     @classmethod
     def _ensure_positive(cls, v: float) -> float:
@@ -248,26 +270,26 @@ class Settings(BaseSettings):
             raise ValueError("Poll interval/lookback must be positive")
         return v
 
-    @field_validator("COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS")
+    @field_validator("COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS")
     @classmethod
     def _ensure_windows_parse(cls, v: str) -> str:
         # Validated here rather than at the call site so a typo fails at boot
         # with the offending value named, instead of starting a producer that
         # publishes nothing and logs "no windows configured" forever.
-        if not _parse_window_hours(v):
+        if not _parse_claude_limit_specs(v):
             raise ValueError(
-                "COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS must be a comma-separated "
-                f"list of positive numbers of hours; got {v!r}"
+                "COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS must be comma-separated "
+                "kind:hours:interval_sec triples, kind in (session_limit, weekly_limit), "
+                f"hours and interval positive, no duplicate kind+hours; got {v!r}"
             )
         return v
 
     @property
-    def claude_limit_window_hours(self) -> tuple[float, ...]:
-        """Parsed, deduplicated, ascending. Ascending so the tightest window --
-        the one a "may Orion speak now" decision needs -- is published first on
-        every tick, and a consumer reading mid-tick sees it rather than waiting
-        behind a 168h scan."""
-        return _parse_window_hours(self.COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOW_HOURS)
+    def claude_limit_specs(self) -> tuple[tuple[str, float, float], ...]:
+        """Parsed, in configured order. Not sorted: the operator's order is the
+        publish order, and there is no cross-series ordering guarantee to
+        preserve now that each series runs on its own task and cadence."""
+        return _parse_claude_limit_specs(self.COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS)
 
     @field_validator("COCREATION_SIGNALS_PR_FETCH_LIMIT")
     @classmethod

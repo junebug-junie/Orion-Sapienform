@@ -41,6 +41,9 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 ClaudeLimitState = Literal["clear", "limited", "unknown"]
+# Mirrors `orion.dev_economics.rate_limit_events.EventKind`. Restated rather
+# than imported so a bus schema does not drag in a transcript-scanning module.
+ClaudeLimitKind = Literal["session_limit", "weekly_limit"]
 
 
 class ClaudeLimitObservationV1(BaseModel):
@@ -59,6 +62,16 @@ class ClaudeLimitObservationV1(BaseModel):
     event_id: str = Field(default_factory=lambda: f"claude-limit-{uuid4()}")
     observed_at: datetime
 
+    # WHICH LIMIT THIS EVENT IS ABOUT, and it is load-bearing rather than a
+    # label. Claude announces two independent limits (session and weekly) and
+    # `LimitObservation.state` keys off the chronologically LAST event in the
+    # window regardless of kind -- so a weekly limit still in force until
+    # Friday reads `clear` the moment a session limit bound an hour ago and
+    # already reset. Caught in review before this shipped. The producer now
+    # filters the observation's events to one kind per published event, and
+    # this field says which, so a consumer can tell the two pools apart
+    # instead of silently merging them.
+    kind: ClaudeLimitKind
     window_hours: float
     window_start: datetime
     window_end: datetime

@@ -38,16 +38,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from orion.autonomy.ask_claude_trigger import (  # noqa: E402
-    MAX_LIMIT_STALENESS_SEC,
     MAX_SETTLED_CONFIDENCE,
     MIN_TIMES_TESTED,
     decide,
 )
 from orion.curiosity.worldview import (  # noqa: E402
     LIVE_PRIORS_CYPHER,
+    Prior,
     WorldviewReader,
     WorldviewUnavailable,
-    Prior,
+    _as_int,
+    collapse_duplicate_priors,
 )
 from orion.dev_economics.rate_limit_events import observe  # noqa: E402
 
@@ -71,7 +72,13 @@ def _row_to_prior(row: dict) -> Prior:
         claim=str(row.get("claim") or ""),
         confidence=_f("confidence"),
         status=str(row.get("status") or ""),
-        times_tested=int(row.get("times_tested") or 0),
+        # worldview's own tolerant reader, NOT int(). Orion writes this graph
+        # by hand and sometimes quotes a number (worldview.py:434), so `'3.0'`
+        # or `'3x'` are real possibilities -- and a ValueError here escapes
+        # _read_priors' try/except, kills main(), and makes the systemd timer
+        # append nothing. A silent hole in the very week of data this script
+        # exists to collect. Caught in review.
+        times_tested=_as_int(row.get("times_tested")),
         formed_from=str(row.get("formed_from") or ""),
         last_tested_at=str(row.get("last_tested_at") or ""),
     )
@@ -89,7 +96,18 @@ def _read_priors(host: str, port: int, graph: str) -> tuple[list[Prior], str | N
         return [], str(exc)[:200]
     except Exception as exc:  # noqa: BLE001 - a read-only report must not traceback
         return [], f"{type(exc).__name__}: {exc}"[:200]
-    return [_row_to_prior(r) for r in rows], None
+    # COLLAPSE FORKS, because Orion is never shown the raw rows either.
+    # LIVE_PRIORS_CYPHER is `MATCH (p:Prior)` with no DISTINCT, and forked
+    # prior_ids are a known-live condition in this graph. Uncollapsed, one
+    # claim stored twice inflates the population the knobs are calibrated
+    # against, double-counts in the eval's stuck tally, and can hand the
+    # subject slot to a stale copy. `read_snapshot` runs the same collapse
+    # before showing Orion anything; this report must measure the same
+    # population Orion actually holds. Caught in review.
+    priors, duplicates = collapse_duplicate_priors([_row_to_prior(r) for r in rows])
+    for prior_id, count in sorted(duplicates.items()):
+        print(f"  NOTE: prior_id {prior_id} is forked ({count} copies); most-tested copy kept")
+    return priors, None
 
 
 def main() -> int:
@@ -105,7 +123,7 @@ def main() -> int:
 
     limit = observe(window_hours=args.window_hours, root=args.projects_root)
     priors, unavailable = _read_priors(args.graph_host, args.graph_port, args.graph_name)
-    decision = decide(priors=priors, limit=limit)
+    decision = decide(priors=priors, limit=limit, worldview_unavailable=unavailable)
 
     if args.json:
         print(json.dumps({
@@ -126,7 +144,10 @@ def main() -> int:
           + ("   <- UNOBSERVED is not 'clear'" if not limit.observed else ""))
     print(f"  times limit bound : {limit.event_count}")
     print(f"  resets at         : {limit.resets_at}")
-    print(f"  staleness         : {limit.staleness_sec}s (refuse above {MAX_LIMIT_STALENESS_SEC}s)")
+    # Reported, never gated on: this is time since anyone last used Claude
+    # Code, so a large value means the pool is UNcontended, not that the
+    # reading is untrustworthy. See ask_claude_trigger's note.
+    print(f"  staleness         : {limit.staleness_sec}s (reported, not a gate)")
     print(f"  files scanned     : {limit.scanned_file_count}")
 
     print()

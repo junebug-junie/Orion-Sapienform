@@ -25,7 +25,7 @@ for path in (REPO_ROOT, SERVICE_ROOT):
         sys.path.insert(0, str(path))
 
 from app.producers import claude_limit as mod  # noqa: E402
-from app.settings import _parse_window_hours  # noqa: E402
+from app.settings import _parse_claude_limit_specs  # noqa: E402
 
 from orion.dev_economics.rate_limit_events import LimitObservation, RateLimitEvent  # noqa: E402
 
@@ -54,7 +54,7 @@ def _obs(*, hours=5.0, events=(), latest_activity=_UNSET, latest_success=None,
 
 def test_to_event_copies_the_observations_own_derived_values():
     obs = _obs()
-    ev = mod._to_event(obs, observed_at=NOW)
+    ev = mod._to_event(obs, kind="session_limit", observed_at=NOW)
     # Every derived field comes from the property, not a local recomputation.
     assert ev.state == obs.state
     assert ev.observed == obs.observed
@@ -72,8 +72,13 @@ def test_to_event_copies_the_observations_own_derived_values():
 
 def test_a_live_limit_carries_its_reset_time_through():
     resets = NOW + timedelta(minutes=30)
-    obs = _obs(events=[RateLimitEvent(at=NOW - timedelta(minutes=5), kind="session", resets_at=resets, source="t.jsonl")])
-    ev = mod._to_event(obs, observed_at=NOW)
+    # "session_limit", not "session": EventKind is Literal["session_limit",
+    # "weekly_limit"], and RateLimitEvent is a plain dataclass that validates
+    # nothing -- so an invalid kind here would pass while exercising a shape
+    # the producer can never see. Caught in review.
+    obs = _obs(events=[RateLimitEvent(at=NOW - timedelta(minutes=5), kind="session_limit",
+                                      resets_at=resets, source="t.jsonl")])
+    ev = mod._to_event(obs, kind="session_limit", observed_at=NOW)
     assert ev.state == "limited"
     assert ev.resets_at == resets
     # The number a consumer actually gates on, not something it has to derive.
@@ -82,10 +87,60 @@ def test_a_live_limit_carries_its_reset_time_through():
 
 def test_an_unobserved_window_publishes_unknown_rather_than_nothing():
     obs = _obs(message_count=0, latest_activity=None)
-    ev = mod._to_event(obs, observed_at=NOW)
+    ev = mod._to_event(obs, kind="session_limit", observed_at=NOW)
     assert ev.state == "unknown"
     assert ev.observed is False
     assert ev.staleness_sec is None
+
+
+# -- finding 1: a spent session limit must not mask a binding weekly one ---
+
+
+def test_a_spent_session_limit_does_not_mask_a_still_binding_weekly_limit():
+    """The regression this producer's kind filtering exists for.
+
+    `LimitObservation.state` reads the chronologically LAST event in the window
+    regardless of kind. Without filtering, a weekly limit binding until Friday
+    reads `clear` the moment a session limit that already reset lands after it
+    -- which defeats the entire reason the 168h window was added.
+    """
+    weekly_resets = NOW + timedelta(days=5)
+    obs = _obs(
+        hours=168.0,
+        events=[
+            # Older, and STILL IN FORCE.
+            RateLimitEvent(at=NOW - timedelta(days=2), kind="weekly_limit",
+                           resets_at=weekly_resets, source="a.jsonl"),
+            # Newer, and already spent -- its reset time has passed.
+            RateLimitEvent(at=NOW - timedelta(hours=1), kind="session_limit",
+                           resets_at=NOW - timedelta(minutes=30), source="b.jsonl"),
+        ],
+    )
+
+    # Unfiltered, the observation reports the weekly pool as clear.
+    assert obs.state == "clear"
+
+    weekly = mod._to_event(obs, kind="weekly_limit", observed_at=NOW)
+    assert weekly.state == "limited"
+    assert weekly.resets_at == weekly_resets
+    assert weekly.event_count == 1
+
+    session = mod._to_event(obs, kind="session_limit", observed_at=NOW)
+    assert session.state == "clear"
+    assert session.event_count == 1
+
+
+def test_for_kind_only_narrows_events_and_leaves_activity_intact():
+    # `state`'s "real activity after the event" recovery path reads the
+    # activity timestamps, which are about the transcript rather than either
+    # pool -- narrowing those too would break recovery detection.
+    obs = _obs(events=[RateLimitEvent(at=NOW - timedelta(hours=1), kind="session_limit",
+                                      resets_at=None, source="a.jsonl")])
+    scoped = mod._for_kind(obs, "weekly_limit")
+    assert scoped.events == ()
+    assert scoped.latest_activity_at == obs.latest_activity_at
+    assert scoped.observed_message_count == obs.observed_message_count
+    assert scoped.window_hours == obs.window_hours
 
 
 @pytest.mark.asyncio
@@ -94,7 +149,7 @@ async def test_loop_refuses_to_start_on_a_missing_mount(fake_bus, source, tmp_pa
     await mod.claude_limit_loop(
         bus=fake_bus, channel="c", source=source,
         claude_projects_path=str(tmp_path / "does-not-exist"),
-        window_hours=(5.0,), poll_interval_sec=0.01, stop=stop,
+        specs=(mod.WindowSpec("session_limit", 5.0, 0.01),), stop=stop,
     )
     # Returns rather than publishing a stream of empty ticks that would
     # misreport a broken mount as a quiet window.
@@ -106,8 +161,7 @@ async def test_loop_refuses_to_start_with_no_windows_configured(fake_bus, source
     stop = asyncio.Event()
     await mod.claude_limit_loop(
         bus=fake_bus, channel="c", source=source,
-        claude_projects_path=str(tmp_path), window_hours=(),
-        poll_interval_sec=0.01, stop=stop,
+        claude_projects_path=str(tmp_path), specs=(), stop=stop,
     )
     assert fake_bus.published == []
 
@@ -120,8 +174,10 @@ async def test_loop_publishes_one_event_per_window_each_tick(fake_bus, source, t
     async def _run():
         await mod.claude_limit_loop(
             bus=fake_bus, channel="orion:substrate:claude_limit", source=source,
-            claude_projects_path=str(tmp_path), window_hours=(5.0, 168.0),
-            poll_interval_sec=0.01, stop=stop,
+            claude_projects_path=str(tmp_path),
+            specs=(mod.WindowSpec("session_limit", 5.0, 0.01),
+                   mod.WindowSpec("weekly_limit", 168.0, 0.01)),
+            stop=stop,
         )
 
     async def _watch():
@@ -130,8 +186,8 @@ async def test_loop_publishes_one_event_per_window_each_tick(fake_bus, source, t
         stop.set()
 
     await asyncio.wait_for(asyncio.gather(_run(), _watch()), timeout=5.0)
-    windows = [e.payload["window_hours"] for _, e in fake_bus.published[:2]]
-    assert windows == [5.0, 168.0]
+    kinds = {e.payload["kind"] for _, e in fake_bus.published}
+    assert kinds == {"session_limit", "weekly_limit"}
     assert all(e.kind == "substrate.claude_limit.v1" for _, e in fake_bus.published)
 
 
@@ -151,8 +207,10 @@ async def test_one_failing_window_does_not_cost_the_tick_its_other_observation(
     async def _run():
         await mod.claude_limit_loop(
             bus=fake_bus, channel="c", source=source,
-            claude_projects_path=str(tmp_path), window_hours=(5.0, 168.0),
-            poll_interval_sec=0.01, stop=stop,
+            claude_projects_path=str(tmp_path),
+            specs=(mod.WindowSpec("session_limit", 5.0, 0.01),
+                   mod.WindowSpec("weekly_limit", 168.0, 0.01)),
+            stop=stop,
         )
 
     async def _watch():
@@ -168,7 +226,7 @@ async def test_one_failing_window_does_not_cost_the_tick_its_other_observation(
 async def test_publish_is_skipped_cleanly_when_the_bus_is_disabled(fake_bus, source, tmp_path, monkeypatch):
     fake_bus.enabled = False
     monkeypatch.setattr(mod, "observe", lambda *, window_hours, root: _obs(hours=window_hours))
-    ev = mod._to_event(_obs(), observed_at=NOW)
+    ev = mod._to_event(_obs(), kind="session_limit", observed_at=NOW)
     await mod._publish(fake_bus, "c", source, ev)
     assert fake_bus.published == []
 
@@ -177,15 +235,20 @@ async def test_publish_is_skipped_cleanly_when_the_bus_is_disabled(fake_bus, sou
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("5,168", (5.0, 168.0)),
-    # Deduplicated and sorted ascending, so the tightest window publishes first.
-    ("168,5,5", (5.0, 168.0)),
-    ("0.5, 5", (0.5, 5.0)),
+    ("session_limit:5:300,weekly_limit:168:3600",
+     (("session_limit", 5.0, 300.0), ("weekly_limit", 168.0, 3600.0))),
     ("", ()),
-    ("abc", ()),
-    ("-1", ()),
-    ("0", ()),
-    ("5,abc", ()),
+    ("bad_kind:5:300", ()),          # kind must be a real EventKind
+    ("session_limit:5", ()),          # interval is required, not optional
+    ("session_limit:-1:300", ()),
+    ("session_limit:5:0", ()),
+    ("session_limit:abc:300", ()),
+    # A duplicate kind+hours would publish the same fact twice per tick and
+    # double whatever a consumer counts -- refused, not silently deduped.
+    ("session_limit:5:300,session_limit:5:600", ()),
+    # Same kind at a DIFFERENT window is a legitimate second series.
+    ("session_limit:5:300,session_limit:24:900",
+     (("session_limit", 5.0, 300.0), ("session_limit", 24.0, 900.0))),
 ])
-def test_parse_window_hours(raw, expected):
-    assert _parse_window_hours(raw) == expected
+def test_parse_claude_limit_specs(raw, expected):
+    assert _parse_claude_limit_specs(raw) == expected

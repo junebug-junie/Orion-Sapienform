@@ -64,6 +64,26 @@ def test_fail_when_every_prior_is_always_selected(tmp_path):
     assert run(["--log", str(log)]) == 1
 
 
+def test_a_single_outage_tick_cannot_disarm_the_always_all_criterion(tmp_path):
+    # The exact review repro: 59 runs selecting every prior, plus one tick
+    # where the worldview was unreachable. The original criterion read that
+    # single `t == 0` run as evidence against the always-all mode and reported
+    # PASS, so one FalkorDB blip in a week silently disarmed the eval.
+    log = tmp_path / "l.jsonl"
+    _write(log, [_decision(7, 7)] * 59 + [_decision(0, 0, would=False, refused="no_live_priors")])
+    assert run(["--log", str(log)]) == 1
+
+
+def test_a_pass_cannot_rest_on_a_few_real_runs_amid_outages(tmp_path):
+    # 3 real runs and 57 outages is not a week of evidence, however varied
+    # those 3 look.
+    log = tmp_path / "l.jsonl"
+    rows = [_decision(1, 7), _decision(2, 7), _decision(3, 7)]
+    rows += [_decision(0, 0, would=False, refused="worldview_unavailable")] * 57
+    _write(log, rows)
+    assert run(["--log", str(log)]) == 0
+
+
 def test_no_readable_priors_is_insufficient_data_not_fail(tmp_path):
     # An unreachable worldview is an ACL/connection problem, not a verdict on
     # the knobs. It must not be reported as FAIL -- that would blame the

@@ -11,7 +11,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
 from .producers.affective_state import affective_state_loop
-from .producers.claude_limit import claude_limit_loop
+from .producers.claude_limit import WindowSpec, claude_limit_loop
 from .producers.dev_economics import dev_economics_loop
 from .producers.doc_semantic_drift import doc_semantic_drift_loop
 from .producers.git_delta import git_delta_loop
@@ -186,8 +186,7 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
                     channel=settings.CHANNEL_CLAUDE_LIMIT,
                     source=source,
                     claude_projects_path=settings.COCREATION_SIGNALS_CLAUDE_PROJECTS_PATH,
-                    window_hours=settings.claude_limit_window_hours,
-                    poll_interval_sec=settings.COCREATION_SIGNALS_CLAUDE_LIMIT_POLL_INTERVAL_SEC,
+                    specs=tuple(WindowSpec(*spec) for spec in settings.claude_limit_specs),
                     stop=stop,
                 ),
                 name="claude_limit_loop",

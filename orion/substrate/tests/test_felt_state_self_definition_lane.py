@@ -115,3 +115,34 @@ def test_projection_id_lanes_still_query_by_pid() -> None:
     pid_queries = [(q, p) for q, p in reader._engine.queries if "projection_id = :pid" in q]
     assert pid_queries, "projection lanes unchanged"
     assert all("pid" in p for _, p in pid_queries)
+
+
+def test_a_miss_is_remembered_for_the_cache_ttl_and_does_not_leak_into_ctx() -> None:
+    """Review finding 2026-09-08: until the first self-inquiry run lands the
+    table has no row, and that steady-state miss used to re-query on every
+    chat turn and gate tick."""
+    lane = _lane()
+    reader = _reader(None)
+    ctx: dict = {}
+    reader.hydrate(ctx)
+    n1 = sum(1 for q, _ in reader._engine.queries if "self_concept_history" in q)
+    reader.hydrate({})
+    n2 = sum(1 for q, _ in reader._engine.queries if "self_concept_history" in q)
+    assert n1 == 1 and n2 == 1, "second hydrate inside the TTL did not re-query"
+    assert "orion_self_definition" not in ctx
+    # After the TTL the lane looks again and picks up a new row.
+    reader._cache[lane.ctx_key] = (None, time.monotonic() - (lane.cache_ttl_sec + 1))
+    reader._engine._row = {"payload": {"content": "now I exist"}, "ts": datetime.now(timezone.utc)}
+    ctx3: dict = {}
+    reader.hydrate(ctx3)
+    assert ctx3["orion_self_definition"] == {"content": "now I exist"}
+
+
+def test_lanes_without_an_explicit_cache_ttl_still_requery_on_a_miss() -> None:
+    """The negative cache is opt-in per lane: `curiosity_signals` (120s row
+    age, no cache_ttl_sec) must not delay a fresh candidate by its own max age."""
+    reader = _reader(None)
+    reader.hydrate({})
+    reader.hydrate({})
+    n = sum(1 for q, _ in reader._engine.queries if "substrate_endogenous_curiosity_candidates" in q)
+    assert n == 2

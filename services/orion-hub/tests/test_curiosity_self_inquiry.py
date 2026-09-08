@@ -336,6 +336,34 @@ def test_missing_grants_block_the_run_and_name_the_tables(caplog) -> None:
     assert _SELF_COOLDOWN_KEY not in bus.redis.values, "a blocked run spends no slot"
 
 
+class _BrokenGrantConn(_GrantConn):
+    async def fetch(self, sql, *args):
+        if "has_table_privilege" in sql:
+            raise RuntimeError('role "" does not exist')
+        return await super().fetch(sql, *args)
+
+
+def test_a_failed_grant_check_blocks_rather_than_passing(caplog) -> None:
+    """Review finding 2026-09-08: `has_table_privilege` raises for a missing
+    table or an empty role, and the exception used to read as 'all granted'."""
+    bus = _FakeBus()
+    loop = _self_loop(bus, reader=_DefinitionReader(), conn=_BrokenGrantConn(), kickoff_via_cortex=False)
+    with caplog.at_level("WARNING"):
+        assert asyncio.run(loop.tick_self_inquiry()) == "grant_check_failed"
+    assert "nothing is assumed granted" in caplog.text
+    assert _SELF_COOLDOWN_KEY not in bus.redis.values
+    assert _mirrors(bus) == [] and _journal(bus) == []
+
+
+def test_the_grant_query_treats_a_missing_table_as_missing_not_as_an_error() -> None:
+    from orion.curiosity.self_inquiry import SELF_INQUIRY_GRANTS_SQL
+
+    assert "to_regclass" in SELF_INQUIRY_GRANTS_SQL
+    # CASE, not OR: SQL does not guarantee OR short-circuits, and
+    # has_table_privilege raises on a relation that does not exist.
+    assert SELF_INQUIRY_GRANTS_SQL.index("CASE WHEN to_regclass") < SELF_INQUIRY_GRANTS_SQL.index("has_table_privilege")
+
+
 def test_no_pool_yet_reads_as_stores_not_ready_for_the_self_line() -> None:
     bus = _FakeBus()
     loop = _self_loop(bus, reader=_DefinitionReader(), kickoff_via_cortex=False, pool_provider=lambda: None)

@@ -1473,13 +1473,26 @@ class CuriosityInvestigation:
             )
             return "pg_role_missing"
 
-        missing = await self._self_inquiry_grants_missing()
-        if missing is None:
+        grant_status, missing = await self._self_inquiry_grants_missing()
+        if grant_status == "not_ready":
             logger.info(
                 "curiosity_self_inquiry_blocked reason=stores_not_ready -- "
                 "the memory pool is not up yet, so the grants cannot be checked"
             )
             return "stores_not_ready"
+        if grant_status == "failed":
+            # NOT fail-open. `_pg_role_missing` reads an unreadable answer as
+            # "present" because the role check is a courtesy ahead of a gate
+            # that catches the same fault one step later; here there is no
+            # later gate, and a turn that starts without these tables spends
+            # its whole budget on permission errors. Review finding 2026-09-08.
+            logger.warning(
+                "curiosity_self_inquiry_blocked reason=grant_check_failed role=%r "
+                "-- the grant query itself errored (empty role name, or Postgres "
+                "unreachable); nothing is assumed granted",
+                self.pg_readonly_role,
+            )
+            return "grant_check_failed"
         if missing:
             logger.warning(
                 "curiosity_self_inquiry_blocked reason=pg_grants_missing role=%s "
@@ -1507,15 +1520,15 @@ class CuriosityInvestigation:
                 now=now, run_id=run_id, correlation_id=correlation_id, done_today=done_today
             )
 
-    async def _self_inquiry_grants_missing(self) -> Optional[list[str]]:
-        """Which of the self-inquiry outcome tables the read-only role cannot
-        SELECT. `[]` means all granted; `None` means the pool is not up yet.
-        An unreadable answer counts as granted, the same rule `_pg_role_missing`
-        applies: the turn's own psql will say otherwise if it is wrong, and
-        guessing `missing` here would block on the wrong evidence."""
+    async def _self_inquiry_grants_missing(self) -> tuple[str, list[str]]:
+        """(status, missing tables). Status is `ok`, `not_ready` (no pool yet)
+        or `failed` (the query itself errored). Missing is by name, and a
+        table that does not exist counts as missing (see
+        SELF_INQUIRY_GRANTS_SQL). A `failed` check is never read as granted --
+        the caller blocks on it."""
         pool = self._pool_provider()
         if pool is None:
-            return None
+            return "not_ready", []
         try:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -1523,8 +1536,8 @@ class CuriosityInvestigation:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_self_inquiry_grant_check_failed err=%s", exc)
-            return []
-        return sorted(str(r["table_name"]) for r in rows)
+            return "failed", []
+        return "ok", sorted(str(r["table_name"]) for r in rows)
 
     async def _read_self_ledger(self) -> list[LedgerRow]:
         """Row count and latest timestamp per outcome table. Orientation for the

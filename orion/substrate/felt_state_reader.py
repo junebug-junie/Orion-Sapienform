@@ -172,6 +172,20 @@ class SubstrateFeltStateReader:
             return None
         return (row.get("payload"), row.get("ts"))
 
+    def _remember_miss(self, lane: LaneSpec) -> None:
+        """Negative cache, ONLY for lanes that declare their own `cache_ttl_sec`.
+
+        A lane whose expected steady state is "no row yet" (the self-definition
+        lane until the first self-inquiry run lands) would otherwise re-query
+        on every chat turn and gate tick, because a miss never reached the
+        cache. Lanes without an explicit TTL keep the old behaviour on purpose:
+        their max_age doubles as their cache TTL, and remembering a miss for
+        `curiosity_signals`' 120s would delay a fresh candidate by that long.
+        """
+        if lane.cache_ttl_sec is None:
+            return
+        self._cache[lane.ctx_key] = (None, time.monotonic())
+
     def hydrate(self, ctx: dict) -> None:
         if not self._enabled:
             return
@@ -185,18 +199,24 @@ class SubstrateFeltStateReader:
                     payload, fetched_at = cached
                     cache_ttl = lane.cache_ttl_sec if lane.cache_ttl_sec is not None else max_age
                     if (time.monotonic() - fetched_at) <= cache_ttl:
-                        ctx[lane.ctx_key] = payload
+                        # A cached None is a remembered MISS (see below): skip
+                        # the query, leave ctx untouched, until the TTL lapses.
+                        if payload is not None:
+                            ctx[lane.ctx_key] = payload
                         continue
                 result = self._fetch_lane(lane)
                 if result is None:
+                    self._remember_miss(lane)
                     continue
                 payload, ts = result
                 if ts is None:
+                    self._remember_miss(lane)
                     continue
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 age = (datetime.now(timezone.utc) - ts).total_seconds()
                 if age > max_age:
+                    self._remember_miss(lane)
                     continue
                 ctx[lane.ctx_key] = payload
                 self._cache[lane.ctx_key] = (payload, time.monotonic())

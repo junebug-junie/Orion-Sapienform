@@ -116,9 +116,17 @@ SELF_INQUIRY_PG_TABLE_NAMES: tuple[str, ...] = tuple(t for t, _ in SELF_INQUIRY_
 
 # One round trip: which of the required tables the role can NOT select from.
 # asyncpg positional params: $1 role name, $2 text[] of table names.
+#
+# `has_table_privilege` RAISES for a table that does not exist (confirmed live
+# 2026-09-08: `relation "public.no_such_table" does not exist`), and a raise
+# used to read as "all granted" one level up. The CASE guarantees the
+# existence test is evaluated first (SQL gives no such guarantee for `OR`),
+# so a table that is not there is reported missing by name instead of
+# aborting the whole check.
 SELF_INQUIRY_GRANTS_SQL = (
     "SELECT t AS table_name FROM unnest($2::text[]) AS t "
-    "WHERE NOT has_table_privilege($1, 'public.' || t, 'SELECT')"
+    "WHERE CASE WHEN to_regclass('public.' || t) IS NULL THEN true "
+    "ELSE NOT has_table_privilege($1, 'public.' || t, 'SELECT') END"
 )
 
 

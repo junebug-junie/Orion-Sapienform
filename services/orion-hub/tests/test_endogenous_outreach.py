@@ -508,6 +508,64 @@ def test_sustained_load_pressure_falls_back_to_honest_unnamed_wording_without_id
     assert "sustained_load_pressure=0.71" in prompt
 
 
+def test_prompt_states_grounded_names_when_present() -> None:
+    """2026-09-08 closed-vocabulary guard: the prompt must explicitly name
+    which real internal-signal names (if any) are true this tick."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+            sustained_load_pressure_channel="disk_capacity_pressure",
+            sustained_load_pressure_node_id="node:athena",
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "only specific internal signal name(s) you may state as true" in prompt
+    assert "disk_capacity_pressure" in prompt.split(
+        "only specific internal signal name(s) you may state as true"
+    )[1].split("\n")[0]
+
+
+def test_prompt_states_nothing_grounded_when_tension_reason_is_none() -> None:
+    """A tick with no real trigger (e.g. curiosity-only grounding) must
+    still get an explicit "nothing is true right now" statement -- an
+    absent statement is exactly the gap the 2026-09-08 incident fell
+    through."""
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising on node:substrate.route"],
+        recent_turns=[],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "Nothing above names a specific internal channel, node, or metric as true right now." in prompt
+
+
+def test_prompt_cautions_recent_turns_are_not_a_fact_source_when_present() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[("Orion", "harness_closure's prediction error is still on my mind")],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "for tone" in prompt and "continuity only" in prompt
+    assert "not a source of new facts about your current internal state" in prompt
+
+
+def test_prompt_has_no_recent_turns_caution_when_no_recent_turns() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising on node:substrate.route"],
+        recent_turns=[],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "not a source of new facts about your current internal state" not in prompt
+
+
 def test_tension_reason_with_sustained_load_still_never_claims_distress() -> None:
     """Even with a real, nonzero level-aware reading present, this module
     must not script a feeling for Orion -- that judgment is left to
@@ -709,6 +767,72 @@ def test_successful_outreach_pushes_to_every_live_socket(monkeypatch) -> None:
         assert "memory_digest" not in payload
     assert [kind for kind, _ in published] == ["history", "notify"]
     assert outreach.status()["sent_today"] == 1
+
+
+def test_named_ungrounded_signal_blocks_send_and_records_offending_terms(monkeypatch) -> None:
+    """2026-09-08 closed-vocabulary guard, full-flow: no real tension reason
+    fired this tick (a noisy field, no sustained run -- `_stub_context`'s
+    default `OutreachContext` carries `tension_reason=None`), so nothing is
+    grounded, but generation names a real registered signal
+    (`harness_closure`) as though it were current fact. The tick must not
+    reach any delivery rail."""
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+    _stub_context(monkeypatch)
+    _stub_generation(
+        monkeypatch,
+        "I keep noticing something in harness_closure's prediction error.",
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "named_ungrounded_signal"
+    assert result["offending_terms"] == ["harness_closure"]
+    assert queue.empty()
+    assert outreach.status()["sent_today"] == 0
+
+
+def test_grounded_signal_name_is_sent_normally(monkeypatch) -> None:
+    """The counterpart to the block test above: a message naming a real
+    signal that IS this tick's grounded fact must ship exactly like any
+    other successful outreach."""
+    real_reason = TensionTriggerReason(
+        target_id="node:athena",
+        run_length=9,
+        peak_deviation_pressure=0.62,
+        sustained_load_pressure=0.71,
+        sustained_load_pressure_channel="disk_capacity_pressure",
+        sustained_load_pressure_node_id="node:athena",
+    )
+    # `tension_reason` (used for grounding) comes from `_should_roll()`'s
+    # trigger_evaluator, NOT from `_gather_context` -- in real flow
+    # `_gather_context` just echoes back `self._last_tension_reason`
+    # (see `EndogenousOutreach._gather_context`), so the two must be the
+    # SAME object here for this test to model a real tick honestly.
+    outreach = _outreach(trigger_evaluator=lambda: real_reason)
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+
+    async def fake_gather(self, session_id):
+        return OutreachContext(
+            curiosity_summaries=[],
+            recent_turns=[],
+            presence=None,
+            tension_reason=real_reason,
+        )
+
+    monkeypatch.setattr(EndogenousOutreach, "_gather_context", fake_gather)
+    _stub_generation(monkeypatch, "`disk_capacity_pressure` on `node:athena` has been high all day.")
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert result["reason"] == "sent"
+    assert not queue.empty()
 
 
 def test_second_outreach_blocked_by_cooldown(monkeypatch) -> None:

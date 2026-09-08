@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # Polling + thresholds
     # ─────────────────────────────────────────────
     POWER_GUARD_POLL_INTERVAL_SEC: float = Field(default=5.0)
-    POWER_GUARD_ONBATTERY_GRACE_SEC: float = Field(default=60.0)
+    POWER_GUARD_ONBATTERY_GRACE_SEC: float = Field(default=300.0)
 
     # ─────────────────────────────────────────────
     # Bus channels
@@ -63,9 +63,18 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────
     # Shutdown behavior
     # ─────────────────────────────────────────────
+    # power-guard runs in a container, so a local `shutdown` only kills the
+    # container -- it does NOT touch the host it's meant to protect. The
+    # container mounts a dedicated SSH key (docker-compose.yml) for exactly
+    # this: reach the host over the docker bridge and shut *it* down. See
+    # README.md "Shutdown wiring" for how the key/host were provisioned.
     POWER_GUARD_ENABLE_SHUTDOWN: bool = Field(default=False)
     POWER_GUARD_SHUTDOWN_CMD: str = Field(
-        default='/sbin/shutdown -h +1 "Orion PowerGuard: UPS on battery"'
+        default=(
+            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o ConnectTimeout=5 -i /etc/powerguard/ssh_key root@host.docker.internal "
+            "'shutdown -h now \"Orion PowerGuard: UPS on battery beyond grace period\"'"
+        )
     )
 
     @field_validator("POWER_GUARD_POLL_INTERVAL_SEC", "POWER_GUARD_ONBATTERY_GRACE_SEC")

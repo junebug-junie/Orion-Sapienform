@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # Polling + thresholds
     # ─────────────────────────────────────────────
     POWER_GUARD_POLL_INTERVAL_SEC: float = Field(default=5.0)
-    POWER_GUARD_ONBATTERY_GRACE_SEC: float = Field(default=60.0)
+    POWER_GUARD_ONBATTERY_GRACE_SEC: float = Field(default=300.0)
 
     # ─────────────────────────────────────────────
     # Bus channels
@@ -63,9 +63,24 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────
     # Shutdown behavior
     # ─────────────────────────────────────────────
+    # power-guard runs in a container, so a local `shutdown` only kills the
+    # container -- it does NOT touch the host it's meant to protect. The
+    # container mounts a dedicated SSH key (docker-compose.yml) for exactly
+    # this: reach the host over the docker bridge and shut *it* down. `-h now`
+    # is immediate and uncancellable (no `shutdown -c` grace window) -- a
+    # deliberate choice: the grace timer above already buys minutes of
+    # margin, and racing UPS depletion is the whole point of this hook. See
+    # README.md "Shutdown wiring" for that tradeoff and how the key/host were
+    # provisioned. `BatchMode=yes` makes ssh fail fast on any auth problem
+    # instead of ever waiting on an interactive prompt.
     POWER_GUARD_ENABLE_SHUTDOWN: bool = Field(default=False)
     POWER_GUARD_SHUTDOWN_CMD: str = Field(
-        default='/sbin/shutdown -h +1 "Orion PowerGuard: UPS on battery"'
+        default=(
+            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o ConnectTimeout=5 -o BatchMode=yes -i /etc/powerguard/ssh_key "
+            "root@host.docker.internal "
+            "'shutdown -h now \"Orion PowerGuard: UPS on battery beyond grace period\"'"
+        )
     )
 
     @field_validator("POWER_GUARD_POLL_INTERVAL_SEC", "POWER_GUARD_ONBATTERY_GRACE_SEC")

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from time import perf_counter
-import time
 import base64
 import json
 import logging

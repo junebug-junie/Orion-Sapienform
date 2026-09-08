@@ -555,10 +555,10 @@ different:
 | budget | `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` | `HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP` (3), own cooldown, own Redis keys (`orion:curiosity:self:*`) |
 | priors shown | every live prior | only priors with `line = "self"` |
 | extra material | -- | Orion's own repo at `/repo` (read-only mount), the outcome tables below, the previous definition |
-| extra write | -- | `CREATE (:SelfDefinition {run_id, text, evidence, revises, written_at})` |
+| extra write | -- | `MERGE (s:SelfDefinition {run_id}) SET s.text, s.evidence, s.revises, s.written_at` -- written EARLY (by hop 2) and overwritten as the run learns more |
 | crosses back out as | `:TurnOutcome` | `:TurnOutcome` **and** the definition, mirrored by Hub into `self_concept_history` |
 | journal | title `Curiosity`, `source_ref=curiosity:<run>` | title `Self-inquiry`, `entry_id=curiosity-self-inquiry:<run>` (same `source_ref=curiosity:<run>`, which the atlas page joins on) |
-| operator trigger | `POST /api/curiosity/api/run-now` | `POST /api/curiosity/api/self-inquiry/run-now` |
+| operator trigger | `POST /curiosity/api/run-now` | `POST /curiosity/api/self-inquiry/run-now` |
 
 Why it exists: every durable self-store Orion had was fed codebase facts and
 read by nobody in chat, so Orion self-described as a chatbot. Design record:

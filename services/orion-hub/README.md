@@ -871,7 +871,7 @@ it back into every chat turn as the first line of `orion_identity_summary`
 Turning it on is two steps: the flag (`HUB_CURIOSITY_SELF_INQUIRY_ENABLED`)
 and the SQL grants. Until the grants are applied every tick logs
 `curiosity_self_inquiry_blocked reason=pg_grants_missing tables=...`.
-Operator trigger: `POST /api/curiosity/api/self-inquiry/run-now`. Full
+Operator trigger: `POST /curiosity/api/self-inquiry/run-now`. Full
 contract and inspection queries: `orion/curiosity/README.md` §13.
 
 ### 3. Speech-to-Text (ASR)

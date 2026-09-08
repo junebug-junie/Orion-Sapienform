@@ -20,6 +20,7 @@ from orion.substrate.materializer import SubstrateGraphMaterializer
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
 from orion.substrate.review_schedule import GraphReviewScheduler
+from orion.substrate.review_telemetry import GraphReviewTelemetryRecorder
 from orion.substrate.store import InMemorySubstrateGraphStore
 
 
@@ -200,6 +201,159 @@ def test_followup_branch_is_optional_and_default_off() -> None:
     assert on.outcome == "executed"
     assert on.frontier_followup_invoked is True
     assert followup.calls == 1
+
+
+def test_second_review_of_a_stable_region_reaches_reinforce_not_keep_provisional() -> None:
+    """2026-09-08 regression: consolidate() was never given a real prior_cycle
+    at all -- node_persistence_ratio was permanently 0.0, so `reinforce` was
+    structurally unreachable no matter how stable a region actually was.
+    Confirmed live: 100% of recorded consolidation_outcomes, all of history,
+    were `keep_provisional`. See
+    docs/plans/substrate/2026-09-08-consolidation-prior-cycle-wiring.md.
+
+    Store here never changes between cycles (no contradiction, activation
+    0.35 mean -- above the >=0.2 reinforce floor) -- the *only* thing that
+    can move the outcome from the first cycle to the second is a real
+    prior_cycle now being looked up and threaded through.
+    """
+    queue = GraphReviewQueue(max_items=10)
+    scheduler = GraphReviewScheduler(queue=queue)
+    item_id = _enqueue_requeue_item(queue=queue, scheduler=scheduler)
+    evaluator = GraphConsolidationEvaluator(store=_build_store())
+    telemetry = GraphReviewTelemetryRecorder()
+    executor = GraphReviewRuntimeExecutor(
+        queue=queue, consolidation_evaluator=evaluator, scheduler=scheduler, telemetry_recorder=telemetry
+    )
+
+    # No prior_cycle exists yet -- lookup must be empty before the first review.
+    assert executor._lookup_prior_cycle(queue_item_id=item_id) is None  # noqa: SLF001
+
+    first = executor.execute_once(request=GraphReviewRuntimeRequestV1(invocation_surface="operator_review"))
+    assert first.outcome == "executed"
+    assert first.audit_summary["consolidation_outcomes"] == ["keep_provisional"]
+
+    # Force the item eligible again regardless of the scheduler's real cadence --
+    # this test is about the prior_cycle comparison, not revisit timing.
+    second = executor.execute_once(
+        request=GraphReviewRuntimeRequestV1(invocation_surface="operator_review", explicit_queue_item_id=item_id),
+        now=datetime.now(timezone.utc) + timedelta(days=365),
+    )
+    assert second.outcome == "executed"
+    assert second.audit_summary["consolidation_outcomes"] == ["reinforce"]
+
+
+def test_organic_requeue_of_an_unchanged_region_preserves_queue_item_id() -> None:
+    """The prior-cycle lookup is keyed on queue_item_id. That id is only
+    stable across cycles when GraphReviewQueue.upsert()'s exact-match
+    region_key (zone + sorted focal_node_refs) matches on re-enqueue -- see
+    test_region_key_changes_orphan_the_queue_item below for what happens
+    when it doesn't. This test proves the common case works end-to-end
+    through the real scheduler re-enqueue path (apply_consolidation_result
+    -> queue.upsert()), not just via the explicit_queue_item_id shortcut
+    the other tests in this module use to force a second cycle.
+    """
+    queue = GraphReviewQueue(max_items=10)
+    scheduler = GraphReviewScheduler(queue=queue)
+    item_id = _enqueue_requeue_item(queue=queue, scheduler=scheduler)
+    evaluator = GraphConsolidationEvaluator(store=_build_store())
+    telemetry = GraphReviewTelemetryRecorder()
+    executor = GraphReviewRuntimeExecutor(
+        queue=queue, consolidation_evaluator=evaluator, scheduler=scheduler, telemetry_recorder=telemetry
+    )
+
+    first = executor.execute_once(request=GraphReviewRuntimeRequestV1(invocation_surface="operator_review"))
+    assert first.selected_queue_item_id == item_id
+
+    # Auto-select, not explicit_queue_item_id -- whatever the scheduler
+    # actually re-enqueued after cycle 1 is what gets picked up here.
+    second = executor.execute_once(
+        request=GraphReviewRuntimeRequestV1(invocation_surface="operator_review"),
+        now=datetime.now(timezone.utc) + timedelta(days=365),
+    )
+    assert second.selected_queue_item_id == item_id
+    assert second.audit_summary["consolidation_outcomes"] == ["reinforce"]
+
+
+def test_region_key_changes_orphan_the_queue_item() -> None:
+    """Known limitation, not fixed by this patch: GraphReviewQueue.upsert()
+    matches re-enqueued items by an EXACT region_key (zone + sorted
+    focal_node_refs, review_queue.py's _region_key) -- not by any more
+    durable region identity (anchor_scope/subject_ref/originating decision).
+    Any drift in the live-resolved node set (e.g. a node entering or
+    leaving scope between reviews -- an ordinary substrate event, not an
+    error) mints a brand-new queue_item_id instead of continuing the old
+    one. _lookup_prior_cycle() is keyed on queue_item_id, so a review that
+    drifts loses its prior_cycle exactly when the comparison matters most --
+    it silently falls back to today's pre-patch behavior for that one
+    cycle, not a crash, but a real gap named in
+    docs/plans/substrate/2026-09-08-consolidation-prior-cycle-wiring.md's
+    follow-ups rather than solved here.
+    """
+    queue = GraphReviewQueue(max_items=10)
+    scheduler = GraphReviewScheduler(queue=queue)
+    same_region_narrower = GraphConsolidationDecisionV1(
+        target_refs=["concept-1", "goal-1"],
+        outcome="requeue_review",
+        reason="baseline",
+        confidence=0.8,
+        zone="concept_graph",
+        priority=70,
+        notes=[],
+        evidence_summary="baseline",
+    )
+    drifted_region = same_region_narrower.model_copy(update={"target_refs": ["concept-1", "goal-1", "concept-2"]})
+
+    scheduler.apply_consolidation_result(
+        consolidation_result=GraphConsolidationResultV1(
+            request_id="r-1", decisions=[same_region_narrower], outcome_counts={}, regions_reviewed=[], unresolved_regions=[], confidence=0.8
+        ),
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        now=datetime.now(timezone.utc),
+    )
+    first_id = queue.snapshot(limit=10).queue_items[0].queue_item_id
+
+    scheduler.apply_consolidation_result(
+        consolidation_result=GraphConsolidationResultV1(
+            request_id="r-2", decisions=[drifted_region], outcome_counts={}, regions_reviewed=[], unresolved_regions=[], confidence=0.8
+        ),
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        now=datetime.now(timezone.utc),
+    )
+    items = queue.snapshot(limit=10).queue_items
+    assert len(items) == 2, "a one-node-wider region should not merge with the original -- it should orphan it"
+    assert first_id in {item.queue_item_id for item in items}
+
+
+def test_prior_cycle_lookup_reconstructs_the_last_real_cycle() -> None:
+    queue = GraphReviewQueue(max_items=10)
+    scheduler = GraphReviewScheduler(queue=queue)
+    item_id = _enqueue_requeue_item(queue=queue, scheduler=scheduler)
+    evaluator = GraphConsolidationEvaluator(store=_build_store())
+    telemetry = GraphReviewTelemetryRecorder()
+    executor = GraphReviewRuntimeExecutor(
+        queue=queue, consolidation_evaluator=evaluator, scheduler=scheduler, telemetry_recorder=telemetry
+    )
+
+    assert executor._lookup_prior_cycle(queue_item_id=item_id) is None  # noqa: SLF001
+
+    executor.execute_once(request=GraphReviewRuntimeRequestV1(invocation_surface="operator_review"))
+
+    prior = executor._lookup_prior_cycle(queue_item_id=item_id)  # noqa: SLF001
+    assert prior is not None
+    assert set(prior.focal_node_refs) == {"concept-1", "goal-1"}
+    assert prior.contradiction_count == 0
+    assert prior.mean_activation is not None and prior.mean_activation > 0.0
+
+
+def test_lookup_prior_cycle_returns_none_without_a_telemetry_recorder() -> None:
+    queue = GraphReviewQueue(max_items=10)
+    scheduler = GraphReviewScheduler(queue=queue)
+    evaluator = GraphConsolidationEvaluator(store=_build_store())
+    executor = GraphReviewRuntimeExecutor(queue=queue, consolidation_evaluator=evaluator, scheduler=scheduler)
+
+    assert executor._lookup_prior_cycle(queue_item_id="anything") is None  # noqa: SLF001
 
 
 def test_runtime_failure_is_captured_without_raising() -> None:

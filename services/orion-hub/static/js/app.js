@@ -7701,6 +7701,10 @@ document.addEventListener("DOMContentLoaded", () => {
       div.dataset.turnId = `hub-utterance:${uuid}`;
     }
     div.dataset.role = (sender === 'Orion' || sender === 'Claude') ? 'assistant' : (sender === 'You' ? 'user' : 'system');
+    // Real speaker name, not just the role bucket -- 'assistant' alone can't
+    // tell Orion from Claude apart, and askClaude()'s empty-box fallback
+    // needs that distinction to attribute the message it reacts to honestly.
+    div.dataset.sender = sender;
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
       sender === 'Orion'
@@ -9659,7 +9663,23 @@ document.addEventListener("DOMContentLoaded", () => {
     const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
     // Falls back to the last thing said when the composer is empty, so "Ask
     // Claude" works as "weigh in on this" without retyping the question.
-    const prompt = value || lastUserOrOrionText() || 'What do you make of the conversation so far?';
+    // That fallback text is not necessarily Juniper's -- it could be Orion's
+    // or Claude's own last bubble -- so it must travel with its real
+    // speaker. The backend used to default invited_by to "Juniper"
+    // unconditionally, which meant Orion's own words got quoted back to
+    // Claude as something Juniper had said (confirmed live: Claude then
+    // addressed Juniper as the author of Orion's message).
+    let prompt = value;
+    let invitedBy = 'Juniper';
+    if (!prompt) {
+      const last = lastRoomMessage();
+      if (last) {
+        prompt = last.text;
+        invitedBy = last.sender === 'You' ? 'Juniper' : last.sender;
+      } else {
+        prompt = 'What do you make of the conversation so far?';
+      }
+    }
     setAskClaudeBusy(true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/room/claude/invite`, {
@@ -9667,6 +9687,7 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
+          invited_by: invitedBy,
           session_id: orionSessionId || null,
           connection_id: activeConnectionId || null,
         }),
@@ -9686,14 +9707,22 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function lastUserOrOrionText() {
-    if (!conversationDiv) return '';
+  // Last real message in the room, with who actually said it -- not just its
+  // text. Skips System bubbles (errors, status banners): those are not
+  // something to hand Claude as a quote from anyone.
+  function lastRoomMessage() {
+    if (!conversationDiv) return null;
     const nodes = conversationDiv.querySelectorAll('[data-message-body="1"]');
     for (let i = nodes.length - 1; i >= 0; i -= 1) {
-      const text = (nodes[i].textContent || '').trim();
-      if (text) return text;
+      const node = nodes[i];
+      const text = (node.textContent || '').trim();
+      if (!text) continue;
+      const container = node.closest('[data-sender]');
+      const sender = container ? container.dataset.sender : '';
+      if (sender === 'System') continue;
+      return { text, sender: sender || 'Juniper' };
     }
-    return '';
+    return null;
   }
 
   if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);

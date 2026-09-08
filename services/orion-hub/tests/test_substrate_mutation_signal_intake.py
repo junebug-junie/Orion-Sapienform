@@ -102,6 +102,10 @@ def _live_shaped_store() -> GraphReviewTelemetryRecorder:
 
 
 def test_live_starvation_is_named_zone_filter_rejected_all(scheduler_env) -> None:
+    """This fixture's zones (concept_graph, autonomy_graph) are still a real
+    starvation case even after allowed_zones was corrected to "world_ontology"
+    2026-09-08: neither zone here is world_ontology, so the intersection the
+    scheduler needs is still empty for this particular data shape."""
     scheduler_env(_live_shaped_store())
 
     intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
@@ -113,11 +117,35 @@ def test_live_starvation_is_named_zone_filter_rejected_all(scheduler_env) -> Non
     assert intake["store_matched_surface"] == 6
     assert intake["before_zone_filter"] == 6
     assert intake["after_zone_filter"] == 0
-    assert intake["allowed_zones"] == ["autonomy_graph"]
+    assert intake["allowed_zones"] == ["autonomy_graph", "world_ontology"]
     # The report names the values that DO exist, so the mismatch is readable
     # without a database session.
     assert intake["zone_histogram"] == {"concept_graph": 6, "autonomy_graph": 2}
     assert intake["surface_histogram"] == {"operator_review": 6, "chat_reflective_lane": 2}
+
+
+def test_world_ontology_telemetry_clears_the_zone_filter(scheduler_env) -> None:
+    """2026-09-08 regression test: allowed_zones was {"autonomy_graph"} --
+    retired 2026-09-05 and producing no live signal any more -- meaning the
+    scheduled cycle rejected every real proposal-worthy row regardless of
+    allowed_classes. "world_ontology" is graph_consolidation_param_patch's
+    real zone (TARGET_SURFACE_BY_ZONE) and is live in production (141
+    operator_review/world_ontology rows in the 14 days before this fix,
+    confirmed via direct Postgres query). This is the positive case at the
+    exact layer the bug lived in -- zone filtering, before any signal/
+    proposal/trial machinery runs.
+    """
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    store = _live_shaped_store()
+    store.record(_record(surface="operator_review", zone="world_ontology", at=base + timedelta(minutes=20)))
+    scheduler_env(store)
+
+    intake = api_routes.execute_substrate_mutation_scheduled_cycle()["summary"]["signal_intake"]
+
+    assert intake["reason"] == "healthy"
+    assert intake["starved"] is False
+    assert intake["after_zone_filter"] == 1
+    assert intake["after_zone_filter_live"] == 1
 
 
 def test_an_empty_store_is_reported_as_empty_not_starved(scheduler_env) -> None:
@@ -153,7 +181,12 @@ def test_an_autonomy_graph_row_alone_is_not_reported_as_healthy(scheduler_env) -
     mutation_detectors.py filters every autonomy_graph-zoned signal out of
     from_review_telemetry() unconditionally (see PARKED_TELEMETRY_ZONES), so
     a row that clears every filter but sits in that zone can never produce a
-    live signal any more. Formerly `test_a_satisfying_row_reports_healthy`,
+    live signal any more. autonomy_graph stays in allowed_zones (2026-09-08,
+    alongside adding world_ontology) purely so a real, separate pathway
+    survives -- pressure-event-derived signals, zone-independent, whose only
+    production rows ever seen are tagged this zone -- so this row still
+    clears the outer zone filter and this inner PARKED_TELEMETRY_ZONES check
+    is what has to catch it. Formerly `test_a_satisfying_row_reports_healthy`,
     which asserted this exact row combination was "healthy" -- reporting that
     now would reproduce the same "unexplained zero looks fine" failure this
     whole module exists to prevent, just one level down (after_zone_filter
@@ -251,7 +284,8 @@ def test_no_reason_is_unreachable(scheduler_env, monkeypatch) -> None:
     A branch nothing can reach is exactly the dead scaffolding this patch exists
     to expose. "matched_rows_only_in_parked_zones" (added 2026-09-03 alongside
     the routing park) and "healthy" (now needing a non-parked zone -- see
-    test_a_satisfying_row_in_a_live_zone_reports_healthy) are both covered."""
+    test_a_satisfying_row_in_a_live_zone_reports_healthy /
+    test_world_ontology_telemetry_clears_the_zone_filter) are both covered."""
     base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     seen = set()
 
@@ -291,7 +325,7 @@ def test_no_reason_is_unreachable(scheduler_env, monkeypatch) -> None:
 
     truncating = GraphReviewTelemetryRecorder()
     for i in range(4):
-        truncating.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=i)))
+        truncating.record(_record(surface="operator_review", zone="world_ontology", at=base + timedelta(minutes=i)))
     for i in range(40):
         truncating.record(_record(surface="operator_review", zone="concept_graph", at=base + timedelta(minutes=10 + i)))
     scheduler_env(truncating)
@@ -328,7 +362,7 @@ def test_limit_truncation_is_not_blamed_on_the_zone_filter(scheduler_env) -> Non
     base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
     store = GraphReviewTelemetryRecorder()
     for i in range(40):  # usable, older
-        store.record(_record(surface="operator_review", zone="autonomy_graph", at=base + timedelta(minutes=i)))
+        store.record(_record(surface="operator_review", zone="world_ontology", at=base + timedelta(minutes=i)))
     for i in range(40):  # newer, wrong zone -- these win the 32-row slice
         store.record(_record(surface="operator_review", zone="concept_graph", at=base + timedelta(minutes=100 + i)))
     scheduler_env(store)

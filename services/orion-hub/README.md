@@ -954,7 +954,13 @@ plus whatever historical data already exists, rather than a live value):
 - `GET /api/substrate/mutation-runtime/cognitive-proposals/<proposal-id>/lineage`
   - Returns full lineage/evidence for a single cognitive proposal.
 
-Routing-only live ramp gates:
+Scheduled-cycle live ramp gates (named "ROUTING" from when the scheduled
+cycle only ever touched `routing_threshold_patch`; that class retired
+2026-09-05, and since 2026-09-08 these are the master gates for
+`graph_consolidation_param_patch` instead -- the only class the scheduled
+cycle can currently act on. Turning `ROUTING_PROPOSALS_ENABLED` or
+`ROUTING_APPLY_ENABLED` off to disable the dead routing feature also
+disables the real graph_consolidation autonomy loop):
 
 - `SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED` (default `true`)
 - `SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED` (default `false`)
@@ -1787,8 +1793,13 @@ Operational refresh:
 - freeform production prompt rewrite
 
 9) Live mutable surface:
-- none. `routing_threshold_patch` was the only one and it's retired
-  2026-09-05 (see step 1 above) -- no surface currently has live apply.
+- `routing_threshold_patch` was the only one and it's retired 2026-09-05
+  (see step 1 above). Since 2026-09-08, `graph_consolidation_param_patch`
+  is real again: an auto-promoted proposal stages a profile in
+  `SubstratePolicyProfileStore` (durable, audited) but does not activate
+  it -- an operator still has to promote a staged profile before it
+  changes live graph-review behavior. No class currently reaches live
+  *activation* on its own.
 
 10) Routing rollback check:
 - inspect `GET /api/substrate/autonomy-readiness` routing + recent activity blocks/rollbacks.

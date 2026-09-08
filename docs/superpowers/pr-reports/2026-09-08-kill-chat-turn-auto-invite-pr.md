@@ -125,17 +125,15 @@ does not.
 
 ## Tests run
 
-Like-for-like, the **same file** on both sides:
+### Running that one file
 
 ```text
 main   (primary checkout, real .env):   3 failed, 15 passed
 branch (this worktree):                18 passed
 ```
 
-The 3 failures were pre-existing and identical by name on main. They are now
-**fixed**, because review finding 7's fix needed one of them to run — see
-"those 3 pre-existing failures" above. Test count 18 = 18 on main − 3 auto-path
-tests + 2 surface-is-gone tests + 1 pass-is-still-scoped test.
+Test count 18 = 18 on main − 3 auto-path tests + 2 surface-is-gone tests + 1
+pass-is-still-scoped test.
 
 Mutation check on the finding-7 fix:
 
@@ -144,7 +142,40 @@ fix reverted:   1 failed, 17 passed   <- test_a_pass_pushes_an_empty_frame_so_th
 fix restored:   18 passed
 ```
 
-Full hub suite, branch vs main baseline: see the run recorded at merge time.
+### Full hub suite, branch vs a main baseline — identical
+
+```text
+branch:  33 failed, 2339 passed, 2 skipped, 2 errors   (35 FAILED/ERROR lines)
+main:    33 failed, 2339 passed, 2 skipped, 2 errors   (35 FAILED/ERROR lines)
+
+branch-only failures (would be mine):  0
+main-only failures (fixed by branch):  0
+```
+
+Compared by **name**, not by count. Aggregates were not enough here: a test
+fixed plus a different one newly broken reads identically at the count level,
+and the first pair of runs did show 33 vs 34 — one flaky test in hub's suite,
+not a real difference. The name-level `comm` diff is empty in both directions.
+
+### CORRECTION: the 3 "pre-existing failures" were order-dependent, not broken
+
+An earlier draft of this report claimed this patch *fixed* 3 pre-existing
+failures. That overstates it, and the full-suite diff above is what caught it:
+**those 3 tests appear in neither failure list.** They pass on main in a
+whole-suite run.
+
+Why: other modules (`test_observability_api.py`,
+`test_presence_chat_injection.py` and several more) put the five required
+`CHANNEL_*` keys into `os.environ` at collection time, so by the time
+`test_room_claude_relay.py` runs in a full suite the environment is already
+populated. The failures only appear when that file is run **on its own** —
+which is exactly how a developer runs it, and how I hit them.
+
+So the honest claim is narrower than "fixed 3 failures": the `conftest.py`
+change **removes an order dependency**. It makes the file runnable in
+isolation, which is what review finding 7's fix needed in order to be testable
+at all, and it changes nothing about full-suite outcomes. The suite's 33
+failures are pre-existing on both sides and untouched here.
 
 Gates:
 
@@ -304,12 +335,18 @@ control-plane-Postgres detach), supplying the five keys with `setdefault` and
 the `.env_example` values — so a real `.env` or a test's own value still wins.
 
 ```text
-before:  3 failed, 15 passed   (test_room_claude_relay.py, on main)
-after:   18 passed             (this branch, same file)
+before:  3 failed, 15 passed   (test_room_claude_relay.py alone, on main)
+after:   18 passed             (this branch, same file alone)
 ```
 
-Hub's suite is still absent from CI, which is why this went unnoticed. Flagged
-in Concerns.
+**Scope of that claim, corrected after the full-suite diff:** these 3 fail only
+when the file is run *by itself*. In a whole-suite run they pass on main too,
+because other modules populate the same five env keys at collection time. So
+this is an order-dependency fix, not a repair of tests that were failing in
+CI — see the CORRECTION under Tests run.
+
+Hub's suite is absent from CI either way, which is why an order-dependent
+failure could sit here unnoticed. Flagged in Concerns.
 
 ## Restart required
 
@@ -354,10 +391,14 @@ different mechanism.
   contract, and the reason for keeping it is recorded at the field.
 
 - Severity: **note**
-  Concern: 3 pre-existing test failures in this file, and hub's suite is absent
-  from CI.
-  Mitigation: documented above with the main-branch comparison. Worth its own
-  patch; it would have caught this class of thing earlier.
+  Concern: hub's suite is absent from CI (only
+  `test_schedule_panel_browser_smoke.py` runs), and it carries 33 pre-existing
+  failures plus at least one flaky test — the first pair of full runs differed
+  by one, 33 vs 34.
+  Mitigation: none here; documented with a name-level branch-vs-main diff so
+  this patch's contribution to that number is provably zero. Getting the suite
+  into CI is worth its own patch — an order-dependent failure like the one this
+  patch tripped over is invisible until someone runs a single file.
 
 ## PR link
 

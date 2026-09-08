@@ -103,7 +103,9 @@ def _reason_from_non_final_frame(frames: list[Any]) -> str:
         return "turn_error"
     if frame_type == "turn_deferred":
         reason = str(last.get("reason") or "").strip()
-        return f"turn_deferred:{reason}" if reason else "turn_deferred"
+        if reason:
+            return f"turn_deferred:{reason[:_FAIL_REASON_DETAIL_MAX_LEN]}"
+        return "turn_deferred"
     if frame_type:
         return f"non_final_frame:{frame_type}"
     return "no_final_frame"

@@ -502,6 +502,27 @@ def test_generate_pulls_real_reason_off_turn_error_frame(monkeypatch: pytest.Mon
     assert outcome.fail_reason == "turn_error:fcc_stream_stalled"
 
 
+def test_generate_turn_deferred_reason_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """turn_deferred must truncate like every other reason branch -- a review
+    finding caught this one path skipping `_FAIL_REASON_DETAIL_MAX_LEN`."""
+    from scripts.world_pulse_read_stage2 import _FAIL_REASON_DETAIL_MAX_LEN
+
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+    long_reason = "x" * (_FAIL_REASON_DETAIL_MAX_LEN + 50)
+
+    async def _deferred(**kwargs):
+        return [{"type": "turn_deferred", "reason": long_reason}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _deferred)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-4b"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == f"turn_deferred:{'x' * _FAIL_REASON_DETAIL_MAX_LEN}"
+    assert len(outcome.fail_reason) <= len("turn_deferred:") + _FAIL_REASON_DETAIL_MAX_LEN
+
+
 def test_generate_no_final_frame_falls_back_when_nothing_useful(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

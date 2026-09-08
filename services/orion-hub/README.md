@@ -269,6 +269,25 @@ numbers. `GET .../status` reports both `peak_deviation_pressure` and
 `sustained_load_pressure` on `last_tension_reason` so an operator can see
 which fact(s) actually drove a given outreach.
 
+**Names the channel now, not just "a channel" (2026-09-07).** Root-caused
+live: Orion sent Juniper an unprompted message naming a specific internal
+channel ("harness_closure prediction error") that was never in the context
+it was given and had read 0.0/NULL for the prior 24h — the real driver
+that tick WAS `sustained_load_pressure` (`node:athena`, a real 7-reading
+run), but the prompt used to say only "somewhere in your field state... a
+channel", and the generation model asked to speak from that gap invented a
+plausible, wrong, real-sounding channel name instead of an honest
+"something." `orion.field.significance` already computed which (channel,
+node_id) produced the reading; it now carries that identity through
+instead of discarding it (`SustainedLoadReading`, see
+`services/orion-field-digester/README.md`'s own section for the full
+account). `TensionTriggerReason` and `GET .../status`'s `last_tension_
+reason` now also carry `sustained_load_pressure_channel`/`_node_id`, and
+`build_outreach_prompt` names the real channel/node whenever identity is
+present, falling back to the old honest wording only when it genuinely is
+not (a pre-migration row, or a quiet tick). No guard was added on the
+generated text — the fix is upstream, not a filter on the output.
+
 **A daydream, not only telemetry (2026-08-28).** Every other grounding lane
 above is an instrument reading, so an unprompted message could only ever be
 Orion narrating its own dials. `_fetch_current_daydream` adds the one lane

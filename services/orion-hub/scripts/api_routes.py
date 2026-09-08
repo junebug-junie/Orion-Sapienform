@@ -1614,8 +1614,9 @@ def api_debug_endogenous_outreach_decisions(limit: int = Query(default=50, ge=1,
                     """
                     SELECT decision_id, decided_at, outreach, reason, forced,
                            target_id, run_length, peak_deviation_pressure,
-                           sustained_load_pressure, correlation_id, session_id,
-                           result_json
+                           sustained_load_pressure, sustained_load_pressure_channel,
+                           sustained_load_pressure_node_id, correlation_id,
+                           session_id, result_json
                     FROM endogenous_outreach_decisions
                     ORDER BY decided_at DESC
                     LIMIT :lim

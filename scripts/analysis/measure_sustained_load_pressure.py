@@ -121,7 +121,7 @@ def main() -> int:
             lo += 1
         payloads = [p for _, p in rows[lo : hi + 1]]
         tick = compute_tick(payloads, window_seconds=args.window_seconds, voting_regimes=voting_regimes)
-        slp_series.append((generated_at, sustained_load_pressure(tick)))
+        slp_series.append((generated_at, sustained_load_pressure(tick).value))
         next_check = generated_at + step
 
     if not slp_series:

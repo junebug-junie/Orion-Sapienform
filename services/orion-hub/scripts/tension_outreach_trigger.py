@@ -26,13 +26,28 @@ it alongside the run's own peak deviation -- read straight off the same
 `substrate_field_state` row this trigger already queries, not recomputed
 here. This is honestly scoped GLOBAL, not per-target: `sustained_load_
 pressure` is a `max()` over every `loaded_steady` channel/node in the
-significance window (see that module's own docstring for why it ships no
-per-node identity yet), so a nonzero reading here means "something,
-somewhere in the field is genuinely under sustained load right now", not
-"the SAME node this run's target_id names is". `build_outreach_prompt`
+significance window, so a nonzero reading here means "something, somewhere
+in the field is genuinely under sustained load right now", not "the SAME
+node this run's target_id names is". `build_outreach_prompt`
 (`endogenous_outreach.py`) states both numbers as separate real facts and
 lets generation draw the connection -- it does not narrate a feeling on
 Orion's behalf.
+
+IDENTITY NOW CARRIED TOO (2026-09-07). `sustained_load_pressure` used to
+ship no per-node identity -- `orion.field.significance` computed which
+(channel, node_id) produced the max reading and then threw it away at the
+line that collapsed it to a bare float. Root-caused live: Orion sent an
+unprompted message naming a specific internal channel
+("harness_closure prediction error") that was not in the context it was
+given and had read 0.0/NULL for the prior 24h -- the real driver that tick
+WAS `sustained_load_pressure` (`node:athena`), but the prompt could only say
+"somewhere... a channel", and the generation model filled that gap with a
+plausible, wrong, real-sounding invented name. `TensionTriggerReason` now
+also carries `sustained_load_pressure_channel`/`_node_id`, read off the same
+row, same LATEST-tick-not-run-tracked semantics as the scalar itself. Still
+honestly scoped GLOBAL: naming the channel/node that is loaded does not
+claim it is the SAME node `target_id` names -- `build_outreach_prompt`
+states both as separate facts, same as before.
 
 WHY PERSISTENCE, NOT A LEAKY INTEGRATOR
 -----------------------------------------
@@ -158,17 +173,38 @@ class TensionTriggerReason:
     # (missing-looks-like-calm) by incident, so it is disclosed here rather
     # than silently assumed away.
     sustained_load_pressure: float = 0.0
+    # Identity of the (channel, node_id) that produced
+    # `sustained_load_pressure` above (2026-09-07) -- see the module
+    # docstring's "IDENTITY NOW CARRIED TOO" section for the incident this
+    # closes. Both `None` in EXACTLY the same two cases `sustained_load_
+    # pressure`'s own 0.0 already covers: a genuine "nothing loaded_steady
+    # right now" reading, or a pre-migration `field_json` row with no such
+    # keys at all -- this dataclass does not distinguish those two cases any
+    # more for identity than it already declines to for the scalar (see that
+    # field's comment). A caller that needs the distinction reads
+    # `_fetch_recent_winners`'s raw `float | None` / `str | None` tuple
+    # instead, same precedent already set for the scalar.
+    sustained_load_pressure_channel: str | None = None
+    sustained_load_pressure_node_id: str | None = None
 
 
 def _fetch_recent_winners(
     limit_minutes: float,
-) -> list[tuple[str | None, float, float | None]]:
-    """(winner_target_id, deviation_pressure, sustained_load_pressure)
-    triples, oldest first. `sustained_load_pressure` is `None` when the row's
+) -> list[tuple[str | None, float, float | None, str | None, str | None]]:
+    """(winner_target_id, deviation_pressure, sustained_load_pressure,
+    sustained_load_pressure_channel, sustained_load_pressure_node_id)
+    tuples, oldest first. `sustained_load_pressure` is `None` when the row's
     `field_json` has no such key (a pre-`PR #1718` row) or the value is
     malformed -- kept distinct from a genuine `0.0` reading here; `current_run`
     is where that distinction collapses (see `TensionTriggerReason`'s own
-    comment for why collapsing it there, not here, is deliberate).
+    comment for why collapsing it there, not here, is deliberate). The two
+    identity strings follow the exact same None-means-either-quiet-or-
+    pre-migration convention (2026-09-07) -- a row with a real
+    `sustained_load_pressure` but a missing identity key (pre-identity-
+    migration, post-#1718) reads as `(value, None, None)`, same shape as a
+    genuinely quiet 0.0 row; nothing here needs to tell those apart, since
+    the only real consumer (`current_run`) already treats "no identity to
+    report" the same way regardless of which caused it.
 
     Reads the already-computed columns `orion-field-digester` wrote once per
     real digestion tick -- does NOT replay `FieldTensionCompetition` or
@@ -187,7 +223,9 @@ def _fetch_recent_winners(
                 """
                 SELECT field_json->>'tension_borda_winner_target_id' AS winner,
                        field_json->>'tension_deviation_pressure' AS deviation,
-                       field_json->>'sustained_load_pressure' AS sustained_load
+                       field_json->>'sustained_load_pressure' AS sustained_load,
+                       field_json->>'sustained_load_pressure_channel' AS sustained_load_channel,
+                       field_json->>'sustained_load_pressure_node_id' AS sustained_load_node_id
                 FROM substrate_field_state
                 -- secs, not mins: make_interval's mins arg is int, so a
                 -- float LOOKBACK_MINUTES raises UndefinedFunction -- secs is
@@ -204,8 +242,8 @@ def _fetch_recent_winners(
             ),
             {"secs": limit_minutes * 60.0},
         ).fetchall()
-    out: list[tuple[str | None, float, float | None]] = []
-    for winner, deviation, sustained_load in rows:
+    out: list[tuple[str | None, float, float | None, str | None, str | None]] = []
+    for winner, deviation, sustained_load, sustained_load_channel, sustained_load_node_id in rows:
         # deviation's 0.0 default is intentional arithmetic, not an honesty
         # claim -- an absent/malformed reading contributes nothing to the
         # run's max() below, same as a genuine 0.0 would.
@@ -215,7 +253,13 @@ def _fetch_recent_winners(
         # comment for why the None/0.0 distinction is kept this far and no
         # further.
         load = _safe_float(sustained_load, default=None)
-        out.append((winner, dev, load))
+        # Plain strings, not `_safe_float` -- `->>'...'` already returns
+        # `None` for a missing/JSON-null key, and an empty string never
+        # occurs (the producer writes either a real node_id/channel string
+        # or omits the key), so no coercion is needed here.
+        channel = sustained_load_channel
+        node_id = sustained_load_node_id
+        out.append((winner, dev, load, channel, node_id))
     return out
 
 
@@ -241,13 +285,19 @@ def current_run(
         return None
     if not rows:
         return None
-    latest_winner, _latest_deviation, latest_sustained_load = rows[-1]
+    (
+        latest_winner,
+        _latest_deviation,
+        latest_sustained_load,
+        latest_sustained_load_channel,
+        latest_sustained_load_node_id,
+    ) = rows[-1]
     if not latest_winner:
         return None
 
     run_length = 0
     max_deviation_in_run = 0.0
-    for winner, deviation, _sustained_load in reversed(rows):
+    for winner, deviation, _sustained_load, _channel, _node_id in reversed(rows):
         if winner != latest_winner:
             break
         run_length += 1
@@ -255,6 +305,11 @@ def current_run(
 
     if run_length < min_run_length:
         return None
+    # Identity belongs to the LATEST tick, same as the scalar itself -- not
+    # accumulated/tracked across the run (see TensionTriggerReason's own
+    # comment). A quiet or pre-migration latest tick collapses both to
+    # None/None, same convention the scalar already uses for 0.0.
+    is_quiet_or_missing = latest_sustained_load is None
     return TensionTriggerReason(
         target_id=latest_winner,
         run_length=run_length,
@@ -265,5 +320,11 @@ def current_run(
         # keeps has done its job by the time it reaches this object.
         sustained_load_pressure=(
             0.0 if latest_sustained_load is None else latest_sustained_load
+        ),
+        sustained_load_pressure_channel=(
+            None if is_quiet_or_missing else latest_sustained_load_channel
+        ),
+        sustained_load_pressure_node_id=(
+            None if is_quiet_or_missing else latest_sustained_load_node_id
         ),
     )

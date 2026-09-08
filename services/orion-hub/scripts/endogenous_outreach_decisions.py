@@ -49,6 +49,8 @@ def _write_decision_to_postgres(
     run_length: Optional[int],
     peak_deviation_pressure: Optional[float],
     sustained_load_pressure: Optional[float],
+    sustained_load_pressure_channel: Optional[str],
+    sustained_load_pressure_node_id: Optional[str],
     forced: bool,
 ) -> None:
     try:
@@ -75,13 +77,15 @@ def _write_decision_to_postgres(
                     INSERT INTO endogenous_outreach_decisions (
                         decision_id, outreach, reason, forced, target_id,
                         run_length, peak_deviation_pressure,
-                        sustained_load_pressure, correlation_id, session_id,
-                        result_json
+                        sustained_load_pressure, sustained_load_pressure_channel,
+                        sustained_load_pressure_node_id, correlation_id,
+                        session_id, result_json
                     ) VALUES (
                         :decision_id, :outreach, :reason, :forced, :target_id,
                         :run_length, :peak_deviation_pressure,
-                        :sustained_load_pressure, :correlation_id, :session_id,
-                        CAST(:result_json AS jsonb)
+                        :sustained_load_pressure, :sustained_load_pressure_channel,
+                        :sustained_load_pressure_node_id, :correlation_id,
+                        :session_id, CAST(:result_json AS jsonb)
                     )
                     """
                 ),
@@ -94,6 +98,8 @@ def _write_decision_to_postgres(
                     "run_length": run_length,
                     "peak_deviation_pressure": peak_deviation_pressure,
                     "sustained_load_pressure": sustained_load_pressure,
+                    "sustained_load_pressure_channel": sustained_load_pressure_channel,
+                    "sustained_load_pressure_node_id": sustained_load_pressure_node_id,
                     "correlation_id": result.get("correlation_id"),
                     "session_id": result.get("session_id"),
                     "result_json": json.dumps(result),
@@ -135,6 +141,17 @@ def record_decision(
         run_length = getattr(tension_reason, "run_length", None)
         peak_deviation_pressure = getattr(tension_reason, "peak_deviation_pressure", None)
         sustained_load_pressure = getattr(tension_reason, "sustained_load_pressure", None)
+        # Identity (2026-09-07) -- see manual_migration_endogenous_outreach_
+        # decisions_v2.sql's own header for why this is added: this table is
+        # the durable trail that made the "harness_closure" incident
+        # traceable at all, and it had a real column for the sustained-load
+        # SCALAR but nothing for which channel/node produced it.
+        sustained_load_pressure_channel = getattr(
+            tension_reason, "sustained_load_pressure_channel", None
+        )
+        sustained_load_pressure_node_id = getattr(
+            tension_reason, "sustained_load_pressure_node_id", None
+        )
         threading.Thread(
             target=_write_decision_to_postgres,
             kwargs={
@@ -144,6 +161,8 @@ def record_decision(
                 "run_length": run_length,
                 "peak_deviation_pressure": peak_deviation_pressure,
                 "sustained_load_pressure": sustained_load_pressure,
+                "sustained_load_pressure_channel": sustained_load_pressure_channel,
+                "sustained_load_pressure_node_id": sustained_load_pressure_node_id,
                 "forced": forced,
             },
             name="hub-endogenous-outreach-decision-writer",

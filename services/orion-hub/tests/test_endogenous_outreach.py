@@ -461,6 +461,53 @@ def test_sustained_load_pressure_omitted_from_prompt_when_zero() -> None:
     assert "sustained_load_pressure" not in prompt
 
 
+def test_sustained_load_pressure_names_the_real_channel_when_identity_present() -> None:
+    """2026-09-07 fix: when `orion.field.significance` identified WHICH
+    channel/node produced the reading, the prompt must name it honestly
+    instead of the old "somewhere... a channel" wording -- that gap is
+    exactly what a generation model filled with an invented channel name
+    (`harness_closure`) in the real incident this closes."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+            sustained_load_pressure_channel="disk_capacity_pressure",
+            sustained_load_pressure_node_id="node:athena",
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "disk_capacity_pressure" in prompt
+    assert "node:athena" in prompt
+    assert "sustained_load_pressure=0.71" in prompt
+    assert "somewhere in your field state" not in prompt
+
+
+def test_sustained_load_pressure_falls_back_to_honest_unnamed_wording_without_identity() -> None:
+    """A nonzero reading with no identity (pre-migration row, or a
+    genuinely ambiguous case) must keep the old honest "somewhere... a
+    channel" wording -- never fabricate a name just because one is
+    expected."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "somewhere in your field state" in prompt
+    assert "sustained_load_pressure=0.71" in prompt
+
+
 def test_tension_reason_with_sustained_load_still_never_claims_distress() -> None:
     """Even with a real, nonzero level-aware reading present, this module
     must not script a feeling for Orion -- that judgment is left to
@@ -1323,6 +1370,8 @@ def test_status_reports_sustained_load_pressure_alongside_deviation(monkeypatch)
             run_length=9,
             peak_deviation_pressure=0.62,
             sustained_load_pressure=0.71,
+            sustained_load_pressure_channel="disk_capacity_pressure",
+            sustained_load_pressure_node_id="node:athena",
         )
     )
     _stub_context(monkeypatch)
@@ -1333,6 +1382,11 @@ def test_status_reports_sustained_load_pressure_alongside_deviation(monkeypatch)
     reason = outreach.status()["last_tension_reason"]
     assert reason is not None
     assert reason["sustained_load_pressure"] == 0.71
+    # 2026-09-07: the identity fields must reach the debug surface too, not
+    # just the scalar -- otherwise an operator inspecting `status()` sees
+    # exactly the same "somewhere... a channel" gap the prompt fix closes.
+    assert reason["sustained_load_pressure_channel"] == "disk_capacity_pressure"
+    assert reason["sustained_load_pressure_node_id"] == "node:athena"
 
 
 def test_forced_outreach_does_not_carry_a_stale_tension_reason(monkeypatch) -> None:

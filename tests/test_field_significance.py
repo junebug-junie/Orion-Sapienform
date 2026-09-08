@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from orion.field.significance import TickResult, compute_tick, sustained_load_pressure
+from orion.field.significance import (
+    SustainedLoadReading,
+    TickResult,
+    compute_tick,
+    sustained_load_pressure,
+)
 from orion.field.regime import LOADED_LEVEL, MIN_REGIME_SAMPLES, STEADY_DISPERSION
 
 
@@ -45,7 +50,10 @@ def test_loaded_steady_channel_votes() -> None:
     assert tick.channels_evaluated == 1
     assert tick.channels_loaded_steady == 1
     assert tick.loaded == {"memory_pressure": {"node:athena": pytest.approx(0.8125)}}
-    assert sustained_load_pressure(tick) == pytest.approx(0.8125)
+    reading = sustained_load_pressure(tick)
+    assert reading.value == pytest.approx(0.8125)
+    assert reading.channel == "memory_pressure"
+    assert reading.node_id == "node:athena"
 
 
 def test_calm_channel_does_not_vote() -> None:
@@ -59,7 +67,9 @@ def test_calm_channel_does_not_vote() -> None:
     assert tick.channels_loaded_steady == 0
     assert tick.loaded == {}
     assert tick.any_loaded is False
-    assert sustained_load_pressure(tick) == 0.0
+    assert sustained_load_pressure(tick) == SustainedLoadReading(
+        value=0.0, channel=None, node_id=None
+    )
 
 
 def test_loaded_volatile_channel_does_not_vote() -> None:
@@ -78,7 +88,9 @@ def test_loaded_volatile_channel_does_not_vote() -> None:
     assert tick.channels_evaluated == 1
     assert tick.channels_loaded_steady == 0
     assert tick.loaded == {}
-    assert sustained_load_pressure(tick) == 0.0
+    assert sustained_load_pressure(tick) == SustainedLoadReading(
+        value=0.0, channel=None, node_id=None
+    )
 
 
 def test_loaded_volatile_votes_when_included_via_voting_regimes() -> None:
@@ -125,7 +137,10 @@ def test_polarity_inverted_channel_reads_pressure_equivalent_not_raw_level() -> 
 
     assert tick.channels_loaded_steady == 1
     assert tick.loaded == {"availability": {"node:athena": pytest.approx(0.8)}}
-    assert sustained_load_pressure(tick) == pytest.approx(0.8)
+    reading = sustained_load_pressure(tick)
+    assert reading.value == pytest.approx(0.8)
+    assert reading.channel == "availability"
+    assert reading.node_id == "node:athena"
 
 
 def test_scalar_is_the_max_across_all_loaded_ballots() -> None:
@@ -172,7 +187,40 @@ def test_scalar_is_the_max_across_all_loaded_ballots() -> None:
             "node:atlas": pytest.approx(0.72),
         },
     }
-    assert sustained_load_pressure(tick) == pytest.approx(0.90)
+    reading = sustained_load_pressure(tick)
+    assert reading.value == pytest.approx(0.90)
+    assert reading.channel == "memory_pressure"
+    assert reading.node_id == "node:athena"
+
+
+def test_tied_max_ballots_pick_the_first_encountered_deterministically() -> None:
+    """Two DIFFERENT (channel, node_id) ballots landing on the EXACT same
+    max value -- the tie-break must be deterministic (first encountered in
+    `TickResult.loaded`'s iteration order), not flaky/arbitrary, and must
+    not silently pick neither. `memory_pressure`/`node:athena` is admitted
+    first (it's the first tick series built below), so it must win the tie
+    over `cpu_pressure`/`node:atlas` even though both hit exactly 0.90."""
+    ticks = []
+    for v_a, v_b in zip([0.895, 0.905] * 4, [0.895, 0.905] * 4):
+        ticks.append(
+            _field_json(
+                {
+                    ("node:athena", "memory_pressure"): v_a,
+                    ("node:atlas", "cpu_pressure"): v_b,
+                }
+            )
+        )
+
+    tick = compute_tick(ticks, window_seconds=900.0)
+    assert tick.loaded == {
+        "memory_pressure": {"node:athena": pytest.approx(0.90)},
+        "cpu_pressure": {"node:atlas": pytest.approx(0.90)},
+    }
+
+    reading = sustained_load_pressure(tick)
+    assert reading.value == pytest.approx(0.90)
+    assert reading.channel == "memory_pressure"
+    assert reading.node_id == "node:athena"
 
 
 def test_empty_window_returns_zero() -> None:
@@ -180,7 +228,9 @@ def test_empty_window_returns_zero() -> None:
 
     assert tick.channels_evaluated == 0
     assert tick.any_loaded is False
-    assert sustained_load_pressure(tick) == 0.0
+    assert sustained_load_pressure(tick) == SustainedLoadReading(
+        value=0.0, channel=None, node_id=None
+    )
 
 
 def test_non_finite_and_non_numeric_values_are_skipped_not_crashed() -> None:

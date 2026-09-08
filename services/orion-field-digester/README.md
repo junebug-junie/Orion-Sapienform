@@ -258,9 +258,32 @@ and carries it on `TensionTriggerReason` alongside the deviation-run data,
 so Hub's endogenous-outreach prompt can state a second, genuinely
 level-aware fact rather than only ever "I noticed a change." See
 `services/orion-hub/README.md` §4.1 and that trigger module's own docstring
-for the combined account — honestly scoped GLOBAL (this module ships no
-per-node identity yet), not necessarily the same node the deviation run
-names.
+for the combined account — honestly scoped GLOBAL, not necessarily the same
+node the deviation run names.
+
+**Identity now carried too (2026-09-07).** `compute_tick()` already knows
+which `(channel, node_id)` produced the `max()` that becomes
+`sustained_load_pressure`'s value — `sustained_load_pressure()` used to
+discard that identity at the exact line that collapsed it to a bare float.
+Root-caused live: Orion sent Juniper an unprompted message naming a
+specific internal channel ("harness_closure prediction error") that was
+never in the context it was given and had read 0.0/NULL for the prior 24h
+— the real driver that tick WAS `sustained_load_pressure` (`node:athena`,
+a real 7-reading run), but Hub's prompt could only say "somewhere in your
+field state... a channel", and the generation model asked to speak from
+that gap invented a plausible, wrong, real-sounding channel name instead.
+`sustained_load_pressure()` now returns `SustainedLoadReading(value,
+channel, node_id)` (see `orion/field/significance.py`'s own docstring for
+the tie-break rule when two ballots share the exact max), and
+`update_significance_pressure()` writes the identity onto two new
+`FieldStateV1` fields, `sustained_load_pressure_channel` /
+`sustained_load_pressure_node_id`, right alongside the scalar — both
+`None` on a quiet tick or a pre-migration row, same "no fabricated
+identity" convention the scalar's own 0.0 already used.
+`tension_outreach_trigger.py` reads both new columns the same way it
+already reads the scalar, and Hub's outreach prompt now names the real
+channel/node instead of "somewhere... a channel" whenever identity is
+present.
 
 Replay/measurement tooling: `scripts/analysis/measure_sustained_load_pressure.py`
 (`--hours`, `--window-seconds`, `--step-seconds`, `--include-volatile`,

@@ -209,6 +209,27 @@ class FieldStateV1(BaseModel):
     # window read is a real Postgres query, not an O(1) EWMA update) via
     # `sustained_load_computed_at` below.
     sustained_load_pressure: float = 0.0
+    # Identity of the (channel, node_id) ballot that produced
+    # `sustained_load_pressure`'s value above (2026-09-07). Both `None`
+    # exactly when `sustained_load_pressure == 0.0` because nothing is
+    # currently `loaded_steady` -- a real "no sustained load, no identity to
+    # report" reading, never a fabricated one, same convention the bare
+    # scalar already used. Written alongside `sustained_load_pressure` by
+    # `orion.field.significance.sustained_load_pressure()`'s
+    # `SustainedLoadReading` return value -- see that class's own docstring
+    # for the full incident this closes: Hub's endogenous-outreach prompt
+    # (services/orion-hub/scripts/endogenous_outreach.py) used to have only
+    # the bare number to work with and had to describe the loaded channel as
+    # "somewhere in your field state"; the generation model asked to write
+    # from that gap invented a plausible, wrong, real-sounding channel name
+    # (`harness_closure`) instead of naming the real one. A row written
+    # before this field existed has both as `None` (pydantic default, not a
+    # SQL NULL vs. genuine-`None` ambiguity worth distinguishing further --
+    # see `services/orion-hub/scripts/tension_outreach_trigger.py`'s
+    # `_fetch_recent_winners` for how a pre-migration row is kept apart from
+    # a genuinely-absent identity at the one layer that still needs to).
+    sustained_load_pressure_channel: str | None = None
+    sustained_load_pressure_node_id: str | None = None
     # When `sustained_load_pressure` was last actually RECOMPUTED (not just
     # carried forward unchanged from the prior tick). Compared against `now`
     # each hot tick to decide whether this tick's real window-read is due yet

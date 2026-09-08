@@ -43,6 +43,42 @@ def test_record_decision_writes_on_a_background_thread(monkeypatch):
     assert call["target_id"] == "node:athena"
     assert call["run_length"] == 9
     assert call["forced"] is False
+    # 2026-09-07: identity must reach the durable trail too -- this table is
+    # the exact one traced by hand to diagnose the "harness_closure"
+    # incident, and it had a real column for the scalar but nothing for
+    # which channel/node produced it.
+    assert call["sustained_load_pressure_channel"] == "disk_capacity_pressure"
+    assert call["sustained_load_pressure_node_id"] == "node:athena"
+
+
+def test_record_decision_defaults_identity_to_none_for_a_reason_without_it(monkeypatch):
+    """A `tension_reason` object that predates the identity fields (or any
+    object missing them) must degrade to `None`, not raise -- same
+    `getattr(..., None)` contract the pre-existing fields already use."""
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    calls: list[dict] = []
+
+    def fake_writer(**kwargs):
+        calls.append(kwargs)
+
+    class _ReasonWithoutIdentity:
+        target_id = "node:athena"
+        run_length = 9
+        peak_deviation_pressure = 0.42
+        sustained_load_pressure = 0.0
+
+    with patch.object(decisions, "_write_decision_to_postgres", side_effect=fake_writer):
+        with patch.object(decisions.threading, "Thread") as fake_thread:
+            _run_thread_target_synchronously(fake_thread)
+            decisions.record_decision(
+                {"outreach": False, "reason": "no_tension_trigger"},
+                tension_reason=_ReasonWithoutIdentity(),
+                forced=False,
+            )
+
+    assert len(calls) == 1
+    assert calls[0]["sustained_load_pressure_channel"] is None
+    assert calls[0]["sustained_load_pressure_node_id"] is None
 
 
 def test_record_decision_respects_the_disable_flag(monkeypatch):
@@ -70,3 +106,5 @@ class _FakeReason:
     run_length = 9
     peak_deviation_pressure = 0.42
     sustained_load_pressure = 0.0
+    sustained_load_pressure_channel = "disk_capacity_pressure"
+    sustained_load_pressure_node_id = "node:athena"

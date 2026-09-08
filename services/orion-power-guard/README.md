@@ -16,7 +16,11 @@ Smart-UPS 1500 plugged into it over USB.
    service going dark.
 3. If the UPS stays on battery for longer than
    `POWER_GUARD_ONBATTERY_GRACE_SEC` (default 300s / 5 min), and
-   `POWER_GUARD_ENABLE_SHUTDOWN=true`, it shuts the host down.
+   `POWER_GUARD_ENABLE_SHUTDOWN=true`, it shuts the host down — and keeps
+   retrying every poll cycle if an attempt fails, publishing
+   `power.guard.shutdown_issued` or `power.guard.shutdown_failed` so a
+   failed attempt is visible on the bus instead of silently indistinguishable
+   from a successful one.
 4. It also publishes a bus-native `SystemHealthV1` heartbeat
    (`orion:system:health`) so a dead power-guard container is itself
    visible, independent of the power events above.
@@ -59,11 +63,13 @@ and shut *that* down:
 power-guard (container) --ssh, root, key--> host.docker.internal (athena) --> shutdown -h now
 ```
 
-`POWER_GUARD_SHUTDOWN_CMD` (default, in `.env_example`):
+`POWER_GUARD_SHUTDOWN_CMD` — the canonical default lives in `.env_example`
+(don't hand-copy it elsewhere; nothing currently checks the two stay in sync
+if one is edited):
 
 ```bash
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
-  -i /etc/powerguard/ssh_key root@host.docker.internal \
+  -o BatchMode=yes -i /etc/powerguard/ssh_key root@host.docker.internal \
   'shutdown -h now "Orion PowerGuard: UPS on battery beyond grace period"'
 ```
 
@@ -74,12 +80,21 @@ Requires on the host:
   `/etc/ssh/sshd_config` has `PermitRootLogin yes`).
 - The public half of `/root/.ssh/powerguard_shutdown` in root's
   `authorized_keys`.
+- The container running as root (`user: "0:0"` in `docker-compose.yml`) —
+  the key is root-owned, mode 600.
 
-`StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`: this link never
-leaves the docker bridge to the same physical host, and a persistent
-`known_hosts` file has nowhere reliable to live across container restarts —
-disabling host-key pinning here is a deliberate tradeoff for that narrow
-path, not a general recommendation.
+Tradeoffs baked into that default, on purpose:
+- `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`: this link
+  never leaves the docker bridge to the same physical host, and a
+  persistent `known_hosts` file has nowhere reliable to live across
+  container restarts — disabling host-key pinning here is a deliberate
+  tradeoff for that narrow path, not a general recommendation.
+- `BatchMode=yes`: fail fast on any auth problem instead of ever risking a
+  wait on an interactive prompt.
+- `shutdown -h now`, not `-h +1`: immediate and uncancellable (no
+  `shutdown -c` abort window). The grace timer above already buys minutes
+  of margin before this ever runs; racing UPS depletion once it does is the
+  whole point of the hook, so there's no second delay stacked on top.
 
 **`POWER_GUARD_ENABLE_SHUTDOWN` defaults to `false`.** Arming a real,
 unattended host shutdown is a per-deployment decision, not something a
@@ -112,7 +127,7 @@ most:
 | `POWER_GUARD_ONBATTERY_GRACE_SEC` | `300.0` | How long on battery before the grace-elapsed event (and shutdown, if enabled) fires. |
 | `POWER_GUARD_ENABLE_SHUTDOWN` | `false` | Arm/disarm the real host shutdown. |
 | `POWER_GUARD_SHUTDOWN_CMD` | (see above) | The command run when the grace period elapses. |
-| `CHANNEL_POWER_EVENTS` | `orion:power:events` | Bus channel for on_battery/grace_elapsed/restored events. |
+| `CHANNEL_POWER_EVENTS` | `orion:power:events` | Bus channel for on_battery/grace_elapsed/restored/shutdown_issued/shutdown_failed events. |
 
 Env parity: if you change `.env_example`, sync your local `.env`
 (`python scripts/sync_local_env_from_example.py` from repo root) — see
@@ -136,6 +151,17 @@ docker exec orion-athena-power-guard sh -c \
 Do not test the real `POWER_GUARD_SHUTDOWN_CMD` end-to-end against a host
 you care about — it shuts the host down. Verify SSH reachability (above)
 and trust the grace-timer logic via `tests/`, not a live fire.
+
+## Known limitation, not fixed here
+
+`POWER_GUARD_SHUTDOWN_CMD` fuses host, key path, remote user, SSH flags, and
+the remote command into one opaque, hand-quoted `shell=True` string. It's the
+only setting shaped like this in the repo. A future change (rotating the key
+path, a second target host) means hand-editing nested quotes with nothing
+catching a broken one until it fails during a real outage. Splitting it into
+typed fields (host/key/user) composed with `shlex.join` would remove that,
+but it's a bigger reshape than this fix's scope — flagged as a follow-up, not
+done.
 
 ## Tests
 

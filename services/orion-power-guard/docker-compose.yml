@@ -33,7 +33,12 @@ services:
       POWER_GUARD_ENABLE_SHUTDOWN: ${POWER_GUARD_ENABLE_SHUTDOWN}
       POWER_GUARD_SHUTDOWN_CMD: ${POWER_GUARD_SHUTDOWN_CMD}
 
-      user: "0:0"
+    # Must stay root: the shutdown mechanism below depends on reading the
+    # root-owned, mode-600 SSH key. This was previously nested under
+    # `environment:` (a no-op literal env var named `user`, not a real
+    # compose key) -- it only "worked" because the base image has no `USER`
+    # directive and defaults to root anyway. Fixed 2026-09-08.
+    user: "0:0"
 
     volumes:
       # Mount the host's private key into the container, read-only

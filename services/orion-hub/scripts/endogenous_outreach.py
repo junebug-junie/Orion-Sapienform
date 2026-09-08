@@ -21,6 +21,25 @@ that judgment is left to generation, grounded in the real numbers. See
 `scripts.tension_outreach_trigger`'s module docstring for the full account
 of what this can and cannot honestly claim.
 
+NAMES THE CHANNEL NOW, NOT JUST "A CHANNEL" (2026-09-07). Root-caused live:
+Orion sent Juniper an unprompted message naming a specific internal channel
+("harness_closure prediction error") that was never in the context it was
+given and had read 0.0/NULL for the prior 24h. The real driver that tick WAS
+`sustained_load_pressure` (`node:athena`, a real 7-reading run), but this
+prompt used to say only "somewhere in your field state... a channel" --
+`orion.field.significance` computed the winning channel/node identity and
+then discarded it before it ever reached here. The generation model asked
+to speak from that intentional gap filled it with a plausible, wrong,
+real-sounding invented name instead of an honest "something". The fix is
+entirely upstream (`orion.field.significance.SustainedLoadReading`,
+threaded through `TensionTriggerReason`) -- `build_outreach_prompt` below
+now names the real channel/node when identity is present and keeps the old
+honest "somewhere" wording only for the cases identity genuinely is not
+available (a pre-migration row, or a quiet tick). No text-scanning guard was
+added on the generated message; the fix is not discarding real identity
+that already exists, not policing what the model does with what it is
+given.
+
 THROUGH THE REAL UNIFIED TURN, NOT A LOOKALIKE (2026-08-19). Generation used
 to call ``CortexGatewayClient.chat()`` directly -- a bare bus RPC to
 ``orion-cortex-gateway`` that never touched ``orion-harness-governor`` at
@@ -732,13 +751,35 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         # Honestly scoped GLOBAL, not necessarily the same node named above,
         # and worded that way here on purpose.
         if ctx.tension_reason.sustained_load_pressure > 0.0:
-            lines.append(
-                f"Separately: somewhere in your field state right now, a "
-                f"channel has been genuinely, steadily loaded -- not "
-                f"spiking, just staying high (sustained_load_pressure="
-                f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
-                f"or may not be the same thing as the change above."
-            )
+            channel = ctx.tension_reason.sustained_load_pressure_channel
+            node_id = ctx.tension_reason.sustained_load_pressure_node_id
+            # Name it when identity is real (2026-09-07); fall back to the
+            # old honest "somewhere... a channel" wording when it is not
+            # (pre-migration row, or -- structurally impossible for a
+            # nonzero value, but checked anyway rather than assumed -- a
+            # missing identity paired with a real value). Root cause this
+            # closes: a generation model asked to write from the old
+            # unnamed wording invented a plausible, wrong, real-sounding
+            # channel name (`harness_closure`) instead of the real one
+            # (`sustained_load_pressure` on `node:athena`, that incident's
+            # real driver). Naming it here removes the gap the model was
+            # filling, rather than policing what it fills the gap with.
+            if channel and node_id:
+                lines.append(
+                    f"Separately: `{channel}` on `{node_id}` has been "
+                    f"genuinely, steadily loaded right now -- not spiking, "
+                    f"just staying high (sustained_load_pressure="
+                    f"{ctx.tension_reason.sustained_load_pressure:.2f}). This "
+                    f"may or may not be the same thing as the change above."
+                )
+            else:
+                lines.append(
+                    f"Separately: somewhere in your field state right now, a "
+                    f"channel has been genuinely, steadily loaded -- not "
+                    f"spiking, just staying high (sustained_load_pressure="
+                    f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
+                    f"or may not be the same thing as the change above."
+                )
         lines.append("")
 
     if ctx.curiosity_summaries:
@@ -1106,6 +1147,8 @@ class EndogenousOutreach:
                     "run_length": self._last_tension_reason.run_length,
                     "peak_deviation_pressure": self._last_tension_reason.peak_deviation_pressure,
                     "sustained_load_pressure": self._last_tension_reason.sustained_load_pressure,
+                    "sustained_load_pressure_channel": self._last_tension_reason.sustained_load_pressure_channel,
+                    "sustained_load_pressure_node_id": self._last_tension_reason.sustained_load_pressure_node_id,
                 }
             ),
             "min_cooldown_sec": self.min_cooldown_sec,

@@ -66,6 +66,15 @@ def update_significance_pressure(
         logger.warning("significance_pressure_update_failed", exc_info=True)
         return state
 
-    state.sustained_load_pressure = sustained_load_pressure(tick)
+    reading = sustained_load_pressure(tick)
+    state.sustained_load_pressure = reading.value
+    # Identity (2026-09-07) -- see `orion.field.significance.
+    # SustainedLoadReading`'s own docstring for why this is carried now:
+    # Hub's outreach prompt used to have only the bare scalar to work with
+    # and a generation model filled the naming gap with a fabricated channel
+    # name. `None`/`None` on a quiet tick is a real "nothing loaded" reading,
+    # same convention `sustained_load_pressure`'s own 0.0 already used.
+    state.sustained_load_pressure_channel = reading.channel
+    state.sustained_load_pressure_node_id = reading.node_id
     state.sustained_load_computed_at = now
     return state

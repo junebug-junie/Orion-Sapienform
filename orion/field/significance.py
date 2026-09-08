@@ -39,15 +39,31 @@ module this reuses `channel_regime()`/`iter_observations()` from. That
 module ranks nodes by Borda count because it has a real consumer that needs
 node IDENTITY (`tension_borda_winner_target_id`, read by Hub's outreach
 trigger) -- and even THERE, `deviation_pressure()`'s own scalar is a plain
-`max()` over raw ballots, not derived from the Borda ranking either. This
-module ships no winner/target field yet (see the design doc's own
-Non-goals -- no consumer needs identity today), so building the Borda
-machinery here would be real code with zero real callers. `max()` over
-`loaded_steady` ballots directly, same as `deviation_pressure()` already
-does for its own scalar. If a real consumer for node identity appears
-later, Borda-ranking these same ballots by `pressure_equivalent_level` is
-the natural mechanism to add THEN -- same staged precedent
-`tension_borda_winner_target_id` itself already set.
+`max()` over raw ballots, not derived from the Borda ranking either.
+`max()` over `loaded_steady` ballots directly, same as `deviation_pressure()`
+already does for its own scalar.
+
+IDENTITY NOW CARRIED, STILL NOT BORDA-RANKED (2026-09-07). A real consumer
+for node identity appeared: root-caused live, Orion sent an unprompted
+message naming a specific internal channel ("harness_closure prediction
+error") that was not in the context it was given and had read 0.0/NULL for
+the prior 24h -- the real driver that tick WAS `sustained_load_pressure`
+(`node:athena`, 7 consecutive readings), but Hub's outreach prompt
+(`services/orion-hub/scripts/endogenous_outreach.py::build_outreach_prompt`)
+could only say "somewhere in your field state... a channel" because this
+function discarded the winning (channel, node_id) at the exact line that
+computed `max()`, even though `TickResult.loaded` already had it. The
+generation model filled that intentional gap with a plausible, wrong,
+real-sounding channel name -- worse than the honest "somewhere" it replaced.
+`sustained_load_pressure()` now returns `SustainedLoadReading`, which
+carries `channel`/`node_id` alongside the scalar. This is still a plain
+`max()` winner, deliberately NOT the Borda machinery this paragraph used to
+flag as the natural next step -- the one real consumer only ever needs "the
+single (channel, node_id) that produced this tick's number to name
+honestly," not a full ranking, so building Borda here would again be real
+code with zero real callers for the parts a ranking adds beyond a bare
+argmax. If a future consumer needs a ranked list, Borda-ranking these same
+ballots is still the natural mechanism to add THEN.
 
 Ballots come from `orion.attention.tension.field_observations.
 iter_observations` (same subnormal-coercing per-(node,channel) extraction
@@ -150,20 +166,71 @@ def compute_tick(
     )
 
 
-def sustained_load_pressure(tick: TickResult) -> float:
-    """This window's sustained-load scalar, in [0, 1].
+@dataclass(frozen=True)
+class SustainedLoadReading:
+    """`sustained_load_pressure`'s scalar, in [0, 1], plus which (channel,
+    node_id) ballot actually produced it (2026-09-07).
+
+    The identity was always sitting in `TickResult.loaded` -- this class
+    just stops throwing it away at the exact line that used to collapse
+    everything to a bare `max()` float. Root-caused live: a generation model
+    asked to write Orion's unprompted outreach message was told (honestly,
+    at the time) only that "somewhere in your field state, a channel has
+    been loaded" -- no identity was available to state -- and it filled that
+    gap with a plausible, wrong, real-sounding invented channel name
+    (`harness_closure`, a genuine but unrelated signal reading 0.0/NULL for
+    the prior 24h). The real driver that tick WAS `sustained_load_pressure`
+    (`node:athena`), the numbers were real, only the name was fabricated.
+    Carrying identity through closes the gap the model was filling.
+
+    `channel`/`node_id` are `None` exactly when `value == 0.0` because
+    nothing is currently `loaded_steady` -- a real "no sustained load, no
+    identity to report" reading, never a fabricated one, same convention
+    `value` itself already used before this class existed.
+
+    Tie-break: when two or more (channel, node_id) ballots land on the
+    EXACT same maximum value, this keeps whichever is encountered first
+    while walking `TickResult.loaded` (dict insertion order, itself the
+    order `compute_tick` first admitted that (node, channel) pair into the
+    window) -- a deterministic, reproducible choice for a rare case, not a
+    claim that the winning channel is somehow more significant than the one
+    it tied with.
+    """
+
+    value: float
+    channel: str | None
+    node_id: str | None
+
+
+def sustained_load_pressure(tick: TickResult) -> SustainedLoadReading:
+    """This window's sustained-load scalar, in [0, 1], plus the identity of
+    the (channel, node_id) ballot that produced it -- see
+    `SustainedLoadReading`'s own docstring for why identity is carried now
+    and how ties are broken.
 
     `pressure_equivalent_level` is already a median over already-clamped-to-
     [0,1] channel pressures (see `orion.field.regime.channel_regime`), so
     unlike `orion.attention.tension.competition.deviation_pressure` (which
     needs a disclosed SATURATION constant to compress an unbounded z-excess
     into [0, 1]) this needs no calibration -- the max across `loaded_steady`
-    ballots is already on the right scale. 0.0 on a window with nothing
-    `loaded_steady` is a real "no sustained load right now" reading, never a
-    fabricated absence -- same convention `deviation_pressure` uses for its
-    own quiet-tick 0.0.
+    ballots is already on the right scale. A quiet window (nothing
+    `loaded_steady`) returns `SustainedLoadReading(0.0, None, None)` -- a
+    real "no sustained load right now" reading, never a fabricated absence
+    -- same convention `deviation_pressure` uses for its own quiet-tick 0.0.
     """
     if not tick.any_loaded:
-        return 0.0
-    top = max(v for channel in tick.loaded.values() for v in channel.values())
-    return max(0.0, min(1.0, top))
+        return SustainedLoadReading(value=0.0, channel=None, node_id=None)
+    best_value = float("-inf")
+    best_channel: str | None = None
+    best_node_id: str | None = None
+    for channel, nodes in tick.loaded.items():
+        for node_id, level in nodes.items():
+            if level > best_value:
+                best_value = level
+                best_channel = channel
+                best_node_id = node_id
+    return SustainedLoadReading(
+        value=max(0.0, min(1.0, best_value)),
+        channel=best_channel,
+        node_id=best_node_id,
+    )

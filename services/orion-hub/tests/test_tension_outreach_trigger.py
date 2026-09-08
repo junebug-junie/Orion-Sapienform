@@ -23,10 +23,11 @@ from scripts import tension_outreach_trigger
 
 
 def _fake_engine_with_rows(rows: list[tuple]):
-    """rows: (winner, deviation[, sustained_load]) oldest-first, matching the
-    real query's `ORDER BY generated_at ASC`. `sustained_load` defaults to
-    0.0 when omitted -- most tests here are about the deviation-run logic
-    and don't care about the level-aware field."""
+    """rows: (winner, deviation[, sustained_load[, channel[, node_id]]])
+    oldest-first, matching the real query's `ORDER BY generated_at ASC`.
+    `sustained_load` defaults to 0.0 when omitted, `channel`/`node_id`
+    default to `None` -- most tests here are about the deviation-run logic
+    and don't care about the level-aware fields."""
     fake_engine = MagicMock()
     conn = MagicMock()
     fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
@@ -35,10 +36,14 @@ def _fake_engine_with_rows(rows: list[tuple]):
     def _row(r):
         winner, deviation = r[0], r[1]
         load = r[2] if len(r) > 2 else 0.0
+        channel = r[3] if len(r) > 3 else None
+        node_id = r[4] if len(r) > 4 else None
         return (
             winner,
             None if deviation is None else str(deviation),
             None if load is None else str(load),
+            channel,
+            node_id,
         )
 
     conn.execute.return_value.fetchall.return_value = [_row(r) for r in rows]
@@ -158,6 +163,8 @@ def test_raw_sql_json_keys_match_the_real_schema_fields():
     assert "tension_borda_winner_target_id" in field_names
     assert "tension_deviation_pressure" in field_names
     assert "sustained_load_pressure" in field_names
+    assert "sustained_load_pressure_channel" in field_names
+    assert "sustained_load_pressure_node_id" in field_names
 
 
 def test_lookback_query_uses_seconds_not_minutes_for_make_interval():
@@ -231,7 +238,7 @@ def test_fetch_recent_winners_keeps_missing_sustained_load_distinct_from_zero():
     engine = _fake_engine_with_rows([("node:athena", 0.3, None)])
     with patch.object(tension_outreach_trigger, "_engine", return_value=engine):
         rows = tension_outreach_trigger._fetch_recent_winners(10.0)
-    assert rows == [("node:athena", 0.3, None)]
+    assert rows == [("node:athena", 0.3, None, None, None)]
 
 
 def test_missing_sustained_load_column_collapses_to_zero_in_the_reason():
@@ -244,3 +251,71 @@ def test_missing_sustained_load_column_collapses_to_zero_in_the_reason():
         result = tension_outreach_trigger.current_run()
     assert result is not None
     assert result.sustained_load_pressure == 0.0
+    assert result.sustained_load_pressure_channel is None
+    assert result.sustained_load_pressure_node_id is None
+
+
+def test_query_also_selects_sustained_load_pressure_identity_columns():
+    """Regression guard for the identity fix (2026-09-07): the query must
+    read the new channel/node_id columns too, not just the scalar."""
+    engine = _fake_engine_with_rows([])
+    conn = engine.connect.return_value.__enter__.return_value
+    with patch.object(tension_outreach_trigger, "_engine", return_value=engine):
+        tension_outreach_trigger.current_run()
+
+    query, _bound_params = conn.execute.call_args.args
+    query_text = str(query)
+    assert "sustained_load_pressure_channel" in query_text
+    assert "sustained_load_pressure_node_id" in query_text
+
+
+def test_reason_carries_the_latest_ticks_sustained_load_identity():
+    """2026-09-07: the real fix -- identity present on a real loaded tick
+    must reach `TensionTriggerReason`, not just the bare scalar. This is the
+    exact gap that let a generation model invent a channel name ("Orion sent
+    an unprompted message naming harness_closure, which was never in the
+    context it was given")."""
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, 0.10, "cpu_pressure", "node:atlas")] * (n - 1) + [
+        ("node:athena", 0.3, 0.55, "disk_capacity_pressure", "node:athena")
+    ]
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.55
+    assert result.sustained_load_pressure_channel == "disk_capacity_pressure"
+    assert result.sustained_load_pressure_node_id == "node:athena"
+
+
+def test_quiet_latest_tick_reports_no_identity_even_if_an_earlier_row_had_one():
+    """Identity belongs to the LATEST tick only -- a stale prior tick's real
+    identity must not leak forward once the load itself has gone quiet
+    (0.0), same "latest, not accumulated" semantics `current_run`'s own
+    comment documents for the scalar."""
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, 0.71, "disk_capacity_pressure", "node:athena")] * (
+        n - 1
+    ) + [("node:athena", 0.3, 0.0, None, None)]
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.0
+    assert result.sustained_load_pressure_channel is None
+    assert result.sustained_load_pressure_node_id is None
+
+
+def test_pre_migration_row_has_real_scalar_but_no_identity_columns():
+    """Backward-compat: a row written before this identity migration has a
+    real `sustained_load_pressure` value but no identity keys at all in
+    `field_json` -- `_fetch_recent_winners` reads both identity columns as
+    `None` (SQL NULL for a missing JSON key), and `current_run` must not
+    fabricate an identity to fill the gap; it reports the real scalar with
+    no channel/node_id, same as a genuinely quiet tick."""
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, 0.71)] * n  # no channel/node_id in the row at all
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.71
+    assert result.sustained_load_pressure_channel is None
+    assert result.sustained_load_pressure_node_id is None

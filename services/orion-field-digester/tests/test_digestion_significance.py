@@ -62,6 +62,38 @@ def test_first_tick_always_recomputes() -> None:
     assert state.sustained_load_computed_at == BASE
 
 
+def test_first_tick_also_writes_the_winning_identity() -> None:
+    """2026-09-07: identity (channel, node_id) must land on the state
+    alongside the scalar, not just the bare float -- this is the exact gap
+    that let a generation model invent a channel name Hub's outreach prompt
+    could not otherwise supply."""
+    state = _empty_state("tick_0")
+    store = _FakeStore(_loaded_steady_payloads())
+
+    state = update_significance_pressure(
+        state, store, window_seconds=900.0, check_interval_sec=30.0
+    )
+
+    assert state.sustained_load_pressure_channel == "memory_pressure"
+    assert state.sustained_load_pressure_node_id == "node:athena"
+
+
+def test_quiet_tick_writes_no_fabricated_identity() -> None:
+    """Nothing loaded_steady -- identity must stay `None`, not some
+    leftover/default value, same "no fabrication" convention the 0.0 scalar
+    already uses."""
+    state = _empty_state("tick_0")
+    store = _FakeStore([])
+
+    state = update_significance_pressure(
+        state, store, window_seconds=900.0, check_interval_sec=30.0
+    )
+
+    assert state.sustained_load_pressure == 0.0
+    assert state.sustained_load_pressure_channel is None
+    assert state.sustained_load_pressure_node_id is None
+
+
 def test_within_interval_does_not_recompute() -> None:
     """A tick 10s after the last real computation, with a 30s throttle, must
     carry the existing value forward WITHOUT touching the store."""

@@ -51,3 +51,40 @@ def test_field_state_accepts_topology_metadata() -> None:
     )
     restored = FieldStateV1.model_validate(state.model_dump(mode="json"))
     assert restored.topology_id == "orion_field_topology"
+
+
+def test_field_state_v1_carries_sustained_load_pressure_identity() -> None:
+    """2026-09-07: `sustained_load_pressure_channel`/`_node_id` round-trip
+    alongside the pre-existing scalar."""
+    now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+    state = FieldStateV1(
+        generated_at=now,
+        tick_id="tick_identity",
+        sustained_load_pressure=0.71,
+        sustained_load_pressure_channel="disk_capacity_pressure",
+        sustained_load_pressure_node_id="node:athena",
+    )
+    restored = FieldStateV1.model_validate(state.model_dump(mode="json"))
+    assert restored.sustained_load_pressure == 0.71
+    assert restored.sustained_load_pressure_channel == "disk_capacity_pressure"
+    assert restored.sustained_load_pressure_node_id == "node:athena"
+
+
+def test_field_state_v1_pre_migration_payload_reads_with_no_fabricated_identity() -> None:
+    """Backward-read compat: a real pre-2026-09-07 payload has
+    `sustained_load_pressure` but no identity keys at all in the JSON blob
+    (`model_config = ConfigDict(extra="forbid")` only rejects UNKNOWN
+    fields, not missing ones, so this must validate cleanly). The new
+    fields must default to `None`, not raise and not invent a value."""
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+    pre_migration_payload = {
+        "schema_version": "field.state.v1",
+        "generated_at": now.isoformat(),
+        "tick_id": "tick_pre_migration",
+        "sustained_load_pressure": 0.71,
+        # No sustained_load_pressure_channel / _node_id keys at all.
+    }
+    restored = FieldStateV1.model_validate(pre_migration_payload)
+    assert restored.sustained_load_pressure == 0.71
+    assert restored.sustained_load_pressure_channel is None
+    assert restored.sustained_load_pressure_node_id is None

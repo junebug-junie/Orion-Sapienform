@@ -71,6 +71,11 @@ class MindLLMClientProtocol(Protocol):
         route: str,
         max_tokens: int,
         temperature: float = 0.2,
+        # thinking=False (default): actively disables the model's chain-of-thought
+        # via chat_template_kwargs.enable_thinking. thinking=True: leaves the
+        # model's own default behavior alone (used by appraisal, which budgets
+        # enough tokens to survive unsuppressed reasoning). See the concrete
+        # implementation below for why this must actually set the option now.
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
@@ -116,8 +121,23 @@ class MindLLMClient:
         }
         if extra_options:
             options.update(extra_options)
-        if thinking:
-            options["thinking"] = True
+        if not thinking:
+            # 2026-09-08: `options["thinking"] = True` (the old body of this branch)
+            # was a pure no-op -- confirmed nothing in orion-llm-gateway ever reads a
+            # plain "thinking" option (only chat_template_kwargs.enable_thinking,
+            # llm_backend.py:1142, and the narrower structured_output_thinking_policy
+            # gate actually toggle model behavior). Every metacog-model caller that
+            # left `thinking` at its False default was silently getting the model's
+            # own thinking-enabled default instead, which is how semantic_synthesis
+            # and stance_handoff burned their whole max_tokens budget on unsuppressed
+            # reasoning and never reached the JSON (json_parse_failed on every
+            # metacog-routed call after the 2026-09-07 quick->metacog route move).
+            # `thinking=False` now actually means what it says. `extra_options` is
+            # applied first (above), so a caller that already supplies its own
+            # chat_template_kwargs is respected via setdefault, not clobbered.
+            ctk = dict(options.get("chat_template_kwargs") or {})
+            ctk.setdefault("enable_thinking", False)
+            options["chat_template_kwargs"] = ctk
         if context is not None:
             options["mind_run_id"] = context.mind_run_id
             options["mind_phase"] = context.phase_name

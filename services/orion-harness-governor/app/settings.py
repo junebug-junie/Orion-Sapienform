@@ -112,9 +112,13 @@ class HarnessGovernorSettings(BaseSettings):
     # Cap on one stream-json line, read directly from the environment by
     # orion.harness.fcc_motor; mirrored here so operators see the effective
     # value. See fcc_motor._stream_stall_timeout_sec for why this exists
-    # separately from fcc_timeout_sec (whole-turn budget).
+    # separately from fcc_timeout_sec (whole-turn budget). Raised 180 -> 420
+    # on 2026-09-08 after every confirmed world-pulse-read Stage 2
+    # empty_generation traced back to this exact stall firing on a
+    # contended shared GPU -- see .env_example's comment for the full
+    # rationale.
     harness_fcc_stream_stall_timeout_sec: float = Field(
-        180.0, alias="HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC"
+        420.0, alias="HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC"
     )
     finalize_reflect_timeout_sec: float = Field(180.0, alias="FINALIZE_REFLECT_TIMEOUT_SEC")
     voice_finalize_timeout_sec: float = Field(300.0, alias="VOICE_FINALIZE_TIMEOUT_SEC")

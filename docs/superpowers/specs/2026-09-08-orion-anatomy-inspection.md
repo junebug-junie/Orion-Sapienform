@@ -332,14 +332,81 @@ That is an argument for emitting snapshots now, before anything consumes them.
 
 ---
 
-## 7. Conclusions for the design
+## 7. The four sources a snapshot must read
 
-1. **Four sources, not three layers.** Declared (`channels.yaml` + field topology),
-   observed-aggregate (`orion_bus_synapse`), observed-per-instance (46
-   `correlation_id` tables), persisted-outcome (`dreams`,
-   `substrate_reverie_chain`, curiosity candidates, `harness_turn_trace`). Dream is
-   only honestly representable with the fourth: the bus says nothing, the verb says
-   nine days, the outcome table says two days and here is what it produced.
+Not three layers. Four sources, because a faculty can be **declared, unobserved,
+and still producing output** — and no three of these can express that state.
+
+### 1. Declared
+
+`orion/bus/channels.yaml` (288 channels with `producer_services` /
+`consumer_services`) and `config/field/orion_field_topology.v1.yaml`.
+
+What Orion is *supposed* to contain and connect. Config truth. It is the only
+source that carries a faculty's *name* when nothing is currently enacting it, and
+the only place `orion-dream` exists as a component at all.
+
+### 2. Observed-aggregate
+
+`orion_bus_synapse` (FalkorDB, live). 99 Organs, 214 Channels, 34 Verbs, weighted
+by real traffic counts and EWMA cadence.
+
+What has actually been active, summed. Bounded state by design — which is why it
+has no per-instance chains and no time series (see §6).
+
+### 3. Observed-per-instance
+
+The 46 Postgres tables sharing `correlation_id`.
+
+Individual runs, traceable end to end. **This is where faculties actually live** —
+one curiosity run spans 16 of these tables. The bus derives
+`CAUSALLY_FOLLOWED_BY` from these same correlation ids and then aggregates the
+per-instance structure away, so this source is not redundant with source 2; it is
+the structure source 2 discarded.
+
+### 4. Persisted-outcome
+
+The faculty result tables: `dreams`, `substrate_reverie_chain`,
+`reverie_visual_chain`, `substrate_endogenous_curiosity_candidates`,
+`harness_turn_trace`.
+
+What a faculty *produced*, whether or not the run itself was traceable. Note that
+some of these carry no `correlation_id` at all (§2, Reverie), so they are reachable
+only as outcomes, never as processes — which is itself a fact the snapshot must
+report rather than silently drop.
+
+### Worked example: why dream needs all four
+
+Each source says something different about the same faculty, and each one alone
+gives a wrong answer:
+
+| Source | What it says about dream |
+|---|---|
+| Declared | It exists — `orion:dream:trigger`, `orion:dream:log`, `producer_services: ["orion-dream"]` |
+| Observed-aggregate | **Nothing at all.** No `orion-dream` Organ node exists on the bus |
+| Observed-per-instance | It ran 26 times, last 2026-09-06T08:27:33Z — but via the verb layer, attributed to `cortex-exec`, not to dream |
+| Persisted-outcome | 17 dreams exist; the last was written 2026-09-06T08:27:32Z, matching the verb execution to the second |
+
+- Drop **declared** and dreaming has no name — you get an unlabeled `cortex-exec`
+  verb and a table.
+- Drop **observed-aggregate** and you cannot tell quiet from busy for anything.
+- Drop **observed-per-instance** and you have a declaration and a pile of rows with
+  no process connecting them.
+- Drop **persisted-outcome** and you cannot prove dreaming produced anything — the
+  bus says absent, the verb says nine days by count, and neither is the truth.
+
+**Only the fourth source proves the faculty did something. Only the first proves it
+is supposed to.** The bus alone yields "Orion does not dream"; the declaration
+alone yields "dream is fine." Both are wrong, and this repo has already made the
+first mistake once.
+
+---
+
+## 8. Conclusions for the design
+
+1. **Four sources, not three layers** — see §7 for each source and the dream
+   worked example. A faculty can be declared, unobserved, and still producing
+   output; no three of these sources can express that state.
 
 2. **Faculties reify on `correlation_id`, not on channel names.** The channel is the
    marker; the correlation is the process. The mechanism already exists and is
@@ -367,7 +434,7 @@ That is an argument for emitting snapshots now, before anything consumes them.
 
 ---
 
-## 8. Explicitly NOT verified
+## 9. Explicitly NOT verified
 
 - ~~Whether reverie's diffusion leg uses a different correlation key~~ — **resolved
   during this inspection**: it has no join key at all (see §2, Reverie). Not a

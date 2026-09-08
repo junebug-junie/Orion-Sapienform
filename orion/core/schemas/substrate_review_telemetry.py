@@ -52,6 +52,28 @@ class GraphReviewTelemetryRecordV1(BaseModel):
     notes: List[str] = Field(default_factory=list, max_length=64)
     degraded: bool = False
     pressure_events: List[MutationPressureEvidenceV1] = Field(default_factory=list, max_length=16)
+    # Added 2026-09-08 so a later review of the same queue_item_id can look
+    # back at this one as its `prior_cycle` (see GraphConsolidationEvaluator
+    # .consolidate()'s prior_cycle param, orion/substrate/consolidation.py).
+    # Before this, that comparison was never given a real prior cycle at
+    # all -- node_persistence_ratio was permanently 0.0 and `reinforce`
+    # structurally unreachable. All Optional/default so a stored row from
+    # before this field existed still validates unchanged.
+    #
+    # Caps match query_limit_nodes/query_limit_edges's real upper bounds
+    # (mutation_contracts.py's graph_consolidation_param_patch contract:
+    # 8-256 / 16-512) rather than GraphConsolidationEvaluator's own
+    # default max_region_nodes/edges (32/64) -- an adopted policy profile
+    # can raise the real query limit above that default, and this record
+    # must be able to hold whatever consolidate() actually resolved or the
+    # whole telemetry row silently fails validation and is dropped.
+    focal_node_refs: List[str] = Field(default_factory=list, max_length=256)
+    focal_edge_refs: List[str] = Field(default_factory=list, max_length=512)
+    mean_activation: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    mean_pressure: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    contradiction_count: Optional[int] = Field(default=None, ge=0)
+    evidence_gap_count: Optional[int] = Field(default=None, ge=0)
+    isolated_frontier_count: Optional[int] = Field(default=None, ge=0)
 
 
 class GraphReviewTelemetryQueryV1(BaseModel):
@@ -60,6 +82,7 @@ class GraphReviewTelemetryQueryV1(BaseModel):
     invocation_surface: Optional[GraphReviewRuntimeSurfaceV1] = None
     target_zone: Optional[FrontierTargetZoneV1] = None
     subject_ref: Optional[str] = None
+    queue_item_id: Optional[str] = None
     outcome: Optional[GraphReviewRuntimeOutcomeV1] = None
     frontier_followup_invoked: Optional[bool] = None
     since: Optional[datetime] = None

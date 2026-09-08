@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
 
-from orion.core.schemas.substrate_consolidation import GraphConsolidationRequestV1
+from orion.core.schemas.substrate_consolidation import GraphConsolidationRequestV1, GraphReviewCycleRecordV1
 from orion.core.schemas.substrate_review_queue import GraphReviewQueueItemV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1, GraphReviewRuntimeResultV1
-from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
+from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1, GraphReviewTelemetryRecordV1
 from orion.substrate.consolidation import GraphConsolidationEvaluator, GraphConsolidationExecutionV1
 from orion.substrate.policy_profiles import SubstratePolicyProfileStore
 from orion.substrate.review_queue import GraphReviewQueue
@@ -89,8 +89,10 @@ class GraphReviewRuntimeExecutor:
             )
             policy_resolution = self._resolve_policy(request=request, queue_item=reviewed_item)
             overrides = policy_resolution.overrides if policy_resolution.mode == "adopted" else {}
+            prior_cycle = self._lookup_prior_cycle(queue_item_id=reviewed_item.queue_item_id)
             consolidation = self.consolidation_evaluator.consolidate(
                 request=consolidation_request,
+                prior_cycle=prior_cycle,
                 max_region_nodes=int(overrides.get("query_limit_nodes")) if overrides.get("query_limit_nodes") is not None else None,
                 max_region_edges=int(overrides.get("query_limit_edges")) if overrides.get("query_limit_edges") is not None else None,
                 query_cache_enabled=bool(overrides.get("query_cache_enabled", True)),
@@ -229,6 +231,61 @@ class GraphReviewRuntimeExecutor:
 
         return None, "operator_only", "eligible items require operator surface"
 
+    def _lookup_prior_cycle(self, *, queue_item_id: str) -> GraphReviewCycleRecordV1 | None:
+        """The last real consolidation of this same queue item, if one exists.
+
+        This is what makes GraphConsolidationEvaluator's prior_cycle
+        comparison real. Before this, nothing ever called consolidate()
+        with a prior_cycle at all -- node_persistence_ratio was permanently
+        0.0 and `reinforce` was structurally unreachable (confirmed live
+        2026-09-08: 100% of recorded consolidation_outcomes, all time, were
+        keep_provisional). See docs/plans/substrate/
+        2026-09-08-consolidation-prior-cycle-wiring.md.
+
+        Only "executed" rows carry a real cycle -- every other
+        execution_outcome is an early return before consolidate() ever runs
+        (see execute_once() above), so its mean_activation/etc. fields are
+        never populated. Missing telemetry_recorder, a degraded store, or a
+        row from before these fields existed (all Optional, no default)
+        must fall back to None -- today's behavior -- not raise or fabricate
+        a comparison.
+        """
+        if self.telemetry_recorder is None:
+            return None
+        try:
+            records = self.telemetry_recorder.query(
+                GraphReviewTelemetryQueryV1(queue_item_id=queue_item_id, outcome="executed", limit=1)
+            )
+            if not records:
+                return None
+            prior = records[0]
+            if prior.mean_activation is None or prior.mean_pressure is None:
+                # Row predates these fields, or was never a real consolidation
+                # cycle -- "cannot compare" must not read as "compare to zero".
+                return None
+            return GraphReviewCycleRecordV1(
+                # outcome_counts/request_id have no real prior value to recover
+                # from a telemetry row -- neither is read by
+                # _compare_with_prior(), the only consumer of this object.
+                request_id=prior.correlation_id or prior.telemetry_id,
+                reviewed_at=prior.selected_at,
+                focal_node_refs=list(prior.focal_node_refs),
+                focal_edge_refs=list(prior.focal_edge_refs),
+                mean_activation=prior.mean_activation,
+                mean_pressure=prior.mean_pressure,
+                contradiction_count=prior.contradiction_count or 0,
+                evidence_gap_count=prior.evidence_gap_count or 0,
+                isolated_frontier_count=prior.isolated_frontier_count or 0,
+                outcome_counts={},
+                notes=["reconstructed_from_telemetry"],
+            )
+        except Exception:
+            # The docstring's promise ("fall back to None, not raise") has to
+            # cover reconstruction too, not just the query -- a bounds/shape
+            # mismatch here must degrade this one cycle's comparison, not
+            # take the whole review down.
+            return None
+
     def _record_telemetry(
         self,
         *,
@@ -265,6 +322,13 @@ class GraphReviewRuntimeExecutor:
                     remaining_cycles_before=(selected_item.cycle_budget.remaining_cycles + 1) if selected_item else None,
                     remaining_cycles_after=selected_item.cycle_budget.remaining_cycles if selected_item else None,
                     consolidation_outcomes=[d.outcome for d in consolidation.result.decisions] if consolidation else [],
+                    focal_node_refs=list(consolidation.cycle_record.focal_node_refs) if consolidation else [],
+                    focal_edge_refs=list(consolidation.cycle_record.focal_edge_refs) if consolidation else [],
+                    mean_activation=consolidation.cycle_record.mean_activation if consolidation else None,
+                    mean_pressure=consolidation.cycle_record.mean_pressure if consolidation else None,
+                    contradiction_count=consolidation.cycle_record.contradiction_count if consolidation else None,
+                    evidence_gap_count=consolidation.cycle_record.evidence_gap_count if consolidation else None,
+                    isolated_frontier_count=consolidation.cycle_record.isolated_frontier_count if consolidation else None,
                     suppression_state_before=pre_suppressed,
                     suppression_state_after=selected_item.suppression_state if selected_item else None,
                     termination_state_before=pre_terminated,

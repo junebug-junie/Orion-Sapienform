@@ -128,6 +128,8 @@ class GraphReviewTelemetryRecorder:
             _apply("target_zone", lambda r: r.target_zone == query.target_zone)
         if query.subject_ref is not None:
             _apply("subject_ref", lambda r: r.subject_ref == query.subject_ref)
+        if query.queue_item_id is not None:
+            _apply("queue_item_id", lambda r: r.queue_item_id == query.queue_item_id)
         if query.outcome is not None:
             _apply("outcome", lambda r: r.execution_outcome == query.outcome)
         if query.frontier_followup_invoked is not None:

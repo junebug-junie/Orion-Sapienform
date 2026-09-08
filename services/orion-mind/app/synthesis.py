@@ -375,6 +375,11 @@ def run_semantic_synthesis(
 
     started = utc_now_iso()
     t0 = time.perf_counter()
+    # thinking is left at request_json's default (False = actively disable
+    # chain-of-thought via chat_template_kwargs.enable_thinking, see
+    # llm_client.py). semantic_synthesis wants a compact claims JSON, not a
+    # reasoning trace -- see llm_client.py's 2026-09-08 comment for why this
+    # must actually be enforced, not merely defaulted.
     extra_options: dict[str, Any] | None = None
     if settings.MIND_LLM_RETURN_LOGPROBS_SEMANTIC:
         extra_options = {

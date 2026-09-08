@@ -132,6 +132,10 @@ def run_stance_handoff(
     )
     started = utc_now_iso()
     t0 = time.perf_counter()
+    # thinking left at request_json's default (False = actively disable
+    # chain-of-thought) -- see llm_client.py's 2026-09-08 comment. stance_handoff's
+    # smaller token budget (MIND_LLM_MAX_TOKENS_STANCE) made it especially exposed
+    # to unsuppressed reasoning eating the whole budget before any JSON appeared.
     raw, err, meta = client.request_json(
         system_prompt=_STANCE_SYSTEM,
         user_prompt=user_prompt,

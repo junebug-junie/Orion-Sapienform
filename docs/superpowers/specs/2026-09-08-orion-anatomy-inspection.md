@@ -448,7 +448,114 @@ pattern applied to a different graph — not a new invention.
 
 ---
 
-## 8. Conclusions for the design
+## 8. Node typing: derive the type, then handle by type
+
+Volume is one axis and it is the weakest one. Weighting by count alone produces
+three specific wrong answers this inspection already found: a nine-day-dead verb
+ranks as Orion's most important structure, a 78-producer heartbeat channel welds
+unrelated organs together, and a faculty that fired 26 times reads as noise.
+
+The fix is not a better weight. It is a **type attribute carried on the node, with
+its own handling rule per type** — and the type must be *derived* from data that
+already exists, never hand-assigned, or it becomes exactly the keyword cathedral
+this repo bans.
+
+### Most of the type already exists in the catalog and nothing reads it
+
+Every one of the 288 channels in `orion/bus/channels.yaml` already carries:
+
+```
+kind          288/288    event 192 | request 39 | result 39 | telemetry 16 | stream 2
+schema_id     288/288
+producer_services / consumer_services   288/288
+stability     286/288
+message_kind  161/288
+single_consumer  39/288
+```
+
+`kind: telemetry` **already isolates the largest structural hazard**. Both of the
+top false-adjacency/mass offenders are already labeled:
+
+```
+orion:system:health        kind=telemetry   23,824,734
+orion:vision:edge:health   kind=telemetry   35,833,650
+```
+
+That is 59.6M of the 60.1M health mass, already typed, in a file the projection is
+already reading. The rule `kind == telemetry -> attribute, not structural edge`
+costs nothing to implement and needs no new vocabulary.
+
+### But `kind` alone fails in both directions
+
+**Over-captures.** The 16 `telemetry` channels also include
+`orion:cognition:reasoning_call`, `orion:metacognition:tick`,
+`orion:attention:salience:trace`, `orion:recall:telemetry`. Those are cognition.
+Stripping all telemetry would delete metacognition from the anatomy.
+
+**Under-captures.** The two largest channels by observed mass are typed `event`:
+
+```
+orion:signals:*      76,089,915   kind=event
+orion:vision:frames  36,029,754   kind=event
+```
+
+The declared type does not solve volume. It solves *adjacency*, which is the
+different and more damaging problem.
+
+### Two catalog findings
+
+**`stability` is degenerate.** 277 `experimental`, 9 `stable`, 2 null — 96% one
+value. A populated field carrying essentially no information. Unusable for
+weighting as it stands; recorded here so it is not mistaken for a lifecycle signal.
+
+**`orion:system:health` declares 1 producer and has 78 observed.** Producer fan-out
+— the thing that actually causes false adjacency — **cannot be read from the
+declaration.** It must be derived from `orion_bus_synapse`. This is also a
+first-class discrepancy fact in its own right (§2, §7).
+
+### The derived type tuple
+
+Four facts, each computable from data that already exists, each with one handling
+rule that fixes one observed failure:
+
+| Derived fact | Source | Handling rule | Failure it fixes |
+|---|---|---|---|
+| `declared_kind` | `channels.yaml` `kind` | `telemetry`/`stream` -> candidate plumbing | free first cut, 59.6M of health mass |
+| `observed_fanout` | `orion_bus_synapse` producer count | `> 20 producers` -> attribute only, never a structural edge | the 78-producer clique on `orion:system:health` |
+| `observed_recency` | `last_seen_epoch` | stale -> keeps identity, contributes **zero current weight** | `substrate.inspect` ranking #1 while 9 days dead |
+| `has_outcome_rows` | faculty result tables (source 4) | present -> weight by what it produced, not how often it fired | `dream_cycle` at 26 executions reading as noise |
+
+Nothing here is hand-assigned. Every value is read off the four sources in §7, and
+every rule exists because a specific failure in this document demands it — not
+because the category sounded useful.
+
+### OPEN DECISION: cognitive telemetry
+
+`orion:metacognition:tick` and `orion:attention:salience:trace` are declared
+`kind: telemetry` but are arguably faculties, not plumbing.
+
+`observed_fanout` separates them correctly **today** — 1 producer each against
+`orion:system:health`'s 78 — so `declared_kind` + `observed_fanout` together give
+the right answer with no special case. But that is an empirical property of the
+current mesh, not a guarantee: a second producer appearing on a cognitive telemetry
+channel does not change what it is, and a cognitive channel that later fans out
+would be silently reclassified as plumbing.
+
+Two options, **not yet decided by Juniper**:
+
+- **A. Fan-out is the discriminator.** No carve-out. Simpler, correct today,
+  silently wrong if the mesh changes.
+- **B. Explicit carve-out list** for cognitive telemetry channels, checked against
+  `kind` at projection time. More robust, adds a hand-maintained list — which is
+  the thing this section exists to avoid.
+
+Recorded as open. The projection should implement A and **assert** the separation
+(fail loudly if a `kind: telemetry` channel crosses the fan-out threshold), so the
+day option B becomes necessary is announced rather than absorbed.
+
+---
+
+## 9. Conclusions for the design
 
 1. **Four sources, not three layers** — see §7 for each source and the dream
    worked example. A faculty can be declared, unobserved, and still producing
@@ -480,13 +587,17 @@ pattern applied to a different graph — not a new invention.
    joined to a faculty and which cannot — an unjoinable store is an absence with
    a different cause and a different fix.
 
-7. **The FCC motor is an instrument gap, not a weighting problem.** No projection
+7. **Type the node, then handle by type — and derive the type (§8).** Volume alone
+   produces three wrong answers this document already found. Most of the type
+   already exists as `channels.yaml`'s `kind` field and nothing reads it.
+
+8. **The FCC motor is an instrument gap, not a weighting problem.** No projection
    choice makes ~9,700 unrecorded motor steps visible. Closing it requires a new
    trace source, and that is a separate decision from anything in this document.
 
 ---
 
-## 9. Explicitly NOT verified
+## 10. Explicitly NOT verified
 
 - ~~Whether reverie's diffusion leg uses a different correlation key~~ — **resolved
   during this inspection**: it has no join key at all (see §2, Reverie). Not a

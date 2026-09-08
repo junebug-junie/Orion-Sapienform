@@ -149,6 +149,16 @@ def build_stance_react_context(
         context["surface_context"] = surface_context
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
+    if request.llm_route:
+        # Caller-requested gateway route override for stance_react's own LLM
+        # call (see StanceReactRequestV1.llm_route's own docstring -- today
+        # only orion.hub.turn_orchestrator's agent-lane resolution sets
+        # this). Top-level "llm_route" is one of the two keys
+        # services/orion-cortex-exec/app/executor.py's
+        # _resolve_llm_route_override reads before falling back to
+        # _default_llm_route_for_step's hardcoded "chat" default for this
+        # verb.
+        context["llm_route"] = request.llm_route
     return context
 
 

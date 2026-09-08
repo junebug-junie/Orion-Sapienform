@@ -226,6 +226,83 @@ async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_stance_req_llm_route_agent_when_agent_lane() -> None:
+    """2026-09-08 outreach-agent-lane-precedence: the real gap this session
+    closed. Before this, StanceReactRequestV1 carried no route field at all
+    -- a caller asking for the agent lane via payload["fcc_model_label"]
+    (curiosity's own convention, and now outreach's first attempt) steered
+    ONLY the later HarnessGovernorClient.run() dispatch; stance_react's own
+    gateway call had no way to hear it and stayed hardcoded to "chat"
+    (services/orion-cortex-exec/app/executor.py's
+    _default_llm_route_for_step). Asserts the SAME resolved fact
+    (AGENT_ROUTE_FCC_MODEL_LABEL) now reaches both ThoughtClient.react()'s
+    request and HarnessRunRequestV1.fcc_model_label -- one computation, not
+    two that could disagree (see orion.hub.turn_orchestrator's
+    resolved_fcc_model_label comment)."""
+    from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            payload={"fcc_model_label": AGENT_ROUTE_FCC_MODEL_LABEL},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    react_mock.assert_awaited_once()
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.llm_route == "agent"
+
+    harness_client_run.assert_awaited_once()
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.fcc_model_label == AGENT_ROUTE_FCC_MODEL_LABEL
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_stance_req_llm_route_none_by_default() -> None:
+    """Unchanged-behaviour guard: an ordinary turn (no agent-lane request)
+    must leave StanceReactRequestV1.llm_route at its default (None), so
+    stance_react keeps resolving to today's hardcoded "chat" default."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    react_mock.assert_awaited_once()
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.llm_route is None
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_threads_situation_prompt_fragment_into_harness_request() -> None:
     """Regression for the 2026-08-22 report ("Orion asked how my evening was
     going at 12:45pm"): execute_unified_turn must resolve situation context

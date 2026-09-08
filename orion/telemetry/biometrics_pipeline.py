@@ -448,13 +448,17 @@ class BiometricsPipeline:
         disk_capacity_values = list((disk_capacity_data.get("disk_usage_pct") or {}).values())
         disk_capacity_pressure = clamp01(max(disk_capacity_values) / 100.0) if disk_capacity_values else 0.0
 
-        # `fan` (RedFish fan speed, percent) -- present only when iLO is configured and
-        # reports fan units as "Percent" (see app/ilo.py's ReadingUnits guard). Elevated
-        # fan speed is the BMC's own real-time thermal-stress response, not an independent
-        # hazard signal on its own -- theory anchor: sustained high fan percent indicates
-        # the chassis is actively compensating for thermal load, a legitimate physical
-        # strain signal even though it is a *response to* (not sole cause of) that load,
-        # similar to elevated heart rate under exertion.
+        # `fan` (RedFish fan speed, normalized to 0-100) -- present only when iLO is
+        # configured and reports usable fan data. app/ilo.py fills this either from a
+        # BMC-native "Percent" reading (athena's HPE iLO) or, as of 2026-09-08, from a
+        # BMC-reported RPM value normalized against that same sensor's own vendor-declared
+        # MinReadingRange/MaxReadingRange (circe's Gigabyte/AMI MegaRAC BMC) -- not always
+        # a true vendor-native percent, but always percent-of-that-sensor's-own-rated-range.
+        # Elevated fan speed is the BMC's own real-time thermal-stress response, not an
+        # independent hazard signal on its own -- theory anchor: sustained high fan percent
+        # indicates the chassis is actively compensating for thermal load, a legitimate
+        # physical strain signal even though it is a *response to* (not sole cause of) that
+        # load, similar to elevated heart rate under exertion.
         fan_values = list((ilo.get("ilo_fan_pct") or {}).values())
         fan_pressure = clamp01(max(fan_values) / 100.0) if fan_values else 0.0
 

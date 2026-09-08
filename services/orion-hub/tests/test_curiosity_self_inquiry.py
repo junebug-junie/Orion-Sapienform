@@ -157,6 +157,9 @@ def test_prompt_carries_the_standing_question_and_this_run_id() -> None:
     assert f'MERGE (s:SelfDefinition {{run_id: "{RUN}"}})' in text
     assert "CREATE (:SelfDefinition" not in text, "one node per run, rewritten as Orion goes"
     assert "by your second hop at the latest" in text
+    # Write first, then look: the MERGE instruction precedes every read section.
+    assert text.index("YOUR FIRST TOOL CALL") < text.index("WHERE THE RECORDS ARE")
+    assert text.index("YOUR FIRST TOOL CALL") < text.index("HOW TO REACH")
     assert 'p.line = "self"' in text
     assert "/repo/" in text
     assert "dreams" in text and "17 rows" in text

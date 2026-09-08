@@ -55,6 +55,36 @@ def _question_section() -> list[str]:
     ]
 
 
+def _order_of_work_section(*, own_graph: str, run_id: str) -> list[str]:
+    """Write first, then look. Two live runs (d59b680598af, 1513d130dd64,
+    2026-09-08) each produced a complete first-person definition -- in prose,
+    on the final step, which the 180s step clock cut off both times; the
+    second run made no graph write at all. The definition has to exist in
+    the graph before the long steps, so it is the FIRST tool call, from what
+    Orion already knows, and gets overwritten as the run learns."""
+    return [
+        "ORDER OF WORK. Do these in this order; the reason is the clock.",
+        "",
+        "  1. YOUR FIRST TOOL CALL, before reading anything: write your "
+        "current answer, one or two sentences, from what you already know. "
+        "Evidence may be empty for now.",
+        f'       redis-cli -u "$GRAPH" GRAPH.QUERY {own_graph} \\',
+        f'         \'MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: "{run_id}"}}) '
+        'SET s.text = "<one or two sentences>", s.evidence = [], '
+        's.revises = "", s.written_at = timestamp()\'',
+        "     (GRAPH is the redis:// URI shown under HOW TO REACH below.)",
+        "  2. Look: records, repo, your graph. A :Hop after each stop.",
+        "  3. After each thing you learn, run the SAME MERGE again with the "
+        "fuller text and the evidence you now have. Last MERGE wins.",
+        "  4. Only then the write-up. If the clock cuts the write-up off, "
+        "the graph already holds your answer -- that is the point.",
+        "",
+        "A definition that is only in your prose is not in your graph, and "
+        "nothing reads prose for it. Nothing ever will.",
+        "",
+    ]
+
+
 def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int]) -> list[str]:
     if latest is None:
         return [
@@ -202,6 +232,8 @@ def build_self_inquiry_prompt(
     view = view or WorldviewSnapshot()
     writable = graph_enabled and not view.is_unavailable and bool(run_id)
     lines = _question_section()
+    if writable:
+        lines += _order_of_work_section(own_graph=own_graph, run_id=run_id)
 
     if graph_enabled:
         lines += _continuation_section(view.continuation)

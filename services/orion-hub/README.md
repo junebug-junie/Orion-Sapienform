@@ -286,7 +286,67 @@ reason` now also carry `sustained_load_pressure_channel`/`_node_id`, and
 `build_outreach_prompt` names the real channel/node whenever identity is
 present, falling back to the old honest wording only when it genuinely is
 not (a pre-migration row, or a quiet tick). No guard was added on the
-generated text — the fix is upstream, not a filter on the output.
+generated text for **this** incident — the fix was upstream, not a filter on
+the output. A different, later incident did need exactly that filter — see
+the closed-vocabulary section immediately below.
+
+**Closed-vocabulary grounding guard (2026-09-08) — a second, different
+incident, ~1h42m after the fix above.** Orion sent Juniper another
+unprompted message naming the same fabricated `harness_closure` reading,
+with zero real signal behind it a second time. Traced live: this tick's
+field was too noisy for a real sustained-tension run (the leading node
+flipped every tick), so `ctx.tension_reason` was `None` — nothing to name.
+But `build_outreach_prompt`'s "The last thing the two of you said" section
+fed the model its own immediately-preceding turn, in which Orion had
+*defended* the same false claim after a different AI in the Hub room flagged
+it as suspicious. With nothing fresh to say and its own recent argument
+sitting right there, generation just restated the fabrication as though it
+were still live.
+
+Juniper's fix, verbatim: *"if Orion is going to send me a message stating
+they're seeing issues with telemetry, it better be real"* — solved as
+**closed-vocabulary schema enforcement**, explicitly not a fuzzy "does this
+look suspicious" text classifier (rejected in an earlier conversation as the
+wrong shape). `scripts/outreach_vocabulary.py` builds two sets:
+
+* `known_real_signal_names()` — the closed universe of every internal-signal
+  identifier that is ever real anywhere in the system: `orion.field.
+  channel_glossary.load_glossary()`, `config/metrics/metric_definitions.
+  lock.json`, `orion.substrate.attention_self_model.ACTIVE_INFERENCE_DOMAINS`
+  plus the literal `"harness_closure"` (real but currently-quiet — the exact
+  term this fabricated, so it must be in the universe even though it is
+  rarely true), and `config/biometrics/node_catalog.yaml`'s node ids. Only
+  COMPOUND names (containing `"_"` or `":"`) enter from the two broad,
+  machine-generated sources — a bare single word like `"pressure"` or
+  `"confidence"` is a real registered channel/metric name in those sources
+  but indistinguishable from ordinary English, so it is excluded; a compound
+  name like `disk_capacity_pressure` is unambiguous and included.
+* `grounded_signal_names(tension_reason)` — the small subset of that
+  universe that is actually true THIS tick: `TensionTriggerReason`'s
+  `target_id`, plus `sustained_load_pressure_channel`/`_node_id` when
+  `sustained_load_pressure > 0.0` — the exact facts `build_outreach_prompt`
+  already had permission to name. Does **not** yet include a live
+  `harness_closure` prediction-error reading — checked live, nothing threads
+  that reducer input (`orion/substrate/attention_self_model.py`'s
+  `harness_closure_signal` argument) to Hub today; that is a real follow-up,
+  not solved here.
+
+`build_outreach_prompt` now states the tick's grounded names explicitly (or
+states plainly that nothing is grounded) and, only when recent-turns history
+is present, tells the model that history is for tone/continuity only, never
+a source of new facts. `_outreach_once` then enforces this after generation,
+before delivery: `find_ungrounded_signal_mentions` scans the generated text
+for exact, compound-token matches (never fuzzy — see the compound-only rule
+above, which also applies at scan time) against the closed registry; any
+match that is real but not grounded this tick blocks the send with
+`reason="named_ungrounded_signal"` and the offending term(s) recorded to
+`endogenous_outreach_decisions.result_json.offending_terms` for forensic
+tracing.
+
+Applied only to `_outreach_once`'s own `_generate()` output. `offer_message`
+(the curiosity-loop path, `services/orion-hub/scripts/curiosity_investigation.
+py`) receives already-composed text with no comparable grounded-facts
+structure and is explicitly out of scope for this patch — a real follow-up.
 
 **A daydream, not only telemetry (2026-08-28).** Every other grounding lane
 above is an instrument reading, so an unprompted message could only ever be

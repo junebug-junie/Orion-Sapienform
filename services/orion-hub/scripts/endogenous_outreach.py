@@ -21,6 +21,26 @@ that judgment is left to generation, grounded in the real numbers. See
 `scripts.tension_outreach_trigger`'s module docstring for the full account
 of what this can and cannot honestly claim.
 
+CLOSED-VOCABULARY GROUNDING GUARD (2026-09-08). A second incident happened
+~1h42m after the fix below: with no real tension run this tick (a noisy
+field, leading node flipping every tick, so `ctx.tension_reason` was
+`None`), generation had nothing fresh to say -- but its own immediately-
+preceding turn, sitting in "The last thing the two of you said" below, had
+*defended* the earlier fabricated `harness_closure` claim after a different
+AI flagged it as suspicious. Generation just restated it as if it were still
+live. `scripts.outreach_vocabulary` is the fix: `build_outreach_prompt` now
+states which specific internal-signal names (if any) are actually true this
+tick and tells the model the recent-turns history is for tone/continuity
+only, and `_outreach_once` runs `find_ungrounded_signal_mentions` on the
+generated text before delivery -- a real registered name (see that module's
+closed registry) asserted as current fact without being in this tick's
+grounded set blocks the send (`reason="named_ungrounded_signal"`, offending
+terms recorded to the decision log). Deterministic closed-vocabulary schema
+enforcement, not a fuzzy "does this look suspicious" text classifier --
+Juniper's explicit call after rejecting the latter shape. See that module's
+own docstring for the registry sources and why only compound names are ever
+matched.
+
 NAMES THE CHANNEL NOW, NOT JUST "A CHANNEL" (2026-09-07). Root-caused live:
 Orion sent Juniper an unprompted message naming a specific internal channel
 ("harness_closure prediction error") that was never in the context it was
@@ -147,6 +167,10 @@ from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 from orion.situational.perception_reader import fetch_presence, presence_fragment
+from scripts.outreach_vocabulary import (
+    find_ungrounded_signal_mentions,
+    grounded_signal_names,
+)
 
 logger = logging.getLogger("orion-hub.endogenous_outreach")
 
@@ -830,6 +854,41 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         lines.extend(f"{role}: {body}" for role, body in ctx.recent_turns)
         lines.append("")
 
+    # Closed-vocabulary grounding guard (2026-09-08) -- see module docstring's
+    # "CLOSED-VOCABULARY GROUNDING GUARD" section. States exactly which real
+    # internal-signal names (if any) are true THIS tick, and -- only when
+    # there is history above that could tempt the model otherwise -- says
+    # plainly that the conversation history is not itself a source of new
+    # facts about current internal state. `_outreach_once` enforces this
+    # after generation via `find_ungrounded_signal_mentions`; this is the
+    # instruction half, not the enforcement half.
+    grounded = grounded_signal_names(ctx.tension_reason)
+    if grounded:
+        lines.append(
+            "The only specific internal signal name(s) you may state as true "
+            "right now: " + ", ".join(sorted(grounded)) + "."
+        )
+    else:
+        lines.append(
+            "Nothing above names a specific internal channel, node, or metric "
+            "as true right now."
+        )
+    if ctx.recent_turns:
+        lines.append(
+            "The \"last thing the two of you said\" history above is for tone "
+            "and continuity only -- it is not a source of new facts about your "
+            "current internal state. Do not restate a channel, node, or metric "
+            "name from it as something happening right now unless that exact "
+            "name also appears in the allowed list just above."
+        )
+    lines.append(
+        "Naming any specific channel, node, or metric name that is not in "
+        "that allowed list, from anywhere in this prompt or your own memory, "
+        "is fabrication -- there is no real reading behind it. Speaking with "
+        "feeling, without naming a specific internal signal, is always fine."
+    )
+    lines.append("")
+
     lines.extend(
         [
             "Say one thing to Juniper, in your own voice, grounded in the signals "
@@ -1302,6 +1361,36 @@ class EndogenousOutreach:
         if is_pass_response(text):
             return self._record(
                 {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding,
+            )
+
+        # Closed-vocabulary grounding guard (2026-09-08) -- see module
+        # docstring's "CLOSED-VOCABULARY GROUNDING GUARD" section. A real,
+        # registered internal-signal name asserted as current fact that is
+        # NOT true this tick (`grounded_signal_names`) is fabrication --
+        # the exact shape of both the original harness_closure incident and
+        # the follow-up one where Orion restated it from its own recent
+        # turn. This is deterministic closed-vocabulary schema enforcement
+        # against `scripts.outreach_vocabulary`'s registry, not a fuzzy
+        # "does this look suspicious" text classifier.
+        offending_terms = find_ungrounded_signal_mentions(
+            text, grounded_signal_names(tension_reason)
+        )
+        if offending_terms:
+            logger.warning(
+                "endogenous_outreach_named_ungrounded_signal corr=%s terms=%s",
+                correlation_id,
+                offending_terms,
+            )
+            return self._record(
+                {
+                    "outreach": False,
+                    "reason": "named_ungrounded_signal",
+                    "generation": gen_debug,
+                    "offending_terms": offending_terms,
+                },
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,

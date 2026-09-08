@@ -91,6 +91,7 @@ from orion.curiosity.self_inquiry import (
     LINE_INVESTIGATE,
     LINE_SELF_INQUIRY,
     LIVE_SELF_PRIORS_CYPHER,
+    SELF_COUNTS_CYPHER,
     SELF_INQUIRY_GRANTS_SQL,
     SELF_INQUIRY_PG_TABLE_NAMES,
     SELF_INQUIRY_PG_TABLES,
@@ -128,6 +129,7 @@ from orion.curiosity.worldview import (
     read_finding_connectivity,
     read_hop_notes,
     read_run_footprint,
+    COUNTS_CYPHER,
     LIVE_PRIORS_CYPHER,
     read_snapshot,
     read_turn_outcome,
@@ -759,6 +761,7 @@ class CuriosityInvestigation:
         *,
         rotate_seed: str = "",
         priors_cypher: str = LIVE_PRIORS_CYPHER,
+        counts_cypher: str = COUNTS_CYPHER,
     ) -> WorldviewSnapshot:
         """Orion's own graph, plus the note the previous run left itself."""
         if self._reader is None:
@@ -772,6 +775,7 @@ class CuriosityInvestigation:
                 stale_after=self.stale_prior_tests,
                 rotate_seed=rotate_seed,
                 priors_cypher=priors_cypher,
+                counts_cypher=counts_cypher,
             )
             if view.is_unavailable or not run_id_of_last:
                 return view
@@ -1590,7 +1594,10 @@ class CuriosityInvestigation:
         """The self-inquiry turn. Held under `_run_lock` by the caller."""
         last_run_id = await self._read_last_run_id(LINE_SELF_INQUIRY)
         view = await self._read_worldview(
-            last_run_id, rotate_seed=run_id, priors_cypher=LIVE_SELF_PRIORS_CYPHER
+            last_run_id,
+            rotate_seed=run_id,
+            priors_cypher=LIVE_SELF_PRIORS_CYPHER,
+            counts_cypher=SELF_COUNTS_CYPHER,
         )
         if view.is_unavailable:
             logger.warning(

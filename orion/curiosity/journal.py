@@ -201,10 +201,12 @@ def build_investigation_journal_entry(
         # Namespaced away from the four self-study analysis sources, whose own
         # cooldown matches on a `<source>:` prefix. Keyed on the run rather
         # than on a subject, since there is no code-known subject any more.
-        # The self line gets its own prefix for the same reason.
-        source_ref=(
-            f"curiosity:self:{run_id}" if line == SELF_INQUIRY_LINE else f"curiosity:{run_id}"
-        ),
+        # SAME KEY FOR BOTH LINES. The Hub atlas page joins journal bodies on
+        # exactly `curiosity:<run_id>` (curiosity_routes.py, `_bodies_for`);
+        # a self-line prefix here would leave every self-inquiry run's prose
+        # off the page. The run id is unique across lines, and entry_id and
+        # title already tell them apart. Review finding 2026-09-08.
+        source_ref=f"curiosity:{run_id}",
         correlation_id=correlation_id,
     )
 

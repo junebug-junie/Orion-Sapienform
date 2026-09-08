@@ -60,6 +60,7 @@ from orion.curiosity.worldview import (
     WorldviewReader,
     WorldviewUnavailable,
     _clip,
+    _CLOSED_WHERE,
     _LIVE_WHERE,
     _PRIOR_FIELDS,
     LIVE_PRIORS_LIMIT,
@@ -169,6 +170,14 @@ SELF_DEFINITION_COUNT_CYPHER = f"MATCH (s:{LABEL_SELF_DEFINITION}) RETURN count(
 LIVE_SELF_PRIORS_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) WHERE {_LIVE_WHERE} AND p.line = '{SELF_PRIOR_LINE}' "
     f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
+)
+
+# The counts the self prompt states ("YOUR GRAPH HOLDS N LIVE PRIORS") must be
+# the self line's, or the prompt says 40 and shows 2.
+SELF_COUNTS_CYPHER = (
+    f"MATCH (p:{LABEL_PRIOR}) WHERE p.line = '{SELF_PRIOR_LINE}' "
+    f"RETURN count(DISTINCT CASE WHEN {_LIVE_WHERE} THEN p.prior_id END) AS live_total, "
+    f"count(DISTINCT CASE WHEN {_CLOSED_WHERE} THEN p.prior_id END) AS closed_total"
 )
 
 
@@ -284,6 +293,11 @@ def build_self_definition_history_write(
     if own_ref not in evidence:
         evidence.append(own_ref)
     return SelfConceptHistoryV1(
+        # Keyed on the run, not a fresh uuid: the durable finish event can be
+        # re-delivered (runner restart) and the in-process fallback can race a
+        # late dispatch. sql-writer upserts on the primary key, so a second
+        # fire for the same run updates one row instead of appending twice.
+        entry_id=f"self-definition:{definition.run_id}",
         concept_id=SELF_CONCEPT_ID,
         version=max(1, int(version)),
         content=definition.text[:SELF_DEFINITION_TEXT_CAP],

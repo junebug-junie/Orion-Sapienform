@@ -883,6 +883,7 @@ def read_snapshot(
     rotate_seed: str = "",
     recent_runs: int = 4,
     priors_cypher: str = LIVE_PRIORS_CYPHER,
+    counts_cypher: str = COUNTS_CYPHER,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -900,7 +901,7 @@ def read_snapshot(
     """
     try:
         prior_rows = reader.query(priors_cypher)
-        count_rows = reader.query(COUNTS_CYPHER)
+        count_rows = reader.query(counts_cypher)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
         recent_rows = reader.query(RECENT_RUNS_CYPHER)

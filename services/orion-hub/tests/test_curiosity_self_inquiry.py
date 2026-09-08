@@ -112,6 +112,7 @@ def test_history_write_appends_the_worldview_ref_and_names_the_producer() -> Non
     assert row.produced_by == SELF_DEFINITION_PRODUCER
     assert row.version == 4
     assert row.evidence_refs == ["README.md", worldview_evidence_ref(RUN)]
+    assert row.entry_id == f"self-definition:{RUN}", "keyed on the run so a re-fire upserts"
 
 
 def test_detail_round_trip() -> None:
@@ -129,7 +130,8 @@ def test_journal_entry_for_the_self_line_is_distinguishable() -> None:
     plain = build_investigation_journal_entry(material=counts, body_text="I looked.", correlation_id="c", run_id=RUN)
     assert entry.title == "Self-inquiry" and plain.title == "Curiosity"
     assert entry.entry_id != plain.entry_id
-    assert entry.source_ref == f"curiosity:self:{RUN}" and plain.source_ref == f"curiosity:{RUN}"
+    # Same source_ref on purpose: the atlas page joins journal bodies on it.
+    assert entry.source_ref == plain.source_ref == f"curiosity:{RUN}"
     assert entry.source_kind == plain.source_kind == "self_study"
 
 
@@ -419,6 +421,9 @@ def test_the_self_run_reads_only_self_priors_and_the_latest_definition() -> None
     assert asyncio.run(loop.tick_self_inquiry()) is None
     assert any("p.line = 'self'" in q for q in reader.queries)
     assert LATEST_SELF_DEFINITION_CYPHER in reader.queries
+    from orion.curiosity.self_inquiry import SELF_COUNTS_CYPHER
+
+    assert SELF_COUNTS_CYPHER in reader.queries, "the prompt's live_total is the self line's"
     assert not any(q == LIVE_PRIORS_CYPHER for q in reader.queries)
 
 

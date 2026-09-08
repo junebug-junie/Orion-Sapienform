@@ -222,6 +222,9 @@ class SubstrateFeltStateReader:
                 self._cache[lane.ctx_key] = (payload, time.monotonic())
             except Exception:
                 logger.debug("felt-state lane hydrate failed: %s", lane.ctx_key, exc_info=True)
+                # A failing query is a miss too: without this an unreachable DB
+                # is re-tried on every turn for lanes that opted into the TTL.
+                self._remember_miss(lane)
                 continue
 
 

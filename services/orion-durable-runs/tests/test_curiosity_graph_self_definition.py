@@ -90,7 +90,8 @@ def test_self_inquiry_run_carries_the_definition_to_finish_detail() -> None:
     assert detail["self_definition"] == DEFINITION
     assert world.turn_tags == ["curiosity_self_inquiry"]
     assert world.journal_entries[0].title == "Self-inquiry"
-    assert world.journal_entries[0].source_ref == "curiosity:self:abc123def456"
+    assert world.journal_entries[0].source_ref == "curiosity:abc123def456"
+    assert world.journal_entries[0].entry_id == "curiosity-self-inquiry:abc123def456"
 
 
 def test_investigation_run_still_reports_its_line_and_journal() -> None:

@@ -93,6 +93,16 @@ def test_degraded_beliefs_fall_back_to_the_felt_state_ctx_payload() -> None:
     assert out["orion_identity_summary"][1:] == list(FALLBACK_ORION_IDENTITY_SUMMARY)
 
 
+def test_degraded_path_does_not_let_the_marker_evict_an_authored_line() -> None:
+    """Review finding: the fallback capped ctx to 10 lines BEFORE stripping the
+    marker, so a marker already on ctx pushed out the last authored line."""
+    marker = f"{SELF_DEFINITION_MARKER}, written during my own self-inquiry (v1): old"
+    ctx = {"orion_identity_summary": [marker] + _AUTHORED[:10], "orion_self_definition": _DEFINITION}
+    out = _project_identity_from_beliefs(None, ctx)
+    assert out["orion_identity_summary"][0].startswith(SELF_DEFINITION_MARKER)
+    assert out["orion_identity_summary"][1:] == _AUTHORED[:10]
+
+
 def test_long_definitions_are_clipped_for_the_prompt() -> None:
     beliefs = _beliefs(_snap("self_definition", {**_DEFINITION, "content": "x" * 5000}))
     out = _project_identity_from_beliefs(beliefs, {})

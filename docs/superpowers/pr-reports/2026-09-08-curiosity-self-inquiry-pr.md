@@ -58,7 +58,7 @@ Before: Orion's only positive self-description in a chat turn was ~14 operator-a
 - Added: `CuriosityRunBriefV1.line: Literal["investigate","self_inquiry"] = "investigate"`; `SelfConceptHistoryProducer` gains `"curiosity_self_inquiry"`; `LaneSpec.where_sql`, `LaneSpec.cache_ttl_sec`; Hub route `POST /api/curiosity/api/self-inquiry/run-now`; worldview label `SelfDefinition` (Orion-written) and prior property `line`.
 - Removed: none.
 - Renamed: none.
-- Behavior changed: `orion:self_concept:history:write` now also carries `produced_by="curiosity_self_inquiry"` rows. `orion_identity_summary` may begin with one "In my own words, …" line. Journal entries for self runs use title `Self-inquiry`, `source_ref=curiosity:self:<run>`.
+- Behavior changed: `orion:self_concept:history:write` now also carries `produced_by="curiosity_self_inquiry"` rows. `orion_identity_summary` may begin with one "In my own words, …" line. Journal entries for self runs use title `Self-inquiry` and `entry_id=curiosity-self-inquiry:<run>`; `source_ref` stays `curiosity:<run>` so the atlas page still joins their prose.
 - Compatibility notes: `line` is additive on a `forbid` model — **deploy `orion-durable-runs` before `orion-hub`**; an old runner rejects the brief and Hub falls back to running the turn in-process (`curiosity_durable_dispatch_fell_back`). sql-writer already subscribes to the channel and the model has no producer enum, so no sql-writer change.
 
 ## Env/config changes
@@ -72,12 +72,12 @@ Before: Orion's only positive self-description in a chat turn was ~14 operator-a
 ## Tests run
 
 ```text
-services/orion-hub:      tests/test_curiosity_self_inquiry.py + tests/test_curiosity_investigation.py   161 passed
+services/orion-hub:      tests/test_curiosity_self_inquiry.py + tests/test_curiosity_investigation.py   161 passed (final)
 services/orion-durable-runs: tests/                                                                     8 passed
 services/orion-cortex-exec:  test_chat_stance_self_definition.py, test_chat_stance_self_state_projection.py,
-                             test_identity_injection.py, test_grounding_capsule_assembly.py             30 passed
+                             test_identity_injection.py, test_grounding_capsule_assembly.py             31 passed
 orion/:                  orion/substrate/relational/tests, orion/substrate/tests/test_felt_state_self_definition_lane.py
-                                                                                                        111 passed (relational) + 7 (felt-state lane)
+                                                                                                        112 passed (relational + felt-state lane)
 ```
 
 Pre-existing failures, verified NOT from this change (same result on `main` or on this worktree at HEAD before any edit):
@@ -102,11 +102,26 @@ Knowledge graph: scripts/safe_graphify_update.sh ran clean (75,802 -> 76,539 nod
 
 ## Review findings fixed
 
-The `/code-review feat/curiosity-self-inquiry high` pass ran twice and both times the orchestrator was killed by the session rate limit before reporting; two of its verifier agents completed with CONFIRMED verdicts and both are fixed here. A third, lighter pass was run after the fixes (see the PR thread for its result).
+The `/code-review feat/curiosity-self-inquiry high` pass ran twice and both times the orchestrator was killed by the session rate limit before reporting; two of its verifier agents completed with CONFIRMED verdicts and both are fixed here. A third pass at `low` also hit the limit after its finders had merged candidates; those five candidates were verified by hand against the code and are fixed below with the first two.
 
 - Finding: **the grants gate failed open.** `has_table_privilege` raises for a table that does not exist (confirmed live: `relation "public.no_such_table" does not exist`) and for an empty role name; the check caught the exception and returned `[]`, which the caller read as "all granted", so a self-inquiry turn would start and spend its budget on permission errors.
   - Fix: `SELF_INQUIRY_GRANTS_SQL` now tests existence first with `CASE WHEN to_regclass(...) IS NULL THEN true ELSE NOT has_table_privilege(...) END` (CASE guarantees evaluation order; `OR` does not), so a missing table is reported by name. `_self_inquiry_grants_missing` returns `(status, missing)` and a `failed` status BLOCKS with the new reason `grant_check_failed` instead of passing.
   - Evidence: live read-only run of the new query lists all nine tables plus a deliberately nonexistent one as missing, no error. Tests `test_a_failed_grant_check_blocks_rather_than_passing`, `test_the_grant_query_treats_a_missing_table_as_missing_not_as_an_error`.
+- Finding: **the mirror was not idempotent.** `self_concept_history` rows got a fresh uuid `entry_id`, so a re-delivered durable finish event (runner restart) or the in-process fallback racing a late dispatch would append the same definition twice.
+  - Fix: `entry_id = f"self-definition:{run_id}"`; sql-writer upserts on the primary key, so a second fire updates one row.
+  - Evidence: `test_history_write_appends_the_worldview_ref_and_names_the_producer` asserts the key.
+- Finding: **self-inquiry journal prose would be missing from the Hub atlas page.** `curiosity_routes.py` joins journal bodies on exactly `source_ref = curiosity:<run_id>`; the self line used `curiosity:self:<run_id>`.
+  - Fix: same `source_ref` for both lines (the run id is unique; `entry_id` prefix and title distinguish them). README and report updated.
+  - Evidence: `test_journal_entry_for_the_self_line_is_distinguishable`, durable-runs graph test.
+- Finding: **the self prompt stated the wrong prior count.** `read_snapshot` counted ALL live priors for "YOUR GRAPH HOLDS N LIVE PRIORS" while listing only `line='self'` ones.
+  - Fix: `SELF_COUNTS_CYPHER` and a `counts_cypher` parameter on `read_snapshot`/`_read_worldview`.
+  - Evidence: `test_the_self_run_reads_only_self_priors_and_the_latest_definition` asserts the self counts query runs.
+- Finding: **in the degraded (no beliefs) path a marker line already on ctx evicted the last authored line**, because the 10-line cap was applied before the marker strip.
+  - Fix: strip before `identity_kernel_with_fallbacks` caps.
+  - Evidence: `test_degraded_path_does_not_let_the_marker_evict_an_authored_line`.
+- Finding: **a failing felt-state query was not a remembered miss**, so an unreachable DB was retried every turn for the new lane.
+  - Fix: `_remember_miss` on exception too (still opt-in per lane).
+  - Evidence: `test_a_failing_query_is_also_remembered_as_a_miss`.
 - Finding: **the felt-state lane re-queried on every chat turn while no definition exists.** A miss never reached the cache, and "no row yet" is this lane's steady state until the first self-inquiry run lands, so every stance build and equilibrium gate tick paid one blocking query.
   - Fix: `SubstrateFeltStateReader._remember_miss` stores a negative cache entry, only for lanes that declare an explicit `cache_ttl_sec` (so `curiosity_signals` and the other pre-existing lanes keep their behaviour).
   - Evidence: `test_a_miss_is_remembered_for_the_cache_ttl_and_does_not_leak_into_ctx`, `test_lanes_without_an_explicit_cache_ttl_still_requery_on_a_miss`.

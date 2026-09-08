@@ -709,8 +709,12 @@ def _project_identity_from_beliefs(
                         }
                         break
     if kernel is None:
+        # Strip BEFORE the fallback's 10-line cap, or a marker line already on
+        # ctx counts against the cap and evicts the last authored line.
+        raw = ctx.get("orion_identity_summary")
+        if isinstance(raw, list):
+            ctx = {**ctx, "orion_identity_summary": _strip_self_definition_lines([str(v) for v in raw])}
         kernel = identity_kernel_with_fallbacks(ctx)
-        kernel["orion_identity_summary"] = _strip_self_definition_lines(kernel["orion_identity_summary"])
     own = _self_definition_line(beliefs, ctx)
     if own:
         kernel["orion_identity_summary"] = [own] + list(kernel["orion_identity_summary"])

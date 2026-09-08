@@ -343,10 +343,18 @@ match that is real but not grounded this tick blocks the send with
 `endogenous_outreach_decisions.result_json.offending_terms` for forensic
 tracing.
 
-Applied only to `_outreach_once`'s own `_generate()` output. `offer_message`
+**Second delivery door, same guard (2026-09-08 follow-up).** Originally
+applied only to `_outreach_once`'s own `_generate()` output. `offer_message`
 (the curiosity-loop path, `services/orion-hub/scripts/curiosity_investigation.
-py`) receives already-composed text with no comparable grounded-facts
-structure and is explicitly out of scope for this patch — a real follow-up.
+py`) composes its own text via a separate LLM call entirely outside
+`_generate()`/`build_outreach_prompt` and had zero check before this
+follow-up — the identical fabrication risk was reachable through that second
+door. `offer_message` now runs the same check
+(`EndogenousOutreach._named_ungrounded_terms`, shared with `_outreach_once`
+so the two paths cannot diverge) against a *fresh* trigger-evaluator read
+taken inside that call, not the periodic tick's `self._last_tension_reason`
+field, which can be stale by the time an arbitrary investigation calls
+`offer_message` minutes later.
 
 **A daydream, not only telemetry (2026-08-28).** Every other grounding lane
 above is an instrument reading, so an unprompted message could only ever be

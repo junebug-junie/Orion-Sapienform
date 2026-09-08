@@ -1952,6 +1952,121 @@ def test_blocked_reason_lets_a_caller_skip_composing_a_whole_turn() -> None:
 
 
 # --------------------------------------------------------------------------
+# offer_message: closed-vocabulary grounding guard (2026-09-08 follow-up)
+#
+# `_outreach_once` (the periodic tick) has run this guard since the original
+# incident. `offer_message` is the SECOND, independent door to Juniper's
+# inbox -- the curiosity loop composes its own text via its own separate LLM
+# call and hands the finished string straight here, never touching
+# `_generate()`/`build_outreach_prompt` at all. Before this patch nothing
+# checked it.
+# --------------------------------------------------------------------------
+
+
+def test_offer_message_blocks_a_named_ungrounded_signal(monkeypatch) -> None:
+    """A curiosity finding that names a real, registered signal
+    (`harness_closure`) as current fact, with nothing grounding it this tick,
+    must not reach any delivery rail -- the exact failure shape the original
+    incident closed for `_generate()`, now closed for this door too."""
+    outreach = _outreach(trigger_evaluator=lambda: None)  # nothing grounded
+    queue = _delivered(outreach)
+
+    result = _offer(
+        outreach,
+        text="I keep noticing something in harness_closure's prediction error.",
+    )
+
+    assert result["outreach"] is False
+    assert result["reason"] == "named_ungrounded_signal"
+    assert result["offending_terms"] == ["harness_closure"]
+    assert queue.empty()
+
+
+def test_offer_message_sends_a_grounded_signal_name_normally(monkeypatch) -> None:
+    """The counterpart to the block test above: a real signal name that IS
+    this tick's grounded fact must ship exactly like any other successful
+    curiosity message."""
+    real_reason = TensionTriggerReason(
+        target_id="node:athena",
+        run_length=9,
+        peak_deviation_pressure=0.62,
+        sustained_load_pressure=0.71,
+        sustained_load_pressure_channel="disk_capacity_pressure",
+        sustained_load_pressure_node_id="node:athena",
+    )
+    outreach = _outreach(trigger_evaluator=lambda: real_reason)
+    queue = _delivered(outreach)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = _offer(
+        outreach,
+        text="`disk_capacity_pressure` on `node:athena` has been high all day.",
+    )
+
+    assert result["outreach"] is True and result["reason"] == "sent"
+    assert (
+        queue.get_nowait()["llm_response"]
+        == "`disk_capacity_pressure` on `node:athena` has been high all day."
+    )
+
+
+def test_offer_message_plain_finding_has_no_false_positive(monkeypatch) -> None:
+    """An ordinary, non-technical finding must not trip the guard just for
+    existing -- only compound, registered signal names do."""
+    outreach = _outreach()
+    queue = _delivered(outreach)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    text = "I noticed we haven't talked about the garden in a while."
+    result = _offer(outreach, text=text)
+
+    assert result["outreach"] is True and result["reason"] == "sent"
+    assert queue.get_nowait()["llm_response"] == text
+
+
+def test_offer_message_grounds_against_a_fresh_read_not_the_cached_field(
+    monkeypatch,
+) -> None:
+    """`self._last_tension_reason` belongs to `_should_roll()`'s periodic
+    tick and can be minutes stale by the time an arbitrary curiosity
+    investigation calls `offer_message` -- it must not be what grounds this
+    check. Here the STALE cached field would ground `node:athena` (so a
+    buggy "read the cached field" implementation would ship the message),
+    but the FRESH evaluator call returns a different, unrelated reason that
+    grounds nothing about athena -- the correct implementation must block."""
+    stale_reason = TensionTriggerReason(
+        target_id="node:athena", run_length=9, peak_deviation_pressure=0.62
+    )
+    fresh_reason = TensionTriggerReason(
+        target_id="node:circe", run_length=3, peak_deviation_pressure=0.10
+    )
+    calls = {"n": 0}
+
+    def fresh_evaluator():
+        calls["n"] += 1
+        return fresh_reason
+
+    outreach = _outreach(trigger_evaluator=fresh_evaluator)
+    # Simulates a stale value left by an earlier, unrelated periodic tick --
+    # never set by this test's own call to offer_message.
+    outreach._last_tension_reason = stale_reason
+    queue = _delivered(outreach)
+
+    result = _offer(outreach, text="node:athena has been under load again.")
+
+    assert calls["n"] == 1, "offer_message must fetch a fresh trigger read"
+    assert result["outreach"] is False
+    assert result["reason"] == "named_ungrounded_signal"
+    assert result["offending_terms"] == ["node:athena"]
+    assert queue.empty()
+    # The stale field itself must be left alone -- offer_message's fresh
+    # fetch is a local read, not a `_should_roll()`-style field write.
+    assert outreach._last_tension_reason is stale_reason
+
+
+# --------------------------------------------------------------------------
 # Reverie daydream (visual-chain caption)
 # --------------------------------------------------------------------------
 

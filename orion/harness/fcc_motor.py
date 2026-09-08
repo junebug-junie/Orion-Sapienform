@@ -34,7 +34,7 @@ logger = logging.getLogger("orion.harness.fcc_motor")
 
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
 DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
-DEFAULT_STREAM_STALL_TIMEOUT_SEC = 180.0
+DEFAULT_STREAM_STALL_TIMEOUT_SEC = 420.0
 
 # Live FCC claude subprocesses keyed by correlation_id (harness cancel path).
 _ACTIVE: Dict[str, asyncio.subprocess.Process] = {}

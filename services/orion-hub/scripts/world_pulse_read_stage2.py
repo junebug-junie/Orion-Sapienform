@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -53,6 +53,60 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 PIPELINE_TAG = "world_pulse_read_stage2"
 _AUTHOR = "orion"
 _FORCE_OVERRIDE = frozenset({"cooldown", "daily_cap", "outside_window"})
+# Cap on how much of a raw exception message / non-final-frame error string
+# lands in `fail_reason` -- keep it grep-friendly (short label + a hint of
+# context), not a full stack trace stuffed into the `stage2_error` column.
+_FAIL_REASON_DETAIL_MAX_LEN = 200
+
+
+class GenerateOutcome(NamedTuple):
+    """Result of `_generate`: generated text (empty on any failure) plus a
+    specific, short, machine-greppable reason for that failure.
+
+    Before this, every one of the six ways `_generate` can produce no text
+    collapsed to a bare `""`, so `_stage2_pass` always raised the identical
+    `ValueError("empty_generation")` no matter which of six very different
+    situations actually happened (bus never wired up, the whole-turn timeout,
+    an exception from the turn itself, no final frame in the response, a
+    blank final response, or error-shaped text). `fail_reason` is `None` on
+    success (non-empty `text`).
+    """
+
+    text: str
+    fail_reason: Optional[str] = None
+
+
+def _reason_from_non_final_frame(frames: list[Any]) -> str:
+    """Pull the real failure reason off the last frame when there is no
+    `type == "final"` frame in the response, instead of a generic label.
+
+    See `orion/hub/turn_orchestrator.py` for how these frames get built:
+    `_harness_error_frame` (`type == "turn_error"`) carries the real cause on
+    `error`/`error_code`; `_thought_deferred_frame` (`type == "turn_deferred"`)
+    carries it on `reason`. Falls back to `no_final_frame` only when the last
+    frame itself carries nothing useful (empty frame list, or a frame shape
+    with none of the known reason fields).
+    """
+    if not frames:
+        return "no_final_frame"
+    last = frames[-1]
+    if not isinstance(last, dict):
+        return "no_final_frame"
+    frame_type = last.get("type")
+    if frame_type == "turn_error":
+        code = last.get("error_code")
+        if code:
+            return f"turn_error:{code}"
+        detail = str(last.get("error") or "").strip()
+        if detail:
+            return f"turn_error:{detail[:_FAIL_REASON_DETAIL_MAX_LEN]}"
+        return "turn_error"
+    if frame_type == "turn_deferred":
+        reason = str(last.get("reason") or "").strip()
+        return f"turn_deferred:{reason}" if reason else "turn_deferred"
+    if frame_type:
+        return f"non_final_frame:{frame_type}"
+    return "no_final_frame"
 
 
 def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
@@ -426,19 +480,23 @@ class WorldPulseReadStage2Pipeline:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
-        text = await self._generate(_build_stage2_prompt(handoff, trace_id), trace_id)
-        if not text:
-            raise ValueError("empty_generation")
-        parsed = parse_json_object(text)
+        outcome = await self._generate(_build_stage2_prompt(handoff, trace_id), trace_id)
+        if not outcome.text:
+            raise ValueError(outcome.fail_reason or "empty_generation")
+        parsed = parse_json_object(outcome.text)
         parsed["trace_id"] = trace_id
         parsed.setdefault("created_at", created_at.isoformat())
         parsed["seed_id"] = handoff.seed_ref.seed_id
         parsed["producer_hint"] = "world_pulse_read_stage2"
         return WorldPulseReadStage2ResultV1.model_validate(parsed)
 
-    async def _generate(self, prompt: str, correlation_id: str) -> str:
+    async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
+        """Real unified-turn generation. Every failure path returns a distinct,
+        short `fail_reason` instead of collapsing to a bare empty string --
+        see `GenerateOutcome` for why that used to make root-causing a stall
+        indistinguishable from five other, very different failures."""
         if self._bus is None:
-            return ""
+            return GenerateOutcome("", "bus_unavailable")
         from orion.cognition.cortex_payload_extract import looks_like_error_text
         from orion.hub.turn_orchestrator import execute_unified_turn
 
@@ -461,19 +519,22 @@ class WorldPulseReadStage2Pipeline:
             )
         except (TimeoutError, asyncio.TimeoutError):
             logger.warning("world_pulse_read_stage2_generate_timeout corr=%s", correlation_id)
-            return ""
+            return GenerateOutcome("", "stage2_turn_timeout")
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "world_pulse_read_stage2_generate_failed corr=%s err=%s", correlation_id, exc
             )
-            return ""
+            detail = str(exc)[:_FAIL_REASON_DETAIL_MAX_LEN]
+            return GenerateOutcome("", f"turn_exception:{detail}" if detail else "turn_exception")
 
         final = next(
             (f for f in frames if isinstance(f, dict) and f.get("type") == "final"), None
         )
         if final is None:
-            return ""
+            return GenerateOutcome("", _reason_from_non_final_frame(frames))
         text = str(final.get("llm_response") or "").strip()
+        if not text:
+            return GenerateOutcome("", "blank_final_response")
         if looks_like_error_text(text):
-            return ""
-        return text
+            return GenerateOutcome("", "looks_like_error_text")
+        return GenerateOutcome(text, None)

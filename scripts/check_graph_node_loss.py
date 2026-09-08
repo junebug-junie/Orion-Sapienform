@@ -94,6 +94,14 @@ def _is_lfs_pointer(raw: str) -> bool:
     return raw.startswith(_LFS_POINTER_PREFIX)
 
 
+# This gate runs on every commit (via the pre-commit hook), so a hang here
+# hangs every commit, not just ones touching graph.json. `git lfs smudge` can
+# legitimately hit the network (fetching an object not yet in the local LFS
+# cache -- exactly why smudge, not a local object-store read, is used).
+# Override with GRAPHIFY_LFS_SMUDGE_TIMEOUT (seconds).
+_LFS_SMUDGE_TIMEOUT = float(os.environ.get("GRAPHIFY_LFS_SMUDGE_TIMEOUT", "60"))
+
+
 def _lfs_smudge(raw: str, path_hint: str) -> str:
     """Resolve LFS pointer-stub text to real file content via `git lfs smudge`.
 
@@ -101,13 +109,26 @@ def _lfs_smudge(raw: str, path_hint: str) -> str:
     cache -- exactly what's needed for HEAD's version, which may not have
     been pulled yet in a shallow or partial LFS checkout.
     """
-    proc = subprocess.run(
-        ["git", "lfs", "smudge", "--", path_hint],
-        input=raw,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # GIT_LFS_SKIP_SMUDGE unset explicitly: if set to 1 in the invoking
+    # environment (a common CI/large-repo speed optimization), `git lfs
+    # smudge` would pass the pointer text through unchanged instead of
+    # fetching real content -- this gate needs real content unconditionally.
+    env = dict(os.environ)
+    env.pop("GIT_LFS_SKIP_SMUDGE", None)
+    try:
+        proc = subprocess.run(
+            ["git", "lfs", "smudge", "--", path_hint],
+            input=raw,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_LFS_SMUDGE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(
+            f"git lfs smudge timed out after {_LFS_SMUDGE_TIMEOUT}s for {path_hint}"
+        ) from exc
     if proc.returncode != 0:
         raise ValueError(f"git lfs smudge failed for {path_hint}: {proc.stderr.strip()}")
     return proc.stdout

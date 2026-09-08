@@ -196,7 +196,7 @@ def _lfs_available() -> bool:
 
 
 @pytest.mark.skipif(not _lfs_available(), reason="git or git-lfs not on PATH")
-def test_git_mode_smudges_lfs_pointer_for_head_and_staged(tmp_path, monkeypatch):
+def test_git_mode_smudges_lfs_pointer_for_head_and_staged(tmp_path):
     """End-to-end: a real git repo with graph.json LFS-tracked, one real commit
     (HEAD) and one staged real edit -- both sides must be read as real graph
     content, not the raw pointer stub `git show` would otherwise return."""
@@ -256,3 +256,67 @@ def test_git_mode_smudges_lfs_pointer_for_head_and_staged(tmp_path, monkeypatch)
     assert payload["before"]["nodes"] == 1000
     assert payload["after"]["nodes"] == 920
     assert payload["blocked"] is False
+
+
+@pytest.mark.skipif(not _lfs_available(), reason="git or git-lfs not on PATH")
+def test_git_mode_fails_closed_on_unresolvable_lfs_pointer(tmp_path):
+    """An LFS pointer this machine can't resolve (no remote configured, oid
+    not in the local cache) must not hang the gate and must not silently
+    report success -- it must fail closed (exit 2) with a real message.
+
+    Deliberately built network-free and deterministic: no remote is
+    configured, so `git lfs smudge` cannot even attempt a fetch (verified by
+    direct repro that this makes it exit 0 and pass the pointer text through
+    UNCHANGED rather than raising -- json.loads on that unchanged pointer
+    text is what actually trips the gate's existing fail-closed path). The
+    subprocess timeout here is a test-level backstop: if a future change
+    reintroduces a hang, this test fails loudly instead of stalling CI.
+    """
+    import os
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "Test"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "test@test.local"
+
+    def run(*args):
+        subprocess.run(list(args), cwd=repo, check=True, capture_output=True, text=True, env=env)
+
+    run("git", "init", "-q", ".")
+    run("git", "config", "user.email", "test@test.local")
+    run("git", "config", "user.name", "Test")
+    (repo / ".gitattributes").write_text(
+        "graphify-out/graph.json filter=lfs diff=lfs -text\n", encoding="utf-8"
+    )
+    run("git", "config", "filter.lfs.clean", "git-lfs clean -- %f")
+    run("git", "config", "filter.lfs.smudge", "git-lfs smudge -- %f")
+    run("git", "config", "filter.lfs.process", "git-lfs filter-process")
+    run("git", "config", "filter.lfs.required", "true")
+    run("git", "lfs", "install", "--local")
+
+    (repo / "graphify-out").mkdir()
+    # A syntactically valid pointer whose object was never fetched and never
+    # will be (no remote configured at all) -- unresolvable by construction.
+    (repo / "graphify-out" / "graph.json").write_text(
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:" + "0" * 64 + "\n"
+        "size 999\n",
+        encoding="utf-8",
+    )
+    run("git", "add", ".gitattributes", "graphify-out/graph.json")
+    run("git", "commit", "-q", "-m", "unresolvable pointer")
+
+    # The gate only runs when graph.json is actually staged (see
+    # _staged_paths()) -- stage a real edit so HEAD's unresolvable pointer
+    # actually gets compared against something.
+    _graph(repo / "graphify-out" / "graph.json", nodes=50)
+    run("git", "add", "graphify-out/graph.json")
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--json"],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert proc.stderr.strip() != ""

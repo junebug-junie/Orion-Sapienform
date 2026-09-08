@@ -44,7 +44,10 @@
 # way, which smudges the pointer back into real content there (verified: see
 # the PR report's merge-driver evidence section).
 #
-# POSIX sh only -- no bashisms.
+# No bashisms (arrays, [[, local, etc.) -- runs under any /bin/sh. Does rely
+# on `mktemp -d`, `head -c`, and `timeout`, which are not in strict POSIX but
+# are near-universal on Linux (GNU coreutils); same assumption already made
+# by sibling scripts in this repo (e.g. safe_graphify_update.sh's `mktemp -d`).
 
 set -eu
 
@@ -59,6 +62,15 @@ ORIG_B=$3
 
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT INT TERM
+
+# `git lfs smudge`/`git lfs clean` can legitimately need to hit the network
+# (smudge fetches an object on demand if it's not cached locally -- that's
+# the whole reason smudge is used here instead of a local object-store
+# read). Git treats this merge driver as blocking for the duration of the
+# merge; an unreachable/slow LFS remote or a credential prompt would
+# otherwise hang the merge indefinitely with no way out but killing the
+# process by hand. Override with GRAPHIFY_LFS_MERGE_TIMEOUT (seconds).
+_LFS_TIMEOUT="${GRAPHIFY_LFS_MERGE_TIMEOUT:-60}"
 
 _is_lfs_pointer() {
     # A real LFS pointer file's first line is exactly this. Plain JSON always
@@ -77,8 +89,14 @@ _resolve() {
         return 0
     fi
     if _is_lfs_pointer "$_src"; then
-        if ! git lfs smudge -- "$_src" < "$_src" > "$_dst" 2>"$WORKDIR/smudge.err"; then
-            echo "graphify_lfs_merge_driver: git lfs smudge failed for $_src:" >&2
+        # GIT_LFS_SKIP_SMUDGE unset explicitly: if it's set to 1 in the
+        # invoking environment (a common CI/large-repo speed optimization),
+        # `git lfs smudge` passes the pointer text through UNCHANGED instead
+        # of fetching real content -- this driver needs real content
+        # unconditionally, regardless of ambient LFS speed settings.
+        if ! timeout "$_LFS_TIMEOUT" env -u GIT_LFS_SKIP_SMUDGE \
+                git lfs smudge -- "$_src" < "$_src" > "$_dst" 2>"$WORKDIR/smudge.err"; then
+            echo "graphify_lfs_merge_driver: git lfs smudge failed or timed out (${_LFS_TIMEOUT}s) for $_src:" >&2
             cat "$WORKDIR/smudge.err" >&2
             exit 1
         fi
@@ -104,16 +122,27 @@ graphify merge-driver "$RESOLVED_O" "$RESOLVED_A" "$RESOLVED_B"
 STATUS=$?
 set -e
 
-if [ "$STATUS" -eq 0 ] && [ -f "$RESOLVED_A" ]; then
-    # Re-clean the real merged content back into an LFS pointer before
-    # writing it to the path git treats as the merge result -- see the
-    # header comment above for why this step is required, not optional.
-    if ! git lfs clean -- "$ORIG_A" < "$RESOLVED_A" > "$WORKDIR/A.pointer" 2>"$WORKDIR/clean.err"; then
-        echo "graphify_lfs_merge_driver: git lfs clean failed for $ORIG_A:" >&2
-        cat "$WORKDIR/clean.err" >&2
-        exit 1
+if [ -f "$RESOLVED_A" ]; then
+    if [ "$STATUS" -eq 0 ]; then
+        # Re-clean the real merged content back into an LFS pointer before
+        # writing it to the path git treats as the merge result -- see the
+        # header comment above for why this step is required, not optional.
+        if ! timeout "$_LFS_TIMEOUT" env -u GIT_LFS_SKIP_SMUDGE \
+                git lfs clean -- "$ORIG_A" < "$RESOLVED_A" > "$WORKDIR/A.pointer" 2>"$WORKDIR/clean.err"; then
+            echo "graphify_lfs_merge_driver: git lfs clean failed or timed out (${_LFS_TIMEOUT}s) for $ORIG_A:" >&2
+            cat "$WORKDIR/clean.err" >&2
+            exit 1
+        fi
+        cp "$WORKDIR/A.pointer" "$ORIG_A"
+    else
+        # graphify merge-driver reported a real conflict it couldn't
+        # auto-resolve. Leave the REAL (un-cleaned) content it produced at
+        # ORIG_A, not a pointer -- a human resolving this by hand needs to
+        # see usable JSON, not a stale pre-merge pointer stub (which is what
+        # ORIG_A would otherwise still hold, since we never touched it) or a
+        # freshly re-cleaned pointer (unreadable for manual resolution).
+        cp "$RESOLVED_A" "$ORIG_A"
     fi
-    cp "$WORKDIR/A.pointer" "$ORIG_A"
 fi
 
 exit "$STATUS"

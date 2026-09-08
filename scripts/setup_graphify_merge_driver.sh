@@ -88,6 +88,18 @@ if [ ! -x "$SCRIPT_DIR_FOR_DRIVER/graphify_lfs_merge_driver.sh" ]; then
     exit 1
 fi
 
+# 1c. Confirm git-lfs itself is on PATH -- the wrapper depends on
+# `git lfs smudge`/`git lfs clean` at merge time. Catching a missing
+# git-lfs install here (setup time) is far easier to diagnose than letting
+# it surface as a `command not found` buried inside the wrapper's stderr
+# during someone's first real merge.
+if ! command -v git-lfs >/dev/null 2>&1; then
+    echo "error: 'git-lfs' is not on PATH. The merge driver this script configures" >&2
+    echo "  depends on it. Install it (e.g. 'apt install git-lfs' or see" >&2
+    echo "  https://git-lfs.com), then re-run this script." >&2
+    exit 1
+fi
+
 # 2. Configure the local (repo-scoped, NOT --global) merge driver.
 current_driver="$(git config --get merge.graphify.driver 2>/dev/null || true)"
 if [ "$current_driver" = "$EXPECTED_DRIVER" ]; then

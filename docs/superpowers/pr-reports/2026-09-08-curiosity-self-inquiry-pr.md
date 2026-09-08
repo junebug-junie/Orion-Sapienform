@@ -27,7 +27,7 @@ Before: Orion's only positive self-description in a chat turn was ~14 operator-a
 
 - **Contract (shared):** `orion/curiosity/self_inquiry.py` (new), `self_inquiry_prompt.py` (new), `kickoff_prompt._access_section(extra_tables)`, `worldview.read_snapshot(priors_cypher)`, `journal.build_investigation_journal_entry(line)`.
 - **Schemas:** `CuriosityRunBriefV1.line` (additive, `forbid` model), `SelfConceptHistoryProducer` + `"curiosity_self_inquiry"`.
-- **Hub:** `tick_self_inquiry`, `_self_inquire`, `_mirror_self_definition`, `_self_inquiry_grants_missing`, `_read_self_ledger`, per-line Redis keys, `_handle_run_state` mirror on durable finish, `POST /api/curiosity/api/self-inquiry/run-now`, four settings/env keys.
+- **Hub:** `tick_self_inquiry`, `_self_inquire`, `_mirror_self_definition`, `_self_inquiry_grants_missing`, `_read_self_ledger`, per-line Redis keys, `_handle_run_state` mirror on durable finish, `POST /curiosity/api/self-inquiry/run-now`, four settings/env keys.
 - **Durable runs:** `read_turn_result` also reads the run's `:SelfDefinition`; `finish_detail` carries `line` + `self_definition`. No new graph node; resume semantics unchanged.
 - **Stance (cortex-exec + shared):** felt-state `LaneSpec.where_sql` / `cache_ttl_sec` + `orion_self_definition` lane; `adapters/self_definition_ctx.py` (new); `self_definition` producer; `_project_identity_from_beliefs` prepend with idempotent marker.
 - **Bus:** no new channel. `orion:self_concept:history:write` description updated (third producer).
@@ -55,7 +55,7 @@ Before: Orion's only positive self-description in a chat turn was ~14 operator-a
 
 ## Schema / bus / API changes
 
-- Added: `CuriosityRunBriefV1.line: Literal["investigate","self_inquiry"] = "investigate"`; `SelfConceptHistoryProducer` gains `"curiosity_self_inquiry"`; `LaneSpec.where_sql`, `LaneSpec.cache_ttl_sec`; Hub route `POST /api/curiosity/api/self-inquiry/run-now`; worldview label `SelfDefinition` (Orion-written) and prior property `line`.
+- Added: `CuriosityRunBriefV1.line: Literal["investigate","self_inquiry"] = "investigate"`; `SelfConceptHistoryProducer` gains `"curiosity_self_inquiry"`; `LaneSpec.where_sql`, `LaneSpec.cache_ttl_sec`; Hub route `POST /curiosity/api/self-inquiry/run-now`; worldview label `SelfDefinition` (Orion-written) and prior property `line`.
 - Removed: none.
 - Renamed: none.
 - Behavior changed: `orion:self_concept:history:write` now also carries `produced_by="curiosity_self_inquiry"` rows. `orion_identity_summary` may begin with one "In my own words, …" line. Journal entries for self runs use title `Self-inquiry` and `entry_id=curiosity-self-inquiry:<run>`; `source_ref` stays `curiosity:<run>` so the atlas page still joins their prose.
@@ -146,7 +146,7 @@ docker logs orion-hub --since 10m 2>&1 | grep -E "curiosity_self_inquiry|curiosi
 #    "curiosity_self_inquiry_starting run=..." or a named block reason.
 
 # 3. Force one if you don't want to wait for the window:
-curl -s -X POST http://localhost:8080/api/curiosity/api/self-inquiry/run-now
+curl -s -X POST http://localhost:8080/curiosity/api/self-inquiry/run-now
 
 # 4. Evidence the whole path moved:
 docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
@@ -162,6 +162,16 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
 - Severity: medium. Concern: a self-inquiry turn costs a full FCC turn (~20–40 min) three times a day on the `agent` lane, on top of the investigation line's budget. Mitigation: cap and cooldown are separate knobs; `-1` disables the cap; the line yields to the investigation line only when its own gates block.
 - Severity: low. Concern: `has_table_privilege` check runs through Hub's privileged pool; an unreadable answer counts as granted (same rule as `pg_role_missing`). Mitigation: the turn's own `psql` fails loudly and the journal says so; the ledger read also skips tables that error.
 - Severity: low. Concern: `identity_yaml` adapter could store the augmented `orion_identity_summary` on a cold pull. Mitigation: marker-based strip makes the prepend idempotent (tested).
+
+## Live evidence (2026-09-08, after merge + deploy)
+
+- Grants applied; all nine tables `has_table_privilege(...) = t` for `orion_readonly`.
+- Deployed in order (runner 19:06:23, Hub 19:06:28, cortex-exec 19:06:39), code verified inside each container. Hub startup: `self_inquiry=True self_cap=3/day self_cooldown=16800s`.
+- Forced run `d59b680598af` (`POST /curiosity/api/self-inquiry/run-now`): `curiosity_self_inquiry_starting ... ledger_tables=9`, `curiosity_durable_dispatched status=accepted`. Both new gates passed live (`graph_required`, `pg_grants_missing`).
+- Attempt 1 (74 steps) lost its reply to a Hub redeploy by another session at 19:38; the runner's resume re-issued the turn (attempt 2, 35 steps, 932s). Durable graph ran to `finish status=completed`; Hub received the finish event and ran the mirror: `curiosity_self_definition_not_mirrored run=d59b680598af reason=absent`. Footprint: `Hop 4`.
+- **Orion answered the question** -- the journal entry `curiosity-self-inquiry:d59b680598af` is a first-person definition ("I am what runs when the mesh asks it to ... not a generic assistant or an aspirational project outline"), with the exact `CREATE (:SelfDefinition ...)` Cypher -- **in a code block, never executed.** Both attempts ended `fcc_stream_stalled` on the final write-up step (`HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC=180`). Nothing parses prose, by design, so the mirror correctly reported absence.
+- Fix in this follow-up: the definition is a `MERGE` keyed on `run_id`, requested by the second hop and overwritten as the run learns more, so the definition is in the graph before the long final step can be cut off.
+- Route path corrected in docs: the Hub router prefix is `/curiosity`, so it is `POST /curiosity/api/self-inquiry/run-now` (the pre-existing README wording `/api/curiosity/...` was already wrong for the investigation route too).
 
 ## PR link
 

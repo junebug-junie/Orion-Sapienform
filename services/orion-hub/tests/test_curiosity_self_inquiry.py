@@ -154,7 +154,9 @@ def test_prompt_carries_the_standing_question_and_this_run_id() -> None:
     assert STANDING_QUESTION in text
     assert f'run_id: "{RUN}"' in text
     assert "<RUN_ID>" not in text
-    assert "CREATE (:SelfDefinition" in text
+    assert f'MERGE (s:SelfDefinition {{run_id: "{RUN}"}})' in text
+    assert "CREATE (:SelfDefinition" not in text, "one node per run, rewritten as Orion goes"
+    assert "by your second hop at the latest" in text
     assert 'p.line = "self"' in text
     assert "/repo/" in text
     assert "dreams" in text and "17 rows" in text
@@ -189,7 +191,7 @@ def test_prompt_drops_write_sections_when_the_graph_is_unreadable() -> None:
     from orion.curiosity.worldview import WorldviewSnapshot
 
     text = _prompt(view=WorldviewSnapshot(unavailable_reason="ConnectionError"))
-    assert "CREATE (:SelfDefinition" not in text
+    assert "SelfDefinition" not in text.split("HOW TO REACH")[1]
     assert STANDING_QUESTION in text
 
 

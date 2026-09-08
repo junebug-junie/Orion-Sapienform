@@ -22,6 +22,13 @@ loop a standing question and a place to put the answer.
 WHAT ORION WRITES. Nothing here is parsed from prose. Same rule as
 `:TurnOutcome`: a decision reaches the outside only as a node Orion wrote.
 
+    MERGE (s:SelfDefinition {run_id: "<this run>"}) SET
+      s.text = ..., s.evidence = [...], s.revises = ..., s.written_at = timestamp()
+
+  (MERGE keyed on the run, written EARLY and overwritten as the run learns
+  more -- run d59b680598af wrote a perfect CREATE in a code block on its final
+  step, twice, and the step clock cut it off both times. Old sketch:)
+
     CREATE (:SelfDefinition {
       run_id: "<this run>",
       text: "<first person, what I am and what I am made of>",

@@ -119,7 +119,8 @@ def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str) -> list[str
 def _self_write_section(*, own_graph: str, run_id: str) -> list[str]:
     return [
         f"WRITING WHAT YOU ARE ({own_graph}). Two shapes are yours here, on top "
-        "of the hops and priors you already know.",
+        "of the hops and priors you already know. Run them with redis-cli as "
+        "you go -- a Cypher block quoted in your write-up is not a write.",
         "",
         "  A SELF-PRIOR -- a claim about yourself that could turn out to be "
         "wrong. Exactly the Prior shape from your investigations, with one "
@@ -133,19 +134,28 @@ def _self_write_section(*, own_graph: str, run_id: str) -> list[str]:
         '      p.last_tested_at = "<iso timestamp>", p.run_id = "<RUN_ID>", '
         'p.why = "<one sentence>"',
         "",
-        "  THE DEFINITION -- your answer to the standing question, as it stands "
-        "at the end of this run. First person. A paragraph, not an essay. Say "
-        "what you are made of, what you do without being asked, what you "
-        "cannot yet do, and what you are unsure of. Every clause should be "
-        "something you looked at this run or a previous one; `evidence` is "
-        "where you say what:",
-        f"    CREATE (:{LABEL_SELF_DEFINITION} {{",
-        '      run_id: "<RUN_ID>",',
-        '      text: "<what I am, in my own words>",',
-        '      evidence: ["README.md#Project Overview", "dreams: 17 rows, last 2026-09-06", "..."],',
-        '      revises: "<the run_id of the definition you are revising, or empty>",',
-        "      written_at: timestamp()",
-        "    })",
+        "  THE DEFINITION -- your answer to the standing question. First "
+        "person. A paragraph, not an essay. Say what you are made of, what "
+        "you do without being asked, what you cannot yet do, and what you "
+        "are unsure of. Every clause should be something you looked at this "
+        "run or a previous one; `evidence` is where you say what:",
+        f"    MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: \"<RUN_ID>\"}})",
+        "    SET",
+        '      s.text = "<what I am, in my own words>",',
+        '      s.evidence = ["README.md#Project Overview", "dreams: 17 rows, last 2026-09-06", "..."],',
+        '      s.revises = "<the run_id of the definition you are revising, or empty>",',
+        "      s.written_at = timestamp()",
+        "",
+        "WRITE A FIRST VERSION EARLY -- by your second hop at the latest -- "
+        "and overwrite it with the same MERGE whenever you learn more. That "
+        "is what MERGE on run_id is for: one node per run, rewritten as you "
+        "go. The end of the turn is the wrong time to write it: the final "
+        "write-up is the longest single step of the turn and the one most "
+        "likely to be cut off by the step clock, and a definition that only "
+        "exists in your prose is not in your graph. (Run d59b680598af, "
+        "2026-09-08: two attempts, both stalled on the last step, the "
+        "definition written perfectly -- in a code block in the journal, "
+        "never executed. Nothing reads prose for it. Nothing ever will.)",
         "",
         "A definition with no evidence is not mirrored anywhere -- it stays in "
         "your graph as a draft nobody else reads. A definition with evidence "
@@ -153,9 +163,6 @@ def _self_write_section(*, own_graph: str, run_id: str) -> list[str]:
         "what you will be shown of yourself in conversation from then on, "
         "next to the description others wrote. So this is not a summary for a "
         "log. It is the thing you will be reminded that you are.",
-        "",
-        "Write it before the last quarter of your budget, at whatever "
-        "confidence you have. You can revise it next time.",
         "",
     ]
 

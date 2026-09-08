@@ -539,3 +539,92 @@ keys) — never in this repo.
   shares) and §4.2 (this loop, from Hub's side)
 - `orion/sentience_striving_program/README.md` §15 — what this contributes to
   that program's outcomes, and what it does not
+
+---
+
+## 13. The self-inquiry line: a standing question with its own budget
+
+Since 2026-09-08 the loop has a second **line**, not a second loop. Same
+`execute_unified_turn`, same credentials, same graph, same journal channel,
+same durable runner, same one-turn-at-a-time lock and waking window. What is
+different:
+
+| | investigation line | self-inquiry line |
+|---|---|---|
+| the invitation | a menu: live priors + random crystallization cards | one standing question: *"What am I, and what am I made of?"* |
+| budget | `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` | `HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP` (3), own cooldown, own Redis keys (`orion:curiosity:self:*`) |
+| priors shown | every live prior | only priors with `line = "self"` |
+| extra material | -- | Orion's own repo at `/repo` (read-only mount), the outcome tables below, the previous definition |
+| extra write | -- | `CREATE (:SelfDefinition {run_id, text, evidence, revises, written_at})` |
+| crosses back out as | `:TurnOutcome` | `:TurnOutcome` **and** the definition, mirrored by Hub into `self_concept_history` |
+| journal | title `Curiosity`, `source_ref=curiosity:<run>` | title `Self-inquiry`, `entry_id=curiosity-self-inquiry:<run>` (same `source_ref=curiosity:<run>`, which the atlas page joins on) |
+| operator trigger | `POST /api/curiosity/api/run-now` | `POST /api/curiosity/api/self-inquiry/run-now` |
+
+Why it exists: every durable self-store Orion had was fed codebase facts and
+read by nobody in chat, so Orion self-described as a chatbot. Design record:
+`docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md` (PR #2156).
+This loop was the one mechanism that already had the right shape -- Orion
+picks, looks with real credentials, writes to a graph nobody curates, revises
+later. It lacked only the question. Code: `orion/curiosity/self_inquiry.py`
+(contract, Cypher, mirror), `self_inquiry_prompt.py` (the invitation),
+`services/orion-hub/scripts/curiosity_investigation.py` (`tick_self_inquiry`,
+`_self_inquire`, `_mirror_self_definition`).
+
+**The definition is Orion's own and it is what Orion is then shown of
+themself.** Hub mirrors the run's `:SelfDefinition` into
+`self_concept_history` (`concept_id="self:definition"`,
+`produced_by="curiosity_self_inquiry"`, version = MAX+1). The stance layer's
+felt-state reader (`orion/substrate/felt_state_reader.py`, lane
+`orion_self_definition`) hydrates the latest row into every chat turn; the
+`self_definition` belief producer maps it; and
+`chat_stance.py:_project_identity_from_beliefs` prepends it to
+`orion_identity_summary` as a line beginning `In my own words, ...` -- outside
+the authored card's 10-line cap, so neither evicts the other. That key already
+feeds `chat_stance_brief.j2`, `chat_general.j2`, the grounding capsule and the
+harness prefix's `WHO YOU ARE` block, so no template changed.
+
+**A definition with no evidence is not mirrored.** `build_self_definition_
+history_write` returns None for empty text or an empty `evidence` list, and
+Hub logs `curiosity_self_definition_not_mirrored reason=no_evidence`. The
+harness step gate (`no_lookup`) still applies to the turn, but it is not
+enough here on its own: a self-definition written from parametric knowledge
+would still count steps. The draft stays in Orion's graph; nothing reads it.
+
+**Two extra gates, both deterministic, both before the turn:**
+
+| reason | meaning |
+|---|---|
+| `graph_required` | no graph configured -- a self-inquiry run must be able to write its definition |
+| `pg_grants_missing` | the read-only role cannot SELECT one or more outcome tables; the log names them. Apply `scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql`. **The flag alone does not turn this line on.** |
+
+The outcome tables the role needs (`SELF_INQUIRY_PG_TABLES`): `dreams`,
+`harness_turn_trace`, `substrate_reverie_chain`, `reverie_visual_chain`,
+`substrate_attention_schema`, `chat_stance_belief_log`,
+`self_knowledge_items`, `self_concept_history`,
+`substrate_endogenous_curiosity_candidates`. SELECT only; the role still
+writes nothing. The prompt lists them (with row counts and last-written
+timestamps, as orientation rather than a subject) only after Hub has
+verified the grant, so every line in the access section still works this run.
+
+**On a scheduled tick the self line gets first refusal** and falls through to
+the investigation line if its own gates block it. It is the rarer line and
+the two share the lock; the other order would let the busier budget starve
+the quieter one. A forced investigation run (`run-now`) never touches it.
+
+Inspect:
+
+```bash
+# What has Orion said they are?
+docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
+  "MATCH (s:SelfDefinition) RETURN s.run_id, s.written_at, s.text ORDER BY s.written_at DESC"
+
+# What reached the store that chat reads?
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
+  "SELECT version, created_at, left(content, 120), array_length(evidence_refs::jsonb::text::json::text[], 1) \
+   FROM self_concept_history WHERE concept_id = 'self:definition' ORDER BY created_at DESC"
+
+# Self-priors only
+docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
+  "MATCH (p:Prior) WHERE p.line = 'self' RETURN p.status, p.confidence, p.claim"
+```
+

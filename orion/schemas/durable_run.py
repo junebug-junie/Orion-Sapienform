@@ -93,6 +93,13 @@ class CuriosityRunBriefV1(BaseModel):
     graph_configured: bool = False
     material: CuriosityMaterialBriefV1 = Field(default_factory=CuriosityMaterialBriefV1)
     source_tag: str = "curiosity_investigation"
+    # Which curiosity line this run belongs to. `self_inquiry` runs are the
+    # same graph with one extra read (`:SelfDefinition`) and a different
+    # journal title; Hub mirrors the definition on the `finish` event.
+    # ADDITIVE FIELD ON A `forbid` MODEL: deploy orion-durable-runs before
+    # orion-hub, or an old runner rejects the brief and Hub falls back to
+    # running the turn in-process (logged as curiosity_durable_dispatch_fell_back).
+    line: Literal["investigate", "self_inquiry"] = "investigate"
 
 
 class DurableRunRequestV1(BaseModel):

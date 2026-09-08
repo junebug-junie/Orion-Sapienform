@@ -27,6 +27,7 @@ from orion.curiosity.attention_schema import (
     read_attended_priors,
     to_attention_schema as curiosity_to_attention_schema,
 )
+from orion.curiosity.self_inquiry import read_self_definition, self_definition_to_detail
 from orion.curiosity.worldview import (
     TurnOutcome,
     WorldviewReader,
@@ -135,13 +136,17 @@ class DurableRunner:
     async def _read_turn_result(self, run_id: str) -> dict[str, Any]:
         reader = self._reader
         if reader is None:
-            return {"outcome": None, "footprint": None, "hops": [], "evidence_summary": None, "graph_readable": False}
+            return {"outcome": None, "footprint": None, "hops": [], "evidence_summary": None, "graph_readable": False, "self_definition": None}
 
         def _read() -> dict[str, Any]:
             outcome = read_turn_outcome(reader, run_id)
             footprint = read_run_footprint(reader, run_id)
             hops = read_hop_notes(reader, run_id)
             evidence = read_finding_connectivity(reader, run_id)
+            # Read for every run, not only self_inquiry: an investigation run
+            # that also wrote a definition is still a definition Orion wrote.
+            # Hub decides whether to mirror it, keyed on the run's line.
+            self_definition = read_self_definition(reader, run_id)
             return {
                 "outcome": (
                     {
@@ -158,13 +163,14 @@ class DurableRunner:
                 "hops": [[n, note] for n, note in hops],
                 "evidence_summary": evidence.summary() if evidence is not None else None,
                 "graph_readable": footprint is not None,
+                "self_definition": self_definition_to_detail(self_definition),
             }
 
         try:
             return await asyncio.wait_for(asyncio.to_thread(_read), timeout=30.0)
         except Exception as exc:  # noqa: BLE001 -- unreadable graph is a state, not a crash
             logger.warning("durable_run_graph_read_failed run=%s err=%s", run_id, exc)
-            return {"outcome": None, "footprint": None, "hops": [], "evidence_summary": None, "graph_readable": False}
+            return {"outcome": None, "footprint": None, "hops": [], "evidence_summary": None, "graph_readable": False, "self_definition": None}
 
     async def _publish_attention_row(self, facts: dict[str, Any]) -> bool:
         """The same curiosity-lane row Hub used to publish, from the same

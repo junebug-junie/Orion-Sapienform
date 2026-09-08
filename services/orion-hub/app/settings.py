@@ -869,6 +869,27 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_KICKOFF_VIA_CORTEX: bool = Field(
         default=True, alias="HUB_CURIOSITY_KICKOFF_VIA_CORTEX"
     )
+    # The self-inquiry LINE of the same loop (orion/curiosity/self_inquiry.py):
+    # a standing question -- "what am I, and what am I made of?" -- with its
+    # OWN budget, separate from the investigation cap above. Same window,
+    # same lock, same credentials, same graph. Needs
+    # scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql applied,
+    # or every tick blocks with `pg_grants_missing`.
+    HUB_CURIOSITY_SELF_INQUIRY_ENABLED: bool = Field(
+        default=False, alias="HUB_CURIOSITY_SELF_INQUIRY_ENABLED"
+    )
+    HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP: int = Field(
+        default=3, alias="HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP"
+    )
+    HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC: float = Field(
+        default=7200.0, alias="HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC"
+    )
+    # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
+    # harness governor's compose mounts it read-only at /repo). Rendered into
+    # the self-inquiry prompt only; Hub never reads it.
+    HUB_CURIOSITY_SANDBOX_REPO_ROOT: str = Field(
+        default="/repo", alias="HUB_CURIOSITY_SANDBOX_REPO_ROOT"
+    )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"

@@ -327,6 +327,47 @@ async def curiosity_run_now() -> JSONResponse:
     )
 
 
+@router.post("/api/self-inquiry/run-now")
+async def curiosity_self_inquiry_run_now() -> JSONResponse:
+    """Take a SELF-INQUIRY turn now (orion/curiosity/self_inquiry.py),
+    skipping that line's cooldown and daily cap. Same rules as run-now above:
+    `enabled` and every health gate still apply, and the run still counts
+    against the self-inquiry budget."""
+    try:
+        from . import main as hub_main
+
+        loop = getattr(hub_main, "curiosity_investigation", None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_self_inquiry_run_now_import_failed err=%s", exc)
+        loop = None
+    if loop is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "loop_not_running"},
+            status_code=503,
+            headers=_NO_CACHE,
+        )
+    logger.warning("curiosity_self_inquiry_run_now_requested -- operator asked for a self-inquiry turn")
+    try:
+        task = asyncio.create_task(loop.tick_self_inquiry(force=True))
+        _RUN_NOW_TASKS.add(task)
+        task.add_done_callback(_RUN_NOW_TASKS.discard)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_self_inquiry_run_now_failed err=%s", exc)
+        return JSONResponse(
+            content={"ok": False, "reason": str(exc)[:200]},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    return JSONResponse(
+        content={
+            "ok": True,
+            "detail": "Self-inquiry turn requested. It takes ~20 minutes; the "
+                      "definition appears in self_concept_history once mirrored.",
+        },
+        headers=_NO_CACHE,
+    )
+
+
 @router.get("")
 @router.get("/")
 async def curiosity_atlas_page() -> HTMLResponse:

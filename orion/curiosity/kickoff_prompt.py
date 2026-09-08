@@ -49,7 +49,7 @@ it into its own graph, which is a channel it already owns -- see
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from orion.curiosity.study_material import StudyMaterial
 from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip
@@ -265,8 +265,14 @@ def _access_section(
     hub_url: str,
     graph_enabled: bool = True,
     writable: bool = True,
+    extra_tables: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
     """What Orion can actually reach, named as possible and never as required.
+
+    `extra_tables` are (name, what it holds) pairs the read-only role has
+    ADDITIONALLY been granted for this run -- the self-inquiry line's outcome
+    tables (orion/curiosity/self_inquiry.py). Listed only when Hub has
+    verified the grant, so every line here still works this run.
 
     Same rule as not picking the subject: listing a move is not asking for it.
     The credentials are real -- a Postgres role restricted to SELECT on four
@@ -320,12 +326,14 @@ def _access_section(
         "step you are expected to take; they are what is available if you want "
         "it.",
         "",
-        "  Your memory, in SQL (read-only -- SELECT only, four tables):",
+        "  Your memory, in SQL (read-only -- SELECT only, "
+        f"{'four tables' if not extra_tables else f'{4 + len(extra_tables)} tables'}):",
         '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT ..."',
         "      memory_crystallizations              the full row behind any preview above",
         "      memory_concept_relation_decisions    the induction judgements",
         "      chat_history_log                     the conversation a concept came from",
         "      journal_entries                      what you have written before",
+        *[f"      {name.ljust(36)} {what}" for name, what in extra_tables],
         "",
         *atlas_lines,
         *own_lines,

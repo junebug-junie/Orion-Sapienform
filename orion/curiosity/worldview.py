@@ -882,8 +882,16 @@ def read_snapshot(
     stale_after: int,
     rotate_seed: str = "",
     recent_runs: int = 4,
+    priors_cypher: str = LIVE_PRIORS_CYPHER,
+    counts_cypher: str = COUNTS_CYPHER,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
+
+    `priors_cypher` selects WHICH live priors are offered -- the default is
+    every live prior; the self-inquiry line passes its own
+    (`orion/curiosity/self_inquiry.py:LIVE_SELF_PRIORS_CYPHER`, the same
+    fields with one extra WHERE). Counts, settled and recent runs are
+    line-independent and read the same either way.
 
     An unreachable graph is reported as `unavailable_reason`, NOT as an empty
     world view -- those must never be the same state, or a broken ACL after a
@@ -892,8 +900,8 @@ def read_snapshot(
     reason: the only symptom of the former would otherwise be an absence.
     """
     try:
-        prior_rows = reader.query(LIVE_PRIORS_CYPHER)
-        count_rows = reader.query(COUNTS_CYPHER)
+        prior_rows = reader.query(priors_cypher)
+        count_rows = reader.query(counts_cypher)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
         recent_rows = reader.query(RECENT_RUNS_CYPHER)

@@ -827,6 +827,27 @@ outreach, because from Juniper's end they are the same interruption.
 address **as seen from the sandbox** (`host.docker.internal:8080`), because that
 value is only ever rendered into the prompt.
 
+#### 4.2.1 Self-inquiry: the same loop, a standing question, its own budget
+
+Three times a day (`HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP`, separate from the
+investigation cap) the loop hands Orion one question instead of a menu:
+*"What am I, and what am I made of?"* Orion reads their own repository
+(mounted read-only at `/repo` in the FCC sandbox), their outcome tables
+(dreams, motor turns, reverie chains, attention frames, previous
+self-definitions -- SELECT grants from
+`scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql`), forms
+self-priors (`line = "self"`), and writes a first-person `:SelfDefinition` to
+their own graph. Hub mirrors that node into `self_concept_history`
+(`produced_by="curiosity_self_inquiry"`), and the stance identity kernel reads
+it back into every chat turn as the first line of `orion_identity_summary`
+("In my own words, ..."), next to the operator-authored card.
+
+Turning it on is two steps: the flag (`HUB_CURIOSITY_SELF_INQUIRY_ENABLED`)
+and the SQL grants. Until the grants are applied every tick logs
+`curiosity_self_inquiry_blocked reason=pg_grants_missing tables=...`.
+Operator trigger: `POST /api/curiosity/api/self-inquiry/run-now`. Full
+contract and inspection queries: `orion/curiosity/README.md` §13.
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.

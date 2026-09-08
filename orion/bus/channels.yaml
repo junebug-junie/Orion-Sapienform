@@ -2102,7 +2102,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-05"
-    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by two producers: Layer 3's real LLM reflection findings (orion-cortex-exec) and Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py). Additive to identity.yaml, not a replacement."
+    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by three producers: Layer 3's real LLM reflection findings (orion-cortex-exec), Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
 
   - name: "orion:journal:created"
     kind: "event"

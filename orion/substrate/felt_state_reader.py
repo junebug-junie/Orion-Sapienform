@@ -25,6 +25,14 @@ class LaneSpec:
     ts_col: str
     projection_id: str | None
     max_age_sec: int | None = None
+    # Optional extra WHERE (no leading `WHERE`/`AND`), for lanes that pick a
+    # row by something other than projection_id. Constant SQL from this
+    # module only -- never interpolated from ctx.
+    where_sql: str | None = None
+    # How long a fetched payload is reused before re-querying. Defaults to
+    # `max_age_sec`; separate for lanes whose ROW may be days old and still
+    # valid but whose cache should still refresh within minutes.
+    cache_ttl_sec: int | None = None
 
 
 _LANES: tuple[LaneSpec, ...] = (
@@ -77,6 +85,27 @@ _LANES: tuple[LaneSpec, ...] = (
         # actually observe a fresh candidate row between writes.
         max_age_sec=120,
     ),
+    # Orion's own current self-definition (orion/curiosity/self_inquiry.py):
+    # the latest `self:definition` row Hub mirrored from a self-inquiry run's
+    # `:SelfDefinition` node. Read by the `self_definition` stance producer
+    # (orion/substrate/relational/adapters/self_definition_ctx.py). A row is
+    # valid for 30 days -- a definition Orion wrote last week is still what
+    # Orion last said about themself -- but the cache refreshes every 5 min so
+    # a new run's definition reaches chat within a few turns.
+    LaneSpec(
+        ctx_key="orion_self_definition",
+        table="self_concept_history",
+        payload_col=(
+            "json_build_object('entry_id', entry_id, 'content', content, "
+            "'version', version, 'evidence_refs', evidence_refs, "
+            "'created_at', created_at)"
+        ),
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=30 * 86400,
+        where_sql="concept_id = 'self:definition' AND produced_by = 'curiosity_self_inquiry'",
+        cache_ttl_sec=300,
+    ),
     LaneSpec(
         ctx_key="latest_reverie_thought",
         table="substrate_reverie_thought",
@@ -122,15 +151,17 @@ class SubstrateFeltStateReader:
         if self._engine is None:
             return None
         if lane.projection_id is None:
+            where = f"WHERE {lane.where_sql} " if lane.where_sql else ""
             query = text(
-                f"SELECT {lane.payload_col}, {lane.ts_col} "
+                f"SELECT {lane.payload_col} AS payload, {lane.ts_col} AS ts "
                 f"FROM {lane.table} "
+                f"{where}"
                 f"ORDER BY {lane.ts_col} DESC LIMIT 1"
             )
             params: dict[str, Any] = {}
         else:
             query = text(
-                f"SELECT {lane.payload_col}, {lane.ts_col} "
+                f"SELECT {lane.payload_col} AS payload, {lane.ts_col} AS ts "
                 f"FROM {lane.table} "
                 f"WHERE projection_id = :pid"
             )
@@ -139,7 +170,21 @@ class SubstrateFeltStateReader:
             row = conn.execute(query, params).mappings().first()
         if row is None:
             return None
-        return (row.get(lane.payload_col), row.get(lane.ts_col))
+        return (row.get("payload"), row.get("ts"))
+
+    def _remember_miss(self, lane: LaneSpec) -> None:
+        """Negative cache, ONLY for lanes that declare their own `cache_ttl_sec`.
+
+        A lane whose expected steady state is "no row yet" (the self-definition
+        lane until the first self-inquiry run lands) would otherwise re-query
+        on every chat turn and gate tick, because a miss never reached the
+        cache. Lanes without an explicit TTL keep the old behaviour on purpose:
+        their max_age doubles as their cache TTL, and remembering a miss for
+        `curiosity_signals`' 120s would delay a fresh candidate by that long.
+        """
+        if lane.cache_ttl_sec is None:
+            return
+        self._cache[lane.ctx_key] = (None, time.monotonic())
 
     def hydrate(self, ctx: dict) -> None:
         if not self._enabled:
@@ -152,24 +197,34 @@ class SubstrateFeltStateReader:
                 cached = self._cache.get(lane.ctx_key)
                 if cached is not None:
                     payload, fetched_at = cached
-                    if (time.monotonic() - fetched_at) <= max_age:
-                        ctx[lane.ctx_key] = payload
+                    cache_ttl = lane.cache_ttl_sec if lane.cache_ttl_sec is not None else max_age
+                    if (time.monotonic() - fetched_at) <= cache_ttl:
+                        # A cached None is a remembered MISS (see below): skip
+                        # the query, leave ctx untouched, until the TTL lapses.
+                        if payload is not None:
+                            ctx[lane.ctx_key] = payload
                         continue
                 result = self._fetch_lane(lane)
                 if result is None:
+                    self._remember_miss(lane)
                     continue
                 payload, ts = result
                 if ts is None:
+                    self._remember_miss(lane)
                     continue
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 age = (datetime.now(timezone.utc) - ts).total_seconds()
                 if age > max_age:
+                    self._remember_miss(lane)
                     continue
                 ctx[lane.ctx_key] = payload
                 self._cache[lane.ctx_key] = (payload, time.monotonic())
             except Exception:
                 logger.debug("felt-state lane hydrate failed: %s", lane.ctx_key, exc_info=True)
+                # A failing query is a miss too: without this an unreachable DB
+                # is re-tried on every turn for lanes that opted into the TTL.
+                self._remember_miss(lane)
                 continue
 
 

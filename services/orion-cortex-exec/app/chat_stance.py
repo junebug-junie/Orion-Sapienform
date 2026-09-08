@@ -133,6 +133,7 @@ def _build_unification_registry() -> ProducerRegistryV1:
     """Construct the ProducerRegistryV1 wiring all known producer lanes."""
     from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
     from orion.substrate.relational.adapters.concept_induction_ctx import map_concept_induction_ctx_to_substrate
+    from orion.substrate.relational.adapters.self_definition_ctx import map_self_definition_ctx_to_substrate
 
     return ProducerRegistryV1(
         producers=[
@@ -151,6 +152,18 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=300,
                 pull_on_cold=True,
                 adapter_fn=map_self_study_to_substrate,
+            ),
+            ProducerEntryV1(
+                # Orion's own current self-definition, from the self-inquiry
+                # curiosity line (orion/curiosity/self_inquiry.py) via the
+                # felt-state reader's `orion_self_definition` lane. Read into
+                # the identity kernel by `_project_identity_from_beliefs`.
+                producer_id="self_definition",
+                trust_tier=GRAPHDB_DURABLE,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=300,
+                pull_on_cold=True,
+                adapter_fn=map_self_definition_ctx_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="autonomy",
@@ -614,27 +627,98 @@ def identity_kernel_with_fallbacks(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
+# Orion's own self-definition rides on `orion_identity_summary` as its first
+# line(s), so every existing consumer of that key -- chat_stance_brief.j2,
+# chat_general.j2, chat_quick.j2, the grounding capsule and therefore the
+# harness prefix's WHO YOU ARE block -- sees it with no template change. The
+# marker prefix makes the prepend idempotent: `orion_identity_summary` is
+# written back onto ctx after projection, and a later cold pull of the
+# identity_yaml adapter within the same process could otherwise read the
+# augmented list back and store it, doubling the line on the next turn.
+SELF_DEFINITION_MARKER = "In my own words"
+_SELF_DEFINITION_CHAT_CAP = 900
+
+
+def _strip_self_definition_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if not str(line).startswith(SELF_DEFINITION_MARKER)]
+
+
+def _self_definition_line(beliefs: UnifiedRelationalBeliefSetV1 | None, ctx: Dict[str, Any]) -> str | None:
+    """The one line Orion's own definition contributes, or None.
+
+    Prefers the `self_definition` snapshot from the belief set; falls back to
+    the raw felt-state ctx payload so a degraded unification layer does not
+    silently drop Orion's own words from the kernel."""
+    meta: dict[str, Any] | None = None
+    if beliefs is not None:
+        orion_slice = beliefs.anchors.get("orion")
+        if orion_slice:
+            for snap in orion_slice.snapshots:
+                if getattr(snap, "snapshot_source", "") == "self_definition":
+                    meta = dict(snap.metadata or {})
+                    break
+    if meta is None:
+        raw = ctx.get("orion_self_definition")
+        if isinstance(raw, dict):
+            meta = dict(raw)
+    if not meta:
+        return None
+    content = str(meta.get("content") or "").strip().replace("\n", " ")
+    if not content:
+        return None
+    try:
+        version = int(meta.get("version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    evidence_n = len(meta.get("evidence_refs") or [])
+    stamp = str(meta.get("created_at") or "")[:10]
+    if len(content) > _SELF_DEFINITION_CHAT_CAP:
+        content = content[:_SELF_DEFINITION_CHAT_CAP].rstrip() + "…"
+    return (
+        f"{SELF_DEFINITION_MARKER}, written during my own self-inquiry "
+        f"(v{version}{', ' + stamp if stamp else ''}, {evidence_n} evidence refs): {content}"
+    )
+
+
 def _project_identity_from_beliefs(
     beliefs: UnifiedRelationalBeliefSetV1 | None,
     ctx: Dict[str, Any],
 ) -> dict[str, list[str]]:
-    """Projection helper: read identity summaries from unified beliefs → same shape as identity_kernel_with_fallbacks."""
+    """Projection helper: read identity summaries from unified beliefs → same shape as identity_kernel_with_fallbacks.
+
+    Orion's own self-definition (if any) is prepended to `orion_identity_summary`
+    OUTSIDE the 10-line cap, so it never evicts an authored line and an
+    authored line never evicts it."""
+    kernel: dict[str, list[str]] | None = None
     if beliefs is not None:
         orion_slice = beliefs.anchors.get("orion")
         if orion_slice:
             for snap in orion_slice.snapshots:
                 if getattr(snap, "snapshot_source", "") == "identity_yaml":
                     meta = snap.metadata or {}
-                    orion_s = [str(v) for v in (meta.get("orion_identity_summary") or []) if str(v).strip()]
+                    orion_s = _strip_self_definition_lines(
+                        [str(v) for v in (meta.get("orion_identity_summary") or []) if str(v).strip()]
+                    )
                     juniper_s = [str(v) for v in (meta.get("juniper_relationship_summary") or []) if str(v).strip()]
                     policy_s = [str(v) for v in (meta.get("response_policy_summary") or []) if str(v).strip()]
                     if orion_s:
-                        return {
+                        kernel = {
                             "orion_identity_summary": _unique(orion_s, limit=10),
                             "juniper_relationship_summary": _unique(juniper_s, limit=10) or list(FALLBACK_JUNIPER_RELATIONSHIP_SUMMARY),
                             "response_policy_summary": _unique(policy_s, limit=10) or list(FALLBACK_RESPONSE_POLICY_SUMMARY),
                         }
-    return identity_kernel_with_fallbacks(ctx)
+                        break
+    if kernel is None:
+        # Strip BEFORE the fallback's 10-line cap, or a marker line already on
+        # ctx counts against the cap and evicts the last authored line.
+        raw = ctx.get("orion_identity_summary")
+        if isinstance(raw, list):
+            ctx = {**ctx, "orion_identity_summary": _strip_self_definition_lines([str(v) for v in raw])}
+        kernel = identity_kernel_with_fallbacks(ctx)
+    own = _self_definition_line(beliefs, ctx)
+    if own:
+        kernel["orion_identity_summary"] = [own] + list(kernel["orion_identity_summary"])
+    return kernel
 
 
 def _project_recall_from_beliefs(

@@ -511,6 +511,32 @@ python3 scripts/report_ask_claude_dry_run.py
   Mitigation: unchanged by this patch, which spends nothing. Restated so the
   arming patch does not mistake this budget for a ceiling.
 
+## A separate, urgent finding this patch tripped over
+
+**`graphify-out/graph.json` on `origin/main` is 99.98 MB. GitHub's hard limit
+is 100 MB.** Running the mandated `scripts/safe_graphify_update.sh` grew it to
+**100.54 MB** and the push was rejected:
+
+```text
+remote: error: File graphify-out/graph.json is 100.54 MB; this exceeds
+remote: error: GitHub's file size limit of 100.00 MB
+! [remote rejected]  (pre-receive hook declined)
+```
+
+The refresh itself was healthy (75,802 -> 76,279 nodes, +0.63%, well inside the
+node-loss gate). The problem is that main sits **0.02 MB** under an absolute
+cap, so **any** graph refresh from **any** branch now blocks its own push.
+
+This branch drops the refresh (`graphify-out/` is byte-identical to
+`origin/main`) so this PR is not held hostage to it. But the next agent or human
+who follows CLAUDE.md's "run `safe_graphify_update.sh` after modifying code"
+instruction will hit the same wall, and the failure arrives at push time --
+after the work is committed -- which is the worst moment to discover it.
+
+Needs Juniper's decision, none of which belong in this PR: git-LFS for the
+artifact, stop tracking it and rebuild locally, or shrink what the extractor
+emits. Flagging rather than choosing.
+
 ## Follow-ups
 
 1. Hub reader + budget panel for `orion:substrate:claude_limit` -- makes the
@@ -525,4 +551,4 @@ python3 scripts/report_ask_claude_dry_run.py
 
 ## PR link
 
-<filled in after push>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2152

@@ -1,0 +1,24 @@
+[Unit]
+Description=Orion ask_claude dry run -- record what Orion WOULD say to Claude
+Documentation=file:/mnt/scripts/Orion-Sapienform/orion/autonomy/ask_claude_trigger.py
+Documentation=file:/mnt/scripts/Orion-Sapienform/docs/superpowers/pr-reports/2026-09-08-ask-claude-dry-run-pr.md
+
+[Service]
+Type=oneshot
+# NOT root, and this is load-bearing rather than hygiene. The script reads
+# ~/.claude/projects via Path.home(); under root that resolves to /root and the
+# scan finds nothing, which `rate_limit_events` correctly reports as `unknown`
+# -- a log full of honest "budget_unobserved" refusals that look like a working
+# dry run producing a real negative. --projects-root is also passed explicitly
+# below so the path does not depend on this line alone.
+User=athena
+Group=athena
+WorkingDirectory=/mnt/scripts/Orion-Sapienform
+# Appended, never truncated: the whole deliverable is the accumulated week.
+# ~/.orion rather than /var/log/orion: this unit runs as athena (see above),
+# and /var/log/orion does not exist and would need root to create. ~/.orion is
+# already athena-owned and already holds the agent board, so the log needs no
+# privileged setup step -- one less thing between installing the timer and
+# having a week of output. mkdir -p keeps a fresh host working.
+ExecStart=/bin/sh -c 'mkdir -p /home/athena/.orion && /mnt/scripts/Orion-Sapienform/venv/bin/python /mnt/scripts/Orion-Sapienform/scripts/report_ask_claude_dry_run.py --json --projects-root /home/athena/.claude/projects >> /home/athena/.orion/ask-claude-dry-run.jsonl'
+Nice=10

@@ -572,6 +572,12 @@ async def startup_event():
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
+                # The self-inquiry line: own budget, same loop. See the
+                # settings' own comment and orion/curiosity/self_inquiry.py.
+                self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_ENABLED,
+                self_inquiry_daily_cap=settings.HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP,
+                self_inquiry_min_cooldown_sec=settings.HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC,
+                sandbox_repo_root=settings.HUB_CURIOSITY_SANDBOX_REPO_ROOT,
                 cortex_request_channel=settings.CORTEX_ORCH_REQUEST_CHANNEL,
                 cortex_result_prefix=settings.CORTEX_ORCH_RESULT_PREFIX,
                 outreach_provider=lambda: endogenous_outreach,

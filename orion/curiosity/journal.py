@@ -20,6 +20,10 @@ from orion.journaler.schemas import JournalEntryWriteV1
 
 INVESTIGATION_TAG = "curiosity_investigation"
 OUTREACH_TAG = "curiosity_outreach"
+# The self-inquiry line (orion/curiosity/self_inquiry.py) writes the same
+# entry shape under its own title, entry_id prefix and source_ref, so the two
+# lines are distinguishable in journal_entries without a new source_kind.
+SELF_INQUIRY_LINE = "self_inquiry"
 _JOURNAL_SOURCE_KIND = "self_study"
 _AUTHOR = "orion"
 
@@ -66,6 +70,7 @@ def build_investigation_journal_entry(
     graph_footprint: Optional[dict[str, int]] = None,
     hop_notes: Optional[list[tuple[int, str]]] = None,
     created_at: Optional[datetime] = None,
+    line: str = "investigate",
 ) -> JournalEntryWriteV1:
     """Orion's own written result.
 
@@ -182,17 +187,24 @@ def build_investigation_journal_entry(
         # sharing the same source_ref below, with nothing to catch the
         # duplicate. Same run_id -> same entry_id -> the writer's own
         # primary-key dedup makes the retry a no-op instead of a duplicate.
-        entry_id=f"curiosity-investigation:{run_id}",
+        entry_id=(
+            f"curiosity-self-inquiry:{run_id}"
+            if line == SELF_INQUIRY_LINE
+            else f"curiosity-investigation:{run_id}"
+        ),
         created_at=stamp,
         author=_AUTHOR,
         mode="manual",
-        title="Curiosity",
+        title="Self-inquiry" if line == SELF_INQUIRY_LINE else "Curiosity",
         body="\n".join(lines),
         source_kind=_JOURNAL_SOURCE_KIND,
         # Namespaced away from the four self-study analysis sources, whose own
         # cooldown matches on a `<source>:` prefix. Keyed on the run rather
         # than on a subject, since there is no code-known subject any more.
-        source_ref=f"curiosity:{run_id}",
+        # The self line gets its own prefix for the same reason.
+        source_ref=(
+            f"curiosity:self:{run_id}" if line == SELF_INQUIRY_LINE else f"curiosity:{run_id}"
+        ),
         correlation_id=correlation_id,
     )
 

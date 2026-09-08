@@ -20,7 +20,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SelfConceptHistoryProducer = Literal["layer3_reflect", "self_atlas_cluster"]
+# `curiosity_self_inquiry`: Orion's own `:SelfDefinition` node, written during a
+# self-inquiry curiosity run and mirrored here by Hub
+# (orion/curiosity/self_inquiry.py). The only producer whose content is
+# first-person and authored by Orion rather than induced from Orion's records.
+SelfConceptHistoryProducer = Literal["layer3_reflect", "self_atlas_cluster", "curiosity_self_inquiry"]
 
 
 def _utc_now() -> datetime:

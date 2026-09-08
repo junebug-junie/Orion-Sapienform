@@ -85,6 +85,25 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .endogenous_outreach import in_quiet_hours
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
+from orion.curiosity.self_inquiry import (
+    LEDGER_SQL_TEMPLATE,
+    LEDGER_TS_COLUMNS,
+    LINE_INVESTIGATE,
+    LINE_SELF_INQUIRY,
+    LIVE_SELF_PRIORS_CYPHER,
+    SELF_INQUIRY_GRANTS_SQL,
+    SELF_INQUIRY_PG_TABLE_NAMES,
+    SELF_INQUIRY_PG_TABLES,
+    SELF_INQUIRY_TAG,
+    LedgerRow,
+    SelfDefinition,
+    build_self_definition_history_write,
+    read_latest_self_definition,
+    read_self_definition,
+    read_self_definition_count,
+    self_definition_from_detail,
+)
+from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.study_material import (
     APPROVED_COUNT_SQL,
@@ -109,6 +128,7 @@ from orion.curiosity.worldview import (
     read_finding_connectivity,
     read_hop_notes,
     read_run_footprint,
+    LIVE_PRIORS_CYPHER,
     read_snapshot,
     read_turn_outcome,
 )
@@ -165,6 +185,29 @@ _DAILY_COUNT_KEY_PREFIX = "orion:curiosity:count:"
 # depends on. Redis, not process state, for the same restart reason as above.
 _LAST_RUN_KEY = "orion:curiosity:last_run_id"
 _STATE_TTL_SEC = 172800
+
+# The self-inquiry line (orion/curiosity/self_inquiry.py) keeps ITS OWN
+# cooldown, daily counter and continuation key, so its budget is separate
+# from the investigation budget and neither line's run consumes the other's
+# slot. Same Redis, same TTLs, same restart reasoning as the keys above.
+_SELF_COOLDOWN_KEY = "orion:curiosity:self:last_inquiry_at"
+_SELF_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:self:count:"
+_SELF_LAST_RUN_KEY = "orion:curiosity:self:last_run_id"
+
+# The channel Hub mirrors a run's `:SelfDefinition` into. Registered in
+# orion/bus/channels.yaml; orion-sql-writer subscribes.
+SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
+SELF_CONCEPT_HISTORY_WRITE_KIND = "self_concept.history.write.v1"
+SELF_CONCEPT_VERSION_SQL = (
+    "SELECT COALESCE(MAX(version), 0) + 1 FROM self_concept_history WHERE concept_id = $1"
+)
+
+
+def _line_keys(line: str) -> tuple[str, str, str]:
+    """(cooldown key, daily-count key prefix, last-run key) for a line."""
+    if line == LINE_SELF_INQUIRY:
+        return _SELF_COOLDOWN_KEY, _SELF_DAILY_COUNT_KEY_PREFIX, _SELF_LAST_RUN_KEY
+    return _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX, _LAST_RUN_KEY
 
 # The turn has to show evidence it actually went and looked. `harness_step_count`
 # is already on the final frame (orion/hub/turn_orchestrator.py) and costs
@@ -439,6 +482,11 @@ class CuriosityInvestigation:
         kickoff_via_cortex: bool = False,
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
+        # --- the self-inquiry line -----------------------------------------
+        self_inquiry_enabled: bool = False,
+        self_inquiry_daily_cap: int = 3,
+        self_inquiry_min_cooldown_sec: float = 7200.0,
+        sandbox_repo_root: str = "/repo",
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -570,6 +618,15 @@ class CuriosityInvestigation:
         self._done_today_date: Optional[str] = None
         self._acl_error: Optional[str] = "not_asserted_yet"
         self._consecutive_not_ready = 0
+        # Self-inquiry line state. In-process mirrors of the Redis keys, used
+        # only when the bus has no redis (tests); see `_line_keys`.
+        self.self_inquiry_enabled = bool(self_inquiry_enabled)
+        self.self_inquiry_daily_cap = int(self_inquiry_daily_cap)
+        self.self_inquiry_min_cooldown_sec = float(self_inquiry_min_cooldown_sec)
+        self.sandbox_repo_root = str(sandbox_repo_root or "/repo")
+        self._self_last_monotonic: Optional[float] = None
+        self._self_done_today = 0
+        self._self_done_today_date: Optional[str] = None
 
     @property
     def graph_enabled(self) -> bool:
@@ -597,7 +654,8 @@ class CuriosityInvestigation:
             )
         logger.info(
             "curiosity_investigation started tick=%ss cooldown=%ss(floor=%ss) "
-            "cap=%s window=%s sample=%s+%s graph=%s hops=%s outreach=%s",
+            "cap=%s window=%s sample=%s+%s graph=%s hops=%s outreach=%s "
+            "self_inquiry=%s self_cap=%s/day self_cooldown=%ss",
             self.tick_interval_sec,
             round(self.effective_cooldown_sec),
             self.min_cooldown_sec,
@@ -613,6 +671,9 @@ class CuriosityInvestigation:
             self.graph_own if self.graph_enabled else "off",
             self.max_hops,
             self.outreach_enabled,
+            self.self_inquiry_enabled,
+            self.self_inquiry_daily_cap,
+            round(self.effective_self_inquiry_cooldown_sec),
         )
 
     async def stop(self) -> None:
@@ -693,7 +754,11 @@ class CuriosityInvestigation:
         return self._acl_error
 
     async def _read_worldview(
-        self, run_id_of_last: Optional[str], *, rotate_seed: str = ""
+        self,
+        run_id_of_last: Optional[str],
+        *,
+        rotate_seed: str = "",
+        priors_cypher: str = LIVE_PRIORS_CYPHER,
     ) -> WorldviewSnapshot:
         """Orion's own graph, plus the note the previous run left itself."""
         if self._reader is None:
@@ -706,6 +771,7 @@ class CuriosityInvestigation:
                 sample=self.prior_sample,
                 stale_after=self.stale_prior_tests,
                 rotate_seed=rotate_seed,
+                priors_cypher=priors_cypher,
             )
             if view.is_unavailable or not run_id_of_last:
                 return view
@@ -773,6 +839,18 @@ class CuriosityInvestigation:
         )
 
     @property
+    def effective_self_inquiry_cooldown_sec(self) -> float:
+        """Same derivation as `effective_cooldown_sec`, for the self line's
+        own cap and floor. Three a day over an 08-22 window is one every
+        4h40m, floored by HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC."""
+        return paced_cooldown_sec(
+            min_cooldown_sec=self.self_inquiry_min_cooldown_sec,
+            daily_cap=self.self_inquiry_daily_cap,
+            start_hour=self.window_start_hour,
+            end_hour=self.window_end_hour,
+        )
+
+    @property
     def window_configured(self) -> bool:
         return window_is_configured(self.window_start_hour, self.window_end_hour)
 
@@ -781,30 +859,45 @@ class CuriosityInvestigation:
         if self._done_today_date != today:
             self._done_today_date = today
             self._done_today = 0
+        if self._self_done_today_date != today:
+            self._self_done_today_date = today
+            self._self_done_today = 0
 
-    def _seconds_since_last_in_process(self) -> Optional[float]:
-        if self._last_investigation_monotonic is None:
+    def _seconds_since_last_in_process(self, line: str = LINE_INVESTIGATE) -> Optional[float]:
+        last = (
+            self._self_last_monotonic
+            if line == LINE_SELF_INQUIRY
+            else self._last_investigation_monotonic
+        )
+        if last is None:
             return None
-        return time.monotonic() - self._last_investigation_monotonic
+        return time.monotonic() - last
 
-    def _daily_key(self, now: datetime) -> str:
+    def _done_today_in_process(self, line: str = LINE_INVESTIGATE) -> int:
+        return self._self_done_today if line == LINE_SELF_INQUIRY else self._done_today
+
+    def _daily_key(self, now: datetime, line: str = LINE_INVESTIGATE) -> str:
         # Keyed on the operator's LOCAL date, not UTC. "3 per day" meaning
         # 18:00-to-18:00 for someone in MDT is not what the setting says.
         local = now.astimezone(self._tz) if self._tz else now
-        return f"{_DAILY_COUNT_KEY_PREFIX}{local.date().isoformat()}"
+        _, prefix, _ = _line_keys(line)
+        return f"{prefix}{local.date().isoformat()}"
 
-    async def _read_persisted_state(self, now: datetime) -> tuple[Optional[float], int]:
+    async def _read_persisted_state(
+        self, now: datetime, line: str = LINE_INVESTIGATE
+    ) -> tuple[Optional[float], int]:
         """(seconds since last investigation, count so far today) from Redis.
 
         Fail-open to in-process state -- an unreadable Redis must not silently
         freeze Orion's curiosity."""
         redis = getattr(self._bus, "redis", None)
+        cooldown_key, _, _ = _line_keys(line)
         if redis is None:
-            return self._seconds_since_last_in_process(), self._done_today
+            return self._seconds_since_last_in_process(line), self._done_today_in_process(line)
         since: Optional[float] = None
         count = 0
         try:
-            raw = await redis.get(_COOLDOWN_KEY)
+            raw = await redis.get(cooldown_key)
             if raw is not None:
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="replace")
@@ -815,19 +908,20 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_cooldown_read_failed", exc_info=True)
         try:
-            raw_count = await redis.get(self._daily_key(now))
+            raw_count = await redis.get(self._daily_key(now, line))
             if raw_count is not None:
                 count = int(raw_count)
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_daily_count_read_failed", exc_info=True)
         return since, count
 
-    async def _read_last_run_id(self) -> Optional[str]:
+    async def _read_last_run_id(self, line: str = LINE_INVESTIGATE) -> Optional[str]:
         redis = getattr(self._bus, "redis", None)
         if redis is None:
             return None
+        _, _, last_run_key = _line_keys(line)
         try:
-            raw = await redis.get(_LAST_RUN_KEY)
+            raw = await redis.get(last_run_key)
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_last_run_read_failed", exc_info=True)
             return None
@@ -840,7 +934,9 @@ class CuriosityInvestigation:
         # Redis must read as "no previous run", never as a query fragment.
         return value if _RUN_ID_RE.match(value) else None
 
-    async def _refund_investigation(self, previous_stamp: Optional[str]) -> None:
+    async def _refund_investigation(
+        self, previous_stamp: Optional[str], line: str = LINE_INVESTIGATE
+    ) -> None:
         """Give back a slot a turn never got to use.
 
         ONLY on cancellation, and that distinction is the whole design. The
@@ -868,17 +964,21 @@ class CuriosityInvestigation:
         redis = getattr(self._bus, "redis", None)
         if redis is None:
             return
+        cooldown_key, _, _ = _line_keys(line)
         try:
             now = datetime.now(timezone.utc)
-            key = self._daily_key(now)
+            key = self._daily_key(now, line)
             current = await redis.get(key)
             if current is not None:
                 await redis.decr(key)
             if previous_stamp:
-                await redis.setex(_COOLDOWN_KEY, _STATE_TTL_SEC, previous_stamp)
+                await redis.setex(cooldown_key, _STATE_TTL_SEC, previous_stamp)
             else:
-                await redis.delete(_COOLDOWN_KEY)
-            self._done_today = max(0, self._done_today - 1)
+                await redis.delete(cooldown_key)
+            if line == LINE_SELF_INQUIRY:
+                self._self_done_today = max(0, self._self_done_today - 1)
+            else:
+                self._done_today = max(0, self._done_today - 1)
             logger.warning(
                 "curiosity_investigation_refunded -- the turn was cancelled "
                 "before it finished, which means Hub is shutting down rather "
@@ -887,30 +987,34 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_state_refund_failed", exc_info=True)
 
-    async def _record_investigation(self, now: datetime, run_id: str) -> None:
+    async def _record_investigation(
+        self, now: datetime, run_id: str, line: str = LINE_INVESTIGATE
+    ) -> None:
         """Persist the cooldown stamp, today's counter, and this run's id."""
         redis = getattr(self._bus, "redis", None)
         if redis is None:
             return
+        cooldown_key, _, last_run_key = _line_keys(line)
         try:
             # Two days of TTL so the counter cannot outlive its own date key.
-            await redis.setex(_COOLDOWN_KEY, _STATE_TTL_SEC, now.isoformat())
-            key = self._daily_key(now)
+            await redis.setex(cooldown_key, _STATE_TTL_SEC, now.isoformat())
+            key = self._daily_key(now, line)
             await redis.incr(key)
             await redis.expire(key, _STATE_TTL_SEC)
             # Longer than the others on purpose: a continuation note should
             # survive a quiet weekend. Seven days.
-            await redis.setex(_LAST_RUN_KEY, 604800, run_id)
+            await redis.setex(last_run_key, 604800, run_id)
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_state_write_failed", exc_info=True)
 
-    async def _read_cooldown_stamp(self) -> Optional[str]:
+    async def _read_cooldown_stamp(self, line: str = LINE_INVESTIGATE) -> Optional[str]:
         """The persisted cooldown stamp as written, or None."""
         redis = getattr(self._bus, "redis", None)
         if redis is None:
             return None
+        cooldown_key, _, _ = _line_keys(line)
         try:
-            raw = await redis.get(_COOLDOWN_KEY)
+            raw = await redis.get(cooldown_key)
         except Exception:  # noqa: BLE001
             return None
         if isinstance(raw, (bytes, bytearray)):
@@ -989,6 +1093,16 @@ class CuriosityInvestigation:
         """
         now = datetime.now(timezone.utc)
         self._roll_daily_counter(now)
+
+        # The self-inquiry line gets first refusal on every scheduled tick
+        # (never on a forced investigation run). It is the rarer line and it
+        # shares the lock, so letting the investigation line go first would
+        # let a busier budget starve the quieter one. Its own gates decide;
+        # a block there falls through to the investigation line as before.
+        if self.self_inquiry_enabled and not force:
+            took = await self.tick_self_inquiry(now=now)
+            if took is None or took == "dispatched":
+                return took
 
         # No two turns at once. There was no lock before this because the
         # cooldown made overlap impossible -- a turn runs ~20 minutes and the
@@ -1291,6 +1405,376 @@ class CuriosityInvestigation:
             await self._maybe_reach_out(outcome=outcome, finding_text=text, run_id=run_id)
         return None
 
+    # --- the self-inquiry line ------------------------------------------------
+    #
+    # orion/curiosity/self_inquiry.py. Same turn, same credentials, same graph,
+    # same journal channel, same durable runner -- a different standing
+    # question, its own budget, and one extra write (`:SelfDefinition`) that
+    # Hub mirrors into self_concept_history so the stance identity kernel can
+    # show Orion its own words in every chat turn.
+
+    async def tick_self_inquiry(
+        self, *, force: bool = False, now: Optional[datetime] = None
+    ) -> Optional[str]:
+        """One self-inquiry decision. Returns the block reason, or None if it
+        ran (or "dispatched" when cortex took it).
+
+        `force` skips this line's cooldown, cap and window -- nothing else --
+        exactly like `tick(force=True)` does for the investigation line.
+        """
+        now = now or datetime.now(timezone.utc)
+        self._roll_daily_counter(now)
+        if self._run_lock.locked():
+            logger.info("curiosity_self_inquiry_blocked reason=already_running")
+            return "already_running"
+
+        since_last, done_today = await self._read_persisted_state(now, LINE_SELF_INQUIRY)
+        reason = scheduling_block_reason(
+            SchedulingGateInputs(
+                enabled=self.self_inquiry_enabled,
+                seconds_since_last=since_last,
+                min_cooldown_sec=self.effective_self_inquiry_cooldown_sec,
+                done_today=done_today,
+                daily_cap=self.self_inquiry_daily_cap,
+                local_hour=(
+                    now.astimezone(self._tz).hour
+                    if (self.window_configured and self._tz_loaded)
+                    else None
+                ),
+                window_start_hour=self.window_start_hour,
+                window_end_hour=self.window_end_hour,
+            )
+        )
+        if force and reason in {"cooldown", "daily_cap", "outside_window"}:
+            logger.warning(
+                "curiosity_self_inquiry_forced overriding=%s since_last=%.0fs "
+                "done_today=%s cap=%s -- an operator asked for this run; it "
+                "still counts against today",
+                reason,
+                since_last if since_last is not None else -1.0,
+                done_today,
+                self.self_inquiry_daily_cap,
+            )
+            reason = None
+        if reason is not None:
+            logger.info("curiosity_self_inquiry_blocked reason=%s", reason)
+            return reason
+
+        # A self-inquiry run has to be able to WRITE its definition; with no
+        # graph there is nothing to mirror and the turn would be prose only.
+        if not self.graph_enabled:
+            logger.info("curiosity_self_inquiry_blocked reason=graph_required")
+            return "graph_required"
+
+        if self.pg_readonly_role and await self._pg_role_missing():
+            logger.warning(
+                "curiosity_self_inquiry_blocked reason=pg_role_missing role=%s",
+                self.pg_readonly_role,
+            )
+            return "pg_role_missing"
+
+        missing = await self._self_inquiry_grants_missing()
+        if missing is None:
+            logger.info(
+                "curiosity_self_inquiry_blocked reason=stores_not_ready -- "
+                "the memory pool is not up yet, so the grants cannot be checked"
+            )
+            return "stores_not_ready"
+        if missing:
+            logger.warning(
+                "curiosity_self_inquiry_blocked reason=pg_grants_missing role=%s "
+                "tables=%s -- apply scripts/sql/2026-09-08_grant_orion_readonly_"
+                "self_inquiry.sql; the flag alone does not turn this line on",
+                self.pg_readonly_role,
+                ",".join(missing),
+            )
+            return "pg_grants_missing"
+
+        acl_error = await self._assert_acl()
+        if acl_error:
+            logger.warning(
+                "curiosity_self_inquiry_blocked reason=graph_unavailable detail=%s", acl_error
+            )
+            return "graph_unavailable"
+
+        run_id = uuid4().hex[:12]
+        correlation_id = str(uuid5(NAMESPACE_URL, f"{SELF_INQUIRY_TAG}:{run_id}"))
+        if self._run_lock.locked():
+            logger.info("curiosity_self_inquiry_blocked reason=already_running")
+            return "already_running"
+        async with self._run_lock:
+            return await self._self_inquire(
+                now=now, run_id=run_id, correlation_id=correlation_id, done_today=done_today
+            )
+
+    async def _self_inquiry_grants_missing(self) -> Optional[list[str]]:
+        """Which of the self-inquiry outcome tables the read-only role cannot
+        SELECT. `[]` means all granted; `None` means the pool is not up yet.
+        An unreadable answer counts as granted, the same rule `_pg_role_missing`
+        applies: the turn's own psql will say otherwise if it is wrong, and
+        guessing `missing` here would block on the wrong evidence."""
+        pool = self._pool_provider()
+        if pool is None:
+            return None
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    SELF_INQUIRY_GRANTS_SQL, self.pg_readonly_role, list(SELF_INQUIRY_PG_TABLE_NAMES)
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_inquiry_grant_check_failed err=%s", exc)
+            return []
+        return sorted(str(r["table_name"]) for r in rows)
+
+    async def _read_self_ledger(self) -> list[LedgerRow]:
+        """Row count and latest timestamp per outcome table. Orientation for the
+        prompt, never a subject. A table that fails to answer is left out."""
+        pool = self._pool_provider()
+        if pool is None:
+            return []
+        out: list[LedgerRow] = []
+        try:
+            async with pool.acquire() as conn:
+                for table, _ in SELF_INQUIRY_PG_TABLES:
+                    ts = LEDGER_TS_COLUMNS.get(table, "created_at")
+                    try:
+                        row = await conn.fetchrow(LEDGER_SQL_TEMPLATE.format(ts=ts, table=table))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("curiosity_self_ledger_table_skipped table=%s err=%s", table, exc)
+                        continue
+                    if row is None:
+                        continue
+                    last = row["last"]
+                    out.append(
+                        LedgerRow(
+                            table=table,
+                            count=int(row["n"] or 0),
+                            last=last.isoformat() if isinstance(last, datetime) else (str(last) if last else ""),
+                        )
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_ledger_read_failed err=%s", exc)
+        return out
+
+    async def _read_self_context(self) -> tuple[Optional[SelfDefinition], Optional[int]]:
+        """The latest definition Orion wrote, and how many exist. One thread hop."""
+        reader = self._reader
+        if reader is None:
+            return None, None
+
+        def _read() -> tuple[Optional[SelfDefinition], Optional[int]]:
+            return read_latest_self_definition(reader), read_self_definition_count(reader)
+
+        try:
+            return await asyncio.to_thread(_read)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_context_read_failed err=%s", exc)
+            return None, None
+
+    async def _self_inquire(
+        self, *, now: datetime, run_id: str, correlation_id: str, done_today: int
+    ) -> Optional[str]:
+        """The self-inquiry turn. Held under `_run_lock` by the caller."""
+        last_run_id = await self._read_last_run_id(LINE_SELF_INQUIRY)
+        view = await self._read_worldview(
+            last_run_id, rotate_seed=run_id, priors_cypher=LIVE_SELF_PRIORS_CYPHER
+        )
+        if view.is_unavailable:
+            logger.warning(
+                "curiosity_self_worldview_degraded run=%s detail=%s", run_id, view.unavailable_reason
+            )
+        latest, definition_count = await self._read_self_context()
+        ledger = await self._read_self_ledger()
+
+        # Counted BEFORE the turn, same rule as the investigation line.
+        self._self_last_monotonic = time.monotonic()
+        self._self_done_today = done_today + 1
+        previous_stamp = await self._read_cooldown_stamp(LINE_SELF_INQUIRY)
+        await self._record_investigation(now, run_id, LINE_SELF_INQUIRY)
+
+        logger.info(
+            "curiosity_self_inquiry_starting run=%s definitions=%s self_priors=%s/%s "
+            "ledger_tables=%s continuing=%s corr=%s",
+            run_id,
+            definition_count if definition_count is not None else "unreadable",
+            len(view.live_priors) + len(view.stale_priors),
+            view.live_total,
+            len(ledger),
+            bool(view.continuation and view.continuation.continue_line),
+            correlation_id,
+        )
+
+        prompt = build_self_inquiry_prompt(
+            view=view,
+            latest=latest,
+            definition_count=definition_count,
+            ledger=ledger,
+            granted_tables=SELF_INQUIRY_PG_TABLES,
+            run_id=run_id,
+            own_graph=self.graph_own,
+            atlas_graph=self.graph_atlas,
+            hub_url=self.hub_url,
+            repo_root=self.sandbox_repo_root,
+            max_hops=self.max_hops,
+            stale_after=self.stale_prior_tests,
+            graph_enabled=self.graph_enabled,
+        )
+        material = StudyMaterial(generated_at=now)
+        if self.kickoff_via_cortex:
+            try:
+                dispatched = await self._dispatch_durable_run(
+                    run_id=run_id,
+                    correlation_id=correlation_id,
+                    prompt=prompt,
+                    material=material,
+                    line=LINE_SELF_INQUIRY,
+                )
+            except asyncio.CancelledError:
+                await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
+                raise
+            if dispatched:
+                return "dispatched"
+            logger.warning(
+                "curiosity_durable_dispatch_fell_back run=%s line=%s -- running the turn in-process",
+                run_id,
+                LINE_SELF_INQUIRY,
+            )
+        try:
+            if self.kickoff_via_cortex:
+                turn = await self._turn_result_for(
+                    CuriosityTurnRequestV1(
+                        run_id=run_id,
+                        correlation_id=correlation_id,
+                        prompt=prompt,
+                        fcc_model_label=self._fcc_model_label,
+                        timeout_sec=float(self.timeout_sec),
+                        source_tag=SELF_INQUIRY_TAG,
+                    ),
+                    hold_lock=False,
+                )
+                text, debug = turn.text, dict(turn.debug)
+            else:
+                text, debug = await self._generate(prompt, correlation_id, source=SELF_INQUIRY_TAG)
+        except asyncio.CancelledError:
+            await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
+            raise
+        if not text:
+            logger.info("curiosity_self_inquiry_no_text run=%s debug=%s", run_id, debug)
+            return "empty_generation"
+
+        outcome, footprint, hops, evidence = await self._read_turn_result(run_id)
+        definition = await self._read_run_self_definition(run_id)
+        await self._publish_attention_schema(
+            run_id=run_id, outcome=outcome, correlation_id=correlation_id, now=now
+        )
+        await self._journal(
+            material=material,
+            text=text,
+            correlation_id=correlation_id,
+            run_id=run_id,
+            harness_step_count=debug.get("harness_step_count"),
+            harness_grounding_status=debug.get("harness_grounding_status"),
+            harness_elapsed_sec=debug.get("elapsed_sec"),
+            harness_fcc_elapsed_sec=debug.get("fcc_elapsed_sec"),
+            graph_footprint=footprint,
+            hop_notes=hops,
+            line=LINE_SELF_INQUIRY,
+        )
+        await self._mirror_self_definition(definition, run_id=run_id, correlation_id=correlation_id)
+        logger.info(
+            "curiosity_self_inquiry_journaled run=%s chars=%s wrote=%s evidence=%s hops=%s "
+            "definition=%s continue=%s reach_out=%s corr=%s",
+            run_id,
+            len(text),
+            "unreadable" if footprint is None else (format_footprint(footprint) or "nothing"),
+            format_evidence(evidence, graph_configured=self._reader is not None),
+            len(hops),
+            "written" if definition is not None else "absent",
+            bool(outcome and outcome.continue_line),
+            bool(outcome and outcome.reach_out),
+            correlation_id,
+        )
+        if outcome is not None and outcome.reach_out:
+            await self._maybe_reach_out(outcome=outcome, finding_text=text, run_id=run_id)
+        return None
+
+    async def _read_run_self_definition(self, run_id: str) -> Optional[SelfDefinition]:
+        reader = self._reader
+        if reader is None:
+            return None
+        try:
+            return await asyncio.to_thread(read_self_definition, reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_definition_read_failed run=%s err=%s", run_id, exc)
+            return None
+
+    async def _next_self_concept_version(self) -> int:
+        pool = self._pool_provider()
+        if pool is None:
+            return 1
+        try:
+            async with pool.acquire() as conn:
+                value = await conn.fetchval(SELF_CONCEPT_VERSION_SQL, "self:definition")
+            return int(value or 1)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_self_definition_version_lookup_failed err=%s", exc)
+            return 1
+
+    async def _mirror_self_definition(
+        self,
+        definition: Optional[SelfDefinition],
+        *,
+        run_id: str,
+        correlation_id: str,
+    ) -> bool:
+        """Append the run's `:SelfDefinition` to self_concept_history, or say
+        exactly why not. True only when a row was published.
+
+        The refusal is deliberate and logged by cause: a run that wrote no
+        definition is `absent`; one that wrote prose with no evidence is
+        `no_evidence`. Neither reaches the store, so what the stance kernel
+        later shows Orion is always something Orion looked for."""
+        if self._bus is None:
+            return False
+        if definition is None:
+            logger.info("curiosity_self_definition_not_mirrored run=%s reason=absent", run_id)
+            return False
+        version = await self._next_self_concept_version()
+        row = build_self_definition_history_write(definition, version=version)
+        if row is None:
+            logger.warning(
+                "curiosity_self_definition_not_mirrored run=%s reason=no_evidence chars=%s -- "
+                "a definition with nothing cited stays a draft in Orion's own graph",
+                run_id,
+                len(definition.text),
+            )
+            return False
+        try:
+            await self._bus.publish(
+                SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+                BaseEnvelope(
+                    kind=SELF_CONCEPT_HISTORY_WRITE_KIND,
+                    source=self._source_ref,
+                    correlation_id=uuid5(NAMESPACE_URL, f"{SELF_INQUIRY_TAG}:{run_id}"),
+                    payload=row.model_dump(mode="json"),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_definition_publish_failed run=%s", run_id, exc_info=True
+            )
+            return False
+        logger.info(
+            "curiosity_self_definition_mirrored run=%s version=%s chars=%s evidence=%s revises=%s corr=%s",
+            run_id,
+            row.version,
+            len(row.content),
+            len(row.evidence_refs),
+            definition.revises or "-",
+            correlation_id,
+        )
+        return True
+
     # --- the turn ----------------------------------------------------------
 
     async def _generate(
@@ -1505,7 +1989,9 @@ class CuriosityInvestigation:
 
     # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
 
-    def _run_brief(self, *, prompt: str, material: StudyMaterial) -> CuriosityRunBriefV1:
+    def _run_brief(
+        self, *, prompt: str, material: StudyMaterial, line: str = LINE_INVESTIGATE
+    ) -> CuriosityRunBriefV1:
         return CuriosityRunBriefV1(
             prompt=prompt,
             session_id=self.session_id,
@@ -1519,11 +2005,18 @@ class CuriosityInvestigation:
                 relation_total=int(material.relation_total),
                 relation_count=len(material.relations),
             ),
-            source_tag=INVESTIGATION_TAG,
+            source_tag=SELF_INQUIRY_TAG if line == LINE_SELF_INQUIRY else INVESTIGATION_TAG,
+            line=line,
         )
 
     async def _dispatch_durable_run(
-        self, *, run_id: str, correlation_id: str, prompt: str, material: StudyMaterial
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        prompt: str,
+        material: StudyMaterial,
+        line: str = LINE_INVESTIGATE,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -1532,7 +2025,7 @@ class CuriosityInvestigation:
             run_id=run_id,
             workflow="curiosity.investigate",
             correlation_id=correlation_id,
-            brief=self._run_brief(prompt=prompt, material=material),
+            brief=self._run_brief(prompt=prompt, material=material, line=line),
         )
         payload = {
             "mode": "brain",
@@ -1706,6 +2199,15 @@ class CuriosityInvestigation:
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}
+        if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
+            # The runner read the run's `:SelfDefinition` and carried it here;
+            # Hub owns the mirror because Hub has the memory pool for the
+            # version lookup. Absent means absent -- nothing is inferred.
+            await self._mirror_self_definition(
+                self_definition_from_detail(detail),
+                run_id=state.run_id,
+                correlation_id=state.correlation_id,
+            )
         if not detail.get("reach_out"):
             return
         outcome = TurnOutcome(
@@ -1791,6 +2293,7 @@ class CuriosityInvestigation:
         harness_fcc_elapsed_sec: Optional[float] = None,
         graph_footprint: Optional[dict[str, int]] = None,
         hop_notes: Optional[list[tuple[int, str]]] = None,
+        line: str = LINE_INVESTIGATE,
     ) -> None:
         # BUILD INSIDE THE TRY. The journal is the only place this turn is
         # persisted -- the unified turn runs with `no_write`, so a raise here
@@ -1811,6 +2314,7 @@ class CuriosityInvestigation:
                 harness_fcc_elapsed_sec=harness_fcc_elapsed_sec,
                 graph_footprint=graph_footprint,
                 hop_notes=hop_notes,
+                line=line,
             )
             await self._bus.publish(
                 JOURNAL_WRITE_CHANNEL,

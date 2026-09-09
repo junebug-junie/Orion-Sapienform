@@ -560,8 +560,20 @@ class SubstrateMutationStore:
             }
         return payload
 
-    def recent_lifecycles(self, *, limit: int = 20) -> list[dict[str, object]]:
+    def recent_lifecycles(self, *, limit: int = 20, mutation_class: str | None = None) -> list[dict[str, object]]:
         proposals = sorted(self._proposals.values(), key=lambda proposal: proposal.created_at, reverse=True)
+        if mutation_class is not None:
+            # Filtered BEFORE the limit slice, not after: this store has no
+            # eviction and is shared by every mutation class the scheduler
+            # runs (12+, at last count). A class filter applied to the
+            # already-sliced top `limit` proposals would go silently empty
+            # the moment `limit` other-class proposals land more recently
+            # than the last one in the class you actually asked about --
+            # exactly the "loop is doing real work but the view shows
+            # nothing" failure a caller filtering post-hoc is trying to
+            # avoid. Confirmed live: routing_threshold_patch alone produced
+            # ~190 proposals in 36 hours before its own retirement.
+            proposals = [proposal for proposal in proposals if proposal.mutation_class == mutation_class]
         payload: list[dict[str, object]] = []
         for proposal in proposals[:limit]:
             lifecycle = self.lifecycle_for_proposal(proposal.proposal_id)

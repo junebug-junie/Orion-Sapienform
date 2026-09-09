@@ -457,3 +457,18 @@ check-sentience-instruments:
 # Makefile. Every other entry in this crontab already uses one form or the other.
 postgres-headroom-watch:
 	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose --notify
+
+# Self-sense eval (Patch A of docs/superpowers/specs/2026-09-08-orion-sense-of-
+# self-design.md): three fixed identity questions to the LIVE Hub chat endpoint,
+# two deterministic scores per answer (orion/evals/self_sense.py), one row per
+# question in self_sense_eval_log via orion:self_sense:eval:write. Costs three
+# real chat turns. Env comes from the root .env (ORION_BUS_URL -- the tailscale
+# redis, never bus-core) and services/orion-hub/.env (HUB_BASE_URL, Postgres DSN);
+# root .env is sourced last so its ORION_BUS_URL wins. No scheduler yet -- run by
+# hand; `ARGS=--no-publish` scores without writing.
+eval-self-sense:
+	@set -a; \
+	[ -f services/orion-hub/.env ] && . ./services/orion-hub/.env; \
+	[ -f .env ] && . ./.env; \
+	set +a; \
+	$(METRIC_PYTHON) services/orion-hub/evals/run_self_sense_eval.py $(ARGS)

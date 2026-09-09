@@ -165,6 +165,9 @@ SYNC_PREFIXES = (
     # then silently not synced, with the run reporting no changes. Every
     # HUB_CURIOSITY_* key already in the live .env got there by hand.
     "HUB_CURIOSITY_",
+    # Host-run evals against the live Hub (services/orion-hub/evals/
+    # run_self_sense_eval.py). Exact key: no generic "HUB_" prefix is synced.
+    "HUB_BASE_URL",
     # World-pulse Stage 1 Wallet A. Same failure shape as HUB_CURIOSITY_ above:
     # without this prefix the default sync reports "no changes" and the keys
     # never land in the live .env.

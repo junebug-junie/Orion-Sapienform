@@ -53,6 +53,7 @@ from orion.schemas.actions.mesh_ops import (
 )
 from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryIndexV1, JournalEntryWriteV1, JournalTriggerV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.self_sense import SelfSenseEvalV1
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
@@ -1227,6 +1228,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalEntryIndexV1": JournalEntryIndexV1,
     "JournalEntryWriteV1": JournalEntryWriteV1,
     "SelfConceptHistoryV1": SelfConceptHistoryV1,
+    "SelfSenseEvalV1": SelfSenseEvalV1,
     "SelfKnowledgeItemLogV1": SelfKnowledgeItemLogV1,
     "ChatStanceBeliefLogV1": ChatStanceBeliefLogV1,
     "DailyMetacogV1": DailyMetacogV1,

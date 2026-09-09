@@ -42,6 +42,7 @@ from .attention_schema import AttentionSchemaSQL
 from .durable_run_state import DurableRunStateSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
+from .self_sense_eval_log import SelfSenseEvalLogSQL
 from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
 from .external_room_message import ExternalRoomMessageSQL

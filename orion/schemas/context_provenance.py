@@ -54,7 +54,19 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
     entry.key: entry
     for entry in [
         # --- static identity / config: loaded once, stable across turns ---
-        _entry("orion_identity_summary", "static_identity_config", "Identity kernel summary lines."),
+        _entry(
+            "orion_identity_summary",
+            "static_identity_config",
+            "Identity kernel summary lines. Since 2026-09-08 the FIRST line may be Orion's own "
+            "self-definition (marker 'In my own words'), a live_runtime_projection carried on this "
+            "key for template compatibility -- see orion_self_definition.",
+        ),
+        _entry(
+            "orion_self_definition",
+            "live_runtime_projection",
+            "Latest self:definition row from self_concept_history (Orion's own words, written "
+            "during a self-inquiry curiosity run); hydrated by the felt-state reader.",
+        ),
         _entry("juniper_relationship_summary", "static_identity_config", "Relationship summary lines."),
         _entry("response_policy_summary", "static_identity_config", "Response policy summary lines."),
         _entry("identity_kernel_source", "static_identity_config", "Which identity kernel file was loaded."),

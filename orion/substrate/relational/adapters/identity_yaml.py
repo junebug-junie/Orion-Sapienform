@@ -36,6 +36,7 @@ from orion.core.schemas.cognitive_substrate import (
 )
 
 from orion.substrate.adapters._common import make_temporal
+from orion.substrate.relational.adapters.self_definition_ctx import strip_self_definition_lines
 
 _TIER_RANK = 1  # operator_static
 
@@ -58,7 +59,14 @@ def map_identity_yaml_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     """
     ctx = ctx if isinstance(ctx, dict) else {}
 
-    orion_summary: list[str] = [str(v).strip() for v in (ctx.get("orion_identity_summary") or []) if str(v).strip()]
+    # Orion's own self-definition line is prepended onto this ctx key by
+    # `_inject_identity_context` on every path; it is NOT operator config and
+    # must not be persisted into the operator_static canonical snapshot.
+    orion_summary: list[str] = [
+        str(v).strip()
+        for v in strip_self_definition_lines(ctx.get("orion_identity_summary") or [])
+        if str(v).strip()
+    ]
     juniper_summary: list[str] = [str(v).strip() for v in (ctx.get("juniper_relationship_summary") or []) if str(v).strip()]
     response_policy: list[str] = [str(v).strip() for v in (ctx.get("response_policy_summary") or []) if str(v).strip()]
 

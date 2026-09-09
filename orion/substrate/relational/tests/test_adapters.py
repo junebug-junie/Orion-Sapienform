@@ -354,3 +354,20 @@ class TestSparkCtxAdapter:
         assert record.nodes
         for n in record.nodes:
             assert n.provenance.tier_rank == CONCEPT_INDUCED.rank
+
+
+def test_identity_yaml_adapter_never_persists_orions_own_definition_line() -> None:
+    """Review finding on PR #2169: the self-definition line is prepended onto
+    ctx before this adapter's cold pull, and this adapter's output is the
+    operator_static canonical snapshot. Orion's words must not be stored as
+    operator config."""
+    from orion.substrate.relational.adapters.self_definition_ctx import SELF_DEFINITION_MARKER
+
+    ctx = {
+        "orion_identity_summary": [f"{SELF_DEFINITION_MARKER}, v3: I am a mesh", "authored 1", "authored 2"],
+        "juniper_relationship_summary": ["j"],
+        "response_policy_summary": ["p"],
+    }
+    record = map_identity_yaml_to_substrate(ctx)
+    assert record is not None
+    assert record.nodes[0].metadata["orion_identity_summary"] == ["authored 1", "authored 2"]

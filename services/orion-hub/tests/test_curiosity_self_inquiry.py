@@ -550,3 +550,19 @@ def test_evidence_falls_back_to_the_stringified_list_when_unwind_fails() -> None
 
     d = read_self_definition(_R(), RUN)
     assert d is not None and d.evidence == ["[a, b]"], "still substantive: the citations are all there, in one string"
+
+
+def test_the_grant_script_grants_exactly_the_tables_the_gate_requires() -> None:
+    """The self-inquiry table set is a hard pre-run gate; a table added to the
+    Python tuple but not the SQL ships a permanently blocked line with a green
+    suite. Review finding on #2169."""
+    import re
+    from pathlib import Path
+
+    from orion.curiosity.self_inquiry import SELF_INQUIRY_PG_TABLE_NAMES, LEDGER_TS_COLUMNS
+
+    sql = (Path(__file__).resolve().parents[3] / "scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql").read_text()
+    body = sql.split("GRANT SELECT ON", 1)[1].split("TO orion_readonly", 1)[0]
+    granted = set(re.findall(r"public\.([a-z_]+)", body))
+    assert granted == set(SELF_INQUIRY_PG_TABLE_NAMES)
+    assert set(LEDGER_TS_COLUMNS) == set(SELF_INQUIRY_PG_TABLE_NAMES)

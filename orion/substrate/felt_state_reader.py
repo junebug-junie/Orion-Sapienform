@@ -186,10 +186,16 @@ class SubstrateFeltStateReader:
             return
         self._cache[lane.ctx_key] = (None, time.monotonic())
 
-    def hydrate(self, ctx: dict) -> None:
+    def hydrate(self, ctx: dict, *, lanes: tuple[str, ...] | None = None) -> None:
+        """Hydrate every lane, or only the ctx_keys named in `lanes`.
+
+        The subset form exists for callers on the quick lane, which must not
+        pay eight blocking SELECTs for one key (review finding on PR #2169)."""
         if not self._enabled:
             return
         for lane in _LANES:
+            if lanes is not None and lane.ctx_key not in lanes:
+                continue
             try:
                 max_age = lane.max_age_sec if lane.max_age_sec is not None else self._max_age_sec
                 if ctx.get(lane.ctx_key) is not None:
@@ -242,13 +248,14 @@ def _get_reader() -> SubstrateFeltStateReader:
     return _READER
 
 
-def hydrate_felt_state_ctx(ctx: dict) -> None:
-    """Public entrypoint. Fail-open: never raises."""
+def hydrate_felt_state_ctx(ctx: dict, *, lanes: tuple[str, ...] | None = None) -> None:
+    """Public entrypoint. Fail-open: never raises. `lanes` limits the pull to
+    those ctx_keys (see `SubstrateFeltStateReader.hydrate`)."""
     try:
         if not isinstance(ctx, dict):
             return
         reader = _get_reader()
-        reader.hydrate(ctx)
+        reader.hydrate(ctx, lanes=lanes)
     except Exception:
         logger.debug("hydrate_felt_state_ctx failed", exc_info=True)
         return

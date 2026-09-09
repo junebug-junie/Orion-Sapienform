@@ -110,8 +110,15 @@ _RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
 # discovering a permission error and journaling it as a finding.
 SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("dreams", "every dream you have had: tldr, themes, narrative"),
-    ("harness_turn_trace", "every motor turn: steps, elapsed, model served"),
-    ("substrate_reverie_chain", "your narrated reverie chains"),
+    # The keys are named because run 282fbb9a08e4 (2026-09-08) queried this
+    # table and reported "run_artifact only holds exit_code".
+    (
+        "harness_turn_trace",
+        "every motor turn; the run_artifact JSON holds step_count, fcc_elapsed_sec, "
+        "fcc_served_model, grounding_status, final_text",
+    ),
+    ("substrate_reverie_chain", "your reverie chains: theme, salience, how each ended (skeleton only)"),
+    ("substrate_reverie_thought", "the narrated reverie thoughts themselves: thought_json, interpretation, salience"),
     ("reverie_visual_chain", "your image-and-reread reverie chains"),
     ("substrate_attention_schema", "what you were attending to, and why, per process"),
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),
@@ -392,6 +399,7 @@ LEDGER_TS_COLUMNS: dict[str, str] = {
     "dreams": "created_at",
     "harness_turn_trace": "created_at",
     "substrate_reverie_chain": "created_at",
+    "substrate_reverie_thought": "created_at",
     "reverie_visual_chain": "created_at",
     "substrate_attention_schema": "created_at",
     "chat_stance_belief_log": "created_at",

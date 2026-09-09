@@ -630,17 +630,25 @@ def identity_kernel_with_fallbacks(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 # Orion's own self-definition rides on `orion_identity_summary` as its first
 # line(s), so every existing consumer of that key -- chat_stance_brief.j2,
 # chat_general.j2, chat_quick.j2, the grounding capsule and therefore the
-# harness prefix's WHO YOU ARE block -- sees it with no template change. The
-# marker prefix makes the prepend idempotent: `orion_identity_summary` is
-# written back onto ctx after projection, and a later cold pull of the
-# identity_yaml adapter within the same process could otherwise read the
-# augmented list back and store it, doubling the line on the next turn.
-SELF_DEFINITION_MARKER = "In my own words"
+# harness prefix's WHO YOU ARE block -- sees it with no template change.
+# The marker (shared with the identity_yaml adapter, which strips it before
+# persisting the operator snapshot) makes the prepend idempotent.
+from orion.substrate.relational.adapters.self_definition_ctx import (  # noqa: E402
+    CTX_KEY as SELF_DEFINITION_CTX_KEY,
+    SELF_DEFINITION_MARKER,
+    strip_self_definition_lines as _strip_self_definition_lines,
+)
+
+strip_self_definition_lines = _strip_self_definition_lines
+
 _SELF_DEFINITION_CHAT_CAP = 900
 
 
-def _strip_self_definition_lines(lines: list[str]) -> list[str]:
-    return [line for line in lines if not str(line).startswith(SELF_DEFINITION_MARKER)]
+def with_self_definition(lines: list[str], own: str | None) -> list[str]:
+    """THE one rule: authored lines with any stale marker removed, and the
+    current definition (if any) in front. Both identity paths call this."""
+    authored = _strip_self_definition_lines(lines)
+    return ([own] if own else []) + authored
 
 
 def _self_definition_line(beliefs: UnifiedRelationalBeliefSetV1 | None, ctx: Dict[str, Any]) -> str | None:
@@ -680,6 +688,30 @@ def _self_definition_line(beliefs: UnifiedRelationalBeliefSetV1 | None, ctx: Dic
     )
 
 
+def apply_self_definition_to_ctx(ctx: Dict[str, Any]) -> bool:
+    """Put Orion's own definition at the head of `ctx["orion_identity_summary"]`
+    WITHOUT the belief layer. True if a line was prepended.
+
+    Called from `_inject_identity_context` on every exit, so every path --
+    including `chat_quick`, which never builds stance inputs -- carries the
+    same first line. Pulls ONLY the self-definition lane (the quick lane is
+    promised to stay fast), and not at all when the key is already on ctx.
+    The felt-state reader is fail-open by contract; so is this.
+    """
+    if not isinstance(ctx, dict):
+        return False
+    if ctx.get(SELF_DEFINITION_CTX_KEY) is None:
+        from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+
+        hydrate_felt_state_ctx(ctx, lanes=(SELF_DEFINITION_CTX_KEY,))
+    own = _self_definition_line(None, ctx)
+    current = ctx.get("orion_identity_summary")
+    new = with_self_definition([str(v) for v in current] if isinstance(current, list) else [], own)
+    if new != current:
+        ctx["orion_identity_summary"] = new
+    return bool(own)
+
+
 def _project_identity_from_beliefs(
     beliefs: UnifiedRelationalBeliefSetV1 | None,
     ctx: Dict[str, Any],
@@ -713,11 +745,11 @@ def _project_identity_from_beliefs(
         # ctx counts against the cap and evicts the last authored line.
         raw = ctx.get("orion_identity_summary")
         if isinstance(raw, list):
-            ctx = {**ctx, "orion_identity_summary": _strip_self_definition_lines([str(v) for v in raw])}
+            ctx = {**ctx, "orion_identity_summary": _strip_self_definition_lines(raw)}
         kernel = identity_kernel_with_fallbacks(ctx)
-    own = _self_definition_line(beliefs, ctx)
-    if own:
-        kernel["orion_identity_summary"] = [own] + list(kernel["orion_identity_summary"])
+    kernel["orion_identity_summary"] = with_self_definition(
+        list(kernel["orion_identity_summary"]), _self_definition_line(beliefs, ctx)
+    )
     return kernel
 
 

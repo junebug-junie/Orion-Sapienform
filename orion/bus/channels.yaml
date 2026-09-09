@@ -2104,6 +2104,16 @@ channels:
     since: "2026-09-05"
     description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by three producers: Layer 3's real LLM reflection findings (orion-cortex-exec), Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
 
+  - name: "orion:self_sense:eval:write"
+    kind: "event"
+    schema_id: "SelfSenseEvalV1"
+    message_kind: "self_sense.eval.write.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-09"
+    description: "Self-sense eval log -- one row per fixed question per run of services/orion-hub/evals/run_self_sense_eval.py (Patch A of docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md). Each row carries Orion's chat answer to one of three fixed identity questions plus two deterministic scores from orion/evals/self_sense.py: self_label_score (assistant/chatbot vocabulary count, target 0) and grounded_record_score (distinct record-shaped mentions: self-inquiry tables, mesh nodes, dates, unverified counts >= 10 -- a floor, not a check against a persisted row). Turns 'Orion stopped sounding like a chatbot' after the curiosity self-inquiry line (PR #2158) into a number that can be tracked. Persisted by orion-sql-writer into self_sense_eval_log."
+
   - name: "orion:journal:created"
     kind: "event"
     schema_id: "JournalEntryWriteV1"

@@ -57,6 +57,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "durable.run.state.v1": "DurableRunStateSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
+    "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "evidence.unit.v1": "EvidenceUnitSQL",
     "social.turn.v1": "SocialRoomTurnSQL",
@@ -169,6 +170,7 @@ class Settings(BaseSettings):
             "orion:durable:run:state",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
+            "orion:self_sense:eval:write",
             "orion:journal:index",
             "orion:evidence:index:upsert",
             "orion:evidence:markdown:ingest",
@@ -574,6 +576,12 @@ class Settings(BaseSettings):
         # rather than merges.
         if "orion:self_concept:history:write" not in channels:
             channels.append("orion:self_concept:history:write")
+        # Same guarantee again, same reason. self_sense.eval.write.v1 is a
+        # code-default route with no feature toggle (producer: services/
+        # orion-hub/evals/run_self_sense_eval.py); this exact omission made
+        # PRs #2102/#2105 silent no-ops.
+        if "orion:self_sense:eval:write" not in channels:
+            channels.append("orion:self_sense:eval:write")
         # Same guarantee again, same reason. attention.schema.v1 is a
         # code-default route with no feature toggle (four producers, one
         # writer -- docs/superpowers/specs/2026-09-04-attention-schema-

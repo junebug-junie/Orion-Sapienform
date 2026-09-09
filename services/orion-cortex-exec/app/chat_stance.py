@@ -680,6 +680,38 @@ def _self_definition_line(beliefs: UnifiedRelationalBeliefSetV1 | None, ctx: Dic
     )
 
 
+def apply_self_definition_to_ctx(ctx: Dict[str, Any]) -> bool:
+    """Put Orion's own definition at the head of `ctx["orion_identity_summary"]`
+    WITHOUT the belief layer. True if a line was prepended.
+
+    `_project_identity_from_beliefs` does this for turns that build stance
+    inputs (the unified turn, including the Mind shortcut, which replaces only
+    the stance-synthesis LLM step). `chat_quick` and any verb that only runs
+    `_inject_identity_context` never reach it, so those turns showed the
+    authored card alone. Called from `_inject_identity_context` on every exit,
+    so every consumer of the key -- every chat template, the grounding capsule,
+    the harness WHO YOU ARE block -- sees the same first line. Idempotent via
+    the marker strip; fail-open (a felt-state read error leaves ctx as it was).
+    """
+    if not isinstance(ctx, dict):
+        return False
+    try:
+        from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+
+        hydrate_felt_state_ctx(ctx)
+    except Exception:  # noqa: BLE001 -- the reader is fail-open by contract; so is this
+        logger.debug("self_definition_hydrate_failed", exc_info=True)
+    own = _self_definition_line(None, ctx)
+    current = ctx.get("orion_identity_summary")
+    lines = _strip_self_definition_lines([str(v) for v in current]) if isinstance(current, list) else []
+    if not own:
+        if isinstance(current, list) and len(lines) != len(current):
+            ctx["orion_identity_summary"] = lines
+        return False
+    ctx["orion_identity_summary"] = [own] + lines
+    return True
+
+
 def _project_identity_from_beliefs(
     beliefs: UnifiedRelationalBeliefSetV1 | None,
     ctx: Dict[str, Any],

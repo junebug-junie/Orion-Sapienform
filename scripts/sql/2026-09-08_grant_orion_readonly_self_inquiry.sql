@@ -22,7 +22,8 @@
 --
 -- TO UNDO, in full:
 --   REVOKE SELECT ON public.dreams, public.harness_turn_trace,
---     public.substrate_reverie_chain, public.reverie_visual_chain,
+--     public.substrate_reverie_chain, public.substrate_reverie_thought,
+--     public.reverie_visual_chain,
 --     public.substrate_attention_schema, public.chat_stance_belief_log,
 --     public.self_knowledge_items, public.self_concept_history,
 --     public.substrate_endogenous_curiosity_candidates FROM orion_readonly;
@@ -33,6 +34,7 @@ GRANT SELECT ON
   public.dreams,
   public.harness_turn_trace,
   public.substrate_reverie_chain,
+  public.substrate_reverie_thought,
   public.reverie_visual_chain,
   public.substrate_attention_schema,
   public.chat_stance_belief_log,
@@ -46,6 +48,6 @@ COMMIT;
 -- Verify (each row should be `t`):
 --   SELECT t, has_table_privilege('orion_readonly', 'public.' || t, 'SELECT')
 --   FROM unnest(ARRAY['dreams','harness_turn_trace','substrate_reverie_chain',
---     'reverie_visual_chain','substrate_attention_schema','chat_stance_belief_log',
+--     'substrate_reverie_thought','reverie_visual_chain','substrate_attention_schema','chat_stance_belief_log',
 --     'self_knowledge_items','self_concept_history',
 --     'substrate_endogenous_curiosity_candidates']) AS t;

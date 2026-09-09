@@ -598,7 +598,7 @@ would still count steps. The draft stays in Orion's graph; nothing reads it.
 | `pg_grants_missing` | the read-only role cannot SELECT one or more outcome tables; the log names them. Apply `scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql`. **The flag alone does not turn this line on.** |
 
 The outcome tables the role needs (`SELF_INQUIRY_PG_TABLES`): `dreams`,
-`harness_turn_trace`, `substrate_reverie_chain`, `reverie_visual_chain`,
+`harness_turn_trace`, `substrate_reverie_chain`, `substrate_reverie_thought`, `reverie_visual_chain`,
 `substrate_attention_schema`, `chat_stance_belief_log`,
 `self_knowledge_items`, `self_concept_history`,
 `substrate_endogenous_curiosity_candidates`. SELECT only; the role still

@@ -95,6 +95,7 @@ from .chat_stance import (
     identity_kernel_with_fallbacks,
     parse_chat_stance_brief_with_debug,
     suppress_chat_general_speech_identity_priming,
+    apply_self_definition_to_ctx,
 )
 from .admission_cue import admission_cue_for_settings
 from orion.situational.context import build_situation_for_ctx
@@ -1103,6 +1104,7 @@ def _inject_identity_context(ctx: Dict[str, Any]) -> None:
     required_keys = ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary")
     if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
         logger.debug("identity_injection skipped: identity context already present")
+        apply_self_definition_to_ctx(ctx)
         return
 
     personality_file_loaded = False
@@ -1149,6 +1151,9 @@ def _inject_identity_context(ctx: Dict[str, Any]) -> None:
         else:
             identity_kernel_source = "fallback_empty_yaml"
     ctx["identity_kernel_source"] = identity_kernel_source
+    # Orion's own definition rides on the same key, for every path that gets
+    # here -- including chat_quick, which never builds stance inputs.
+    apply_self_definition_to_ctx(ctx)
     try:
         logger.info(
             "identity_context_ready identity_kernel_source=%s personality_file=%s personality_declared_in_metadata=%s personality_file_loaded=%s orion_count=%s juniper_count=%s policy_count=%s",

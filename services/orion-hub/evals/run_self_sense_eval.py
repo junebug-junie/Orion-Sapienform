@@ -239,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="print rows as JSON")
     ap.add_argument("--node", default=os.getenv("NODE_NAME") or os.uname().nodename)
     args = ap.parse_args(argv)
+    # Progress lines must reach a redirected log as each turn finishes, not at exit.
+    sys.stdout.reconfigure(line_buffering=True)
 
     if not args.no_publish and not args.bus_url:
         print("ORION_BUS_URL is required unless --no-publish (use the tailscale redis://<ip>:6379/0)", file=sys.stderr)

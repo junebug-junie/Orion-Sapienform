@@ -31,6 +31,7 @@ Absent is reported as absent (``first_step_at: null``), never guessed.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -161,12 +162,22 @@ class RuntimeActivity:
         max_finished: int = 30,
         max_turns: int = 500,
         max_runs: int = 200,
+        dispatched_stale_sec: float = 1800.0,
     ) -> None:
         self._now = now
         self._finished_ttl_sec = max(1.0, float(finished_ttl_sec))
         self._max_finished = max(1, int(max_finished))
         self._max_turns = max(1, int(max_turns))
         self._max_runs = max(1, int(max_runs))
+        # A run dispatched via cortex-orch but never followed by ANY
+        # DurableRunStateV1 event (the runner never started it, or died
+        # before its first transition) has no terminal status to age out
+        # on -- RunRecord.active treats bare "dispatched" as active
+        # indefinitely. Review finding 2026-09-09: without this, such a
+        # run reads as a permanent phantom "running" chip until the count
+        # cap (default 200 runs, i.e. weeks at real curiosity cadence)
+        # happens to evict it. Age it out on wall-clock time instead.
+        self._dispatched_stale_sec = max(1.0, float(dispatched_stale_sec))
         self._runs: "OrderedDict[str, RunRecord]" = OrderedDict()
         self._turns: "OrderedDict[str, TurnRecord]" = OrderedDict()
         self._gateway: dict[str, Any] | None = None
@@ -283,6 +294,14 @@ class RuntimeActivity:
                 started_at=first,
                 updated_at=ts,
             )
+            detail = row.get("detail")
+            if isinstance(detail, str):
+                try:
+                    detail = json.loads(detail)
+                except (TypeError, ValueError):
+                    detail = None
+            if isinstance(detail, dict) and detail.get("line"):
+                rec.line = str(detail["line"])
             rec.transitions.append({"node": rec.node, "status": status, "at": _iso(ts), "backfilled": True})
             self._runs[run_id] = rec
             adopted += 1
@@ -388,6 +407,14 @@ class RuntimeActivity:
     # -------------------------------------------------------------- eviction
     def _evict_runs(self) -> None:
         now = self._now()
+        # Orphaned dispatch: never got a first state event, so `active` would
+        # otherwise be true forever. Drop it outright rather than routing it
+        # through the finished/TTL machinery below, which is keyed on
+        # finished_at (None here) -- there is nothing to keep once it is
+        # presumed abandoned.
+        for run_id, r in list(self._runs.items()):
+            if r.status == "dispatched" and (now - r.updated_at) > self._dispatched_stale_sec:
+                self._runs.pop(run_id, None)
         finished = [r for r in self._runs.values() if not r.active]
         finished.sort(key=lambda r: r.finished_at or r.updated_at)
         stale = [

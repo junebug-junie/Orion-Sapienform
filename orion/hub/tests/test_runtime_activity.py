@@ -163,6 +163,32 @@ def test_finished_turns_and_runs_expire():
     assert snap["curiosity_runs"] == []
 
 
+def test_dispatched_run_with_no_state_event_ages_out():
+    act, clock = _activity(dispatched_stale_sec=100)
+    act.run_dispatched(run_id="orphan", correlation_id="c", line="investigate")
+    assert act.snapshot()["curiosity_runs"][0]["run_id"] == "orphan"
+    clock.t += 50
+    # Still within the staleness window -- not evicted just for sitting quietly.
+    assert [r["run_id"] for r in act.snapshot()["curiosity_runs"]] == ["orphan"]
+    clock.t += 51
+    # Never got a first state event (runner never started, or died before
+    # its first transition) -- presumed abandoned, dropped outright rather
+    # than lingering as a permanent phantom "active" run.
+    assert act.snapshot()["curiosity_runs"] == []
+    assert act.snapshot()["busy"] is False
+
+
+def test_a_state_event_resets_the_dispatched_staleness_clock():
+    act, clock = _activity(dispatched_stale_sec=100)
+    act.run_dispatched(run_id="r1", correlation_id="c", line="investigate")
+    clock.t += 90
+    act.run_state({"run_id": "r1", "correlation_id": "c", "status": "running", "node": "harness_turn"})
+    clock.t += 90
+    # 180s since dispatch, but only 90s since the real "running" status --
+    # the staleness rule only applies while status is still bare "dispatched".
+    assert [r["run_id"] for r in act.snapshot()["curiosity_runs"]] == ["r1"]
+
+
 def test_backfill_adopts_only_still_active_runs():
     act, _ = _activity()
     adopted = act.backfill_runs(
@@ -179,6 +205,25 @@ def test_backfill_adopts_only_still_active_runs():
     assert runs[0]["transitions"][0]["backfilled"] is True
     # A second backfill never overwrites what live events already said.
     assert act.backfill_runs([{"run_id": "live", "status": "running", "node": "journal"}]) == 0
+
+
+def test_backfill_recovers_line_from_the_row_detail_column():
+    act, _ = _activity()
+    # `detail` comes back from psycopg as a dict for JSONB, or a JSON string
+    # depending on driver/registration -- both are handled.
+    act.backfill_runs(
+        [
+            {"run_id": "r1", "status": "running", "node": "harness_turn", "correlation_id": "c1",
+             "detail": {"line": "self_inquiry"}},
+            {"run_id": "r2", "status": "running", "node": "harness_turn", "correlation_id": "c2",
+             "detail": "{\"line\": \"investigate\"}"},
+            {"run_id": "r3", "status": "running", "node": "harness_turn", "correlation_id": "c3", "detail": None},
+        ]
+    )
+    by_id = {r["run_id"]: r for r in act.snapshot()["curiosity_runs"]}
+    assert by_id["r1"]["line"] == "self_inquiry"
+    assert by_id["r2"]["line"] == "investigate"
+    assert by_id["r3"]["line"] is None
 
 
 def test_gateway_snapshot_and_error_are_both_reported():

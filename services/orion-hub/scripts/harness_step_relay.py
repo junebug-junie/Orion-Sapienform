@@ -138,10 +138,17 @@ class HarnessStepRelay:
         # Live activity surface: the first step is the evidence the governor
         # actually started this turn. Fed before the queue check on purpose --
         # a turn with no WebSocket listener (curiosity, world-pulse) is still
-        # a turn occupying its lane.
-        get_runtime_activity().harness_step(
-            {"correlation_id": cid, "step_index": step_event.step_index, "step": step_event.step}
-        )
+        # a turn occupying its lane. Isolated in its own try/except (review
+        # finding 2026-09-09): unguarded, an exception here would propagate
+        # out of the shared subscription loop in _run(), which drops the
+        # WHOLE pubsub subscription and resleeps -- costing real Soft HUD
+        # step delivery for every in-flight turn, not just this fold.
+        try:
+            get_runtime_activity().harness_step(
+                {"correlation_id": cid, "step_index": step_event.step_index, "step": step_event.step}
+            )
+        except Exception:
+            logger.exception("runtime_activity_harness_step_fold_failed corr=%s", cid)
         now = time.monotonic()
         self._last_seen[cid] = now
         self._last_seen.move_to_end(cid)

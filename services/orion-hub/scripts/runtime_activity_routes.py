@@ -45,7 +45,7 @@ router = APIRouter(prefix="/api/runtime-activity", tags=["runtime-activity"])
 BACKFILL_SQL = """
 SELECT DISTINCT ON (s.run_id)
     s.run_id, s.workflow, s.node, s.next_node, s.status, s.resumed_from_node,
-    s.correlation_id, s.generated_at,
+    s.correlation_id, s.generated_at, s.detail,
     (SELECT MIN(f.generated_at) FROM substrate_durable_run_state f WHERE f.run_id = s.run_id) AS first_seen_at
 FROM substrate_durable_run_state s
 WHERE s.generated_at > NOW() - INTERVAL '48 hours'

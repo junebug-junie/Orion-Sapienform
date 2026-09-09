@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from scripts import harness_step_relay as harness_step_relay_mod
 from scripts.harness_step_relay import HarnessStepRelay
 
 
@@ -29,6 +30,34 @@ async def test_harness_step_relay_dispatches_matching_correlation() -> None:
     assert item["mode"] == "orion"
     assert item["correlation_id"] == "corr-1"
     assert item["step_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_broken_activity_fold_never_costs_real_step_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review finding 2026-09-09: the runtime-activity fold used to run
+    unguarded ahead of real Soft HUD delivery. A raise there would propagate
+    out of the shared subscription loop and drop the whole pubsub
+    subscription for ~1s -- costing every in-flight turn's steps, not just
+    this one. It must be caught locally and never block delivery."""
+
+    class _Boom:
+        def harness_step(self, *_a, **_k):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(harness_step_relay_mod, "get_runtime_activity", lambda: _Boom())
+
+    relay = HarnessStepRelay(channel="orion:harness:run:step")
+    queue: asyncio.Queue = asyncio.Queue()
+    relay.register_queue("corr-1", queue)
+    step_event = MagicMock()
+    step_event.correlation_id = "corr-1"
+    step_event.step_index = 0
+    step_event.step = {"type": "assistant"}
+
+    await relay._dispatch_step(step_event)  # must not raise
+
+    item = queue.get_nowait()
+    assert item["correlation_id"] == "corr-1", "real delivery still happened despite the fold raising"
 
 
 @pytest.mark.asyncio

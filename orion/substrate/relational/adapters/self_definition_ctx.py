@@ -32,6 +32,17 @@ from orion.core.schemas.cognitive_substrate import (
 from orion.substrate.adapters._common import make_temporal
 
 CTX_KEY = "orion_self_definition"
+# The prefix of the ONE line Orion's own definition contributes to
+# `orion_identity_summary`. Shared here (not in chat_stance) because the
+# identity_yaml adapter must strip it: that adapter reads the ctx list and
+# persists it as the operator-authored snapshot, and the prepend now happens
+# before that read on every path. Review finding on PR #2169.
+SELF_DEFINITION_MARKER = "In my own words"
+
+
+def strip_self_definition_lines(lines) -> list[str]:
+    """Drop the marker line(s) so an authored list stays authored."""
+    return [str(line) for line in (lines or []) if not str(line).startswith(SELF_DEFINITION_MARKER)]
 SNAPSHOT_SOURCE = "self_definition"
 NODE_ID = "sub-self-definition-orion"
 _TIER_RANK = 2  # graphdb_durable

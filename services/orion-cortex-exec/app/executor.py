@@ -96,6 +96,7 @@ from .chat_stance import (
     parse_chat_stance_brief_with_debug,
     suppress_chat_general_speech_identity_priming,
     apply_self_definition_to_ctx,
+    strip_self_definition_lines,
 )
 from .admission_cue import admission_cue_for_settings
 from orion.situational.context import build_situation_for_ctx
@@ -1143,6 +1144,11 @@ def _inject_identity_context(ctx: Dict[str, Any]) -> None:
             raw_personality_file,
         )
 
+    # Strip Orion's own marker line BEFORE the fallback's 10-line cap, or it
+    # counts against the cap and evicts the last authored line (same guard as
+    # chat_stance._project_identity_from_beliefs; review finding on #2169).
+    if isinstance(ctx.get("orion_identity_summary"), list):
+        ctx["orion_identity_summary"] = strip_self_definition_lines(ctx["orion_identity_summary"])
     fallback_identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(fallback_identity)
     if identity_kernel_source == "configured_yaml":

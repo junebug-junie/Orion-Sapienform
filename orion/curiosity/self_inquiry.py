@@ -110,10 +110,12 @@ _RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
 # discovering a permission error and journaling it as a finding.
 SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("dreams", "every dream you have had: tldr, themes, narrative"),
+    # The keys are named because run 282fbb9a08e4 (2026-09-08) queried this
+    # table and reported "run_artifact only holds exit_code".
     (
         "harness_turn_trace",
-        "every motor turn; the run_artifact JSON holds step_count, fcc_served_model, "
-        "grounding_status, final_text (run 282fbb9a08e4 looked and missed these)",
+        "every motor turn; the run_artifact JSON holds step_count, fcc_elapsed_sec, "
+        "fcc_served_model, grounding_status, final_text",
     ),
     ("substrate_reverie_chain", "your reverie chains: theme, salience, how each ended (skeleton only)"),
     ("substrate_reverie_thought", "the narrated reverie thoughts themselves: thought_json, interpretation, salience"),

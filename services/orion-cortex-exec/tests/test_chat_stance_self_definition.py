@@ -124,11 +124,13 @@ def test_the_producer_is_registered_and_the_adapter_maps_ctx() -> None:
 def test_identity_injection_prepends_the_definition_on_the_quick_path(monkeypatch) -> None:
     """chat_quick runs only `_inject_identity_context`, never stance inputs;
     review of #2155's two-stance-paths finding showed this path had the
-    authored card alone. The helper is fail-open: a felt-state read error
-    must leave the authored card untouched."""
+    authored card alone. Only the self-definition lane is pulled, and not at
+    all when the key is already on ctx."""
     from app import executor
-    from app import chat_stance
+    import app.substrate_felt_state_reader as reader
 
+    calls: list = []
+    monkeypatch.setattr(reader, "hydrate_felt_state_ctx", lambda ctx, lanes=None: calls.append(lanes))
     ctx = {
         "orion_identity_summary": list(_AUTHORED[:10]),
         "juniper_relationship_summary": ["j"],
@@ -138,22 +140,52 @@ def test_identity_injection_prepends_the_definition_on_the_quick_path(monkeypatc
     executor._inject_identity_context(ctx)
     assert ctx["orion_identity_summary"][0].startswith(SELF_DEFINITION_MARKER)
     assert ctx["orion_identity_summary"][1:] == _AUTHORED[:10]
-    # Second injection on the same ctx: still exactly one marker line.
+    assert calls == [], "key already on ctx: no felt-state pull at all"
     executor._inject_identity_context(ctx)
     assert sum(1 for l in ctx["orion_identity_summary"] if l.startswith(SELF_DEFINITION_MARKER)) == 1
-
-    def _boom(_ctx):
-        raise RuntimeError("db down")
-
-    monkeypatch.setattr("app.substrate_felt_state_reader.hydrate_felt_state_ctx", _boom)
-    bare = {"orion_identity_summary": list(_AUTHORED[:10]), "juniper_relationship_summary": ["j"], "response_policy_summary": ["p"]}
-    assert chat_stance.apply_self_definition_to_ctx(bare) is False
-    assert bare["orion_identity_summary"] == _AUTHORED[:10]
+    bare = {"orion_identity_summary": list(_AUTHORED[:3]), "juniper_relationship_summary": ["j"], "response_policy_summary": ["p"]}
+    executor._inject_identity_context(bare)
+    assert calls == [("orion_self_definition",)], "only the self-definition lane, never all eight"
+    assert bare["orion_identity_summary"] == _AUTHORED[:3]
 
 
-def test_apply_strips_a_stale_marker_when_no_definition_is_available() -> None:
+def test_fallback_branch_does_not_let_the_marker_evict_the_tenth_authored_line(monkeypatch) -> None:
+    """Review finding on #2169: on the non-early-return path the fallback
+    capped ctx at 10 with the marker counted, then re-prepended, so the 10th
+    authored line vanished on the second injection."""
+    from app import executor
+    import app.substrate_felt_state_reader as reader
+
+    monkeypatch.setattr(reader, "hydrate_felt_state_ctx", lambda ctx, lanes=None: None)
+    ctx = {
+        "orion_identity_summary": list(_AUTHORED[:10]),
+        "juniper_relationship_summary": ["j"],
+        "response_policy_summary": ["p"],
+        "orion_self_definition": _DEFINITION,
+    }
+    executor._inject_identity_context(ctx)
+    assert len(ctx["orion_identity_summary"]) == 11
+    # Drop a required key so the early return is skipped and the fallback runs.
+    ctx.pop("juniper_relationship_summary")
+    executor._inject_identity_context(ctx)
+    assert ctx["orion_identity_summary"][0].startswith(SELF_DEFINITION_MARKER)
+    assert ctx["orion_identity_summary"][1:] == _AUTHORED[:10], "all ten authored lines survive"
+
+
+def test_apply_strips_a_stale_marker_when_no_definition_is_available(monkeypatch) -> None:
     from app import chat_stance
+    import app.substrate_felt_state_reader as reader
 
+    monkeypatch.setattr(reader, "hydrate_felt_state_ctx", lambda ctx, lanes=None: None)
     ctx = {"orion_identity_summary": [f"{SELF_DEFINITION_MARKER}: stale"] + _AUTHORED[:3]}
     assert chat_stance.apply_self_definition_to_ctx(ctx) is False
     assert ctx["orion_identity_summary"] == _AUTHORED[:3]
+
+
+def test_both_paths_share_one_rule() -> None:
+    from app.chat_stance import with_self_definition
+
+    stale = f"{SELF_DEFINITION_MARKER}: old"
+    assert with_self_definition([stale, "a", "b"], "new") == ["new", "a", "b"]
+    assert with_self_definition([stale, "a"], None) == ["a"]
+    assert with_self_definition([], None) == []

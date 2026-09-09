@@ -466,9 +466,12 @@ postgres-headroom-watch:
 # redis, never bus-core) and services/orion-hub/.env (HUB_BASE_URL, Postgres DSN);
 # root .env is sourced last so its ORION_BUS_URL wins. No scheduler yet -- run by
 # hand; `ARGS=--no-publish` scores without writing.
+# Linked worktrees carry no .env files, so the env is read from the primary
+# checkout (resolved the same way METRIC_PYTHON is) when the local copy is absent.
 eval-self-sense:
 	@set -a; \
-	[ -f services/orion-hub/.env ] && . ./services/orion-hub/.env; \
-	[ -f .env ] && . ./.env; \
+	_root=$$(git rev-parse --git-common-dir 2>/dev/null)/..; \
+	if [ -f services/orion-hub/.env ]; then . ./services/orion-hub/.env; elif [ -f "$$_root/services/orion-hub/.env" ]; then . "$$_root/services/orion-hub/.env"; fi; \
+	if [ -f .env ]; then . ./.env; elif [ -f "$$_root/.env" ]; then . "$$_root/.env"; fi; \
 	set +a; \
 	$(METRIC_PYTHON) services/orion-hub/evals/run_self_sense_eval.py $(ARGS)

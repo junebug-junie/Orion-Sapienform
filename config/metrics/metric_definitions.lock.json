@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 646,
+  "metric_count": 647,
   "_last_change": {
-    "base": "merge base 8e4335c61 (origin/main)",
-    "change_count": 0,
+    "base": "merge base 9572e8eb7 (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-hub/orion:self_sense:eval:write"
     ]
   },
   "definitions": {
@@ -1814,6 +1814,17 @@
       ],
       "declared_consumers": [
         "orion-room-companion"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:self_sense:eval:write": {
+      "schema_id": "SelfSenseEvalV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

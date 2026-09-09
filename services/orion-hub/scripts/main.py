@@ -31,6 +31,9 @@ from scripts.exo_exploration_routes import router as exo_exploration_router
 from scripts.self_brain_routes import router as self_brain_router
 from scripts.chat_attachments import router as chat_attachments_router
 from scripts.hub_surface_routes import router as hub_surface_router, page_router as hub_surface_page_router
+from scripts.hub_surface_routes import _engine as hub_surface_engine
+from scripts.runtime_activity_routes import RuntimeActivityFeeds, router as runtime_activity_router
+from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 import scripts.self_atlas_cluster_history as self_atlas_cluster_history_runtime
@@ -292,6 +295,7 @@ world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
+runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
 cognition_trace_cache: Optional[CognitionTraceCache] = None
@@ -394,7 +398,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -667,6 +671,16 @@ async def startup_event():
                 last_seen_max_entries=settings.HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES,
             )
             await harness_step_relay.start(bus)
+
+            if settings.HUB_RUNTIME_ACTIVITY_ENABLED:
+                runtime_activity_feeds = RuntimeActivityFeeds(
+                    activity=get_runtime_activity(),
+                    gateway_url=settings.HUB_LLM_GATEWAY_URL,
+                    poll_sec=settings.HUB_RUNTIME_ACTIVITY_GATEWAY_POLL_SEC,
+                    timeout_sec=settings.HUB_LLM_GATEWAY_TIMEOUT_SEC,
+                    engine_factory=hub_surface_engine,
+                )
+                await runtime_activity_feeds.start()
 
             sic: Optional[SignalsInspectCache] = None
             try:
@@ -1267,7 +1281,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1374,6 +1388,12 @@ async def shutdown_event() -> None:
             await harness_step_relay.stop()
         except Exception:
             pass
+    if runtime_activity_feeds is not None:
+        try:
+            await runtime_activity_feeds.stop()
+        except Exception:
+            pass
+        runtime_activity_feeds = None
     if signals_inspect_cache is not None:
         await signals_inspect_cache.stop()
     if cognition_trace_cache is not None:
@@ -1417,6 +1437,7 @@ app.include_router(self_brain_router)
 app.include_router(chat_attachments_router)
 app.include_router(hub_surface_router)
 app.include_router(hub_surface_page_router)
+app.include_router(runtime_activity_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

@@ -8,6 +8,7 @@ from collections import OrderedDict, defaultdict
 from typing import Any, Dict, Optional, Set
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.hub.runtime_activity import get_runtime_activity
 from orion.schemas.harness_finalize import HarnessRunStepV1
 
 logger = logging.getLogger("orion-hub.harness_step_relay")
@@ -134,6 +135,13 @@ class HarnessStepRelay:
 
     async def _dispatch_step(self, step_event: HarnessRunStepV1) -> None:
         cid = str(step_event.correlation_id)
+        # Live activity surface: the first step is the evidence the governor
+        # actually started this turn. Fed before the queue check on purpose --
+        # a turn with no WebSocket listener (curiosity, world-pulse) is still
+        # a turn occupying its lane.
+        get_runtime_activity().harness_step(
+            {"correlation_id": cid, "step_index": step_event.step_index, "step": step_event.step}
+        )
         now = time.monotonic()
         self._last_seen[cid] = now
         self._last_seen.move_to_end(cid)

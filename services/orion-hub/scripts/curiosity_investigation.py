@@ -145,6 +145,7 @@ from orion.curiosity.journal import (  # moved 2026-09-06; names unchanged for c
     format_evidence,
     format_footprint,
 )
+from orion.hub.runtime_activity import get_runtime_activity
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
 from orion.schemas.durable_run import (
     CURIOSITY_TURN_REQUEST_CHANNEL,
@@ -2085,6 +2086,10 @@ class CuriosityInvestigation:
         logger.info(
             "curiosity_durable_dispatched run=%s corr=%s status=%s", run_id, correlation_id, status or "no_reply"
         )
+        if accepted:
+            # The only place that knows the run's line before it finishes;
+            # the runner's state events carry `line` only in finish_detail.
+            get_runtime_activity().run_dispatched(run_id=run_id, correlation_id=correlation_id, line=line)
         return accepted
 
     async def _turn_request_loop(self) -> None:
@@ -2216,6 +2221,9 @@ class CuriosityInvestigation:
             state = DurableRunStateV1.model_validate(decoded.envelope.payload or {})
         except Exception:  # noqa: BLE001
             return
+        # Every transition feeds Hub's live activity surface, before the
+        # outreach filter below narrows to `completed`.
+        get_runtime_activity().run_state(state.model_dump(mode="json"))
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}

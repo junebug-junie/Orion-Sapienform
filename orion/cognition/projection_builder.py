@@ -33,7 +33,6 @@ from orion.substrate.relational import (
     map_concept_induction_ctx_to_substrate,
     map_identity_yaml_to_substrate,
     map_recall_bundle_to_substrate,
-    map_self_study_to_substrate,
     map_social_ctx_to_substrate,
 )
 from orion.cognition.projection_context import summarize_projection_inputs
@@ -76,14 +75,6 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=86400,
                 pull_on_cold=True,
                 adapter_fn=map_identity_yaml_to_substrate,
-            ),
-            ProducerEntryV1(
-                producer_id="self_study",
-                trust_tier=GRAPHDB_DURABLE,
-                anchor_scopes=("orion",),
-                freshness_ttl_sec=300,
-                pull_on_cold=True,
-                adapter_fn=map_self_study_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="autonomy",

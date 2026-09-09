@@ -14,7 +14,6 @@ from .registry import (
 from .layer import CognitiveUnificationLayer
 from .adapters import (
     map_identity_yaml_to_substrate,
-    map_self_study_to_substrate,
     map_recall_bundle_to_substrate,
     map_social_ctx_to_substrate,
     map_autonomy_ctx_to_substrate,
@@ -34,7 +33,6 @@ __all__ = [
     "TIER_BY_NAME",
     "CognitiveUnificationLayer",
     "map_identity_yaml_to_substrate",
-    "map_self_study_to_substrate",
     "map_recall_bundle_to_substrate",
     "map_social_ctx_to_substrate",
     "map_autonomy_ctx_to_substrate",

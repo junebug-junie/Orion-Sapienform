@@ -13,18 +13,21 @@ def test_projection_registry_matches_expected_chat_stance_producers() -> None:
     registry = build_projection_unification_registry()
     producer_ids = [producer.producer_id for producer in registry.producers]
 
+    # `self_study` (dead SPARQL producer against the retired RDF store) was
+    # removed 2026-09-09; `self_state`/`orionmem` were removed earlier and this
+    # assertion had been failing on main since then.
     assert producer_ids == [
         "identity_yaml",
-        "self_study",
         "autonomy",
         "concept_induction",
         "spark",
-        # self-model (higher-order rung) + substrate "felt state" reducer lanes
-        "self_state",
+        # substrate "felt state" reducer lanes
         "biometrics",
         "execution",
         "transport",
-        "orionmem",
+        "attention",
+        "episodes",
+        "curiosity",
         "recall",
         "social",
     ]

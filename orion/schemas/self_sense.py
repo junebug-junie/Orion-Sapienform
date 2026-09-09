@@ -25,7 +25,8 @@ KIND_SELF_SENSE_EVAL_WRITE = "self_sense.eval.write.v1"
 # endpoint body, which comes back empty when the voice lane fails at delivery
 # even though the turn produced text (seen live 2026-09-08); `none` means both
 # were empty -- the row is kept so the delivery failure is on record, but its
-# scores are NOT evidence of anything and the runner exits non-zero.
+# scores are NOT evidence of anything and the runner exits non-zero. Any
+# aggregate over self_sense_eval_log must filter `answer_source != 'none'`.
 SelfSenseAnswerSource = Literal["harness_trace", "http", "none"]
 
 SelfSenseQuestionKey = Literal["what_are_you", "last_day_unasked", "cannot_do_now"]
@@ -57,6 +58,10 @@ class SelfSenseEvalV1(BaseModel):
     question: str
     answer_text: str
     answer_source: SelfSenseAnswerSource
+    # The chat turn's correlation_id (Hub mints a uuid4), which is also the
+    # envelope's correlation_id so sql-writer's generic envelope stamp writes
+    # the same value. When the chat returned none, the envelope carries a
+    # deterministic uuid5 and `notes` says `envelope_corr=synthetic`.
     correlation_id: str | None = None
     # Count of assistant/chatbot vocabulary in the answer. Target 0.
     self_label_score: int = Field(ge=0)

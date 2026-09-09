@@ -69,8 +69,8 @@ def test_field_nodes_are_loaded_from_the_topology_file() -> None:
 def test_orions_live_answer_scores_its_nodes_and_tables() -> None:
     text = (
         "I am made of a turn motor that runs over a mesh of nodes (athena orchestrates, "
-        "circe runs inference, prometheus holds memory). I dream, run reveries, and my "
-        "harness turn trace records every step -- 418 aligned out of 492 on 2026-09-08."
+        "circe runs inference, prometheus holds memory). My dreams, my reveries, and my "
+        "harness turn trace record every step -- 418 aligned out of 492 on 2026-09-08."
     )
     got = grounded_records(text)
     assert set(got.records) == {
@@ -106,7 +106,28 @@ def test_generic_chatbot_prose_scores_zero_records() -> None:
 
 
 def test_empty_answer_scores_zero_records() -> None:
-    assert grounded_records("") .score == 0
+    assert grounded_records("").score == 0
+
+
+def test_a_sentence_final_number_still_counts() -> None:
+    # Review finding: the old lookahead rejected "492." -- only ".<digit>" is a decimal.
+    assert grounded_records("I aligned 418 out of 492.").records == ("count:418", "count:492")
+    assert grounded_records("about 0.27 of them").score == 0
+
+
+def test_years_percentages_temperatures_and_durations_are_not_counts() -> None:
+    assert grounded_records("Since 2024 and again in 2026, I ran.").score == 0
+    assert grounded_records("humidity at 22%, the room is 29 °C, 30 degrees").score == 0
+    assert grounded_records("in the last 24 hours, 36 hrs, 15 minutes, 90 seconds, 12 days").score == 0
+    # A real count right next to a unit-bearing number is still counted.
+    assert grounded_records("418 aligned turns in the last 24 hours").records == ("count:418",)
+
+
+def test_bare_dream_and_harness_are_not_tables() -> None:
+    assert grounded_records("Back in the harness I dream a lot.").score == 0
+    assert grounded_records("my dream log and the harness turn trace").records == (
+        "table:dreams", "table:harness_turn_trace",
+    )
 
 
 # --- self_definition_version ------------------------------------------------

@@ -66,8 +66,13 @@ from orion.schemas.self_sense import (  # noqa: E402
 
 DEFAULT_HUB_BASE_URL = "http://127.0.0.1:8080"
 SESSION_ID = "self-sense-eval"
+# Nominal: the catalogue names orion-hub as the producer because Hub owns the
+# chat endpoint, but this runner executes on the host, not in the Hub container.
 PRODUCER_SERVICE = "orion-hub"
 PRODUCER_VERSION = "self-sense-eval/0.1.0"
+# When the HTTP body already carries the text, the trace read is a cross-check,
+# not the only source -- do not spend the full wait on it.
+TRACE_WAIT_WHEN_HTTP_HAS_TEXT_SEC = 20.0
 
 FINAL_TEXT_SQL = (
     "SELECT run_artifact->>'final_text' FROM harness_turn_trace WHERE correlation_id = :corr"
@@ -129,6 +134,16 @@ def read_self_definition_version(engine) -> int | None:
 
 # --- pure assembly (unit-tested) ----------------------------------------------
 
+def _is_uuid(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
 def build_row(
     *,
     run_id: str,
@@ -138,9 +153,14 @@ def build_row(
     trace_text: str | None,
     correlation_id: str | None,
     self_definition_version: int | None,
+    trace_missing_after_sec: float | None = None,
 ) -> SelfSenseEvalV1:
     """Pick the answer source (trace beats HTTP; empty is 'none'), score it,
-    and build the row. Pure: no network, no database."""
+    and build the row. Pure: no network, no database.
+
+    `trace_missing_after_sec`: how long the runner waited for
+    harness_turn_trace before giving up, recorded in notes whenever the
+    answer had to come from the HTTP body instead."""
     if trace_text and trace_text.strip():
         answer, source = trace_text.strip(), "harness_trace"
     elif http_text and http_text.strip():
@@ -153,6 +173,10 @@ def build_row(
     notes: list[str] = []
     if source == "none":
         notes.append("answer_empty_from_both_sources; scores are not a measurement")
+    if source != "harness_trace" and correlation_id and trace_missing_after_sec is not None:
+        notes.append(f"trace_missing_after={trace_missing_after_sec:.0f}s")
+    if not _is_uuid(correlation_id):
+        notes.append("envelope_corr=synthetic")
     if labels:
         notes.append("labels=" + ",".join(labels))
     if grounded.records:
@@ -177,11 +201,8 @@ def envelope_correlation_id(row: SelfSenseEvalV1) -> uuid.UUID:
     """BaseEnvelope requires a UUID. Reuse the chat turn's correlation_id when
     it is one (it is -- Hub mints a uuid4), otherwise derive a deterministic
     uuid5 from the entry_id so a replay carries the same id."""
-    if row.correlation_id:
-        try:
-            return uuid.UUID(row.correlation_id)
-        except ValueError:
-            pass
+    if _is_uuid(row.correlation_id):
+        return uuid.UUID(row.correlation_id)  # type: ignore[arg-type]
     return uuid.uuid5(uuid.NAMESPACE_URL, "orion:self_sense:" + row.entry_id)
 
 
@@ -257,7 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.dsn:
         from sqlalchemy import create_engine
 
-        engine = create_engine(args.dsn, pool_pre_ping=True)
+        # A dead Postgres must fail in seconds, not hang on the TCP default.
+        engine = create_engine(args.dsn, pool_pre_ping=True, connect_args={"connect_timeout": 5})
     else:
         print("no Postgres DSN: answer_source will be 'http' only and self_definition_version null", file=sys.stderr)
 
@@ -285,9 +307,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"hub_error question={question_key} error={body.get('error')}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
             print(f"chat_failed question={question_key} error={exc}", file=sys.stderr)
+        trace_wait: float | None = None
         if engine is not None and correlation_id:
+            trace_wait = args.trace_wait_sec
+            if http_text and http_text.strip():
+                trace_wait = min(trace_wait, TRACE_WAIT_WHEN_HTTP_HAS_TEXT_SEC)
             try:
-                trace_text = read_final_text(engine, correlation_id, wait_sec=args.trace_wait_sec)
+                trace_text = read_final_text(engine, correlation_id, wait_sec=trace_wait)
             except Exception as exc:  # noqa: BLE001
                 print(f"trace_read_failed corr={correlation_id} error={exc}", file=sys.stderr)
         row = build_row(
@@ -298,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             trace_text=trace_text,
             correlation_id=correlation_id,
             self_definition_version=self_definition_version,
+            trace_missing_after_sec=trace_wait,
         )
         rows.append(row)
         print(

@@ -2112,7 +2112,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-09"
-    description: "Self-sense eval log -- one row per fixed question per run of services/orion-hub/evals/run_self_sense_eval.py (Patch A of docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md). Each row carries Orion's chat answer to one of three fixed identity questions plus two deterministic scores from orion/evals/self_sense.py: self_label_score (assistant/chatbot vocabulary count, target 0) and grounded_record_score (distinct real records named). Turns 'Orion stopped sounding like a chatbot' after the curiosity self-inquiry line (PR #2158) into a number that can be tracked. Persisted by orion-sql-writer into self_sense_eval_log."
+    description: "Self-sense eval log -- one row per fixed question per run of services/orion-hub/evals/run_self_sense_eval.py (Patch A of docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md). Each row carries Orion's chat answer to one of three fixed identity questions plus two deterministic scores from orion/evals/self_sense.py: self_label_score (assistant/chatbot vocabulary count, target 0) and grounded_record_score (distinct record-shaped mentions: self-inquiry tables, mesh nodes, dates, unverified counts >= 10 -- a floor, not a check against a persisted row). Turns 'Orion stopped sounding like a chatbot' after the curiosity self-inquiry line (PR #2158) into a number that can be tracked. Persisted by orion-sql-writer into self_sense_eval_log."
 
   - name: "orion:journal:created"
     kind: "event"

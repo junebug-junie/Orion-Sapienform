@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +92,9 @@ def test_schema_fields_map_onto_real_columns() -> None:
 
 
 def _session(monkeypatch):
-    engine = create_engine("sqlite://")
+    # One shared in-memory connection: worker._write runs _write_row in a
+    # thread, and a per-thread sqlite connection would not see the table.
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SelfSenseEvalLogSQL.__table__.create(bind=engine)
     session = sessionmaker(bind=engine)()
     monkeypatch.setattr(worker, "get_session", lambda: session)
@@ -127,3 +130,27 @@ def test_a_redelivered_envelope_updates_one_row_not_two(monkeypatch) -> None:
     rows = session.query(SelfSenseEvalLogSQL).filter_by(run_id=first.run_id).all()
     assert len(rows) == 1
     assert rows[0].answer_text == "second delivery of the same turn"
+
+
+def test_the_envelope_stamp_writes_the_same_correlation_id_the_row_carries(monkeypatch) -> None:
+    """worker._write applies the generic envelope stamp (`extra_fields`) over
+    the payload, so `correlation_id` on the row is the ENVELOPE's. The runner
+    puts the chat turn's id on both, so the stamp is a no-op here; this pins
+    that a mismatch would be visible rather than silently overwritten."""
+    import asyncio
+
+    session = _session(monkeypatch)
+    payload = _make_payload()
+    ok = asyncio.run(
+        worker._write(
+            SelfSenseEvalLogSQL,
+            SelfSenseEvalV1,
+            payload.model_dump(mode="json"),
+            extra_fields={"correlation_id": payload.correlation_id},
+            kind=KIND_SELF_SENSE_EVAL_WRITE,
+        )
+    )
+    assert ok is True
+    row = session.query(SelfSenseEvalLogSQL).filter_by(entry_id=payload.entry_id).one()
+    assert row.correlation_id == payload.correlation_id
+    assert row.answer_text == payload.answer_text

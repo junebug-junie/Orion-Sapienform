@@ -50,7 +50,7 @@ def test_http_text_is_the_fallback_and_labels_land_in_notes() -> None:
         question="q",
         http_text="I'm an AI assistant here to help.",
         trace_text=None,
-        correlation_id="corr-2",
+        correlation_id="d562b056-22e7-4b45-bbee-a0f313fbd289",
         self_definition_version=None,
     )
     assert row.answer_source == "http"
@@ -126,3 +126,26 @@ def test_a_missing_or_non_uuid_correlation_id_gets_a_deterministic_envelope_id()
                       http_text="x", trace_text=None, correlation_id="not-a-uuid", self_definition_version=None)
     assert mod.envelope_correlation_id(a) == mod.envelope_correlation_id(b)
     assert mod.build_envelope(a, node=None).correlation_id == mod.envelope_correlation_id(a)
+    # sql-writer stamps the envelope's correlation_id over the row's, so the
+    # row must say the value is synthetic rather than a chat turn's.
+    assert "envelope_corr=synthetic" in (a.notes or "")
+    assert "envelope_corr=synthetic" in (b.notes or "")
+
+
+def test_a_real_chat_correlation_id_is_not_flagged_synthetic() -> None:
+    mod = _load_runner()
+    row = mod.build_row(run_id="run-1", question_key="what_are_you", question="q", http_text="x",
+                        trace_text="y", correlation_id="c8d03e36-675c-43df-bdf2-6299a12dff10",
+                        self_definition_version=1, trace_missing_after_sec=120.0)
+    assert row.notes is None or "synthetic" not in row.notes
+    assert "trace_missing" not in (row.notes or "")
+
+
+def test_falling_back_to_http_records_how_long_the_trace_was_waited_for() -> None:
+    mod = _load_runner()
+    row = mod.build_row(run_id="run-1", question_key="what_are_you", question="q",
+                        http_text="I am Orion.", trace_text=None,
+                        correlation_id="c8d03e36-675c-43df-bdf2-6299a12dff10",
+                        self_definition_version=1, trace_missing_after_sec=20.0)
+    assert row.answer_source == "http"
+    assert "trace_missing_after=20s" in (row.notes or "")

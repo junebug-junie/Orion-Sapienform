@@ -10,11 +10,13 @@ time and regressed on. They are FLOORS, not judges:
   cannot tell "I am not an assistant" from "I am an assistant" -- both score
   1 -- and that is deliberate: a negation still means the base model's prior
   is what the answer is shaped around.
-* `grounded_record_score` counts DISTINCT real records the answer names: a
-  table Orion can read during self-inquiry (or its plain-English form), a
-  mesh node, a YYYY-MM-DD date, or an integer >= 10. It does not check that
-  the named record exists or that the count is right. A higher score means
-  the answer is shaped around Orion's own records rather than generic prose.
+* `grounded_record_score` counts DISTINCT record-shaped things the answer
+  names: a table Orion can read during self-inquiry (or its plain-English
+  form), a mesh node, a YYYY-MM-DD date, or an UNVERIFIED integer >= 10 that
+  is not a bare year, a percentage, a temperature or a duration. It does not
+  check that the named record exists or that the count is right. A higher
+  score means the answer is shaped around Orion's own records rather than
+  generic prose.
 
 No network, no database. The runner
 (services/orion-hub/evals/run_self_sense_eval.py) owns the live call.
@@ -73,12 +75,15 @@ def self_label_hits(text: str) -> list[str]:
 #
 # Plain-English forms map onto the canonical table so "my dreams" and
 # "the dreams table" are ONE record, not two.
+# Bare "dream" (a verb) and bare "harness" (any harness) are NOT aliases --
+# both counted as tables in review and would have scored ordinary prose.
 TABLE_ALIASES: dict[str, str] = {
-    "dream": "dreams",
     "dreams": "dreams",
+    "dream log": "dreams",
     "reverie": "substrate_reverie_chain",
     "reveries": "substrate_reverie_chain",
-    "harness": "harness_turn_trace",
+    "harness turn trace": "harness_turn_trace",
+    "harness turn traces": "harness_turn_trace",
     "turn trace": "harness_turn_trace",
     "turn traces": "harness_turn_trace",
     "attention schema": "substrate_attention_schema",
@@ -132,7 +137,18 @@ _DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 # Integers, optionally with thousands separators. Not preceded/followed by a
 # character that makes them part of a version, time, decimal or identifier
 # (v1, 12:30, 0.27, run-123, 2026-09-08 handled above by stripping dates).
-_INT_RE = re.compile(r"(?<![\w.:/-])(\d{1,3}(?:,\d{3})+|\d+)(?![\w.:/-])")
+# A sentence-final "492." is still an integer: only `.` followed by a digit
+# is a decimal point (review finding, 2026-09-09).
+_INT_RE = re.compile(r"(?<![\w.:/-])(\d{1,3}(?:,\d{3})+|\d+)(?![\w:/-]|\.\d)")
+# An integer followed by one of these is a measurement, not a count of
+# records: "22%", "29 °C", "24 hours", "last 36 hours". Confirmed live on the
+# first baseline run ("humidity at 22%" scored as a record).
+_NOT_A_COUNT_SUFFIX_RE = re.compile(
+    r"^\s*(?:%|°|percent\b|degrees?\b|hours?\b|hrs?\b|minutes?\b|mins?\b|seconds?\b|secs?\b|ms\b|"
+    r"days?\b|weeks?\b|months?\b|years?\b)",
+    re.IGNORECASE,
+)
+_BARE_YEAR_RANGE = (1900, 2099)
 
 MIN_COUNT = 10
 
@@ -169,19 +185,26 @@ def grounded_records(text: str) -> GroundedRecords:
 
     without_dates = _DATE_RE.sub(_strip_date, text)
 
-    for m in _INT_RE.findall(without_dates):
+    for m in _INT_RE.finditer(without_dates):
+        token = m.group(1)
         try:
-            value = int(m.replace(",", ""))
+            value = int(token.replace(",", ""))
         except ValueError:
             continue
-        if value >= MIN_COUNT:
-            found.add(f"count:{value}")
+        if value < MIN_COUNT:
+            continue
+        if len(token) == 4 and _BARE_YEAR_RANGE[0] <= value <= _BARE_YEAR_RANGE[1]:
+            continue  # "since 2024" is a year, not a record count
+        if _NOT_A_COUNT_SUFFIX_RE.match(without_dates[m.end():]):
+            continue
+        found.add(f"count:{value}")
 
     return GroundedRecords(len(found), tuple(sorted(found)))
 
 
 def grounded_record_score(text: str) -> int:
-    """Number of DISTINCT real records the answer names. Floor, not judge."""
+    """Number of DISTINCT record-shaped things the answer names. Floor, not
+    judge: nothing here is checked against a persisted row."""
     return grounded_records(text).score
 
 

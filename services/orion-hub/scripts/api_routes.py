@@ -5756,8 +5756,11 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             "autonomy_level": "level_2_5_bounded_self_mutation",
             # "routing-only narrow live apply" retired 2026-09-05 (was the
             # only surface this level description named as live) -- no
-            # surface currently has live apply. See autonomy_constitution.py.
-            "summary": "bounded self-mutation with recall/cognitive proposal-shadow controls; no surface currently has live apply",
+            # surface currently AUTO-ACTIVATES. graph_consolidation_param_patch
+            # (2026-09-08/09) is real -- real proposals, real trial evidence,
+            # real staged writes to SubstratePolicyProfileStore -- but stops
+            # at staging; see graph_consolidation.recent_activity below.
+            "summary": "bounded self-mutation with recall/cognitive proposal-shadow controls; graph_consolidation stages real profiles for operator review, no surface auto-activates",
             "safe_next_action": "build_recall_v2_manual_canary",
             "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
             "warnings": [],
@@ -5801,6 +5804,13 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             ],
             "counts_by_state": {},
             "recent_proposals": [],
+            "warnings": [],
+        },
+        "graph_consolidation": {
+            "mutation_class": "graph_consolidation_param_patch",
+            "recent_proposals": [],
+            "staged_profiles": [],
+            "decision_counts": {},
             "warnings": [],
         },
         "pressure": {
@@ -5934,6 +5944,56 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
         payload["cognitive"]["warnings"] = list(payload["cognitive"]["warnings"]) + [str(exc)]
 
     try:
+        # recent_lifecycles() is the same generic proposal->trial->decision
+        # bundle every other surface's history is built from -- reused here
+        # with its mutation_class filter applied INSIDE the store, before
+        # its own limit slice. Filtering client-side after an unscoped
+        # limit=50 fetch would go silently empty the moment 50 other-class
+        # proposals (the scheduler runs 12+ classes) land more recently than
+        # the last real graph_consolidation one -- exactly the false-negative
+        # this whole section exists to prevent.
+        lifecycles = SUBSTRATE_MUTATION_STORE.recent_lifecycles(limit=20, mutation_class="graph_consolidation_param_patch")
+        decision_counts: dict[str, int] = {}
+        recent_summaries = []
+        for item in lifecycles:
+            proposal = item.get("proposal") or {}
+            trials = item.get("trials") or []
+            decisions = item.get("decisions") or []
+            latest_trial = trials[-1] if trials else None
+            latest_decision = decisions[-1] if decisions else None
+            action = str((latest_decision or {}).get("action") or "none")
+            decision_counts[action] = decision_counts.get(action, 0) + 1
+            recent_summaries.append(
+                {
+                    "proposal_id": proposal.get("proposal_id"),
+                    "created_at": proposal.get("created_at"),
+                    "trial_status": (latest_trial or {}).get("status"),
+                    "trial_metrics": (latest_trial or {}).get("metrics"),
+                    "decision_action": (latest_decision or {}).get("action"),
+                    "decision_reason": (latest_decision or {}).get("reason"),
+                    "staged_profile_id": (item.get("adoption") or {}).get("rollback_payload", {}).get("policy_profile_id"),
+                }
+            )
+        staged_from_loop = [
+            profile.model_dump(mode="json")
+            for profile in SUBSTRATE_POLICY_STORE.list_profiles(limit=200)
+            if str(profile.source_recommendation_id or "").startswith("substrate-mutation-proposal-")
+            # Not just loop-authored -- still actually staged. Once an
+            # operator activates (or rolls back) one of these, it must stop
+            # appearing under "awaiting review" or the label lies.
+            and profile.activation_state == "staged"
+        ]
+        payload["graph_consolidation"]["recent_proposals"] = recent_summaries
+        payload["graph_consolidation"]["decision_counts"] = decision_counts
+        payload["graph_consolidation"]["staged_profiles"] = [
+            {"profile_id": p["profile_id"], "activation_state": p["activation_state"], "created_at": p["created_at"], "policy_overrides": p["policy_overrides"]}
+            for p in staged_from_loop[:20]
+        ]
+    except Exception as exc:
+        warnings.append(f"graph_consolidation_posture_unavailable:{exc}")
+        payload["graph_consolidation"]["warnings"] = list(payload["graph_consolidation"]["warnings"]) + [str(exc)]
+
+    try:
         pressures = SUBSTRATE_MUTATION_STORE.recent_recall_pressures(limit=30)
         recent_events = api_substrate_mutation_runtime_recall_pressure_events(limit=30).get("data", {}).get("recent_recall_pressure_events", [])
         top_keys: dict[str, int] = {}
@@ -5956,7 +6016,21 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
     payload["recent_activity"]["applies"] = payload["routing"]["recent_applies"][:10]
     payload["recent_activity"]["rollbacks"] = payload["routing"]["recent_rollbacks"][:10]
     payload["recent_activity"]["blocked_applies"] = payload["routing"]["recent_blocked_applies"][:10]
-    payload["recent_activity"]["staged"] = payload["recall"]["staged_profiles"][:10]
+    # Two different shapes (recall_strategy_profile candidates vs real
+    # SubstratePolicyProfileV1 rows) sharing one cross-cutting "what did the
+    # loop just stage" feed -- tagged by surface so they stay distinguishable.
+    # Without this, an operator scanning the generic feed sees nothing for
+    # graph_consolidation even after it stages a real profile, because that
+    # data lived only in the separately-nested graph_consolidation section.
+    staged_recall = [{**item, "surface": "recall_strategy_profile"} for item in payload["recall"]["staged_profiles"]]
+    staged_graph_consolidation = [
+        {**item, "surface": "graph_consolidation_param_patch"} for item in payload["graph_consolidation"]["staged_profiles"]
+    ]
+    payload["recent_activity"]["staged"] = sorted(
+        staged_recall + staged_graph_consolidation,
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )[:10]
     payload["recent_activity"]["reviews"] = payload["recall"]["production_candidate_reviews"][:10]
     recall_ready = payload["recall"].get("readiness") or {}
     if str(recall_ready.get("recommendation") or "") not in {"ready_for_shadow_expansion", "ready_for_operator_promotion"}:

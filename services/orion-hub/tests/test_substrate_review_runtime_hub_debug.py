@@ -698,6 +698,7 @@ def test_autonomy_readiness_endpoint_returns_unified_read_only_snapshot() -> Non
     assert "routing" in payload
     assert "recall" in payload
     assert "cognitive" in payload
+    assert "graph_consolidation" in payload
     assert "pressure" in payload
     assert "recent_activity" in payload
     assert "safe_next_actions" in payload
@@ -743,6 +744,7 @@ def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
     assert "summary" in payload
     by_surface = {str(item.get("surface")): item for item in payload["surfaces"]}
     assert "routing_threshold_patch" in by_surface
+    assert "graph_consolidation_param_patch" in by_surface
     assert "recall_strategy_profile" in by_surface
     assert "recall_weighting_patch" in by_surface
     assert "cognitive_self_model" in by_surface
@@ -756,11 +758,172 @@ def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
     assert payload["summary"]["live_apply_surfaces"] == []
     assert by_surface["routing_threshold_patch"]["status"] == "retired"
     assert by_surface["routing_threshold_patch"]["live_apply_allowed"] is False
+    # graph_consolidation_param_patch (2026-09-08/09) is real -- real
+    # proposals, real trial evidence -- but stages rather than activates
+    # (SubstratePolicyProfileStore is manual/operator-controlled), so it
+    # must not appear in live_apply_surfaces either.
+    assert by_surface["graph_consolidation_param_patch"]["status"] == "staged_review_only"
+    assert by_surface["graph_consolidation_param_patch"]["apply"] == "staged_no_activate"
+    assert by_surface["graph_consolidation_param_patch"]["live_apply_allowed"] is False
+    assert by_surface["graph_consolidation_param_patch"]["autonomous_apply_allowed"] is False
+    assert by_surface["graph_consolidation_param_patch"]["production_write_allowed"] is True
     assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
     assert by_surface["recall_weighting_patch"]["apply"] == "forbidden"
     assert by_surface["identity_kernel"]["status"] == "protected"
     assert by_surface["policy_safety"]["status"] == "protected"
     assert by_surface["production_prompt"]["status"] == "protected"
+
+
+def test_autonomy_readiness_surfaces_real_graph_consolidation_activity(monkeypatch) -> None:
+    """The readiness endpoint's graph_consolidation section must reflect a
+    real proposal/trial/decision lifecycle, not just an empty scaffold --
+    this is the actual "can an operator see what the loop is doing" check,
+    not just a shape check."""
+    from orion.core.schemas.substrate_mutation import (
+        MutationDecisionV1,
+        MutationPatchV1,
+        MutationProposalV1,
+        MutationTrialV1,
+    )
+    from orion.substrate.mutation_queue import SubstrateMutationStore
+    from orion.substrate.policy_profiles import SubstratePolicyProfileStore
+
+    fresh_store = SubstrateMutationStore()
+    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", fresh_store)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_POLICY_STORE", SubstratePolicyProfileStore())
+
+    proposal = MutationProposalV1(
+        lane="operational",
+        mutation_class="graph_consolidation_param_patch",
+        risk_tier="medium",
+        target_surface="graph_consolidation",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        rationale="test",
+        expected_effect="reduce_runtime_failure",
+        evidence_refs=["telemetry:placeholder"],
+        source_signal_ids=["signal:placeholder"],
+        source_pressure_id="pressure-test",
+        patch=MutationPatchV1(
+            mutation_class="graph_consolidation_param_patch",
+            target_surface="graph_consolidation",
+            target_ref="graph_consolidation",
+            patch={"query_limit_nodes": 96},
+            rollback_payload={"query_limit_nodes": 64},
+        ),
+    )
+    fresh_store.add_proposal(proposal, priority=60)
+    fresh_store.record_trial(
+        MutationTrialV1(
+            proposal_id=proposal.proposal_id,
+            mutation_class="graph_consolidation_param_patch",
+            replay_corpus_id="replay-consolidation-v1",
+            baseline_metric_ref="baseline-consolidation-v1",
+            status="inconclusive",
+            metrics={},
+            notes=["missing_class_metrics"],
+        )
+    )
+    fresh_store.record_decision(
+        MutationDecisionV1(
+            proposal_id=proposal.proposal_id,
+            action="reject",
+            reason="trial_inconclusive",
+            notes=[],
+        )
+    )
+
+    payload = api_routes.api_substrate_autonomy_readiness()
+
+    entries = payload["graph_consolidation"]["recent_proposals"]
+    matching = [row for row in entries if row["proposal_id"] == proposal.proposal_id]
+    assert len(matching) == 1
+    assert matching[0]["trial_status"] == "inconclusive"
+    assert matching[0]["decision_action"] == "reject"
+    assert matching[0]["decision_reason"] == "trial_inconclusive"
+    assert payload["graph_consolidation"]["decision_counts"].get("reject") == 1
+    assert payload["graph_consolidation"]["staged_profiles"] == []
+
+
+def test_graph_consolidation_activity_is_not_squeezed_out_by_other_classes(monkeypatch) -> None:
+    """Code review finding: recent_lifecycles(limit=N) used to truncate
+    across ALL mutation classes before any class filter ran. The store has
+    no eviction and is shared by 12+ classes off the same scheduler
+    (routing_threshold_patch alone produced ~190 proposals in 36 hours,
+    historically) -- a real graph_consolidation proposal could get pushed
+    out of view by nothing more than other-class volume, even though the
+    loop is actively producing graph_consolidation activity. The fix
+    (mutation_class filter pushed inside recent_lifecycles(), before its
+    own limit slice) must survive exactly this scenario.
+    """
+    from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationProposalV1
+    from orion.substrate.mutation_queue import SubstrateMutationStore
+
+    fresh_store = SubstrateMutationStore()
+    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", fresh_store)
+
+    def _proposal(mutation_class: str) -> MutationProposalV1:
+        return MutationProposalV1(
+            lane="operational",
+            mutation_class=mutation_class,
+            risk_tier="medium",
+            target_surface="graph_consolidation" if mutation_class == "graph_consolidation_param_patch" else "routing",
+            anchor_scope="orion",
+            subject_ref="entity:orion",
+            rationale="test",
+            expected_effect="reduce_runtime_failure",
+            evidence_refs=["telemetry:placeholder"],
+            source_signal_ids=["signal:placeholder"],
+            source_pressure_id="pressure-test",
+            patch=MutationPatchV1(
+                mutation_class=mutation_class,
+                target_surface="graph_consolidation" if mutation_class == "graph_consolidation_param_patch" else "routing",
+                target_ref="target",
+                patch={"query_limit_nodes": 96} if mutation_class == "graph_consolidation_param_patch" else {"chat_reflective_lane_threshold": 0.58},
+                rollback_payload={"query_limit_nodes": 64} if mutation_class == "graph_consolidation_param_patch" else {"chat_reflective_lane_threshold": 0.5},
+            ),
+        )
+
+    old_graph_consolidation_proposal = _proposal("graph_consolidation_param_patch")
+    fresh_store.add_proposal(old_graph_consolidation_proposal, priority=60)
+
+    # 25 newer other-class proposals -- more than the section's own limit
+    # (20) -- landing strictly after the one real graph_consolidation
+    # proposal above.
+    for _ in range(25):
+        fresh_store.add_proposal(_proposal("routing_threshold_patch"), priority=60)
+
+    payload = api_routes.api_substrate_autonomy_readiness()
+
+    entries = payload["graph_consolidation"]["recent_proposals"]
+    assert any(row["proposal_id"] == old_graph_consolidation_proposal.proposal_id for row in entries)
+
+
+def test_staged_profiles_excludes_activated_profiles(monkeypatch) -> None:
+    """Code review finding: the staged_profiles filter checked only
+    source_recommendation_id, not activation_state -- a profile the
+    operator already activated (the intended next step) kept showing up
+    under "awaiting review" forever."""
+    from orion.substrate.policy_profiles import SubstratePolicyProfileStore
+    from orion.core.schemas.substrate_policy_adoption import SubstratePolicyAdoptionRequestV1, SubstratePolicyOverridesV1
+
+    fresh_policy_store = SubstratePolicyProfileStore()
+    monkeypatch.setattr(api_routes, "SUBSTRATE_POLICY_STORE", fresh_policy_store)
+
+    result = fresh_policy_store.adopt(
+        SubstratePolicyAdoptionRequestV1(
+            source_recommendation_id="substrate-mutation-proposal-test-1",
+            policy_overrides=SubstratePolicyOverridesV1(query_limit_nodes=96),
+            activate_now=False,
+        )
+    )
+    payload_before = api_routes.api_substrate_autonomy_readiness()
+    assert any(p["profile_id"] == result.profile_id for p in payload_before["graph_consolidation"]["staged_profiles"])
+
+    fresh_policy_store.activate(profile_id=result.profile_id, operator_id="test-operator")
+    payload_after = api_routes.api_substrate_autonomy_readiness()
+
+    assert not any(p["profile_id"] == result.profile_id for p in payload_after["graph_consolidation"]["staged_profiles"])
 
 
 def test_constitution_validation_helper_flags_unsafe_live_apply() -> None:

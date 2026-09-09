@@ -4814,6 +4814,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
+  // "{"reject":20}" is not a summary a human reads, it's a data structure --
+  // every other line in this panel writes "key=value key=value" (see
+  // "scheduler: enabled=yes proposals=yes" below). Counts objects belong in
+  // the same style, not JSON syntax.
+  function formatCounts(counts) {
+    const entries = Object.entries(counts || {});
+    return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(' ') : 'none';
+  }
+
   function updateAutonomyReadinessPanel(snapshot) {
     if (!autonomyReadinessPanel || !autonomyReadinessMeta || !autonomyReadinessOverview) return;
     lastAutonomyReadinessSnapshot = snapshot || null;
@@ -4900,9 +4909,9 @@ document.addEventListener("DOMContentLoaded", () => {
       `surfaces: live=${liveCount} shadow=${shadowCount} proposal-only=${proposalOnlyCount} blocked=${blockedCount}`,
       `recall: production=${recall.production_mode || 'v1'} live_apply=${recall.live_apply_enabled ? 'true' : 'false'} readiness=${recallReadiness}`,
       `recall manual canary: runs=${manualCanary.run_count ?? 0} review_artifacts=${manualCanary.review_artifact_count ?? 0} recommended=${manualCanary.recommended_canary_action || '--'}`,
-      `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${JSON.stringify(cognitive.counts_by_state || {})}`,
+      `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${formatCounts(cognitive.counts_by_state)}`,
       `graph consolidation: proposals=${(graphConsolidation.recent_proposals || []).length}`
-        + ` decisions=${JSON.stringify(graphConsolidation.decision_counts || {})}`
+        + ` decisions=${formatCounts(graphConsolidation.decision_counts)}`
         + ` staged=${(graphConsolidation.staged_profiles || []).length}`,
       `pressure: ${pressureTop}`,
       `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,

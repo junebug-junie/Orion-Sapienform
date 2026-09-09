@@ -256,6 +256,14 @@ def test_app_js_wires_autonomy_readiness_fetch_toggle_and_defensive_rendering() 
     # "Autonomy Readiness" panel just never asked for it.
     assert "snapshot.graph_consolidation" in app_js
     assert "graph consolidation: proposals=" in app_js
+    # Every other line in this panel writes "key=value key=value" -- a raw
+    # JSON.stringify() blob inline in a summary line is not a summary a
+    # human reads, and this panel is a real page Juniper opens, not a debug
+    # log. formatCounts() renders counts objects the same way as everything
+    # else here.
+    assert "function formatCounts(counts)" in app_js
+    assert "proposal_states=${formatCounts(cognitive.counts_by_state)}" in app_js
+    assert "decisions=${formatCounts(graphConsolidation.decision_counts)}" in app_js
     assert "clearAutonomyReadinessPanel();" in app_js
     assert "refreshAutonomyReadinessPanel().catch((err) => {" in app_js
     assert "const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];" in app_js

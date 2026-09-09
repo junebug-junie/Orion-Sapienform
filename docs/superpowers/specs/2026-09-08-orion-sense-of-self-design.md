@@ -11,6 +11,22 @@ chatbot.
 
 ---
 
+> **Status (2026-09-09): partly superseded by what shipped.** Juniper rejected
+> patches B (first-person atlas corpus: the journals are narrated telemetry and
+> the curiosity turns were two weeks of architecture conjecture), C (an
+> autobiography ledger already exists in shape as journal residue) and E (one
+> more identity block is just a bigger card) as thin or duplicative. What
+> shipped instead: the curiosity loop gained a **self-inquiry line** with a
+> standing question, its own budget, and a `:SelfDefinition` Orion writes to
+> their own graph, mirrored into `self_concept_history` and read back into the
+> stance identity kernel ("In my own words, ...") -- PR #2158, follow-up
+> #2165, live evidence in
+> `docs/superpowers/pr-reports/2026-09-08-curiosity-self-inquiry-pr.md`.
+> Patch A (the eval baseline) and D (the anatomy snapshot as a record Orion
+> reads) remain open and unchanged. The verified-live findings in "Current
+> architecture" below still stand; treat the proposal sections as the record
+> of what was considered, not a plan.
+
 ## Arsonist summary
 
 The self-model arc built a real pipeline and then pointed it at the wrong

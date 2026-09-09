@@ -86,6 +86,58 @@ def test_fetch_ilo_snapshot_parses_real_shaped_redfish_payload(monkeypatch: pyte
     assert snap.fetched_at > 0
 
 
+def test_fetch_ilo_snapshot_normalizes_rpm_fans_using_vendor_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Circe's Gigabyte/AMI MegaRAC BMC, confirmed live 2026-09-08: fans report
+    RPM, not Percent -- shape taken directly from its real Thermal/ payload."""
+    _fake_session(
+        monkeypatch,
+        {
+            "/redfish/v1/Chassis/": _FakeResponse({"Members": [{"@odata.id": "/redfish/v1/Chassis/Self"}]}),
+            "/redfish/v1/Chassis/Self/Thermal/": _FakeResponse(
+                {
+                    "Temperatures": [],
+                    "Fans": [
+                        {
+                            "Name": "BPB_FAN1",
+                            "Reading": 11550,
+                            "ReadingUnits": "RPM",
+                            "MinReadingRange": 0,
+                            "MaxReadingRange": 38250,
+                            "Status": {"State": "Enabled"},
+                        },
+                        # Unpopulated slot -- must be skipped like the Percent path.
+                        {
+                            "Name": "EXT_FAN1",
+                            "Reading": None,
+                            "ReadingUnits": "RPM",
+                            "MinReadingRange": 0,
+                            "MaxReadingRange": 38250,
+                            "Status": {"State": "Absent"},
+                        },
+                        # RPM but no usable range -- skip rather than fake a percent.
+                        {
+                            "Name": "BPB_FAN2",
+                            "Reading": 11550,
+                            "ReadingUnits": "RPM",
+                            "Status": {"State": "Enabled"},
+                        },
+                    ],
+                }
+            ),
+            "/redfish/v1/Chassis/Self/Power/": _FakeResponse({"PowerControl": []}),
+        },
+    )
+
+    snap = fetch_ilo_snapshot("https://192.168.1.150", "admin", "hunter2", timeout_sec=8.0)
+
+    assert snap.error is None
+    assert snap.fan_pct == {"BPB_FAN1": pytest.approx(30.196078431372548)}
+    assert "EXT_FAN1" not in snap.fan_pct
+    assert "BPB_FAN2" not in snap.fan_pct
+
+
 def test_fetch_ilo_snapshot_no_chassis_members_is_a_soft_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_session(monkeypatch, {"/redfish/v1/Chassis/": _FakeResponse({"Members": []})})
     snap = fetch_ilo_snapshot("https://host", "user", "pw")

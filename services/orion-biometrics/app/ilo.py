@@ -35,9 +35,19 @@ def fetch_ilo_snapshot(
     Standard DMTF RedFish (`/redfish/v1/Chassis/` -> first chassis member's
     `/Thermal/` and `/Power/`) rather than hardcoding an HPE-specific chassis
     path -- confirmed live against athena's iLO 2026-07-25 (real, non-degenerate
-    temps/fans/power). Should generalize to other RedFish-compliant BMCs (e.g.
-    circe's Gigabyte variant) without code changes, though that's unverified
-    until credentials for a second vendor are available.
+    temps/fans/power).
+
+    CORRECTED 2026-09-08: the chassis/thermal/power *paths* did generalize to a
+    second vendor (circe's Gigabyte board, AMI MegaRAC SP-X) with zero code
+    changes, but the fan *unit* did not -- confirmed live that circe reports
+    all 12 of its fans in RPM (~12300-12450 RPM, real and varying), not Percent
+    like athena's iLO. Before this fix, the `units == "Percent"` guard below
+    silently dropped every one of circe's fan readings, so the pipeline's
+    `pressures["fan"]` sat hard at 0.0 -- reading as "no airflow" when the fans
+    were spinning normally the whole time. Fixed by normalizing RPM against the
+    sensor's own vendor-reported range (`MinReadingRange`/`MaxReadingRange`,
+    standard DMTF fields, confirmed present on circe's payload) instead of a
+    guessed constant.
 
     Not fatal on any failure -- returns an IloSnapshot with `.error` set so the
     caller (a slow-poll background loop, not the heartbeat's own bounded hook --
@@ -88,14 +98,31 @@ def fetch_ilo_snapshot(
                     continue
                 reading = fan.get("Reading")
                 name = fan.get("Name")
-                # RedFish fans can report Percent or RPM depending on vendor --
-                # confirmed live only against athena's HPE iLO (Percent). Only
-                # HPE/athena is verified so far; skip (don't mislabel) rather than
-                # record an RPM value under a field named/typed as a percentage
-                # once a second vendor (e.g. circe's Gigabyte BMC) is wired in.
                 units = fan.get("ReadingUnits")
-                if reading is not None and name and units == "Percent":
+                if reading is None or not name:
+                    continue
+                if units == "Percent":
+                    # Already the unit the pipeline expects -- confirmed live
+                    # against athena's HPE iLO.
                     fan_pct[name] = float(reading)
+                elif units == "RPM":
+                    # Confirmed live against circe's Gigabyte/AMI MegaRAC BMC:
+                    # fans report raw RPM here, not Percent. Normalize against
+                    # the sensor's own vendor-declared range rather than a
+                    # guessed max -- MinReadingRange/MaxReadingRange are
+                    # standard DMTF RedFish fields, present on every fan circe
+                    # reports. Skip (don't fake a percent) if the range is
+                    # missing or degenerate.
+                    min_range = fan.get("MinReadingRange")
+                    max_range = fan.get("MaxReadingRange")
+                    if (
+                        isinstance(min_range, (int, float))
+                        and isinstance(max_range, (int, float))
+                        and max_range > min_range
+                    ):
+                        pct = (float(reading) - min_range) / (max_range - min_range) * 100.0
+                        fan_pct[name] = max(0.0, min(100.0, pct))
+                # Any other/unknown unit: skip rather than mislabel.
 
         power_resp = session.get(f"{base}{chassis_path}/Power/", timeout=timeout_sec)
         if power_resp.ok:

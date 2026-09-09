@@ -198,29 +198,6 @@ class TestExistingAdapterSmoke:
 
 
 # ---------------------------------------------------------------------------
-# self_study adapter — returns None without configured endpoint (no network)
-# ---------------------------------------------------------------------------
-
-class TestSelfStudyAdapter:
-    def test_returns_none_when_no_endpoint(self, monkeypatch):
-        monkeypatch.delenv("SELF_STUDY_NAMED_GRAPH", raising=False)
-        monkeypatch.delenv("GRAPHDB_QUERY_ENDPOINT", raising=False)
-        monkeypatch.delenv("GRAPHDB_URL", raising=False)
-        from orion.substrate.relational.adapters.self_study import map_self_study_to_substrate
-        result = map_self_study_to_substrate({})
-        assert result is None
-
-    def test_empty_ctx_does_not_raise(self, monkeypatch):
-        monkeypatch.delenv("SELF_STUDY_NAMED_GRAPH", raising=False)
-        from orion.substrate.relational.adapters.self_study import map_self_study_to_substrate
-        try:
-            map_self_study_to_substrate({})
-        except Exception as exc:
-            pytest.fail(f"self_study adapter raised on empty ctx: {exc}")
-
-
-
-# ---------------------------------------------------------------------------
 # recall adapter — anchor routing (juniper branch now reachable)
 # ---------------------------------------------------------------------------
 

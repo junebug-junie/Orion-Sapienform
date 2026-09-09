@@ -56,7 +56,6 @@ from .relational import (
     UnifiedRelationalBeliefSetV1,
     map_identity_yaml_to_substrate,
     map_recall_bundle_to_substrate,
-    map_self_study_to_substrate,
     map_social_ctx_to_substrate,
 )
 
@@ -100,7 +99,6 @@ __all__ = [
     "UnifiedRelationalBeliefSetV1",
     "map_identity_yaml_to_substrate",
     "map_recall_bundle_to_substrate",
-    "map_self_study_to_substrate",
     "map_social_ctx_to_substrate",
     "FrontierContextPackV1",
     "FrontierContextPackBuilder",

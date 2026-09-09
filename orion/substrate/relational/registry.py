@@ -36,9 +36,10 @@ class ProducerEntryV1:
     freshness_ttl_sec: int             # staleness threshold in seconds
     pull_on_cold: bool                 # fan out when anchor is cold/stale
     adapter_fn: Callable[[dict[str, Any]], SubstrateGraphRecordV1 | None]
-    # adapter_fn receives the ctx dict; network-based adapters (autonomy, self_study,
-    # orionmem) ignore ctx and make their own calls; ctx-based adapters (recall,
-    # social, identity_yaml) read from ctx directly.
+    # adapter_fn receives the ctx dict; network-based adapters (autonomy) ignore
+    # ctx and make their own calls; ctx-based adapters (recall, social,
+    # identity_yaml, self_definition) read from ctx directly. self_study and
+    # orionmem were network adapters against the retired RDF store; both gone.
 
 
 @dataclass

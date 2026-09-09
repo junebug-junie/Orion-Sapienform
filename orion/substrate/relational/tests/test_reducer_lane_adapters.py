@@ -234,6 +234,9 @@ def test_registry_registers_three_reducer_lanes() -> None:
     # 15 -> 14 (2026-07-22, self_state_ctx burn, landed independently on main)
     # -> 13 (2026-07-22, this patch): "orionmem" producer removed, dead code
     # reading test-fixture-polluted Fuseki content -- see approve.py's docstring.
-    assert len(reg.producers) == 13
+    # -> 12 (2026-09-09): "self_study" producer removed, dead SPARQL read
+    # against the retired RDF store (SELF_STUDY_NAMED_GRAPH was empty everywhere).
+    assert len(reg.producers) == 12
     assert "orionmem" not in ids
+    assert "self_study" not in ids
     assert {"biometrics", "execution", "transport", "attention", "episodes", "curiosity"} <= set(ids)

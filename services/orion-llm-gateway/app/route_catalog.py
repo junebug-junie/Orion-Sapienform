@@ -34,6 +34,12 @@ class RouteHealthEntry:
     latency_ms: Optional[int]
     last_checked_at: Optional[str]
     model: Optional[str] = None
+    # The upstream base URL this route dispatches to -- the SAME string
+    # `GET /admission`'s "upstreams" map is keyed by (upstream_admission.py
+    # keys its per-upstream gate on plan.upstream == RouteTarget.url). Exposed
+    # so a consumer can join a route name to its live inflight/waiting gauges
+    # without guessing from ports. Two routes sharing a worker share one key.
+    upstream: Optional[str] = None
     vision: Optional[bool] = None
     # The context window the worker is ACTUALLY serving right now, read off the same
     # /v1/models response `model` comes from. Published because a route's usable window is
@@ -224,6 +230,7 @@ def _entry_from_probe(
         n_ctx=n_ctx,
         priority=getattr(target, "priority", None) or _definitional_priority(route_id),
         reserved_free_slots=getattr(target, "reserved_free_slots", None),
+        upstream=getattr(target, "url", None) or None,
     )
 
 
@@ -291,6 +298,7 @@ def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
         "n_ctx": entry.n_ctx,
         "priority": entry.priority,
         "reserved_free_slots": entry.reserved_free_slots,
+        "upstream": entry.upstream,
     }
 
 
@@ -316,6 +324,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "vision": None,
                     "priority": _definitional_priority(route_id),
                     "reserved_free_slots": None,
+                    "upstream": None,
                 }
             )
         else:
@@ -335,6 +344,7 @@ def build_routes_response() -> Dict[str, Any]:
                     # gateway uptime, which is exactly when someone is most likely looking.
                     "priority": getattr(target, "priority", None) or _definitional_priority(route_id),
                     "reserved_free_slots": getattr(target, "reserved_free_slots", None),
+                    "upstream": getattr(target, "url", None) or None,
                 }
             )
     return {

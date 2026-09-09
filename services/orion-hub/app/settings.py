@@ -120,6 +120,20 @@ class Settings(BaseSettings):
         alias="HUB_LLM_GATEWAY_TIMEOUT_SEC",
     )
 
+    # --- Runtime activity (header marquee + "what's running" modal) ---
+    # Folds facts Hub already sees (curiosity durable-run transitions, harness
+    # turn handoffs + steps) with the LLM gateway's /admission + /routes into
+    # one snapshot served at /api/runtime-activity (+ SSE at .../stream).
+    # See orion/hub/runtime_activity.py. Disabled = no gateway polling, no
+    # startup backfill, routes answer 503; the in-process folds still run
+    # (they are free) so re-enabling needs no restart.
+    HUB_RUNTIME_ACTIVITY_ENABLED: bool = Field(default=True, alias="HUB_RUNTIME_ACTIVITY_ENABLED")
+    # How often Hub polls the gateway's live lane gauges. 0 disables the poll
+    # (the page then shows governor lanes + curiosity runs only).
+    HUB_RUNTIME_ACTIVITY_GATEWAY_POLL_SEC: float = Field(
+        default=5.0, alias="HUB_RUNTIME_ACTIVITY_GATEWAY_POLL_SEC"
+    )
+
     # --- Chat attachments (images Juniper attaches to a turn) ---
     # Bytes live here; only a content-addressed ref travels on the wire.
     HUB_CHAT_ATTACHMENT_DIR: str = Field(

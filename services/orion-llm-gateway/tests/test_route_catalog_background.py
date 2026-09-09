@@ -60,6 +60,10 @@ async def test_background_route_declares_its_priority(monkeypatch):
     by_id = {r["id"]: r for r in payload["routes"]}
     assert by_id["quick_background"]["priority"] == "background"
     assert by_id["quick_background"]["reserved_free_slots"] == 2
+    # `upstream` is the join key to GET /admission's "upstreams" map: two routes on one
+    # worker share it, so a consumer can attribute the worker's live queue to both lanes.
+    assert by_id["quick"]["upstream"] == "http://atlas:8013"
+    assert by_id["quick_background"]["upstream"] == "http://atlas:8013"
     # ...and an ordinary lane does not claim to be one.
     assert by_id["quick"]["priority"] is None
 

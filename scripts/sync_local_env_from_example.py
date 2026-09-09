@@ -156,6 +156,9 @@ SYNC_PREFIXES = (
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
     "HUB_PROPOSAL_REVIEW_",
+    # Runtime activity marquee (2026-09-09): its two keys matched no prefix and
+    # were silently skipped on first sync; found by grepping the live .env after.
+    "HUB_RUNTIME_ACTIVITY_",
     # Exo Exploration (KSL classifieds tech/compute finds) Hub tab, 2026-09-04.
     "HUB_EXO_EXPLORATION_",
     "EXO_EXPLORATION_",

@@ -43,6 +43,7 @@ from orion.schemas.pre_turn_appraisal import (
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.substrate.appraisal.turn_window import build_turn_window
 from orion.llm.routes import fcc_model_for_route, is_agent_route_model_label
+from orion.hub.runtime_activity import get_runtime_activity
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     is_context_overflow_text,
@@ -1220,17 +1221,32 @@ async def execute_unified_turn(
     )
     if cockpit_run_holder is not None:
         cockpit_run_holder["motor_boot_recorded"] = True
+    # Hub's "what is running right now" surface (orion/hub/runtime_activity.py):
+    # the turn is *queued* on its governor lane from here until the first
+    # harness step arrives, and finished when this RPC returns or is torn
+    # down. Lane is derived inside the reducer from the SAME fcc_model_label
+    # HarnessGovernorClient.run() reads, so it cannot disagree with the queue.
+    activity = get_runtime_activity()
+    activity.turn_requested(
+        correlation_id=correlation_id,
+        mode=harness_req.mode,
+        model_label=harness_req.fcc_model_label,
+        source=payload.get("source"),
+    )
+    activity_outcome: dict[str, Any] = {"run": None, "error": "interrupted"}
     try:
         run = await HarnessGovernorClient(harness_bus).run(
             harness_req,
             correlation_id=correlation_id,
             liveness_check=liveness_check,
         )
+        activity_outcome = {"run": run, "error": None if run is not None else "rpc_timeout"}
         # `run is None` means an RPC timeout with no cancel published -- the
         # motor may still be mid-turn, so this stays False and we leave the
         # staged files alone rather than yanking them from a live reader.
         _harness_run_completed = run is not None
     finally:
+        activity.turn_finished(correlation_id=correlation_id, **activity_outcome)
         # Do NOT unregister the step queue here. Governor may still be publishing
         # trailing motor hops (and Soft HUD needs them) until run_unified_turn
         # finishes draining. Unregister + forget happen there after drain flush.

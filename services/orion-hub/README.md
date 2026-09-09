@@ -1382,6 +1382,49 @@ docker compose logs -f orion-whisper-tts | grep -E '\[STT\]|Sent STT result'
 
 Empty-transcript WebSocket errors include `audio_debug` with client and STT metadata. No JS unit harness — verify manually in the browser.
 
+### Runtime activity marquee ("Running right now")
+
+The pill in the top-right of the header shows what Orion is running at this
+moment; clicking it opens a modal with the details. It is fed live over
+Server-Sent Events, so it moves without a page reload.
+
+What it shows, and where each fact comes from (nothing here is a new
+producer -- these are facts Hub already sees):
+
+- **Curiosity runs** (both lines: `investigate` and `self_inquiry`) -- from
+  `orion:durable:run:state` transitions (`DurableRunStateV1`), which Hub
+  already subscribes to for outreach, plus Hub's own `_dispatch_durable_run`
+  (the only place that knows the run's line before it finishes). Shows run
+  id, correlation id, current node, duration since dispatch, resume marker,
+  the last transitions, and the harness turn the run is on (joined by
+  correlation id).
+- **Harness lanes** (`chat` and `agent`, the governor's two serial dispatch
+  loops) -- from `execute_unified_turn`'s handoff (requested: source tag,
+  mode, model label) and `orion:harness:run:step` (the first step is the
+  evidence the governor started the turn; before that the turn is *queued*).
+  The lane is derived from the same `fcc_model_label` predicate
+  `HarnessGovernorClient.run()` uses to pick the queue, so it cannot disagree.
+- **LLM gateway lanes** -- polled from orion-llm-gateway's `GET /admission`
+  (per-upstream inflight / waiting / shed gauges) joined to `GET /routes` by
+  the catalog's `upstream` field, so each worker's queue is labelled with the
+  route names that dispatch to it (`metacog`, `quick_background`, ...).
+
+Endpoints: `GET /api/runtime-activity` (snapshot) and
+`GET /api/runtime-activity/stream` (SSE, one frame per change). Reducer:
+`orion/hub/runtime_activity.py`; feeds + routes:
+`scripts/runtime_activity_routes.py`; page: `static/js/runtime-activity.js`.
+
+Env: `HUB_RUNTIME_ACTIVITY_ENABLED` (default `true`; `false` = routes 503,
+no gateway poll, no startup backfill) and
+`HUB_RUNTIME_ACTIVITY_GATEWAY_POLL_SEC` (default `5`; `0` = no gateway poll).
+
+Honesty rules baked in: a turn is "running" only once a step arrived; a run's
+`turn` is `null` until its handoff is seen; a gateway that is down shows its
+error next to the last good read instead of blanking; after a Hub restart the
+still-active runs are re-adopted from `substrate_durable_run_state` and
+marked as backfilled. Prompt text never reaches this surface (the motor-boot
+step carries the whole prompt and is reduced to the label "motor boot").
+
 ### Cockpit (Soft HUD)
 
 On each Orion reply, **Turn Trace** (fused GET trace) stays as-is. **Cockpit** opens a full-screen Soft HUD beside it: visor line, hop rail, scrubber, and raw inspector for that turn's sighting timeline. Click **Cockpit** on a message to load `GET /api/chat/turn/{correlation_id}/cockpit`; live unified turns also stream `cockpit_hop` WebSocket frames into the open modal until `cockpit_timeline_complete`. Turn Trace and Cockpit are independent — use either or both.

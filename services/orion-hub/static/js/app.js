@@ -4822,6 +4822,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const surfaces = snapshot && snapshot.surfaces ? snapshot.surfaces : {};
     const recall = snapshot && snapshot.recall ? snapshot.recall : {};
     const cognitive = snapshot && snapshot.cognitive ? snapshot.cognitive : {};
+    const graphConsolidation = snapshot && snapshot.graph_consolidation ? snapshot.graph_consolidation : {};
     const pressure = snapshot && snapshot.pressure ? snapshot.pressure : {};
     const recent = snapshot && snapshot.recent_activity ? snapshot.recent_activity : {};
     const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];
@@ -4900,6 +4901,9 @@ document.addEventListener("DOMContentLoaded", () => {
       `recall: production=${recall.production_mode || 'v1'} live_apply=${recall.live_apply_enabled ? 'true' : 'false'} readiness=${recallReadiness}`,
       `recall manual canary: runs=${manualCanary.run_count ?? 0} review_artifacts=${manualCanary.review_artifact_count ?? 0} recommended=${manualCanary.recommended_canary_action || '--'}`,
       `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${JSON.stringify(cognitive.counts_by_state || {})}`,
+      `graph consolidation: proposals=${(graphConsolidation.recent_proposals || []).length}`
+        + ` decisions=${JSON.stringify(graphConsolidation.decision_counts || {})}`
+        + ` staged=${(graphConsolidation.staged_profiles || []).length}`,
       `pressure: ${pressureTop}`,
       `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,
       currentLine,

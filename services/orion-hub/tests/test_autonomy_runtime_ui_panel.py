@@ -251,6 +251,11 @@ def test_app_js_wires_autonomy_readiness_fetch_toggle_and_defensive_rendering() 
     assert "function refreshAutonomyReadinessPanel()" in app_js
     assert "substrateReviewFetch('/api/substrate/autonomy-readiness')" in app_js
     assert "autonomyReadinessToggle.addEventListener('click', toggleAutonomyReadinessPanel);" in app_js
+    # The backend's graph_consolidation section (PR #2173) existed for a full
+    # day before this line was added -- the API had real data, the visible
+    # "Autonomy Readiness" panel just never asked for it.
+    assert "snapshot.graph_consolidation" in app_js
+    assert "graph consolidation: proposals=" in app_js
     assert "clearAutonomyReadinessPanel();" in app_js
     assert "refreshAutonomyReadinessPanel().catch((err) => {" in app_js
     assert "const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];" in app_js

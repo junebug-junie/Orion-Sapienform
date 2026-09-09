@@ -254,11 +254,142 @@ class RoutingReplayEvaluator:
                 output[field] = max(0.0, min(1.0, float(output[field])))
 
 
+@dataclass(frozen=True)
+class GraphConsolidationReplayEvaluation:
+    case_count: int
+    resolution_rate: float
+    requeue_rate: float
+
+
+@dataclass(frozen=True)
+class GraphConsolidationReplayEvaluator:
+    """Derives graph_consolidation_param_patch's real trial metrics.
+
+    Routing's evaluator can literally recompute "would this case have
+    escalated under threshold X", because a case's priority_score is a
+    static, already-stored value -- re-thresholding it is a pure function.
+    graph_consolidation's params (query_limit_nodes/edges, revisit cadence)
+    don't have that property: what a wider node query would have returned
+    depends on live graph state at review time, which telemetry doesn't
+    snapshot. There is no honest counterfactual replay here.
+
+    What IS honestly measurable from real telemetry: whether the queue's
+    own resolution behavior is trending better or worse right now. Split
+    the real replay window in half chronologically and compare the two
+    halves' outcome rates. This is a trend signal, not a controlled
+    estimate of this specific proposal's effect -- see queue_resolution_delta
+    and requeue_rate_delta's docstrings in derive_metrics() for the exact
+    caveat, since the two are easy to conflate.
+
+    ``resolved_outcomes`` is ``{"retire", "noop"}``, matching exactly the
+    two outcomes GraphReviewScheduler._schedule_for_decision() treats as
+    terminating (review_schedule.py: only these return `queue_item=None`,
+    so the item is never re-upserted). "reinforce" is NOT resolution:
+    _schedule_for_decision() groups it with "keep_provisional" under the
+    same "bounded monitoring" cadence -- the item stays in the queue
+    either way. Getting this wrong (an earlier version of this evaluator
+    counted reinforce as resolved) would make the metric read "the queue
+    is resolving faster" for exactly the outcome that keeps every one of
+    those items in the queue unchanged.
+
+    Independence caveat, named rather than hidden: queue_resolution_delta
+    and requeue_rate_delta both come from the same outcome list and the
+    same before/after split -- a shift from requeue_review to retire moves
+    both at once. They are not two independent pieces of evidence, even
+    though the contract (mutation_contracts.py) requires both to pass. Not
+    fixed here -- changing what the contract measures is a bigger,
+    separate decision than giving this class its first real evaluator.
+    """
+
+    resolved_outcomes: frozenset[str] = frozenset({"retire", "noop"})
+    requeue_outcome: str = "requeue_review"
+    min_window_size: int = 3
+
+    def evaluate_window(self, records: list[GraphReviewTelemetryRecordV1]) -> GraphConsolidationReplayEvaluation | None:
+        outcomes = [outcome for record in records for outcome in record.consolidation_outcomes]
+        if not outcomes:
+            return None
+        total = 0
+        resolved = 0
+        requeued = 0
+        for outcome in outcomes:
+            total += 1
+            if outcome in self.resolved_outcomes:
+                resolved += 1
+            if outcome == self.requeue_outcome:
+                requeued += 1
+        return GraphConsolidationReplayEvaluation(
+            case_count=total,
+            resolution_rate=float(resolved) / float(total),
+            requeue_rate=float(requeued) / float(total),
+        )
+
+    def derive_metrics(self, *, replay_records: list[GraphReviewTelemetryRecordV1]) -> dict[str, float] | None:
+        """queue_resolution_delta / requeue_rate_delta, or None if there is
+        nothing real to compare yet.
+
+        Two distinct "nothing to report" cases, both correctly None here
+        (ClassSpecificScorer.evaluate() reads a missing metric as
+        `inconclusive` -- the right read for "not enough evidence", never
+        silently `passed`):
+
+        1. Too few real rows to split into two meaningful halves. Returning
+           a delta from a handful of records would be noise dressed as
+           signal.
+        2. Enough rows exist, but the two halves show the EXACT SAME
+           outcome distribution -- zero evidence of any real change, not
+           "at least it didn't get worse". metric_passed() (mutation_
+           contracts.py) treats a delta of exactly 0.0 as passing (its
+           floor is `>= 0.0`), which would auto-promote a proposal based on
+           a total absence of signal -- backwards. This was not a rare
+           edge case: 100% keep_provisional, both halves, every single
+           real telemetry row, was the *entire* recorded history of this
+           system until 2026-09-08 (PR #2162 first made any other outcome
+           reachable at all).
+
+        Only rows with a real consolidation_outcomes list count -- everything
+        else (noop/suppressed/terminated/failed cycles) never ran
+        consolidate() and has nothing to measure.
+        """
+        consolidated = sorted(
+            (record for record in replay_records if record.consolidation_outcomes),
+            key=lambda record: record.selected_at,
+        )
+        if len(consolidated) < self.min_window_size * 2:
+            return None
+        midpoint = len(consolidated) // 2
+        before = self.evaluate_window(consolidated[:midpoint])
+        after = self.evaluate_window(consolidated[midpoint:])
+        # Both are guaranteed non-None here: `consolidated` was already
+        # filtered to non-empty consolidation_outcomes above, and the
+        # min_window_size*2 floor guarantees both slices are non-empty too.
+        assert before is not None and after is not None
+        if before.resolution_rate == after.resolution_rate and before.requeue_rate == after.requeue_rate:
+            return None
+        return {
+            # Positive = the queue is terminating (retire/noop) more of its
+            # reviews in the recent half of this window than the older half.
+            "queue_resolution_delta": after.resolution_rate - before.resolution_rate,
+            # Reversed on purpose: a LOWER requeue rate is the improvement,
+            # but metric_passed() (mutation_contracts.py) treats every
+            # metric the same way -- "passes if >= 0.0". A drop in requeue
+            # rate has to read as a positive delta here, or this metric
+            # would silently mean the opposite of what its name says.
+            "requeue_rate_delta": before.requeue_rate - after.requeue_rate,
+            # Not a contract metric (ClassSpecificScorer only checks the
+            # two above) -- carried through as auditable evidence of how
+            # much real data this trial's verdict rests on, mirroring
+            # RoutingReplayEvaluation.case_count's role for routing.
+            "graph_consolidation_replay_case_count": float(before.case_count + after.case_count),
+        }
+
+
 @dataclass
 class SubstrateTrialRunner:
     scorer: ClassSpecificScorer
     corpus_registry: ReplayCorpusRegistry
     routing_replay_evaluator: RoutingReplayEvaluator = RoutingReplayEvaluator()
+    graph_consolidation_replay_evaluator: GraphConsolidationReplayEvaluator = GraphConsolidationReplayEvaluator()
 
     def run_trial(
         self,
@@ -362,6 +493,8 @@ class SubstrateTrialRunner:
     ) -> dict[str, float] | None:
         if measured_metrics:
             return None
+        if proposal.mutation_class == "graph_consolidation_param_patch":
+            return self.graph_consolidation_replay_evaluator.derive_metrics(replay_records=replay_records)
         if proposal.mutation_class != "routing_threshold_patch":
             return None
         cases = self.routing_replay_evaluator.build_cases(replay_records)

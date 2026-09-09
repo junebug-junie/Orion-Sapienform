@@ -48,6 +48,16 @@
   padding: 4.5rem 1rem 1rem;
   overflow: auto;
 }
+/* LIVE BUG 2026-09-09: the ID rule above sets `display: flex` unconditionally.
+   An ID selector outranks the browser's own [hidden]{display:none} default
+   (a lone attribute selector), so that rule was silently winning and the
+   modal covered the whole page permanently, with no way to close it, no
+   matter what the `hidden` attribute said. This rule outranks BOTH: it must
+   stay below the base rule in source order AND keep the higher-specificity
+   [hidden] attribute selector to win the cascade. */
+#runtimeActivityModal[hidden] {
+  display: none;
+}
 .ra-modal {
   width: min(64rem, 100%);
   max-height: calc(100vh - 5.5rem);

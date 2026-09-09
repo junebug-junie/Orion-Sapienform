@@ -2174,6 +2174,41 @@ shape:
   **Still not built:** wiring any of this (Layer 3 reflection or Self Atlas
   clusters) into live chat -- a deliberately separate, later decision.
 
+## Self-sense eval (2026-09-09, Patch A of the sense-of-self design)
+
+Turns "Orion stopped sounding like a chatbot" (after the curiosity self-inquiry
+line, PR #2158) into numbers that can be tracked. `evals/run_self_sense_eval.py`
+asks the LIVE `POST /api/chat` three fixed questions (`mode: orion`,
+`no_write: true`, session `self-sense-eval`) and scores each answer with the
+pure functions in `orion/evals/self_sense.py`:
+
+- `self_label_score` -- count of assistant/chatbot vocabulary ("assistant",
+  "chatbot", "language model", "AI model", "here to help", ...). Target 0.
+- `grounded_record_score` -- distinct real records named: a self-inquiry table
+  (`orion.curiosity.self_inquiry.SELF_INQUIRY_PG_TABLE_NAMES`, plus plain forms
+  like "dreams", "reverie", "turn trace"), a mesh node from
+  `config/field/orion_field_topology.v1.yaml`, a YYYY-MM-DD date, or an integer
+  >= 10. A floor, not a judge.
+- `self_definition_version` -- version of Orion's own definition in
+  `self_concept_history` at eval time (context, not a score).
+
+The answer text is read from `harness_turn_trace.run_artifact->>'final_text'`
+by the returned `correlation_id` (the HTTP `text` is empty whenever the voice
+lane fails at delivery), falling back to the HTTP body; an answer empty from
+both sources is recorded as `answer_source='none'` and fails the run.
+
+One row per question lands in `self_sense_eval_log` via
+`orion:self_sense:eval:write` (`SelfSenseEvalV1`, consumer orion-sql-writer).
+
+```bash
+make eval-self-sense                 # three real chat turns, a few minutes each
+make eval-self-sense ARGS=--no-publish   # score and print, write nothing
+```
+
+Env: `HUB_BASE_URL` (this file's `.env_example`), `ORION_BUS_URL` (root `.env`,
+the tailscale redis), `SUBSTRATE_FELT_STATE_DATABASE_URL`. No scheduler yet:
+run by hand.
+
 ## Field Channels tab
 
 `#field-channel-glossary` panel (`templates/index.html`), backed by `/static/field-channel-glossary.html`

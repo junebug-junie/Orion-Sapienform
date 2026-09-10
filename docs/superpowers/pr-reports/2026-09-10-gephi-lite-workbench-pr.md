@@ -68,6 +68,10 @@ python scripts/check_service_env_compose_parity.py orion-hub
   N/A: service keys are supplied through env_file.
 git diff --check
   PASS
+python scripts/check_definition_drift.py --gate
+  PASS: 648 definitions, no changes (using the repository virtualenv).
+python scripts/check_metric_lineage.py --gate
+  PASS: 648 URNs (using the repository virtualenv).
 ```
 
 ## Evals run
@@ -83,6 +87,8 @@ node services/orion-hub/evals/graph_workbench_browser.cjs \
 ```
 
 Evidence is in `/tmp/orion-gephi-smoke.rZypsc/report.json` and screenshots alongside it. These contain private graph content and are deliberately not committed. The eval server binds localhost, skips Hub workers/database bootstrap, and uses read-only backing-store access. Default-slice browser coverage does not assert every upstream Gephi filter or metric.
+
+Additional authenticated live HTTP smoke: search returned 20 choices per source; exporting the first search result at depth 2 / limit 30 succeeded for all three (worldview 1/0, substrate 1/0, crystallizations 10/10 nodes/edges). Isolated nodes are retained as legitimate neighborhoods.
 
 ## Docker/build/smoke checks
 
@@ -127,4 +133,4 @@ Then open Hub's Graph Workbench link, authenticate as `juniper` using the passwo
 
 ## PR link
 
-Pending PR creation; CI status will be recorded before handoff.
+[PR #2198](https://github.com/junebug-junie/Orion-Sapienform/pull/2198). Latest main merged without conflicts; CI status will be recorded before handoff.

@@ -98,6 +98,18 @@ def _apply_biometrics_atom_uncertainty(
             u = max(base, 0.65 if degraded else base)
         elif role.endswith("_pressure_signal") or role.endswith("_activity_signal"):
             u = max(base, sal * 0.5)
+        elif role == "stability_signal":
+            # Same "an extreme reading deserves a higher uncertainty floor"
+            # principle as the _pressure_signal/_activity_signal branch above,
+            # but stability's extreme is the OPPOSITE direction: high salience
+            # here means calm (the safe end), low salience means volatile (the
+            # alarming end) -- see orion.field.pressure.HIGHER_IS_BETTER_CHANNELS.
+            # Scaling on raw `sal` like the branch above would do the reverse
+            # of what's intended: stamp LOW uncertainty on the most alarming
+            # readings (sal near 0) and HIGH uncertainty on the calmest ones
+            # (sal near 1). Scale on (1 - sal) instead so the same "urgent
+            # claims get more scrutiny" principle applies in the right direction.
+            u = max(base, (1.0 - sal) * 0.5)
         elif not node_profile.known:
             u = max(base, uncertainty_from_inverse_confidence(conf))
         else:
@@ -365,6 +377,28 @@ def build_biometrics_node_grammar_events(
             source_event_id=f"{node_id}:{ts}",
             payload_ref=f"biometrics.pressure.fan:{node_id}:{ts}",
         ),
+        # stability (2026-09-10 addition): how STEADY this node's strain has
+        # been recently (low volatility/spike-rate), not how loaded it is right
+        # now -- see orion/telemetry/biometrics_pipeline.py::_stability_from_induction().
+        # Computed since 2026-07-17 but never emitted anywhere until now --
+        # confirmed live it's a real, non-degenerate signal (0.895 on athena
+        # with a real non-zero spike rate vs. 0.992 on a calmer circe, same
+        # tick). Opposite polarity from every "*_pressure_signal" atom above
+        # (higher = calmer, not higher = worse) -- salience source is
+        # `composites`, like `body_state`'s strain salience, not `pressures`.
+        "stability_signal": GrammarAtomV1(
+            atom_id=atom_id("stability_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="stability_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "resource"],
+            summary=f"{node_id} strain stability observed",
+            confidence=0.9,
+            salience=float((summary.composites or {}).get("stability", 0.5)),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.stability:{node_id}:{ts}",
+        ),
     }
 
     pressures = summary.pressures or {}
@@ -440,12 +474,14 @@ def build_biometrics_node_grammar_events(
         ("telemetry_sample", "power_pressure_signal", "derived_from"),
         ("telemetry_sample", "disk_capacity_pressure_signal", "derived_from"),
         ("telemetry_sample", "fan_pressure_signal", "derived_from"),
+        ("telemetry_sample", "stability_signal", "derived_from"),
         ("memory_pressure_signal", "capability_surface", "influenced"),
         ("thermal_pressure_signal", "capability_surface", "influenced"),
         ("disk_pressure_signal", "capability_surface", "influenced"),
         ("power_pressure_signal", "capability_surface", "influenced"),
         ("disk_capacity_pressure_signal", "capability_surface", "influenced"),
         ("fan_pressure_signal", "capability_surface", "influenced"),
+        ("stability_signal", "capability_surface", "influenced"),
         ("gpu_pressure_signal", "capability_surface", "influenced"),
     ]
 

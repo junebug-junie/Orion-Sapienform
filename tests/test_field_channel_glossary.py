@@ -29,14 +29,18 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     node:substrate.bus_synaptic only -- see that entry's own comment for why
     node:substrate.vision's qualified entry is deliberately NOT added yet)
     -- this reuses channel=prediction_error, so it adds a row but not a new
-    distinct channel name; the digester's 48 raw/derived channels are
-    unchanged, only prediction_error now has a qualified variant alongside
-    its pre-existing bare entry."""
+    distinct channel name
+    + stability added 2026-09-10 (real distinct channel -- how steady a
+    node's recent strain has been, computed since 2026-07-17 but never
+    emitted anywhere until now; see orion.field.pressure.HIGHER_IS_BETTER_CHANNELS).
+    Test name/docstring number (48) is now stale by one distinct channel (49);
+    not renamed here to keep this diff reviewable against its own history --
+    the asserted numbers below are current, that's what matters."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 49
+    assert len(entries) == 50
     names = {e.channel for e in entries}
-    assert len(names) == 48, "a node-qualified entry must not introduce a new distinct channel name"
+    assert len(names) == 49, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -44,6 +48,7 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "cabinet_sensor_staleness" in names
     assert "cabinet_ambient_audio_activity" in names
     assert "cabinet_ambient_audio_staleness" in names
+    assert "stability" in names
     # stream_backlog_pressure/contract_pressure are the two node+capability overlaps.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
     assert {e.channel for e in overlap} == {"stream_backlog_pressure", "contract_pressure"}

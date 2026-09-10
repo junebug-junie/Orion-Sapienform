@@ -237,6 +237,53 @@ def test_node_biometrics_delta_missing_power_disk_capacity_fan_hints_produces_no
     assert "fan_pressure" not in channels
 
 
+def test_node_biometrics_delta_produces_stability() -> None:
+    # stability (2026-09-10): opposite polarity from every channel above --
+    # higher = calmer, not higher = worse. Still a plain 1:1 hint->channel
+    # perturbation, same shape as power/disk_capacity/fan.
+    delta = _make_node_biometrics_delta(pressure_hints={"stability": 0.91})
+    perturbations = delta_to_perturbations(delta)
+    channels = {p.channel: p.intensity for p in perturbations}
+    assert channels["stability"] == 0.91
+    assert all(p.node_id == "node:atlas" for p in perturbations)
+
+
+def test_stability_perturbation_uses_replace_mode() -> None:
+    delta = _make_node_biometrics_delta(pressure_hints={"stability": 0.5})
+    perturbations = delta_to_perturbations(delta)
+    modes = {p.channel: p.mode for p in perturbations}
+    assert modes["stability"] == "replace"
+
+
+def test_stability_perturbation_does_not_saturate_across_repeated_deltas() -> None:
+    # Same fan-out regression as power/disk_capacity/fan above -- a single
+    # biometrics trace produces many deltas that each still carry "stability"
+    # once first set; "add" mode would saturate the channel at 1.0 (or below
+    # 0.0, given no lower clamp on repeated subtraction) regardless of the
+    # real value.
+    delta = _make_node_biometrics_delta(pressure_hints={"stability": 0.7})
+    perturbations = []
+    for _ in range(16):
+        perturbations.extend(delta_to_perturbations(delta))
+
+    state = FieldStateV1(
+        generated_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+        tick_id="tick_stability_saturation_regression",
+        node_vectors={},
+        capability_vectors={},
+        edges=[],
+    )
+    apply_perturbations(state, perturbations)
+    assert state.node_vectors["node:atlas"]["stability"] == 0.7
+
+
+def test_node_biometrics_delta_missing_stability_hint_produces_no_perturbation() -> None:
+    delta = _make_node_biometrics_delta(pressure_hints={})
+    perturbations = delta_to_perturbations(delta)
+    channels = [p.channel for p in perturbations]
+    assert "stability" not in channels
+
+
 def test_gpu_and_cpu_perturbations_do_not_saturate_across_repeated_deltas() -> None:
     # Same regression as memory/thermal/disk above, for the pre-existing
     # gpu/strain channels this cycle's fix also covers.
@@ -276,6 +323,18 @@ def test_node_channels_include_cabinet_sensor_channels() -> None:
 
     for channel in CABINET_HINT_KEYS:
         assert channel in NODE_CHANNELS
+
+
+def test_stability_channel_registered_with_calm_default() -> None:
+    # "stability" is opposite polarity from every *_pressure channel: 0.0
+    # would mean "presumed maximally volatile before any real reading exists,"
+    # the same wrong-default class of bug stream_backlog_health/
+    # delivery_confidence were fixed for on 2026-07-17 -- must default to 1.0
+    # ("presumed calm"), not the generic {ch: 0.0} every pressure channel gets.
+    from app.tensor.channels import DEFAULT_NODE_VECTOR, NODE_CHANNELS
+
+    assert "stability" in NODE_CHANNELS
+    assert DEFAULT_NODE_VECTOR["stability"] == 1.0
 
 
 def test_node_biometrics_delta_produces_cabinet_sensor_perturbations() -> None:

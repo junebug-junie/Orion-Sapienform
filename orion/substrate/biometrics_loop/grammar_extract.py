@@ -149,6 +149,8 @@ def extract_node_state_from_events(
             pressure_hints["disk_capacity_pressure"] = float(atom.salience)
         elif atom.semantic_role == "fan_pressure_signal" and atom.salience is not None:
             pressure_hints["fan_pressure"] = float(atom.salience)
+        elif atom.semantic_role == "stability_signal" and atom.salience is not None:
+            pressure_hints["stability"] = float(atom.salience)
         elif atom.semantic_role in _CABINET_ROLE_TO_HINT and atom.salience is not None:
             pressure_hints[_CABINET_ROLE_TO_HINT[atom.semantic_role]] = float(atom.salience)
 

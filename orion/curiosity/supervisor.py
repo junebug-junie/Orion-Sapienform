@@ -52,24 +52,24 @@ from orion.schemas.cortex.contracts import (
 
 logger = logging.getLogger("orion.curiosity.supervisor")
 
-# A judgment task -- matching a hop's prose to a claim, and reading whether it
-# moved it -- not a lookup, so the more capable lane is the sane default for a
-# one-off history replay where a handful of extra seconds per run costs
-# nothing. Exposed as a parameter (not hardcoded past this default) precisely
-# so this can be swapped after step 2's sample-20 check without a code change.
-DEFAULT_LLM_ROUTE = "metacog"
+# ROOT-CAUSED (was mis-blamed on max_tokens in an earlier version of this
+# file). "metacog" is Qwen3-8B on a **4096-token total context window** --
+# confirmed live against the real server: `curl :8012/slots` returns
+# `"n_ctx": 4096`, and that figure covers PROMPT + COMPLETION together, not
+# completion alone. A multi-hop batch's prompt (priors list + several hop
+# notes) can eat most of that 4096 before the model writes a single
+# character of its answer, so raising `max_tokens` past what's left cannot
+# help -- the model hits the hard context wall mid-string and stops, which
+# is exactly the "Unterminated string..." truncation live verification hit
+# on 3/40 runs. `chat` (Qwen3.6-35B-A3B, port 8011) runs at 131072 tokens of
+# context -- confirmed live the same way -- and per
+# reference_agent_lane_27b_vs_chat_lane_35b_speed.md is also the FASTER lane
+# per token despite being nominally bigger (MoE: ~3B active params/token).
+# Only 1 concurrent slot vs metacog's 4, which does not matter here --
+# generate_all_readings awaits one run's RPC before starting the next, so
+# nothing this module does is concurrent on the lane anyway.
+DEFAULT_LLM_ROUTE = "chat"
 DEFAULT_TIMEOUT_SEC = 180.0
-# Raised from 3000. KNOWN OPEN ISSUE, not fixed by this: live verification
-# (68 hops, 40 runs) hit 3 truncated-JSON failures ("Unterminated string...")
-# on multi-hop batches (2-3 hops), and re-testing one at max_tokens=12000
-# truncated at the SAME short character offset -- so `max_tokens` was ruled
-# OUT as the cause, not confirmed as the fix. Left at a generous value on the
-# chance it helps some cases; the real cause (something in the LLM route/
-# gateway stopping generation early, independent of the requested budget) is
-# undiagnosed and documented in this patch's PR report rather than chased
-# further here. Degrades safely either way: parse_reading_batch drops an
-# unparseable batch and logs it, `generate_all_readings` moves on to the next
-# run -- confirmed live, the other 37 runs were unaffected.
 DEFAULT_MAX_TOKENS = 6000
 _VERB = "curiosity_hop_reading"
 

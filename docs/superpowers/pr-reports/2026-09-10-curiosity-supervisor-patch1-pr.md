@@ -233,12 +233,15 @@ work; the two rebuilt services are already running the new image.
 
 ## Risks / concerns
 
-- Severity: low. Concern: 3 of 40 live runs returned truncated JSON from the
-  LLM route for reasons not yet diagnosed (ruled out `max_tokens` as the
-  cause, did not find the real one). Mitigation: degrades safely today
-  (dropped and logged, rest of the sweep unaffected); flagged in the spec
-  doc's "Patch 1 results" for whoever picks up the next patch, with the
-  ruled-out hypothesis recorded so it isn't re-tried.
+- RESOLVED before merge. 3 of 40 live runs returned truncated JSON; root
+  cause was `metacog` (the original default route) running a 4096-token
+  **total** context window (prompt + completion), confirmed live via
+  `curl :8012/slots`. `max_tokens` couldn't have fixed it at any value —
+  the model hit the hard context wall mid-string on larger multi-hop
+  prompts. Fixed by switching the default route to `chat`
+  (Qwen3.6-35B-A3B, `n_ctx=131072`, also the faster lane). Re-verified live
+  against the exact 3 runs that previously failed: all now return complete,
+  parseable readings.
 - Severity: low. Concern: `Hop` still carries no timestamp, so run ordering
   (and therefore "most recent" in `is_circling`) is a best-effort proxy via
   `TurnOutcome.written_at`, not a real clock. Mitigation: documented in code

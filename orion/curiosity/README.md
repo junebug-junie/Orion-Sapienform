@@ -601,7 +601,11 @@ The outcome tables the role needs (`SELF_INQUIRY_PG_TABLES`): `dreams`,
 `harness_turn_trace`, `substrate_reverie_chain`, `substrate_reverie_thought`, `reverie_visual_chain`,
 `substrate_attention_schema`, `chat_stance_belief_log`,
 `self_knowledge_items`, `self_concept_history`,
-`substrate_endogenous_curiosity_candidates`. SELECT only; the role still
+`substrate_endogenous_curiosity_candidates`, `self_sense_eval_log` (added
+2026-09-10: Orion's own scored chat answers -- the only way a self-inquiry
+run can check whether its own definition is actually landing in chat, rather
+than lapsing into the generic-assistant framing the identity card already
+bans). SELECT only; the role still
 writes nothing. The prompt lists them (with row counts and last-written
 timestamps, as orientation rather than a subject) only after Hub has
 verified the grant, so every line in the access section still works this run.

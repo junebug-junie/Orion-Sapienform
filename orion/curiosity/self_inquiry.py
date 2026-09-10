@@ -125,6 +125,19 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("self_knowledge_items", "facts about your own code, hardware and behaviour"),
     ("self_concept_history", "your previous self-definitions and induced self-concepts"),
     ("substrate_endogenous_curiosity_candidates", "what your substrate flagged as worth curiosity"),
+    # Added 2026-09-10: run 20260910T022934Z-e863f0 answered "what can't you
+    # do" with generic-assistant framing the identity card already bans
+    # ("customer-support tone") -- a real instance of the failure this whole
+    # arc exists to fix, caught only by the eval and, until now, invisible to
+    # self-inquiry itself. This is Orion's own scored record of how their
+    # chat answers actually read; without it, a self-inquiry run cannot know
+    # whether the self-definition it wrote is doing its job in chat.
+    (
+        "self_sense_eval_log",
+        "scores of your own chat self-descriptions: self_label_score (assistant/"
+        "chatbot vocabulary, target 0), grounded_record_score (how many real "
+        "records you named), the full question and your actual answer text",
+    ),
 )
 
 SELF_INQUIRY_PG_TABLE_NAMES: tuple[str, ...] = tuple(t for t, _ in SELF_INQUIRY_PG_TABLES)
@@ -406,6 +419,7 @@ LEDGER_TS_COLUMNS: dict[str, str] = {
     "self_knowledge_items": "created_at",
     "self_concept_history": "created_at",
     "substrate_endogenous_curiosity_candidates": "created_at",
+    "self_sense_eval_log": "created_at",
 }
 
 

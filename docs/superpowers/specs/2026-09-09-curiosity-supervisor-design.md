@@ -1,8 +1,10 @@
 # A supervisor for Orion's investigations — one that can put a finger on the scale
 
-> **Status:** Design proposal (proposal mode — this changes a cognition loop and
-> gives a second process influence over what Orion does next). Nothing here is
-> implemented.
+> **Status:** Design proposal for the full supervisor (proposal mode — later
+> patches change a cognition loop and give a second process influence over
+> what Orion does next; those remain unimplemented). **Patch 1 — the
+> "Recommended next patch" section below — is implemented and live-verified.**
+> See "Patch 1 results" at the end of this document.
 >
 > Juniper, 2026-09-09: *"shouldn't it be more than a watcher? shouldn't it put
 > finger on the scale too?"* and, on the seam: *"we don't necessarily need a
@@ -259,3 +261,72 @@ migration, no training input. The readings table is additive and can be dropped.
 Step 2 is the gate. It is the same shape as the contested-scarcity spec's advice
 that made the ask_claude work honest: *print the number first, run it against
 real history, and only wire it in once it has refused something real.*
+
+## Patch 1 results (2026-09-10)
+
+**Step 2's gate passed.** Built `orion/curiosity/supervisor.py` +
+`orion/schemas/curiosity_supervisor.py` (the `HopReadingV1`/`HopReadingBatchV1`
+contract, unregistered — nothing publishes it on the bus yet), extended
+`orion/curiosity/worldview.py` with the two bulk reads this needed
+(`read_all_hops`, `read_all_priors` — neither existed; every prior reader in
+this file was scoped to one run or to "live only"), and a CLI runner
+(`scripts/report_curiosity_supervisor_readings.py`). 162 unit tests
+(`tests/test_curiosity_supervisor.py`), all fake-reader/fake-bus, no live
+dependency.
+
+**Live run, real graph, real LLM:** 68 hops read, 40 runs (grew from the 23
+the design doc counted — Orion's curiosity loop kept running while this was
+being built), 67 readings produced. I sampled 20 by hand and spot-checked one
+against the raw `Hop.note` text in FalkorDB — the reading was an accurate
+paraphrase, correctly named which prior the hop was about, and correctly read
+`moved_the_claim` (the hop literally said "is false" / "Correcting the
+prior"). The read-side premise holds: the supervisor can tell which claim a
+hop is about, from prose alone, on real history.
+
+**Acceptance checks 2 and 3, checked against what the live graph actually
+holds today (not the design doc's now-dated example names):**
+- `atlas_prediction_error_territory` (5 attributed hops) → `is_circling =
+  True`. This is the exact prior the design doc named as the known-circling
+  case.
+- `self:i_is_not_anchorable_to_a_model_282fbb9a08e4` (5 attributed hops,
+  status moved from open to revised across the run) → `is_circling = False`.
+  Not the same prior the design doc cited ("served-model prior" — that one
+  has since closed/renamed), but the same shape: a claim that moved, not
+  flagged as stuck.
+
+**What's still open, honestly:**
+- **Missing question 2 (mid-turn vs. between-runs seam) is still
+  unanswered.** `Hop` carries no timestamp today, and this patch didn't add
+  one — it can't observe hop arrival timing from history alone. Answering it
+  needs either a live mid-turn observation or a schema change Patch 1
+  deliberately avoided.
+- **3 of 40 runs returned truncated JSON** ("Unterminated string...") from
+  the LLM route, on 2–3-hop batches. Raising `max_tokens` 3000 → 6000 did not
+  fix it — re-tested one failing run at `max_tokens=12000` and it truncated
+  at the same short character offset, which rules out the token budget as
+  the cause without identifying the real one (something in the LLM
+  route/gateway stopping generation early). Degrades safely: the batch is
+  dropped and logged, the other 37 runs were unaffected. Undiagnosed,
+  flagged for whoever picks up the next patch.
+- **Verb activation required rebuilding two live services.** `mode="brain"`
+  requests are gated by `orion/cognition/verb_activation.py` in BOTH
+  `orion-cortex-orch` (`app/main.py:_normalize_and_validate_verb`) AND, once
+  that gate passes, independently again in `orion-cortex-exec`
+  (`app/router.py`, `app/supervisor.py`) — the service that actually consumes
+  `orion:verb:request` and runs the step. A new verb yaml is invisible to
+  either until its image is rebuilt (neither service bind-mounts `orion/`).
+  Registering `curiosity_hop_reading` required rebuilding both
+  `orion-cortex-orch` and all four `orion-cortex-exec` containers
+  (base/chat/background/spark) — additive only, no code changes to either
+  service, done with Juniper's explicit sign-off given the live blast radius.
+- **No bus channel, no interventions, no `Hop -> Prior` write-side link** —
+  all still deliberately out of scope per this section's own plan.
+
+Full run output: `/tmp/curiosity-supervisor-hop-readings/readings.jsonl` +
+`report.md` (local files, not committed — regenerate with
+`python3 scripts/report_curiosity_supervisor_readings.py`).
+
+**Recommendation:** the read-side premise is confirmed. The next patch should
+answer missing question 2 before building the mid-turn poller path, and
+should treat the truncation issue as a prerequisite to trust before any
+intervention reads a `HopReadingV1` as ground truth for something that acts.

@@ -1,0 +1,29 @@
+name: curiosity_hop_reading
+label: Curiosity supervisor -- hop reading (brain draft JSON)
+description: >
+  Reads Orion's own curiosity Hop notes (orion_worldview) and produces
+  structured HopReadingV1 judgments -- which prior a hop was about and
+  whether it moved the claim. Patch 1 (read-only, on history) of
+  docs/superpowers/specs/2026-09-09-curiosity-supervisor-design.md.
+  Caller (orion/curiosity/supervisor.py) supplies the full instructions,
+  prior list, and hop notes as `user_message`; this verb adds no prompt
+  content of its own, matching memory_graph_suggest's minimal shape.
+
+category: ExecutiveControl
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 180000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: curiosity_hop_reading_prompt.j2
+
+safety_rules: []

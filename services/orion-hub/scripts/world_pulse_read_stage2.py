@@ -26,6 +26,8 @@ from orion.schemas.world_pulse_read import (
     WorldPulseReadStage2ResultV1,
 )
 from orion.world_pulse_read.queue import (
+    RECLAIM_REASON_PROCESS_RESTART,
+    RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_stage2_seed,
     enqueue_seeds,
     mark_stage2_done,
@@ -370,9 +372,16 @@ class WorldPulseReadStage2Pipeline:
 
     async def _reclaim_stale_claimed(self) -> None:
         older = 0.0 if not self._startup_reclaim_done else float(self.timeout_sec)
+        reason = (
+            RECLAIM_REASON_PROCESS_RESTART
+            if not self._startup_reclaim_done
+            else RECLAIM_REASON_STALE_TIMEOUT
+        )
         try:
             reclaimed = await self._with_conn(
-                lambda conn: reclaim_stale_stage2_claimed(conn, older_than_sec=older)
+                lambda conn: reclaim_stale_stage2_claimed(
+                    conn, older_than_sec=older, reason=reason
+                )
             )
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_stage2_reclaim_failed", exc_info=True)

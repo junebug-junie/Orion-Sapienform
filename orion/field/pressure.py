@@ -61,6 +61,14 @@ HIGHER_IS_BETTER_CHANNELS = frozenset({
     "available_capacity",
     "delivery_confidence",
     "stream_backlog_health",
+    # stability (2026-09-10): how steady a node's recent strain has been, not
+    # how loaded it is right now -- see orion/telemetry/biometrics_pipeline.py
+    # ::_stability_from_induction(). Kept in sync with the separate copy in
+    # orion/attention/field_attention/selectors.py by
+    # test_higher_is_better_channels_stay_in_sync -- add to BOTH or a calm
+    # node silently reads as maximally urgent wherever a consumer merges/ranks
+    # channels generically instead of by name.
+    "stability",
 })
 
 # Only the 7 categories self_state's builder.py ever actually read from the

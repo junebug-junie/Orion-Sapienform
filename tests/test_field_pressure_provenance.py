@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from orion.field.pressure import (
     CHANNEL_DIMENSION_MAP,
     DimensionContributor,
+    HIGHER_IS_BETTER_CHANNELS,
     collect_field_channel_pressures,
     field_pressures,
     field_pressures_with_provenance,
@@ -289,3 +290,24 @@ def test_values_are_clamped_before_the_dimension_merge() -> None:
     assert dims == {"resource_pressure": 1.0}
     assert detail["resource_pressure"].value == 1.0
     assert detail["resource_pressure"].contributors[0].value == 1.0
+
+
+def test_higher_is_better_channels_stay_in_sync() -> None:
+    """orion.attention.field_attention.selectors keeps its own copy of this
+    exact set (`_HIGHER_IS_BETTER_CHANNELS`) rather than importing it -- a
+    divergence between the two is silent and dangerous: any channel present
+    in one but not the other gets inverted by one consumer and not the other,
+    so a calm node/capability can read as maximally urgent (or vice versa)
+    depending on which consumer happens to touch it. This already happened
+    once for real (selectors.py's own docstring: its first version was a
+    hand-re-derivation that silently missed `confidence`/`available_capacity`
+    -- code review Finding 1, 2026-07-30) and orion/attention/tension/
+    direction_map.py had the same class of drift independently (its own
+    2026-08-14 fix). Both of those were caught by a human; this test makes
+    it mechanical instead of relying on a third catch.
+    """
+    from orion.attention.field_attention.selectors import (
+        _HIGHER_IS_BETTER_CHANNELS as selectors_copy,
+    )
+
+    assert HIGHER_IS_BETTER_CHANNELS == selectors_copy

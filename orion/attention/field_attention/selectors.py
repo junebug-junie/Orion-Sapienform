@@ -76,10 +76,17 @@ _HIGHER_IS_BETTER_CHANNELS: frozenset[str] = frozenset(
         "availability",  # node
         "delivery_confidence",  # node (node:athena only, single-observer)
         "stream_backlog_health",  # node (node:athena only, single-observer)
+        "stability",  # node (2026-09-10)
         "confidence",  # capability
         "available_capacity",  # capability
     }
 )
+# Kept in sync with orion.field.pressure.HIGHER_IS_BETTER_CHANNELS by
+# test_higher_is_better_channels_stay_in_sync -- this module's own docstring
+# above explains why a divergence here is silent and dangerous (a calm target
+# reads as maximally urgent), which is exactly what almost happened once
+# already (this set was originally a hand-re-derivation that missed two
+# entries -- see orion/attention/tension/direction_map.py's own history).
 
 
 def _current_pressure_proxy(vector: dict[str, float]) -> float:

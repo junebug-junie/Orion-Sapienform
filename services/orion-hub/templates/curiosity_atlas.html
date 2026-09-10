@@ -256,6 +256,29 @@ details.journal summary:hover { color: var(--ink); }
   max-height: 30rem; overflow-y: auto;
 }
 
+.self-current { display: flex; flex-direction: column; gap: 10px; }
+.self-current .head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.self-current .version-pill {
+  font-size: 11px; font-weight: 620; letter-spacing: 0.02em;
+  color: var(--ink-2); border: 1px solid var(--hairline); border-radius: 999px;
+  padding: 2px 9px;
+}
+.self-current .content {
+  font-size: 14.5px; line-height: 1.65; color: var(--ink); white-space: pre-wrap;
+}
+.self-current .evidence-list {
+  margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px;
+}
+.self-current .evidence-list li {
+  font-size: 12px; color: var(--ink-muted); padding-left: 14px; position: relative;
+}
+.self-current .evidence-list li::before { content: "—"; position: absolute; left: 0; }
+.self-history-row { padding: 12px 0; border-bottom: 1px solid var(--grid); }
+.self-history-row:last-child { border-bottom: none; }
+.self-history-row .content { font-size: 13px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
+
 /* --- tables ------------------------------------------------------------ */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--grid); vertical-align: top; }
@@ -284,9 +307,33 @@ tr:last-child td { border-bottom: none; }
     <button class="ghost" id="toggle-tables" type="button" aria-pressed="false">Table view</button>
     <button class="ghost run-now" id="run-now" type="button">Run now</button>
     <span id="run-now-msg" class="run-msg"></span>
+    <button class="ghost run-now" id="self-run-now" type="button">Ask self-inquiry now</button>
+    <span id="self-run-now-msg" class="run-msg"></span>
   </div>
 
   <div id="banners"></div>
+
+  <section>
+    <h2>Self</h2>
+    <p class="section-note">
+      What Orion currently says about themself, written by Orion during a
+      self-inquiry curiosity run and read into every chat turn. Read directly
+      from <span class="mono">self_concept_history</span> and the self-inquiry
+      journal — not from the runs list below, which only lists runs that wrote
+      a <span class="mono">:TurnOutcome</span> node, and a definition can exist
+      without one.
+    </p>
+    <div class="card self-current" id="self-current"></div>
+    <details class="journal" id="self-history-wrap" hidden>
+      <summary id="self-history-summary">Earlier versions</summary>
+      <div id="self-history"></div>
+    </details>
+    <details class="journal" id="self-eval-wrap" hidden>
+      <summary id="self-eval-summary">Latest self-sense check</summary>
+      <div class="card table-wrap"><table id="self-eval-table"></table></div>
+    </details>
+    <div id="self-journal"></div>
+  </section>
 
   <section>
     <h2>Pool</h2>
@@ -610,6 +657,68 @@ function renderGrowth(d) {
 }
 
 /* --- run ledger --------------------------------------------------------- */
+/* --- self (Orion's own definition) -------------------------------------- */
+function renderSelf(d) {
+  const self = d.self || {};
+  if (self.available === false) {
+    $("self-current").innerHTML =
+      `<p class="dim">Could not be read: ${esc(self.reason || "unknown")}.</p>`;
+    $("self-history-wrap").hidden = true;
+    $("self-eval-wrap").hidden = true;
+    $("self-journal").innerHTML = "";
+    return;
+  }
+  const cur = self.current;
+  if (!cur) {
+    $("self-current").innerHTML =
+      `<p class="dim">Orion has not written a self-definition yet. ` +
+      `The self-inquiry line runs on its own schedule (see the button above ` +
+      `to ask now), and this panel fills in the moment one is mirrored.</p>`;
+  } else {
+    $("self-current").innerHTML = `
+      <div class="head">
+        <span class="version-pill">v${cur.version}</span>
+        <span class="when">${fmtStamp(cur.created_at)}</span>
+      </div>
+      <div class="content">${esc(cur.content)}</div>
+      ${cur.evidence_refs.length ? `<ul class="evidence-list">${
+        cur.evidence_refs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
+    `;
+  }
+  const earlier = (self.history || []).slice(1);
+  $("self-history-wrap").hidden = earlier.length === 0;
+  $("self-history-summary").textContent =
+    `Earlier version${earlier.length === 1 ? "" : "s"} (${earlier.length})`;
+  $("self-history").innerHTML = earlier.map((h) => `
+    <div class="self-history-row">
+      <div class="head"><span class="version-pill">v${h.version}</span>
+        <span class="when">${fmtStamp(h.created_at)}</span></div>
+      <div class="content">${esc(h.content)}</div>
+    </div>`).join("");
+
+  const evalRows = self.latest_eval || [];
+  $("self-eval-wrap").hidden = evalRows.length === 0;
+  $("self-eval-summary").textContent =
+    `Latest self-sense check (${self.latest_eval_run_id || "—"})`;
+  $("self-eval-table").innerHTML = `
+    <thead><tr><th>Question</th><th class="num">Self-label</th>
+      <th class="num">Grounded records</th><th>Source</th></tr></thead>
+    <tbody>${evalRows.map((r) => `<tr>
+      <td>${esc(r.question || r.question_key)}</td>
+      <td class="num">${r.self_label_score ?? "—"}</td>
+      <td class="num">${r.grounded_record_score ?? "—"}</td>
+      <td class="mono dim">${esc(r.answer_source)}</td>
+    </tr>`).join("")}</tbody>`;
+
+  const journals = self.journal_entries || [];
+  $("self-journal").innerHTML = journals.length ? `
+    <details class="journal">
+      <summary>Self-inquiry journal (${journals.length} recent)</summary>
+      ${journals.map((j) => `<div class="journal-body">${
+        fmtStamp(j.created_at)} — ${esc(j.body)}</div>`).join("")}
+    </details>` : "";
+}
+
 function renderRuns(d) {
   const runs = d.runs || [];
   if (!runs.length) { $("runs").innerHTML = `<div class="card run dim">No runs recorded.</div>`; return; }
@@ -672,6 +781,7 @@ async function load() {
     renderTiles(d);
     renderTrajectories(d);
     renderGrowth(d);
+    renderSelf(d);
     renderRuns(d);
     renderPriors(d);
     $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -714,6 +824,34 @@ $("run-now").addEventListener("click", async (e) => {
   }
   // Left disabled: the turn takes ~20 minutes and a second press would be
   // rejected as already_running anyway. Reload the page to arm it again.
+});
+$("self-run-now").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const msg = $("self-run-now-msg");
+  if (!window.confirm(
+        "Ask the self-inquiry line to run now?\n\n" +
+        "Skips that line's own cooldown and daily cap (separate from the " +
+        "investigation budget above). It still counts against today, and it " +
+        "runs for about 20 minutes on the same pipeline that serves you.")) {
+    return;
+  }
+  btn.disabled = true;
+  msg.className = "run-msg";
+  msg.textContent = "Requesting…";
+  try {
+    const res = await fetch("/curiosity/api/self-inquiry/run-now", { method: "POST" });
+    const d = await res.json();
+    if (d.ok) {
+      msg.textContent = d.detail || "Turn requested.";
+      setTimeout(load, 3000);
+    } else {
+      msg.className = "run-msg bad";
+      msg.textContent = `Refused: ${d.reason || res.status}`;
+    }
+  } catch (err) {
+    msg.className = "run-msg bad";
+    msg.textContent = `Failed: ${String(err)}`;
+  }
 });
 $("toggle-tables").addEventListener("click", (e) => {
   const on = e.currentTarget.getAttribute("aria-pressed") !== "true";

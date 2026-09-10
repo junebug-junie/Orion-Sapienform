@@ -222,6 +222,24 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     mode="replace",
                 )
             )
+        # stability (2026-09-10 addition): same fan-out/mode="replace" reasoning
+        # as power_pressure/disk_capacity_pressure/fan_pressure above. OPPOSITE
+        # polarity from every other channel in this block -- higher = calmer,
+        # not higher = worse. Registered as such in
+        # orion.field.pressure.HIGHER_IS_BETTER_CHANNELS AND its separate copy
+        # in orion.attention.field_attention.selectors -- both, or a calm node
+        # silently reads as maximally urgent wherever a consumer merges/ranks
+        # channels generically (see the sync test guarding those two lists).
+        if "stability" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="stability",
+                    intensity=float(hints["stability"]),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
         # Cabinet sensor activity/staleness (2026-08-23): dedicated NODE_CHANNELS,
         # not folded into thermal_pressure or other host biometrics. Same per-trace
         # fan-out / mode="replace" precedent as fan_pressure above.

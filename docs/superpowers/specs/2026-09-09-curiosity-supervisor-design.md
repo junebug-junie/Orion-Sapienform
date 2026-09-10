@@ -300,14 +300,20 @@ holds today (not the design doc's now-dated example names):**
   one — it can't observe hop arrival timing from history alone. Answering it
   needs either a live mid-turn observation or a schema change Patch 1
   deliberately avoided.
-- **3 of 40 runs returned truncated JSON** ("Unterminated string...") from
-  the LLM route, on 2–3-hop batches. Raising `max_tokens` 3000 → 6000 did not
-  fix it — re-tested one failing run at `max_tokens=12000` and it truncated
-  at the same short character offset, which rules out the token budget as
-  the cause without identifying the real one (something in the LLM
-  route/gateway stopping generation early). Degrades safely: the batch is
-  dropped and logged, the other 37 runs were unaffected. Undiagnosed,
-  flagged for whoever picks up the next patch.
+- **3 of 40 runs returned truncated JSON** ("Unterminated string..."),
+  root-caused and fixed same day: `metacog` (the original default route,
+  Qwen3-8B) runs a **4096-token TOTAL context window** — confirmed live via
+  `curl :8012/slots` → `"n_ctx": 4096` — covering prompt AND completion
+  together. Raising `max_tokens` couldn't fix it because `max_tokens` was
+  never the ceiling; the model hit the hard context wall mid-string on a
+  multi-hop batch's larger prompt and stopped, regardless of what completion
+  budget was requested (re-tested at `max_tokens=12000`, truncated at the
+  same short offset — that's what ruled the token budget out and pointed at
+  context instead). Fixed by switching the default route to `chat`
+  (Qwen3.6-35B-A3B, confirmed live at `n_ctx=131072`) — also the faster lane
+  per `reference_agent_lane_27b_vs_chat_lane_35b_speed.md`. Degraded safely
+  either way: the batch was dropped and logged, the other 37 runs were
+  unaffected.
 - **Verb activation required rebuilding two live services.** `mode="brain"`
   requests are gated by `orion/cognition/verb_activation.py` in BOTH
   `orion-cortex-orch` (`app/main.py:_normalize_and_validate_verb`) AND, once

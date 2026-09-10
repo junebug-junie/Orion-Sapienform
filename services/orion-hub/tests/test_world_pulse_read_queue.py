@@ -5,6 +5,8 @@ from pathlib import Path
 
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.queue import (
+    RECLAIM_REASON_PROCESS_RESTART,
+    RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_seed,
     claim_next_stage2_seed,
     count_seeds_by_status,
@@ -128,6 +130,7 @@ class _FakeConn:
             return "INSERT 0 1"
         if "SET stage2_status = 'pending'" in sql_n and "stage2_status = 'claimed'" in sql_n:
             older = float(args[0]) if args else 0.0
+            reason = args[1] if len(args) > 1 else None
             cutoff = datetime.now(timezone.utc) - timedelta(seconds=older)
             n = 0
             for row in self.rows.values():
@@ -139,6 +142,7 @@ class _FakeConn:
                 ):
                     row["stage2_status"] = "pending"
                     row["stage2_claimed_at"] = None
+                    row["stage2_error"] = reason
                     n += 1
             return f"UPDATE {n}"
         if (
@@ -147,6 +151,7 @@ class _FakeConn:
             and "status = 'claimed'" in sql_n
         ):
             older = float(args[0]) if args else 0.0
+            reason = args[1] if len(args) > 1 else None
             cutoff = datetime.now(timezone.utc) - timedelta(seconds=older)
             n = 0
             for row in self.rows.values():
@@ -158,6 +163,7 @@ class _FakeConn:
                 ):
                     row["status"] = "pending"
                     row["claimed_at"] = None
+                    row["last_error"] = reason
                     n += 1
             return f"UPDATE {n}"
         if "SET stage2_status = 'claimed'" in sql_n:
@@ -348,7 +354,9 @@ def test_reclaim_stale_claimed_makes_seed_claimable_again():
         await enqueue_seeds(conn, [_finding(seed_id=fresh_id)])
         conn.rows[fresh_id]["status"] = "claimed"
         conn.rows[fresh_id]["claimed_at"] = datetime.now(timezone.utc)
-        n = await reclaim_stale_claimed(conn, older_than_sec=3500)
+        n = await reclaim_stale_claimed(
+            conn, older_than_sec=3500, reason=RECLAIM_REASON_STALE_TIMEOUT
+        )
         claimed = await claim_next_seed(conn)
         return n, claimed
 
@@ -357,6 +365,74 @@ def test_reclaim_stale_claimed_makes_seed_claimable_again():
     assert claimed is not None
     assert claimed.seed_id == "finding:r1:x"
     assert conn.rows["finding:r1:fresh"]["status"] == "claimed"
+
+
+def test_reclaim_stale_claimed_writes_stale_timeout_reason():
+    """Periodic in-loop reclaim (a turn that ran past its own timeout) leaves
+    a real trace instead of silently resetting the row (confirmed live
+    2026-09-10: a reclaim reset a seed with zero trace of it happening)."""
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        row = conn.rows["finding:r1:x"]
+        row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
+        return await reclaim_stale_claimed(
+            conn, older_than_sec=3500, reason=RECLAIM_REASON_STALE_TIMEOUT
+        )
+
+    n = asyncio.run(_run())
+    assert n == 1
+    assert conn.rows["finding:r1:x"]["status"] == "pending"
+    assert conn.rows["finding:r1:x"]["last_error"] == "interrupted:stale_timeout"
+
+
+def test_reclaim_stale_claimed_writes_process_restart_reason():
+    """Startup reclaim (older_than_sec=0.0, catching a claim orphaned by a
+    dead process) gets a distinct label from the periodic case."""
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        row = conn.rows["finding:r1:x"]
+        row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        return await reclaim_stale_claimed(
+            conn, older_than_sec=0.0, reason=RECLAIM_REASON_PROCESS_RESTART
+        )
+
+    n = asyncio.run(_run())
+    assert n == 1
+    assert conn.rows["finding:r1:x"]["status"] == "pending"
+    assert conn.rows["finding:r1:x"]["last_error"] == "interrupted:process_restart"
+
+
+def test_reclaimed_seed_error_cleared_by_later_successful_completion():
+    """A reclaim's `interrupted:*` marker must not survive a later real
+    success -- MARK_DONE_SQL already nulls `last_error` on success; confirm
+    that still holds once the reclaim itself writes a non-null value."""
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        row = conn.rows["finding:r1:x"]
+        row["status"] = "claimed"
+        row["claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
+        await reclaim_stale_claimed(
+            conn, older_than_sec=3500, reason=RECLAIM_REASON_STALE_TIMEOUT
+        )
+        assert conn.rows["finding:r1:x"]["last_error"] == "interrupted:stale_timeout"
+        claimed = await claim_next_seed(conn)
+        assert claimed is not None
+        # CLAIM_SQL touches only status/claimed_at -- the interrupted: marker
+        # must still be sitting there mid-retry, before completion clears it.
+        assert conn.rows["finding:r1:x"]["last_error"] == "interrupted:stale_timeout"
+        await mark_seed_done(conn, claimed.seed_id, trace_id="tr-retry")
+
+    asyncio.run(_run())
+    assert conn.rows["finding:r1:x"]["status"] == "done"
+    assert conn.rows["finding:r1:x"]["last_error"] is None
 
 
 def test_mark_seed_done_and_failed():
@@ -522,7 +598,9 @@ def test_reclaim_stale_stage2_claimed():
         row["stage2_status"] = "claimed"
         row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
         assert await claim_next_stage2_seed(conn) is None
-        n = await reclaim_stale_stage2_claimed(conn, older_than_sec=3500)
+        n = await reclaim_stale_stage2_claimed(
+            conn, older_than_sec=3500, reason=RECLAIM_REASON_STALE_TIMEOUT
+        )
         claimed = await claim_next_stage2_seed(conn)
         return n, claimed
 
@@ -530,6 +608,76 @@ def test_reclaim_stale_stage2_claimed():
     assert n == 1
     assert claimed is not None
     assert claimed.seed.seed_id == "finding:r1:x"
+
+
+def test_reclaim_stale_stage2_claimed_writes_stale_timeout_reason():
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        await mark_seed_done(
+            conn, "finding:r1:x", trace_id="tr-s1", handoff=_handoff_for(_finding())
+        )
+        row = conn.rows["finding:r1:x"]
+        row["stage2_status"] = "claimed"
+        row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
+        return await reclaim_stale_stage2_claimed(
+            conn, older_than_sec=3500, reason=RECLAIM_REASON_STALE_TIMEOUT
+        )
+
+    n = asyncio.run(_run())
+    assert n == 1
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "pending"
+    assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:stale_timeout"
+
+
+def test_reclaim_stale_stage2_claimed_writes_process_restart_reason():
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        await mark_seed_done(
+            conn, "finding:r1:x", trace_id="tr-s1", handoff=_handoff_for(_finding())
+        )
+        row = conn.rows["finding:r1:x"]
+        row["stage2_status"] = "claimed"
+        row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        return await reclaim_stale_stage2_claimed(
+            conn, older_than_sec=0.0, reason=RECLAIM_REASON_PROCESS_RESTART
+        )
+
+    n = asyncio.run(_run())
+    assert n == 1
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "pending"
+    assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:process_restart"
+
+
+def test_reclaimed_stage2_seed_error_cleared_by_later_successful_completion():
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        await mark_seed_done(
+            conn, "finding:r1:x", trace_id="tr-s1", handoff=_handoff_for(_finding())
+        )
+        row = conn.rows["finding:r1:x"]
+        row["stage2_status"] = "claimed"
+        row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=4000)
+        await reclaim_stale_stage2_claimed(
+            conn, older_than_sec=3500, reason=RECLAIM_REASON_STALE_TIMEOUT
+        )
+        assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:stale_timeout"
+        claimed = await claim_next_stage2_seed(conn)
+        assert claimed is not None
+        # CLAIM_STAGE2_SQL touches only stage2_status/stage2_claimed_at -- the
+        # interrupted: marker must still be sitting there mid-retry, before
+        # completion clears it.
+        assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:stale_timeout"
+        await mark_stage2_done(conn, claimed.seed.seed_id, stage2_trace_id="tr-s2-retry")
+
+    asyncio.run(_run())
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
+    assert conn.rows["finding:r1:x"]["stage2_error"] is None
 
 
 def test_queue_count_helpers():

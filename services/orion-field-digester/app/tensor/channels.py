@@ -9,6 +9,12 @@ NODE_CHANNELS = [
     "power_pressure",
     "disk_capacity_pressure",
     "fan_pressure",
+    # "higher = calmer" polarity (opposite of every *_pressure channel above) --
+    # see orion.field.pressure.HIGHER_IS_BETTER_CHANNELS and its synced copy in
+    # orion.attention.field_attention.selectors. Not in NODE_DECAY_CHANNELS,
+    # same as "availability" above -- headroom-style channels are excluded from
+    # generic staleness decay, not decayed toward 0 like a pressure channel.
+    "stability",
     "cabinet_climate_activity",
     "cabinet_particulate_activity",
     "cabinet_em_activity",
@@ -60,6 +66,17 @@ DEFAULT_NODE_VECTOR["availability"] = 1.0
 # reported. It's no longer reached by any other node -- see below.
 DEFAULT_NODE_VECTOR["stream_backlog_health"] = 1.0
 DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
+# Same "presumed healthy until first real report" reasoning as the two lines
+# above, for the same reason: NODE_CHANNELS' generic `{ch: 0.0 ...}` default
+# is correct for *_pressure channels (0.0 = no load, a fine default) but wrong
+# for stability's opposite polarity (0.0 = presumed maximally volatile before
+# any real reading exists). biometrics_pipeline.py's own _stability_from_
+# induction() already uses 0.5 as its no-data fallback, not 0.0 or 1.0 -- but
+# the field's own convention (this file, not biometrics) for a headroom-style
+# channel with no report yet is 1.0, matching stream_backlog_health/
+# delivery_confidence/availability above, not the producer's own neutral
+# fallback.
+DEFAULT_NODE_VECTOR["stability"] = 1.0
 
 # Design correction (2026-07-22): stream_backlog_health/delivery_confidence were
 # modeled as ordinary per-node NODE_CHANNELS, merged across every lattice

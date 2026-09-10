@@ -22,6 +22,8 @@ from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseRe
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from orion.substrate.materializer import SubstrateGraphMaterializer
 from orion.world_pulse_read.queue import (
+    RECLAIM_REASON_PROCESS_RESTART,
+    RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_seed,
     enqueue_from_recent_digests,
     mark_seed_done,
@@ -280,9 +282,16 @@ class WorldPulseReadPipeline:
         # not stolen. Pool is created after pipeline.start() in Hub
         # startup, so start() itself cannot do this.
         older = 0.0 if not self._startup_reclaim_done else float(self.timeout_sec)
+        reason = (
+            RECLAIM_REASON_PROCESS_RESTART
+            if not self._startup_reclaim_done
+            else RECLAIM_REASON_STALE_TIMEOUT
+        )
         try:
             reclaimed = await self._with_conn(
-                lambda conn: reclaim_stale_claimed(conn, older_than_sec=older)
+                lambda conn: reclaim_stale_claimed(
+                    conn, older_than_sec=older, reason=reason
+                )
             )
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_reclaim_failed", exc_info=True)

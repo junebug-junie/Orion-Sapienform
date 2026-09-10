@@ -1,8 +1,8 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 647,
+  "metric_count": 648,
   "_last_change": {
-    "base": "merge base 29752780a (origin/main)",
+    "base": "merge base 9028d58df (origin/main)",
     "change_count": 0,
     "high_severity_count": 0,
     "changes": [
@@ -3695,6 +3695,14 @@
         "social_pressure"
       ],
       "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/stability": {
+      "meaning": "How STEADY a node's recent overall strain has been (low volatility/spike-rate), not how loaded it is right now. Opposite polarity from every other physical_substrate channel above -- higher = calmer. See orion.field.pressure.HIGHER_IS_BETTER_CHANNELS.",
+      "feeds_dimensions": [
+        "coherence"
+      ],
+      "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/staleness": {

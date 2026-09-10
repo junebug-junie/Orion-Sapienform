@@ -36,6 +36,8 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from orion.curiosity.atlas import read_atlas, to_payload
+from orion.curiosity.self_panel import read_self_panel
+from orion.curiosity.self_panel import to_payload as self_panel_to_payload
 from orion.curiosity.worldview import WorldviewReader
 
 logger = logging.getLogger("orion-hub.curiosity_routes")
@@ -166,6 +168,20 @@ async def _read_schedule() -> dict[str, Any]:
     return out
 
 
+def _get_memory_pg_pool() -> Any:
+    """Hub's shared asyncpg pool, or None if it is not up yet. One place to
+    change if `app.state.memory_pg_pool` ever moves -- review finding,
+    2026-09-09: this lookup was duplicated inline in two readers in this file."""
+    try:
+        from . import main as hub_main
+
+        state = getattr(getattr(hub_main, "app", None), "state", None)
+        return getattr(state, "memory_pg_pool", None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory_pg_pool_lookup_failed err=%s", exc)
+        return None
+
+
 async def _read_journals(run_ids: list[str]) -> dict[str, str]:
     """What each run actually SAID, which is its real output.
 
@@ -179,13 +195,10 @@ async def _read_journals(run_ids: list[str]) -> dict[str, str]:
     """
     if not run_ids:
         return {}
+    pool = _get_memory_pg_pool()
+    if pool is None:
+        return {}
     try:
-        from . import main as hub_main
-
-        pool = getattr(getattr(hub_main, "app", None), "state", None)
-        pool = getattr(pool, "memory_pg_pool", None)
-        if pool is None:
-            return {}
         refs = [f"curiosity:{r}" for r in run_ids]
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -272,7 +285,16 @@ async def curiosity_atlas_api() -> JSONResponse:
         payload.get("runs", []), payload["schedule"].get("local_date"),
         payload["schedule"].get("tz"),
     )
+    payload["self"] = await _read_self_panel_payload()
     return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+async def _read_self_panel_payload() -> dict[str, Any]:
+    """Orion's own definition, its version history, and the self-inquiry
+    journal -- read directly from Postgres (see `orion.curiosity.self_panel`
+    for why this does not go through the `:TurnOutcome`-keyed run list)."""
+    view = await read_self_panel(_get_memory_pg_pool())
+    return self_panel_to_payload(view)
 
 
 @router.post("/api/run-now")

@@ -42,6 +42,7 @@ from .resonance_monitor import check_resonance_worsening
 from .reverie import _default_broadcast_reader, _source, run_reverie_once
 from .settings import settings
 from .store import (
+    load_latest_no_coalition_streak,
     load_recent_chain_theme_events,
     persist_compaction_request,
     persist_resonance_alert,
@@ -107,6 +108,51 @@ def theme_key_for(coalition: Any) -> str:
     if attended:
         return "nodes:" + ",".join(attended)
     return "unknown"
+
+
+def resolve_reverie_chain_stuck_loop(
+    terminal: TerminalReason, streak: int, max_repeats: int
+) -> tuple[bool, int]:
+    """Mirrors `visual_chain.py::resolve_visual_chain_continuity`'s shape
+    (that module's Patch 4): a deterministic, testable cap on a repeated
+    same-cause failure, not a heuristic guess.
+
+    `terminal` is THIS chain's own terminal reason. `streak` is
+    `store.load_latest_no_coalition_streak(theme_key)`'s return -- how many
+    CONSECUTIVE prior chains for this theme also ended `"no_coalition"`
+    (never got a first grounded thought). `max_repeats` is
+    `settings.reverie_no_coalition_max_repeats`.
+
+    `"no_coalition"` is deliberately excluded from `run_reverie_chain`'s own
+    refractory-arming terminal set: a single hollow first attempt shouldn't
+    cost a theme a full `refractory_sec` cooldown when the very next tick
+    might ground fine. But a theme repeating that exact failure
+    `max_repeats` times running is not a fluke -- `run_reverie_once` cannot
+    produce a first thought for it right now, and refusing to arm cooldown
+    just lets it re-fire every tick indefinitely. Confirmed live 2026-09-10:
+    47 of 63 resonance violations logged for one loop directly followed a
+    `no_coalition` row, spanning 13 days / 678 chains, because nothing ever
+    broke that cycle. This gives that theme the same mechanical guarantee
+    `resolve_visual_chain_continuity` already gives the image side against
+    "still doing the same images of Roman aqueducts": the loop cannot run
+    unbounded.
+
+    Returns `(force_suppress, next_streak)`:
+      - `force_suppress`: True once `next_streak >= max_repeats` -- the
+        caller should arm the refractory cooldown even though `terminal`
+        isn't in the normal arm-list.
+      - `next_streak`: the value to persist in this chain's own
+        `no_coalition_streak`, for the next chain's decision. 0 for any
+        non-`no_coalition` terminal (a real step happened -- the "can't
+        even start" streak is broken) and after a forced suppression (the
+        cooldown itself is the reset).
+    """
+    if terminal != "no_coalition":
+        return False, 0
+    next_streak = streak + 1
+    if next_streak >= max(1, max_repeats):
+        return True, 0
+    return False, next_streak
 
 
 def update_ema(prev: float, salience: float, *, alpha: float) -> float:
@@ -209,6 +255,8 @@ async def run_reverie_chain(
     min_ema_salience: float = 0.0,
     now_fn: Callable[[], datetime] = _now,
     publish: bool = True,
+    no_coalition_max_repeats: int = 3,
+    no_coalition_streak_loader: Callable[[str], int] = load_latest_no_coalition_streak,
 ) -> ReverieChainV1 | None:
     """Run one train of thought. Returns the chain readout, or None.
 
@@ -265,8 +313,25 @@ async def run_reverie_chain(
     else:
         terminal = "max_steps"
 
+    # A theme repeatedly unable to produce even a first thought is not a
+    # fluke -- force the cooldown anyway once that streak is proven, so it
+    # can't re-fire every tick indefinitely. See
+    # resolve_reverie_chain_stuck_loop's own docstring for why "no_coalition"
+    # alone doesn't already arm the cooldown below.
+    no_coalition_streak = 0
+    force_suppress = False
+    if terminal == "no_coalition":
+        try:
+            prior_streak = no_coalition_streak_loader(theme_key)
+        except Exception as exc:
+            logger.debug("no_coalition streak lookup failed theme=%s err=%s", theme_key, exc)
+            prior_streak = 0
+        force_suppress, no_coalition_streak = resolve_reverie_chain_stuck_loop(
+            terminal, prior_streak, no_coalition_max_repeats
+        )
+
     # Habituate a resolved theme so a discharged loop can't immediately re-ignite.
-    if terminal in ("pressure_discharged", "max_steps", "low_salience"):
+    if terminal in ("pressure_discharged", "max_steps", "low_salience") or force_suppress:
         with suppress(Exception):
             refractory_store.suppress(theme_key, now + timedelta(seconds=refractory_sec))
 
@@ -277,6 +342,7 @@ async def run_reverie_chain(
         ema_salience=max(0.0, min(1.0, ema)),
         ema_summary=f"{len(thought_ids)} steps on {theme_key}; ema_salience={ema:.3f}",
         terminal_reason=terminal,
+        no_coalition_streak=no_coalition_streak,
     )
 
     if publish:
@@ -363,6 +429,7 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
                     refractory_store=refractory,
                     max_steps=settings.reverie_chain_max_steps,
                     refractory_sec=settings.reverie_refractory_sec,
+                    no_coalition_max_repeats=settings.reverie_no_coalition_max_repeats,
                 )
             except Exception:
                 logger.exception("unhandled reverie chain error")

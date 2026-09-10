@@ -4814,13 +4814,42 @@ document.addEventListener("DOMContentLoaded", () => {
     if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
-  // "{"reject":20}" is not a summary a human reads, it's a data structure --
-  // every other line in this panel writes "key=value key=value" (see
-  // "scheduler: enabled=yes proposals=yes" below). Counts objects belong in
-  // the same style, not JSON syntax.
-  function formatCounts(counts) {
+  // "{"reject":20}" is not a summary a human reads, and neither is
+  // "reject=20" -- this whole panel is meant to be read by Juniper directly,
+  // not decoded like a log line. "20 turned down" reads as a sentence.
+  // mutation_decision.py: "reject" fires for at least 5 distinct reasons
+  // (a malformed patch, missing evidence, a failed trial...) -- only some of
+  // which are about evidence, so this can't honestly claim one specific
+  // reason. "hold" is ONLY ever automated (surface busy, evidence not built
+  // yet) -- never because a human needs to look at it; "require_review" is
+  // the real human-attention action. Getting hold/require_review backwards
+  // would tell Juniper something needs her when it doesn't, or vice versa --
+  // exactly the distinction this panel exists to get right.
+  // auto_promote only ever fires for graph_consolidation_param_patch today
+  // (mutation_decision.py's auto_promote_allowlist), and PatchApplier stages
+  // it with activate_now=False -- an operator still has to promote it
+  // (mutation_apply.py's own comment). "approved automatically" next to
+  // "N waiting for your approval" a few words later would read as a
+  // contradiction; both describe the exact same not-yet-live state.
+  const DECISION_ACTION_LABELS = {
+    reject: 'turned down',
+    auto_promote: 'approved and staged (still needs your OK to go live)',
+    hold: 'paused automatically (not waiting on you)',
+    require_review: 'waiting on your review',
+    none: 'no decision yet',
+  };
+  function describeCounts(counts, labels) {
     const entries = Object.entries(counts || {});
-    return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(' ') : 'none';
+    if (!entries.length) return 'none yet';
+    return entries.map(([key, value]) => `${value} ${(labels && labels[key]) || humanize(key)}`).join(', ');
+  }
+  // Backend fields are code-style identifiers (safe_next_action:
+  // "expand_recall_shadow_corpus"), not sentences. Turning underscores into
+  // spaces doesn't make them beautiful, but it stops them reading as code.
+  // Explicit null/undefined check, not a truthy check -- a real falsy value
+  // (an empty string, say) must not silently look the same as "missing".
+  function humanize(value) {
+    return value === null || value === undefined ? 'unknown' : String(value).replace(/_/g, ' ');
   }
 
   function updateAutonomyReadinessPanel(snapshot) {
@@ -4842,8 +4871,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const recallReadiness = (recall.readiness && recall.readiness.recommendation) || 'unavailable';
     const manualCanary = recall.manual_canary || {};
     const pressureTop = Array.isArray(pressure.top_pressure_keys) && pressure.top_pressure_keys.length
-      ? pressure.top_pressure_keys.slice(0, 2).map((row) => `${row.key || '--'}:${row.count ?? '--'}`).join(', ')
-      : 'No data yet';
+      ? pressure.top_pressure_keys.slice(0, 2).map((row) => `${humanize(row.key)} (${row.count ?? 'unknown'} times)`).join(', ')
+      : 'nothing yet';
     const recentApplies = Array.isArray(recent.applies) ? recent.applies.length : 0;
     const recentRollbacks = Array.isArray(recent.rollbacks) ? recent.rollbacks.length : 0;
     // What Orion changed about itself, and whether a surface is stuck. Both of
@@ -4858,66 +4887,102 @@ document.addEventListener("DOMContentLoaded", () => {
     // when it also looks empty. The store swallows its own backend errors and
     // returns no rows, so "broken" and "calm" arrive looking identical unless
     // the error branch is checked first.
+    // A leading "⚠" is the scan cue the old ALL-CAPS wording gave for free --
+    // someone skimming several rows for a stuck one needs to spot the bad
+    // ones without reading every sentence. Plain words alone lost that.
     let selfModLine;
     if (selfMod.history_error) {
-      selfModLine = `last self-change: HISTORY UNREADABLE (${selfMod.history_error})`;
+      selfModLine = `⚠ Last time this dial changed: could not read that history (error: ${selfMod.history_error}).`;
     } else if (lastChange) {
-      selfModLine = `last self-change: ${fmtValue(lastChange.previous_value)} -> ${fmtValue(lastChange.new_value)}`
-        + ` by ${lastChange.actor || '--'} at ${lastChange.changed_at || '--'}`;
+      selfModLine = `Last time this dial changed: from ${fmtValue(lastChange.previous_value)} to ${fmtValue(lastChange.new_value)}`
+        + `, done by ${lastChange.actor || 'unknown'} at ${lastChange.changed_at || 'unknown time'}.`;
     } else if (selfMod.history_available) {
       // Distinct from unreadable: the table is readable and nothing has changed.
-      selfModLine = 'last self-change: none recorded since history started';
+      selfModLine = 'Last time this dial changed: never, since tracking started.';
     } else {
-      selfModLine = 'last self-change: unavailable';
+      selfModLine = 'Last time this dial changed: not available.';
     }
     const currentSurface = selfMod.current || {};
-    const currentLine = `routing threshold: ${fmtValue(currentSurface.value)}`
-      + ` (source ${currentSurface.source_kind || '--'}${currentSurface.degraded ? ', DEGRADED' : ''})`;
+    // selfMod.retired (set 2026-09-05): this dial's value is real,
+    // already-persisted history -- but nothing reads it to make a routing
+    // decision any more, so wording it as an active, present-tense behavior
+    // would tell Juniper it's still steering something today when it isn't.
+    const currentLine = selfMod.retired
+      ? `A number Orion used to use for picking which chat lane to answer with: ${fmtValue(currentSurface.value)}.`
+        + ` That routing logic is retired now, so this number no longer does anything.`
+      : `How sure Orion needs to be before acting instead of just replying: ${fmtValue(currentSurface.value)}`
+        + ` (from ${currentSurface.source_kind || 'an unknown source'}${currentSurface.degraded ? ', ⚠ may not be accurate right now' : ''}).`;
     const holds = Array.isArray(selfMod.surface_holds) ? selfMod.surface_holds : [];
     const fmtHeld = (sec) => {
-      if (sec === null || sec === undefined) return '--';
-      if (sec < 90) return `${Math.round(sec)}s`;
-      if (sec < 5400) return `${Math.round(sec / 60)}m`;
-      return `${(sec / 3600).toFixed(1)}h`;
+      if (sec === null || sec === undefined) return 'an unknown amount of time';
+      if (sec < 90) return `${Math.round(sec)} seconds`;
+      if (sec < 5400) return `${Math.round(sec / 60)} minutes`;
+      return `${(sec / 3600).toFixed(1)} hours`;
     };
+    // Whether ⚠ leads this row -- it has to be the very first character a
+    // skim lands on, not buried after "Anything currently stuck..." or after
+    // several other holds' worth of clauses. That's the whole point of it.
+    let holdsHaveProblem = false;
     let holdLine;
     if (selfMod.surface_holds_error) {
       // An empty list because the store is broken is not "nothing is held".
-      holdLine = `LOCKS UNREADABLE (${selfMod.surface_holds_error})`;
+      holdsHaveProblem = true;
+      holdLine = `could not check (error: ${selfMod.surface_holds_error})`;
     } else if (holds.length) {
+      holdsHaveProblem = holds.some((h) => h.window_elapsed === true);
+      // A strong visual separator matters here: multiple holds joined by
+      // plain punctuation all start looking alike (quotes, dashes, parens
+      // in every clause), and a stuck one among several healthy ones has to
+      // stay easy to pick out on a skim.
       holdLine = holds.map((h) => {
         // window_elapsed && still held == settlement is not running. That is
         // the shape of the bug this panel exists to make visible.
         const state = h.window_elapsed === true
-          ? 'OVERDUE (window elapsed, still held)'
-          : (h.window_elapsed === false ? 'within window' : 'unknown');
+          ? 'should have released by now and did not -- likely stuck'
+          : (h.window_elapsed === false ? 'still within its normal hold time' : 'unclear whether this is overdue');
         // held_for_sec is computed server-side at request time and this panel
         // does not poll, so an open dashboard freezes it. held_since does not
         // go stale, and is what to trust on a page that has been left open.
-        return `${h.target_surface || '--'} held ${fmtHeld(h.held_for_sec)}`
-          + ` since ${h.held_since || '--'} ${state}`;
+        return `"${h.target_surface || 'unknown'}" has been locked for ${fmtHeld(h.held_for_sec)}`
+          + ` (since ${h.held_since || 'an unknown time'}) -- ${state}`;
       }).join(' | ');
     } else {
-      holdLine = 'none held';
+      holdLine = 'nothing is currently locked';
     }
-    autonomyReadinessMeta.textContent = `schema ${(snapshot && snapshot.schema_version) || '--'} · generated ${(snapshot && snapshot.generated_at) || '--'}`;
+    // schema_version stays: if the backend ever ships a shape change while an
+    // old page is still open, this is the only on-screen sign the contract
+    // moved -- worth the one technical word in an otherwise plain line.
+    autonomyReadinessMeta.textContent = `As of ${(snapshot && snapshot.generated_at) || 'an unknown time'}`
+      + ` (data format ${(snapshot && snapshot.schema_version) || 'unknown'})`;
     autonomyReadinessOverview.innerHTML = '';
     [
-      `overall: ${overall.summary || 'Unavailable'}`,
-      `safe next: ${overall.safe_next_action || 'Unavailable'}`,
-      `scheduler: enabled=${scheduler.enabled ? 'yes' : 'no'} proposals=${scheduler.proposal_enabled ? 'yes' : 'no'} apply=${scheduler.apply_enabled ? 'yes' : 'no'}`,
-      `surfaces: live=${liveCount} shadow=${shadowCount} proposal-only=${proposalOnlyCount} blocked=${blockedCount}`,
-      `recall: production=${recall.production_mode || 'v1'} live_apply=${recall.live_apply_enabled ? 'true' : 'false'} readiness=${recallReadiness}`,
-      `recall manual canary: runs=${manualCanary.run_count ?? 0} review_artifacts=${manualCanary.review_artifact_count ?? 0} recommended=${manualCanary.recommended_canary_action || '--'}`,
-      `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${formatCounts(cognitive.counts_by_state)}`,
-      `graph consolidation: proposals=${(graphConsolidation.recent_proposals || []).length}`
-        + ` decisions=${formatCounts(graphConsolidation.decision_counts)}`
-        + ` staged=${(graphConsolidation.staged_profiles || []).length}`,
-      `pressure: ${pressureTop}`,
-      `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,
+      `In short: ${overall.summary || 'Unavailable'}`,
+      `Suggested next step: ${humanize(overall.safe_next_action)}`,
+      `Self-check loop: ${scheduler.enabled ? 'turned on' : 'turned off'}.`
+        + ` Can suggest changes: ${scheduler.proposal_enabled ? 'yes' : 'no'}.`
+        // apply_enabled is the master switch for acting WITHOUT asking you
+        // first -- the opposite of a safety checkpoint. Getting this
+        // backwards would tell Juniper a human step exists when it doesn't;
+        // this is the exact flag SUBSTRATE_AUTONOMY_APPLY_ENABLED and this
+        // panel's own "highest risk" line both name as the thing to watch.
+        + ` Can apply a change on its own, with no approval step: ${scheduler.apply_enabled ? 'yes' : 'no'}.`,
+      `What Orion can currently touch: ${liveCount} live right now, ${shadowCount} being tried out quietly,`
+        + ` ${proposalOnlyCount} suggestion-only, ${blockedCount} blocked entirely.`,
+      `Memory recall: using version "${recall.production_mode || 'v1'}".`
+        + ` Allowed to switch on its own: ${recall.live_apply_enabled ? 'yes' : 'no'}.`
+        + ` Readiness to try something new: ${humanize(recallReadiness)}.`,
+      `Manual recall comparisons: ${manualCanary.run_count ?? 0} run, ${manualCanary.review_artifact_count ?? 0} reviewed.`
+        + ` Recommended next step: ${humanize(manualCanary.recommended_canary_action)}.`,
+      `Self-reflection suggestions: allowed to change anything live: ${cognitive.live_apply_enabled ? 'yes' : 'no'}.`
+        + ` Current suggestions: ${describeCounts(cognitive.counts_by_state)}.`,
+      `Graph review tuning: ${(graphConsolidation.recent_proposals || []).length} recent suggestions`
+        + ` -- ${describeCounts(graphConsolidation.decision_counts, DECISION_ACTION_LABELS)}.`
+        + ` ${(graphConsolidation.staged_profiles || []).length} waiting for your approval.`,
+      `What's nagging at Orion right now: ${pressureTop}`,
+      `Recently: ${recentApplies} change(s) applied, ${recentRollbacks} undone.`,
       currentLine,
       selfModLine,
-      `surface locks: ${holdLine}`,
+      `${holdsHaveProblem ? '⚠ ' : ''}Anything currently stuck or locked: ${holdLine}.`,
     ].forEach((line) => {
       const row = document.createElement('div');
       row.className = 'autonomy-readiness-row';

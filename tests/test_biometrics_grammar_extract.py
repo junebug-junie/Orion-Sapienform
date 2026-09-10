@@ -143,6 +143,21 @@ def test_extract_sets_memory_thermal_disk_pressure_hints(catalog: NodeCatalog) -
     assert state.pressure_hints.get("disk_pressure") == pytest.approx(0.12)
 
 
+def test_extract_sets_stability_hint(catalog: NodeCatalog) -> None:
+    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    events = [
+        _atom_event(
+            trace_id=trace_id,
+            event_id="gev_stability",
+            role="stability_signal",
+            observed_at=FIXED_TS,
+            salience=0.91,
+        ),
+    ]
+    state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)
+    assert state.pressure_hints.get("stability") == pytest.approx(0.91)
+
+
 def test_extract_ignores_memory_thermal_disk_signals_with_no_salience(
     catalog: NodeCatalog,
 ) -> None:

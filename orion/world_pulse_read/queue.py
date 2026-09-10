@@ -118,9 +118,20 @@ WHERE seed_id = (
 RETURNING seed_id, kind, run_id, url, title, section, item_id, handoff_json, trace_id
 """
 
+# Short, grep-friendly reclaim reasons -- same pattern as PR #2166's Stage 2
+# fail_reason labels (e.g. `turn_error:fcc_stream_stalled`). Written into
+# `last_error`/`stage2_error` by the RECLAIM_* SQL below so a reclaim leaves
+# a real trace instead of silently resetting the row to `pending` with no
+# indication anything happened (confirmed live 2026-09-10: a Hub restart
+# reclaim reset an in-flight seed with zero trace of it). A later successful
+# claim + completion still clears the field to null via MARK_DONE_SQL /
+# mark_stage2_done, so this is not a permanent-failure marker.
+RECLAIM_REASON_PROCESS_RESTART = "interrupted:process_restart"
+RECLAIM_REASON_STALE_TIMEOUT = "interrupted:stale_timeout"
+
 RECLAIM_STALE_CLAIMED_SQL = """
 UPDATE world_pulse_read_seed
-SET status = 'pending', claimed_at = NULL
+SET status = 'pending', claimed_at = NULL, last_error = $2
 WHERE status = 'claimed'
   AND claimed_at IS NOT NULL
   AND claimed_at < now() - ($1 * interval '1 second')
@@ -128,7 +139,7 @@ WHERE status = 'claimed'
 
 RECLAIM_STALE_STAGE2_CLAIMED_SQL = """
 UPDATE world_pulse_read_seed
-SET stage2_status = 'pending', stage2_claimed_at = NULL
+SET stage2_status = 'pending', stage2_claimed_at = NULL, stage2_error = $2
 WHERE stage2_status = 'claimed'
   AND stage2_claimed_at IS NOT NULL
   AND stage2_claimed_at < now() - ($1 * interval '1 second')
@@ -235,20 +246,33 @@ def _update_rowcount(status: Any) -> int:
     return 0
 
 
-async def reclaim_stale_claimed(conn: Any, *, older_than_sec: float) -> int:
+async def reclaim_stale_claimed(
+    conn: Any, *, older_than_sec: float, reason: str
+) -> int:
     """Return stuck ``claimed`` rows to ``pending`` after Hub/FCC death.
 
     ``claimed_at`` older than ``older_than_sec`` is the live-tick guard:
     a turn still running inside ``timeout_sec`` is left alone. Pass
     ``older_than_sec=0`` on the first tick after Hub start so a restart
     immediately frees leftovers from the previous process.
+
+    ``reason`` is stamped into ``last_error`` on every row this reclaims, so
+    the caller must pass ``RECLAIM_REASON_PROCESS_RESTART`` for the
+    ``older_than_sec=0`` startup case and ``RECLAIM_REASON_STALE_TIMEOUT``
+    for the periodic in-loop case -- the caller already knows which one it
+    is (it's the same branch that picks ``older_than_sec``).
     """
-    status = await conn.execute(RECLAIM_STALE_CLAIMED_SQL, float(older_than_sec))
+    status = await conn.execute(RECLAIM_STALE_CLAIMED_SQL, float(older_than_sec), reason)
     return _update_rowcount(status)
 
 
-async def reclaim_stale_stage2_claimed(conn: Any, *, older_than_sec: float) -> int:
-    status = await conn.execute(RECLAIM_STALE_STAGE2_CLAIMED_SQL, float(older_than_sec))
+async def reclaim_stale_stage2_claimed(
+    conn: Any, *, older_than_sec: float, reason: str
+) -> int:
+    """Stage 2 sibling of :func:`reclaim_stale_claimed` -- see its docstring."""
+    status = await conn.execute(
+        RECLAIM_STALE_STAGE2_CLAIMED_SQL, float(older_than_sec), reason
+    )
     return _update_rowcount(status)
 
 

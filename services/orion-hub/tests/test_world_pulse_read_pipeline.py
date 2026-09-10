@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.world_pulse_read import (
     WorldPulseReadConceptCandidateV1,
@@ -14,8 +16,11 @@ from orion.schemas.world_pulse_read import (
 from orion.substrate.store import InMemorySubstrateGraphStore
 from orion.world_pulse_read import wallet_a as wa
 from orion.world_pulse_read.queue import enqueue_seeds
+from scripts.world_pulse_read_pipeline import (
+    JOURNAL_WRITE_CHANNEL,
+    WorldPulseReadPipeline,
+)
 from scripts.curiosity_investigation import _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX
-from scripts.world_pulse_read_pipeline import JOURNAL_WRITE_CHANNEL, WorldPulseReadPipeline
 
 SOURCE = ServiceRef(name="orion-hub", version="0.1.0", node="test")
 NOW = datetime(2026, 9, 6, 15, 0, tzinfo=timezone.utc)
@@ -564,8 +569,9 @@ def test_generate_passes_stage1_correlation_id_to_unified_turn() -> None:
         ):
             return await pipe._generate("read this", "tr-stage1-shared")
 
-    text = asyncio.run(_run())
-    assert text == '{"what_i_learned": "ok"}'
+    outcome = asyncio.run(_run())
+    assert outcome.text == '{"what_i_learned": "ok"}'
+    assert outcome.fail_reason is None
     assert captured["correlation_id"] == "tr-stage1-shared"
 
 
@@ -596,3 +602,160 @@ def test_post_read_crash_marks_seed_failed_not_claimed() -> None:
     assert conn.rows["finding:r1:x"]["status"] == "failed"
     assert conn.rows["finding:r1:x"]["last_error"] == "atlas write failed"
     assert bus.redis.store[_count_key()] == "1"
+
+
+# --- _generate: distinct failure reasons, not one collapsed "" (mirrors
+# world_pulse_read_stage2.py's #2166 fix, applied to Stage 1) ---
+
+
+def test_generate_returns_bus_unavailable_when_no_bus() -> None:
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(_FakeBus(), conn, store)
+    pipe._bus = None
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-1"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "bus_unavailable"
+
+
+def test_generate_returns_stage1_turn_timeout_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, timeout_sec=0.01)
+
+    async def _hang(**kwargs):
+        await asyncio.sleep(1.0)
+        return []
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _hang)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-2"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "stage1_turn_timeout"
+    assert outcome.fail_reason != "empty_generation"
+
+
+def test_generate_returns_turn_exception_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+
+    async def _boom(**kwargs):
+        raise RuntimeError("governor unreachable")
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _boom)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-3"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "turn_exception:governor unreachable"
+
+
+def test_generate_pulls_real_reason_off_turn_error_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same regression class this whole patch exists for on Stage 2: a
+    stalled-stream turn_error frame must surface `turn_error:fcc_stream_stalled`,
+    not a bare `""` that collapses into the same `empty_generation` as every
+    other unrelated failure."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+
+    async def _turn_error(**kwargs):
+        return [
+            {
+                "type": "turn_error",
+                "error_code": "fcc_stream_stalled",
+                "error": (
+                    "fcc stream stalled for 180.0s without completing a step "
+                    "(turn_timeout=2400.0s, steps_seen=0)"
+                ),
+            }
+        ]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn_error)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-4"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "turn_error:fcc_stream_stalled"
+
+
+def test_generate_no_final_frame_falls_back_when_nothing_useful(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+
+    async def _empty(**kwargs):
+        return []
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _empty)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-5"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "no_final_frame"
+
+
+def test_generate_blank_final_response_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+
+    async def _blank(**kwargs):
+        return [{"type": "final", "llm_response": "   "}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _blank)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-6"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "blank_final_response"
+
+
+def test_generate_looks_like_error_text_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+
+    async def _error_text(**kwargs):
+        return [{"type": "final", "llm_response": "Error: something broke"}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _error_text)
+    monkeypatch.setattr(
+        "orion.cognition.cortex_payload_extract.looks_like_error_text", lambda t: True
+    )
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-7"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == "looks_like_error_text"
+
+
+def test_stage1_read_raises_with_specific_reason_not_generic_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a stalled turn must land a specific reason in `last_error`,
+    not the same 'empty_generation' every other failure produced before this."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, timeout_sec=0.01)
+
+    async def _hang(**kwargs):
+        await asyncio.sleep(1.0)
+        return []
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _hang)
+
+    async def _run():
+        await _seed_queue(conn)
+        return await pipe.tick(force=True)
+
+    result = asyncio.run(_run())
+    assert result == "parse_failed"
+    assert conn.rows["finding:r1:x"]["last_error"] == "stage1_turn_timeout"
+    assert conn.rows["finding:r1:x"]["last_error"] != "empty_generation"

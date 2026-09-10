@@ -1,0 +1,6 @@
+{# Curiosity supervisor hop reading -- deliberately no fixed framing here. #}
+{# The caller (orion/curiosity/supervisor.py:build_reading_prompt) builds a  #}
+{# complete, self-contained prompt per run (priors, hops, JSON instructions) #}
+{# and passes it as `user_message` -- adding boilerplate here would just be  #}
+{# a second, possibly conflicting, set of instructions on top of it.        #}
+{{ user_message }}

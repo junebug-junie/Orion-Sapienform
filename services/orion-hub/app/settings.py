@@ -1527,7 +1527,21 @@ class Settings(BaseSettings):
 
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")
-    PRE_TURN_APPRAISAL_TIMEOUT_MS: int = Field(default=60000, alias="PRE_TURN_APPRAISAL_TIMEOUT_MS")
+    # 60s -> 180s (2026-09-10). This one value is reused as the timeout at
+    # every nested layer of the appraisal call -- Hub's own RPC wait
+    # (turn_orchestrator.py), cortex-exec's asyncio.wait_for around the whole
+    # paradigm run, AND the paradigm's own LLM-gateway probe call
+    # (pre_turn_appraisal.py:_llm_probe_call) -- with no slack between them
+    # for bus/envelope overhead. Live-confirmed same day: repair_pressure's
+    # probe runs on the `quick` route (REPAIR_PRESSURE_PROBE_ROUTE), which is
+    # an 8B model at n_ctx=4096 on only 4 slots (same starved-lane shape as
+    # the curiosity-supervisor JSON-truncation bug fixed in PR #2186) --
+    # under real slot contention a 60s shared budget loses the race by
+    # design, which is why Hub observed this RPC time out 5/5 times on a
+    # live-triggered curiosity turn even though cortex-exec's reply
+    # eventually arrived. Raising the one shared value gives the LLM call
+    # real headroom without touching repair_pressure's own scoring logic.
+    PRE_TURN_APPRAISAL_TIMEOUT_MS: int = Field(default=180000, alias="PRE_TURN_APPRAISAL_TIMEOUT_MS")
     CHANNEL_PRE_TURN_APPRAISAL_REQUEST: str = Field(
         default="orion:cortex:pre_turn_appraisal:request",
         alias="CHANNEL_PRE_TURN_APPRAISAL_REQUEST",

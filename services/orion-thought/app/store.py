@@ -1057,6 +1057,51 @@ def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
         return []
 
 
+def load_latest_no_coalition_streak(theme_key: str) -> int:
+    """This theme's most recent chain row's own `chain_json.
+    no_coalition_streak` -- how many CONSECUTIVE prior chains for this theme
+    also ended `"no_coalition"` (never got a first grounded thought), a
+    counter this service itself writes on every chain
+    (`chain.py::resolve_reverie_chain_stuck_loop`). Same shape as
+    `load_latest_visual_chain_continuity_state`'s `continuity_streak` read
+    (visual_chain.py Patch 4): missing/unparsable on an older pre-this-patch
+    row degrades to 0 -- "no streak recorded yet", under-count never
+    over-count, so a bad read costs one extra un-suppressed retry at worst,
+    never gets stuck skipping the forced cooldown forever.
+
+    Read-only, best-effort: 0 on any error or no rows for this theme.
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT chain_json FROM substrate_reverie_chain "
+                        "WHERE theme_key = :theme_key "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"theme_key": theme_key},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return 0
+        cj = row.get("chain_json")
+        if not isinstance(cj, dict):
+            return 0
+        try:
+            return max(0, int(cj.get("no_coalition_streak") or 0))
+        except (TypeError, ValueError):
+            return 0
+    except Exception as exc:
+        logger.debug("no_coalition streak load failed theme=%s err=%s", theme_key, exc)
+        return 0
+
+
 def persist_resonance_alert(alert) -> bool:
     """Persist one resonance alert. Never raises; idempotent on alert_id."""
     try:

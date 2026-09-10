@@ -157,6 +157,13 @@ class ThoughtSettings(BaseSettings):
     reverie_chain_enabled: bool = Field(False, alias="ORION_REVERIE_CHAIN_ENABLED")
     reverie_chain_max_steps: int = Field(4, alias="ORION_REVERIE_CHAIN_MAX_STEPS")
     reverie_refractory_sec: float = Field(900.0, alias="ORION_REVERIE_REFRACTORY_SEC")
+    # A theme that ends "no_coalition" (never got a first grounded thought)
+    # this many times in a row gets the refractory cooldown forced anyway,
+    # even though "no_coalition" alone doesn't arm it -- see
+    # chain.py::resolve_reverie_chain_stuck_loop for why.
+    reverie_no_coalition_max_repeats: int = Field(
+        3, alias="ORION_REVERIE_NO_COALITION_MAX_REPEATS"
+    )
     reverie_drift_temp: float = Field(0.7, alias="ORION_REVERIE_DRIFT_TEMP")
     channel_reverie_chain: str = Field(
         "orion:reverie:chain",

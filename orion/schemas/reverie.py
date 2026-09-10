@@ -237,6 +237,13 @@ class ReverieChainV1(BaseModel):
     ema_summary: str = ""
     terminal_reason: TerminalReason = "max_steps"
     committed_proposal_id: str | None = None
+    # How many CONSECUTIVE prior chains for this theme also ended
+    # "no_coalition" (never got a first grounded thought) -- written by
+    # chain.py::resolve_reverie_chain_stuck_loop, read back from the latest
+    # row for the theme on the next chain. Mirrors reverie-visual chain's
+    # own chain_json.continuity_streak (visual_chain.py Patch 4). 0 for any
+    # chain that isn't itself a no_coalition terminal.
+    no_coalition_streak: int = 0
 
 
 # --- Phase E: compaction request (reverie → dream queue, applied by nothing) ---

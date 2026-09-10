@@ -142,6 +142,90 @@ async def test_chain_step_none_terminates_without_raise():
     assert c.thought_ids == []
 
 
+# --- stuck-loop breaker (no_coalition doesn't arm refractory on its own,
+# but a repeated streak of it forces the cooldown anyway) ---------------------
+
+def test_stuck_loop_pure_below_threshold_does_not_force_suppress():
+    from app import chain
+    force, next_streak = chain.resolve_reverie_chain_stuck_loop("no_coalition", 1, 3)
+    assert force is False
+    assert next_streak == 2  # climbing, but not there yet
+
+
+def test_stuck_loop_pure_at_threshold_forces_suppress_and_resets():
+    from app import chain
+    force, next_streak = chain.resolve_reverie_chain_stuck_loop("no_coalition", 2, 3)
+    assert force is True
+    assert next_streak == 0  # the forced cooldown is itself the reset
+
+
+def test_stuck_loop_pure_non_no_coalition_terminal_resets_streak():
+    from app import chain
+    # A real step happened -- whatever streak preceded it is broken.
+    force, next_streak = chain.resolve_reverie_chain_stuck_loop("pressure_discharged", 7, 3)
+    assert force is False
+    assert next_streak == 0
+
+
+@pytest.mark.asyncio
+async def test_chain_below_streak_threshold_does_not_force_refractory():
+    from app import chain
+
+    async def step_none(chain_id, index):
+        return None
+
+    store = chain.InMemoryRefractoryStore()
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_none, refractory_store=store,
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        no_coalition_max_repeats=3, no_coalition_streak_loader=lambda theme_key: 1,
+    )
+    assert c.terminal_reason == "no_coalition"
+    assert c.no_coalition_streak == 2  # 1 (prior) + 1 (this chain)
+    assert store.is_suppressed("ol-1", NOW) is False  # not there yet -- can retry next tick
+
+
+@pytest.mark.asyncio
+async def test_chain_at_streak_threshold_forces_refractory():
+    from app import chain
+
+    async def step_none(chain_id, index):
+        return None
+
+    store = chain.InMemoryRefractoryStore()
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_none, refractory_store=store,
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        refractory_sec=900, no_coalition_max_repeats=3, no_coalition_streak_loader=lambda theme_key: 2,
+    )
+    assert c.terminal_reason == "no_coalition"
+    assert c.no_coalition_streak == 0  # forced cooldown is the reset
+    # The loop that was resonating every tick is now actually suppressed.
+    assert store.is_suppressed("ol-1", NOW) is True
+    assert store.is_suppressed("ol-1", NOW + timedelta(seconds=899)) is True
+    assert store.is_suppressed("ol-1", NOW + timedelta(seconds=901)) is False
+
+
+@pytest.mark.asyncio
+async def test_chain_streak_loader_failure_degrades_to_zero_not_raise():
+    from app import chain
+
+    async def step_none(chain_id, index):
+        return None
+
+    def boom(theme_key):
+        raise RuntimeError("db down")
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_none, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        no_coalition_streak_loader=boom,
+    )
+    assert c is not None  # never raises
+    assert c.terminal_reason == "no_coalition"
+    assert c.no_coalition_streak == 1  # degraded prior streak of 0, plus this chain
+
+
 @pytest.mark.asyncio
 async def test_chain_never_raises_on_step_error():
     from app import chain

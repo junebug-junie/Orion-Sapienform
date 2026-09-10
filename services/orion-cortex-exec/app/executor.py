@@ -94,6 +94,7 @@ from .chat_stance import (
     fallback_chat_stance_brief,
     identity_kernel_with_fallbacks,
     parse_chat_stance_brief_with_debug,
+    publish_chat_stance_classification,
     suppress_chat_general_speech_identity_priming,
     apply_self_definition_to_ctx,
     strip_self_definition_lines,
@@ -2902,7 +2903,7 @@ def _forward_llm_uncertainty_metadata(payload: Any, ctx: Dict[str, Any]) -> None
             ctx["llm_serving_node"] = node
 
 
-def _attempt_mind_handoff_chat_stance_shortcut(
+async def _attempt_mind_handoff_chat_stance_shortcut(
     *,
     step: ExecutionStep,
     service: str,
@@ -2937,6 +2938,11 @@ def _attempt_mind_handoff_chat_stance_shortcut(
                 if parsed_brief is not None:
                     synthesized_brief = parsed_brief.model_dump(mode="json")
                     ctx["chat_stance_brief"] = synthesized_brief
+                    # Same observability write as the LLM-synthesis path below --
+                    # without it, every Mind-handoff turn (this shortcut's whole
+                    # purpose) would be invisible to the "what did stance decide"
+                    # query this table exists to answer.
+                    await publish_chat_stance_classification(ctx, parsed_brief)
                     ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
                         ctx=ctx,
                         synthesized_brief=synthesized_brief,
@@ -3221,7 +3227,7 @@ async def call_step_services(
 
         draft_ctx_overflow: str | None = None
 
-        shortcut = _attempt_mind_handoff_chat_stance_shortcut(
+        shortcut = await _attempt_mind_handoff_chat_stance_shortcut(
             step=step,
             service=service,
             ctx=ctx,
@@ -4475,6 +4481,7 @@ async def call_step_services(
                         semantic_fallback,
                     )
                     ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    await publish_chat_stance_classification(ctx, parsed_brief)
                     _session_id = str(ctx.get("session_id") or "")
                     if _session_id:
                         _prior_stance_cache_set(_session_id, {

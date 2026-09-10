@@ -868,6 +868,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("orion_biometrics_cluster measurements_by_node migration warning: %s", e)
 
+    # 2026-09-10 (docs/superpowers/specs/2026-09-10-self-report-tool-discipline-design.md,
+    # "Observability, prerequisite to trusting either patch"). Same
+    # UndefinedColumn hazard as every block above: ChatStanceBeliefLogSQL now
+    # declares interaction_regime/task_mode, so the moment this deploys,
+    # _write_row's generic key-to-column filter puts them in every
+    # chat_stance_belief_log INSERT. Against a live Postgres without the
+    # columns that is UndefinedColumn -> ProgrammingError, which the handlers
+    # here do not catch -- ALL chat_stance_belief_log persistence (not just
+    # the new fields) would stop while the bus publish kept looking healthy.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS chat_stance_belief_log "
+                "ADD COLUMN IF NOT EXISTS interaction_regime TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS chat_stance_belief_log "
+                "ADD COLUMN IF NOT EXISTS task_mode TEXT;"
+            )
+    except Exception as e:
+        logger.warning("chat_stance_belief_log interaction_regime/task_mode migration warning: %s", e)
+
     # drive_audits retention startup job removed 2026-08-13 (same patch that
     # fully untangled DriveAuditSQL's write path) -- the table and its boot
     # DDL are both gone, so a DELETE against it was dead weight even guarded

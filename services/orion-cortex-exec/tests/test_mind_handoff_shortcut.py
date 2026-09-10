@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -44,9 +45,20 @@ def _step() -> ExecutionStep:
     )
 
 
-def test_shortcut_returns_result_when_orch_authorized_meaningful_handoff() -> None:
+def test_shortcut_returns_result_when_orch_authorized_meaningful_handoff(monkeypatch) -> None:
+    """Also covers the 2026-09-10 observability write (design doc:
+    self-report-tool-discipline-design.md): a Mind-handoff turn is exactly
+    the path publish_chat_stance_classification would otherwise never see,
+    since it returns before the LLM-synthesis call site that also fires it."""
     _exec_prep()
-    from app.executor import _attempt_mind_handoff_chat_stance_shortcut
+    from app import executor
+
+    publish_calls: list[tuple] = []
+
+    async def _spy(ctx, brief):
+        publish_calls.append((ctx, brief))
+
+    monkeypatch.setattr(executor, "publish_chat_stance_classification", _spy)
 
     ctx = {
         "metadata": {
@@ -62,21 +74,26 @@ def test_shortcut_returns_result_when_orch_authorized_meaningful_handoff() -> No
     merged: dict = {}
     logs: list[str] = []
 
-    out = _attempt_mind_handoff_chat_stance_shortcut(
-        step=_step(),
-        service="LLMGatewayService",
-        ctx=ctx,
-        merged_result=merged,
-        logs=logs,
-        correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        spark_vector=None,
-        t0=0.0,
-        record_scoped_step=lambda *args, **kwargs: None,
-        node_name="test-node",
+    out = asyncio.run(
+        executor._attempt_mind_handoff_chat_stance_shortcut(
+            step=_step(),
+            service="LLMGatewayService",
+            ctx=ctx,
+            merged_result=merged,
+            logs=logs,
+            correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            spark_vector=None,
+            t0=0.0,
+            record_scoped_step=lambda *args, **kwargs: None,
+            node_name="test-node",
+        )
     )
     assert out is not None
     assert out.status == "success"
     assert merged.get("ChatStanceBrief")
+    assert len(publish_calls) == 1
+    assert publish_calls[0][0] is ctx
+    assert publish_calls[0][1].conversation_frame == "technical"
 
 
 def test_shortcut_returns_none_when_orch_did_not_authorize_skip() -> None:
@@ -94,17 +111,19 @@ def test_shortcut_returns_none_when_orch_did_not_authorize_skip() -> None:
         }
     }
     merged = {}
-    out = _attempt_mind_handoff_chat_stance_shortcut(
-        step=_step(),
-        service="LLMGatewayService",
-        ctx=ctx,
-        merged_result=merged,
-        logs=[],
-        correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        spark_vector=None,
-        t0=0.0,
-        record_scoped_step=lambda *a, **k: None,
-        node_name="n",
+    out = asyncio.run(
+        _attempt_mind_handoff_chat_stance_shortcut(
+            step=_step(),
+            service="LLMGatewayService",
+            ctx=ctx,
+            merged_result=merged,
+            logs=[],
+            correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            spark_vector=None,
+            t0=0.0,
+            record_scoped_step=lambda *a, **k: None,
+            node_name="n",
+        )
     )
     assert out is None
     assert merged == {}
@@ -126,17 +145,19 @@ def test_shortcut_returns_none_when_skip_flag_without_authorization() -> None:
         }
     }
     merged = {}
-    out = _attempt_mind_handoff_chat_stance_shortcut(
-        step=_step(),
-        service="LLMGatewayService",
-        ctx=ctx,
-        merged_result=merged,
-        logs=[],
-        correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        spark_vector=None,
-        t0=0.0,
-        record_scoped_step=lambda *a, **k: None,
-        node_name="n",
+    out = asyncio.run(
+        _attempt_mind_handoff_chat_stance_shortcut(
+            step=_step(),
+            service="LLMGatewayService",
+            ctx=ctx,
+            merged_result=merged,
+            logs=[],
+            correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            spark_vector=None,
+            t0=0.0,
+            record_scoped_step=lambda *a, **k: None,
+            node_name="n",
+        )
     )
     assert out is None
     assert merged == {}
@@ -155,16 +176,18 @@ def test_shortcut_returns_none_when_payload_invalid() -> None:
         }
     }
     merged = {}
-    out = _attempt_mind_handoff_chat_stance_shortcut(
-        step=_step(),
-        service="LLMGatewayService",
-        ctx=ctx,
-        merged_result=merged,
-        logs=[],
-        correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        spark_vector=None,
-        t0=0.0,
-        record_scoped_step=lambda *a, **k: None,
-        node_name="n",
+    out = asyncio.run(
+        _attempt_mind_handoff_chat_stance_shortcut(
+            step=_step(),
+            service="LLMGatewayService",
+            ctx=ctx,
+            merged_result=merged,
+            logs=[],
+            correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            spark_vector=None,
+            t0=0.0,
+            record_scoped_step=lambda *a, **k: None,
+            node_name="n",
+        )
     )
     assert out is None

@@ -7025,8 +7025,8 @@
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/app/chat_stance.py": {
-    "mtime": 1789064218.7297757,
-    "ast_hash": "1e9c4b4de80df02efea2471641c6b66f",
+    "mtime": 1789073231.4914184,
+    "ast_hash": "bca1004581df51bda73fc1ba00b2bd1c",
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/app/chat_stance_shared_spine.py": {
@@ -7075,8 +7075,8 @@
     "semantic_hash": "2fbb1a68966679cf73d941a17659dbc0"
   },
   "services/orion-cortex-exec/app/executor.py": {
-    "mtime": 1789064218.7317758,
-    "ast_hash": "d52e312088c8bc5be0f973e9ee7fd7e4",
+    "mtime": 1789073231.4934182,
+    "ast_hash": "0f2568902d725edbd308740e32051ef8",
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/app/grammar_emit.py": {
@@ -7520,9 +7520,9 @@
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_mind_handoff_shortcut.py": {
-    "mtime": 1789064218.7417755,
-    "ast_hash": "19cba53f5798a3fadfdfe3f86299bb24",
-    "semantic_hash": "19cba53f5798a3fadfdfe3f86299bb24"
+    "mtime": 1789073231.4934182,
+    "ast_hash": "0bc69fb3b7faca80446b44cc719ee7b1",
+    "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_notify_chat_message_body_fallback.py": {
     "mtime": 1789064218.7417755,
@@ -12010,8 +12010,8 @@
     "semantic_hash": "d296838713f5645c45dec9ea71495931"
   },
   "services/orion-sql-writer/app/main.py": {
-    "mtime": 1789064219.086772,
-    "ast_hash": "b3b71b6b757c378c3e4ef8d20a29ab8d",
+    "mtime": 1789073231.4934182,
+    "ast_hash": "4ca86b614cd359ed970043a0a3aa1439",
     "semantic_hash": ""
   },
   "services/orion-sql-writer/app/schemas/__init__.py": {
@@ -16105,8 +16105,8 @@
     "semantic_hash": "d0ce14a9aa866b3091df64b061becbe4"
   },
   "orion/cognition/verbs/stance_react.yaml": {
-    "mtime": 1789064218.591777,
-    "ast_hash": "9eedb183f41b9fcc4f0f4d4b931f940a",
+    "mtime": 1789073229.7474408,
+    "ast_hash": "5499798e2cd351b641428e73b57c6c45",
     "semantic_hash": ""
   },
   "orion/cognition/verbs/story_weave.yaml": {
@@ -18435,8 +18435,8 @@
     "semantic_hash": ""
   },
   "orion/schemas/chat_stance_belief.py": {
-    "mtime": 1789064218.6277769,
-    "ast_hash": "6e142bca0caf02a5e293ea1195675516",
+    "mtime": 1789073231.4904182,
+    "ast_hash": "4140ecb3722cd273503930571091e7f9",
     "semantic_hash": ""
   },
   "orion/schemas/codebase_delta.py": {
@@ -18815,8 +18815,8 @@
     "semantic_hash": ""
   },
   "orion/substrate/chat_stance_belief_bus.py": {
-    "mtime": 1789064218.6507766,
-    "ast_hash": "f7eb49dcb64cc85eb5aad0e5d6fb5db2",
+    "mtime": 1789073231.4904182,
+    "ast_hash": "cf578ce537e2f137bd36be208ea5bc25",
     "semantic_hash": ""
   },
   "orion/substrate/falkor_codec.py": {
@@ -18910,8 +18910,8 @@
     "semantic_hash": ""
   },
   "orion/substrate/tests/test_chat_stance_belief_bus.py": {
-    "mtime": 1789064218.6627765,
-    "ast_hash": "aa429c6d8a0760e4eea93b1345fed4ad",
+    "mtime": 1789073231.4904182,
+    "ast_hash": "a0dc95f211f577f06df2ffe8769cc14e",
     "semantic_hash": ""
   },
   "orion/substrate/tests/test_control_surface_history.py": {
@@ -20500,8 +20500,8 @@
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_chat_stance_belief_publish.py": {
-    "mtime": 1789064218.7377756,
-    "ast_hash": "586501b65adcabdb12d69e26d46d515a",
+    "mtime": 1789073231.4934182,
+    "ast_hash": "3f63fd2f3ae42c649b4c0f39684d96bf",
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_chat_stance_context_provenance_hazard.py": {
@@ -22900,8 +22900,8 @@
     "semantic_hash": ""
   },
   "services/orion-sql-writer/tests/test_chat_stance_belief_log_sql_shape.py": {
-    "mtime": 1789064219.091772,
-    "ast_hash": "6e4e6e771c5aa7d42303b190ddadc5d2",
+    "mtime": 1789073231.4944181,
+    "ast_hash": "093ac20d10afe2e7826054626d185dc9",
     "semantic_hash": ""
   },
   "services/orion-sql-writer/tests/test_dev_economics_ledger_sql_shape.py": {
@@ -30992,6 +30992,11 @@
   "docs/superpowers/pr-reports/2026-09-10-reverie-resonance-alert-cooldown-pr.md": {
     "mtime": 1789064217.9717836,
     "ast_hash": "6b8e4af5652ecf8efac8d37e5553dc0f",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/specs/2026-09-10-fcc-motor-step-trace-design.md": {
+    "mtime": 1789073229.2524474,
+    "ast_hash": "99549800d47ceaa1554d467635de2f18",
     "semantic_hash": ""
   }
 }

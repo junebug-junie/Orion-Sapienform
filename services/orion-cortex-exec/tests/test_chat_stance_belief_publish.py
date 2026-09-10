@@ -100,6 +100,73 @@ def test_publish_chat_stance_belief_never_raises_when_publish_fails(monkeypatch)
     asyncio.run(chat_stance._publish_chat_stance_belief({}, beliefs))
 
 
+class _FakeBrief:
+    def __init__(self, *, interaction_regime=None, task_mode="direct_response"):
+        self.interaction_regime = interaction_regime
+        self.task_mode = task_mode
+
+
+def test_publish_chat_stance_classification_calls_publish_with_regime_and_mode(monkeypatch):
+    """2026-09-10 (design doc: self-report-tool-discipline-design.md) --
+    the whole point of this function: interaction_regime/task_mode reach
+    publish_chat_stance_belief_log_sync with the other belief-set fields
+    left None, since this call site doesn't have a beliefs object."""
+    calls = []
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(chat_stance, "publish_chat_stance_belief_log_sync", spy)
+
+    ctx = {"correlation_id": "corr-5", "session_id": "sess-5"}
+    brief = _FakeBrief(interaction_regime="relational", task_mode="reflective_dialogue")
+
+    asyncio.run(chat_stance.publish_chat_stance_classification(ctx, brief))
+
+    assert len(calls) == 1
+    kwargs = calls[0]
+    assert kwargs["interaction_regime"] == "relational"
+    assert kwargs["task_mode"] == "reflective_dialogue"
+    assert kwargs["anchors"] is None
+    assert kwargs["degraded_producers"] is None
+    assert kwargs["lineage"] is None
+    assert kwargs["ctx"] is ctx
+
+
+def test_publish_chat_stance_classification_never_raises_when_publish_fails(monkeypatch):
+    def broken(**kwargs):
+        raise RuntimeError("simulated redis failure")
+
+    monkeypatch.setattr(chat_stance, "publish_chat_stance_belief_log_sync", broken)
+
+    # Must not raise.
+    asyncio.run(chat_stance.publish_chat_stance_classification({}, _FakeBrief()))
+
+
+def test_publish_chat_stance_classification_offloads_to_a_thread(monkeypatch):
+    seen_thread_ids = []
+    main_thread_id = None
+
+    def spy(**kwargs):
+        import threading
+
+        seen_thread_ids.append(threading.get_ident())
+
+    monkeypatch.setattr(chat_stance, "publish_chat_stance_belief_log_sync", spy)
+
+    async def run():
+        import threading
+
+        nonlocal main_thread_id
+        main_thread_id = threading.get_ident()
+        await chat_stance.publish_chat_stance_classification({}, _FakeBrief())
+
+    asyncio.run(run())
+
+    assert len(seen_thread_ids) == 1
+    assert seen_thread_ids[0] != main_thread_id
+
+
 def test_publish_chat_stance_belief_offloads_to_a_thread(monkeypatch):
     """The whole point of the review fix: this must not call
     publish_chat_stance_belief_log_sync directly on the event loop."""

@@ -16,6 +16,14 @@ class ChatStanceBeliefLogSQL(Base):
     anchor_summary = Column(Text, nullable=True)
     degraded_producers = Column(JSONB, nullable=True)
     lineage_summary = Column(Text, nullable=True)
+    # Added 2026-09-10 -- see orion/schemas/chat_stance_belief.py's docstring
+    # for why these are written from a separate call site/row than the
+    # fields above. Boot-time ALTER TABLE lives in app/main.py's lifespan
+    # (same ADD COLUMN IF NOT EXISTS convention as every other table here) --
+    # this table already exists live, so create_all() alone will not add
+    # these columns to it.
+    interaction_regime = Column(String, nullable=True)
+    task_mode = Column(String, nullable=True)
 
     __table_args__ = (
         Index("idx_chat_stance_belief_log_created_at", "created_at"),

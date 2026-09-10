@@ -110,6 +110,71 @@ def test_publish_real_content_reaches_the_client(monkeypatch):
     assert payload["session_id"] == "sess-1"
 
 
+class TestNormalizeStanceField:
+    """2026-09-10 (design doc: self-report-tool-discipline-design.md):
+    interaction_regime/task_mode are free-text here (not a Literal, unlike
+    shift_kind), so this just normalizes casing/emptiness."""
+
+    def test_none_and_empty_stay_none(self):
+        assert bus_module._normalize_stance_field(None) is None
+        assert bus_module._normalize_stance_field("") is None
+        assert bus_module._normalize_stance_field("   ") is None
+
+    def test_lowercases_and_strips(self):
+        assert bus_module._normalize_stance_field(" Relational ") == "relational"
+
+    def test_already_lowercase_passes_through(self):
+        assert bus_module._normalize_stance_field("identity_dialogue") == "identity_dialogue"
+
+
+def test_publish_carries_stance_classification_when_given(monkeypatch):
+    """The classification fields reach the payload untouched by the
+    anchors/degraded_producers/lineage machinery -- publish_chat_stance_
+    classification() in chat_stance.py calls this with those three as None
+    and only the classification fields set."""
+    monkeypatch.setenv("ORION_BUS_ENABLED", "true")
+    fake_client = _FakeRedisClient()
+    monkeypatch.setattr(bus_module, "_sync_redis", lambda: fake_client)
+
+    bus_module.publish_chat_stance_belief_log_sync(
+        anchors=None,
+        degraded_producers=None,
+        lineage=None,
+        ctx={"correlation_id": "corr-3", "session_id": "sess-3"},
+        interaction_regime="Relational",
+        task_mode="Identity_Dialogue",
+    )
+
+    assert len(fake_client.published) == 1
+    _, data = fake_client.published[0]
+    payload = json.loads(data.decode("utf-8"))["payload"]
+    assert payload["interaction_regime"] == "relational"
+    assert payload["task_mode"] == "identity_dialogue"
+    assert payload["anchor_summary"] is None
+    assert payload["degraded_producers"] == []
+
+
+def test_publish_stance_classification_fields_default_to_none(monkeypatch):
+    """A caller that doesn't pass interaction_regime/task_mode (the existing
+    _publish_chat_stance_belief call site) must not accidentally start
+    writing empty-string values into a previously-None column."""
+    monkeypatch.setenv("ORION_BUS_ENABLED", "true")
+    fake_client = _FakeRedisClient()
+    monkeypatch.setattr(bus_module, "_sync_redis", lambda: fake_client)
+
+    bus_module.publish_chat_stance_belief_log_sync(
+        anchors=None,
+        degraded_producers=None,
+        lineage=None,
+        ctx={"correlation_id": "corr-4"},
+    )
+
+    _, data = fake_client.published[0]
+    payload = json.loads(data.decode("utf-8"))["payload"]
+    assert payload["interaction_regime"] is None
+    assert payload["task_mode"] is None
+
+
 def test_sync_redis_does_not_retry_connect_within_cooldown_after_failure(monkeypatch):
     """Review finding (2026-09-05): this module is called on essentially
     every real chat turn now, unlike its precedent (tier_outcomes_bus.py),

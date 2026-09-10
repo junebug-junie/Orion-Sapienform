@@ -101,3 +101,31 @@ def test_chat_stance_belief_log_v1_optional_fields_construct_row_without_raising
 
     assert row.shift_kind is None
     assert row.degraded_producers == []
+
+
+def test_chat_stance_belief_log_v1_carries_stance_classification() -> None:
+    """2026-09-10 (design doc: self-report-tool-discipline-design.md): the
+    stance decision (interaction_regime/task_mode) is written from a
+    separate row/call site than the fields above (see the schema module's
+    docstring) -- confirm those two also map onto real columns and survive
+    an INSERT-shaped construction."""
+    payload = _make_payload(
+        correlation_id="corr-2",
+        session_id="sess-2",
+        shift_kind=None,
+        anchor_summary=None,
+        degraded_producers=[],
+        lineage_summary=None,
+        interaction_regime="relational",
+        task_mode="reflective_dialogue",
+    )
+    data = payload.model_dump(mode="json")
+
+    mapper = inspect(ChatStanceBeliefLogSQL)
+    valid_keys = {attr.key for attr in mapper.attrs}
+    assert "interaction_regime" in valid_keys
+    assert "task_mode" in valid_keys
+
+    row = ChatStanceBeliefLogSQL(**data)
+    assert row.interaction_regime == "relational"
+    assert row.task_mode == "reflective_dialogue"

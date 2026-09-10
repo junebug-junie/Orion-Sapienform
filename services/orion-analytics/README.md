@@ -79,8 +79,10 @@ role. The idempotent bootstrap script creates two separate principals:
 Role creation changes database metadata, so review and run it as the operator:
 
 ```bash
-export ORION_ANALYTICS_DBT_PASSWORD='generate-a-long-random-password'
-export ORION_ANALYTICS_READER_PASSWORD='generate-another-long-random-password'
+python3 services/orion-analytics/scripts/init_local_env.py
+set -a
+. services/orion-analytics/.env
+set +a
 
 docker exec -i orion-athena-sql-db \
   psql -U postgres -d "$ORION_ANALYTICS_DATABASE" \
@@ -89,14 +91,19 @@ docker exec -i orion-athena-sql-db \
   < services/orion-analytics/scripts/bootstrap_analytics_roles.sql
 ```
 
-Copy `.env_example` to the ignored `.env`, set those two passwords, and set
-fresh values for `LIGHTDASH_METADATA_PASSWORD`, `LIGHTDASH_SECRET`, and
-`LIGHTDASH_S3_SECRET_KEY`. The metadata password and S3 secret belong only to
-Lightdash's private PostgreSQL and MinIO containers. Lightdash 2.184.6 requires
-S3-compatible storage; the compose stack pins MinIO, creates the bucket
-idempotently, and exposes its API on localhost port 8266 for browser-signed
-downloads. Lightdash and dbt anonymous analytics are disabled. Do not expose
-either backing service to a public interface.
+The initializer creates the ignored `.env` from `.env_example` when needed and
+fills all five required password/secret blanks with independent random values.
+It does not replace existing nonblank values, does not print generated values,
+is safe to run again, and sets the file mode to `0600`. The two generated
+analytics role passwords still need to be applied with the reviewed role
+bootstrap above before dbt or Lightdash connects to Orion's database.
+
+The metadata password and S3 secret belong only to Lightdash's private
+PostgreSQL and MinIO containers. Lightdash 2.184.6 requires S3-compatible
+storage; the compose stack pins MinIO, creates the bucket idempotently, and
+exposes its API on localhost port 8266 for browser-signed downloads. Lightdash
+and dbt anonymous analytics are disabled. Do not expose either backing service
+to a public interface.
 
 `ORION_HOST_REPO_ROOT` anchors Compose bind mounts to the durable primary
 checkout. For disposable local worktree validation only, point it at that

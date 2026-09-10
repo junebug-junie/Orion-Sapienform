@@ -30365,8 +30365,8 @@
     "semantic_hash": ""
   },
   "services/orion-hub/tests/test_world_pulse_read_pipeline.py": {
-    "mtime": 1789015047.2216969,
-    "ast_hash": "b76f6b2197ebdb90ef1bd08329966712",
+    "mtime": 1789015485.428523,
+    "ast_hash": "a5867094ec0ffea65fdc8f2e62c68a2a",
     "semantic_hash": ""
   },
   "services/orion-hub/tests/test_world_pulse_read_queue.py": {
@@ -30882,6 +30882,91 @@
   "orion/cognition/verbs/curiosity_hop_reading.yaml": {
     "mtime": 1789015136.6770797,
     "ast_hash": "595ec7dac708a28d5d1474b288589493",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/evals/reconcile_reverie_analytics.sql": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "f4884985c5baa45601f5bc96975455a7",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/scripts/bootstrap_analytics_roles.sql": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "f2fe053d0623f31c7f0b6845a09fa5ad",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/tests/assert_fact_dimension_joins_do_not_fan_out.sql": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "3e91d0df58b8bf6332d2c4b739ca56b7",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/tests/assert_reverie_date_spine_has_no_gaps.sql": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "083d0d3427699afc8cfc4323c062e815",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/tests/assert_source_fact_row_count.sql": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "443cca5ab306bfe5ededebc1a5e5d591",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/tests/test_analytics_contract.py": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "f637c05ea82f959a409585e5f419cb31",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-09-10-reverie-analytics-dbt-lightdash.md": {
+    "mtime": 1789056995.304519,
+    "ast_hash": "c4bc080c194072ff9c739978c891b871",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/pr-reports/2026-09-10-reverie-analytics-dbt-lightdash-pr.md": {
+    "mtime": 1789056995.304519,
+    "ast_hash": "276741723ff6d1f2f3cd91573b27f374",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/README.md": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "b4f5f984fd06f94ed6723026dd8a46f7",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/dbt_project.yml": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "f8cfb635068a32d9f0810a5e89ec62c9",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/docker-compose.yml": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "91a2ca71a9d18ed52757c0f86368b51e",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/lightdash/charts/reverie-activity-by-day.yml": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "d31450d00111b3c969e221c352fd5e70",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/lightdash/charts/reverie-chains-by-terminal-reason.yml": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "69536dac66294b3d3e130ae090c2c05f",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/lightdash/charts/reverie-missing-days.yml": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "22796800a41ad6b74b473148a1c6574d",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/lightdash/dashboards/reverie-activity.yml": {
+    "mtime": 1789056996.5735095,
+    "ast_hash": "62d224c70c317cb4385f54ddc385d46a",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/packages.yml": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "2cecd7e3ed2b29ad3b7cd267bcbc5424",
+    "semantic_hash": ""
+  },
+  "services/orion-analytics/profiles.yml": {
+    "mtime": 1789056996.5745094,
+    "ast_hash": "520821a3b9ed1b2fd79a81fcbb8f7624",
     "semantic_hash": ""
   }
 }

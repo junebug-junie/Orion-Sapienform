@@ -1,0 +1,38 @@
+version: 2
+
+models:
+  - name: stg_reverie_chains
+    description: >-
+      Grain: one row per persisted reverie chain. Primary key:
+      reverie_chain_id. Foreign keys: none at staging. Event time: event_at.
+      Writer/owner: orion-thought via persist_reverie_chain. Known limitations:
+      only persisted attempts exist; suppressed refractory attempts and crashes
+      before insert are invisible. Narrative-bearing source fields are omitted.
+    meta:
+      hidden: true
+    columns:
+      - name: reverie_chain_id
+        description: Stable source chain identifier.
+        tests:
+          - not_null
+          - unique
+      - name: event_at
+        description: >-
+          UTC record-creation timestamp assigned after the chain loop terminates
+          and immediately before persistence.
+        tests:
+          - not_null
+      - name: event_date
+        description: UTC calendar date derived from event_at.
+        tests:
+          - not_null
+      - name: outcome_key
+        description: Terminal reason key copied without reinterpretation.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience]
+      - name: stored_at
+        description: PostgreSQL insertion timestamp.
+        tests:
+          - not_null

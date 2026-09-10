@@ -1,0 +1,36 @@
+name: Reverie activity by day
+description: Distinct persisted reverie chains by UTC event day.
+tableName: fct_reverie_chains
+metricQuery:
+  exploreName: fct_reverie_chains
+  dimensions:
+    - fct_reverie_chains_event_at_day
+  metrics:
+    - fct_reverie_chains_reverie_chain_count
+  filters: {}
+  sorts:
+    - fieldId: fct_reverie_chains_event_at_day
+      descending: false
+  limit: 500
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_reverie_chains_event_at_day
+      yField:
+        - fct_reverie_chains_reverie_chain_count
+    eChartsConfig:
+      series:
+        - type: line
+          encode:
+            xRef:
+              field: fct_reverie_chains_event_at_day
+            yRef:
+              field: fct_reverie_chains_reverie_chain_count
+          isFilteredOut: false
+slug: reverie-activity-by-day
+spaceSlug: orion-analytics
+version: 1

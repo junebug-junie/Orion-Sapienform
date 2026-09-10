@@ -1,0 +1,79 @@
+name: Reverie activity
+description: Persisted reverie-chain volume, code-defined stop reasons, and dates with no rows.
+slug: reverie-activity
+spaceSlug: orion-analytics
+version: 1
+tiles:
+  - x: 0
+    "y": 0
+    h: 4
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: What this dashboard counts
+      content: |-
+        One row is one reverie chain that reached PostgreSQL persistence.
+
+        A missing row is not proof that the service was down. Terminal reasons
+        are shown as recorded; they are not relabeled as success or failure.
+        Theme keys, thought text, summaries, and other narrative context are
+        deliberately excluded.
+    tileSlug: reverie-dashboard-scope
+  - x: 0
+    "y": 4
+    h: 8
+    w: 24
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: reverie-activity-by-day
+    tileSlug: reverie-activity-by-day
+  - x: 24
+    "y": 4
+    h: 8
+    w: 12
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: reverie-chains-by-terminal-reason
+    tileSlug: reverie-chains-by-terminal-reason
+  - x: 0
+    "y": 12
+    h: 6
+    w: 36
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: reverie-missing-days
+    tileSlug: reverie-missing-days
+filters:
+  metrics: []
+  dimensions:
+    - target:
+        fieldId: fct_reverie_chains_event_at_day
+        fieldName: event_at_day
+        tableName: fct_reverie_chains
+      values:
+        - 30
+      disabled: false
+      operator: inThePast
+      settings:
+        completed: false
+        unitOfTime: days
+      tileTargets:
+        reverie-missing-days:
+          fieldId: dim_reverie_dates_date_key_day
+          tableName: dim_reverie_dates
+  tableCalculations: []
+tabs: []
+config:
+  isDateZoomDisabled: false
+  dateZoomGranularities: [Day, Week, Month]
+  defaultDateZoomGranularity: Day

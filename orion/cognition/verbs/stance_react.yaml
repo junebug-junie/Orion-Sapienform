@@ -10,19 +10,33 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-# REVERTED 2026-09-05, end of session ("move everything back to how it
-# was"): was briefly 240000 (see PR #2108/#2112) to accommodate
-# Qwen3.8-Flash-Next and Qwen3.8-27B-BF16, both of which live-confirmed
-# needing >115s for a real stance_react completion at reasoning_effort
-# xhigh. Reverted to 120000 alongside reverting the agent lane back to
-# qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex, which this value was
-# already proven fine against before tonight's testing. If a future model
-# swap on this lane produces the same "stance_react exec result missing
-# thought payload" / gateway TIMEOUT at route=chat, re-raise this first
-# before assuming something else broke -- see PR #2108 for the full
+# RE-RAISED 2026-09-10, per this file's own note: exactly the predicted
+# recurrence. Live-caught mid curiosity-investigation-loop debugging: one
+# real curiosity run needed 4 attempts to get a usable stance_react result,
+# 3 of the 4 timing out against this file's then-120000 (120s) ceiling --
+# `orion-thought` logged "stance_react error ... err=stance_react exec
+# result missing thought payload" at 191s, 192s and 202s (all comfortably
+# inside orion-thought's own 360s STANCE_REACT_TIMEOUT_SEC RPC wait, so the
+# reply DID arrive -- it just arrived already cut off, because cortex-exec's
+# `executor.py` enforces this verb's `timeout_ms` as the actual LLM-call
+# cutoff at `step_timeout_sec = (step.timeout_ms or 60000) / 1000.0`,
+# independent of the caller's own patience). This is the mechanism behind
+# the curiosity-supervisor design doc's long-unexplained "~3 failures per
+# run" pattern -- each failed attempt re-runs the ENTIRE curiosity turn from
+# scratch (services/orion-durable-runs), not just this one step.
+#
+# 2026-09-05 history unchanged below: was briefly 240000 (see PR
+# #2108/#2112) to accommodate Qwen3.8-Flash-Next and Qwen3.8-27B-BF16, both
+# of which live-confirmed needing >115s for a real stance_react completion
+# at reasoning_effort xhigh. Reverted to 120000 alongside reverting the
+# agent lane back to qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex, which
+# this value was already proven fine against at the time. Raised back to
+# 240000 now that the lane's real completion time (181-202s observed live)
+# again exceeds 120s -- if it drifts again, check the agent lane's current
+# model/load before just re-raising a third time; see PR #2108 for the full
 # incident writeup and self_study.py's SELF_STUDY_REFLECT_TIMEOUT_SEC for
 # the matching precedent.
-timeout_ms: 120000
+timeout_ms: 240000
 
 services:
   - LLMGatewayService

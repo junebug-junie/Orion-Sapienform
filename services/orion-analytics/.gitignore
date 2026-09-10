@@ -1,0 +1,6 @@
+.env
+.user.yml
+dbt_packages/
+logs/
+target/
+lightdash/.lightdash-metadata.json

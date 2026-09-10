@@ -611,6 +611,18 @@ the investigation line if its own gates block it. It is the rarer line and
 the two share the lock; the other order would let the busier budget starve
 the quieter one. A forced investigation run (`run-now`) never touches it.
 
+**A human-visible panel exists.** The Hub's Curiosity Atlas page
+(`/curiosity`) has a "Self" section, above the investigation pool: the current
+definition and its evidence, earlier versions (collapsed), the latest
+self-sense eval scores if any have run, the recent self-inquiry journal
+entries, and an "Ask self-inquiry now" button (`POST
+/curiosity/api/self-inquiry/run-now`, same rules as the investigation line's
+`Run now`). It reads `self_concept_history` and `journal_entries` directly
+(`orion/curiosity/self_panel.py`) rather than through the `:TurnOutcome`-keyed
+run list `atlas.py` already builds -- that list only shows runs that wrote an
+outcome node, which is optional, and the run that produced the first
+self-definition never wrote one.
+
 Inspect:
 
 ```bash

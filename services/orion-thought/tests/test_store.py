@@ -259,7 +259,7 @@ def _connect_result_engine(row: dict | None):
         def __exit__(self, *exc):
             return False
 
-        def execute(self, _stmt):
+        def execute(self, _stmt, _params=None):
             return _FakeResult()
 
     class _FakeEngine:
@@ -357,6 +357,80 @@ def test_load_latest_visual_chain_continuity_state_never_raises_on_db_failure() 
     monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
     try:
         assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
+    finally:
+        monkeypatch.undo()
+
+
+# --- load_latest_no_coalition_streak: text chain's own stuck-loop counter --
+#
+# Same shape as load_latest_visual_chain_continuity_state's streak field
+# (above), but for the text reverie chain, keyed by theme_key rather than
+# "the one latest row" (this service runs many themes' chains at once).
+
+
+def test_load_latest_no_coalition_streak_reads_the_value() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"chain_json": {"no_coalition_streak": 2}}),
+    )
+    try:
+        assert store.load_latest_no_coalition_streak("ol-1") == 2
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_no_coalition_streak_zero_on_missing_key() -> None:
+    """A pre-this-patch row has no no_coalition_streak key at all -- degrades
+    to 0 (the honest 'nothing recorded yet' answer), never raises."""
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"chain_json": {"terminal_reason": "no_coalition"}}),
+    )
+    try:
+        assert store.load_latest_no_coalition_streak("ol-1") == 0
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_no_coalition_streak_zero_on_non_dict_chain_json() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _connect_result_engine({"chain_json": "not a dict"})
+    )
+    try:
+        assert store.load_latest_no_coalition_streak("ol-1") == 0
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_no_coalition_streak_zero_when_theme_has_no_rows() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _connect_result_engine(None))
+    try:
+        assert store.load_latest_no_coalition_streak("ol-1") == 0
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_no_coalition_streak_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_no_coalition_streak("ol-1") == 0
     finally:
         monkeypatch.undo()
 

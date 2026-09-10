@@ -30910,8 +30910,8 @@
     "semantic_hash": ""
   },
   "services/orion-analytics/tests/test_analytics_contract.py": {
-    "mtime": 1789014812.0902035,
-    "ast_hash": "d0721ab1c171010851f2e801fb4035cb",
+    "mtime": 1789015612.3665516,
+    "ast_hash": "f637c05ea82f959a409585e5f419cb31",
     "semantic_hash": ""
   },
   "docs/superpowers/plans/2026-09-10-reverie-analytics-dbt-lightdash.md": {
@@ -30920,13 +30920,13 @@
     "semantic_hash": ""
   },
   "docs/superpowers/pr-reports/2026-09-10-reverie-analytics-dbt-lightdash-pr.md": {
-    "mtime": 1789014811.148209,
-    "ast_hash": "e943b2092774b48dc1d303e5111d671b",
+    "mtime": 1789015612.3675518,
+    "ast_hash": "276741723ff6d1f2f3cd91573b27f374",
     "semantic_hash": ""
   },
   "services/orion-analytics/README.md": {
-    "mtime": 1789014812.0882034,
-    "ast_hash": "08bc073b24a3425841740933cbced275",
+    "mtime": 1789015612.3665516,
+    "ast_hash": "b4f5f984fd06f94ed6723026dd8a46f7",
     "semantic_hash": ""
   },
   "services/orion-analytics/dbt_project.yml": {
@@ -30935,8 +30935,8 @@
     "semantic_hash": ""
   },
   "services/orion-analytics/docker-compose.yml": {
-    "mtime": 1789014812.0892036,
-    "ast_hash": "e4c1b61289d4a33b774895de1c81ec70",
+    "mtime": 1789015612.3655517,
+    "ast_hash": "91a2ca71a9d18ed52757c0f86368b51e",
     "semantic_hash": ""
   },
   "services/orion-analytics/lightdash/charts/reverie-activity-by-day.yml": {

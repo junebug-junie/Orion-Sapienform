@@ -15,7 +15,7 @@ services:
       DBT_TARGET_PATH: /tmp/dbt-target
       DBT_LOG_PATH: /tmp/dbt-logs
     volumes:
-      - ./:/usr/app/dbt
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-analytics:/usr/app/dbt
       - dbt-target:/tmp/dbt-target
       - dbt-logs:/tmp/dbt-logs
     networks:
@@ -118,7 +118,7 @@ services:
       DBT_TARGET_PATH: /tmp/dbt-target
       DBT_LOG_PATH: /tmp/dbt-logs
     volumes:
-      - ./:/usr/app/dbt:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-analytics:/usr/app/dbt:ro
       - dbt-target:/tmp/dbt-target
       - dbt-logs:/tmp/dbt-logs
     ports:

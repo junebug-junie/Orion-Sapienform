@@ -56,6 +56,12 @@ def test_lightdash_is_pinned_and_metadata_is_isolated() -> None:
     assert services["lightdash"]["ports"] == [
         "${LIGHTDASH_BIND_ADDRESS:-127.0.0.1}:${LIGHTDASH_PORT:-8265}:8080"
     ]
+    assert services["analytics-dbt"]["volumes"][0].startswith(
+        "${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/"
+    )
+    assert services["lightdash"]["volumes"][0].startswith(
+        "${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/"
+    )
     assert compose["networks"]["analytics-internal"]["internal"] is True
 
 

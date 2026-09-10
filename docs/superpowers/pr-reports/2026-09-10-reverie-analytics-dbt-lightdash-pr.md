@@ -77,6 +77,8 @@ source.
 
 - Added `services/orion-analytics/.env_example`; local ignored `.env` was synced.
 - Passwords and connection location are environment-driven.
+- Compose bind mounts are rooted at `ORION_HOST_REPO_ROOT`, with the durable
+  primary checkout as the production default.
 - `analytics`, `orion_analytics_transformer`, and `orion_analytics_reader` are
   fixed security-policy identifiers, preventing bootstrap/profile drift.
 - Anonymous dbt and Lightdash analytics are disabled.

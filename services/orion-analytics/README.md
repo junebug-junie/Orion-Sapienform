@@ -98,6 +98,11 @@ idempotently, and exposes its API on localhost port 8266 for browser-signed
 downloads. Lightdash and dbt anonymous analytics are disabled. Do not expose
 either backing service to a public interface.
 
+`ORION_HOST_REPO_ROOT` anchors Compose bind mounts to the durable primary
+checkout. For disposable local worktree validation only, point it at that
+worktree in the ignored `.env`; do not leave production containers mounted to
+a worktree that may be removed.
+
 ## Build and test the models
 
 From the repository root, using the repo's Docker safety wrapper:

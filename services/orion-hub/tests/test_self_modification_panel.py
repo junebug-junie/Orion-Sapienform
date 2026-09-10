@@ -114,8 +114,13 @@ def test_the_rendered_line_for_unreadable_history_differs_from_the_calm_one() ->
     error_branch = app_js.index("if (selfMod.history_error)")
     empty_branch = app_js.index("selfMod.history_available")
     assert error_branch < empty_branch, "error branch must be checked first"
-    assert "HISTORY UNREADABLE" in app_js
-    assert "LOCKS UNREADABLE" in app_js
+    # Wording changed to plain English (2026-09-10, Juniper: "i have no idea
+    # what any of this means in that obscure debug panel") -- the marker
+    # text this test pins moved with it, but the invariant it protects
+    # didn't: a broken history read must still say something different from
+    # an empty-but-readable one, not silently look calm.
+    assert "could not read that history" in app_js
+    assert "could not check" in app_js
 
 
 def test_the_payload_exposes_the_key_path_the_frontend_reads() -> None:

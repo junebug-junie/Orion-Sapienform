@@ -145,6 +145,7 @@ class _FakeConn:
             return "INSERT 0 1"
         if "SET stage2_status = 'pending'" in sql_n and "stage2_status = 'claimed'" in sql_n:
             older = float(args[0]) if args else 0.0
+            reason = args[1] if len(args) > 1 else None
             cutoff = datetime.now(timezone.utc) - timedelta(seconds=older)
             n = 0
             for row in self.rows.values():
@@ -156,6 +157,7 @@ class _FakeConn:
                 ):
                     row["stage2_status"] = "pending"
                     row["stage2_claimed_at"] = None
+                    row["stage2_error"] = reason
                     n += 1
             return f"UPDATE {n}"
         if "SET stage2_status = 'claimed'" in sql_n:
@@ -333,6 +335,76 @@ def test_stage2_happy_path_debits_wallet_b_not_curiosity_or_wallet_a() -> None:
     }
     assert curiosity_after == curiosity_before
     assert wallet_a_after == wallet_a_before
+
+
+def test_stage2_reclaim_on_startup_writes_process_restart_reason() -> None:
+    """First tick after Hub start (`_startup_reclaim_done` still False)
+    reclaims with `older_than_sec=0.0` and must label the row distinctly
+    from a periodic stale-timeout reclaim -- confirmed live 2026-09-10 that
+    a restart reclaim previously left zero trace."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+
+    async def _run():
+        await _ready_stage2(conn)
+        row = conn.rows["finding:r1:x"]
+        row["stage2_status"] = "claimed"
+        row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert pipe._startup_reclaim_done is False
+        await pipe._reclaim_stale_claimed()
+
+    asyncio.run(_run())
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "pending"
+    assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:process_restart"
+    assert pipe._startup_reclaim_done is True
+
+
+def test_stage2_reclaim_after_startup_writes_stale_timeout_reason() -> None:
+    """Once the one-shot startup reclaim has already fired, a later reclaim
+    catching a turn stuck past `timeout_sec` must use the distinct
+    stale-timeout label, not the startup one."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, timeout_sec=30.0)
+    pipe._startup_reclaim_done = True
+
+    async def _run():
+        await _ready_stage2(conn)
+        row = conn.rows["finding:r1:x"]
+        row["stage2_status"] = "claimed"
+        row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=40)
+        await pipe._reclaim_stale_claimed()
+
+    asyncio.run(_run())
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "pending"
+    assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:stale_timeout"
+
+
+def test_stage2_reclaimed_reason_cleared_by_subsequent_real_success() -> None:
+    """A reclaim-then-retry cycle must not leave the `interrupted:*` marker
+    behind once the retry genuinely completes."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+
+    async def _pass(handoff):
+        return _result()
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        row = conn.rows["finding:r1:x"]
+        row["stage2_status"] = "claimed"
+        row["stage2_claimed_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await pipe._reclaim_stale_claimed()
+        assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:process_restart"
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
+    assert conn.rows["finding:r1:x"]["stage2_error"] is None
 
 
 def test_round_trip_ceiling_stops_at_five() -> None:

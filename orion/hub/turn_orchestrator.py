@@ -468,7 +468,7 @@ async def _run_pre_turn_appraisal(
         continuity_messages or [{"role": "user", "content": user_message}]
     )
     paradigms = str(getattr(settings, "PRE_TURN_APPRAISAL_PARADIGMS", "repair_pressure"))
-    timeout_ms = int(getattr(settings, "PRE_TURN_APPRAISAL_TIMEOUT_MS", 60000))
+    timeout_ms = int(getattr(settings, "PRE_TURN_APPRAISAL_TIMEOUT_MS", 180000))
     started = asyncio.get_running_loop().time()
     try:
         bundle = await PreTurnAppraisalClient(bus).appraise(

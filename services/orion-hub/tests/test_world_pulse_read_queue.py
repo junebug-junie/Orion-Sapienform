@@ -425,6 +425,9 @@ def test_reclaimed_seed_error_cleared_by_later_successful_completion():
         assert conn.rows["finding:r1:x"]["last_error"] == "interrupted:stale_timeout"
         claimed = await claim_next_seed(conn)
         assert claimed is not None
+        # CLAIM_SQL touches only status/claimed_at -- the interrupted: marker
+        # must still be sitting there mid-retry, before completion clears it.
+        assert conn.rows["finding:r1:x"]["last_error"] == "interrupted:stale_timeout"
         await mark_seed_done(conn, claimed.seed_id, trace_id="tr-retry")
 
     asyncio.run(_run())
@@ -666,6 +669,10 @@ def test_reclaimed_stage2_seed_error_cleared_by_later_successful_completion():
         assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:stale_timeout"
         claimed = await claim_next_stage2_seed(conn)
         assert claimed is not None
+        # CLAIM_STAGE2_SQL touches only stage2_status/stage2_claimed_at -- the
+        # interrupted: marker must still be sitting there mid-retry, before
+        # completion clears it.
+        assert conn.rows["finding:r1:x"]["stage2_error"] == "interrupted:stale_timeout"
         await mark_stage2_done(conn, claimed.seed.seed_id, stage2_trace_id="tr-s2-retry")
 
     asyncio.run(_run())

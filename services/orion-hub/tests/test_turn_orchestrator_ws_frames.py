@@ -1327,3 +1327,23 @@ def test_the_final_frame_passes_an_unknown_leg_through_as_unknown() -> None:
     frames = _success_frames(run, correlation_id="c-2")
     final = next(f for f in frames if f.get("type") == "final")
     assert final["harness_fcc_elapsed_sec"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context,run_id", [("unified_chat", _CORR_ID), ("curiosity", "actual-curiosity-run")])
+async def test_reading_binding_is_runtime_context_not_model_payload(context, run_id):
+    harness_run = HarnessRunV1(correlation_id=_CORR_ID, final_text="Saved the recommendation.", finalize_ran=True,
+                              step_count=1, compliance_verdict="completed", grounding_status="grounded")
+    capture = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=capture)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(), correlation_id=_CORR_ID, session_id="s", user_message="This article looks interesting",
+            payload={"no_write": True, "reading_context": "world_pulse", "requested_by": "world_pulse"},
+            reading_context=context, reading_parent_run_id=run_id,
+            emit_observation_fn=lambda **kwargs: None,
+        )
+    binding = capture.await_args.args[0].reading_binding
+    assert binding.invocation_context == context
+    assert binding.parent_run_id == run_id
+    assert binding.parent_trace_id == _CORR_ID

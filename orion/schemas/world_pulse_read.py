@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from orion.schemas.reading import ReadingRequestedV1
+
 
 class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -12,12 +14,13 @@ class _Base(BaseModel):
 
 class WorldPulseReadSeedV1(_Base):
     seed_id: str = Field(min_length=1)
-    kind: Literal["finding", "digest_item"]
+    kind: Literal["finding", "digest_item", "reading"]
     run_id: str = Field(min_length=1)
     url: str = Field(min_length=1)
     title: str = ""
     section: str = ""
     item_id: str | None = None  # digest_item only
+    request: ReadingRequestedV1 | None = None
 
 
 class WorldPulseReadConceptCandidateV1(_Base):
@@ -139,6 +142,13 @@ class WorldPulseReadHandoffV1(_Base):
     created_at: datetime
     producer_hint: Literal["world_pulse_read_pipeline"] = "world_pulse_read_pipeline"
 
+    @field_validator("what_i_learned")
+    @classmethod
+    def nonempty_learning(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("empty_learning")
+        return value.strip()
+
     @field_validator("candidate_priors", mode="before")
     @classmethod
     def _priors_before(cls, value: Any) -> list[Any]:
@@ -160,7 +170,17 @@ class WorldPulseReadStage2ResultV1(_Base):
 
     summary: str = Field(min_length=1)
     need_stage1_urls: list[str] = Field(default_factory=list)
+    round_trips: int = Field(default=0, ge=0)
     trace_id: str = Field(min_length=1)
     created_at: datetime
     seed_id: str = ""
+    request: ReadingRequestedV1 | None = None
     producer_hint: Literal["world_pulse_read_stage2"] = "world_pulse_read_stage2"
+
+
+    @field_validator("summary")
+    @classmethod
+    def nonempty_summary(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("empty_summary")
+        return value.strip()

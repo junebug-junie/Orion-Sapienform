@@ -182,3 +182,11 @@ docker compose \
 ```
 
 Rebuild/restart after toggling MCP flags or changing `~/.fcc/.env` secrets.
+
+## General reading tools
+
+Unified Chat and curiosity may carry a server-authored `reading_binding` in `HarnessRunRequestV1`. The FCC motor renders an `orion-reading` stdio MCP entry with only `recommend_reading(url, why_now)` and `reading_status(request_id)`. Binding provenance is outside tool arguments; the transport uses the existing internal bus to Hub's Postgres queue owner. No writer database credentials are passed to this tool. Existing `HARNESS_FCC_MCP_ENABLED` controls normal turn MCP exposure.
+
+Stage 1/2 reading turns instead set the trusted `reading_only` flag. Their actual process receives `--tools WebFetch,WebSearch --strict-mcp-config --setting-sources ''` and an explicit empty MCP config. This prevents source content from reaching shell, mutable graph tools or plugin execution while the server-owned queue/journal/Concept Atlas path retains responsibility for persistence. The general chat/curiosity tool configuration is unchanged apart from the new narrow reading entry.
+
+Rebuild this service and Hub after applying the additive queue migration. See the [reading implementation report](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md) for exact tests, restart commands and unverified production behavior.

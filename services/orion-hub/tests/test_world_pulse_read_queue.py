@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
@@ -38,7 +39,7 @@ _STAGE2_MIGRATION = (
 )
 
 
-class _FakeConn:
+class _LegacyFakeConn:
     """Interprets the real SQL strings `queue.py` emits (Hub fake-conn style)."""
 
     def __init__(self) -> None:
@@ -757,3 +758,12 @@ def test_enqueue_findings_only_and_dry_run_idempotent():
     assert len(rows) == 1
     assert rows[0]["kind"] == "finding"
     assert rows[0]["url"] == "https://ex.com/find"
+
+
+from reading_queue_fakes import ReadingQueueFakeMixin
+
+
+class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
+    pass
+
+pytestmark = pytest.mark.usefixtures("reading_dns")

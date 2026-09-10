@@ -222,12 +222,16 @@ async def default_fcc_runner(
     correlation_id: str,
     fcc_model_label: str | None = None,
     timeout_sec: float = 120.0,
+    reading_binding: Any = None,
+    reading_only: bool = False,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
     env = load_fcc_env(env_path)
     token = resolve_auth_token(env, override=os.environ.get("HARNESS_FCC_AUTH_TOKEN", ""))
     async for event in run_fcc_turn(
+        reading_binding=reading_binding,
+        reading_only=reading_only,
         prompt=prompt,
         correlation_id=correlation_id,
         fcc_model_label=fcc_model_label,
@@ -401,6 +405,8 @@ class HarnessRunner:
         error_path_taken = False
 
         async for event in self.fcc_runner(
+            **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
+            **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             prompt=prompt,
             correlation_id=request.correlation_id,
             fcc_model_label=request.fcc_model_label,

@@ -120,3 +120,15 @@ def _hub_service_isolation() -> None:
     # popping again per-test would undo it and 503 that suite.
     _ensure_hub_paths()
     yield
+
+
+@pytest.fixture
+def reading_dns(monkeypatch):
+    """Legacy reading fixtures use synthetic domains; never query live DNS."""
+    import asyncio
+    import socket
+
+    async def public_dns(self, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "getaddrinfo", public_dns)

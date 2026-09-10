@@ -703,6 +703,9 @@ async def execute_unified_turn(
     harness_step_queue: asyncio.Queue | None = None,
     cockpit_sink: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
     cockpit_run_holder: dict[str, Any] | None = None,
+    reading_context: str | None = None,
+    reading_parent_run_id: str | None = None,
+    reading_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -1144,7 +1147,15 @@ async def execute_unified_turn(
     # says "mode=orion" -- caught live 2026-09-03 via Hub's own
     # /api/chat/turn/{corr}/trace endpoint on a real Mode: Agent turn.
 
+    from orion.schemas.reading import ReadingToolBindingV1
+    reading_binding = (
+        ReadingToolBindingV1(invocation_context=reading_context,
+                             parent_run_id=reading_parent_run_id or correlation_id, parent_trace_id=correlation_id)
+        if reading_context is not None else None
+    )
     harness_req = HarnessRunRequestV1(
+        reading_binding=reading_binding,
+        reading_only=reading_only,
         correlation_id=correlation_id,
         thought_event=thought,
         user_message=user_message,
@@ -1591,6 +1602,7 @@ async def run_unified_turn(
     try:
         frames = await execute_unified_turn(
             bus=bus,
+            reading_context="unified_chat",
             correlation_id=correlation_id,
             session_id=session_id,
             user_message=user_message,

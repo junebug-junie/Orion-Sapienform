@@ -1360,7 +1360,7 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
-                text, debug = await self._generate(prompt, correlation_id)
+                text, debug = await self._generate(prompt, correlation_id, parent_run_id=run_id)
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
@@ -1675,7 +1675,7 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
-                text, debug = await self._generate(prompt, correlation_id, source=SELF_INQUIRY_TAG)
+                text, debug = await self._generate(prompt, correlation_id, source=SELF_INQUIRY_TAG, parent_run_id=run_id)
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -1804,6 +1804,7 @@ class CuriosityInvestigation:
         correlation_id: str,
         source: str = INVESTIGATION_TAG,
         require_lookup: bool = True,
+        parent_run_id: str | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -1829,6 +1830,8 @@ class CuriosityInvestigation:
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
+                    reading_context="curiosity" if parent_run_id else None,
+                    reading_parent_run_id=parent_run_id,
                     bus=self._bus,
                     correlation_id=correlation_id,
                     session_id=self.session_id,
@@ -2158,7 +2161,8 @@ class CuriosityInvestigation:
         async def _run_turn() -> CuriosityTurnResultV1:
             try:
                 text, debug = await self._generate(
-                    request.prompt, request.correlation_id, source=request.source_tag
+                    request.prompt, request.correlation_id, source=request.source_tag,
+                    parent_run_id=request.run_id,
                 )
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,

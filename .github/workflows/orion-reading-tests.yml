@@ -1,0 +1,55 @@
+name: orion-reading tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/world_pulse_read/**"
+      - "orion/schemas/**"
+      - "orion/bus/channels.yaml"
+      - "orion/fcc/**"
+      - "orion/harness/**"
+      - "orion/hub/**"
+      - "orion/substrate/adapters/world_pulse_read.py"
+      - "services/orion-hub/**"
+      - "services/orion-harness-governor/**"
+      - "services/orion-sql-db/manual_migration*reading*"
+      - "services/orion-sql-db/manual_migration_world_pulse_read*"
+      - "tests/test_world_pulse_read*"
+      - ".github/workflows/orion-reading-tests.yml"
+  push:
+    branches: [main]
+
+jobs:
+  reading:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal reading test dependencies and local PostgreSQL
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+      - name: Reading contracts, caller bindings, workers and real SQL durability
+        env:
+          RUN_READING_POSTGRES: "1"
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q \
+            services/orion-hub/tests/test_reading_ingress.py \
+            services/orion-hub/tests/test_reading_postgres.py \
+            services/orion-hub/tests/test_world_pulse_read_*.py \
+            services/orion-hub/tests/test_curiosity_investigation.py \
+            services/orion-hub/tests/test_curiosity_self_inquiry.py \
+            services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
+            orion/fcc/tests/test_reading_mcp.py \
+            orion/fcc/tests/test_mcp_config.py \
+            orion/harness/tests/test_fcc_motor_mcp.py \
+            tests/test_world_pulse_read_*.py \
+            tests/test_unified_turn_schemas.py \
+            tests/test_unified_turn_bus_catalog.py
+      - name: Offline source handoff behavior eval
+        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py -q

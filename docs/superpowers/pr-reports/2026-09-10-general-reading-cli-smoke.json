@@ -1,0 +1,43 @@
+{
+  "cli_version": "2.1.268 (Claude Code)",
+  "provider": "local mocked Messages API",
+  "production_model_called": false,
+  "cases": [
+    {
+      "case": "enumeration",
+      "returncode": 0,
+      "tools": [
+        "WebFetch",
+        "WebSearch"
+      ],
+      "mcp_servers": [],
+      "plugins": [],
+      "unexpected_execution": false,
+      "rejected_tool_calls": 0
+    },
+    {
+      "case": "blocked_bash",
+      "returncode": 0,
+      "tools": [
+        "WebFetch",
+        "WebSearch"
+      ],
+      "mcp_servers": [],
+      "plugins": [],
+      "unexpected_execution": false,
+      "rejected_tool_calls": 1
+    },
+    {
+      "case": "blocked_plugin",
+      "returncode": 0,
+      "tools": [
+        "WebFetch",
+        "WebSearch"
+      ],
+      "mcp_servers": [],
+      "plugins": [],
+      "unexpected_execution": false,
+      "rejected_tool_calls": 1
+    }
+  ]
+}

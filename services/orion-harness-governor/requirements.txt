@@ -7,3 +7,6 @@ redis>=5.0.0
 PyYAML>=6.0.0
 requests==2.34.2
 httpx==0.27.2
+
+# Per-turn reading MCP server (also used by the existing AI Town MCP).
+mcp>=1.0.0,<2

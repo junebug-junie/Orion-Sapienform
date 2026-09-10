@@ -61,6 +61,7 @@ async def run_backfill(
     dry_run: bool,
     findings_only: bool,
     limit_digests: int,
+    bus: Any = None,
 ) -> int:
     from orion.world_pulse_read.queue import enqueue_from_recent_digests
 
@@ -69,6 +70,7 @@ async def run_backfill(
         limit_digests=limit_digests,
         findings_only=findings_only,
         dry_run=dry_run,
+        bus=bus,
     )
 
 
@@ -79,16 +81,30 @@ async def _amain(args: argparse.Namespace) -> int:
     limit = args.limit_digests if args.limit_digests is not None else 10000
     if limit < 1:
         raise SystemExit("--limit-digests must be >= 1")
+    bus = None
+    bus_url = os.getenv("ORION_BUS_URL", "").strip()
+    if not args.dry_run and bus_url:
+        from orion.core.bus.async_service import OrionBusAsync
+        bus = OrionBusAsync(bus_url)
     conn = await asyncpg.connect(dsn)
     try:
+        if bus is not None:
+            try:
+                await bus.connect()
+            except Exception:
+                # Persistence remains usable through a bus outage.
+                print("reading accepted-event transport unavailable; queue writes remain durable", file=sys.stderr)
         n = await run_backfill(
             conn,
             dry_run=args.dry_run,
             findings_only=args.findings_only,
             limit_digests=limit,
+            bus=bus,
         )
     finally:
         await conn.close()
+        if bus is not None:
+            await bus.close()
     mode = "dry-run" if args.dry_run else "inserted"
     extra = " findings-only" if args.findings_only else ""
     print(f"world_pulse_read_backfill {mode}{extra} count={n} limit_digests={limit}")

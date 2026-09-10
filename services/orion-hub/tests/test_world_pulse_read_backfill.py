@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 
 from scripts.world_pulse_read_backfill import parse_args, run_backfill
 
 
-class _FakeConn:
+class _LegacyFakeConn:
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
         self.executed: list[tuple[str, tuple]] = []
@@ -105,3 +106,10 @@ def test_run_backfill_dry_run_does_not_insert():
     assert real == 2
     assert again == 0
     assert len(conn.rows) == 2
+
+pytestmark = pytest.mark.usefixtures("reading_dns")
+
+from reading_queue_fakes import ReadingQueueFakeMixin
+
+class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
+    pass

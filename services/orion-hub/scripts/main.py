@@ -46,6 +46,7 @@ from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
+from scripts.reading_listener import ReadingListener
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
 from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
 from scripts.endogenous_outreach import EndogenousOutreach
@@ -291,6 +292,7 @@ bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 
 endogenous_outreach: Optional[EndogenousOutreach] = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
+reading_listener = None
 world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
@@ -398,7 +400,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -620,6 +622,11 @@ async def startup_event():
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
             )
             await world_pulse_read_pipeline.start(bus, harness_rpc_bus=rpc_bus)
+            reading_listener = ReadingListener(
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=world_pulse_read_pipeline._source_ref,
+            )
+            await reading_listener.start(bus)
 
             world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(
                 enabled=settings.HUB_WORLD_PULSE_READ_STAGE2_ENABLED,
@@ -1281,7 +1288,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1354,6 +1361,9 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_investigation_stop_failed", exc_info=True)
         curiosity_investigation = None
+    if reading_listener is not None:
+        await reading_listener.stop()
+        reading_listener = None
     if world_pulse_read_pipeline is not None:
         try:
             await world_pulse_read_pipeline.stop()

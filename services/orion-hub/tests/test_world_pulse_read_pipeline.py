@@ -57,7 +57,7 @@ class _FakeBus:
         return [(c, e) for c, e in self.published if c == JOURNAL_WRITE_CHANNEL]
 
 
-class _FakeConn:
+class _LegacyFakeConn:
     """Interprets the real SQL strings `queue.py` emits."""
 
     def __init__(self) -> None:
@@ -783,3 +783,12 @@ def test_stage1_read_raises_with_specific_reason_not_generic_label(
     assert result == "parse_failed"
     assert conn.rows["finding:r1:x"]["last_error"] == "stage1_turn_timeout"
     assert conn.rows["finding:r1:x"]["last_error"] != "empty_generation"
+
+
+from reading_queue_fakes import ReadingQueueFakeMixin
+
+
+class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
+    pass
+
+pytestmark = pytest.mark.usefixtures("reading_dns")

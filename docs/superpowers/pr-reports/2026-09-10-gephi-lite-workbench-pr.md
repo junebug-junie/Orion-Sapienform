@@ -94,7 +94,7 @@ Additional authenticated live HTTP smoke: search returned 20 choices per source;
 
 ```text
 scripts/safe_docker_build.sh orion-hub build hub-app
-  PASS: image sha256:132b107abf7cc68e2fade5d3b77b268abc9f308bf90d3584fc1b9c6ae3d69428
+  PASS after merging latest main: image sha256:588c7ff4385ff507da518c0aaa31d338abc8c92efe7e2150deb30db5b70711ab
 Built-image read-only smoke against live FalkorDB
   PASS: 222 worldview nodes / 40 edges; Gephi index present; /app/.env absent.
 ```
@@ -133,4 +133,4 @@ Then open Hub's Graph Workbench link, authenticate as `juniper` using the passwo
 
 ## PR link
 
-[PR #2198](https://github.com/junebug-junie/Orion-Sapienform/pull/2198). Latest main merged without conflicts; CI status will be recorded before handoff.
+[PR #2198](https://github.com/junebug-junie/Orion-Sapienform/pull/2198). Latest main merged without conflicts; live CI results are available in the PR's Checks tab. The final handoff reports the verified head's check status.

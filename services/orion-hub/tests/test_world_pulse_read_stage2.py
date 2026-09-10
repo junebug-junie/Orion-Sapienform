@@ -11,6 +11,7 @@ import pytest
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.world_pulse_read import (
     WorldPulseReadHandoffV1,
+    WorldPulseReadPriorCandidateV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
 )
@@ -22,6 +23,7 @@ from scripts.world_pulse_read_stage2 import (
     JOURNAL_WRITE_CHANNEL,
     GenerateOutcome,
     WorldPulseReadStage2Pipeline,
+    _build_stage2_prompt,
 )
 
 SOURCE = ServiceRef(name="orion-hub", version="0.1.0", node="test")
@@ -240,6 +242,58 @@ def _result(*, urls: list[str] | None = None) -> WorldPulseReadStage2ResultV1:
         created_at=NOW,
         seed_id="finding:r1:x",
     )
+
+
+def test_prompt_has_no_prior_write_instruction_when_no_candidates() -> None:
+    """No bogus instruction to write a prior when there is nothing to write."""
+    handoff = _handoff()
+    assert handoff.candidate_priors == []
+    prompt = _build_stage2_prompt(handoff, "tr-s2")
+    assert "MERGE (p:Prior" not in prompt
+    assert "WRITE THE CANDIDATE PRIORS" not in prompt
+
+
+def test_prompt_includes_prior_write_instruction_when_candidates_present() -> None:
+    seed = _seed()
+    handoff = WorldPulseReadHandoffV1(
+        seed_ref=seed,
+        what_i_learned="Learned about packaging.",
+        candidate_priors=[
+            WorldPulseReadPriorCandidateV1(claim="Packaging costs are rising.", confidence=0.6)
+        ],
+        trace_id="tr-pipeline-1",
+        created_at=NOW,
+    )
+    prompt = _build_stage2_prompt(handoff, "tr-s2")
+    assert "MERGE (p:Prior" in prompt
+    assert "Packaging costs are rising." in prompt
+    # Provenance: distinguishable from Curiosity Atlas's own priors.
+    assert 'p.producer = "world_pulse_read_stage2"' in prompt
+    assert 'p.source_kind = "world_pulse.read"' in prompt
+    # Trace linkage back to this exact world-pulse read.
+    assert f'p.stage1_trace_id = "{handoff.trace_id}"' in prompt
+    assert 'p.stage2_trace_id = "tr-s2"' in prompt
+    assert f'p.seed_id = "{seed.seed_id}"' in prompt
+    # Never overload Curiosity Atlas's own run_id linkage property.
+    assert "p.run_id" not in prompt
+    assert "p.last_run_id" not in prompt
+
+
+def test_prompt_includes_all_candidate_priors_not_just_first() -> None:
+    seed = _seed()
+    handoff = WorldPulseReadHandoffV1(
+        seed_ref=seed,
+        what_i_learned="Learned about packaging.",
+        candidate_priors=[
+            WorldPulseReadPriorCandidateV1(claim="Claim one.", confidence=0.4),
+            WorldPulseReadPriorCandidateV1(claim="Claim two.", confidence=0.7),
+        ],
+        trace_id="tr-pipeline-1",
+        created_at=NOW,
+    )
+    prompt = _build_stage2_prompt(handoff, "tr-s2")
+    assert "Claim one." in prompt
+    assert "Claim two." in prompt
 
 
 def _count_key_b() -> str:

@@ -120,6 +120,88 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     return payload
 
 
+def _priors_write_section(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
+    """The Cypher instruction that actually lands `:Prior` nodes on
+    `orion_worldview` from this handoff's `candidate_priors`.
+
+    Before this function existed, Stage 2 never told the model to write
+    anything to `orion_worldview` at all -- `_build_stage2_prompt` only asked
+    for `summary` / `need_stage1_urls` JSON fields, so the design doc's
+    "curiosity priors" landing (see
+    `docs/superpowers/specs/2026-09-06-world-pulse-concept-read-pipeline-design.md`,
+    "Landings") was never wired even though Stage 1 already populates
+    `candidate_priors` on every handoff.
+
+    Reuses the exact MERGE-on-`prior_id`-only shape
+    `orion/curiosity/kickoff_prompt.py::_write_section` teaches Curiosity
+    Atlas, for the same reason stated there: a CREATE here forks the claim
+    into two nodes that both answer to one id (`ed05344f8a39`, live
+    2026-08-27), and MERGE binds the existing node while ON CREATE SET makes
+    saying it again free instead of destructive.
+
+    `producer` / `source_kind` are Concept-Atlas-provenance-shaped
+    (`orion/substrate/adapters/world_pulse_read.py` sets the same
+    `source_kind="world_pulse.read"` / `producer="world_pulse_read_pipeline"`
+    pair on the Concept Atlas side) so a `:Prior` this pipeline wrote is
+    distinguishable from one Curiosity Atlas's own loop formed -- required by
+    the design doc so the two loops' priors are never confused. `stage1_trace_id`
+    / `stage2_trace_id` / `seed_id` mirror the naming `_journal` already uses
+    below for the same two trace ids, so a Prior node can be traced back to
+    the exact world-pulse seed and read that produced it, the same way
+    Concept Atlas's `evidence_refs` traces a concept node back to its article.
+
+    Deliberately NOT `p.run_id` / `p.last_run_id` -- those names are Curiosity
+    Atlas's own turn-footprint linkage (`worldview.run_footprint_cypher`,
+    `_write_section`'s TESTING pattern) keyed on a `uuid4().hex[:12]`
+    Curiosity generates per turn. Stamping a world-pulse seed's `run_id`
+    (e.g. `"r1"`) into that same property would not break the footprint read
+    -- the strings will not collide -- but it would overload one property
+    name with two unrelated id formats for no reason; `seed_id` +
+    `stage1_trace_id`/`stage2_trace_id` already carry the linkage this
+    pipeline needs.
+
+    Returns "" when there is nothing to write -- an empty `candidate_priors`
+    list must not produce an instruction to write a prior anyway.
+    """
+    if not handoff.candidate_priors:
+        return ""
+    seed = handoff.seed_ref
+    candidates = "\n".join(
+        f'  - claim: "{cand.claim}" (candidate confidence={cand.confidence})'
+        for cand in handoff.candidate_priors
+    )
+    return (
+        "\n\n"
+        "WRITE THE CANDIDATE PRIORS ABOVE TO YOUR OWN GRAPH "
+        "(orion_worldview), for each one you still believe after reading the "
+        "handoff:\n\n"
+        f"{candidates}\n\n"
+        '    MERGE (p:Prior {prior_id: "<something unique>"})\n'
+        "    ON CREATE SET\n"
+        '      p.claim = "<the claim, in one sentence>",\n'
+        "      p.confidence = <0.0-1.0>, "
+        'p.status = "open", p.times_tested = 0,\n'
+        f'      p.formed_from = "world_pulse_read:{seed.url}", '
+        'p.last_tested_at = "<iso timestamp>",\n'
+        '      p.producer = "world_pulse_read_stage2", '
+        'p.source_kind = "world_pulse.read",\n'
+        f'      p.stage1_trace_id = "{handoff.trace_id}", '
+        f'p.stage2_trace_id = "{trace_id}", p.seed_id = "{seed.seed_id}"\n\n'
+        "MERGE on prior_id ALONE -- put nothing else inside the braces, or a "
+        "changed property forks the claim into a second node next time this "
+        "seed runs. producer/source_kind mark this prior as written by this "
+        "world-pulse pipeline, not by your own separate curiosity loop, so "
+        "the two stay distinguishable later. stage1_trace_id/stage2_trace_id/"
+        "seed_id link the prior back to this exact read even after it is "
+        "tested and revised many runs from now.\n\n"
+        "If a candidate restates something you already hold, MATCH it on its "
+        "own first and look before deciding whether to MERGE a new claim or "
+        "leave the existing one alone. Skip any candidate you do not "
+        "actually believe after reading the handoff -- writing all of them "
+        "unconditionally is not the goal."
+    )
+
+
 def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
     payload = handoff.model_dump(mode="json")
     return (
@@ -132,7 +214,7 @@ def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str
         f"trace_id={trace_id!r}, created_at (ISO-8601 UTC), "
         f"seed_id={handoff.seed_ref.seed_id!r}, "
         "producer_hint=world_pulse_read_stage2."
-    )
+    ) + _priors_write_section(handoff, trace_id)
 
 
 def _as_stage2_result(raw: Any, *, fallback_trace: str, seed_id: str) -> WorldPulseReadStage2ResultV1:

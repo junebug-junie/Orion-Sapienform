@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.llm_json import parse_json_object
+from orion.curiosity.worldview import _clip
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.llm.routes import fcc_model_for_route
 from orion.schemas.world_pulse_read import (
@@ -139,16 +140,23 @@ def _priors_write_section(handoff: WorldPulseReadHandoffV1, trace_id: str) -> st
     2026-08-27), and MERGE binds the existing node while ON CREATE SET makes
     saying it again free instead of destructive.
 
-    `producer` / `source_kind` are Concept-Atlas-provenance-shaped
-    (`orion/substrate/adapters/world_pulse_read.py` sets the same
-    `source_kind="world_pulse.read"` / `producer="world_pulse_read_pipeline"`
-    pair on the Concept Atlas side) so a `:Prior` this pipeline wrote is
-    distinguishable from one Curiosity Atlas's own loop formed -- required by
-    the design doc so the two loops' priors are never confused. `stage1_trace_id`
-    / `stage2_trace_id` / `seed_id` mirror the naming `_journal` already uses
-    below for the same two trace ids, so a Prior node can be traced back to
-    the exact world-pulse seed and read that produced it, the same way
-    Concept Atlas's `evidence_refs` traces a concept node back to its article.
+    `producer` / `source_kind` mirror the naming (not the exact values) of
+    Concept-Atlas provenance (`orion/substrate/adapters/world_pulse_read.py`
+    sets `source_kind="world_pulse.read"` / `producer="world_pulse_read_pipeline"`
+    on the Concept Atlas side) so a `:Prior` this pipeline wrote carries
+    distinguishing tags a Curiosity-Atlas-formed prior does not. NOTE: as of
+    this patch nothing reads these two properties back yet -- neither
+    `orion/curiosity/worldview.py`'s reader nor any other `:Prior` consumer in
+    the repo selects `producer`/`source_kind`/`stage1_trace_id`/
+    `stage2_trace_id`/`seed_id`. They are inspectable today only via a direct
+    Cypher probe (`MATCH (p:Prior {producer:"world_pulse_read_stage2"})
+    RETURN p`), which is a write-only landing, not yet a read-side
+    distinction -- wiring a reader is real follow-up work, not a claim this
+    patch makes. `stage1_trace_id` / `stage2_trace_id` / `seed_id` mirror the
+    naming `_journal` already uses below for the same two trace ids, so a
+    Prior node can be traced back to the exact world-pulse seed and read that
+    produced it, the same way Concept Atlas's `evidence_refs` traces a
+    concept node back to its article.
 
     Deliberately NOT `p.run_id` / `p.last_run_id` -- those names are Curiosity
     Atlas's own turn-footprint linkage (`worldview.run_footprint_cypher`,
@@ -160,6 +168,24 @@ def _priors_write_section(handoff: WorldPulseReadHandoffV1, trace_id: str) -> st
     `stage1_trace_id`/`stage2_trace_id` already carry the linkage this
     pipeline needs.
 
+    THE redis-cli LINE IS NOT DECORATION. Curiosity's own version of this
+    instruction (`kickoff_prompt.py::_access_section`) is always paired with
+    the literal command that reaches the graph, because a prompt that names a
+    capability without the command to use it is exactly the failure that
+    module's own header warns about. `ORION_CURIOSITY_GRAPH_*` are stamped
+    into every FCC turn's subprocess environment unconditionally
+    (`orion/curiosity/sandbox_env.py`, injected from
+    `orion/harness/fcc_motor.py::_build_subprocess_env` regardless of which
+    pipeline triggered the turn), so Stage 2 turns already carry the same
+    credentials Curiosity turns do -- this just has to say so.
+
+    Free text (`cand.claim`, `seed.url`) goes through `worldview._clip`
+    before being embedded, the same guard the kickoff prompt uses for
+    prior/claim previews -- Stage 1's `candidate_priors` are model-written
+    summaries of arbitrary web content and can contain a stray quote or
+    embedded newline that would otherwise break the bulleted example's
+    formatting.
+
     Returns "" when there is nothing to write -- an empty `candidate_priors`
     list must not produce an instruction to write a prior anyway.
     """
@@ -167,21 +193,29 @@ def _priors_write_section(handoff: WorldPulseReadHandoffV1, trace_id: str) -> st
         return ""
     seed = handoff.seed_ref
     candidates = "\n".join(
-        f'  - claim: "{cand.claim}" (candidate confidence={cand.confidence})'
+        f'  - claim: "{_clip(cand.claim, 200)}" (candidate confidence={cand.confidence})'
         for cand in handoff.candidate_priors
+    )
+    formed_from = _clip(f"world_pulse_read:{seed.url}", 200)
+    graph_uri = (
+        'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+        '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
     )
     return (
         "\n\n"
         "WRITE THE CANDIDATE PRIORS ABOVE TO YOUR OWN GRAPH "
         "(orion_worldview), for each one you still believe after reading the "
-        "handoff:\n\n"
+        "handoff. Reach it the same way you would reach any FalkorDB write "
+        "this turn:\n\n"
+        f'    redis-cli -u "{graph_uri}" \\\n'
+        '      GRAPH.QUERY $ORION_CURIOSITY_GRAPH_OWN "<your MERGE, below>"\n\n'
         f"{candidates}\n\n"
         '    MERGE (p:Prior {prior_id: "<something unique>"})\n'
         "    ON CREATE SET\n"
         '      p.claim = "<the claim, in one sentence>",\n'
         "      p.confidence = <0.0-1.0>, "
         'p.status = "open", p.times_tested = 0,\n'
-        f'      p.formed_from = "world_pulse_read:{seed.url}", '
+        f'      p.formed_from = "{formed_from}", '
         'p.last_tested_at = "<iso timestamp>",\n'
         '      p.producer = "world_pulse_read_stage2", '
         'p.source_kind = "world_pulse.read",\n'

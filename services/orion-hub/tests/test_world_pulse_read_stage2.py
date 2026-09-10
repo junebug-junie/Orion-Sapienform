@@ -251,6 +251,7 @@ def test_prompt_has_no_prior_write_instruction_when_no_candidates() -> None:
     prompt = _build_stage2_prompt(handoff, "tr-s2")
     assert "MERGE (p:Prior" not in prompt
     assert "WRITE THE CANDIDATE PRIORS" not in prompt
+    assert "GRAPH.QUERY $ORION_CURIOSITY_GRAPH_OWN" not in prompt
 
 
 def test_prompt_includes_prior_write_instruction_when_candidates_present() -> None:
@@ -277,6 +278,11 @@ def test_prompt_includes_prior_write_instruction_when_candidates_present() -> No
     # Never overload Curiosity Atlas's own run_id linkage property.
     assert "p.run_id" not in prompt
     assert "p.last_run_id" not in prompt
+    # Teaches the actual command to reach the graph, not just the Cypher shape.
+    assert "redis-cli" in prompt
+    assert "GRAPH.QUERY $ORION_CURIOSITY_GRAPH_OWN" in prompt
+    assert "$ORION_CURIOSITY_GRAPH_USER" in prompt
+    assert "$ORION_CURIOSITY_GRAPH_PASSWORD" in prompt
 
 
 def test_prompt_includes_all_candidate_priors_not_just_first() -> None:

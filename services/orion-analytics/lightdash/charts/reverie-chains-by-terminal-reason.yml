@@ -1,0 +1,36 @@
+name: Reverie chains by terminal reason
+description: Distinct persisted reverie chains grouped by the code-defined stop reason.
+tableName: fct_reverie_chains
+metricQuery:
+  exploreName: fct_reverie_chains
+  dimensions:
+    - dim_reverie_outcomes_outcome_label
+  metrics:
+    - fct_reverie_chains_reverie_chain_count
+  filters: {}
+  sorts:
+    - fieldId: fct_reverie_chains_reverie_chain_count
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: dim_reverie_outcomes_outcome_label
+      yField:
+        - fct_reverie_chains_reverie_chain_count
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: dim_reverie_outcomes_outcome_label
+            yRef:
+              field: fct_reverie_chains_reverie_chain_count
+          isFilteredOut: false
+slug: reverie-chains-by-terminal-reason
+spaceSlug: orion-analytics
+version: 1

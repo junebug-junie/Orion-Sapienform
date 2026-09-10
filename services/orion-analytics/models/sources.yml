@@ -1,0 +1,52 @@
+version: 2
+
+sources:
+  - name: orion_operational
+    description: >-
+      Existing Orion operational PostgreSQL tables. Analytics access is limited
+      to the explicitly declared relations; this project does not scan other
+      public-schema tables.
+    schema: public
+    tables:
+      - name: substrate_reverie_chain
+        description: >-
+          One row per persisted ReverieChainV1 record. Written directly by
+          services/orion-thought/app/store.py::persist_reverie_chain. Primary
+          key: chain_id. Event time: created_at. Known limitations: a process
+          failure before persistence is absent; refractory suppression returns
+          before a chain row is created; theme_key and chain_json may contain
+          internal narrative context and are intentionally not selected into
+          analytics models.
+        columns:
+          - name: chain_id
+            description: Source primary key generated once per persisted chain.
+            tests:
+              - not_null
+              - unique
+          - name: created_at
+            description: >-
+              UTC record-creation time assigned after the chain loop terminates
+              and immediately before persistence.
+            tests:
+              - not_null
+          - name: theme_key
+            description: Internal theme identifier; excluded from analytics marts.
+          - name: terminal_reason
+            description: Code-defined reason the chain stopped.
+            tests:
+              - not_null
+              - accepted_values:
+                  values:
+                    - pressure_discharged
+                    - max_steps
+                    - no_coalition
+                    - refractory
+                    - low_salience
+          - name: ema_salience
+            description: Existing chain signal; excluded pending a separate metric-quality review.
+          - name: committed_proposal_id
+            description: Optional internal proposal link; excluded from analytics marts.
+          - name: chain_json
+            description: Full narrative-bearing payload; excluded from analytics models.
+          - name: stored_at
+            description: Database insertion time assigned by PostgreSQL.

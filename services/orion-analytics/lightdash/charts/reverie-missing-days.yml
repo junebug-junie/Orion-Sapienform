@@ -1,0 +1,38 @@
+name: Reverie activity including zero days
+description: >-
+  Complete UTC date spine since the first persisted chain. A zero reveals a
+  date with no persisted reverie-chain rows; it does not prove service outage.
+tableName: dim_reverie_dates
+metricQuery:
+  exploreName: dim_reverie_dates
+  dimensions:
+    - dim_reverie_dates_date_key_day
+  metrics:
+    - fct_reverie_chains_reverie_chain_count
+  filters: {}
+  sorts:
+    - fieldId: dim_reverie_dates_date_key_day
+      descending: false
+  limit: 500
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: dim_reverie_dates_date_key_day
+      yField:
+        - fct_reverie_chains_reverie_chain_count
+    eChartsConfig:
+      series:
+        - type: line
+          encode:
+            xRef:
+              field: dim_reverie_dates_date_key_day
+            yRef:
+              field: fct_reverie_chains_reverie_chain_count
+          isFilteredOut: false
+slug: reverie-missing-days
+spaceSlug: orion-analytics
+version: 1

@@ -1,0 +1,165 @@
+version: 2
+
+models:
+  - name: fct_reverie_chains
+    description: >-
+      Grain: one row per persisted reverie chain. Primary key:
+      reverie_chain_id. Foreign keys: outcome_key to dim_reverie_outcomes and
+      event_date to dim_reverie_dates. Event time: event_at. Writer/owner:
+      derived by dbt from orion-thought's substrate_reverie_chain rows. Known
+      limitations: attempts that never reached persistence are absent; this
+      model does not claim that a terminal reason is success or failure.
+    meta:
+      label: Reverie chains
+      group_label: Reverie
+      primary_key: reverie_chain_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+      joins:
+        - join: dim_reverie_outcomes
+          label: Reverie outcome
+          sql_on: ${fct_reverie_chains.outcome_key} = ${dim_reverie_outcomes.outcome_key}
+          type: left
+          relationship: many-to-one
+        - join: dim_reverie_dates
+          label: Reverie date
+          sql_on: ${fct_reverie_chains.event_date} = ${dim_reverie_dates.date_key}
+          type: left
+          relationship: many-to-one
+    columns:
+      - name: reverie_chain_id
+        description: Source chain primary key; one value means one persisted chain attempt.
+        tests:
+          - not_null
+          - unique
+        meta:
+          metrics:
+            reverie_chain_count:
+              type: count_distinct
+              label: Reverie chain count
+              description: >-
+                Count of distinct persisted reverie chain IDs. This reconciles
+                to source rows because chain_id is the source primary key.
+              groups: [Reverie activity]
+              default_time_dimension:
+                field: event_at
+                interval: DAY
+      - name: event_at
+        description: >-
+          UTC record-creation timestamp assigned after the chain loop terminates
+          and immediately before persistence.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Chain record time
+      - name: event_date
+        description: UTC date foreign key to dim_reverie_dates.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_reverie_dates')
+              field: date_key
+        meta:
+          dimension:
+            label: Chain event date (UTC)
+      - name: outcome_key
+        description: Terminal reason foreign key copied from the source row.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience]
+          - relationships:
+              to: ref('dim_reverie_outcomes')
+              field: outcome_key
+        meta:
+          dimension:
+            label: Terminal reason key
+
+  - name: dim_reverie_outcomes
+    description: >-
+      Grain: one row per terminal reason declared by ReverieChainV1. Primary
+      key: outcome_key. Foreign keys: none. Event time: none (static code
+      vocabulary). Writer/owner: dbt analytics, grounded in
+      orion/schemas/reverie.py and services/orion-thought/app/chain.py. Known
+      limitations: refractory is declared but the current runner exits before
+      persistence, so it is not expected in the fact table.
+    meta:
+      label: Reverie outcomes
+      group_label: Reverie
+      primary_key: outcome_key
+    columns:
+      - name: outcome_key
+        description: Machine terminal-reason key.
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience]
+      - name: outcome_label
+        description: Human-readable terminal-reason label.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Terminal reason
+      - name: outcome_description
+        description: Plain description of the stop condition implemented in the chain runner.
+        tests:
+          - not_null
+      - name: sort_order
+        description: Stable display order, not an outcome score.
+        tests:
+          - not_null
+
+  - name: dim_reverie_dates
+    description: >-
+      Grain: one row per UTC calendar date from the first persisted reverie
+      chain through today. Primary key: date_key. Foreign keys: none. Event
+      time: date_key. Writer/owner: dbt analytics from the minimum staged event
+      date. Known limitations: dates before the first persisted chain are not
+      represented; a zero fact count means no persisted row, not proof that the
+      service was down.
+    meta:
+      label: Reverie dates
+      group_label: Reverie
+      primary_key: date_key
+      default_time_dimension:
+        field: date_key
+        interval: DAY
+      joins:
+        - join: fct_reverie_chains
+          label: Reverie chains
+          sql_on: ${dim_reverie_dates.date_key} = ${fct_reverie_chains.event_date}
+          type: left
+          relationship: one-to-many
+    columns:
+      - name: date_key
+        description: UTC calendar date.
+        tests:
+          - not_null
+          - unique
+      - name: iso_day_of_week
+        description: ISO day number, Monday 1 through Sunday 7.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7]
+              quote: false
+      - name: iso_week_of_year
+        description: ISO week number.
+        tests:
+          - not_null
+      - name: month_start_date
+        description: First UTC date of the calendar month.
+        tests:
+          - not_null
+      - name: quarter_start_date
+        description: First UTC date of the calendar quarter.
+        tests:
+          - not_null
+      - name: year_number
+        description: Four-digit UTC calendar year.
+        tests:
+          - not_null

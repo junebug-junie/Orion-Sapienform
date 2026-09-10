@@ -1,0 +1,16 @@
+orion_analytics:
+  target: prod
+  outputs:
+    prod:
+      type: postgres
+      host: "{{ env_var('ORION_ANALYTICS_HOST') }}"
+      port: "{{ env_var('ORION_ANALYTICS_PORT', '5432') | int }}"
+      user: orion_analytics_transformer
+      pass: "{{ env_var('ORION_ANALYTICS_DBT_PASSWORD') }}"
+      dbname: "{{ env_var('ORION_ANALYTICS_DATABASE', 'conjourney') }}"
+      schema: analytics
+      threads: "{{ env_var('ORION_ANALYTICS_DBT_THREADS', '2') | int }}"
+      connect_timeout: 10
+      retries: 1
+      keepalives_idle: 0
+      search_path: analytics,public

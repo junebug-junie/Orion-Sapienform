@@ -1,0 +1,30 @@
+name: Hub graph workbench
+on:
+  pull_request:
+    paths:
+      - 'services/orion-hub/scripts/graph_workbench*.py'
+      - 'services/orion-hub/tests/test_graph_workbench.py'
+      - 'services/orion-hub/static/js/graph-workbench.js'
+      - 'services/orion-hub/templates/graph_workbench.html'
+      - 'services/orion-hub/templates/index.html'
+      - 'services/orion-hub/app/settings.py'
+      - 'services/orion-hub/scripts/main.py'
+      - 'services/orion-hub/Dockerfile*'
+      - 'services/orion-hub/docker-compose.yml'
+      - 'services/orion-hub/.env_example'
+      - 'services/orion-hub/static/css/graph-workbench.css'
+      - 'services/orion-hub/evals/graph_workbench*'
+      - '.github/workflows/hub-graph-workbench.yml'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pytest-asyncio fastapi==0.111.0 httpx pydantic==2.11.5 pydantic-settings==2.5.2 asyncpg==0.29.0 redis==5.2.1 PyYAML
+      - run: python -m pytest services/orion-hub/tests/test_graph_workbench.py -q
+      - run: node --check services/orion-hub/static/js/graph-workbench.js

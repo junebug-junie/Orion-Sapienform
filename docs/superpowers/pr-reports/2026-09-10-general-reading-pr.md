@@ -4,7 +4,7 @@
 
 Orion can deliberately queue a source from Unified Chat or an autonomous curiosity turn and ask for its durable status later. Both use the existing World Pulse reading workers, queue, wallets, journal and Concept Atlas landing. The patch adds no service, submission HTTP endpoint, intent router, dashboard, graph writer or second queue.
 
-Worktree: `/mnt/scripts/Orion-Sapienform-general-reading`; branch: `feat/general-reading`; base: `aff23fac0` (current `origin/main` at final verification). Prepared for publication as `feat/general-reading`. Seven upstream commits were integrated by fast-forward; the shared checkout and its six unrelated Graphify notes were preserved.
+Worktree: `/mnt/scripts/Orion-Sapienform-general-reading`; branch: `feat/general-reading`; base: `aff23fac0` (current `origin/main` at final verification). Published as [PR #2199](https://github.com/junebug-junie/Orion-Sapienform/pull/2199) from `feat/general-reading`. Seven upstream commits were integrated by fast-forward; the shared checkout and its six unrelated Graphify notes were preserved.
 
 ## Summary
 
@@ -88,6 +88,7 @@ Additive migration: `services/orion-sql-db/manual_migration_general_reading_v1.s
 - `services/orion-harness-governor/requirements.txt`: explicit MCP dependency.
 - Hub, FCC and harness tests; Hub reading eval and minimal test requirements; `.github/workflows/orion-reading-tests.yml`: regression/CI coverage.
 - `config/metrics/metric_definitions.lock.json`: deterministic catalog inventory refresh for the four bus subjects; no numeric cognition metric or detector added.
+- `graphify-out/{graph.json,manifest.json,GRAPH_REPORT.md}`: guarded code-graph refresh; node count increased from 77,504 to 77,716.
 - Hub and harness READMEs, this report and `2026-09-10-general-reading-cli-smoke.json`: operational contract, handoff and sanitized CLI evidence.
 
 ## Env/config changes
@@ -148,6 +149,8 @@ The Hub failures concern UI expectations, model-label fixtures, the field-channe
 
 Exact outputs: `/tmp/general-reading-ci-gate-final.log`, `/tmp/general-reading-durable-runs.log`, `/tmp/general-reading-world-pulse-regression.log`, `/tmp/general-reading-hub-suite.log`, `/tmp/general-reading-harness-suite.log`, `/tmp/general-reading-baseline-error.log`.
 
+Remote CI on implementation commit `604e36692` passed all seven checks: reading; static repo gates; Hub signals cache; signal gateway/adapters/biometrics; SQL writer unit/shape; SQL writer Postgres integration; schedule browser smoke. The [reading workflow](https://github.com/junebug-junie/Orion-Sapienform/actions/runs/34544347176) reproduced **444 passed, 2 warnings in 12.76s** and **6 evals passed in 0.74s**. Final publication metadata and generated graph artifacts are in the followup commit; its check results remain visible on the PR.
+
 ## Evals run
 
 ```bash
@@ -188,6 +191,8 @@ Static gates: metric lineage, definition drift, inner-state registry, scripts st
 /mnt/scripts/Orion-Sapienform/.venv/bin/python scripts/check_async_routes_not_blocking.py
 git diff --check
 ```
+
+Graph maintenance: `scripts/safe_graphify_update.sh` passed, **77,504 → 77,716 nodes**, 168,769 edges. Graph/report/manifest are committed together. `graphify prs --worktrees` and `graphify prs --conflicts` ran before publication; GitHub reported the branch mergeable. Graphify reported 71 existing source files that produced no code nodes; no graph-shrink guard fired and no semantic extraction was run.
 
 ## Review findings fixed
 
@@ -242,4 +247,4 @@ Run one approved chat recommendation and one curiosity recommendation on the dep
 
 ## PR link / completion status
 
-PR publication and remote check status are recorded in the pull request. **DONE_WITH_CONCERNS** — implemented, reviewed and affected gates pass; broader suite failures and production runtime verification remain as documented.
+[PR #2199](https://github.com/junebug-junie/Orion-Sapienform/pull/2199). Remote check results are attached to the PR. **DONE_WITH_CONCERNS** — implemented, reviewed and affected gates pass; broader suite failures and production runtime verification remain as documented.

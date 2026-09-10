@@ -337,3 +337,100 @@ def test_check_resonance_worsening_module_singleton_never_raises():
     with patch("app.resonance_monitor.NotifyClient", side_effect=RuntimeError("boom")):
         check_resonance_worsening(_alert())  # must not raise
     reset_monitor_for_tests()
+
+
+# --- resonance alert cooldown: real dedupe on the "worsening" publish path ---
+#
+# NotificationRequest.dedupe_key/dedupe_window_seconds look like the tool for
+# this, are already accepted by orion-notify, and do nothing (see
+# resonance_alert_cooldown_active's docstring). These tests cover the actual
+# gate: store.resonance_alert_cooldown_active/_mark, wired into _publish.
+
+
+def test_worsening_publish_skips_network_call_when_cooldown_active():
+    with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
+        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+    ), patch(
+        "app.resonance_monitor.load_recent_resonance_alerts"
+    ) as mock_load, patch(
+        "app.resonance_monitor.resonance_alert_cooldown_active", return_value=True
+    ) as mock_active, patch(
+        "app.resonance_monitor.resonance_alert_cooldown_mark"
+    ) as mock_mark:
+        from app.resonance_monitor import ResonanceHealthMonitor
+
+        _client_mock(client_cls)
+        monitor = ResonanceHealthMonitor(settings_obj=_settings())
+
+        mock_load.return_value = _samples(3)
+        monitor.check(_alert())  # healthy baseline
+
+        mock_load.return_value = _samples(6, 3)  # worsening transition
+        monitor.check(_alert())
+
+        # Cooldown active -> no attention_request call, and the transition is
+        # still treated as handled (edge-tracking state advances).
+        client_cls.return_value.attention_request.assert_not_called()
+        mock_active.assert_called_once()
+        mock_mark.assert_not_called()
+        assert monitor._last_healthy["reverie_resonance_worsening:loop:t1"] is False
+
+
+def test_worsening_publish_sends_and_marks_cooldown_when_not_active():
+    with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
+        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+    ), patch(
+        "app.resonance_monitor.load_recent_resonance_alerts"
+    ) as mock_load, patch(
+        "app.resonance_monitor.resonance_alert_cooldown_active", return_value=False
+    ), patch(
+        "app.resonance_monitor.resonance_alert_cooldown_mark"
+    ) as mock_mark:
+        from app.resonance_monitor import ResonanceHealthMonitor
+
+        _client_mock(client_cls, ok=True)
+        monitor = ResonanceHealthMonitor(settings_obj=_settings())
+
+        mock_load.return_value = _samples(3)
+        monitor.check(_alert())  # healthy baseline
+
+        mock_load.return_value = _samples(6, 3)  # worsening transition
+        monitor.check(_alert())
+
+        client_cls.return_value.attention_request.assert_called_once()
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.args[0] == "reverie_resonance_worsening:loop:t1"
+
+
+def test_recovery_publish_is_never_gated_by_cooldown():
+    """The cooldown only applies to the 'worsening' side -- a genuine recovery
+    note must always go out, never be swallowed by the same-key cooldown."""
+    with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
+        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+    ), patch(
+        "app.resonance_monitor.load_recent_resonance_alerts"
+    ) as mock_load, patch(
+        "app.resonance_monitor.resonance_alert_cooldown_active", return_value=True
+    ) as mock_active:
+        from app.resonance_monitor import ResonanceHealthMonitor
+
+        _client_mock(client_cls, ok=True)
+        monitor = ResonanceHealthMonitor(settings_obj=_settings())
+
+        mock_load.return_value = _samples(3)
+        monitor.check(_alert())  # healthy baseline
+
+        mock_load.return_value = _samples(6, 3)  # worsening -> gated by cooldown
+        monitor.check(_alert())
+        client_cls.return_value.attention_request.assert_not_called()
+
+        mock_load.return_value = _samples(3, 6)  # recovers
+        monitor.check(_alert())
+
+        # Recovery note went out despite the cooldown mock still returning True.
+        client_cls.return_value.attention_request.assert_called_once()
+        recovery_kwargs = client_cls.return_value.attention_request.call_args.kwargs
+        assert recovery_kwargs["severity"] == "info"
+        # cooldown_active is only ever consulted for the worsening (non-recovered)
+        # path, never for the recovery note itself.
+        assert mock_active.call_count == 1

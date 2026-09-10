@@ -1175,3 +1175,169 @@ def test_visual_chain_age_minutes_never_raises_on_db_failure() -> None:
         assert store.visual_chain_age_minutes() is None
     finally:
         monkeypatch.undo()
+
+
+# --- resonance_alert_cooldown_active / _mark ---
+#
+# Real dedupe for ResonanceHealthMonitor's "worsening" pages: NotificationRequest.
+# dedupe_key/dedupe_window_seconds are stored by orion-notify but never read
+# back to suppress a repeat (see resonance_alert_cooldown_active's own
+# docstring). This durable per-key timestamp is the actual gate.
+
+
+def _cooldown_read_engine(row: dict | None):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt, _params=None):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def _cooldown_write_engine(captured: dict):
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+
+    class _FakeEngine:
+        def begin(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_resonance_alert_cooldown_active_false_when_no_row() -> None:
+    from datetime import datetime, timezone
+
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _cooldown_read_engine(None))
+    try:
+        assert store.resonance_alert_cooldown_active("k", 3600.0, datetime.now(timezone.utc)) is False
+    finally:
+        monkeypatch.undo()
+
+
+def test_resonance_alert_cooldown_active_true_within_window() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    store = _fresh_store()
+    now = datetime.now(timezone.utc)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _cooldown_read_engine({"last_alerted_at": now - timedelta(seconds=100)}),
+    )
+    try:
+        assert store.resonance_alert_cooldown_active("k", 3600.0, now) is True
+    finally:
+        monkeypatch.undo()
+
+
+def test_resonance_alert_cooldown_active_false_once_window_elapsed() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    store = _fresh_store()
+    now = datetime.now(timezone.utc)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _cooldown_read_engine({"last_alerted_at": now - timedelta(seconds=4000)}),
+    )
+    try:
+        assert store.resonance_alert_cooldown_active("k", 3600.0, now) is False
+    finally:
+        monkeypatch.undo()
+
+
+def test_resonance_alert_cooldown_active_false_when_cooldown_sec_not_positive() -> None:
+    from datetime import datetime, timezone
+
+    store = _fresh_store()
+    # Never even reaches the DB when the cooldown is disabled (<= 0).
+    monkeypatch = pytest.MonkeyPatch()
+
+    class _ExplodingEngine:
+        def connect(self):
+            raise AssertionError("should not query when cooldown_sec <= 0")
+
+    monkeypatch.setattr(store, "_get_engine", lambda: _ExplodingEngine())
+    try:
+        assert store.resonance_alert_cooldown_active("k", 0.0, datetime.now(timezone.utc)) is False
+    finally:
+        monkeypatch.undo()
+
+
+def test_resonance_alert_cooldown_active_never_raises_on_db_failure() -> None:
+    from datetime import datetime, timezone
+
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.resonance_alert_cooldown_active("k", 3600.0, datetime.now(timezone.utc)) is False
+    finally:
+        monkeypatch.undo()
+
+
+def test_resonance_alert_cooldown_mark_upserts_check_key_and_now() -> None:
+    from datetime import datetime, timezone
+
+    store = _fresh_store()
+    now = datetime.now(timezone.utc)
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _cooldown_write_engine(captured))
+    try:
+        assert store.resonance_alert_cooldown_mark("reverie_resonance_worsening:t1", now) is True
+    finally:
+        monkeypatch.undo()
+    assert "ON CONFLICT (check_key)" in captured["stmt"]
+    assert captured["params"] == {"k": "reverie_resonance_worsening:t1", "now": now}
+
+
+def test_resonance_alert_cooldown_mark_never_raises_on_db_failure() -> None:
+    from datetime import datetime, timezone
+
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def begin(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.resonance_alert_cooldown_mark("k", datetime.now(timezone.utc)) is False
+    finally:
+        monkeypatch.undo()

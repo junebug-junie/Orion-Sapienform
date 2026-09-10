@@ -144,6 +144,22 @@ def build_stance_react_context(
         "repair_bundle": slim_repair_bundle_for_prompt(request.repair_bundle),
         "coalition_projection": _coalition_projection(request),
         "metadata": metadata,
+        # Root cause of the recurring "stance_react exec result missing thought
+        # payload" deferred turn (confirmed live 2026-09-10, corr=9c7e9272):
+        # services/orion-cortex-exec/app/router.py's _structured_output_expected()
+        # already treats "stance_react" as JSON-required and REJECTS a reply that
+        # isn't parseable JSON (router.py:393-394) -- but nothing on the request
+        # side ever told the gateway to actually constrain the model to JSON. The
+        # model is free to just answer in prose, which is exactly what happened:
+        # a good, on-topic 348-char reply got discarded whole because it wasn't a
+        # JSON object, producing an empty final_text and this deferred turn.
+        # `{"type": "json_object"}` is the same minimal llama.cpp/vLLM JSON-mode
+        # constraint executor.py's MetacogDraftService branch already uses
+        # successfully (executor.py:3324) -- reusing it here, not inventing a new
+        # mechanism. This dict is forwarded verbatim into gateway_options by
+        # executor.py's existing `ctx.get("response_format")` forwarding
+        # (executor.py:4365-4367); no executor.py change is needed.
+        "response_format": {"type": "json_object"},
     }
     if isinstance(surface_context, dict) and surface_context:
         context["surface_context"] = surface_context

@@ -255,18 +255,70 @@ def test_app_js_wires_autonomy_readiness_fetch_toggle_and_defensive_rendering() 
     # day before this line was added -- the API had real data, the visible
     # "Autonomy Readiness" panel just never asked for it.
     assert "snapshot.graph_consolidation" in app_js
-    assert "graph consolidation: proposals=" in app_js
-    # Every other line in this panel writes "key=value key=value" -- a raw
-    # JSON.stringify() blob inline in a summary line is not a summary a
-    # human reads, and this panel is a real page Juniper opens, not a debug
-    # log. formatCounts() renders counts objects the same way as everything
-    # else here.
-    assert "function formatCounts(counts)" in app_js
-    assert "proposal_states=${formatCounts(cognitive.counts_by_state)}" in app_js
-    assert "decisions=${formatCounts(graphConsolidation.decision_counts)}" in app_js
+    assert "Graph review tuning:" in app_js
+    # This whole panel is a real page Juniper opens, not a debug log --
+    # neither raw JSON.stringify() blobs nor terse "key=value key=value"
+    # shorthand belong in it. describeCounts()/humanize() render backend
+    # counts objects and code-style identifiers as plain sentences instead.
+    assert "function describeCounts(counts, labels)" in app_js
+    assert "function humanize(value)" in app_js
+    assert "describeCounts(cognitive.counts_by_state)" in app_js
+    assert "describeCounts(graphConsolidation.decision_counts, DECISION_ACTION_LABELS)" in app_js
     assert "clearAutonomyReadinessPanel();" in app_js
     assert "refreshAutonomyReadinessPanel().catch((err) => {" in app_js
     assert "const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];" in app_js
+
+
+def test_autonomy_readiness_wording_does_not_invert_safety_meaning() -> None:
+    """Code review (2026-09-10) caught the plain-English rewrite above
+    accidentally inverting two real distinctions: apply_enabled (can Orion
+    act with NO human step) was worded as if it were a safety checkpoint,
+    and "hold" (always automated) was worded the same as "require_review"
+    (the real human-attention state). Both would tell Juniper the opposite
+    of what's actually gating Orion's behavior -- pinned directly so a
+    future wording pass can't silently reintroduce either.
+    """
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "Can apply a change on its own, with no approval step:" in app_js
+    assert "Can save a suggestion for your approval:" not in app_js
+    assert "'paused automatically (not waiting on you)'" in app_js
+    assert "'held for manual review'" not in app_js
+    # "reject" fires for at least 5 distinct reasons in mutation_decision.py
+    # (a malformed patch, a failed trial, missing evidence...) -- only some
+    # of which are about evidence. Claiming one specific, often-wrong reason
+    # is worse than a generic, always-true one.
+    assert "'turned down'" in app_js
+    assert "not enough evidence yet" not in app_js
+    # decision_counts can carry the literal key "none" (api_routes.py) for a
+    # proposal with no decision yet -- must not render as a bare raw token.
+    assert "none: 'no decision yet'" in app_js
+    # A retired control's value must not be worded as an active, present-tense
+    # behavior -- selfMod.retired (set 2026-09-05) is real backend data this
+    # line ignored before the review caught it.
+    assert "selfMod.retired" in app_js
+    assert "That routing logic is retired now" in app_js
+
+
+def test_auto_promote_label_does_not_contradict_the_staged_count_next_to_it() -> None:
+    """Second review pass (2026-09-10): "approved automatically" read as a
+    contradiction next to "N waiting for your approval" a few words later --
+    auto_promote only ever fires for graph_consolidation_param_patch today,
+    and PatchApplier stages it (activate_now=False); an operator still has
+    to promote it. Both phrases describe the same not-yet-live state, so the
+    label must say so instead of implying it already went live.
+    """
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "'approved and staged (still needs your OK to go live)'" in app_js
+    assert "'approved automatically'" not in app_js
+    # DEGRADED must use the same ⚠ convention as every other "something is
+    # wrong" state in this panel, not a leftover ALL-CAPS word.
+    assert "⚠ may not be accurate right now" in app_js
+    assert "DEGRADED" not in app_js
+    # The ⚠ scan cue has to lead the whole row, not sit buried mid-sentence
+    # or after several other holds' worth of text.
+    assert "holdsHaveProblem ? '⚠ '" in app_js
 
 
 def test_template_and_js_include_recall_canary_controls_without_unsafe_actions() -> None:

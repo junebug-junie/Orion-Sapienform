@@ -5760,7 +5760,9 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             # (2026-09-08/09) is real -- real proposals, real trial evidence,
             # real staged writes to SubstratePolicyProfileStore -- but stops
             # at staging; see graph_consolidation.recent_activity below.
-            "summary": "bounded self-mutation with recall/cognitive proposal-shadow controls; graph_consolidation stages real profiles for operator review, no surface auto-activates",
+            # Plain English, not jargon: this string is the first line a
+            # human reads on this page.
+            "summary": "Orion can suggest changes to itself and try some out quietly, but nothing changes how it actually behaves without you approving it first.",
             "safe_next_action": "build_recall_v2_manual_canary",
             "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
             "warnings": [],

@@ -203,6 +203,16 @@ class ThoughtSettings(BaseSettings):
     # detector's lookback window, and that must not page anyone.
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+    # Minimum time between two "worsening" pages for the SAME check key.
+    # detect_resonance's violation_count can tick up and back down by 1 as its
+    # 200-row lookback window slides (documented stale-window limitation), which
+    # flips the edge-trigger healthy<->unhealthy repeatedly even though nothing
+    # new is actually wrong -- live 2026-09-10: 12 separate pages in 24h for one
+    # theme, NotificationRequest.dedupe_key does nothing (see resonance_alert_
+    # cooldown_active's docstring), so this is the real suppression.
+    reverie_resonance_alert_cooldown_sec: float = Field(
+        3600.0, alias="ORION_REVERIE_RESONANCE_ALERT_COOLDOWN_SEC"
+    )
 
     # --- Reverie metacog-timeout health monitor (default-on) ---
     # Same edge-triggered orion-notify attention pattern as the resonance monitor above and

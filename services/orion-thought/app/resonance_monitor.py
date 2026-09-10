@@ -23,6 +23,21 @@ about an already-resolved problem. Paging on "violation_count is INCREASING
 across the last 2 persisted samples for this theme" only fires while the
 loop is actually getting worse, and recovers once it stops.
 
+Live 2026-09-10: that edge-trigger logic is correct and already tested
+(`test_monitor_alerts_only_on_worsening_transition_not_every_tick`), but the
+signal it watches is noisy enough on its own to still spam -- violation_count
+can tick up and back down by 1 as the 200-row lookback window slides one
+event at a time, flipping healthy<->unhealthy<->healthy for the same theme
+many times a day even though nothing new is actually wrong. One theme paged
+12 times in 24 hours this way, 29 total unacked across its history. The fix
+is `store.resonance_alert_cooldown_active`/`_mark`: a real, durable per-key
+cooldown gate on the "worsening" publish path in `_publish` below.
+`NotificationRequest.dedupe_key`/`dedupe_window_seconds` look like the tool
+for this and are already accepted by orion-notify, but nothing there ever
+reads them back to suppress a repeat (confirmed by search 2026-08-14, see
+`BusFallbackAlertState`'s docstring in orion-sql-writer for the same finding
+on a different caller) -- so this durable timestamp is the actual dedupe.
+
 A second difference: the check-key space here is *dynamic* (one per theme_key,
 not a fixed small set of infra checks like the prior three ports), so on top
 of `_has_open_alert`'s per-check restart guard, `ResonanceHealthMonitor` also
@@ -40,6 +55,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
@@ -49,7 +65,11 @@ from orion.notify.client import NotifyClient
 
 from .settings import ThoughtSettings
 from .settings import settings as _default_settings
-from .store import load_recent_resonance_alerts
+from .store import (
+    load_recent_resonance_alerts,
+    resonance_alert_cooldown_active,
+    resonance_alert_cooldown_mark,
+)
 
 logger = logging.getLogger("orion-thought.resonance_monitor")
 
@@ -240,6 +260,17 @@ class ResonanceHealthMonitor:
         else:
             message = f"[Orion reverie] {check.message}"
             severity = check.severity
+            # Real dedupe (NotificationRequest.dedupe_key is stored by
+            # orion-notify but never read back -- see resonance_alert_
+            # cooldown_active's docstring). Only gates the "worsening" side:
+            # that's the one that requires ack and escalates to email, and
+            # the one the stale-window flapping actually spams. A skip here
+            # still returns True so _run_tick_for_check's edge-tracking state
+            # advances normally -- it just doesn't page again this soon.
+            cooldown_sec = self._settings.reverie_resonance_alert_cooldown_sec
+            if resonance_alert_cooldown_active(check.key, cooldown_sec, datetime.now(timezone.utc)):
+                logger.info("resonance_health_alert_cooldown_active key=%s", check.key)
+                return True
         try:
             result = self._client.attention_request(
                 message=message,
@@ -252,7 +283,10 @@ class ResonanceHealthMonitor:
                     "correlation_id": str(uuid4()),
                 },
             )
-            return bool(getattr(result, "ok", False))
+            ok = bool(getattr(result, "ok", False))
+            if ok and not recovered:
+                resonance_alert_cooldown_mark(check.key, datetime.now(timezone.utc))
+            return ok
         except Exception:
             logger.exception("resonance_health_attention_publish_failed key=%s", check.key)
             return False

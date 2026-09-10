@@ -1272,3 +1272,74 @@ def reverie_refractory_suppress(theme_key: str, until) -> bool:
     except Exception as exc:
         logger.warning("reverie refractory suppress failed theme=%s err=%s", theme_key, exc)
         return False
+
+
+def resonance_alert_cooldown_active(check_key: str, cooldown_sec: float, now) -> bool:
+    """True if a resonance-health "worsening" page for this check key was
+    already sent within the last `cooldown_sec` seconds.
+
+    Real dedupe, unlike `NotificationRequest.dedupe_key`/`dedupe_window_seconds`
+    -- those fields are accepted by orion-notify and stored on the row, but
+    nothing there ever reads them back to suppress a repeat (confirmed by
+    search; `BusFallbackAlertState`'s docstring documents the same finding
+    for its own caller). This durable per-key timestamp is the actual gate,
+    same pattern as `reverie_refractory_is_suppressed` above and
+    `BusFallbackAlertState` in orion-sql-writer.
+
+    Fail-open (False on any error): prefer a possibly-duplicate page over
+    silently swallowing a real, worsening incident -- same rationale as
+    `ResonanceHealthMonitor._has_open_alert`.
+    """
+    if cooldown_sec <= 0:
+        return False
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT last_alerted_at FROM substrate_reverie_resonance_alert_cooldown "
+                        "WHERE check_key = :k"
+                    ),
+                    {"k": check_key},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return False
+        last_alerted_at = row.get("last_alerted_at")
+        if last_alerted_at is None:
+            return False
+        return (now - last_alerted_at).total_seconds() < cooldown_sec
+    except Exception as exc:
+        logger.debug("resonance alert cooldown lookup failed key=%s err=%s", check_key, exc)
+        return False
+
+
+def resonance_alert_cooldown_mark(check_key: str, now) -> bool:
+    """Upsert `now` as the last time a "worsening" page fired for this check
+    key. Never raises."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reverie_resonance_alert_cooldown (check_key, last_alerted_at)
+                    VALUES (:k, :now)
+                    ON CONFLICT (check_key)
+                    DO UPDATE SET last_alerted_at = EXCLUDED.last_alerted_at,
+                                  updated_at = now()
+                    """
+                ),
+                {"k": check_key, "now": now},
+            )
+        return True
+    except Exception as exc:
+        logger.warning("resonance alert cooldown mark failed key=%s err=%s", check_key, exc)
+        return False

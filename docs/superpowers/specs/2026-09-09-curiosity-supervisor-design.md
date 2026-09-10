@@ -328,6 +328,18 @@ holds today (not the design doc's now-dated example names):**
 - **No bus channel, no interventions, no `Hop -> Prior` write-side link** —
   all still deliberately out of scope per this section's own plan.
 
+**Post-fix re-verification (same day):** full sweep re-run after switching to
+the `chat` route — **75 hops read, 42 runs, 74 readings produced (1 residual
+truncation, vs. 3 before)**. The one remaining failure (`cf6f68ac804c`,
+truncated at character 143 — far too short to be a context-window issue on a
+131072-token lane) reads as ordinary LLM stochastic noise, not the systematic
+bug; `parse_reading_batch` dropped and logged it exactly as designed, the
+other 41 runs were unaffected. `atlas_prediction_error_territory` still comes
+back `is_circling = True` (now 11 attributed hops); two more priors crossed
+the 3-hop evidence threshold and now report real verdicts:
+`gate_bias_manual_review_7736d5271d97` (10 hops, `True`) and
+`pe_node_value_channel_not_edges_405686e4` (3 hops, `True`).
+
 Full run output: `/tmp/curiosity-supervisor-hop-readings/readings.jsonl` +
 `report.md` (local files, not committed — regenerate with
 `python3 scripts/report_curiosity_supervisor_readings.py`).

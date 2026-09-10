@@ -50,3 +50,88 @@ sources:
             description: Full narrative-bearing payload; excluded from analytics models.
           - name: stored_at
             description: Database insertion time assigned by PostgreSQL.
+      - name: reverie_visual_chain
+        description: >-
+          One row per persisted visual Reverie chain attempt. Written directly
+          by services/orion-thought/app/store.py::persist_reverie_visual_chain.
+          Primary key: chain_id. Event time: created_at. Prompt, continuity
+          text, theme, salience, and JSON payloads are deliberately excluded
+          from analytics model outputs; the JSON continuity marker is read only
+          to derive a nullable per-run boolean.
+        columns:
+          - name: chain_id
+            description: Source primary key generated once per persisted visual chain.
+            tests:
+              - not_null
+              - unique
+          - name: created_at
+            description: UTC application timestamp recorded for the visual chain row.
+            tests:
+              - not_null
+          - name: theme_key
+            description: Internal theme identifier; excluded from analytics marts.
+          - name: terminal_reason
+            description: Code-defined reason the visual chain stopped.
+            tests:
+              - not_null
+              - accepted_values:
+                  values:
+                    - pressure_discharged
+                    - max_steps
+                    - no_coalition
+                    - refractory
+                    - low_salience
+                    - generation_failed
+                    - run_deadline_exceeded
+                    - thermal_refused
+          - name: ema_salience
+            description: Existing chain signal; excluded pending a separate metric-quality review.
+          - name: prior_description
+            description: Narrative continuity text; excluded from analytics models.
+          - name: chain_json
+            description: Narrative-bearing run payload; excluded from analytics models.
+          - name: stored_at
+            description: Database insertion time assigned by PostgreSQL.
+      - name: reverie_visual_artifact
+        description: >-
+          One row per generated image that reached artifact persistence. Written
+          directly by services/orion-thought/app/store.py::persist_reverie_visual_artifact.
+          Primary key: sha256. Foreign key: chain_id to reverie_visual_chain.
+          Paths and caption text are deliberately excluded from analytics
+          models; the source hash remains as the fact primary key and is hidden
+          from Lightdash users.
+        columns:
+          - name: sha256
+            description: Content-addressed source primary key; excluded from Lightdash.
+            tests:
+              - not_null
+              - unique
+          - name: chain_id
+            description: Source foreign key to reverie_visual_chain.chain_id.
+            tests:
+              - not_null
+              - relationships:
+                  to: source('orion_operational', 'reverie_visual_chain')
+                  field: chain_id
+          - name: step_index
+            description: Zero-based image position within the visual chain.
+            tests:
+              - not_null
+          - name: mime
+            description: Image MIME type; excluded from the initial analytics slice.
+          - name: bytes
+            description: Persisted image size in bytes.
+            tests:
+              - not_null
+          - name: width
+            description: Image width; excluded from the initial analytics slice.
+          - name: height
+            description: Image height; excluded from the initial analytics slice.
+          - name: path
+            description: Private storage pointer; excluded from analytics models.
+          - name: description
+            description: Caption text; only a nonblank boolean is derived for analytics.
+          - name: created_at
+            description: UTC application timestamp recorded for the artifact row.
+            tests:
+              - not_null

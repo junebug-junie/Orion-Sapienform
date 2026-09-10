@@ -1,0 +1,173 @@
+name: Reverie Overview
+description: Grain-safe text and visual Reverie activity, shown as separate systems on one dashboard.
+slug: reverie-overview
+spaceSlug: orion-analytics
+version: 1
+tiles:
+  - x: 0
+    "y": 0
+    h: 4
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: How to read this dashboard
+      content: |-
+        Text and visual Reverie are parallel systems with different grains,
+        schedules, and meanings. Their measures stay separate.
+
+        Counts represent rows that reached PostgreSQL persistence. Missing or
+        late rows do not by themselves prove that a service was down. Terminal
+        reasons are recorded stop conditions, not success/failure judgments.
+        Prompts, captions, themes, paths, continuity text, and raw JSON are
+        deliberately excluded.
+    tileSlug: reverie-overview-scope
+  - x: 0
+    "y": 4
+    h: 2
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: Text reverie
+      content: Persisted text chains, recorded terminal reasons, and UTC dates with no persisted rows.
+    tileSlug: reverie-overview-text-heading
+  - x: 0
+    "y": 6
+    h: 8
+    w: 24
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: reverie-activity-by-day
+    tileSlug: reverie-overview-text-activity
+  - x: 24
+    "y": 6
+    h: 8
+    w: 12
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: reverie-chains-by-terminal-reason
+    tileSlug: reverie-overview-text-outcomes
+  - x: 0
+    "y": 14
+    h: 6
+    w: 36
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: reverie-missing-days
+    tileSlug: reverie-overview-text-missing-days
+  - x: 0
+    "y": 20
+    h: 2
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: Visual reverie
+      content: >-
+        Persisted visual chains and artifacts, observation-caption coverage,
+        and chain gaps beyond the 45-minute watchdog threshold.
+    tileSlug: reverie-overview-visual-heading
+  - x: 0
+    "y": 22
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: visual-reverie-chains-by-day
+    tileSlug: reverie-overview-visual-chains
+  - x: 18
+    "y": 22
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: visual-reverie-artifacts-by-day
+    tileSlug: reverie-overview-visual-artifacts
+  - x: 0
+    "y": 30
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: visual-reverie-caption-coverage
+    tileSlug: reverie-overview-visual-caption-coverage
+  - x: 18
+    "y": 30
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: visual-reverie-late-intervals
+    tileSlug: reverie-overview-visual-late-intervals
+  - x: 0
+    "y": 38
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: visual-reverie-chains-by-terminal-reason
+    tileSlug: reverie-overview-visual-outcomes
+filters:
+  metrics: []
+  dimensions:
+    - target:
+        fieldId: fct_reverie_chains_event_at_day
+        fieldName: event_at_day
+        tableName: fct_reverie_chains
+      values:
+        - 30
+      disabled: false
+      operator: inThePast
+      settings:
+        completed: false
+        unitOfTime: days
+      tileTargets:
+        reverie-overview-text-missing-days:
+          fieldId: dim_reverie_dates_date_key_day
+          tableName: dim_reverie_dates
+        reverie-overview-visual-chains:
+          fieldId: fct_visual_reverie_chains_event_at_day
+          tableName: fct_visual_reverie_chains
+        reverie-overview-visual-artifacts:
+          fieldId: fct_visual_reverie_artifacts_event_at_day
+          tableName: fct_visual_reverie_artifacts
+        reverie-overview-visual-caption-coverage:
+          fieldId: fct_visual_reverie_artifacts_event_at_day
+          tableName: fct_visual_reverie_artifacts
+        reverie-overview-visual-late-intervals:
+          fieldId: fct_visual_reverie_chains_event_at_day
+          tableName: fct_visual_reverie_chains
+        reverie-overview-visual-outcomes:
+          fieldId: fct_visual_reverie_chains_event_at_day
+          tableName: fct_visual_reverie_chains
+  tableCalculations: []
+tabs: []
+config:
+  isDateZoomDisabled: false
+  dateZoomGranularities: [Day, Week, Month]
+  defaultDateZoomGranularity: Day

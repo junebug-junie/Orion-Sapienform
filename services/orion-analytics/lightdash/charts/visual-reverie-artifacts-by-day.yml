@@ -1,0 +1,36 @@
+name: Visual reverie persisted images by day
+description: Generated images whose artifact rows reached PostgreSQL persistence by UTC event day.
+tableName: fct_visual_reverie_artifacts
+metricQuery:
+  exploreName: fct_visual_reverie_artifacts
+  dimensions:
+    - fct_visual_reverie_artifacts_event_at_day
+  metrics:
+    - fct_visual_reverie_artifacts_visual_artifact_count
+  filters: {}
+  sorts:
+    - fieldId: fct_visual_reverie_artifacts_event_at_day
+      descending: false
+  limit: 500
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_visual_reverie_artifacts_event_at_day
+      yField:
+        - fct_visual_reverie_artifacts_visual_artifact_count
+    eChartsConfig:
+      series:
+        - type: line
+          encode:
+            xRef:
+              field: fct_visual_reverie_artifacts_event_at_day
+            yRef:
+              field: fct_visual_reverie_artifacts_visual_artifact_count
+          isFilteredOut: false
+slug: visual-reverie-artifacts-by-day
+spaceSlug: orion-analytics
+version: 1

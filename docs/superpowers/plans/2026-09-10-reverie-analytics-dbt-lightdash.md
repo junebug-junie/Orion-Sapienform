@@ -4,6 +4,22 @@
 
 Give Juniper a self-hosted, human-controlled way to explore completed reverie-chain activity without inventing SQL joins, grains, or denominators.
 
+## Follow-up scope correction
+
+The original recommendation to model expectation verdicts next omitted the
+parallel diffusion/visual Reverie system. The corrected sequence is:
+
+1. Text Reverie activity.
+2. Visual/diffusion Reverie, as separate chain-grain and artifact-grain facts.
+3. Reverie expectation scoring.
+4. Cross-Reverie relationships only where a real key exists.
+5. Curiosity analytics.
+6. Governed agent access.
+
+Text and visual facts may share the UTC date and terminal-reason dimensions and
+appear on one dashboard, but they must not be unioned or joined into a
+mixed-grain fact.
+
 ## Current architecture
 
 - PostgreSQL 15 runs from `services/orion-sql-db/docker-compose.yml`; the operational database is `conjourney` and has no warehouse schema.
@@ -58,4 +74,9 @@ Give Juniper a self-hosted, human-controlled way to explore completed reverie-ch
 
 ## Recommended next patch
 
-After this slice has been used, add reverie-thought expectation outcomes only if their live verdict coverage is non-degenerate and the privacy boundary can remain content-free.
+Add the visual/diffusion slice before expectation scoring. Model
+`reverie_visual_chain` and `reverie_visual_artifact` as separate facts, preserve
+their one-to-many relationship with deterministic tests, and expose only
+content-free operational measures. After that slice has been used, add
+reverie-thought expectation outcomes only if their live verdict coverage is
+non-degenerate and the privacy boundary can remain content-free.

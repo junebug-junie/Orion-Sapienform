@@ -1,0 +1,36 @@
+name: Visual reverie caption coverage
+description: Share of persisted visual artifacts with a nonblank VLM observation caption by UTC event day.
+tableName: fct_visual_reverie_artifacts
+metricQuery:
+  exploreName: fct_visual_reverie_artifacts
+  dimensions:
+    - fct_visual_reverie_artifacts_event_at_day
+  metrics:
+    - fct_visual_reverie_artifacts_caption_coverage_rate
+  filters: {}
+  sorts:
+    - fieldId: fct_visual_reverie_artifacts_event_at_day
+      descending: false
+  limit: 500
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_visual_reverie_artifacts_event_at_day
+      yField:
+        - fct_visual_reverie_artifacts_caption_coverage_rate
+    eChartsConfig:
+      series:
+        - type: line
+          encode:
+            xRef:
+              field: fct_visual_reverie_artifacts_event_at_day
+            yRef:
+              field: fct_visual_reverie_artifacts_caption_coverage_rate
+          isFilteredOut: false
+slug: visual-reverie-caption-coverage
+spaceSlug: orion-analytics
+version: 1

@@ -90,7 +90,11 @@ select format(
 )
 \gexec
 grant usage on schema public to orion_analytics_transformer;
-grant select on public.substrate_reverie_chain to orion_analytics_transformer;
+grant select on
+  public.substrate_reverie_chain,
+  public.reverie_visual_chain,
+  public.reverie_visual_artifact
+to orion_analytics_transformer;
 
 grant usage on schema analytics to orion_analytics_reader;
 grant select on all tables in schema analytics to orion_analytics_reader;
@@ -110,8 +114,16 @@ begin
     'orion_analytics_transformer',
     'public.substrate_reverie_chain',
     'select'
+  ) or not has_table_privilege(
+    'orion_analytics_transformer',
+    'public.reverie_visual_chain',
+    'select'
+  ) or not has_table_privilege(
+    'orion_analytics_transformer',
+    'public.reverie_visual_artifact',
+    'select'
   ) then
-    raise exception 'analytics transformer cannot read the selected source';
+    raise exception 'analytics transformer cannot read every declared source';
   end if;
 
   if not has_schema_privilege(
@@ -132,7 +144,11 @@ begin
       and relation.relkind in ('r', 'p', 'v', 'm', 'f')
       and not (
         namespace.nspname = 'public'
-        and relation.relname = 'substrate_reverie_chain'
+        and relation.relname in (
+          'substrate_reverie_chain',
+          'reverie_visual_chain',
+          'reverie_visual_artifact'
+        )
       )
       and (
         relation.relowner = (
@@ -263,7 +279,13 @@ $$;
 commit;
 
 select
-  has_table_privilege('orion_analytics_transformer', 'public.substrate_reverie_chain', 'select') as transformer_can_read_source,
+  has_table_privilege('orion_analytics_transformer', 'public.substrate_reverie_chain', 'select')
+    and has_table_privilege('orion_analytics_transformer', 'public.reverie_visual_chain', 'select')
+    and has_table_privilege('orion_analytics_transformer', 'public.reverie_visual_artifact', 'select')
+      as transformer_can_read_declared_sources,
   has_schema_privilege('orion_analytics_transformer', 'analytics', 'create') as transformer_can_build_views,
-  not has_table_privilege('orion_analytics_reader', 'public.substrate_reverie_chain', 'select') as reader_source_is_denied,
+  not has_table_privilege('orion_analytics_reader', 'public.substrate_reverie_chain', 'select')
+    and not has_table_privilege('orion_analytics_reader', 'public.reverie_visual_chain', 'select')
+    and not has_table_privilege('orion_analytics_reader', 'public.reverie_visual_artifact', 'select')
+      as reader_sources_are_denied,
   not has_schema_privilege('orion_analytics_reader', 'analytics', 'create') as reader_schema_write_is_denied;

@@ -20,3 +20,7 @@ clean-targets:
 models:
   orion_analytics:
     +materialized: view
+
+vars:
+  # Matches orion-thought's live/default visual-chain watchdog threshold.
+  visual_chain_late_interval_minutes: 45

@@ -1,0 +1,36 @@
+name: Visual reverie chains by day
+description: Distinct visual chains that reached PostgreSQL persistence by UTC event day.
+tableName: fct_visual_reverie_chains
+metricQuery:
+  exploreName: fct_visual_reverie_chains
+  dimensions:
+    - fct_visual_reverie_chains_event_at_day
+  metrics:
+    - fct_visual_reverie_chains_visual_chain_count
+  filters: {}
+  sorts:
+    - fieldId: fct_visual_reverie_chains_event_at_day
+      descending: false
+  limit: 500
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_visual_reverie_chains_event_at_day
+      yField:
+        - fct_visual_reverie_chains_visual_chain_count
+    eChartsConfig:
+      series:
+        - type: line
+          encode:
+            xRef:
+              field: fct_visual_reverie_chains_event_at_day
+            yRef:
+              field: fct_visual_reverie_chains_visual_chain_count
+          isFilteredOut: false
+slug: visual-reverie-chains-by-day
+spaceSlug: orion-analytics
+version: 1

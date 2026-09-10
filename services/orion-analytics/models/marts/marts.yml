@@ -79,12 +79,13 @@ models:
 
   - name: dim_reverie_outcomes
     description: >-
-      Grain: one row per terminal reason declared by ReverieChainV1. Primary
-      key: outcome_key. Foreign keys: none. Event time: none (static code
-      vocabulary). Writer/owner: dbt analytics, grounded in
-      orion/schemas/reverie.py and services/orion-thought/app/chain.py. Known
-      limitations: refractory is declared but the current runner exits before
-      persistence, so it is not expected in the fact table.
+      Grain: one row per terminal reason declared by the text or visual
+      Reverie schemas. Primary key: outcome_key. Foreign keys: none. Event
+      time: none (static code vocabulary). Writer/owner: dbt analytics,
+      grounded in orion/schemas/reverie.py,
+      orion/schemas/reverie_visual.py, and the corresponding orion-thought
+      runners. Known limitations: refractory is declared but the current text
+      runner exits before persistence, so it is not expected in the text fact.
     meta:
       label: Reverie outcomes
       group_label: Reverie
@@ -96,7 +97,7 @@ models:
           - not_null
           - unique
           - accepted_values:
-              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience]
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, generation_failed, run_deadline_exceeded, thermal_refused]
       - name: outcome_label
         description: Human-readable terminal-reason label.
         tests:
@@ -115,12 +116,12 @@ models:
 
   - name: dim_reverie_dates
     description: >-
-      Grain: one row per UTC calendar date from the first persisted reverie
-      chain through today. Primary key: date_key. Foreign keys: none. Event
-      time: date_key. Writer/owner: dbt analytics from the minimum staged event
-      date. Known limitations: dates before the first persisted chain are not
-      represented; a zero fact count means no persisted row, not proof that the
-      service was down.
+      Grain: one row per UTC calendar date from the first persisted text or
+      visual reverie chain through today. Primary key: date_key. Foreign keys:
+      none. Event time: date_key. Writer/owner: dbt analytics from the minimum
+      staged event date across both systems. Known limitations: dates before
+      the first persisted reverie chain are not represented; a zero fact count
+      means no persisted row, not proof that a service was down.
     meta:
       label: Reverie dates
       group_label: Reverie
@@ -163,3 +164,279 @@ models:
         description: Four-digit UTC calendar year.
         tests:
           - not_null
+
+  - name: fct_visual_reverie_chains
+    description: >-
+      Grain: one row per persisted visual reverie chain. Primary key:
+      visual_chain_id. Foreign keys: outcome_key to dim_reverie_outcomes and
+      event_date to dim_reverie_dates. Event time: event_at. Writer/owner:
+      derived by dbt from orion-thought's reverie_visual_chain rows and a
+      grain-preserving artifact count. Known limitations: attempts that never
+      reached persistence are absent; late intervals use the configured
+      45-minute watchdog threshold and do not prove service outage.
+    meta:
+      label: Visual reverie chains
+      group_label: Reverie
+      primary_key: visual_chain_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+      joins:
+        - join: dim_reverie_outcomes
+          label: Reverie outcome
+          sql_on: ${fct_visual_reverie_chains.outcome_key} = ${dim_reverie_outcomes.outcome_key}
+          type: left
+          relationship: many-to-one
+        - join: dim_reverie_dates
+          label: Reverie date
+          sql_on: ${fct_visual_reverie_chains.event_date} = ${dim_reverie_dates.date_key}
+          type: left
+          relationship: many-to-one
+    columns:
+      - name: visual_chain_id
+        description: Source primary key; one value means one persisted visual-chain attempt.
+        tests:
+          - not_null
+          - unique
+        meta:
+          metrics:
+            visual_chain_count:
+              type: count_distinct
+              label: Visual chains
+              description: Count of distinct visual-chain IDs that reached PostgreSQL persistence.
+              groups: [Visual reverie activity]
+              default_time_dimension:
+                field: event_at
+                interval: DAY
+      - name: event_at
+        description: UTC application timestamp recorded on the persisted visual chain.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Visual chain record time
+          metrics:
+            minutes_since_last_visual_chain:
+              type: number
+              sql: extract(epoch from (current_timestamp - max(${TABLE}.event_at))) / 60.0
+              label: Minutes since last visual chain
+              description: >-
+                Wall-clock minutes since the newest persisted visual chain in
+                the current query selection. This is a recency indicator, not
+                proof that the worker is healthy or unhealthy.
+              round: 1
+              groups: [Visual reverie health]
+      - name: event_date
+        description: UTC date foreign key to the shared dim_reverie_dates model.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_reverie_dates')
+              field: date_key
+        meta:
+          dimension:
+            label: Visual chain event date (UTC)
+      - name: outcome_key
+        description: Visual terminal-reason foreign key copied from the source row.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, generation_failed, run_deadline_exceeded, thermal_refused]
+          - relationships:
+              to: ref('dim_reverie_outcomes')
+              field: outcome_key
+        meta:
+          dimension:
+            label: Visual terminal reason key
+      - name: continuity_used_flag
+        description: >-
+          One when the producer's per-run marker proves this run used
+          prior-description continuity, zero when it proves it did not, and
+          null for legacy rows without a valid marker. Text and raw JSON are
+          not retained.
+        tests:
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          dimension:
+            label: Continuity used flag
+          metrics:
+            continuity_used_rate:
+              type: average
+              label: Continuity used rate
+              description: >-
+                Share of persisted visual chains with a known per-run marker
+                whose prompt used prior-description continuity. Legacy rows
+                without the marker are excluded from the denominator.
+              format: percent
+              round: 1
+              groups: [Visual reverie continuity]
+      - name: artifact_count
+        description: Persisted artifact rows for this chain, aggregated before joining to preserve chain grain.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Persisted images on chain
+          metrics:
+            images_per_chain:
+              type: average
+              label: Images per chain
+              description: Average persisted artifact count across persisted visual chains, including zero-artifact chains.
+              round: 2
+              groups: [Visual reverie artifacts]
+      - name: missing_artifact_flag
+        description: One when no persisted artifact row references this chain, otherwise zero.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          dimension:
+            label: Missing artifact flag
+          metrics:
+            chains_without_artifact:
+              type: sum
+              label: Chains without an artifact
+              description: Count of persisted visual chains with no persisted artifact row.
+              groups: [Visual reverie artifacts]
+      - name: minutes_since_previous_chain
+        description: >-
+          Minutes between this persisted chain timestamp and the immediately
+          preceding persisted chain timestamp. Null on the first observed row.
+        meta:
+          dimension:
+            label: Minutes since previous visual chain
+      - name: late_interval_flag
+        description: >-
+          One when minutes_since_previous_chain exceeds the 45-minute
+          visual-chain watchdog threshold, otherwise zero. Absence or lateness
+          alone does not prove service outage.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          dimension:
+            label: Late visual-chain interval flag
+          metrics:
+            late_interval_count:
+              type: sum
+              label: Late visual-chain intervals
+              description: Count of persisted-chain gaps longer than the 45-minute watchdog threshold.
+              groups: [Visual reverie health]
+
+  - name: fct_visual_reverie_artifacts
+    description: >-
+      Grain: one row per generated image that reached artifact persistence.
+      Primary key: visual_artifact_id. Foreign keys: visual_chain_id to
+      fct_visual_reverie_chains and event_date to dim_reverie_dates. Event
+      time: event_at. Writer/owner: derived by dbt from orion-thought's
+      reverie_visual_artifact rows. Paths and caption text are excluded; the
+      source hash is hidden, and only safe operational measurements plus a
+      caption-present flag are exposed.
+    meta:
+      label: Visual reverie artifacts
+      group_label: Reverie
+      primary_key: visual_artifact_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+      joins:
+        - join: dim_reverie_dates
+          label: Reverie date
+          sql_on: ${fct_visual_reverie_artifacts.event_date} = ${dim_reverie_dates.date_key}
+          type: left
+          relationship: many-to-one
+    columns:
+      - name: visual_artifact_id
+        description: Content-addressed source primary key; hidden from Lightdash users.
+        tests:
+          - not_null
+          - unique
+        meta:
+          dimension:
+            hidden: true
+          metrics:
+            visual_artifact_count:
+              type: count_distinct
+              label: Persisted images
+              description: Count of distinct generated images whose artifact rows reached PostgreSQL persistence.
+              groups: [Visual reverie artifacts]
+              default_time_dimension:
+                field: event_at
+                interval: DAY
+      - name: visual_chain_id
+        description: Foreign key to the persisted visual chain; kept for grain validation.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('fct_visual_reverie_chains')
+              field: visual_chain_id
+        meta:
+          dimension:
+            hidden: true
+      - name: step_index
+        description: Zero-based artifact position within its visual chain.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Image position in chain
+      - name: artifact_bytes
+        description: Persisted image size in bytes.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Artifact bytes
+          metrics:
+            average_artifact_bytes:
+              type: average
+              label: Average artifact bytes
+              description: Mean byte size of persisted visual artifact rows.
+              round: 0
+              groups: [Visual reverie artifacts]
+      - name: captioned_flag
+        description: One when the persisted artifact has a nonblank observation caption, otherwise zero.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          dimension:
+            label: Captioned image flag
+          metrics:
+            captioned_artifact_count:
+              type: sum
+              label: Captioned/observed images
+              description: Count of persisted visual artifacts with a nonblank VLM observation caption.
+              groups: [Visual reverie observation]
+            caption_coverage_rate:
+              type: average
+              label: Caption coverage rate
+              description: Share of persisted visual artifacts with a nonblank VLM observation caption.
+              format: percent
+              round: 1
+              groups: [Visual reverie observation]
+      - name: event_at
+        description: UTC application timestamp recorded on the persisted artifact.
+        tests:
+          - not_null
+        meta:
+          dimension:
+            label: Artifact record time
+      - name: event_date
+        description: UTC date foreign key to the shared dim_reverie_dates model.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_reverie_dates')
+              field: date_key
+        meta:
+          dimension:
+            label: Artifact event date (UTC)

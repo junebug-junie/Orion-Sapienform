@@ -242,6 +242,21 @@ class TurnOutcome:
 
 
 @dataclass(frozen=True)
+class HopRecord:
+    """One `Hop` node, from a read that spans every run at once.
+
+    Unlike `read_hop_notes` (one already-known `run_id`), the curiosity
+    supervisor (orion/curiosity/supervisor.py) reads the whole graph's hops
+    in one query, so each row must carry its own `run_id` to be grouped back
+    out in Python -- see `read_all_hops` / `group_hops_by_run`.
+    """
+
+    run_id: str
+    n: int
+    note: str
+
+
+@dataclass(frozen=True)
 class RecentRun:
     """One earlier run, as a subject rather than as a pointer."""
 
@@ -440,6 +455,18 @@ LIVE_PRIORS_CYPHER = (
     f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
 )
 
+# EVERY prior regardless of status -- live AND closed, no WHERE at all.
+#
+# For the curiosity supervisor (orion/curiosity/supervisor.py), NOT for the
+# kickoff prompt: a hop can be about a prior Orion has since closed
+# (refuted/retired), and a reading that can only ever say "no match" for
+# those hops would undercount exactly the runs that did settle something.
+# Same LIMIT as the live read -- the supervisor's population is currently 13
+# nodes total, so this bound is not expected to bite; it exists so a
+# runaway graph fails loud (see LIVE_PRIORS_CYPHER's own comment) rather than
+# silently truncating.
+ALL_PRIORS_CYPHER = f"MATCH (p:{LABEL_PRIOR}) RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
+
 # DISTINCT prior_id, not nodes. These two numbers are rendered to Orion as
 # "N live priors, M closed", so they must count CLAIMS. A forked prior is one
 # claim stored twice and counting it twice tells Orion it holds a belief it
@@ -470,11 +497,18 @@ CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 # commas, so there is nothing reliable to split on. Same family as the
 # floats-come-back-as-strings note at the top of this module. One row per
 # (run, claim), grouped in Python where the types are real.
+# Named so a caller reading past this row bound (orion/curiosity/supervisor.py
+# :build_run_order, which repurposes this row-per-(run,claim) read as a
+# run_id -> written_at map for the WHOLE history rather than "recent") can
+# tell it was hit, the same way LIVE_PRIORS_LIMIT/HOPS_LIMIT are named for
+# their own truncation warnings elsewhere in this module.
+RECENT_RUNS_LIMIT = 200
+
 RECENT_RUNS_CYPHER = (
     f"MATCH (t:{LABEL_TURN_OUTCOME}) "
     f"OPTIONAL MATCH (p:{LABEL_PRIOR} {{run_id: t.run_id}}) "
     "RETURN t.run_id AS run_id, t.written_at AS written_at, "
-    "t.continue_note AS continue_note, p.claim AS claim LIMIT 200"
+    f"t.continue_note AS continue_note, p.claim AS claim LIMIT {RECENT_RUNS_LIMIT}"
 )
 
 # Priors Orion has closed, newest first. `last_tested_at` is a string Orion
@@ -598,6 +632,25 @@ def hops_for_run_cypher(run_id: str) -> str:
         f"MATCH (h:{LABEL_HOP}) WHERE h.run_id = '{run_id}' "
         "RETURN h.n AS n, h.note AS note ORDER BY h.n ASC LIMIT 20"
     )
+
+
+# EVERY hop, across every run -- for the curiosity supervisor
+# (orion/curiosity/supervisor.py), which reads history wholesale rather than
+# one run at a time. `hops_for_run_cypher` above cannot answer this: it is
+# scoped to one `run_id` and capped at 20. No `run_id` to validate here --
+# this query takes no parameter at all.
+#
+# `h.run_id` is returned even though it is not sorted on: grouping by run
+# happens in Python (`group_hops_by_run` in supervisor.py), the same choice
+# `build_recent_runs` makes for `RECENT_RUNS_CYPHER` and for the same reason
+# -- `ORDER BY h.run_id, h.n` would sort run ids lexicographically, which is
+# not chronological and would misleadingly look like it was.
+HOPS_LIMIT = 2000
+
+ALL_HOPS_CYPHER = (
+    f"MATCH (h:{LABEL_HOP}) "
+    f"RETURN h.run_id AS run_id, h.n AS n, h.note AS note LIMIT {HOPS_LIMIT}"
+)
 
 
 # --- Row -> dataclass -------------------------------------------------------
@@ -1072,3 +1125,66 @@ def read_hop_notes(reader: WorldviewReader, run_id: str) -> list[tuple[int, str]
         for r in rows
         if str(r.get("note") or "").strip()
     ]
+
+
+def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:
+    """Every `Hop` node in the graph, across every run. `[]` on failure.
+
+    For the curiosity supervisor's history replay
+    (orion/curiosity/supervisor.py) -- everything else in this module reads
+    one run's hops at a time because everything else is building a prompt for
+    the NEXT run. The supervisor's job is to read what already happened, in
+    bulk, so it needs the query `hops_for_run_cypher` cannot answer.
+
+    Rows missing a `run_id` or a non-empty `note` are dropped, the same
+    "cannot be presented back honestly" rule `build_prior` applies to a prior
+    with no id or claim -- a hop stub with no note is not evidence of
+    anything and inventing a reading for it would be worse than skipping it.
+    """
+    try:
+        rows = reader.query(ALL_HOPS_CYPHER)
+    except WorldviewUnavailable as exc:
+        logger.warning("curiosity_all_hops_read_failed err=%s", exc)
+        return []
+    if len(rows) >= HOPS_LIMIT:
+        logger.warning(
+            "curiosity_all_hops_truncated limit=%s -- the hop population has "
+            "outgrown one read; hops past the limit are invisible to the "
+            "supervisor",
+            HOPS_LIMIT,
+        )
+    out: list[HopRecord] = []
+    for row in rows:
+        run_id = str(row.get("run_id") or "").strip()
+        note = str(row.get("note") or "").strip()
+        if not run_id or not note:
+            continue
+        out.append(HopRecord(run_id=run_id, n=_as_int(row.get("n"), 0), note=note))
+    return out
+
+
+def read_all_priors(reader: WorldviewReader) -> list[Prior]:
+    """Every `Prior` -- live and closed both -- collapsed for duplicates.
+
+    Live-only (`LIVE_PRIORS_CYPHER`) is the right read for the next kickoff
+    prompt; it is the wrong read for the supervisor, which must be able to
+    attribute a hop to a prior Orion has SINCE closed -- a hop that settled a
+    claim is exactly the "moved the claim" case acceptance check 3 is about,
+    and it would be invisible if closed priors were left out. `[]` on
+    failure, same convention as every other reader here.
+    """
+    try:
+        rows = reader.query(ALL_PRIORS_CYPHER)
+    except WorldviewUnavailable as exc:
+        logger.warning("curiosity_all_priors_read_failed err=%s", exc)
+        return []
+    priors = [p for p in (build_prior(r) for r in rows) if p is not None]
+    collapsed, duplicates = collapse_duplicate_priors(priors)
+    for prior_id, copies in sorted(duplicates.items()):
+        logger.warning(
+            "curiosity_all_priors_duplicate prior_id=%s copies=%s -- see "
+            "collapse_duplicate_priors' own docstring for what this means",
+            prior_id,
+            copies,
+        )
+    return collapsed

@@ -18005,8 +18005,8 @@
     "semantic_hash": ""
   },
   "orion/curiosity/worldview.py": {
-    "mtime": 1789008493.1572855,
-    "ast_hash": "5cbd4bf89e079f09f905cd3bd609d6ee",
+    "mtime": 1789015158.516926,
+    "ast_hash": "06bddb3b476e5a7bae8f04b8d90c796a",
     "semantic_hash": ""
   },
   "orion/db_readonly.py": {
@@ -30850,8 +30850,38 @@
     "semantic_hash": ""
   },
   "docs/superpowers/specs/2026-09-09-curiosity-supervisor-design.md": {
-    "mtime": 1789008492.524291,
-    "ast_hash": "4d8c006f0bc02a4c97b7d8bf7745ff5d",
+    "mtime": 1789015157.3119347,
+    "ast_hash": "972300ea407a3cbd6c349ac86be19cbe",
+    "semantic_hash": ""
+  },
+  "orion/curiosity/supervisor.py": {
+    "mtime": 1789015158.516926,
+    "ast_hash": "2d2812c5f966c087605436e29bdaec55",
+    "semantic_hash": ""
+  },
+  "orion/schemas/curiosity_supervisor.py": {
+    "mtime": 1789015158.516926,
+    "ast_hash": "3910ab4236fe12484030f82d41385cbf",
+    "semantic_hash": ""
+  },
+  "scripts/report_curiosity_supervisor_readings.py": {
+    "mtime": 1789015158.516926,
+    "ast_hash": "68f70376641cc8d5cf153bae2aebc65c",
+    "semantic_hash": ""
+  },
+  "tests/test_curiosity_supervisor.py": {
+    "mtime": 1789015158.517926,
+    "ast_hash": "e4dba8282f5ed1ef7f822cc9b3767924",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/pr-reports/2026-09-10-curiosity-supervisor-patch1-pr.md": {
+    "mtime": 1789015157.3109345,
+    "ast_hash": "8bf5dd8c6353967eccb3cff3c313a741",
+    "semantic_hash": ""
+  },
+  "orion/cognition/verbs/curiosity_hop_reading.yaml": {
+    "mtime": 1789015158.5159261,
+    "ast_hash": "595ec7dac708a28d5d1474b288589493",
     "semantic_hash": ""
   },
   "services/orion-analytics/evals/reconcile_reverie_analytics.sql": {

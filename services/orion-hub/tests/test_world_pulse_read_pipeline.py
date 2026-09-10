@@ -653,6 +653,30 @@ def test_generate_returns_turn_exception_reason(monkeypatch: pytest.MonkeyPatch)
     assert outcome.fail_reason == "turn_exception:governor unreachable"
 
 
+def test_generate_turn_deferred_reason_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """turn_deferred must truncate like every other reason branch -- mirrors
+    Stage 2's dedicated test for this (a review finding there caught one
+    path skipping `_FAIL_REASON_DETAIL_MAX_LEN`; this closes the matching
+    coverage gap on Stage 1's copy of the same code)."""
+    from scripts.world_pulse_read_pipeline import _FAIL_REASON_DETAIL_MAX_LEN
+
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    long_reason = "x" * (_FAIL_REASON_DETAIL_MAX_LEN + 50)
+
+    async def _deferred(**kwargs):
+        return [{"type": "turn_deferred", "reason": long_reason}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _deferred)
+
+    outcome = asyncio.run(pipe._generate("prompt", "corr-3b"))
+    assert outcome.text == ""
+    assert outcome.fail_reason == f"turn_deferred:{'x' * _FAIL_REASON_DETAIL_MAX_LEN}"
+    assert len(outcome.fail_reason) <= len("turn_deferred:") + _FAIL_REASON_DETAIL_MAX_LEN
+
+
 def test_generate_pulls_real_reason_off_turn_error_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """Same regression class this whole patch exists for on Stage 2: a
     stalled-stream turn_error frame must surface `turn_error:fcc_stream_stalled`,

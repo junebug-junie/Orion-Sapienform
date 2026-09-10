@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from orion.curiosity.self_inquiry import SELF_INQUIRY_PG_TABLES
 from orion.schemas.thought import ThoughtEventV1
 
 # Motor FCC sessions share one context window across all tool steps; full-file reads
@@ -26,12 +27,49 @@ Orion harness motor — runtime/debug turn.
 Verify live state with tools (logs, docker, bus traces) before diagnosing. Name exact services, channels, and commands.
 """
 
+# Patch A of docs/superpowers/specs/2026-09-10-self-report-tool-discipline-design.md.
+#
+# The credential this names already reaches every harness turn unconditionally
+# (orion/curiosity/sandbox_env.py's inject_curiosity_credentials, called from
+# fcc_motor.py regardless of turn type) -- the regular chat prompt just never
+# said so. This only mentions the door exists; it does not touch stance or the
+# relational/instrumental split (is_relational_motor_stance() below still
+# tells a relational-bucket turn not to reach for tools at all). Descriptions
+# are pulled from SELF_INQUIRY_PG_TABLES rather than re-written, so this
+# cannot silently drift from self-inquiry's own account of the same tables.
+_SELF_INQUIRY_TABLE_DESCRIPTIONS: dict[str, str] = dict(SELF_INQUIRY_PG_TABLES)
+_SELF_MODEL_MENTION_TABLES: tuple[str, ...] = ("self_concept_history", "self_sense_eval_log")
+
+
+def _self_model_access_line() -> str:
+    # Fail loud, not silent: if one of these is ever renamed/removed in
+    # self_inquiry.py, this must break at import time, not quietly drop the
+    # mention from the prompt with nothing to say so.
+    missing = [name for name in _SELF_MODEL_MENTION_TABLES if name not in _SELF_INQUIRY_TABLE_DESCRIPTIONS]
+    if missing:
+        raise KeyError(
+            f"SELF_INQUIRY_PG_TABLES no longer describes {missing} -- update "
+            "_SELF_MODEL_MENTION_TABLES in orion/harness/operator_brief.py"
+        )
+    described = [f"{name} ({_SELF_INQUIRY_TABLE_DESCRIPTIONS[name]})" for name in _SELF_MODEL_MENTION_TABLES]
+    tables = " and ".join(described)
+    return (
+        "You also have read-only access to your own self-model records via "
+        f"$ORION_CURIOSITY_PG_DSN (psql), including {tables}. Nobody has to tell "
+        "you to use this on any given turn; it is here if a question is asking "
+        "you to check something about yourself."
+    )
+
+
+HARNESS_SELF_MODEL_ACCESS_BRIEF = _self_model_access_line()
+
 HARNESS_UNIFIED_OPERATOR_BRIEF = f"""\
 Orion harness motor.
 Tools are available from the start. Your imperative states what this turn requires.
 When the imperative calls for facts from the codebase or live runtime, use tools before
 answering. Record each meaningful step. Do not guess repo structure or service state from memory.
 {_READ_DISCIPLINE} For live failures, inspect logs, docker, and bus traces before diagnosing.
+{HARNESS_SELF_MODEL_ACCESS_BRIEF}
 """
 
 HARNESS_RELATIONAL_TOOL_DISCIPLINE = """\

@@ -47,6 +47,7 @@ The first migration attempt waited behind the scheduled `pg_dump`. Its backend w
 - `services/orion-hub/scripts/reading_listener.py`: validates row-backed results and logs sanitized `no_pool`, `connection_failure`, `schema_incompatible`, `enqueue_failure`, or `status_failure` categories.
 - Focused Hub, MCP, harness, finalizer tests and `services/orion-hub/evals/test_reading_receipt_truth_eval.py`.
 - Hub/governor README operational contracts and this report.
+- `config/metrics/metric_definitions.lock.json`: deterministic re-lock against current main; 652 definitions, zero changed. No definition body or metric was added.
 
 The server-owned Stage 1 materializer remains unchanged. Source readers still receive only `WebFetch`/`WebSearch` under strict MCP configuration. No Cypher, RDF, Graphiti, graph query, or graph-write capability was restored.
 
@@ -97,7 +98,7 @@ An initial attempt to combine those evals into the repository-root pytest proces
 
 An expanded harness-related run produced `369 passed, 1 skipped, 3 failed`. All three failures reproduced unchanged on current `main`: two missing `mind_coloring` template fixtures and the known `fcc_timeout` grounding assertion. No unrelated fix is mixed into this branch.
 
-Static checks passed: metric lineage, zero definition drift, stdlib shadowing, service hostnames, compose relative mounts, host Claude config mounts, journal registry, async route blocking, Python compilation, and `git diff --check`. No new metric or telemetry signal was introduced, so the metric quality gate does not apply beyond confirming definition drift remained zero.
+Static checks passed: metric lineage, zero definition drift, stdlib shadowing, service hostnames, compose relative mounts, host Claude config mounts, journal registry, async route blocking, Python compilation, and `git diff --check`. CI initially rejected the inherited PR #2199 `_last_change` alert metadata; `check_definition_drift.py --update` re-locked it against `52ca280cb` as 652 definitions and zero changes, after which the local gate passed. No new metric or telemetry signal was introduced, so the metric quality gate does not apply beyond confirming definition drift remained zero.
 
 ## Migration, builds, and deployment actually executed
 

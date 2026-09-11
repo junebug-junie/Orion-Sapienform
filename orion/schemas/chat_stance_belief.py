@@ -44,3 +44,17 @@ class ChatStanceBeliefLogV1(BaseModel):
     anchor_summary: str | None = None
     degraded_producers: list[str] = Field(default_factory=list)
     lineage_summary: str | None = None
+    # Added 2026-09-10 (docs/superpowers/specs/
+    # 2026-09-10-self-report-tool-discipline-design.md, "Observability,
+    # prerequisite to trusting either patch"): what the stance classifier
+    # actually decided for this turn -- the same interaction_regime/task_mode
+    # orion.harness.operator_brief.is_relational_motor_stance() reads to pick
+    # the harness motor's tool-use discipline. Before this, that decision left
+    # no queryable trace anywhere; diagnosing one misrouted turn required
+    # reconstructing it by hand from the harness step trace. Written as a
+    # second row per turn (same correlation_id) from
+    # publish_chat_stance_classification() in chat_stance.py, once the
+    # LLM-classified brief is known -- earlier in the turn, when this
+    # module's other fields are written, it isn't known yet.
+    interaction_regime: str | None = None
+    task_mode: str | None = None

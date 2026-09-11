@@ -285,6 +285,43 @@ async def _publish_chat_stance_belief(ctx: Dict[str, Any], beliefs: UnifiedRelat
         logger.debug("chat_stance_belief_log_publish_skip error=%s", exc)
 
 
+async def publish_chat_stance_classification(ctx: Dict[str, Any], brief: ChatStanceBrief) -> None:
+    """Durable per-turn record of what the stance classifier actually
+    decided (docs/superpowers/specs/2026-09-10-self-report-tool-discipline-
+    design.md, "Observability, prerequisite to trusting either patch").
+
+    Before this, orion.harness.operator_brief.is_relational_motor_stance()'s
+    interaction_regime/task_mode decision left no queryable trace anywhere --
+    diagnosing one misrouted turn (the eval regression that design doc opens
+    with) required reconstructing the decision by hand from the harness step
+    trace. This writes it, keyed by the same correlation_id every other
+    chat_stance_belief_log row for this turn already carries.
+
+    Separate call site from _publish_chat_stance_belief on purpose: that one
+    fires from build_chat_stance_inputs(), before the LLM has classified this
+    turn -- interaction_regime/task_mode don't exist yet at that point. This
+    fires once executor.py has the classified brief, producing a second row
+    for the same turn rather than an update to the first. That is not a
+    workaround; chat_stance_belief_log is already append-only by design
+    (_publish_chat_stance_belief's own docstring: "appending is cheap,
+    complexity belongs at query time") -- a second row is the same pattern,
+    not a new one. Best-effort/never raises, same discipline as
+    _publish_chat_stance_belief."""
+    try:
+        await asyncio.to_thread(
+            publish_chat_stance_belief_log_sync,
+            anchors=None,
+            degraded_producers=None,
+            lineage=None,
+            shift_kind=None,
+            ctx=ctx,
+            interaction_regime=brief.interaction_regime,
+            task_mode=brief.task_mode,
+        )
+    except Exception as exc:
+        logger.debug("chat_stance_classification_publish_skip error=%s", exc)
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None:

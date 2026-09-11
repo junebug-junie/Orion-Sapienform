@@ -71,6 +71,15 @@ def _normalize_shift_kind(shift_kind: str | None) -> str | None:
     return normalized if normalized in _VALID_SHIFT_KINDS else None
 
 
+def _normalize_stance_field(value: str | None) -> str | None:
+    """interaction_regime/task_mode are free-text (not a Literal) here --
+    stored as the classifier wrote them, lowercased for consistency with
+    is_relational_motor_stance()'s own comparison, empty/None collapsed to
+    None rather than an empty string."""
+    text = str(value).strip().lower() if value else ""
+    return text or None
+
+
 def _sync_redis() -> redis.Redis | None:
     global _redis_client, _last_connect_failure_monotonic
     if _redis_client is not None:
@@ -142,12 +151,18 @@ def publish_chat_stance_belief_log_sync(
     lineage: Any,
     shift_kind: str | None = None,
     ctx: dict[str, Any] | None = None,
+    interaction_regime: str | None = None,
+    task_mode: str | None = None,
 ) -> None:
     """Publish one real ChatStanceBeliefLogV1 row for this turn. Best-effort;
     never raises -- same discipline as publish_substrate_tier_outcomes_sync,
     its direct precedent. Fine-grained (every turn with real beliefs), per
     the self-model design doc's own resolved append-only-granularity
-    question -- appending is cheap, complexity belongs at query time."""
+    question -- appending is cheap, complexity belongs at query time.
+
+    ``interaction_regime``/``task_mode`` are the classifier's own decision
+    for this turn (see the schema module docstring for why they're written
+    from a separate call site than the other fields)."""
     if str(os.getenv("ORION_BUS_ENABLED", "true")).strip().lower() in {"0", "false", "no"}:
         return
     ctx = ctx if isinstance(ctx, dict) else {}
@@ -166,6 +181,8 @@ def publish_chat_stance_belief_log_sync(
         anchor_summary=build_anchor_summary(anchors),
         degraded_producers=sorted(set(degraded_producers or [])),
         lineage_summary=lineage_summary,
+        interaction_regime=_normalize_stance_field(interaction_regime),
+        task_mode=_normalize_stance_field(task_mode),
     )
     envelope = BaseEnvelope(
         kind="chat_stance.belief.write.v1",

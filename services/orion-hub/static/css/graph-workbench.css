@@ -1,0 +1,7 @@
+:root{color-scheme:dark;font:16px/1.5 system-ui,sans-serif;background:#0b1019;color:#e3eaf4}
+body{max-width:1100px;margin:0 auto;padding:32px}a{color:#9fbfff}h1{font-size:2rem;margin:12px 0 0}header p{color:#a8b7cb}
+main{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-top:30px}form,aside{background:#141d2b;border:1px solid #2a3a51;border-radius:14px;padding:24px}
+label{display:block;margin:0 0 14px;color:#bdcadc}input,select,button{box-sizing:border-box;font:inherit;border:1px solid #415673;border-radius:7px;padding:10px;background:#0b1422;color:#fff}input,select{display:block;width:100%;margin-top:5px}
+button{cursor:pointer;background:#254a80}button:disabled{opacity:.5;cursor:wait}.options{display:flex;flex-wrap:wrap;gap:16px}.options>label{flex:1}.options .check{flex-basis:100%}.check input{display:inline;width:auto}
+.actions{display:flex;align-items:center;gap:18px}#source-help,aside p{color:#a8b7cb;font-size:.9rem}#status{min-height:1.5rem;color:#e4c687}#search{margin-bottom:20px}h2{font-size:1.1rem}
+@media(max-width:700px){body{padding:16px}main{grid-template-columns:1fr}}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orion Graph Workbench</title>
+  <link rel="stylesheet" href="/static/css/graph-workbench.css">
+  <script src="/static/js/graph-workbench.js" defer></script>
+</head>
+<body>
+  <header><a href="/">← Orion Hub</a><h1>Graph Workbench</h1><p>Explore Orion’s graphs in Gephi Lite.</p></header>
+  <main>
+    <form id="workbench-form">
+      <label>Graph<select id="source" name="source">
+        <option value="worldview">Worldview</option>
+        <option value="substrate">Substrate concepts</option>
+        <option value="crystallizations">Memory crystallizations</option>
+      </select></label>
+      <label>Find a starting node<input id="query" type="search" placeholder="Name, subject, or phrase" maxlength="200"></label>
+      <button id="search" type="button">Search</button>
+      <label>Starting node<select id="seed"><option value="">Default view</option></select></label>
+      <div class="options">
+        <label>Hops<select id="depth"><option>1</option><option>2</option><option>3</option></select></label>
+        <label>Node limit<input id="limit" type="number" min="1" max="1000" value="300" required></label>
+        <label class="check"><input id="lineage" type="checkbox" checked> Include memory sources and projection references</label>
+      </div>
+      <p id="source-help">Default view: up to 300 worldview nodes. Pick a starting node to explore its neighborhood.</p>
+      <div class="actions"><button id="open" type="submit">Open in Gephi Lite</button><a id="download" hidden>Download GEXF</a></div>
+      <p id="status" role="status" aria-live="polite"></p>
+    </form>
+    <aside><h2>In the workbench</h2>
+      <p>Search for nodes, inspect their attributes in the data table, filter by type, and use layouts and graph metrics. Save a workspace to keep the graph, appearance, and filters together.</p>
+      <p>Each view is a snapshot. Return here to load fresh data or a different neighborhood. Metrics computed in Gephi Lite describe that snapshot.</p>
+      <p>Crystallizations come from canonical memory. Intimate records are excluded. Projection references show stored links; they do not certify a projection’s current health.</p>
+      <a href="/gephi-lite/" target="_blank" rel="noopener">Open an empty workbench ↗</a>
+    </aside>
+  </main>
+</body></html>

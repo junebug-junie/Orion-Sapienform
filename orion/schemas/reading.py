@@ -8,6 +8,17 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 ReadingContext = Literal["unified_chat", "curiosity", "world_pulse"]
+ReadingStatus = Literal[
+    "queued",
+    "started",
+    "stage1_completed",
+    "stage2_started",
+    "landing_pending",
+    "completed",
+    "failed",
+    "skipped",
+    "not_found",
+]
 
 
 class ReadingRequestedV1(BaseModel):
@@ -75,6 +86,59 @@ class ReadingToolResultV1(BaseModel):
     ok: bool
     result: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+
+
+class ReadingStatusReceiptV1(BaseModel):
+    """Minimum typed status returned by the server-owned Postgres queue."""
+
+    model_config = ConfigDict(extra="allow")
+    request_id: UUID
+    status: ReadingStatus
+
+
+class DurableReadingReceiptV1(ReadingStatusReceiptV1):
+    """A row-backed receipt. ``not_found`` can never prove acceptance."""
+
+    status: Literal[
+        "queued",
+        "started",
+        "stage1_completed",
+        "stage2_started",
+        "landing_pending",
+        "completed",
+        "failed",
+        "skipped",
+    ]
+    seed_id: str = Field(min_length=1)
+
+
+class ReadingRecommendationOutcomeV1(BaseModel):
+    """Deterministic FCC grounding derived from one recommendation tool round-trip."""
+
+    model_config = ConfigDict(extra="forbid")
+    tool_use_ids: list[str] = Field(min_length=1)
+    attempt_count: int = Field(ge=1)
+    url: str
+    acceptance: Literal["accepted", "unknown"]
+    request_id: UUID | None = None
+    status: ReadingStatus | None = None
+    source_read: bool = False
+    failure_kind: Literal[
+        "tool_error", "rpc_timeout", "malformed_receipt", "missing_result"
+    ] | None = None
+
+    @model_validator(mode="after")
+    def coherent_outcome(self):
+        if self.attempt_count != len(self.tool_use_ids):
+            raise ValueError("reading attempt count must match tool use IDs")
+        if self.acceptance == "accepted":
+            if self.request_id is None or self.status in (None, "not_found"):
+                raise ValueError("accepted reading outcome requires a durable receipt")
+            if self.failure_kind is not None:
+                raise ValueError("accepted reading outcome cannot carry a failure kind")
+        elif self.request_id is not None or self.status is not None or self.failure_kind is None:
+            raise ValueError("unknown reading outcome requires only a failure kind")
+        return self
 
 
 class ReadingLifecycleV1(BaseModel):

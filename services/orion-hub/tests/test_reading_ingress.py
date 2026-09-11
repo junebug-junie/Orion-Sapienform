@@ -49,16 +49,21 @@ def test_real_tool_and_listener_share_queue_and_emit_typed_acceptance(context, r
     tools = ReadingTools(bus, binding)
 
     async def run():
-        receipt = await tools.invoke("recommend_reading", {"url": "https://example.org/article", "why_now": "Compare this with our prior source"})
+        response = await tools.invoke("recommend_reading", {"url": "https://example.org/article", "why_now": "Compare this with our prior source"})
+        assert response["ok"] is True
+        receipt = response["result"]
         assert receipt["status"] == "queued"
         assert receipt["request"]["requested_by"] == requester
         assert receipt["request"]["invocation_context"] == context
         assert receipt["request"]["parent_run_id"] == "actual-run"
         assert receipt["request"]["parent_trace_id"] == "actual-trace"
-        assert await tools.invoke("reading_status", {"request_id": receipt["request_id"]}) == receipt
+        status_response = await tools.invoke("reading_status", {"request_id": receipt["request_id"]})
+        assert status_response["ok"] is True
+        assert status_response["result"] == receipt
         # Exact duplicate Pub/Sub delivery and MCP retry remain one active row.
         await bus.listener.handle(bus.commands[0])
-        await tools.invoke("recommend_reading", {"url": "https://example.org/article", "why_now": "Compare this with our prior source"})
+        retry = await tools.invoke("recommend_reading", {"url": "https://example.org/article", "why_now": "Compare this with our prior source"})
+        assert retry["result"]["request_id"] == receipt["request_id"]
         assert len(conn.rows) == 1
         event = next(e for c, e in bus.published if c == REQUESTED_CHANNEL)
         assert resolve("ReadingRequestedV1").model_validate(event.payload).requested_by == requester
@@ -87,7 +92,7 @@ def test_reject_public_hostname_with_private_or_mixed_dns(monkeypatch):
         asyncio.run(validate_source_url("https://example.org/article"))
 
 
-def test_rpc_unavailable_never_claims_queued():
+def test_rpc_unavailable_never_claims_queued(caplog):
     conn = _FakeConn()
     bus = RpcBus(conn)
     bus.listener.pool_provider = lambda: None
@@ -96,6 +101,98 @@ def test_rpc_unavailable_never_claims_queued():
         asyncio.run(tools.invoke("recommend_reading", {"url": "https://example.org/a", "why_now": "Read"}))
     assert not conn.rows
     assert not any(c == REQUESTED_CHANNEL for c, _ in bus.published)
+    assert "category=no_pool phase=pool_lookup" in caplog.text
+
+
+@pytest.mark.usefixtures("reading_dns")
+@pytest.mark.parametrize(
+    "error,category",
+    [
+        (type("UndefinedColumn", (Exception,), {"sqlstate": "42703"})("request_json missing"), "schema_incompatible"),
+        (RuntimeError("insert exploded"), "enqueue_failure"),
+        (ValueError("public URL resolved to a private address"), "enqueue_failure"),
+    ],
+)
+def test_listener_logs_sanitized_enqueue_failure_category(monkeypatch, caplog, error, category):
+    async def fail_enqueue(*args, **kwargs):
+        raise error
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "enqueue_reading", fail_enqueue)
+    tools = ReadingTools(
+        bus,
+        ReadingToolBindingV1(
+            invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="acceptance unknown"):
+        asyncio.run(
+            tools.invoke(
+                "recommend_reading",
+                {"url": "https://example.org/a", "why_now": "Read"},
+            )
+        )
+
+    assert f"category={category} phase=enqueue" in caplog.text
+    assert f"exc_type={type(error).__name__}" in caplog.text
+
+
+def test_listener_classifies_pool_acquire_failure_without_leaking_dsn(caplog):
+    class BrokenPool:
+        def acquire(self):
+            raise ConnectionError("postgresql://operator:secret@db.internal/memory unavailable")
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    bus.listener.pool_provider = BrokenPool
+    tools = ReadingTools(
+        bus,
+        ReadingToolBindingV1(
+            invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="acceptance unknown"):
+        asyncio.run(
+            tools.invoke(
+                "recommend_reading",
+                {"url": "https://example.org/a", "why_now": "Read"},
+            )
+        )
+
+    assert "category=connection_failure phase=pool_acquire" in caplog.text
+    assert "postgresql://[REDACTED]@db.internal/memory unavailable" in caplog.text
+    assert "operator:secret" not in caplog.text
+
+
+def test_listener_redacts_quoted_keyword_dsn_password(caplog):
+    class BrokenPool:
+        def acquire(self):
+            raise ConnectionError(
+                "host=db password = 'secret with spaces' user=operator unavailable"
+            )
+
+    bus = RpcBus(_FakeConn())
+    bus.listener.pool_provider = BrokenPool
+    tools = ReadingTools(
+        bus,
+        ReadingToolBindingV1(
+            invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="acceptance unknown"):
+        asyncio.run(
+            tools.invoke(
+                "recommend_reading",
+                {"url": "https://example.org/a", "why_now": "Read"},
+            )
+        )
+
+    assert "password=[REDACTED]" in caplog.text
+    assert "secret with spaces" not in caplog.text
 
 
 @pytest.mark.usefixtures("reading_dns")
@@ -110,7 +207,8 @@ def test_event_failure_after_commit_still_returns_durable_queue_state():
     bus.publish = fail_event
     tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="curiosity", parent_run_id="r", parent_trace_id="t"))
     result = asyncio.run(tools.invoke("recommend_reading", {"url": "https://example.org/a", "why_now": "Read"}))
-    assert result["status"] == "queued"
+    assert result["ok"] is True
+    assert result["result"]["status"] == "queued"
     assert len(conn.rows) == 1
 
 

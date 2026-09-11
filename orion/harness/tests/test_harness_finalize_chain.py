@@ -11,6 +11,7 @@ from orion.harness.tests.fixtures import (
 )
 from orion.harness.runner import build_coalition_snapshot, build_draft_molecule
 from orion.schemas.harness_finalize import GrammarReceiptV1
+from orion.schemas.reading import ReadingRecommendationOutcomeV1
 
 
 @pytest.mark.asyncio
@@ -86,6 +87,64 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
     for call in cortex_calls:
         ctx = call.context  # type: ignore[attr-defined]
         assert ctx["grammar_receipts"] == [{"step": "0", "tool": "", "summary": "step"}]
+
+
+@pytest.mark.asyncio
+async def test_voice_finalize_cannot_reintroduce_false_reading_acceptance() -> None:
+    thought = make_thought()
+    draft_text = (
+        "The reading recommendation was not confirmed by a durable receipt; "
+        "acceptance is unknown."
+    )
+    molecule = build_draft_molecule(
+        correlation_id="c-reading",
+        thought=thought,
+        draft_text=draft_text,
+        grammar_receipts=[],
+        coalition_snapshot=build_coalition_snapshot(thought),
+        repair_overlay=make_repair_overlay(),
+    )
+    outcome = ReadingRecommendationOutcomeV1(
+        tool_use_ids=["tool-1"],
+        attempt_count=1,
+        url="https://example.org/source",
+        acceptance="unknown",
+        failure_kind="tool_error",
+    )
+    reflection = make_reflection()
+
+    async def substrate_client(_mol: object):
+        return make_appraisal()
+
+    async def cortex_client(_req: object):
+        return {"final_text": "ignored"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "orion.harness.finalize.extract_finalize_reflection_payload",
+            lambda _result: reflection.model_dump(mode="json"),
+        )
+        mp.setattr(
+            "orion.harness.finalize.extract_voice_finalize_text",
+            lambda _result: "I logged it and will process it later. FABRICATED_SUMMARY",
+        )
+        chain = await run_harness_finalize_chain(
+            correlation_id="c-reading",
+            draft_text=draft_text,
+            draft_molecule=molecule,
+            thought=thought,
+            grammar_receipts=[],
+            reading_receipts=[outcome],
+            repair_overlay=make_repair_overlay(),
+            user_message="read this later",
+            voice_contract=None,
+            cortex_client=cortex_client,
+            substrate_client=substrate_client,
+        )
+
+    assert "acceptance is unknown" in chain.final_text
+    assert "did not read" in chain.final_text
+    assert "FABRICATED_SUMMARY" not in chain.final_text
 
 
 @pytest.mark.asyncio

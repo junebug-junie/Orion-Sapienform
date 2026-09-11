@@ -19,6 +19,7 @@ from orion.cognition.cortex_payload_extract import (
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
 from orion.embodiment.intents import build_intent
+from orion.harness.reading_receipts import enforce_reading_receipt_grounding
 from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
@@ -32,6 +33,7 @@ from orion.schemas.harness_finalize import (
     HarnessVerdictMoleculeV1,
     SubstrateFinalizeAppraisalV1,
 )
+from orion.schemas.reading import ReadingRecommendationOutcomeV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
 from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
@@ -1258,6 +1260,7 @@ async def run_harness_finalize_chain(
     draft_molecule: HarnessDraftMoleculeV1,
     thought: ThoughtEventV1,
     grammar_receipts: list[GrammarReceiptV1] | None,
+    reading_receipts: list[ReadingRecommendationOutcomeV1] | None = None,
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     voice_contract: AnswerContract | dict[str, Any] | None,
@@ -1394,7 +1397,13 @@ async def run_harness_finalize_chain(
             finalize_loop_tool=finalize_loop_tool,
         )
         raise HarnessFinalizeFailedError(str(exc), partial=partial) from exc
-    finalize_changed = bool(voice_meta.get("finalize_changed"))
+    grounded_final_text = enforce_reading_receipt_grounding(
+        final_text, list(reading_receipts or [])
+    )
+    finalize_changed = bool(voice_meta.get("finalize_changed")) or (
+        grounded_final_text != draft_text
+    )
+    final_text = grounded_final_text
 
     outcome_molecule = await emit_turn_outcome_molecule(
         correlation_id=correlation_id,

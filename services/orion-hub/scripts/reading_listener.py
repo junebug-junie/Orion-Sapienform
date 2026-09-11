@@ -3,14 +3,55 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.schemas.reading import ReadingToolRequestV1, ReadingToolResultV1
+from orion.schemas.reading import (
+    DurableReadingReceiptV1,
+    ReadingStatusReceiptV1,
+    ReadingToolRequestV1,
+    ReadingToolResultV1,
+)
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
 from orion.world_pulse_read.queue import enqueue_reading, reading_status
 
 logger = logging.getLogger(__name__)
+
+_SAFE_ERROR = "reading_queue_unavailable; acceptance unknown, retry the same request"
+_SCHEMA_SQLSTATES = {"42P01", "42703"}
+_CONNECTION_SQLSTATE_PREFIX = "08"
+
+
+def _failure_category(exc: Exception, *, phase: str) -> str:
+    sqlstate = str(getattr(exc, "sqlstate", "") or "")
+    constraint = str(getattr(exc, "constraint_name", "") or "")
+    if sqlstate in _SCHEMA_SQLSTATES or constraint == "world_pulse_read_seed_kind_check":
+        return "schema_incompatible"
+    if (
+        phase == "pool_acquire"
+        or sqlstate.startswith(_CONNECTION_SQLSTATE_PREFIX)
+        or isinstance(exc, (ConnectionError, TimeoutError, OSError))
+    ):
+        return "connection_failure"
+    return "enqueue_failure" if phase == "enqueue" else "status_failure"
+
+
+def _safe_exception_detail(exc: Exception) -> str:
+    """Keep useful SQL/schema detail while redacting credential-bearing DSNs."""
+
+    detail = str(exc).replace("\n", " ").replace("\r", " ")
+    detail = re.sub(
+        r"(?i)(postgres(?:ql)?://)[^\s/@:]+(?::[^\s/@]*)?@",
+        r"\1[REDACTED]@",
+        detail,
+    )
+    detail = re.sub(
+        r"(?i)\b(password|passwd|pwd)\s*=\s*(?:'[^']*'|\"[^\"]*\"|[^\s]+)",
+        r"\1=[REDACTED]",
+        detail,
+    )
+    return detail[:1000]
 
 
 class ReadingListener:
@@ -28,21 +69,59 @@ class ReadingListener:
             return
         try:
             command = ReadingToolRequestV1.model_validate(envelope.payload)
-            pool = self.pool_provider()
-            if pool is None:
-                raise RuntimeError("reading_queue_unavailable")
-            async with pool.acquire() as conn:
-                if command.operation == "recommend_reading":
-                    result = await enqueue_reading(conn, command.request, bus=self.bus, source=self.source_ref)
-                else:
-                    result = await reading_status(conn, command.request_id)
-            response = ReadingToolResultV1(ok=True, result=result)
         except ValueError as exc:
             response = ReadingToolResultV1(ok=False, error=str(exc))
-        except Exception:
-            logger.warning("reading_tool_failed correlation_id=%s", envelope.correlation_id, exc_info=True)
+            await self._publish_response(reply, envelope, response)
+            return
+
+        phase = "pool_acquire"
+        try:
+            pool = self.pool_provider()
+            if pool is None:
+                logger.warning(
+                    "reading_tool_failed correlation_id=%s category=no_pool phase=pool_lookup",
+                    envelope.correlation_id,
+                )
+                response = ReadingToolResultV1(ok=False, error=_SAFE_ERROR)
+                await self._publish_response(reply, envelope, response)
+                return
+            phase = "pool_acquire"
+            async with pool.acquire() as conn:
+                if command.operation == "recommend_reading":
+                    phase = "enqueue"
+                    result = await enqueue_reading(conn, command.request, bus=self.bus, source=self.source_ref)
+                    try:
+                        receipt = DurableReadingReceiptV1.model_validate(result)
+                    except ValueError as exc:
+                        raise RuntimeError("enqueue returned a malformed durable receipt") from exc
+                    if receipt.request_id != command.request.request_id:
+                        raise RuntimeError("enqueue returned a mismatched request_id")
+                else:
+                    phase = "status"
+                    result = await reading_status(conn, command.request_id)
+                    try:
+                        receipt = ReadingStatusReceiptV1.model_validate(result)
+                    except ValueError as exc:
+                        raise RuntimeError("status returned a malformed receipt") from exc
+                    if receipt.request_id != command.request_id:
+                        raise RuntimeError("status returned a mismatched request_id")
+            response = ReadingToolResultV1(ok=True, result=result)
+        except Exception as exc:
+            logger.warning(
+                "reading_tool_failed correlation_id=%s category=%s phase=%s "
+                "exc_type=%s sqlstate=%s detail=%s",
+                envelope.correlation_id,
+                _failure_category(exc, phase=phase),
+                phase,
+                type(exc).__name__,
+                str(getattr(exc, "sqlstate", "") or "none"),
+                _safe_exception_detail(exc),
+            )
             # Do not leak DSNs, SQL or arbitrary exception text into model context.
-            response = ReadingToolResultV1(ok=False, error="reading_queue_unavailable; acceptance unknown, retry the same request")
+            response = ReadingToolResultV1(ok=False, error=_SAFE_ERROR)
+        await self._publish_response(reply, envelope, response)
+
+    async def _publish_response(self, reply, envelope, response):
         await self.bus.publish(reply, BaseEnvelope(
             kind="reading.tool.result.v1", correlation_id=envelope.correlation_id,
             source=self.source_ref, payload=response.model_dump(mode="json"),

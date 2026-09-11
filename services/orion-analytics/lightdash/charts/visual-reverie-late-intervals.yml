@@ -1,0 +1,39 @@
+name: Visual reverie late intervals
+description: >-
+  Persisted-chain gaps longer than the live 45-minute watchdog threshold,
+  grouped by the later chain's UTC event day. A late gap does not by itself
+  prove service outage.
+tableName: fct_visual_reverie_chains
+metricQuery:
+  exploreName: fct_visual_reverie_chains
+  dimensions:
+    - fct_visual_reverie_chains_event_at_day
+  metrics:
+    - fct_visual_reverie_chains_late_interval_count
+  filters: {}
+  sorts:
+    - fieldId: fct_visual_reverie_chains_event_at_day
+      descending: false
+  limit: 500
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_visual_reverie_chains_event_at_day
+      yField:
+        - fct_visual_reverie_chains_late_interval_count
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_visual_reverie_chains_event_at_day
+            yRef:
+              field: fct_visual_reverie_chains_late_interval_count
+          isFilteredOut: false
+slug: visual-reverie-late-intervals
+spaceSlug: orion-analytics
+version: 1

@@ -1,3 +1,5 @@
+FROM ouestware/gephi-lite@sha256:cdbec4b88fbb7e261d45436e8eb0c63bc0384f1020c001fd290dc6ff1eb08d6f AS gephi_lite
+
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 ARG INSTALL_DEV_DEPS=false
@@ -71,6 +73,9 @@ COPY scripts/analysis/measure_autonomy_gate.py /app/vendor/measure_autonomy_gate
 
 # Copy rest of hub service code
 COPY services/orion-hub /app
+
+# Unmodified GPLv3 Gephi Lite distribution, served behind Hub's operator login.
+COPY --from=gephi_lite /var/www/html/ /app/gephi-lite/
 
 # Copy the new entrypoint script into a standard location
 COPY services/orion-hub/entrypoint.sh /usr/local/bin/entrypoint.sh

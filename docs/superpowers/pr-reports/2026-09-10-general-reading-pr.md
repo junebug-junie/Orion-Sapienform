@@ -248,3 +248,26 @@ Run one approved chat recommendation and one curiosity recommendation on the dep
 ## PR link / completion status
 
 [PR #2199](https://github.com/junebug-junie/Orion-Sapienform/pull/2199). Remote check results are attached to the PR. **DONE_WITH_CONCERNS** — implemented, reviewed and affected gates pass; broader suite failures and production runtime verification remain as documented.
+
+## Graphify merge repair — 2026-09-11
+
+After PRs #2196–#2198 landed, the generated graph, report and manifest conflicted. The installed Graphify 0.9.15 merge driver rejected this repo's ~108MB graph at a hardcoded 50MiB limit. Its implementation also ignored the common ancestor and discarded top-level metadata when serializing through NetworkX.
+
+The existing LFS wrapper now invokes `scripts/merge_graphify_json.py`, a bounded stdlib three-way union. It preserves both parents' node/edge/hyperedge identities, applies independent field edits against the merge base, normalizes the two hyperedge storage locations, and refuses competing non-derived scalar edits without overwriting its input. The cap is 512MiB per input/output and 100,000 merged nodes. Graphify remains the report/community renderer; no package installation or host-package patch was needed. The wrapper/installer comments and git attributes document the new seam. The shared checkout's configured driver picks up this fix after the PR is merged and that checkout is updated; this repair explicitly exercised the worktree wrapper.
+
+Merged `origin/main` at `15d76a51e`. The graph is the exact identity union of both parents: **77,966 nodes, 169,111 links, 104 hyperedges**, with zero duplicate or dangling IDs. Both hyperedge representations retain all records. A separate audit verified 2,273 independent attribute edits from this branch and 889 from main, all 6,217 manifest paths, and the staged LFS pointer's SHA256 and byte size. Manifest hashes survive only when they match both an existing parent extraction and the merged file's content; stale extraction channels remain empty. Communities/report were regenerated from the union without a source rescan and say so explicitly. Evidence: [`2026-09-11-general-reading-graph-merge.json`](2026-09-11-general-reading-graph-merge.json).
+
+Verification:
+
+```bash
+python3 -m unittest discover -s tests/scripts -p test_merge_graphify_json.py -v
+# 10 passed in 1.076s; includes >50MiB input and actual Git LFS pointer round trip
+sh -n scripts/graphify_lfs_merge_driver.sh
+# PASS
+# Repeated the dedicated reading gate listed above after merging main:
+# 444 passed, 2 warnings in 9.79s
+/tmp/orion-reading-ci/bin/python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py -q
+# 6 passed in 0.71s
+```
+
+The real ~108MB parent graphs also passed through the worktree's LFS wrapper. A CI step now runs the merger regressions in the static-gates workflow. Independent review found and fixed two additional metadata cases: one-sided deletions dropping retained hyperedges, and root-only versus nested-only hyperedge layouts diverging. The implementation and preservation audit were rechecked after those fixes.

@@ -7025,8 +7025,8 @@
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/app/chat_stance.py": {
-    "mtime": 1789081701.3891141,
-    "ast_hash": "1e9c4b4de80df02efea2471641c6b66f",
+    "mtime": 1789073231.4914184,
+    "ast_hash": "bca1004581df51bda73fc1ba00b2bd1c",
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/app/chat_stance_shared_spine.py": {
@@ -7075,8 +7075,8 @@
     "semantic_hash": "2fbb1a68966679cf73d941a17659dbc0"
   },
   "services/orion-cortex-exec/app/executor.py": {
-    "mtime": 1789081701.391114,
-    "ast_hash": "d52e312088c8bc5be0f973e9ee7fd7e4",
+    "mtime": 1789073231.4934182,
+    "ast_hash": "0f2568902d725edbd308740e32051ef8",
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/app/grammar_emit.py": {
@@ -7520,9 +7520,9 @@
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_mind_handoff_shortcut.py": {
-    "mtime": 1789081701.4011137,
-    "ast_hash": "19cba53f5798a3fadfdfe3f86299bb24",
-    "semantic_hash": "19cba53f5798a3fadfdfe3f86299bb24"
+    "mtime": 1789073231.4934182,
+    "ast_hash": "0bc69fb3b7faca80446b44cc719ee7b1",
+    "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_notify_chat_message_body_fallback.py": {
     "mtime": 1789081701.4011137,
@@ -8720,8 +8720,8 @@
     "semantic_hash": "16f5832ac64659388c22c6bdd3d52b39"
   },
   "services/orion-hub/app/settings.py": {
-    "mtime": 1789081701.4381127,
-    "ast_hash": "e43dd740935442ede9f6541be6b0254e",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-hub/entrypoint.sh": {
@@ -8945,8 +8945,8 @@
     "semantic_hash": ""
   },
   "services/orion-hub/scripts/main.py": {
-    "mtime": 1789083814.9876423,
-    "ast_hash": "07071e8f9b325655ed359c8759362da1",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-hub/scripts/memory_consolidation_draft_routes.py": {
@@ -12010,8 +12010,8 @@
     "semantic_hash": "d296838713f5645c45dec9ea71495931"
   },
   "services/orion-sql-writer/app/main.py": {
-    "mtime": 1789081701.7461045,
-    "ast_hash": "b3b71b6b757c378c3e4ef8d20a29ab8d",
+    "mtime": 1789073231.4934182,
+    "ast_hash": "4ca86b614cd359ed970043a0a3aa1439",
     "semantic_hash": ""
   },
   "services/orion-sql-writer/app/schemas/__init__.py": {
@@ -16835,13 +16835,13 @@
     "semantic_hash": ""
   },
   "services/orion-hub/README.md": {
-    "mtime": 1789083814.9846423,
-    "ast_hash": "c22089a7bfceec5a75a81e519f1f7d57",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-hub/docker-compose.yml": {
-    "mtime": 1789081701.4381127,
-    "ast_hash": "799615ffc0431066b2ec7de0d222d843",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-hub/requirements.txt": {
@@ -16875,8 +16875,8 @@
     "semantic_hash": ""
   },
   "services/orion-hub/templates/index.html": {
-    "mtime": 1789081701.6811063,
-    "ast_hash": "514f91ff777aa1877e5b375df31135cd",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-hub/templates/substrate.html": {
@@ -17640,8 +17640,8 @@
     "semantic_hash": ""
   },
   "scripts/setup_graphify_merge_driver.sh": {
-    "mtime": 1789081701.353115,
-    "ast_hash": "f0b223fdace3dd1f2c8a9683c152aff8",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "tests/test_drive_history_reflection_synthesis.py": {
@@ -18435,8 +18435,8 @@
     "semantic_hash": ""
   },
   "orion/schemas/chat_stance_belief.py": {
-    "mtime": 1789081701.2891169,
-    "ast_hash": "6e142bca0caf02a5e293ea1195675516",
+    "mtime": 1789073231.4904182,
+    "ast_hash": "4140ecb3722cd273503930571091e7f9",
     "semantic_hash": ""
   },
   "orion/schemas/codebase_delta.py": {
@@ -18815,8 +18815,8 @@
     "semantic_hash": ""
   },
   "orion/substrate/chat_stance_belief_bus.py": {
-    "mtime": 1789081701.3111162,
-    "ast_hash": "f7eb49dcb64cc85eb5aad0e5d6fb5db2",
+    "mtime": 1789073231.4904182,
+    "ast_hash": "cf578ce537e2f137bd36be208ea5bc25",
     "semantic_hash": ""
   },
   "orion/substrate/falkor_codec.py": {
@@ -18910,8 +18910,8 @@
     "semantic_hash": ""
   },
   "orion/substrate/tests/test_chat_stance_belief_bus.py": {
-    "mtime": 1789081701.324116,
-    "ast_hash": "aa429c6d8a0760e4eea93b1345fed4ad",
+    "mtime": 1789073231.4904182,
+    "ast_hash": "a0dc95f211f577f06df2ffe8769cc14e",
     "semantic_hash": ""
   },
   "orion/substrate/tests/test_control_surface_history.py": {
@@ -20500,8 +20500,8 @@
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_chat_stance_belief_publish.py": {
-    "mtime": 1789081701.398114,
-    "ast_hash": "586501b65adcabdb12d69e26d46d515a",
+    "mtime": 1789073231.4934182,
+    "ast_hash": "3f63fd2f3ae42c649b4c0f39684d96bf",
     "semantic_hash": ""
   },
   "services/orion-cortex-exec/tests/test_chat_stance_context_provenance_hazard.py": {
@@ -22900,8 +22900,8 @@
     "semantic_hash": ""
   },
   "services/orion-sql-writer/tests/test_chat_stance_belief_log_sql_shape.py": {
-    "mtime": 1789081701.7521045,
-    "ast_hash": "6e4e6e771c5aa7d42303b190ddadc5d2",
+    "mtime": 1789073231.4944181,
+    "ast_hash": "093ac20d10afe2e7826054626d185dc9",
     "semantic_hash": ""
   },
   "services/orion-sql-writer/tests/test_dev_economics_ledger_sql_shape.py": {
@@ -24345,8 +24345,8 @@
     "semantic_hash": ""
   },
   ".github/workflows/orion-static-gates.yml": {
-    "mtime": 1789081700.4901383,
-    "ast_hash": "1e7fb1a6194ce06f3b0acf0d6a52ee4d",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "PUSH_PROOF.md": {
@@ -30515,8 +30515,8 @@
     "semantic_hash": ""
   },
   "scripts/graphify_lfs_merge_driver.sh": {
-    "mtime": 1789081701.3481152,
-    "ast_hash": "18d194ad5e71952b1121e1d31a986b4c",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "scripts/report_ask_claude_dry_run.py": {
@@ -30890,8 +30890,8 @@
     "semantic_hash": ""
   },
   "services/orion-analytics/scripts/bootstrap_analytics_roles.sql": {
-    "mtime": 1789081701.3701146,
-    "ast_hash": "f2fe053d0623f31c7f0b6845a09fa5ad",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-analytics/tests/assert_fact_dimension_joins_do_not_fan_out.sql": {
@@ -30910,13 +30910,13 @@
     "semantic_hash": ""
   },
   "services/orion-analytics/tests/test_analytics_contract.py": {
-    "mtime": 1789081701.3711147,
-    "ast_hash": "f637c05ea82f959a409585e5f419cb31",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "docs/superpowers/plans/2026-09-10-reverie-analytics-dbt-lightdash.md": {
-    "mtime": 1789081700.533137,
-    "ast_hash": "c4bc080c194072ff9c739978c891b871",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "docs/superpowers/pr-reports/2026-09-10-reverie-analytics-dbt-lightdash-pr.md": {
@@ -30925,13 +30925,13 @@
     "semantic_hash": ""
   },
   "services/orion-analytics/README.md": {
-    "mtime": 1789081701.3691146,
-    "ast_hash": "e2a0029c9e0743a7c56bad034c053985",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-analytics/dbt_project.yml": {
-    "mtime": 1789081701.3691146,
-    "ast_hash": "f8cfb635068a32d9f0810a5e89ec62c9",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "services/orion-analytics/docker-compose.yml": {
@@ -31070,8 +31070,8 @@
     "semantic_hash": ""
   },
   "docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md": {
-    "mtime": 1789084621.6733885,
-    "ast_hash": "d43580fec12d8b63cfd3f0991093aa83",
+    "mtime": 0,
+    "ast_hash": "",
     "semantic_hash": ""
   },
   "docs/superpowers/specs/2026-09-10-fcc-motor-step-trace-design.md": {

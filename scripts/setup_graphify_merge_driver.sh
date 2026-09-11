@@ -1,5 +1,5 @@
 #!/bin/sh
-# Registers graphify's union-merge driver for graphify-out/graph.json in the
+# Registers Orion's three-way union-merge driver for graphify-out/graph.json in the
 # CURRENT clone's local git config. This step is NOT committable by git's
 # own design (local git config is never tracked), so every clone/worktree
 # that wants conflict-free graph.json merges must run this script once.
@@ -16,15 +16,9 @@
 
 set -eu
 
-# The driver command is the LFS-aware wrapper, NOT `graphify merge-driver`
-# directly: since graphify-out/graph.json is git-LFS-tracked, git hands a
-# merge driver the raw LFS pointer stub text for %O/%A/%B, never the smudged
-# real content (LFS only smudges on checkout). The wrapper resolves each
-# argument to real content via `git lfs smudge` before calling
-# `graphify merge-driver`, and copies the real merged result back onto the
-# path git expects it at. See scripts/graphify_lfs_merge_driver.sh for the
-# full explanation and scripts/setup_graphify_merge_driver.sh's own git
-# history for the pre-LFS driver command this replaced.
+# The LFS-aware wrapper resolves all three pointer inputs, invokes the
+# repo's stdlib JSON merger, then cleans its result back to an LFS pointer.
+# This handles the repo's >100MB graph and preserves top-level metadata.
 SCRIPT_DIR_FOR_DRIVER="$(cd "$(dirname "$0")" && pwd)"
 EXPECTED_DRIVER="$SCRIPT_DIR_FOR_DRIVER/graphify_lfs_merge_driver.sh %O %A %B"
 ATTR_LINE='graphify-out/graph.json filter=lfs diff=lfs merge=graphify -text'
@@ -64,18 +58,9 @@ case "$CONFIG_PATH" in
     *) CONFIG_PATH="$REPO_ROOT/$CONFIG_PATH" ;;
 esac
 
-# 1. Confirm graphify is available.
-if ! command -v graphify >/dev/null 2>&1; then
-    echo "error: 'graphify' is not on PATH." >&2
-    if [ -x "graphify-out/.graphify_python" ]; then
-        echo "  This repo has a pinned interpreter at graphify-out/.graphify_python" >&2
-        echo "  that can run it as: \$(cat graphify-out/.graphify_python) -m graphify ..." >&2
-        echo "  but the plain 'graphify' command needs to be on PATH for the merge" >&2
-        echo "  driver git invokes to find it." >&2
-    fi
-    echo "  Install it with: uv tool install graphifyy   (or: pip install graphifyy" >&2
-    echo "  if you're not using uv -- check which one this machine actually has" >&2
-    echo "  on PATH before picking a command)." >&2
+# 1. The merger is stdlib-only; no graphify CLI is needed during a git merge.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: python3 is required by the JSON merge helper." >&2
     exit 1
 fi
 

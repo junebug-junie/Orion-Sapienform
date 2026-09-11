@@ -1,0 +1,8 @@
+**/.env
+**/.env.*
+**/__pycache__
+**/node_modules
+.git
+.worktrees
+.claude/worktrees
+graphify-out

@@ -36,3 +36,95 @@ models:
         description: PostgreSQL insertion timestamp.
         tests:
           - not_null
+
+  - name: stg_visual_reverie_chains
+    description: >-
+      Grain: one row per persisted visual reverie chain. Primary key:
+      visual_chain_id. Event time: event_at. Writer/owner: orion-thought via
+      persist_reverie_visual_chain. Known limitations: attempts that never
+      reached persistence are absent. Narrative fields are omitted; only a
+      nullable boolean flag is derived from the producer's per-run
+      continuity_streak marker. Rows predating that marker remain unknown.
+    meta:
+      hidden: true
+    columns:
+      - name: visual_chain_id
+        description: Stable source visual-chain identifier.
+        tests:
+          - not_null
+          - unique
+      - name: event_at
+        description: UTC application timestamp recorded on the visual chain.
+        tests:
+          - not_null
+      - name: event_date
+        description: UTC calendar date derived from event_at.
+        tests:
+          - not_null
+      - name: outcome_key
+        description: Visual terminal-reason key copied without reinterpretation.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, generation_failed, run_deadline_exceeded, thermal_refused]
+      - name: continuity_used_flag
+        description: >-
+          One when the producer's per-run continuity_streak marker proves this
+          run used prior-description continuity, zero when it proves it did
+          not, and null for legacy rows without a valid marker. No text or raw
+          JSON is retained.
+        tests:
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: stored_at
+        description: PostgreSQL insertion timestamp.
+        tests:
+          - not_null
+
+  - name: stg_visual_reverie_artifacts
+    description: >-
+      Grain: one row per persisted visual artifact. Primary key:
+      visual_artifact_id. Foreign key: visual_chain_id. Event time: event_at.
+      Writer/owner: orion-thought via persist_reverie_visual_artifact. Storage
+      paths and caption text are omitted; the source content hash remains as
+      the fact key, while safe operational measures and a nonblank-caption flag
+      remain.
+    meta:
+      hidden: true
+    columns:
+      - name: visual_artifact_id
+        description: Stable source artifact identifier, hidden from Lightdash by the staging model.
+        tests:
+          - not_null
+          - unique
+      - name: visual_chain_id
+        description: Source foreign key to the persisted visual chain.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_visual_reverie_chains')
+              field: visual_chain_id
+      - name: step_index
+        description: Zero-based artifact position within its visual chain.
+        tests:
+          - not_null
+      - name: artifact_bytes
+        description: Persisted image size in bytes.
+        tests:
+          - not_null
+      - name: captioned_flag
+        description: One when the persisted artifact has a nonblank observation caption.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: event_at
+        description: UTC application timestamp recorded on the artifact.
+        tests:
+          - not_null
+      - name: event_date
+        description: UTC calendar date derived from event_at.
+        tests:
+          - not_null

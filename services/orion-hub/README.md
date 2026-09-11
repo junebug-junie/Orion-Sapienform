@@ -5,6 +5,119 @@
 
 ---
 
+## Graph Workbench (Gephi Lite)
+
+Open **Graph Workbench ↗** in Hub's navigation, or `/graph-workbench`.
+Choose a graph, optionally search for a starting node, choose the neighborhood
+depth and node limit, and select **Open in Gephi Lite**. The workbench opens in
+a separate tab. **Data** exposes arbitrary node/edge attributes; **Layout**,
+**Filters**, and **Metrics** are Gephi's own controls. Save a Gephi workspace
+to preserve the snapshot, appearance, and filters. Browser-side edits affect
+that workspace only; there is no write-back to Orion.
+
+The pinned official `ouestware/gephi-lite` image supplies static assets in a
+multi-stage Hub build. FastAPI serves them at `/gephi-lite/` on the same origin;
+no second service, port, proxy, or frontend build is required. Local Python
+runs need those assets copied to `services/orion-hub/gephi-lite/` or should use
+the isolated eval server's `--assets` option. The latter avoids untracked
+compiled assets in the checkout. A missing distribution returns 503.
+
+### Operator access and configuration
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `HUB_GRAPH_WORKBENCH_USERNAME` | `juniper` | HTTP Basic username |
+| `HUB_GRAPH_WORKBENCH_PASSWORD` | empty | Operator password; empty disables all workbench routes |
+
+Set a generated password in the gitignored service `.env`. Use HTTPS or the
+trusted local/Tailscale network. This login covers the new launcher, exports,
+search, source catalog, and Gephi assets. Export responses are `no-store`.
+Gephi cannot send graph data to an external host under the served content
+security policy. External Google font imports are removed in the CSS response,
+using local fallback fonts; the web manifest is served with credentials.
+The upstream bundle requires `unsafe-eval` for its graph libraries; that
+allowance is confined to Gephi's pages. The launcher has a stricter policy.
+Do not add a public GitHub integration or loosen `connect-src` to share memory.
+Saved downloads/workspaces remain private operator artifacts.
+
+### Read-only HTTP contract
+
+- `GET /api/graph-workbench/sources`: the allowlisted sources and node ceiling.
+- `GET /api/graph-workbench/search/{source}?q=...`: at most 20 node choices.
+- `GET /api/graph-workbench/export/{source}.gexf?seed=&depth=1&limit=300&lineage=true`:
+  GEXF 1.2, with `X-Graph-Nodes`, `X-Graph-Edges`, and `X-Graph-Truncated` headers.
+  Source, seed, counts, timestamp, and truncation also appear in GEXF metadata.
+
+| Source | Default selection | Starting node |
+| --- | --- | --- |
+| `worldview` | Up to `limit` nodes in `orion_worldview` | Falkor internal node ID returned by search |
+| `substrate` | Most activated Concept and its neighborhood in `FALKORDB_SUBSTRATE_GRAPH` | Falkor internal node ID returned by search |
+| `crystallizations` | Latest 50 active canonical Postgres records, then lineage within the cap | UUID or `crys_<hex32>` returned by search |
+
+Depth is 1–3; total nodes 1–1000; total edges at most 4000. Sources and projection
+references count toward the same node ceiling. Unknown sources/invalid limits
+return 422, missing nodes 404, and unavailable backends 503. Every Redis query
+uses `GRAPH.RO_QUERY` explicitly with a 2-second server timeout (no writable
+fallback). PostgreSQL reads use read-only transactions and 3-second statement
+timeouts; a crystal export uses a repeatable-read snapshot. Credentials in
+`FALKORDB_URI` are preserved. `RECALL_PG_DSN` and the existing Hub memory pool
+provide canonical memory. No schema migrations or bus events are added.
+
+All node/edge properties are exported generically; maps/lists are JSON strings,
+numeric and boolean properties retain their types, and XML text is escaped.
+Directed endpoints, self-loops, and parallel edge IDs are preserved. Source
+references share a node by `(source_kind, source_id)`; each crystal's excerpt,
+note, and strength remain on its own provenance edge. Projection references
+come from the canonical `projection_refs` JSONB that `projector.py` actually
+writes, and do **not** claim that the external projection is currently healthy.
+Intimate/unknown-sensitivity crystallizations are excluded both from search and
+neighborhood expansion; public/private records remain operator-visible.
+
+The launcher's download is its checked snapshot. Gephi reads the endpoint again
+so its URL remains reloadable; counts may change if the live graph changes
+between those reads. Metrics calculated in Gephi describe its loaded slice,
+not the whole source graph. Existing native Falkor traversal/centrality endpoints
+remain in Concept Atlas; this patch does not add a second analytics engine.
+
+### Verification and rollout
+
+```bash
+python -m pytest services/orion-hub/tests/test_graph_workbench.py -q
+node --check services/orion-hub/static/js/graph-workbench.js
+python scripts/sync_local_env_from_example.py orion-hub --all-keys
+scripts/safe_docker_build.sh orion-hub build hub-app
+```
+
+The browser eval uses real backing stores through an isolated read-only server;
+it never starts Hub's normal workers or runs database bootstrap:
+
+```bash
+python services/orion-hub/evals/graph_workbench_server.py \
+  --env-file /path/to/hub.env --credentials-file /path/to/operator.env \
+  --assets /path/to/extracted/gephi-lite --port 18089
+node services/orion-hub/evals/graph_workbench_browser.cjs \
+  http://127.0.0.1:18089 /path/to/operator.env /path/to/private-evidence-directory
+```
+
+The credentials file contains the two workbench keys. Puppeteer is already a
+Hub dependency; `PUPPETEER_MODULE` can point at a complete installation when the
+worktree's historical tracked `node_modules` is incomplete. Screenshots and
+UI text contain private graph content and must remain outside git.
+
+After deployment approval, restart from the reviewed worktree with its template
+and static mounts pointed there (or merge first and use a fresh deployment
+worktree):
+
+```bash
+ORION_HOST_REPO_ROOT="$PWD" scripts/safe_docker_build.sh orion-hub up -d --no-deps hub-app
+```
+
+Disable by clearing `HUB_GRAPH_WORKBENCH_PASSWORD` and restarting Hub. Graph data
+is untouched. Existing atlases remain available until replacement parity is
+verified. Gephi Lite is GPLv3; upstream source and license:
+https://github.com/gephi/gephi-lite. The Dockerfile pins the tested image digest;
+repeat the browser eval before changing it.
+
 ## 📖 Overview
 
 **Orion Hub** is the browser gateway into the mesh.

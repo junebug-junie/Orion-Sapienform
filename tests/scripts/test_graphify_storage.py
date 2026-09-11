@@ -96,7 +96,8 @@ class StorageTests(unittest.TestCase):
         data['links'] = [{'source': 'missing', 'target': '0'}]
         with self.assertRaisesRegex(ValueError, 'absent'):
             merger.validate(data)
-        # Sparse >512 MiB real JSON: no expensive padding string allocation.
+        # Probe metadata above the old byte ceiling; the integration eval
+        # separately exercises a real 513 MiB JSON input.
         paths = [self.base / name for name in ('base.json', 'current.json', 'other.json')]
         for path in paths:
             path.write_text(json.dumps(self.graph))
@@ -182,6 +183,36 @@ class StorageTests(unittest.TestCase):
              patch.object(graphify_local, 'configure', return_value=(self.repo, output)), \
              patch.object(sys, 'argv', ['graphify', 'watch']):
             graphify_local.main()
+
+    def test_pull_untracking_graph_keeps_residual_notes_and_seeds_core(self):
+        seed = self.base / 'seed'
+        storage.copy_verified(self.source, seed, bundle=True)
+        for name in ('graph.json', 'manifest.json', 'GRAPH_REPORT.md'):
+            (self.source / name).unlink()  # What the untracking merge removes.
+        output = storage.initialize(self.repo, seed)
+        self.assertEqual(json.loads((output / 'graph.json').read_text()), self.graph)
+        self.assertEqual((output / 'memory/note.md').read_text(), 'keep this query note')
+        self.assertEqual((output / '2026-07-29/graph.json').read_text(), 'historical bytes')
+        original, = output.parent.glob('original-*')
+        self.assertEqual((original / 'memory/note.md').read_text(), 'keep this query note')
+
+    def test_interrupted_residual_copy_retries_complete_note(self):
+        seed = self.base / 'seed'
+        storage.copy_verified(self.source, seed, bundle=True)
+        for name in ('graph.json', 'manifest.json', 'GRAPH_REPORT.md'):
+            (self.source / name).unlink()
+        original_copy = storage.shutil.copy2
+        def interrupted(source, destination):
+            if Path(source).name == 'note.md':
+                Path(destination).write_text('partial')
+                raise OSError('disk full')
+            return original_copy(source, destination)
+        with patch.object(storage.shutil, 'copy2', side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                storage.initialize(self.repo, seed)
+        output = storage.initialize(self.repo, seed)
+        self.assertEqual((output / 'memory/note.md').read_text(), 'keep this query note')
+        self.assertFalse(storage.check_local(self.repo)['dirty'])
 
     def test_failed_copy_does_not_move_original(self):
         with patch.object(storage.shutil, 'copy2', side_effect=OSError('disk full')):

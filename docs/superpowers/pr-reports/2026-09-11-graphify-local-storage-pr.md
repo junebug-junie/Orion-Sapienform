@@ -15,10 +15,10 @@ This follows PR #2199 and is initially based on `feat/general-reading`. Merge #2
 
 ## Validation
 
-- Storage regression gate: 10 tests, including lossless migration, separate worktrees, worktree removal, retry after interrupted checkpoint, full-bundle recovery, publication isolation, native-command transaction behavior, watcher lock scope, and graphs above 100,000 nodes.
+- Storage regression gate: 12 tests, including lossless migration, initialization after Git untracks the core but leaves query notes, interrupted note-copy recovery, separate worktrees, worktree removal, retry after interrupted checkpoint, full-bundle recovery, publication isolation, native-command transaction behavior, watcher lock scope, and graphs above 100,000 nodes.
 - Legacy union/LFS regression gate: 10 tests.
 - Safe-update, integrity guard and env-sync regression tests: 44 tests.
-- Consumer tests cover external storage and publication with unchanged source SHA. Cortex’s original 52-test suite passed against the real local graph; additional focused publication tests pass. A small deterministic fixture supports fresh CI clones without operator graph data; explicitly real-data smokes skip there.
+- Consumer tests cover external storage and publication with unchanged source SHA. Cortex’s original 52-test suite passed against the real local graph; additional focused publication tests pass. A fresh checkout with no graph artifacts passed 51 Cortex tests and skipped only the two explicit real-data smokes using the small deterministic fixture.
 - All three affected Docker service builds succeeded. Network-disabled, read-only container smokes exercised actual graph evidence loading. No production containers were restarted.
 - Compose mount gate, co-creation/enrichment parity gates, script shadowing, metric-definition drift, shell syntax and `git diff --check` pass. Cortex’s standalone parity helper cannot parse its existing Compose `!override` tag; Docker-rendered configuration verifies the graph environment and read-only mount across all four lanes. CI now refuses indexed `graphify-out` artifacts and runs the local-storage regression gate.
 - Native graph refresh was attempted through the safe wrapper. Graphify refused a 77,966→77,858-node rebuild; the wrapper restored the complete original graph/report/manifest. A fresh extraction is **UNVERIFIED**; migration and artifact preservation are verified. The node-loss protection was retained.
@@ -29,7 +29,7 @@ Review used the repository’s requesting-code-review skill in a subagent.
 
 - Legitimate reflection/label changes could be undone by recovery. Fix: transact native mutations and checkpoint sidecars. Evidence: actual native `save-result`/`reflect` followed by the guard preserves learning; regression test also covers failure rollback.
 - Publication could pair graph and report from different checkpoints. Fix: resolve one directory before both reads. Evidence: producer tests and container reads.
-- Interrupted initialization could leave no initial checkpoint. Fix: retry checkpoint creation before linking/returning. Evidence: injected disk-full failure followed by successful retry.
+- Interrupted initialization could leave no initial checkpoint or a partial query note. Fix: retry checkpoint creation and copy residual notes through verified temporary files before atomic replacement. Evidence: disk-full injection followed by successful retries with full active notes.
 - An idle watcher could hold the lock indefinitely. Fix: transact each rebuild callback. Evidence: watcher regression verifies unlocked observer lifetime and locked/checkpointed rebuild; a real idle native watcher permitted a concurrent query in 0.421 seconds. The smoke supplied optional watchdog through a temporary dependency directory.
 - Graph-only publications could be skipped when source SHA stays the same. Fix: observe checkpoint identity and structural values; include publication identity in Cortex memoization. Evidence: same-SHA publication regressions for both readers.
 

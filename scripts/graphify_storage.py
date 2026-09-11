@@ -107,7 +107,9 @@ def initialize(root, seed=None):
         if link.is_symlink():
             return initialize(root, seed)
         if not output.exists():
-            source = link if link.is_dir() else Path(seed) if seed else storage_root() / 'published/graphify-out'
+            # Removing formerly tracked artifacts can leave only ignored caches
+            # or untracked query notes. Seed missing core data from publication.
+            source = link if (link / 'graph.json').is_file() else Path(seed) if seed else storage_root() / 'published/graphify-out'
             validate_bundle(source)
             with locked(source.parent) if source.is_relative_to(storage_root()) else nullcontext():
                 staging = output.parent / ('import-' + uuid.uuid4().hex)
@@ -116,8 +118,25 @@ def initialize(root, seed=None):
         if not (output.parent / "checkpoint").is_dir():
             checkpoint(output)
         if link.exists():
-            # Preserve the entire old output (archives, query notes, caches too),
-            # even when a branch switch found an existing private storage bundle.
+            # Preserve residual notes/caches left behind when Git removes its
+            # old tracked bundle. Existing local files win; originals below
+            # retain any same-name collision without overwriting either copy.
+            for path in link.rglob('*'):
+                relative = path.relative_to(link)
+                if path.is_file() and str(relative) not in BUNDLE:
+                    destination = output / relative
+                    if not destination.exists():
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        temporary = destination.with_name('.import-' + uuid.uuid4().hex)
+                        try:
+                            shutil.copy2(path, temporary)
+                            with path.open('rb') as source_file, temporary.open('rb') as copied_file:
+                                if hashlib.file_digest(source_file, 'sha256').digest() != hashlib.file_digest(copied_file, 'sha256').digest():
+                                    raise ValueError(f'residual copy verification failed: {path}')
+                            temporary.replace(destination)
+                        finally:
+                            temporary.unlink(missing_ok=True)
+            # Preserve the entire old output, even after a branch switch.
             local_backup = root / ('.graphify-migrated-' + uuid.uuid4().hex)
             link.rename(local_backup)
             link.symlink_to(output, target_is_directory=True)

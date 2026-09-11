@@ -13,14 +13,16 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional
-from uuid import uuid4
+from uuid import uuid4, uuid5, NAMESPACE_URL
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.llm_json import parse_json_object
-from orion.curiosity.worldview import _clip
-from orion.journaler.schemas import JournalEntryWriteV1
+from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
+from orion.schemas.reading import ReadingRequestedV1
+from orion.world_pulse_read.events import publish_lifecycle
+from orion.world_pulse_read.urls import validate_source_url
 from orion.schemas.world_pulse_read import (
     WorldPulseReadHandoffV1,
     WorldPulseReadSeedV1,
@@ -30,12 +32,15 @@ from orion.world_pulse_read.queue import (
     RECLAIM_REASON_PROCESS_RESTART,
     RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_stage2_seed,
-    enqueue_seeds,
+    enqueue_reading,
+    confirm_landings,
+    pending_journal_landings,
+    _json_object,
+    request_for_seed,
     mark_stage2_done,
     mark_stage2_failed,
     reclaim_stale_stage2_claimed,
 )
-from orion.world_pulse_read.seeds import make_seed_id
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     read_wallet_a_state,
@@ -121,126 +126,12 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     return payload
 
 
-def _priors_write_section(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
-    """The Cypher instruction that actually lands `:Prior` nodes on
-    `orion_worldview` from this handoff's `candidate_priors`.
-
-    Before this function existed, Stage 2 never told the model to write
-    anything to `orion_worldview` at all -- `_build_stage2_prompt` only asked
-    for `summary` / `need_stage1_urls` JSON fields, so the design doc's
-    "curiosity priors" landing (see
-    `docs/superpowers/specs/2026-09-06-world-pulse-concept-read-pipeline-design.md`,
-    "Landings") was never wired even though Stage 1 already populates
-    `candidate_priors` on every handoff.
-
-    Reuses the exact MERGE-on-`prior_id`-only shape
-    `orion/curiosity/kickoff_prompt.py::_write_section` teaches Curiosity
-    Atlas, for the same reason stated there: a CREATE here forks the claim
-    into two nodes that both answer to one id (`ed05344f8a39`, live
-    2026-08-27), and MERGE binds the existing node while ON CREATE SET makes
-    saying it again free instead of destructive.
-
-    `producer` / `source_kind` mirror the naming (not the exact values) of
-    Concept-Atlas provenance (`orion/substrate/adapters/world_pulse_read.py`
-    sets `source_kind="world_pulse.read"` / `producer="world_pulse_read_pipeline"`
-    on the Concept Atlas side) so a `:Prior` this pipeline wrote carries
-    distinguishing tags a Curiosity-Atlas-formed prior does not. NOTE: as of
-    this patch nothing reads these two properties back yet -- neither
-    `orion/curiosity/worldview.py`'s reader nor any other `:Prior` consumer in
-    the repo selects `producer`/`source_kind`/`stage1_trace_id`/
-    `stage2_trace_id`/`seed_id`. They are inspectable today only via a direct
-    Cypher probe (`MATCH (p:Prior {producer:"world_pulse_read_stage2"})
-    RETURN p`), which is a write-only landing, not yet a read-side
-    distinction -- wiring a reader is real follow-up work, not a claim this
-    patch makes. `stage1_trace_id` / `stage2_trace_id` / `seed_id` mirror the
-    naming `_journal` already uses below for the same two trace ids, so a
-    Prior node can be traced back to the exact world-pulse seed and read that
-    produced it, the same way Concept Atlas's `evidence_refs` traces a
-    concept node back to its article.
-
-    Deliberately NOT `p.run_id` / `p.last_run_id` -- those names are Curiosity
-    Atlas's own turn-footprint linkage (`worldview.run_footprint_cypher`,
-    `_write_section`'s TESTING pattern) keyed on a `uuid4().hex[:12]`
-    Curiosity generates per turn. Stamping a world-pulse seed's `run_id`
-    (e.g. `"r1"`) into that same property would not break the footprint read
-    -- the strings will not collide -- but it would overload one property
-    name with two unrelated id formats for no reason; `seed_id` +
-    `stage1_trace_id`/`stage2_trace_id` already carry the linkage this
-    pipeline needs.
-
-    THE redis-cli LINE IS NOT DECORATION. Curiosity's own version of this
-    instruction (`kickoff_prompt.py::_access_section`) is always paired with
-    the literal command that reaches the graph, because a prompt that names a
-    capability without the command to use it is exactly the failure that
-    module's own header warns about. `ORION_CURIOSITY_GRAPH_*` are stamped
-    into every FCC turn's subprocess environment unconditionally
-    (`orion/curiosity/sandbox_env.py`, injected from
-    `orion/harness/fcc_motor.py::_build_subprocess_env` regardless of which
-    pipeline triggered the turn), so Stage 2 turns already carry the same
-    credentials Curiosity turns do -- this just has to say so.
-
-    Free text (`cand.claim`, `seed.url`) goes through `worldview._clip`
-    before being embedded, the same guard the kickoff prompt uses for
-    prior/claim previews -- Stage 1's `candidate_priors` are model-written
-    summaries of arbitrary web content and can contain a stray quote or
-    embedded newline that would otherwise break the bulleted example's
-    formatting.
-
-    Returns "" when there is nothing to write -- an empty `candidate_priors`
-    list must not produce an instruction to write a prior anyway.
-    """
-    if not handoff.candidate_priors:
-        return ""
-    seed = handoff.seed_ref
-    candidates = "\n".join(
-        f'  - claim: "{_clip(cand.claim, 200)}" (candidate confidence={cand.confidence})'
-        for cand in handoff.candidate_priors
-    )
-    formed_from = _clip(f"world_pulse_read:{seed.url}", 200)
-    graph_uri = (
-        'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
-        '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
-    )
-    return (
-        "\n\n"
-        "WRITE THE CANDIDATE PRIORS ABOVE TO YOUR OWN GRAPH "
-        "(orion_worldview), for each one you still believe after reading the "
-        "handoff. Reach it the same way you would reach any FalkorDB write "
-        "this turn:\n\n"
-        f'    redis-cli -u "{graph_uri}" \\\n'
-        '      GRAPH.QUERY $ORION_CURIOSITY_GRAPH_OWN "<your MERGE, below>"\n\n'
-        f"{candidates}\n\n"
-        '    MERGE (p:Prior {prior_id: "<something unique>"})\n'
-        "    ON CREATE SET\n"
-        '      p.claim = "<the claim, in one sentence>",\n'
-        "      p.confidence = <0.0-1.0>, "
-        'p.status = "open", p.times_tested = 0,\n'
-        f'      p.formed_from = "{formed_from}", '
-        'p.last_tested_at = "<iso timestamp>",\n'
-        '      p.producer = "world_pulse_read_stage2", '
-        'p.source_kind = "world_pulse.read",\n'
-        f'      p.stage1_trace_id = "{handoff.trace_id}", '
-        f'p.stage2_trace_id = "{trace_id}", p.seed_id = "{seed.seed_id}"\n\n'
-        "MERGE on prior_id ALONE -- put nothing else inside the braces, or a "
-        "changed property forks the claim into a second node next time this "
-        "seed runs. producer/source_kind mark this prior as written by this "
-        "world-pulse pipeline, not by your own separate curiosity loop, so "
-        "the two stay distinguishable later. stage1_trace_id/stage2_trace_id/"
-        "seed_id link the prior back to this exact read even after it is "
-        "tested and revised many runs from now.\n\n"
-        "If a candidate restates something you already hold, MATCH it on its "
-        "own first and look before deciding whether to MERGE a new claim or "
-        "leave the existing one alone. Skip any candidate you do not "
-        "actually believe after reading the handoff -- writing all of them "
-        "unconditionally is not the goal."
-    )
-
-
 def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
     payload = handoff.model_dump(mode="json")
     return (
-        "You are continuing a world-pulse read. Start from this Stage 1 handoff "
-        "JSON (do not ignore it). Form/test priors, note hops, and return ONE "
+        "You are continuing a deliberate source reading. Start from this Stage 1 handoff "
+        "JSON (do not ignore it). Treat source claims as attributed candidates, not settled truth. "
+        "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors, note hops, and return ONE "
         "JSON object — no prose outside a fenced JSON block.\n"
         f"handoff={payload}\n"
         "Fields: summary (non-empty), need_stage1_urls (list of http(s) URLs "
@@ -248,7 +139,7 @@ def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str
         f"trace_id={trace_id!r}, created_at (ISO-8601 UTC), "
         f"seed_id={handoff.seed_ref.seed_id!r}, "
         "producer_hint=world_pulse_read_stage2."
-    ) + _priors_write_section(handoff, trace_id)
+    )
 
 
 def _as_stage2_result(raw: Any, *, fallback_trace: str, seed_id: str) -> WorldPulseReadStage2ResultV1:
@@ -387,6 +278,9 @@ class WorldPulseReadStage2Pipeline:
         now = datetime.now(timezone.utc)
         self.last_round_trips = 0
         await self._reclaim_stale_claimed()
+        await self._repair_journal_landings()
+        for landed in (await self._with_conn(confirm_landings) or []):
+            await publish_lifecycle(self._bus, landed, "landing_completed", source=self._source_ref)
 
         redis = self._redis()
         if redis is None:
@@ -427,13 +321,17 @@ class WorldPulseReadStage2Pipeline:
         if claim is None:
             return "empty_queue"
 
+        await publish_lifecycle(self._bus, claim.seed, "stage2_started", source=self._source_ref)
+
         if redis is not None:
             await debit_wallet_b(redis, now=now, timezone_name=self.timezone_name)
 
         try:
             handoff = WorldPulseReadHandoffV1.model_validate(claim.handoff_json)
+            handoff.seed_ref = claim.seed.model_copy(update={"request": request_for_seed(claim.seed)})
         except Exception as exc:  # noqa: BLE001
             await self._fail_stage2(claim.seed.seed_id, f"handoff_invalid:{exc}")
+            await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error="handoff_invalid")
             return "handoff_invalid"
 
         try:
@@ -447,8 +345,10 @@ class WorldPulseReadStage2Pipeline:
                 "world_pulse_read_stage2_failed seed=%s err=%s", claim.seed.seed_id, exc
             )
             await self._fail_stage2(claim.seed.seed_id, str(exc) or "parse_failed")
+            await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "parse_failed"
 
+        result.request = request_for_seed(claim.seed)
         round_trips = 0
         for url in result.need_stage1_urls:
             if round_trips >= self.max_round_trips:
@@ -468,12 +368,13 @@ class WorldPulseReadStage2Pipeline:
                 break
             round_trips += 1
         self.last_round_trips = round_trips
+        result.round_trips = round_trips
 
         try:
             await self._journal(handoff, result)
             await self._with_conn(
                 lambda conn: mark_stage2_done(
-                    conn, claim.seed.seed_id, stage2_trace_id=result.trace_id
+                    conn, claim.seed.seed_id, stage2_trace_id=result.trace_id, result=result
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -483,7 +384,9 @@ class WorldPulseReadStage2Pipeline:
                 exc,
             )
             await self._fail_stage2(claim.seed.seed_id, str(exc) or "post_failed")
+            await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "post_failed"
+        await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
         return None
 
     async def _reclaim_stale_claimed(self) -> None:
@@ -515,43 +418,20 @@ class WorldPulseReadStage2Pipeline:
     async def _fail_stage2(self, seed_id: str, error: str) -> None:
         await self._with_conn(lambda conn: mark_stage2_failed(conn, seed_id, error=error))
 
-    async def _journal(
-        self, handoff: WorldPulseReadHandoffV1, result: WorldPulseReadStage2ResultV1
-    ) -> None:
-        if self._bus is None:
-            return
-        seed = handoff.seed_ref
-        body = (
-            f"{result.summary.strip()}\n\n"
-            f"{seed.url}\n"
-            f"stage1_trace_id={handoff.trace_id}\n"
-            f"stage2_trace_id={result.trace_id}\n"
-            f"round_trips={self.last_round_trips}"
-        )
-        entry = JournalEntryWriteV1(
-            author=_AUTHOR,
-            mode="manual",
-            title=seed.title or "World pulse stage 2",
-            body=body,
-            source_kind="world_pulse",
-            source_ref=f"world_pulse_read_stage2:{result.trace_id}",
-            correlation_id=result.trace_id,
-        )
-        try:
-            await self._bus.publish(
-                JOURNAL_WRITE_CHANNEL,
-                BaseEnvelope(
-                    kind="journal.entry.write.v1",
-                    source=self._source_ref,
-                    payload=entry.model_dump(mode="json"),
-                ),
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "world_pulse_read_stage2_journal_failed trace=%s",
-                result.trace_id,
-                exc_info=True,
-            )
+    async def _journal(self, handoff, result) -> None:
+        await publish_journal(self._bus, self._source_ref, handoff, result, round_trips=self.last_round_trips)
+
+    async def _repair_journal_landings(self) -> None:
+        for row in (await self._with_conn(pending_journal_landings) or []):
+            try:
+                handoff = WorldPulseReadHandoffV1.model_validate(_json_object(row["handoff_json"]))
+                if row["missing_stage1"]:
+                    await publish_journal(self._bus, self._source_ref, handoff)
+                if row["missing_stage2"] and row["stage2_status"] == "done" and row["stage2_result_json"]:
+                    result = WorldPulseReadStage2ResultV1.model_validate(_json_object(row["stage2_result_json"]))
+                    await publish_journal(self._bus, self._source_ref, handoff, result)
+            except Exception:
+                logger.warning("reading_journal_replay_failed seed=%s", row["seed_id"], exc_info=True)
 
     async def _reenter_stage1(
         self, url: str, *, parent_seed: WorldPulseReadSeedV1
@@ -562,8 +442,9 @@ class WorldPulseReadStage2Pipeline:
         Stage 1 loop). Wallet A is gated here; the Stage 1 loop debits when
         it actually reads.
         """
-        url = (url or "").strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
+        try:
+            url = await validate_source_url(url)
+        except ValueError:
             return "bad_url"
         redis = self._redis()
         now = datetime.now(timezone.utc)
@@ -592,15 +473,24 @@ class WorldPulseReadStage2Pipeline:
         )
         if blocked is not None:
             return blocked
-        seed = WorldPulseReadSeedV1(
-            seed_id=make_seed_id(kind="finding", run_id=parent_seed.run_id, url=url),
-            kind="finding",
-            run_id=parent_seed.run_id,
-            url=url,
-            title="",
-            section=parent_seed.section,
+        parent = request_for_seed(parent_seed)
+        request = ReadingRequestedV1(
+            request_id=uuid5(NAMESPACE_URL, f"reading-reentry:{parent.request_id}:{url}"),
+            url=url, requested_by=parent.requested_by,
+            invocation_context=parent.invocation_context, why_now=parent.why_now,
+            parent_run_id=parent.parent_run_id, parent_trace_id=parent.parent_trace_id,
+            root_request_id=parent.root_request_id or parent.request_id,
+            parent_request_id=parent.request_id,
         )
-        await self._with_conn(lambda conn: enqueue_seeds(conn, [seed]))
+        try:
+            receipt = await self._with_conn(lambda conn: enqueue_reading(
+                conn, request, bus=self._bus, source=self._source_ref,
+                max_round_trips=self.max_round_trips,
+            ))
+            if receipt is None:
+                return "queue_unavailable"
+        except ValueError as exc:
+            return str(exc)
         return None
 
     async def _stage2_pass(self, handoff: WorldPulseReadHandoffV1) -> WorldPulseReadStage2ResultV1:
@@ -615,6 +505,7 @@ class WorldPulseReadStage2Pipeline:
         parsed.setdefault("created_at", created_at.isoformat())
         parsed["seed_id"] = handoff.seed_ref.seed_id
         parsed["producer_hint"] = "world_pulse_read_stage2"
+        parsed["request"] = request_for_seed(handoff.seed_ref).model_dump(mode="json")
         return WorldPulseReadStage2ResultV1.model_validate(parsed)
 
     async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
@@ -630,6 +521,7 @@ class WorldPulseReadStage2Pipeline:
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
+                    reading_only=True,
                     bus=self._bus,
                     correlation_id=correlation_id,
                     session_id=self.session_id,

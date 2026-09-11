@@ -26,13 +26,16 @@ def map_world_pulse_read_handoff_to_substrate(
     observed = observed_at or handoff.created_at
     seed = handoff.seed_ref
     evidence = [seed.url, seed.run_id, handoff.trace_id]
+    if seed.request:
+        evidence += [str(seed.request.request_id)]
+        evidence += [v for v in (seed.request.parent_run_id, seed.request.parent_trace_id) if v]
     nodes = []
     for cand in handoff.concept_candidates:
         nodes.append(
             ConceptNodeV1(
                 node_id=_concept_node_id(handoff.trace_id, cand.label),
                 anchor_scope="orion",
-                subject_ref="world_pulse",
+                subject_ref="world_pulse" if not seed.request or seed.request.requested_by == "world_pulse" else "reading",
                 temporal=make_temporal(observed_at=observed),
                 provenance=make_provenance(
                     source_kind="world_pulse.read",
@@ -49,12 +52,13 @@ def map_world_pulse_read_handoff_to_substrate(
                     "seed_id": seed.seed_id,
                     "seed_kind": seed.kind,
                     "section": seed.section,
+                    "reading_request": seed.request.model_dump(mode="json") if seed.request else None,
                 },
             )
         )
     return SubstrateGraphRecordV1(
         anchor_scope="orion",
-        subject_ref="world_pulse",
+        subject_ref="world_pulse" if not seed.request or seed.request.requested_by == "world_pulse" else "reading",
         nodes=nodes,
         edges=[],
     )

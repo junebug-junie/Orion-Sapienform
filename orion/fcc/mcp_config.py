@@ -144,7 +144,14 @@ def render_mcp_config(
     include_context_mode: bool = False,
     context_mode_dir: Optional[str] = None,
     context_mode_project_dir: Optional[str] = None,
+    reading_binding: Any = None,
+    reading_only: bool = False,
+    reading_bus_url: Optional[str] = None,
 ) -> Path:
+    if reading_only:
+        # Deliberate source readers need only built-in WebFetch/WebSearch.
+        # An empty *explicit* config also works when normal MCP is disabled.
+        return _write_mcp_config(correlation_id, {"mcpServers": {}}, tmp_dir)
     github_pat = _require(fcc_env, "GITHUB_PAT", error_code="fcc_mcp_github_missing")
     firecrawl_key = _require(fcc_env, "FIRECRAWL_API_KEY", error_code="fcc_mcp_firecrawl_missing")
     _require_tool("docker", error_code="fcc_mcp_docker_missing")
@@ -163,6 +170,19 @@ def render_mcp_config(
         "__GITHUB_READ_ONLY__": github_read_only,
     }
     rendered = _deep_replace(template, replacements)
+
+    if reading_binding is not None:
+        from orion.schemas.reading import ReadingToolBindingV1
+        binding = ReadingToolBindingV1.model_validate(reading_binding)
+        if not reading_bus_url:
+            raise McpPreflightError("fcc_reading_bus_missing", "ORION_BUS_URL required for reading tools")
+        rendered["mcpServers"]["orion-reading"] = {
+            "type": "stdio", "command": "python3",
+            "args": ["-P", "-m", "orion.world_pulse_read.mcp_server"],
+            "env": {"ORION_BUS_URL": reading_bus_url,
+                    "PYTHONPATH": str(_TEMPLATE_PATH.parents[2]),
+                    "ORION_READING_BINDING": binding.model_dump_json()},
+        }
 
     if include_aitown:
         ae = dict(aitown_env or fcc_env)
@@ -217,6 +237,10 @@ def render_mcp_config(
             },
         }
 
+    return _write_mcp_config(correlation_id, rendered, tmp_dir)
+
+
+def _write_mcp_config(correlation_id: str, rendered: dict, tmp_dir: Optional[Path]) -> Path:
     root = tmp_dir or _TMP_ROOT
     safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", str(correlation_id))
     out = root / f"{safe_id}.json"

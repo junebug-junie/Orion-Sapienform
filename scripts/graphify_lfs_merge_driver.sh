@@ -1,5 +1,5 @@
 #!/bin/sh
-# graphify_lfs_merge_driver.sh -- LFS-aware wrapper around `graphify merge-driver`.
+# graphify_lfs_merge_driver.sh -- LFS-aware wrapper around the repository JSON merger.
 #
 # Why this exists: git feeds a merge driver the RAW blob content of %O/%A/%B.
 # For an LFS-tracked path that is always the ~130-byte pointer stub text
@@ -25,11 +25,12 @@
 # history from before this migration, or a checkout with LFS uninstalled),
 # it is used as-is.
 #
-# `graphify merge-driver` only actually reads %A/%B (not %O, confirmed against
-# the installed package: cli.py's merge-driver branch loads "_current_path"
-# and "_other_path" only) and writes its merged result onto the %A path it
-# was given. Because we hand it *temporary, resolved* paths rather than the
-# originals, its result lands in a temp file.
+# The repository-owned JSON merger consumes all three resolved inputs.
+# graphify 0.9.15's CLI merger rejects this repo's >100MB graph at a fixed
+# 50MiB cap, ignores the merge base, and drops top-level hyperedge metadata.
+# merge_graphify_json.py preserves both parents and one-sided field edits,
+# with bounded inputs and a refusal for competing non-derived scalar edits.
+# Its output lands in the resolved CURRENT temp path.
 #
 # Custom merge drivers bypass git's normal clean-filter pipeline: confirmed
 # by direct repro that whatever content is at %A when this script exits
@@ -118,7 +119,8 @@ _resolve "$ORIG_B" "$RESOLVED_B"
 [ -f "$RESOLVED_B" ] || RESOLVED_B=$ORIG_B
 
 set +e
-graphify merge-driver "$RESOLVED_O" "$RESOLVED_A" "$RESOLVED_B"
+MERGER_DIR=$(cd "$(dirname "$0")" && pwd)
+python3 "$MERGER_DIR/merge_graphify_json.py" "$RESOLVED_O" "$RESOLVED_A" "$RESOLVED_B"
 STATUS=$?
 set -e
 
@@ -135,7 +137,7 @@ if [ -f "$RESOLVED_A" ]; then
         fi
         cp "$WORKDIR/A.pointer" "$ORIG_A"
     else
-        # graphify merge-driver reported a real conflict it couldn't
+        # The JSON merger reported a real conflict it couldn't
         # auto-resolve. Leave the REAL (un-cleaned) content it produced at
         # ORIG_A, not a pointer -- a human resolving this by hand needs to
         # see usable JSON, not a stale pre-merge pointer stub (which is what

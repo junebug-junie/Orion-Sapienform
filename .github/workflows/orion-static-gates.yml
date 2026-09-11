@@ -85,6 +85,9 @@ jobs:
       - name: scripts/ must not shadow a stdlib module
         run: python scripts/check_scripts_dir_no_stdlib_shadow.py
 
+      - name: Graphify merge preserves large graphs and metadata
+        run: python -m unittest discover -s tests/scripts -p test_merge_graphify_json.py -v
+
       - name: Service hostname references
         run: python scripts/check_service_hostname_refs.py
 

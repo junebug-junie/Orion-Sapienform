@@ -651,9 +651,11 @@ def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
     return ae
 
 
-def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
+def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, reading_only=False) -> Optional[Path]:
     from orion.fcc.mcp_config import render_mcp_config
 
+    if reading_only:
+        return render_mcp_config(correlation_id=correlation_id, fcc_env={}, reading_only=True)
     if not _env_truthy("HARNESS_FCC_MCP_ENABLED"):
         return None
     env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
@@ -674,6 +676,9 @@ def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
     return render_mcp_config(
         correlation_id=correlation_id,
         fcc_env=env,
+        reading_binding=reading_binding,
+        reading_only=reading_only,
+        reading_bus_url=os.environ.get("ORION_BUS_URL"),
         include_aitown=include_aitown,
         aitown_env=_harness_aitown_env(env) if include_aitown else None,
         include_gitnexus=_env_truthy("HARNESS_FCC_GITNEXUS_ENABLED"),
@@ -816,6 +821,8 @@ async def run_fcc_turn(
     claude_bin: str,
     timeout_sec: float,
     stream_read_limit: int = DEFAULT_STREAM_READ_LIMIT,
+    reading_binding=None,
+    reading_only=False,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -882,7 +889,11 @@ async def run_fcc_turn(
     try:
         from orion.fcc.mcp_config import McpPreflightError
 
-        mcp_config_path = _maybe_render_mcp_config(correlation_id=correlation_id)
+        mcp_config_path = _maybe_render_mcp_config(
+            correlation_id=correlation_id,
+            **({"reading_binding": reading_binding, "reading_only": reading_only}
+               if reading_binding is not None or reading_only else {}),
+        )
     except McpPreflightError as exc:
         yield {"type": "error", "error": str(exc), "error_code": exc.error_code}
         return
@@ -897,10 +908,15 @@ async def run_fcc_turn(
         "--model",
         model_id,
     ]
-    argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
+    if reading_only:
+        # Source models can fetch/search, but cannot reach shell, filesystem,
+        # graph tools, memory writers or operator-installed MCP servers/plugins.
+        argv.extend(["--tools", "WebFetch,WebSearch", "--strict-mcp-config", "--setting-sources", ""])
+    else:
+        argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None
-        if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
+        if not reading_only and _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
             # Claude Code 2.1 pre-approval pattern is the bare server name,
             # mirroring mcp_allowed_tool_patterns; the plugin-owned server is
             # not in the rendered config, so pre-approve it explicitly.
@@ -952,7 +968,7 @@ async def run_fcc_turn(
                 auth_token=auth_token,
                 # Already loaded above for the model label; passed on so the
                 # curiosity credentials reach the subprocess too.
-                fcc_env=env,
+                fcc_env=None if reading_only else env,
                 turn_budget_sec=float(timeout_sec),
                 turn_deadline_epoch=deadline_epoch,
                 turn_step_stall_sec=stall_timeout_sec,

@@ -1,0 +1,39 @@
+{
+  "parents": {
+    "ours": "262cd1a5e6fda40702c6e05e64e5622d8fda0896",
+    "theirs": "15d76a51e98c0b540db736c3ce2ff326a11850ae",
+    "base": "aff23fac02fc391895b076268e30ede8d7beec6a"
+  },
+  "counts": {
+    "base": {
+      "nodes": 77504,
+      "links": 168255,
+      "hyperedges": 104
+    },
+    "ours": {
+      "nodes": 77716,
+      "links": 168769,
+      "hyperedges": 104
+    },
+    "theirs": {
+      "nodes": 77545,
+      "links": 168307,
+      "hyperedges": 104
+    },
+    "merged": {
+      "nodes": 77966,
+      "links": 169111,
+      "hyperedges": 104
+    }
+  },
+  "exact_node_and_link_union": true,
+  "zero_duplicate_or_dangling_ids": true,
+  "hyperedges_preserved_in_both_locations": true,
+  "one_sided_attribute_edits_verified": {
+    "ours": 2273,
+    "theirs": 889
+  },
+  "manifest_union_paths": 6217,
+  "manifest_hashes_match_existing_extractions_and_current_files": true,
+  "staged_lfs_pointer_matches_graph": true
+}

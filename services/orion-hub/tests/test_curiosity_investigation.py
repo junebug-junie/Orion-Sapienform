@@ -251,7 +251,7 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._bus = bus
     loop._harness_rpc_bus = bus
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         loop.seen_prompt = prompt
         return (text or ""), {
             "elapsed_sec": 1.0,
@@ -411,7 +411,7 @@ def test_the_correlation_id_is_uuid_shaped() -> None:
     seen = {}
     loop = _loop(bus)
 
-    async def _capture(prompt, correlation_id):
+    async def _capture(prompt, correlation_id, parent_run_id=None):
         seen["corr"] = correlation_id
         return "found", {"harness_step_count": 9}
 
@@ -817,7 +817,7 @@ def test_a_finding_orion_wants_to_share_goes_through_a_second_turn() -> None:
     )
     prompts: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         prompts.append(prompt)
         return "here is what I found", {"harness_step_count": 9}
 
@@ -841,7 +841,7 @@ def test_outreach_off_means_the_second_turn_never_runs() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -865,7 +865,7 @@ def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -965,7 +965,7 @@ def test_the_composition_turn_is_not_held_to_the_lookup_gate() -> None:
     )
     seen: list[bool] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         seen.append(require_lookup)
         return "a real message", {"harness_step_count": 1}
 
@@ -1518,7 +1518,7 @@ def test_a_turn_cancelled_mid_flight_gives_its_slot_back() -> None:
     loop = _loop(bus)
     prior = _at_slot(bus, loop, count="2")
 
-    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True):
+    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         raise asyncio.CancelledError()
 
     loop._generate = _cancelled  # type: ignore[assignment]
@@ -1538,7 +1538,7 @@ def test_the_restored_stamp_is_the_old_one_not_an_absence() -> None:
     loop = _loop(bus)
     prior = _at_slot(bus, loop, count="1")
 
-    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True):
+    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         raise asyncio.CancelledError()
 
     loop._generate = _cancelled  # type: ignore[assignment]
@@ -1565,7 +1565,7 @@ def test_a_turn_that_raises_an_ordinary_error_still_costs_its_slot() -> None:
     loop = _loop(bus)
     _at_slot(bus, loop, count="2")
 
-    async def _boom(prompt, correlation_id, source=None, require_lookup=True):
+    async def _boom(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         raise RuntimeError("the model fell over")
 
     loop._generate = _boom  # type: ignore[assignment]
@@ -2285,7 +2285,7 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2326,7 +2326,7 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2350,3 +2350,17 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     assert len(bus.journal) == 1
     reply = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "r-runner"][0].payload)
     assert reply.ok and reply.text == "the finding"
+
+
+def test_actual_curiosity_run_id_reaches_reading_binding(monkeypatch):
+    captured = {}
+    async def turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": "found", "harness_step_count": 9}]
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    loop = _loop(_FakeBus(), text=None)
+    loop._generate = CuriosityInvestigation._generate.__get__(loop)
+    asyncio.run(loop._generate("prompt", "trace-id", parent_run_id="run-id"))
+    assert captured["reading_context"] == "curiosity"
+    assert captured["reading_parent_run_id"] == "run-id"
+    assert captured["correlation_id"] == "trace-id"

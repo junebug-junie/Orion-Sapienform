@@ -705,6 +705,9 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleRunRecordV1,
     WorkflowScheduleSpecV1,
 )
+from orion.schemas.reading import (
+    ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
+)
 from orion.schemas.world_pulse_read import (
     WorldPulseReadConceptCandidateV1,
     WorldPulseReadHandoffV1,
@@ -1318,6 +1321,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorthReadingItemV1": WorthReadingItemV1,
     "WorthWatchingItemV1": WorthWatchingItemV1,
     "DailyWorldPulseV1": DailyWorldPulseV1,
+    "ReadingRequestedV1": ReadingRequestedV1,
+    "ReadingToolBindingV1": ReadingToolBindingV1,
+    "ReadingToolRequestV1": ReadingToolRequestV1,
+    "ReadingToolResultV1": ReadingToolResultV1,
+    "ReadingLifecycleV1": ReadingLifecycleV1,
     "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
     "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,
     "WorldPulseReadStage2ResultV1": WorldPulseReadStage2ResultV1,

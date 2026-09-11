@@ -1,12 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 648,
+  "metric_count": 652,
   "_last_change": {
-    "base": "merge base 9028d58df (origin/main)",
-    "change_count": 0,
+    "base": "merge base 15d76a51e (origin/main)",
+    "change_count": 4,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-harness-governor/orion:reading:tool:request",
+      "medium added metric://bus_channel/orion-hub/orion:reading:lifecycle",
+      "medium added metric://bus_channel/orion-hub/orion:reading:requested",
+      "medium added metric://bus_channel/orion-hub/orion:reading:tool:result:*"
     ]
   },
   "definitions": {
@@ -1461,6 +1464,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-harness-governor/orion:reading:tool:request": {
+      "schema_id": "ReadingToolRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-harness-governor/orion:substrate:finalize_appraisal:request": {
       "schema_id": "HarnessDraftMoleculeV1",
       "all_producers": [
@@ -1793,6 +1807,39 @@
         "orion-hub"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:reading:lifecycle": {
+      "schema_id": "ReadingLifecycleV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:reading:requested": {
+      "schema_id": "ReadingRequestedV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:reading:tool:result:*": {
+      "schema_id": "ReadingToolResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:repair_pressure:appraisal": {

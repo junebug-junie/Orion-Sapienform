@@ -3231,6 +3231,7 @@ async def handle_chat_request(
 
         frames = await execute_unified_turn(
             bus=bus,
+            reading_context="unified_chat",
             correlation_id=corr_id,
             session_id=session_id,
             user_message=user_prompt,

@@ -193,7 +193,12 @@ class HarnessAttachmentV1(BaseModel):
     filename: str | None = None
 
 
+from orion.schemas.reading import ReadingToolBindingV1
+
+
 class HarnessRunRequestV1(BaseModel):
+    reading_binding: ReadingToolBindingV1 | None = None
+    reading_only: bool = False
     schema_version: Literal["harness.run.request.v1"] = "harness.run.request.v1"
     correlation_id: str
     thought_event: ThoughtEventV1

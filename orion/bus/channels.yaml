@@ -3200,3 +3200,44 @@ channels:
     single_consumer: true
     stability: "experimental"
     since: "2026-08-12"
+
+  # General reading: Pub/Sub RPC receipt follows Postgres commit.
+  - name: "orion:reading:tool:request"
+    kind: "request"
+    schema_id: "ReadingToolRequestV1"
+    message_kind: "reading.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-09-10"
+    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives."
+
+  - name: "orion:reading:tool:result:*"
+    kind: "result"
+    schema_id: "ReadingToolResultV1"
+    message_kind: "reading.tool.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-harness-governor"]
+    stability: "experimental"
+    since: "2026-09-10"
+    description: "Durable queue receipt or durable status. A timeout means acceptance is unknown."
+
+  - name: "orion:reading:requested"
+    kind: "event"
+    schema_id: "ReadingRequestedV1"
+    message_kind: "reading.requested.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-09-10"
+    description: "Accepted reading request; emitted only after Postgres commit. Workers poll the queue."
+
+  - name: "orion:reading:lifecycle"
+    kind: "event"
+    schema_id: "ReadingLifecycleV1"
+    message_kind: "reading.lifecycle.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-09-10"
+    description: "Lifecycle facts backed by queue timestamps and artifacts; Pub/Sub is not the status store."

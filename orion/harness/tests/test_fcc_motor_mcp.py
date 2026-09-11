@@ -805,3 +805,38 @@ def test_build_subprocess_env_clears_a_deadline_inherited_from_the_parent(
     assert "ORION_TURN_BUDGET_SEC" not in env
     assert "ORION_TURN_DEADLINE_EPOCH" not in env
     assert "ORION_TURN_STEP_STALL_SEC" not in env
+
+
+@pytest.mark.asyncio
+async def test_reading_motor_can_only_fetch_and_search(monkeypatch, tmp_path):
+    """Inspect actual spawn argv/env: article text cannot reach shell or graphs."""
+    captured = {}
+    proc = _FakeProc(['{"type":"result","result":"source candidate","is_error":false}'])
+    async def fake_exec(*args, **kwargs):
+        captured.update(argv=list(args), env=kwargs["env"])
+        return proc
+    async def no_probe(*args, **kwargs):
+        return None, None
+    def config(**kwargs):
+        assert kwargs["reading_only"] is True
+        path = tmp_path / "reader.json"
+        path.write_text('{"mcpServers":{}}')
+        return path
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "probe_route_runtime", no_probe)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", lambda _: {"MODEL_HAIKU": "claude-haiku-test", "ORION_CURIOSITY_PG_DSN": "private-dsn"})
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", config)
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED", "true")
+    events = [event async for event in motor.run_fcc_turn(
+        prompt="Read this source", correlation_id="reader-test", fcc_model_label="MODEL_HAIKU",
+        workspace=str(tmp_path), fcc_server_url="http://127.0.0.1:8082", auth_token="test",
+        claude_bin="claude", timeout_sec=1, reading_only=True,
+    )]
+    argv = captured["argv"]
+    assert argv[argv.index("--tools") + 1] == "WebFetch,WebSearch"
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--setting-sources") + 1] == ""
+    assert "mcp__plugin_context-mode_context-mode" not in argv
+    assert "ORION_CURIOSITY_PG_DSN" not in captured["env"]
+    assert events[-1]["type"] == "final"

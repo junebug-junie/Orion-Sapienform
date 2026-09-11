@@ -2666,3 +2666,15 @@ Both lines smoke-tested live under a minimal `env -i PATH=... sh -c '...'`
 syntax-checked. Run `make check-attention-loop-decay-liveness` by hand any
 time you suspect either entry stopped running (queries the real overshoot
 past each loop's own decay threshold, not a heartbeat file).
+
+## Deliberate reading from Unified Chat and curiosity
+
+The model can call `recommend_reading(url, why_now)` to preserve a public source for asynchronous reading, or `reading_status(request_id)` to inspect a previous receipt. WebFetch/search remain the tools for facts needed immediately. URL presence never automatically submits work.
+
+Both turn types receive a caller-bound stdio MCP tool through the existing harness. Hub accepts its internal bus RPC into the existing Postgres `world_pulse_read_seed` queue, commits, then emits `orion:reading:requested` and returns durable state. Pub/Sub publication alone is not acceptance. World Pulse discovery/backfill, recommendations and capped Stage 2 reentry share this queue; Wallet A/B and curiosity run accounting retain their roles.
+
+Apply `services/orion-sql-db/manual_migration_general_reading_v1.sql` after the two existing World Pulse read migrations, then rebuild/restart Hub and harness governor from a worktree. No new operator env keys or HTTP submission endpoints are required. Existing reading enable flags stop consumption; queued state remains inspectable. Rolling back the code can leave the additive columns in place; pause the workers first if general `reading` rows remain, because the older seed model cannot parse that new kind.
+
+A completed source can be reread in a later turn. Concurrent requests for an active URL retain their own provenance as aliases without another active read. Final `completed` requires the existing SQL journal rows; missed journal commands are replayed from saved artifacts without another model call or wallet debit. Reading stages have only WebFetch/WebSearch and produce attributed candidates through the existing server-owned adapter.
+
+See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md). The dedicated local/CI gate installs `tests/requirements-reading.txt`; `RUN_READING_POSTGRES=1` enables disposable local PostgreSQL integration tests, never a production DSN.

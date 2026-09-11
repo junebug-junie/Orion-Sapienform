@@ -61,7 +61,7 @@ class _FakeBus:
         return [(c, e) for c, e in self.published if c == JOURNAL_WRITE_CHANNEL]
 
 
-class _FakeConn:
+class _LegacyFakeConn:
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
         self.executed: list[tuple[str, tuple]] = []
@@ -254,7 +254,7 @@ def test_prompt_has_no_prior_write_instruction_when_no_candidates() -> None:
     assert "GRAPH.QUERY $ORION_CURIOSITY_GRAPH_OWN" not in prompt
 
 
-def test_prompt_includes_prior_write_instruction_when_candidates_present() -> None:
+def test_prompt_preserves_attributed_candidates_without_graph_write_instructions() -> None:
     seed = _seed()
     handoff = WorldPulseReadHandoffV1(
         seed_ref=seed,
@@ -266,23 +266,15 @@ def test_prompt_includes_prior_write_instruction_when_candidates_present() -> No
         created_at=NOW,
     )
     prompt = _build_stage2_prompt(handoff, "tr-s2")
-    assert "MERGE (p:Prior" in prompt
     assert "Packaging costs are rising." in prompt
-    # Provenance: distinguishable from Curiosity Atlas's own priors.
-    assert 'p.producer = "world_pulse_read_stage2"' in prompt
-    assert 'p.source_kind = "world_pulse.read"' in prompt
-    # Trace linkage back to this exact world-pulse read.
-    assert f'p.stage1_trace_id = "{handoff.trace_id}"' in prompt
-    assert 'p.stage2_trace_id = "tr-s2"' in prompt
-    assert f'p.seed_id = "{seed.seed_id}"' in prompt
-    # Never overload Curiosity Atlas's own run_id linkage property.
-    assert "p.run_id" not in prompt
-    assert "p.last_run_id" not in prompt
-    # Teaches the actual command to reach the graph, not just the Cypher shape.
-    assert "redis-cli" in prompt
-    assert "GRAPH.QUERY $ORION_CURIOSITY_GRAPH_OWN" in prompt
-    assert "$ORION_CURIOSITY_GRAPH_USER" in prompt
-    assert "$ORION_CURIOSITY_GRAPH_PASSWORD" in prompt
+    assert handoff.trace_id in prompt
+    assert "tr-s2" in prompt
+    assert seed.seed_id in prompt
+    assert seed.url in prompt
+    assert "attributed candidates, not settled truth" in prompt
+    assert "Do not write RDF, execute graph queries, or call Graphiti" in prompt
+    for forbidden in ("MERGE (", "GRAPH.QUERY", "redis-cli", "ORION_CURIOSITY_GRAPH_"):
+        assert forbidden not in prompt
 
 
 def test_prompt_includes_all_candidate_priors_not_just_first() -> None:
@@ -520,7 +512,7 @@ def test_reentry_stops_when_wallet_a_blocked() -> None:
     assert pipe.last_round_trips == 1
 
 
-def test_default_reentry_enqueues_finding_seed() -> None:
+def test_default_reentry_enqueues_reading_seed_with_world_pulse_lineage() -> None:
     bus = _FakeBus()
     conn = _FakeConn()
     pipe = _pipeline(bus, conn)
@@ -538,7 +530,9 @@ def test_default_reentry_enqueues_finding_seed() -> None:
     assert pipe.last_round_trips == 1
     follow = [r for r in conn.rows.values() if r["url"] == "https://ex.com/follow"]
     assert len(follow) == 1
-    assert follow[0]["kind"] == "finding"
+    assert follow[0]["kind"] == "reading"
+    assert follow[0]["request_json"]["requested_by"] == "world_pulse"
+    assert follow[0]["request_json"]["parent_request_id"] == str(conn.rows["finding:r1:x"]["request_id"])
     assert follow[0]["status"] == "pending"
 
 
@@ -743,3 +737,12 @@ def test_stage2_pass_raises_with_specific_reason_not_generic_label(
     assert result == "parse_failed"
     assert conn.rows["finding:r1:x"]["stage2_error"] == "stage2_turn_timeout"
     assert conn.rows["finding:r1:x"]["stage2_error"] != "empty_generation"
+
+
+from reading_queue_fakes import ReadingQueueFakeMixin
+
+
+class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
+    pass
+
+pytestmark = pytest.mark.usefixtures("reading_dns")

@@ -1,6 +1,10 @@
 with bounds as (
     select min(event_date) as first_event_date
-    from {{ ref('stg_reverie_chains') }}
+    from (
+        select event_date from {{ ref('stg_reverie_chains') }}
+        union all
+        select event_date from {{ ref('stg_visual_reverie_chains') }}
+    ) all_reverie_dates
 )
 
 select

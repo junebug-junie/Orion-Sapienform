@@ -5,13 +5,20 @@ PostgreSQL data:
 
 ```text
 public.substrate_reverie_chain
-  -> dbt staging view
-  -> reverie fact + outcome/date dimensions
-  -> Lightdash OSS
+  -> text staging/fact views ──────────────┐
+public.reverie_visual_chain                ├─> shared outcome/date dimensions
+  -> visual-chain staging/fact views       ├─> Lightdash OSS
+public.reverie_visual_artifact             │
+  -> visual-artifact staging/fact views ───┘
 ```
 
 It does not add a second warehouse, copy operational data, or expose reverie
-themes and narrative payloads.
+themes, prompts, captions, continuity text, storage paths, or narrative
+payloads. The artifact content hash remains only as the fact primary key and is
+hidden from Lightdash users. That `hidden` setting is a presentation boundary,
+not removal from the analytics database; database readers can still query the
+key. Text and visual Reverie remain separate facts because their grains,
+schedules, and meanings differ.
 
 ## What exists in PostgreSQL
 
@@ -31,6 +38,23 @@ Mind activity was considered first, but `mind_runs` was not a useful initial
 star: all 793 inspected rows had `trigger=user_turn`, `ok=true`, no error code,
 and `router_profile_id=default`.
 
+The parallel visual system uses `public.reverie_visual_chain` for persisted
+chain attempts and `public.reverie_visual_artifact` for persisted generated
+images. `services/orion-thought/app/visual_chain.py::_run_visual_chain_body`
+generates, stores, observes, and builds the records;
+`services/orion-thought/app/store.py::persist_reverie_visual_chain` and
+`persist_reverie_visual_artifact` insert them. PostgreSQL enforces the artifact
+`chain_id` foreign key.
+
+Live inspection on 2026-09-10 found 1,442 distinct visual chains and 1,433
+distinct artifacts. Nine chains had no artifact, 1,398 artifacts had a nonblank
+observation caption, and nine persisted-chain gaps exceeded the live 45-minute
+watchdog threshold. Of 1,257 rows with the producer's per-run continuity
+marker, 940 proved that continuity was used; 185 legacy rows without that marker
+remain unknown and are excluded from the rate. Artifact counts were exactly
+zero or one per chain in that sample, but the models preserve the declared
+one-to-many relationship.
+
 ## Models and grains
 
 - `stg_reverie_chains`: one row per persisted source `chain_id`; selects only
@@ -43,11 +67,72 @@ and `router_profile_id=default`.
   `ReverieChainV1`.
 - `dim_reverie_dates`: one row per UTC date from the first persisted chain
   through today.
+- `stg_visual_reverie_chains`: one row per persisted visual chain; derives only
+  a continuity-used flag from the producer's numeric `continuity_streak`
+  marker and discards the raw JSON. Missing legacy markers remain null rather
+  than being mislabeled.
+- `stg_visual_reverie_artifacts`: one row per persisted visual artifact;
+  derives only a caption-present flag and discards caption text and storage
+  path. The source content hash is retained only as the fact primary key.
+- `fct_visual_reverie_chains`: one row per persisted visual chain, with a
+  pre-aggregated artifact count so zero-artifact chains remain visible without
+  changing the grain.
+- `fct_visual_reverie_artifacts`: one row per generated image that reached
+  artifact persistence. Its source foreign key is tested against the visual
+  chain fact, but the facts are not joined in Lightdash: that would invite
+  cross-grain measures.
 
 All are ordinary PostgreSQL views in the configured `analytics` schema. A
 missing fact row means only that no chain reached persistence; it is not proof
 that the service was down. Stop reasons are never relabeled as successes or
 failures.
+
+## Metric-quality gate: visual Reverie
+
+The visual metrics were checked before wiring them into Lightdash:
+
+1. **Provenance.** Chain and artifact counts come from the two insert functions
+   named above. Artifact bytes comes from
+   `StoredVisualArtifact.bytes`; caption coverage comes from nonblank
+   `ReverieVisualArtifactV1.description`; continuity use comes from the
+   producer's per-run `chain_json.continuity_streak > 0` marker. The raw JSON
+   is not selected into a model. Late intervals compare adjacent persisted
+   chain `created_at` values, and recency matches
+   `store.py::visual_chain_age_minutes`.
+2. **Independence.** Images-per-chain, missing-artifact count, caption coverage,
+   continuity rate, and late-gap count are explicitly derived diagnostics, not
+   independent cognitive signals. They are retained because they expose
+   distinct generation, observation, continuity, and scheduling failure modes;
+   they must not be interpreted as evidence of cognition quality.
+3. **Theory anchor.** Counts and coverage use relational primary-key/foreign-key
+   conservation. Caption coverage measures whether the generate → observe path
+   produced its persisted observation marker. Continuity rate measures only
+   whether the current run's prompt used prior-description continuity. The
+   45-minute late threshold is the operational watchdog contract, not a learned
+   cutoff.
+4. **Live sanity.** The 2026-09-10 sample was nondegenerate: 1,442 chains,
+   1,433 artifacts, 1,398 captioned artifacts, 940 continuity-using chains among
+   1,257 rows with a known marker, nine zero-artifact chains, and nine late
+   gaps. The 185 legacy rows without a marker stay unknown. Artifact bytes
+   ranged from 111,195 to 2,140,299 (mean 884,069.24). Median persisted-chain
+   gap was 2.53 minutes and p95 was 10.86 minutes.
+5. **Existing mechanism.** The late threshold and latest-chain-age calculation
+   reuse the visual-chain watchdog contract; no second liveness definition is
+   introduced.
+6. **Reversibility.** Every metric is a view/YAML definition over unchanged
+   operational tables. Removing it requires no source migration or data rewrite.
+
+The proposed “generation-to-artifact persistence delay” fails the provenance
+gate and is intentionally absent. The producer stores neither generation-start
+time nor artifact-persistence time: chain `created_at` is assigned after image
+generation and observation, while artifact `created_at` is assigned before its
+insert. Subtracting them would mislabel object-construction timing as generation
+or persistence latency.
+
+Likewise, the dashboard reports observed gaps longer than the watchdog
+threshold, not an invented count of “missing runs.” The worker sleeps after a
+run completes, so elapsed wall time cannot be divided by its 600-second sleep
+interval to recover how many executions should have occurred.
 
 ## Lightdash surface
 
@@ -64,13 +149,21 @@ contains daily activity, terminal-reason volume, and a date-spine query for
 zero-row days. Uploading it requires a Lightdash user or service account token;
 the token is not committed.
 
+The unified `Reverie Overview` dashboard keeps text and visual sections
+separate. Visual charts show persisted chains, persisted generated images,
+caption coverage, 45-minute late intervals, and recorded terminal reasons.
+The visual-chain Explore additionally exposes images per chain, chains without
+an artifact, continuity-used rate, average artifact bytes, captioned image
+count, and minutes since the latest selected persisted chain.
+
 ## Credentials and read boundaries
 
 Do not reuse the PostgreSQL superuser or Orion's `orion_readonly` self-inquiry
 role. The idempotent bootstrap script creates two separate principals:
 
 - `orion_analytics_transformer`: `SELECT` on exactly
-  `public.substrate_reverie_chain`, plus ownership of the `analytics` schema so
+  `public.substrate_reverie_chain`, `public.reverie_visual_chain`, and
+  `public.reverie_visual_artifact`, plus ownership of the `analytics` schema so
   dbt can create views there;
 - `orion_analytics_reader`: `SELECT` on analytics views only, a read-only
   transaction default, and a 30-second statement timeout. This is the
@@ -130,11 +223,16 @@ the mart. The SQL file explicitly opens a read-only transaction:
 PGPASSWORD="$ORION_ANALYTICS_DBT_PASSWORD" psql \
   -h 127.0.0.1 -p 55432 -U orion_analytics_transformer -d conjourney \
   -f services/orion-analytics/evals/reconcile_reverie_analytics.sql
+
+PGPASSWORD="$ORION_ANALYTICS_DBT_PASSWORD" psql \
+  -h 127.0.0.1 -p 55432 -U orion_analytics_transformer -d conjourney \
+  -f services/orion-analytics/evals/reconcile_visual_reverie_analytics.sql
 ```
 
-Success is `source_fact_delta=0`, `duplicate_fact_delta=0`, and
-`join_fanout_delta=0`. The final column reports the number of explicit
-zero-activity dates in the date spine.
+Text success is `source_fact_delta=0`, `duplicate_fact_delta=0`, and
+`join_fanout_delta=0`. Visual success requires every `*_delta` column to be
+zero. Remaining columns report safe live coverage, recency, and late-gap
+observations.
 
 ## Start Lightdash
 
@@ -152,8 +250,9 @@ Open <http://localhost:8265>. On first launch:
 4. Set the dbt project path/subdirectory to `services/orion-analytics` when
    using a Git connection, or deploy the local project once with the pinned
    Lightdash CLI.
-5. Confirm the `Reverie chains` Explore contains the dimensions and measure
-   above. Lightdash's query panel exposes the generated SQL.
+5. Confirm the `Reverie chains`, `Visual reverie chains`, and `Visual reverie
+   artifacts` Explores contain the dimensions and measures above. Lightdash's
+   query panel exposes the generated SQL.
 6. Authenticate the CLI, deploy the semantic project, and upload the starter
    content:
 
@@ -200,6 +299,8 @@ No agent service or Model Context Protocol server is added here.
 - `ema_salience` is excluded until its producing signal passes a separate
   metric-quality review. `committed_proposal_id` was null in every inspected
   row. Theme keys and JSON are excluded for privacy.
+- The operational 45-minute visual-chain watchdog setting is mirrored as a dbt
+  variable. Change and deploy them together if the runtime contract changes.
 - Next smallest useful subject: reverie-thought expectation verdicts, but only
   after checking live coverage of `expectation_verdict` and confirming that no
   narrative text needs to enter the mart.

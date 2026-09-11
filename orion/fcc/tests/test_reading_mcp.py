@@ -42,7 +42,15 @@ def test_mcp_protocol_rejects_spoofed_arguments_and_returns_receipt():
     class Tools:
         async def invoke(self, name, arguments):
             calls.append((name, arguments))
-            return {"status": "queued", "request_id": "saved-id"}
+            return {
+                "ok": True,
+                "result": {
+                    "status": "queued",
+                    "request_id": "00000000-0000-0000-0000-000000000001",
+                    "seed_id": "reading:00000000-0000-0000-0000-000000000001",
+                },
+                "error": None,
+            }
     async def run():
         async with create_connected_server_and_client_session(build_server(Tools())) as client:
             listing = await client.list_tools()
@@ -55,5 +63,7 @@ def test_mcp_protocol_rejects_spoofed_arguments_and_returns_receipt():
             assert calls == []
             good = await client.call_tool("recommend_reading", {"url": "https://example.org/a", "why_now": "Read"})
             assert not good.isError
-            assert json.loads(good.content[0].text)["status"] == "queued"
+            payload = json.loads(good.content[0].text)
+            assert payload["ok"] is True
+            assert payload["result"]["status"] == "queued"
     asyncio.run(run())

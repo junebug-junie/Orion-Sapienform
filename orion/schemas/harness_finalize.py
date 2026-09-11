@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
+from orion.schemas.reading import ReadingRecommendationOutcomeV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
 
 # Bounded cap for HarnessRunRequestV1.recent_turns -- reused, not invented:
@@ -309,3 +310,6 @@ class HarnessRunV1(BaseModel):
     # unified turn, which also spans the stance leg (<=400s) and the finalize
     # chain (<=485s). See services/orion-hub/scripts/curiosity_investigation.py.
     fcc_elapsed_sec: float | None = None
+    # Derived from raw FCC tool_use/tool_result IDs and validated queue
+    # receipts. This is evidence about persistence, not model-authored prose.
+    reading_receipts: list[ReadingRecommendationOutcomeV1] = Field(default_factory=list)

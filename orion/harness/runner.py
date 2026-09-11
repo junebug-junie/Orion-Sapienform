@@ -37,6 +37,10 @@ from orion.harness.grammar_publish import publish_harness_step_grammar
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
 from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
+from orion.harness.reading_receipts import (
+    ReadingReceiptTracker,
+    enforce_reading_receipt_grounding,
+)
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
 from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
@@ -48,6 +52,7 @@ from orion.schemas.harness_finalize import (
     HarnessRunRequestV1,
 )
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
+from orion.schemas.reading import ReadingRecommendationOutcomeV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
 
 logger = logging.getLogger("orion.harness.runner")
@@ -107,6 +112,7 @@ class HarnessMotorResult:
     # point at the same route. None when discovery never fired (e.g. a
     # fast-fail before any assistant turn).
     fcc_served_model: str | None = None
+    reading_receipts: list[ReadingRecommendationOutcomeV1] = field(default_factory=list)
 
 
 def _default_harness_node_name() -> str:
@@ -403,6 +409,9 @@ class HarnessRunner:
         # timed-out/errored turn that still produced some visible text
         # doesn't get treated as clean for cross-turn continuity purposes.
         error_path_taken = False
+        reading_tracker = ReadingReceiptTracker(
+            getattr(request, "reading_binding", None)
+        )
 
         async for event in self.fcc_runner(
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
@@ -417,6 +426,7 @@ class HarnessRunner:
                 step = event.get("step")
                 if not isinstance(step, dict):
                     continue
+                reading_tracker.observe(step)
                 step_chars = measure_step_payload_chars(step)
                 step_char_sum += step_chars
                 step_char_max = max(step_char_max, step_chars)
@@ -507,6 +517,19 @@ class HarnessRunner:
                 )
                 break
 
+        reading_receipts = reading_tracker.outcomes()
+        grounded_draft = enforce_reading_receipt_grounding(draft_text, reading_receipts)
+        if grounded_draft != draft_text:
+            logger.warning(
+                "reading_receipt_grounding_applied corr=%s recommendations=%s "
+                "accepted=%s unknown=%s",
+                request.correlation_id,
+                len(reading_receipts),
+                sum(item.acceptance == "accepted" for item in reading_receipts),
+                sum(item.acceptance == "unknown" for item in reading_receipts),
+            )
+            draft_text = grounded_draft
+
         # Post-hoc audit, not prevention: the fcc subprocess has already run
         # to completion by this point, so this can only flag a mismatch
         # between what the draft claims and this turn's own tool trace, not
@@ -596,6 +619,7 @@ class HarnessRunner:
                 context_gathering_step_count=context_gathering_step_count,
                 execution_step_count=execution_step_count,
                 fcc_served_model=fcc_served_model,
+                reading_receipts=reading_receipts,
             )
 
         await _publish_motor_lifecycle(
@@ -655,4 +679,5 @@ class HarnessRunner:
             context_gathering_step_count=context_gathering_step_count,
             execution_step_count=execution_step_count,
             fcc_served_model=fcc_served_model,
+            reading_receipts=reading_receipts,
         )

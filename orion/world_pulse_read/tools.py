@@ -5,8 +5,9 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.reading import (
-    ReadingRequestedV1, ReadingStatusArguments, ReadingToolBindingV1,
-    ReadingToolRequestV1, ReadingToolResultV1, RecommendReadingArguments,
+    DurableReadingReceiptV1, ReadingRequestedV1, ReadingStatusArguments,
+    ReadingStatusReceiptV1, ReadingToolBindingV1, ReadingToolRequestV1,
+    ReadingToolResultV1, RecommendReadingArguments,
 )
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
 from orion.world_pulse_read.urls import normalize_source_url
@@ -15,8 +16,10 @@ RECOMMEND_DESCRIPTION = (
     "Asynchronously recommend a public HTTP(S) source for deliberate reading, preservation, "
     "follow-up and integration through Orion's reading pipeline. Use WebFetch/search for "
     "information needed immediately in this turn. Supply why this source matters now. "
-    "Returns a durable queue receipt, not an article summary. Reading creates source-attributed "
-    "candidates, not settled beliefs. Keep the request_id for reading_status later."
+    "Acceptance exists only when the response has ok=true and result contains a request_id; "
+    "errors or malformed results mean acceptance is unknown. Returns a durable queue receipt, "
+    "not an article summary or a promise of future processing. Reading creates source-attributed "
+    "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later."
 )
 STATUS_DESCRIPTION = "Read durable reading status and source-attributed result by request_id from a previous receipt."
 
@@ -33,7 +36,9 @@ class ReadingTools:
             url = normalize_source_url(args.url)
             request = ReadingRequestedV1(
                 # Stable across retries/restarts within this turn, new on a later turn.
-                request_id=uuid5(NAMESPACE_URL, f"reading:{self.binding.parent_run_id}:{url}:{args.why_now}"),
+                request_id=deterministic_reading_request_id(
+                    self.binding, url=url, why_now=args.why_now
+                ),
                 url=url, why_now=args.why_now,
                 requested_by="juniper" if self.binding.invocation_context == "unified_chat" else "orion",
                 invocation_context=self.binding.invocation_context,
@@ -62,4 +67,32 @@ class ReadingTools:
         result = ReadingToolResultV1.model_validate(decoded.envelope.payload)
         if not result.ok:
             raise RuntimeError(result.error or "reading tool failed")
-        return result.result
+        if result.error is not None:
+            raise RuntimeError("invalid reading result envelope")
+        if name == "recommend_reading":
+            try:
+                receipt = DurableReadingReceiptV1.model_validate(result.result)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "invalid durable reading receipt; acceptance is unknown"
+                ) from exc
+            if receipt.request_id != request.request_id:
+                raise RuntimeError("invalid durable reading receipt; acceptance is unknown")
+        else:
+            try:
+                receipt = ReadingStatusReceiptV1.model_validate(result.result)
+            except ValueError as exc:
+                raise RuntimeError("invalid reading status receipt") from exc
+            if receipt.request_id != args.request_id:
+                raise RuntimeError("invalid reading status receipt")
+        # The MCP transcript must retain the explicit acceptance bit. Returning
+        # only ``result`` made a merely JSON-shaped payload look authoritative.
+        return result.model_dump(mode="json")
+
+
+def deterministic_reading_request_id(
+    binding: ReadingToolBindingV1, *, url: str, why_now: str
+) -> UUID:
+    """Stable for identical retries in one bound turn; different on later turns."""
+
+    return uuid5(NAMESPACE_URL, f"reading:{binding.parent_run_id}:{url}:{why_now}")

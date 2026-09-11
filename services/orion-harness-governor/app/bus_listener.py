@@ -290,6 +290,7 @@ async def handle_harness_run_request(
             memory_digest=memory_digest,
             fcc_served_model=motor.fcc_served_model,
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
+            reading_receipts=motor.reading_receipts,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -307,6 +308,7 @@ async def handle_harness_run_request(
             draft_molecule=motor.draft_molecule,
             thought=request.thought_event,
             grammar_receipts=motor.grammar_receipts,
+            reading_receipts=motor.reading_receipts,
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,
@@ -345,6 +347,7 @@ async def handle_harness_run_request(
             memory_digest=memory_digest,
             fcc_served_model=motor.fcc_served_model,
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
+            reading_receipts=motor.reading_receipts,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -411,6 +414,7 @@ async def handle_harness_run_request(
             memory_digest=memory_digest,
             fcc_served_model=motor.fcc_served_model,
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
+            reading_receipts=motor.reading_receipts,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -430,6 +434,7 @@ async def handle_harness_run_request(
             memory_digest=memory_digest,
             fcc_served_model=motor.fcc_served_model,
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
+            reading_receipts=motor.reading_receipts,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -453,6 +458,7 @@ async def handle_harness_run_request(
         memory_digest=memory_digest,
         fcc_served_model=motor.fcc_served_model,
         fcc_elapsed_sec=motor.fcc_elapsed_sec,
+        reading_receipts=motor.reading_receipts,
     )
     if motor.grammar_collector is not None and run.final_text:
         await _emit_finalize_lifecycle_grammar(

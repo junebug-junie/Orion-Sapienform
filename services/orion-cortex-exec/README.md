@@ -564,3 +564,5 @@ Exec is tested via the Orchestrator flow.
 ```bash
 python scripts/bus_harness.py brain "plan a party"
 ```
+
+Self-study reads the published Graphify bundle via `SELF_STUDY_GRAPH_PATH`, mounted from warm storage using `SELF_STUDY_GRAPH_HOST_PATH`. See [local graph operations](../../docs/graphify-local-storage.md).

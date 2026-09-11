@@ -25,6 +25,7 @@ services:
       ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}
       ORION_BUS_URL: ${ORION_BUS_URL}
       HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
+      COCREATION_SIGNALS_GRAPH_PATH: ${COCREATION_SIGNALS_GRAPH_PATH:-/graphify/published/graphify-out}
       COCREATION_SIGNALS_REPO_PATH: ${COCREATION_SIGNALS_REPO_PATH:-/repo}
       COCREATION_SIGNALS_GITHUB_OWNER: ${COCREATION_SIGNALS_GITHUB_OWNER}
       COCREATION_SIGNALS_GITHUB_REPO: ${COCREATION_SIGNALS_GITHUB_REPO}
@@ -60,6 +61,7 @@ services:
       COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_CHUNK_CHAR_SIZE: ${COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_CHUNK_CHAR_SIZE}
       COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_STATE_KEY: ${COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_STATE_KEY}
     volumes:
+      - ${COCREATION_SIGNALS_GRAPH_HOST_PATH:-/mnt/storage-warm/orion-graphify}:/graphify:ro
       # Read-only mount of this repo's own working tree -- git_delta.py needs
       # a real `.git` directory (not baked into the image at build time,
       # which would freeze history), graph_delta.py needs a live

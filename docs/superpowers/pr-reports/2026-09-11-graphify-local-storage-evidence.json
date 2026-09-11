@@ -1,0 +1,22 @@
+{
+  "storage_root": "/mnt/storage-warm/orion-graphify",
+  "worktree_graph": "/mnt/storage-warm/orion-graphify/worktrees/13896af7a9ab73d79cd7/graphify-out",
+  "published_graph": "/mnt/storage-warm/orion-graphify/published/graphify-out",
+  "preserved_counts": {
+    "nodes": 77966,
+    "links": 169111,
+    "hyperedges": 104
+  },
+  "original_file_count": 11,
+  "original_files_changed_or_missing": [],
+  "bundle_sha256": {
+    "graph.json": "d015084f348e5544afd7f04e1e32ee712f4ae7b43abf510c419d7f6865f4e0f6",
+    "manifest.json": "70086ef244a9099fb7a30ca94374c0ce027ae7bb4419ce07facfb842de6b7ea7",
+    "GRAPH_REPORT.md": "1437c04eeb844fbd97093f5f2668f827a01349aecaffe0e8031f29ef900bcbd9"
+  },
+  "source_commit": "8b710210fa7af10a1aaf660df56e5a9a46142599",
+  "large_input_eval_bytes": 537919569,
+  "large_input_load_and_merge": "PASS",
+  "native_reflect_survives_guard": "PASS",
+  "refresh": "REFUSED by native node-loss guard: 77966 -> 77858; full original bundle restored"
+}

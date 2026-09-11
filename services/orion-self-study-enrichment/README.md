@@ -189,3 +189,5 @@ scripts/safe_docker_build.sh orion-self-study-enrichment build
 ```bash
 pytest services/orion-self-study-enrichment/tests -q
 ```
+
+Graphify data is read from the published local bundle under `/mnt/storage-warm/orion-graphify`, mounted read-only at `/graphify`. Publish an accepted snapshot with `python3 scripts/graphify_storage.py publish`; worktree refreshes do not change this service’s graph until publication. See [local storage operations](../../docs/graphify-local-storage.md).

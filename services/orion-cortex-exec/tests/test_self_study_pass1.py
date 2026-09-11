@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 import importlib.util
 import json
 import sys
@@ -216,6 +217,8 @@ def test_induce_self_concepts_produces_induced_evidence_backed_concepts():
 
 
 def test_graphify_derived_concepts_use_real_on_disk_graph_json():
+    if not (self_study.REPO_ROOT / "graphify-out/graph.json").exists():
+        pytest.skip("Local graph smoke: initialize warm storage to run")
     # No mock graph -- this repo's own graphify-out/graph.json, read the same
     # way the production code path reads it. Confirms the community mapping
     # actually overlaps real Layer-1 source paths and produces real,
@@ -235,6 +238,8 @@ def test_graphify_derived_concepts_use_real_on_disk_graph_json():
 
 
 def test_graphify_derived_concepts_skip_already_covered_items():
+    if not (self_study.REPO_ROOT / "graphify-out/graph.json").exists():
+        pytest.skip("Local graph smoke: initialize warm storage to run")
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     community_by_source_file = self_study._load_graphify_source_file_communities()
     assert community_by_source_file, "fixture depends on a non-empty graphify graph.json"
@@ -309,7 +314,10 @@ def test_structural_delta_concepts_repeat_call_is_memoized_not_reobserved(monkey
             inferred_from=["structural_mass_delta"],
         )
     ]
-    self_study._STRUCTURAL_DELTA_RESULT_CACHE[snapshot.snapshot_id] = sentinel
+    # Prime through the public behavior, then replace its cached result.
+    self_study._structural_delta_concepts(snapshot)
+    key = next(iter(self_study._STRUCTURAL_DELTA_RESULT_CACHE))
+    self_study._STRUCTURAL_DELTA_RESULT_CACHE[key] = sentinel
 
     result = self_study._structural_delta_concepts(snapshot)
 
@@ -1185,3 +1193,53 @@ def test_repeat_publish_graph_write_retired_but_keeps_journal_append_intent():
     assert second_journal.append_only is True
     assert [channel for channel, _ in first_bus.published] == ["orion:journal:write"]
     assert [channel for channel, _ in second_bus.published] == ["orion:journal:write"]
+
+
+def test_graphify_communities_read_external_storage(monkeypatch, tmp_path):
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "graph.json").write_text(json.dumps({"nodes": [
+        {"id": "external-node", "source_file": "services/example/app.py", "community": 12}
+    ]}))
+    monkeypatch.setenv("SELF_STUDY_GRAPH_PATH", str(external))
+    assert self_study._load_graphify_source_file_communities() == {"services/example/app.py": 12}
+
+
+@pytest.fixture(autouse=True)
+def local_graph_or_fixture(monkeypatch, tmp_path):
+    # Graph is operator data now. Ordinary gate tests use a small fixture when
+    # CI has no local graph; the two explicitly real-data tests still skip.
+    local = self_study.REPO_ROOT / "graphify-out"
+    if (local / "graph.json").is_file():
+        monkeypatch.setenv("SELF_STUDY_GRAPH_PATH", str(local))
+        return
+    fixture = tmp_path / "graph-fixture"
+    fixture.mkdir()
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    paths = sorted({item.source_path for section in self_study._SNAPSHOT_SECTION_NAMES
+                    for item in getattr(snapshot, section)})
+    nodes = [{"id": path, "source_file": path, "community": 1} for path in paths]
+    (fixture / "graph.json").write_text(json.dumps({"nodes": nodes, "links": [], "built_at_commit": "fixture"}))
+    (fixture / "GRAPH_REPORT.md").write_text("# Graph Report\n## God Nodes\n")
+    monkeypatch.setenv("SELF_STUDY_GRAPH_PATH", str(fixture))
+
+
+def test_structural_delta_observes_same_commit_publication(monkeypatch, tmp_path):
+    _reset_structural_delta_state(monkeypatch)
+    for name, count in (("first", 1), ("second", 2)):
+        directory = tmp_path / name
+        directory.mkdir()
+        graph = {"built_at_commit": "same-sha", "nodes": [{"id": str(n)} for n in range(count)], "links": []}
+        (directory / "graph.json").write_text(json.dumps(graph))
+        (directory / "GRAPH_REPORT.md").write_text("# Graph Report\n## God Nodes\n")
+    published = tmp_path / "published"
+    published.symlink_to(tmp_path / "first")
+    monkeypatch.setenv("SELF_STUDY_GRAPH_PATH", str(published))
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    assert self_study._structural_delta_concepts(snapshot) == []
+    replacement = tmp_path / "next"
+    replacement.symlink_to(tmp_path / "second")
+    replacement.replace(published)
+    concepts = self_study._structural_delta_concepts(snapshot)
+    assert any(c.concept_kind == "structural_mass" for c in concepts)
+    assert self_study._structural_delta_concepts(snapshot) == concepts

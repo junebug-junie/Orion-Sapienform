@@ -48,9 +48,11 @@ def _read_built_at_commit(graph_json_path: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def _load_snapshot(repo_path: str, commit_sha: str | None) -> GraphSnapshotStats:
-    graph_json_text = (Path(repo_path) / _GRAPH_JSON_RELPATH).read_text(encoding="utf-8")
-    report_path = Path(repo_path) / _GRAPH_REPORT_RELPATH
+def _load_snapshot(repo_path: str, commit_sha: str | None, graph_path: str | None = None) -> GraphSnapshotStats:
+    directory = Path(graph_path) if graph_path else Path(repo_path) / "graphify-out"
+    directory = directory.resolve()  # Pin the published checkpoint for both reads.
+    graph_json_text = (directory / "graph.json").read_text(encoding="utf-8")
+    report_path = directory / "GRAPH_REPORT.md"
     graph_report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
     return graph_snapshot_stats_from_text(
         graph_json_text, graph_report_text, commit_sha=commit_sha, backfilled=False
@@ -100,24 +102,29 @@ async def graph_delta_loop(
     repo_path: str,
     poll_interval_sec: float,
     stop: asyncio.Event,
+    graph_path: str | None = None,
 ) -> None:
     last_snapshot: GraphSnapshotStats | None = None
-    graph_json_path = Path(repo_path) / _GRAPH_JSON_RELPATH
+    last_graph_json_path: Path | None = None
+    configured_graph_path = Path(graph_path) if graph_path else Path(repo_path) / "graphify-out"
     while not stop.is_set():
         try:
+            graph_json_path = (configured_graph_path / "graph.json").resolve()
             if not graph_json_path.exists():
                 logger.warning("cocreation_graph_delta_graph_json_missing path=%s", graph_json_path)
             else:
                 commit_sha = await asyncio.to_thread(_read_built_at_commit, graph_json_path)
                 if last_snapshot is None:
-                    last_snapshot = await asyncio.to_thread(_load_snapshot, repo_path, commit_sha)
+                    last_snapshot = await asyncio.to_thread(_load_snapshot, repo_path, commit_sha, str(graph_json_path.parent))
+                    last_graph_json_path = graph_json_path
                     logger.info("cocreation_graph_delta_cold_start commit_sha=%s", commit_sha)
-                elif commit_sha != last_snapshot.commit_sha:
-                    curr_snapshot = await asyncio.to_thread(_load_snapshot, repo_path, commit_sha)
+                elif commit_sha != last_snapshot.commit_sha or graph_json_path != last_graph_json_path:
+                    curr_snapshot = await asyncio.to_thread(_load_snapshot, repo_path, commit_sha, str(graph_json_path.parent))
                     delta = graph_structural_delta(last_snapshot, curr_snapshot)
                     published = await _publish(bus, channel, source, delta)
                     if published:
                         last_snapshot = curr_snapshot
+                        last_graph_json_path = graph_json_path
                     # else: leave last_snapshot unchanged, same reasoning as
                     # git_delta_loop's identical guard.
         except Exception:

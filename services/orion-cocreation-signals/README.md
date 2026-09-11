@@ -116,3 +116,5 @@ the same pattern for scheduling, plus one real (not mocked) end-to-end test
 against a real transcript file on disk, exercising the actual wiring to
 `orion/dev_economics/claude_code_ingest.py` and
 `orion/cocreation/affective_signals.py`.
+
+Graphify data is read from the published local bundle under `/mnt/storage-warm/orion-graphify`, mounted read-only at `/graphify`. Publish an accepted snapshot with `python3 scripts/graphify_storage.py publish`; worktree refreshes do not change this service’s graph until publication. See [local storage operations](../../docs/graphify-local-storage.md).

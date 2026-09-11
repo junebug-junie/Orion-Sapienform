@@ -80,5 +80,9 @@ if ! git -C "$REPO_ROOT" worktree add "$TARGET_DIR" -b "$BRANCH" 2>"$_STDERR_TMP
 fi
 
 echo ""
+if [ -f "$TARGET_DIR/scripts/graphify_storage.py" ]; then
+    python3 "$TARGET_DIR/scripts/graphify_storage.py" init --repo "$TARGET_DIR"
+fi
+
 echo "Created. Next:"
 echo "  cd $TARGET_DIR"

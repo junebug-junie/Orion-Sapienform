@@ -192,7 +192,7 @@ _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA: GraphSnapshotStats | None = Non
 # global across each other's awaits and cross-contaminate their prior/
 # current state.
 _STRUCTURAL_DELTA_STATE_LOCK = threading.Lock()
-_STRUCTURAL_DELTA_RESULT_CACHE: "OrderedDict[str, list[SelfInducedConceptV1]]" = OrderedDict()
+_STRUCTURAL_DELTA_RESULT_CACHE: "OrderedDict[tuple[str, str], list[SelfInducedConceptV1]]" = OrderedDict()
 _STRUCTURAL_DELTA_RESULT_CACHE_MAX = 8
 
 # The most recent REAL reflection (see reflect_self_concepts() below), keyed
@@ -862,7 +862,7 @@ def _load_graphify_source_file_communities() -> dict[str, int]:
     Fails soft (empty dict) if the graph file is missing/unparseable --
     graphify enrichment is optional, additive context, never load-bearing
     for Layer-1/Layer-2's existing authoritative guarantees."""
-    graph_json_path = REPO_ROOT / _GRAPHIFY_GRAPH_JSON_RELPATH
+    graph_json_path = Path(os.environ.get("SELF_STUDY_GRAPH_PATH", str(REPO_ROOT / "graphify-out"))) / "graph.json"
     if not graph_json_path.exists():
         return {}
     try:
@@ -939,7 +939,7 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
     documented "no fabricated zero" pattern and orion-cocreation-signals'
     graph_delta_loop() cold-start guard.
 
-    Memoized per snapshot_id (see _STRUCTURAL_DELTA_RESULT_CACHE above) so
+    Memoized per snapshot_id and published checkpoint so
     repeat calls against the SAME snapshot -- notably
     validate_phase2a_induction()'s own internal re-induction check -- return
     the identical result instead of re-observing the "last seen" state a
@@ -953,12 +953,16 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
     global _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA
 
     with _STRUCTURAL_DELTA_STATE_LOCK:
-        cached = _STRUCTURAL_DELTA_RESULT_CACHE.get(snapshot.snapshot_id)
+        # Pin the publication before memoization too: graph-only changes do
+        # not change the source-derived SelfSnapshot ID.
+        graph_dir = Path(os.environ.get("SELF_STUDY_GRAPH_PATH", str(REPO_ROOT / "graphify-out"))).resolve()
+        cache_key = (snapshot.snapshot_id, str(graph_dir))
+        cached = _STRUCTURAL_DELTA_RESULT_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
-        graph_json_path = REPO_ROOT / _GRAPHIFY_GRAPH_JSON_RELPATH
-        report_path = REPO_ROOT / _GRAPHIFY_GRAPH_REPORT_RELPATH
+        graph_json_path = graph_dir / "graph.json"
+        report_path = graph_dir / "GRAPH_REPORT.md"
         if not graph_json_path.exists():
             return []
         try:
@@ -1002,18 +1006,13 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
 
         _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA = current_stats
 
-        # Persist whenever this is a genuinely new observation -- either the
-        # very first one ever recorded (prior_stats is None, true cold
-        # start: no in-process state AND nothing durable to recover) or a
-        # real transition to a different commit_sha, regardless of whether
-        # that prior came from memory or from durable recovery above. Only a
-        # recovered prior at the SAME commit_sha is skipped -- re-appending
-        # an identical current_stats on every repeat call at that commit
-        # would defeat the append-only log's purpose (unbounded growth with
-        # zero new information).
-        should_persist = SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH and (
-            prior_stats is None or prior_stats.commit_sha != current_stats.commit_sha
+        # Graph-only publications can share a source commit. Compare the
+        # observed structure too; source SHA remains provenance, not freshness.
+        observation_changed = prior_stats is None or any(
+            getattr(prior_stats, field) != getattr(current_stats, field)
+            for field in ("commit_sha", "node_count", "edge_count", "community_count", "god_nodes")
         )
+        should_persist = SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH and observation_changed
         if should_persist:
             try:
                 append_snapshot(SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH, current_stats)
@@ -1021,7 +1020,7 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
                 logger.warning("self_study_structural_mass_history_append_failed error=%s", exc)
 
         result: list[SelfInducedConceptV1] = []
-        if prior_stats is not None and prior_stats.commit_sha != current_stats.commit_sha:
+        if prior_stats is not None and observation_changed:
             delta = graph_structural_delta(prior_stats, current_stats)
             trivial = (
                 delta.node_count_delta == 0
@@ -1055,7 +1054,7 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
                     )
                 ]
 
-        _STRUCTURAL_DELTA_RESULT_CACHE[snapshot.snapshot_id] = result
+        _STRUCTURAL_DELTA_RESULT_CACHE[cache_key] = result
         if len(_STRUCTURAL_DELTA_RESULT_CACHE) > _STRUCTURAL_DELTA_RESULT_CACHE_MAX:
             _STRUCTURAL_DELTA_RESULT_CACHE.popitem(last=False)
         return result

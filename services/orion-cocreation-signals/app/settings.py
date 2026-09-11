@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     # would freeze git history at build time and defeat the point of tracking
     # live churn).
     COCREATION_SIGNALS_REPO_PATH: str = Field(default="/repo")
+    COCREATION_SIGNALS_GRAPH_PATH: str = Field(default="/graphify/published/graphify-out")
 
     # ── GitHub access (pr_lifecycle) ──────────────────────────────────
     # No minted GITHUB_TOKEN secret -- pr_lifecycle.py shells out to the `gh`

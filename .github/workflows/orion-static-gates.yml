@@ -88,6 +88,11 @@ jobs:
       - name: Graphify merge preserves large graphs and metadata
         run: python -m unittest discover -s tests/scripts -p test_merge_graphify_json.py -v
 
+      - name: Graphify local storage preserves bundles across worktrees
+        run: |
+          python -m unittest discover -s tests/scripts -p test_graphify_storage.py -v
+          test -z "$(git ls-files -- graphify-out)"
+
       - name: Service hostname references
         run: python scripts/check_service_hostname_refs.py
 

@@ -18,7 +18,7 @@
 #   scripts/safe_graphify_update.sh [graphify update args...]
 #
 # Exit 0: update applied, node count did not drop more than the threshold
-#         (GRAPHIFY_UPDATE_MAX_NODE_LOSS_PCT, default 10) -- safe to commit.
+#         (GRAPHIFY_UPDATE_MAX_NODE_LOSS_PCT, default 10) -- accepted locally.
 # Exit 1: update was destructive -- every artifact listed in ARTIFACTS is
 #         automatically restored to its pre-update state, nothing to
 #         commit. Investigate before retrying; do not just re-run this.
@@ -38,6 +38,16 @@
 # POSIX sh only -- no bashisms.
 
 set -e
+
+# The lock spans backup, update, validation and checkpoint publication. The
+# inherited fd keeps it held while Graphify runs; session guards defer.
+if [ -f scripts/graphify_storage.py ]; then
+    python3 scripts/graphify_storage.py init >/dev/null
+    _STORAGE=$(readlink -f graphify-out)
+    exec 9>"$_STORAGE/../.orion-storage.lock"
+    flock 9
+    export ORION_GRAPHIFY_LOCK_FD=9
+fi
 
 GRAPH_FILE="graphify-out/graph.json"
 THRESHOLD_PCT="${GRAPHIFY_UPDATE_MAX_NODE_LOSS_PCT:-10}"
@@ -184,7 +194,7 @@ if ! graphify update . "$@"; then
     echo "[safe-graphify-update] ERROR: graphify update itself failed (nonzero exit) -- restoring backup" >&2
     _restore_artifacts
     _warn_snapshot_dirs
-    echo "[safe-graphify-update] Verify with: git status --short graphify-out/" >&2
+    echo "[safe-graphify-update] Verify with: python3 scripts/graphify_storage.py status" >&2
     exit 1
 fi
 
@@ -192,7 +202,7 @@ AFTER=$(_count_nodes) || {
     echo "[safe-graphify-update] ERROR: could not read node count after update -- restoring backup" >&2
     _restore_artifacts
     _warn_snapshot_dirs
-    echo "[safe-graphify-update] Verify with: git status --short graphify-out/" >&2
+    echo "[safe-graphify-update] Verify with: python3 scripts/graphify_storage.py status" >&2
     exit 1
 }
 
@@ -212,7 +222,7 @@ if [ "$EXCEEDS" = "1" ]; then
     _restore_artifacts
     _warn_snapshot_dirs
     echo "" >&2
-    echo "[safe-graphify-update] Verify with: git status --short graphify-out/" >&2
+    echo "[safe-graphify-update] Verify with: python3 scripts/graphify_storage.py status" >&2
     echo "  (snapshot dirs are gitignored, so check any named above by hand)" >&2
     exit 1
 fi
@@ -221,4 +231,12 @@ echo "[safe-graphify-update] OK: node count $BEFORE -> $AFTER (~${DROP_PCT}% cha
 # Also fires on the success path: dated snapshots are gitignored now, so a
 # healthy run would otherwise add ~45MB to disk with no signal at all.
 _warn_snapshot_dirs
+if [ -f scripts/graphify_storage.py ]; then
+    # Lock already held by this shell; do not acquire it again in the child.
+    if ! python3 -c 'import sys; sys.path.insert(0,"scripts"); from pathlib import Path; from graphify_storage import checkpoint; checkpoint(Path("graphify-out").resolve())'; then
+        echo '[safe-graphify-update] Invalid bundle or failed checkpoint; restoring backup' >&2
+        _restore_artifacts
+        exit 1
+    fi
+fi
 exit 0

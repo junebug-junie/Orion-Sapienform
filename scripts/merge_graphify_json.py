@@ -15,8 +15,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-MAX_BYTES = 512 * 1024 * 1024
-MAX_NODES = 100_000
 MISSING = object()
 DERIVED = {"community", "community_name", "built_at_commit"}
 
@@ -71,8 +69,6 @@ def validate(data):
     ids = [row["id"] for row in data["nodes"]]
     if not all(isinstance(key, str) for key in ids) or len(ids) != len(set(ids)):
         raise ValueError("node IDs must be unique strings")
-    if len(ids) > MAX_NODES:
-        raise ValueError("graph exceeds node limit")
     members = set(ids)
     for edge in data["links"]:
         if edge["source"] not in members or edge["target"] not in members:
@@ -137,8 +133,6 @@ def main(argv=None):
     inputs = []
     for name in args:
         path = Path(name)
-        if path.stat().st_size > MAX_BYTES:
-            raise ValueError(f"graph exceeds {MAX_BYTES}-byte limit: {name}")
         inputs.append(json.loads(path.read_text()))
     result = merge_graphs(*inputs)
     destination = Path(args[1])
@@ -148,8 +142,6 @@ def main(argv=None):
             temp = Path(handle.name)
             json.dump(result, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
-        if temp.stat().st_size > MAX_BYTES:
-            raise ValueError("merged graph exceeds byte limit")
         os.chmod(temp, destination.stat().st_mode & 0o777)
         os.replace(temp, destination)
     finally:

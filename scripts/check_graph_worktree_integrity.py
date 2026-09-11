@@ -169,6 +169,9 @@ def check(root: str, threshold: float, *, check_only: bool) -> dict:
     """Returns a result dict; never raises for the ordinary "nothing to do"
     or "found and handled" paths. Raises only on a genuinely unreadable
     graph.json when it was flagged dirty (caller reports that as an error)."""
+    if (Path(root) / 'graphify-out').is_symlink():
+        from graphify_storage import check_local
+        return check_local(root, check_only=check_only)
     dirty = set(_dirty_bundle_paths(root))
     result: dict = {
         "dirty": sorted(dirty),

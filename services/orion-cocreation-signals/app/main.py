@@ -112,6 +112,7 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
                     channel=settings.CHANNEL_CODEBASE_DELTA,
                     source=source,
                     repo_path=settings.COCREATION_SIGNALS_REPO_PATH,
+                    graph_path=settings.COCREATION_SIGNALS_GRAPH_PATH,
                     poll_interval_sec=settings.COCREATION_SIGNALS_GRAPH_DELTA_POLL_INTERVAL_SEC,
                     stop=stop,
                 ),

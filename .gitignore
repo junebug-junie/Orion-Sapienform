@@ -189,3 +189,7 @@ graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 # set, and it loads vis-network from an external CDN, so a committed copy
 # renders blank offline or if the pin moves.
 graphify-out/graph.html
+
+# Generated Graphify data lives on warm storage, including the directory symlink.
+/graphify-out
+/.graphify-migrated-*

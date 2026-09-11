@@ -16,6 +16,7 @@ services:
       - "${HEALTH_HTTP_PORT:-8070}:${HEALTH_HTTP_PORT:-8070}"
 
     volumes:
+      - ${SELF_STUDY_GRAPH_HOST_PATH:-/mnt/storage-warm/orion-graphify}:/graphify:ro
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
       - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
       # Host Docker engine + CLI for skills.runtime.docker_prune_stopped_containers.v1 (and other docker skills).
@@ -211,6 +212,7 @@ services:
       ENDOGENOUS_RUNTIME_SQL_DATABASE_URL: ${ENDOGENOUS_RUNTIME_SQL_DATABASE_URL:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
       # Same value as the bind-mount source/target above (not the separate legacy ORION_REPO_ROOT key --
       # see .env_example for the 2026-08-12 rename note).
+      SELF_STUDY_GRAPH_PATH: ${SELF_STUDY_GRAPH_PATH:-/graphify/published/graphify-out}
       ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
       SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR: ${SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR:-/mnt/self_study_enrichment_data/cache/self_study_enrichment}
       SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH: ${SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH:-/mnt/self_study_structural_mass_data/structural_mass_history.jsonl}

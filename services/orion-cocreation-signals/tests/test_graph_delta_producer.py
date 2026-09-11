@@ -45,7 +45,7 @@ async def test_cold_start_seeds_baseline_without_publishing(fake_bus, source, st
 
     calls: list[str] = []
 
-    def _fake_load(repo_path, commit_sha):
+    def _fake_load(repo_path, commit_sha, graph_path=None):
         calls.append(commit_sha)
         return _snap(commit_sha)
 
@@ -83,7 +83,7 @@ async def test_real_commit_change_publishes_real_delta(fake_bus, source, stop_ev
         read_calls.append(commit_sequence[idx])
         return commit_sequence[idx]
 
-    def _fake_load(repo_path, commit_sha):
+    def _fake_load(repo_path, commit_sha, graph_path=None):
         load_calls.append(commit_sha)
         return _snap(commit_sha, node_count=100 if commit_sha == "sha1" else 150)
 
@@ -134,7 +134,7 @@ async def test_failed_publish_does_not_advance_state(fake_bus, source, stop_even
         read_calls.append(commit_sequence[idx])
         return commit_sequence[idx]
 
-    def _fake_load(repo_path, commit_sha):
+    def _fake_load(repo_path, commit_sha, graph_path=None):
         return _snap(commit_sha)
 
     delta_calls: list[tuple] = []
@@ -175,7 +175,7 @@ async def test_no_commit_change_publishes_nothing(fake_bus, source, stop_event, 
         calls.append(str(path))
         return "sha1"
 
-    def _fake_load(repo_path, commit_sha):
+    def _fake_load(repo_path, commit_sha, graph_path=None):
         return _snap(commit_sha)
 
     monkeypatch.setattr(graph_delta_module, "_read_built_at_commit", _fake_read_commit)
@@ -207,3 +207,47 @@ async def test_missing_graph_json_does_not_crash_the_loop(fake_bus, source, stop
     await asyncio.wait_for(task, timeout=5.0)
 
     assert fake_bus.published == []
+
+
+def test_snapshot_reads_external_bundle_without_repo_graph(tmp_path):
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "graph.json").write_text('{"nodes": [{"id": "a"}, {"id": "b"}], "links": []}')
+    (external / "GRAPH_REPORT.md").write_text("# Graph Report\n")
+    snapshot = graph_delta_module._load_snapshot(str(tmp_path / "repo"), "sha1", str(external))
+    assert snapshot.node_count == 2
+    assert snapshot.commit_sha == "sha1"
+
+
+@pytest.mark.asyncio
+async def test_same_commit_publication_is_observed(fake_bus, source, stop_event, monkeypatch, tmp_path):
+    import json
+    for name, count in (("one", 1), ("two", 2)):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "graph.json").write_text(json.dumps({"built_at_commit": "same-sha",
+            "nodes": [{"id": str(n)} for n in range(count)], "links": []}))
+        (directory / "GRAPH_REPORT.md").write_text("# Graph Report\n## God Nodes\n")
+    published = tmp_path / "published"
+    published.symlink_to(tmp_path / "one")
+    original = graph_delta_module._load_snapshot
+    calls = []
+
+    def observe(repo, sha, graph_path=None):
+        snapshot = original(repo, sha, graph_path)
+        calls.append(snapshot)
+        if len(calls) == 1:
+            replacement = tmp_path / "next"
+            replacement.symlink_to(tmp_path / "two")
+            replacement.replace(published)
+        return snapshot
+
+    monkeypatch.setattr(graph_delta_module, "_load_snapshot", observe)
+    async def loop():
+        await graph_delta_module.graph_delta_loop(bus=fake_bus, channel="orion:substrate:codebase_delta",
+            source=source, repo_path=str(tmp_path / "absent"), graph_path=str(published),
+            poll_interval_sec=0.01, stop=stop_event)
+    await _run_until_calls(loop, stop_event, 2, calls)
+    assert len(fake_bus.published) == 1
+    assert calls[0].commit_sha == calls[1].commit_sha == "same-sha"
+    assert calls[1].node_count - calls[0].node_count == 1

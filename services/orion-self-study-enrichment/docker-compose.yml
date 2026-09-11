@@ -22,7 +22,7 @@ services:
       - CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED=${CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED:-orion:self_study:enrichment:requested}
 
       - SELF_STUDY_ENRICHMENT_REPO_PATH=${SELF_STUDY_ENRICHMENT_REPO_PATH:-/repo}
-      - SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH=${SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH:-/repo/graphify-out/graph.json}
+      - SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH=${SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH:-/graphify/published/graphify-out/graph.json}
 
       # Authenticate `claude -p` via a claude-setup-token long-lived OAuth
       # token (2026-08-21, see settings.py) -- not a separate per-service
@@ -54,6 +54,7 @@ services:
       - SELF_STUDY_ENRICHMENT_MAX_PER_DAY=${SELF_STUDY_ENRICHMENT_MAX_PER_DAY:-8}
       - SELF_STUDY_ENRICHMENT_RATE_LIMIT_STATE_PATH=${SELF_STUDY_ENRICHMENT_RATE_LIMIT_STATE_PATH:-/data/state/self_study_enrichment_service_rate_limit.json}
     volumes:
+      - ${SELF_STUDY_ENRICHMENT_GRAPH_HOST_PATH:-/mnt/storage-warm/orion-graphify}:/graphify:ro
       # Read-only mount of this repo's own real working tree -- same
       # ownership-mismatch note as orion-cocreation-signals' Dockerfile
       # (`git config --system --add safe.directory '*'` covers it).

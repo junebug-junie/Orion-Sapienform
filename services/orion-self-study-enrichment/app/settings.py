@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     )
 
     # ── Graphify evidence source ────────────────────────────────────────
-    SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH: str = Field(default="/repo/graphify-out/graph.json")
+    SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH: str = Field(default="/graphify/published/graphify-out/graph.json")
 
 
 @lru_cache(maxsize=1)

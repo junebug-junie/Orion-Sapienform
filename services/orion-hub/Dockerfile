@@ -74,7 +74,7 @@ COPY scripts/analysis/measure_autonomy_gate.py /app/vendor/measure_autonomy_gate
 # Copy rest of hub service code
 COPY services/orion-hub /app
 
-# Unmodified GPLv3 Gephi Lite distribution, served behind Hub's operator login.
+# Unmodified GPLv3 Gephi Lite distribution, served through Hub's network boundary.
 COPY --from=gephi_lite /var/www/html/ /app/gephi-lite/
 
 # Copy the new entrypoint script into a standard location

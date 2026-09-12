@@ -47,9 +47,6 @@ class Settings(BaseSettings):
     HUB_PORT: int = Field(default=8080, alias="HUB_PORT")
     HUB_API_BASE_OVERRIDE: str = Field(default="", alias="HUB_API_BASE_OVERRIDE")
     HUB_WS_BASE_OVERRIDE: str = Field(default="", alias="HUB_WS_BASE_OVERRIDE")
-    HUB_GRAPH_WORKBENCH_USERNAME: str = "juniper"
-    HUB_GRAPH_WORKBENCH_PASSWORD: str = ""
-
     # --- Whisper Transcription Settings (LEGACY/UNUSED - Hub uses Bus RPC now) ---
     WHISPER_MODEL_SIZE: str = Field(default="distil-medium.en", alias="WHISPER_MODEL_SIZE")
     WHISPER_DEVICE: str = Field(default="cuda", alias="WHISPER_DEVICE")

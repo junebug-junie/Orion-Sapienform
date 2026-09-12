@@ -1,17 +1,15 @@
-"""Authenticated operator launcher, graph exports, and local Gephi Lite assets."""
+"""Hub-native graph launcher, read-only exports, and local Gephi Lite assets."""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import re
-import secrets
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from .settings import settings
@@ -24,7 +22,6 @@ logger = logging.getLogger("orion-hub.graph_workbench")
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = SERVICE_ROOT / "gephi-lite"
 Source = Literal["worldview", "substrate", "crystallizations"]
-basic = HTTPBasic(auto_error=False, realm="Orion Graph Workbench")
 PRIVATE_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 # All graph processing stays in the browser and on Hub. External GitHub/sample
 # integrations are intentionally unavailable for this private-memory deployment.
@@ -37,18 +34,7 @@ CSP = ("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; "
 GEPHI_CSP = CSP.replace("'wasm-unsafe-eval'", "'unsafe-eval'")
 
 
-def operator(credentials: HTTPBasicCredentials | None = Depends(basic)) -> None:
-    if not settings.HUB_GRAPH_WORKBENCH_PASSWORD:
-        raise HTTPException(503, "Graph workbench is disabled until its operator password is configured.", headers=PRIVATE_HEADERS)
-    username = credentials.username if credentials else ""
-    password = credentials.password if credentials else ""
-    valid_name = secrets.compare_digest(username.encode(), settings.HUB_GRAPH_WORKBENCH_USERNAME.encode())
-    valid_password = secrets.compare_digest(password.encode(), settings.HUB_GRAPH_WORKBENCH_PASSWORD.encode())
-    if not (valid_name and valid_password):
-        raise HTTPException(401, "Operator login required.", headers={**PRIVATE_HEADERS, "WWW-Authenticate": 'Basic realm="Orion Graph Workbench"'})
-
-
-router = APIRouter(tags=["graph-workbench"], dependencies=[Depends(operator)])
+router = APIRouter(tags=["graph-workbench"])
 
 
 def pool(request: Request):
@@ -139,10 +125,5 @@ async def gephi(request: Request, asset: str):
         # external requests or weakening the private workbench's network policy.
         css = re.sub(r'''@import\s*(?:url\()?['"]https://fonts\.googleapis\.com/[^'"]+['"]\)?\s*;''', "", css)
         response = Response(css, media_type="text/css")
-    elif (not asset or asset == "index.html") and response.status_code == 200:
-        html = await asyncio.to_thread(Path(response.path).read_text)
-        # A web manifest is fetched without auth by default, unlike scripts.
-        html = html.replace('rel="manifest"', 'rel="manifest" crossorigin="use-credentials"')
-        response = HTMLResponse(html)
     response.headers.update({**PRIVATE_HEADERS, "Content-Security-Policy": GEPHI_CSP})
     return response

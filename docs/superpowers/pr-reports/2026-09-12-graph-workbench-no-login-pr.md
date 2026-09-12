@@ -61,6 +61,12 @@ python3 scripts/check_env_template_parity.py orion-hub
 PASS; pre-merge checker warns about the two intentionally retired keys because it compares the primary checkout's still-current template.
 python3 scripts/check_service_env_compose_parity.py orion-hub
 N/A/pass: all template keys reach compose through env_file.
+/mnt/scripts/Orion-Sapienform/.venv/bin/python scripts/check_definition_drift.py --gate
+PASS: 652 definitions, no changes.
+/mnt/scripts/Orion-Sapienform/.venv/bin/python scripts/check_metric_lineage.py --gate
+PASS: 652 URNs.
+/mnt/scripts/Orion-Sapienform/.venv/bin/python scripts/check_async_routes_not_blocking.py
+PASS
 git diff --check
 PASS
 ```
@@ -83,7 +89,7 @@ Anonymous-to-Hub browser flow loaded all three real sources with no browser erro
 
 ```text
 scripts/safe_docker_build.sh orion-hub build hub-app
-PASS: image sha256:710f08de191bd668e78e699b99d894234481029730d59de01607ac89c10ec7b6
+PASS after the review fix: image sha256:9128135e22f1cd8b2f659695f5148f2dc5b3be5cba70d0b3a1d7ad67da829471
 ```
 
 The running Hub was not changed during verification.
@@ -120,4 +126,4 @@ Then open **Graph Workbench ↗** and verify there is no credentials prompt.
 
 ## PR link
 
-Pending creation.
+[PR #2202](https://github.com/junebug-junie/Orion-Sapienform/pull/2202)

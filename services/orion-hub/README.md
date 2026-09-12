@@ -22,19 +22,16 @@ runs need those assets copied to `services/orion-hub/gephi-lite/` or should use
 the isolated eval server's `--assets` option. The latter avoids untracked
 compiled assets in the checkout. A missing distribution returns 503.
 
-### Operator access and configuration
+### Access boundary
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `HUB_GRAPH_WORKBENCH_USERNAME` | `juniper` | HTTP Basic username |
-| `HUB_GRAPH_WORKBENCH_PASSWORD` | empty | Operator password; empty disables all workbench routes |
-
-Set a generated password in the gitignored service `.env`. Use HTTPS or the
-trusted local/Tailscale network. This login covers the new launcher, exports,
-search, source catalog, and Gephi assets. Export responses are `no-store`.
+Graph Workbench uses Hub's existing access boundary and does not add a second
+login. Anyone who can reach Hub can reach the launcher, exports, search, source
+catalog, and Gephi assets, so expose Hub only on the trusted local/Tailscale
+network (or place the whole Hub behind an authenticating HTTPS proxy). Export
+responses are `no-store`.
 Gephi cannot send graph data to an external host under the served content
 security policy. External Google font imports are removed in the CSS response,
-using local fallback fonts; the web manifest is served with credentials.
+using local fallback fonts.
 The upstream bundle requires `unsafe-eval` for its graph libraries; that
 allowance is confined to Gephi's pages. The launcher has a stricter policy.
 Do not add a public GitHub integration or loosen `connect-src` to share memory.
@@ -84,7 +81,6 @@ remain in Concept Atlas; this patch does not add a second analytics engine.
 ```bash
 python -m pytest services/orion-hub/tests/test_graph_workbench.py -q
 node --check services/orion-hub/static/js/graph-workbench.js
-python scripts/sync_local_env_from_example.py orion-hub --all-keys
 scripts/safe_docker_build.sh orion-hub build hub-app
 ```
 
@@ -93,14 +89,12 @@ it never starts Hub's normal workers or runs database bootstrap:
 
 ```bash
 python services/orion-hub/evals/graph_workbench_server.py \
-  --env-file /path/to/hub.env --credentials-file /path/to/operator.env \
-  --assets /path/to/extracted/gephi-lite --port 18089
+  --env-file /path/to/hub.env --assets /path/to/extracted/gephi-lite --port 18089
 node services/orion-hub/evals/graph_workbench_browser.cjs \
-  http://127.0.0.1:18089 /path/to/operator.env /path/to/private-evidence-directory
+  http://127.0.0.1:18089 /path/to/private-evidence-directory
 ```
 
-The credentials file contains the two workbench keys. Puppeteer is already a
-Hub dependency; `PUPPETEER_MODULE` can point at a complete installation when the
+Puppeteer is already a Hub dependency; `PUPPETEER_MODULE` can point at a complete installation when the
 worktree's historical tracked `node_modules` is incomplete. Screenshots and
 UI text contain private graph content and must remain outside git.
 
@@ -112,9 +106,10 @@ worktree):
 ORION_HOST_REPO_ROOT="$PWD" scripts/safe_docker_build.sh orion-hub up -d --no-deps hub-app
 ```
 
-Disable by clearing `HUB_GRAPH_WORKBENCH_PASSWORD` and restarting Hub. Graph data
-is untouched. Existing atlases remain available until replacement parity is
-verified. Gephi Lite is GPLv3; upstream source and license:
+To disable access, remove the navigation/router in a rollback or restrict Hub at
+its network boundary; Graph Workbench has no independent login or enable flag.
+Graph data is untouched. Existing atlases remain available until replacement
+parity is verified. Gephi Lite is GPLv3; upstream source and license:
 https://github.com/gephi/gephi-lite. The Dockerfile pins the tested image digest;
 repeat the browser eval before changing it.
 

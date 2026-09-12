@@ -1,4 +1,4 @@
-/* Real-browser eval. Usage: node ...cjs BASE_URL CREDENTIALS_FILE OUTPUT_DIR
+/* Real-browser eval. Usage: node ...cjs BASE_URL OUTPUT_DIR
  * Requires Hub's existing puppeteer dependency. Output stays local (private data).
  */
 const fs = require("node:fs");
@@ -7,16 +7,13 @@ const assert = require("node:assert/strict");
 const puppeteer = require(process.env.PUPPETEER_MODULE || "puppeteer");
 
 (async () => {
-  const [base, credentialsFile, outputDir] = process.argv.slice(2);
-  if (!base || !credentialsFile || !outputDir) throw new Error("Expected BASE_URL CREDENTIALS_FILE OUTPUT_DIR");
-  const credentials = Object.fromEntries(fs.readFileSync(credentialsFile, "utf8").split("\n").filter(l => l.includes("=")).map(l => [l.slice(0,l.indexOf("=")),l.slice(l.indexOf("=")+1)]));
-  const auth = {username:credentials.HUB_GRAPH_WORKBENCH_USERNAME, password:credentials.HUB_GRAPH_WORKBENCH_PASSWORD};
+  const [base, outputDir] = process.argv.slice(2);
+  if (!base || !outputDir) throw new Error("Expected BASE_URL OUTPUT_DIR");
   const browser = await puppeteer.launch({headless:true, args:["--no-sandbox", "--enable-unsafe-swiftshader"]});
   const report = [];
   try {
     for (const source of ["worldview", "substrate", "crystallizations"]) {
       const page = await browser.newPage();
-      await page.authenticate(auth);
       await page.setViewport({width:1440,height:1000});
       const errors = [];
       page.on("pageerror", e => errors.push(e.message));
@@ -27,7 +24,6 @@ const puppeteer = require(process.env.PUPPETEER_MODULE || "puppeteer");
       await page.click("#open");
       const target = await targetPromise;
       const gephi = await target.page();
-      await gephi.authenticate(auth);
       await gephi.setViewport({width:1440,height:1000});
       gephi.on("pageerror", e => errors.push(e.message));
       gephi.on("console", msg => {if(msg.type() === "error") errors.push(msg.text());});
@@ -42,11 +38,13 @@ const puppeteer = require(process.env.PUPPETEER_MODULE || "puppeteer");
       await page.waitForFunction(() => !document.getElementById("open").disabled, {timeout:30000});
       const status = await page.$eval("#status", e => e.textContent);
       assert.match(status, /\d+ nodes · \d+ edges/);
-      const counts = status.match(/(\d+) nodes · (\d+) edges/);
-      await gephi.waitForFunction((nodes, edges) => {
+      // The launcher preflights one live snapshot and Gephi fetches the same
+      // reloadable URL again. Assert a real native import without pretending
+      // those two independently read snapshots are byte-identical.
+      await gephi.waitForFunction(() => {
         const text = document.body.innerText;
-        return text.includes(`Nodes\n${nodes}`) && text.includes(`Edges\n${edges}`);
-      }, {}, counts[1], counts[2]);
+        return /Nodes\n[1-9]\d*/.test(text) && /Edges\n\d+/.test(text);
+      });
       await gephi.click("::-p-text(Data)");
       await gephi.waitForSelector('table tbody tr');
       const properties = await gephi.$$eval("table thead th", cells => cells.map(c => c.innerText.trim()));
@@ -74,15 +72,19 @@ const puppeteer = require(process.env.PUPPETEER_MODULE || "puppeteer");
       }, {}, coordinates);
       await gephi.screenshot({path:path.join(outputDir,`${source}.png`)});
       const text = await gephi.$eval("body", e => e.innerText);
+      const importedCounts = {
+        nodes:Number(text.match(/Nodes\n([\d,]+)/)?.[1].replaceAll(",", "")),
+        edges:Number(text.match(/Edges\n([\d,]+)/)?.[1].replaceAll(",", "")),
+      };
+      assert(importedCounts.nodes > 0, "Gephi imported no nodes");
       fs.writeFileSync(path.join(outputDir, `${source}-ui.txt`), text);
-      report.push({source,status,canvas:true,properties,selectedNode:true,layoutChanged:true,errors});
+      report.push({source,status,importedCounts,canvas:true,properties,selectedNode:true,layoutChanged:true,errors});
       await gephi.close();
       await page.close();
     }
     // Known directed multigraph proves the real importer preserves edge IDs,
     // parallel relations, and reverse direction (no database fixture writes).
     const fixture = await browser.newPage();
-    await fixture.authenticate(auth);
     await fixture.setViewport({width:1440,height:1000});
     await fixture.goto(`${base}/gephi-lite/?file=${encodeURIComponent(`${base}/eval/parallel.gexf`)}`);
     await fixture.waitForFunction(() => document.body.innerText.includes("Nodes\n2") && document.body.innerText.includes("Edges\n3"));

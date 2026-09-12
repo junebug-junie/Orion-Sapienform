@@ -1,6 +1,6 @@
 """Isolated read-only browser-eval server; never starts Hub's cognition workers.
 
-Run from any directory with --env-file, --credentials-file, and --assets.
+Run from any directory with --env-file and --assets.
 Only SELECT/GRAPH.RO_QUERY paths are exposed, bound to loopback.
 """
 from __future__ import annotations
@@ -14,7 +14,6 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", required=True, type=Path)
-    parser.add_argument("--credentials-file", required=True, type=Path)
     parser.add_argument("--assets", required=True, type=Path)
     parser.add_argument("--port", type=int, default=18089)
     args = parser.parse_args()
@@ -23,15 +22,12 @@ def main():
     sys.path.insert(0, str(hub))
     from dotenv import load_dotenv
     load_dotenv(args.env_file)
-    load_dotenv(args.credentials_file, override=True)
     import asyncpg
     import uvicorn
-    from fastapi import Depends, FastAPI
+    from fastapi import FastAPI
     from fastapi.responses import Response
     from fastapi.staticfiles import StaticFiles
     from scripts import graph_workbench_routes as routes
-    if not routes.settings.HUB_GRAPH_WORKBENCH_PASSWORD:
-        parser.error("Credentials file must set HUB_GRAPH_WORKBENCH_PASSWORD.")
     routes.ASSET_ROOT = args.assets
 
     @asynccontextmanager
@@ -50,7 +46,7 @@ def main():
     app.include_router(routes.router)
     app.mount("/static", StaticFiles(directory=hub / "static"))
 
-    @app.get("/eval/parallel.gexf", dependencies=[Depends(routes.operator)])
+    @app.get("/eval/parallel.gexf")
     async def parallel_fixture():
         from scripts.graph_workbench import Snapshot
         snap = Snapshot("eval-parallel-fixture")

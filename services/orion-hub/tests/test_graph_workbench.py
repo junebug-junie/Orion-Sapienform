@@ -12,8 +12,6 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     from scripts import graph_workbench_routes as routes
-    monkeypatch.setattr(routes.settings, "HUB_GRAPH_WORKBENCH_USERNAME", "operator")
-    monkeypatch.setattr(routes.settings, "HUB_GRAPH_WORKBENCH_PASSWORD", "test-password")
     monkeypatch.setattr(routes, "ASSET_ROOT", tmp_path)
     (tmp_path / "index.html").write_text("<title>Gephi Lite</title>")
     app = FastAPI()
@@ -21,22 +19,25 @@ def client(monkeypatch, tmp_path):
     return TestClient(app), routes
 
 
-@pytest.mark.parametrize("path", ["/graph-workbench", "/gephi-lite/", "/api/graph-workbench/sources", "/api/graph-workbench/search/worldview", "/api/graph-workbench/export/worldview.gexf"])
-def test_auth_required_for_every_surface(client, path):
-    http, _ = client
-    assert http.get(path).status_code == 401
-    assert http.get(path, auth=("operator", "wrong")).status_code == 401
-
-
-def test_blank_password_disables_even_matching_empty_credentials(client, monkeypatch):
+@pytest.mark.parametrize("path", [
+    "/graph-workbench", "/gephi-lite/", "/api/graph-workbench/sources",
+    "/api/graph-workbench/search/worldview", "/api/graph-workbench/export/worldview.gexf",
+])
+def test_workbench_uses_hubs_existing_network_boundary_without_a_second_login(client, path, monkeypatch):
     http, routes = client
-    monkeypatch.setattr(routes.settings, "HUB_GRAPH_WORKBENCH_PASSWORD", "")
-    assert http.get("/api/graph-workbench/sources", auth=("operator", "")).status_code == 503
+    from scripts.graph_workbench import Snapshot
+    monkeypatch.setattr(
+        routes, "_with_graph",
+        lambda _source, fn, *_args: [] if fn is routes.graph_search else Snapshot("worldview"),
+    )
+    response = http.get(path)
+    assert response.status_code == 200
+    assert "www-authenticate" not in response.headers
+    assert routes.router.dependencies == []
 
 
 def test_launcher_and_asset_security(client):
     http, _ = client
-    http.auth = ("operator", "test-password")
     page = http.get("/graph-workbench")
     assert page.status_code == 200
     assert '/static/js/graph-workbench.js' in page.text
@@ -47,19 +48,19 @@ def test_launcher_and_asset_security(client):
     assert http.get("/gephi-lite/%2e%2e%2fapp/settings.py").status_code == 404
 
 
-def test_gephi_fonts_stay_local_and_manifest_keeps_auth(client):
+def test_gephi_fonts_stay_local_without_rewriting_the_manifest(client):
     http, routes = client
-    http.auth = ("operator", "test-password")
     (routes.ASSET_ROOT / "style.css").write_text('@import"https://fonts.googleapis.com/css2?family=Poppins:wght@200;300&display=swap";body{color:red}')
     (routes.ASSET_ROOT / "index.html").write_text('<link rel="manifest" href="./site.webmanifest">')
     assert http.get("/gephi-lite/style.css").text == "body{color:red}"
-    assert 'crossorigin="use-credentials"' in http.get("/gephi-lite/").text
+    assert 'rel="manifest" href="./site.webmanifest"' in http.get("/gephi-lite/").text
+    assert "use-credentials" not in http.get("/gephi-lite/").text
 
 
 @pytest.mark.parametrize("suffix", ["unknown.gexf", "worldview.gexf?depth=4", "worldview.gexf?limit=1001", "worldview.gexf?limit=0", "worldview.gexf?seed=1%20CREATE", "worldview.gexf?seed=99999999999999999999999"])
 def test_invalid_source_and_bounds_rejected(client, suffix):
     http, _ = client
-    assert http.get("/api/graph-workbench/export/" + suffix, auth=("operator", "test-password")).status_code == 422
+    assert http.get("/api/graph-workbench/export/" + suffix).status_code == 422
 
 
 def test_arbitrary_properties_roundtrip_parallel_edges_and_limits():
@@ -122,7 +123,6 @@ def test_no_writable_fallback_or_unbounded_query():
 
 def test_export_errors_are_honest_and_do_not_leak_credentials(client, monkeypatch):
     http, routes = client
-    http.auth = ("operator", "test-password")
     monkeypatch.setattr(routes, "_with_graph", lambda *args: (_ for _ in ()).throw(RuntimeError("redis://secret:password@host")))
     response = http.get("/api/graph-workbench/export/worldview.gexf")
     assert response.status_code == 503

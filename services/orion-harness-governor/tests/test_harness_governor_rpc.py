@@ -56,8 +56,10 @@ async def test_harness_run_artifact_published() -> None:
     appraisal = make_appraisal()
     reflection = make_reflection()
     motor = _motor_result(thought)
+    finalize_kwargs: dict[str, object] = {}
 
-    async def _fake_finalize_chain(**_: object) -> HarnessFinalizeChainResult:
+    async def _fake_finalize_chain(**kwargs: object) -> HarnessFinalizeChainResult:
+        finalize_kwargs.update(kwargs)
         from orion.harness.finalize import emit_turn_outcome_molecule, emit_verdict_molecule
 
         verdict = await emit_verdict_molecule(
@@ -107,10 +109,46 @@ async def test_harness_run_artifact_published() -> None:
     assert run.finalize_ran is True
     assert run.final_text == "final for juniper"
     assert run.draft_text == "internal draft"
+    assert finalize_kwargs["preserve_structured_output"] is False
     assert bus.publish.await_count >= 2
     channels = [call.args[0] for call in bus.publish.await_args_list]
     assert "orion:harness:run:result:c-1" in channels
     assert bus_listener.settings.channel_harness_run_artifact in channels
+
+
+@pytest.mark.asyncio
+async def test_reading_only_request_preserves_structured_output() -> None:
+    from app import bus_listener
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-reading-only",
+        thought_event=thought,
+        user_message="return JSON",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        reading_only=True,
+        reply_to="orion:harness:run:result:c-reading-only",
+    )
+    motor = _motor_result(thought)
+    seen: dict[str, object] = {}
+
+    async def _fake_finalize_chain(**kwargs: object) -> HarnessFinalizeChainResult:
+        seen.update(kwargs)
+        raise RuntimeError("stop after argument capture")
+
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain):
+        await bus_listener.handle_harness_run_request(
+            AsyncMock(),
+            req,
+            reply_to="orion:harness:run:result:c-reading-only",
+        )
+
+    assert seen["preserve_structured_output"] is True
 
 
 @pytest.mark.asyncio

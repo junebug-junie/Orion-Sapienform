@@ -2030,11 +2030,8 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
 
 
 # The exact (verb_name, step_name) pairs whose LLM call output becomes the text Juniper
-# actually reads -- NOT everything that resolves to llm_route == "chat" below. That bucket
-# is a worker/context-budget grouping (DEEP lane, Circe), shared with harness_finalize_reflect
-# and orion_voice_finalize, whose own docstring notes their "chat" llm_route is vestigial:
-# real dispatch for both goes through an explicit llm_lane ("agent"/"background") that
-# ignores body_route entirely, so they never reach Circe via this value -- but options set
+# actually reads -- NOT every internal synthesis call. Finalize calls now use
+# the agent route; options set
 # here (e.g. return_logprobs) still ride along on whatever call they do make. Keyed on
 # identity, not the shared route, so CORTEX_CHAT_RETURN_LOGPROBS below can never leak onto
 # those internal calls.
@@ -2089,20 +2086,12 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     without spinning up the full executor.
 
     Default lane mapping:
-    - harness_finalize_reflect / orion_voice_finalize: DEEP lane ("chat" /
-      Circe) — fat prompts exceed quick/fast ctx (400). NOTE: this llm_route
-      value is vestigial for both verbs today. Both set an explicit top-level
-      llm_lane in their own context builder (orion/harness/finalize.py's
-      build_finalize_reflect_context -> "agent", build_voice_finalize_context
-      -> "background"), and the gateway's resolve_llm_lane_route ignores
-      body_route entirely for both the "background" and "agent" llm_lane
-      branches -- so this "chat" value never actually reaches the wire for
-      either verb. Do not read "chat-lane contention is not a risk" as true
-      of harness_finalize_reflect anymore: it was, until a live incident
-      2026-08-16 (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd) showed the two
-      verbs actually contend with EACH OTHER on `background`/atlas-worker-2
-      when the governor abandons a timed-out RPC without cancelling it -- see
-      finalize.py for the fix.
+    - harness_finalize_reflect / orion_voice_finalize: AGENT lane. These are
+      automated continuation calls, not Juniper chat. Their fat prompts exceed
+      quick/fast context, and live gateway evidence on 2026-09-12 showed 27
+      autonomous finalize completions consuming the reserved chat worker in
+      24h while lane routing was disabled. The context builders also stamp
+      route/lane=agent so old and new gateway configurations agree.
     - stance_react (orion-thought's ThoughtClient.react, the real
       stance-evaluation step of every unified turn): DEEP lane ("chat" /
       Circe). Confirmed missing from this chain entirely until 2026-08-20 --
@@ -2145,7 +2134,9 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     - introspect_spark internal analysis: FAST lane ("quick")
     - metacog mode: METACOG lane
     """
-    if verb_name in {"harness_finalize_reflect", "orion_voice_finalize", "stance_react"}:
+    if verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
+        return "agent"
+    if verb_name == "stance_react":
         return "chat"
     if verb_name == "chat_general" and step_name == "synthesize_chat_stance_brief":
         return "quick"

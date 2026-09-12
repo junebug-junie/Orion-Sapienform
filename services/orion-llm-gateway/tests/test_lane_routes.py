@@ -46,6 +46,19 @@ def test_chat_lane_resolves_body_route() -> None:
     assert d.resolved_llm_lane == "chat"
 
 
+def test_missing_lane_preserves_body_route_with_shipped_default() -> None:
+    d = _resolve(
+        options=None,
+        body_route="agent",
+        keys={"chat", "agent", "quick", "metacog"},
+        served_by={"chat": "c1", "agent": "a1", "quick": "q1", "metacog": "m1"},
+        llm_lane_default="chat",
+    )
+    assert d.route_status == "ok"
+    assert d.requested_llm_lane == "chat"
+    assert d.route_table_key == "agent"
+
+
 def test_spark_lane_prefers_spark_key() -> None:
     d = _resolve(
         options={"llm_lane": "spark", "allow_chat_fallback": False},

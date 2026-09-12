@@ -56,6 +56,11 @@ REPAIR_PRESSURE_MAX = 0.3
 # built, so the idea isn't lost when that system exists.
 MAX_FINALIZE_LOOP_RETRIES = 1
 
+
+def canonicalize_structured_output(text: str) -> str:
+    """Return a compact JSON object or raise when a machine draft is not JSON."""
+    return json.dumps(parse_json_object(text), ensure_ascii=False)
+
 # Semantic verb names the reflect prompt is allowed to recommend. Kept in
 # lockstep with the TOOL RECOMMENDATION section of harness_finalize_reflect.j2
 # -- an unrecognized name is logged and dropped, never dispatched.
@@ -358,6 +363,11 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
+        # Finalize is an automated continuation of the already-selected turn,
+        # never interactive chat traffic. Keep both routing axes explicit so
+        # this stays on agent whether gateway lane routing is enabled or an
+        # older deployment still honors only the body route.
+        "llm_route": "agent",
         # Was `background` until confirmed wrong live 2026-08-16
         # (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize
         # call also runs on `background`/atlas-worker-2 and can occupy it for 90s+,
@@ -370,10 +380,10 @@ def build_finalize_reflect_context(
         # unused by any other verb, isolating this call from both. See
         # test_finalize_reflect_lane.py and
         # test_llm_lane_propagation.py::test_finalize_reflect_ctx_llm_lane_resolves_agent
-        # for the fuller incident writeup. 5c itself is UNCHANGED (still
-        # background) -- out of scope for this fix.
+        # for the fuller incident writeup. Both finalizers now share the
+        # isolated agent lane.
         "llm_lane": "agent",
-        "allow_chat_fallback": True,
+        "allow_chat_fallback": False,
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",
@@ -826,6 +836,11 @@ def build_voice_finalize_context(
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
+        # See build_finalize_reflect_context: 5c is part of the same automated
+        # finalize chain and must not consume Juniper's reserved chat worker.
+        "llm_route": "agent",
+        "llm_lane": "agent",
+        "allow_chat_fallback": False,
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",
@@ -1261,6 +1276,7 @@ async def run_harness_finalize_chain(
     thought: ThoughtEventV1,
     grammar_receipts: list[GrammarReceiptV1] | None,
     reading_receipts: list[ReadingRecommendationOutcomeV1] | None = None,
+    preserve_structured_output: bool = False,
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     voice_contract: AnswerContract | dict[str, Any] | None,
@@ -1289,7 +1305,10 @@ async def run_harness_finalize_chain(
     HARNESS_FINALIZE_TOOL_LOOP_ENABLED), verdict emission, Orion voice
     finalization (5c), turn-outcome emission (6b), and the optional embodiment
     intent. The motor draft is not the final Hub response; this chain is what
-    may change it.
+    may change it. Machine-to-machine reading turns set
+    ``preserve_structured_output``: their draft is parsed and canonicalized as
+    JSON in place of prose-oriented 5c. The default remains false, preserving
+    the existing voice pass for ordinary turns.
 
     Runtime evidence: substrate appraisal, verdict and outcome molecules
     (outcome carries finalize_loop_retried/finalize_loop_tool when 5b-prime
@@ -1362,18 +1381,35 @@ async def run_harness_finalize_chain(
     verdict_molecule_id = _verdict_molecule_id(verdict_molecule)
 
     try:
-        final_text, voice_meta = await run_orion_voice_finalize(
-            correlation_id=correlation_id,
-            draft_text=draft_text,
-            thought=thought,
-            substrate_appraisal=substrate_appraisal,
-            reflection=reflection,
-            voice_contract=voice_contract,
-            repair_overlay=repair_overlay,
-            user_message=user_message,
-            grammar_receipts=grammar_receipts,
-            cortex_client=cortex_client,
-        )
+        if preserve_structured_output:
+            # Reading Stage 1/2 are machine-to-machine calls. Their consumer
+            # requires JSON, while 5c is intentionally a prose voice writer.
+            # Validate and canonicalize the motor result instead of asking a
+            # prose model to preserve syntax probabilistically. Ordinary chat
+            # keeps the existing 5c behavior because this flag defaults false.
+            final_text = canonicalize_structured_output(draft_text)
+            voice_meta = {
+                "finalize_changed": final_text.strip() != draft_text.strip(),
+                "structured_output_preserved": True,
+            }
+            logger.info(
+                "harness_structured_output_preserved corr=%s chars=%s",
+                correlation_id,
+                len(final_text),
+            )
+        else:
+            final_text, voice_meta = await run_orion_voice_finalize(
+                correlation_id=correlation_id,
+                draft_text=draft_text,
+                thought=thought,
+                substrate_appraisal=substrate_appraisal,
+                reflection=reflection,
+                voice_contract=voice_contract,
+                repair_overlay=repair_overlay,
+                user_message=user_message,
+                grammar_receipts=grammar_receipts,
+                cortex_client=cortex_client,
+            )
     except Exception as exc:
         partial = await emit_finalize_failure_artifacts(
             correlation_id=correlation_id,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from orion.harness.finalize import emit_post_turn_closure, run_harness_finalize_chain
@@ -145,6 +147,101 @@ async def test_voice_finalize_cannot_reintroduce_false_reading_acceptance() -> N
     assert "acceptance is unknown" in chain.final_text
     assert "did not read" in chain.final_text
     assert "FABRICATED_SUMMARY" not in chain.final_text
+
+
+@pytest.mark.asyncio
+async def test_structured_reading_output_skips_voice_rewrite_and_stays_json() -> None:
+    thought = make_thought()
+    draft = """```json
+    {"summary":"grounded","need_stage1_urls":[],"trace_id":"t-1"}
+    ```"""
+    molecule = build_draft_molecule(
+        correlation_id="c-structured",
+        thought=thought,
+        draft_text=draft,
+        grammar_receipts=[],
+        coalition_snapshot=build_coalition_snapshot(thought),
+        repair_overlay=make_repair_overlay(),
+    )
+    reflection = make_reflection()
+    cortex_calls: list[object] = []
+
+    async def substrate_client(_mol: object):
+        return make_appraisal()
+
+    async def cortex_client(req: object):
+        cortex_calls.append(req)
+        return {"final_text": reflection.model_dump(mode="json")}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "orion.harness.finalize.extract_finalize_reflection_payload",
+            lambda _result: reflection.model_dump(mode="json"),
+        )
+        chain = await run_harness_finalize_chain(
+            correlation_id="c-structured",
+            draft_text=draft,
+            draft_molecule=molecule,
+            thought=thought,
+            grammar_receipts=[],
+            preserve_structured_output=True,
+            repair_overlay=make_repair_overlay(),
+            user_message="machine reading prompt",
+            voice_contract=None,
+            cortex_client=cortex_client,
+            substrate_client=substrate_client,
+        )
+
+    assert json.loads(chain.final_text) == {
+        "summary": "grounded",
+        "need_stage1_urls": [],
+        "trace_id": "t-1",
+    }
+    assert cortex_calls == [], "deterministic 5b passed, and prose-only 5c must be skipped"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_finalize_remains_voice_finalized_for_backward_compatibility() -> None:
+    thought = make_thought()
+    molecule = build_draft_molecule(
+        correlation_id="c-prose",
+        thought=thought,
+        draft_text="motor draft",
+        grammar_receipts=[],
+        coalition_snapshot=build_coalition_snapshot(thought),
+        repair_overlay=make_repair_overlay(),
+    )
+    reflection = make_reflection()
+    calls = 0
+
+    async def substrate_client(_mol: object):
+        return make_appraisal()
+
+    async def cortex_client(_req: object):
+        nonlocal calls
+        calls += 1
+        return {"final_text": "Orion's voiced reply"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "orion.harness.finalize.extract_finalize_reflection_payload",
+            lambda _result: reflection.model_dump(mode="json"),
+        )
+        chain = await run_harness_finalize_chain(
+            correlation_id="c-prose",
+            draft_text="motor draft",
+            draft_molecule=molecule,
+            thought=thought,
+            grammar_receipts=[],
+            repair_overlay=make_repair_overlay(),
+            user_message="hello",
+            voice_contract=None,
+            cortex_client=cortex_client,
+            substrate_client=substrate_client,
+        )
+
+    assert chain.final_text == "Orion's voiced reply"
+    assert calls == 1
 
 
 @pytest.mark.asyncio

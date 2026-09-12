@@ -309,6 +309,7 @@ async def handle_harness_run_request(
             thought=request.thought_event,
             grammar_receipts=motor.grammar_receipts,
             reading_receipts=motor.reading_receipts,
+            preserve_structured_output=bool(request.reading_only),
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,

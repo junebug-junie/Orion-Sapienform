@@ -98,8 +98,8 @@ def test_finalize_reflect_ctx_llm_lane_resolves_agent() -> None:
     step = SimpleNamespace(verb_name="harness_finalize_reflect", step_name="llm_harness_finalize_reflect")
     out = resolve_llm_lane_for_step(
         step=step,
-        ctx={"llm_lane": "agent", "allow_chat_fallback": True, "metadata": {"mode": "brain"}},
+        ctx={"llm_lane": "agent", "allow_chat_fallback": False, "metadata": {"mode": "brain"}},
         settings=_settings(),
     )
     assert out["llm_lane"] == "agent"
-    assert out["allow_chat_fallback"] is True
+    assert out["allow_chat_fallback"] is False

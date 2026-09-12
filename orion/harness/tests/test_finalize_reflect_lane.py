@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from orion.harness.finalize import build_finalize_reflect_context
+from orion.harness.finalize import (
+    build_finalize_reflect_context,
+    build_voice_finalize_context,
+)
 from orion.harness.tests.fixtures import (
     make_appraisal,
+    make_reflection,
     make_repair_overlay,
     make_thought,
 )
@@ -32,7 +36,8 @@ def test_finalize_reflect_context_routes_to_agent_lane() -> None:
         user_message="How are you?",
     )
     assert ctx["llm_lane"] == "agent"
-    assert ctx["allow_chat_fallback"] is True
+    assert ctx["llm_route"] == "agent"
+    assert ctx["allow_chat_fallback"] is False
 
 
 def test_finalize_reflect_context_lane_is_top_level_for_cortex_ctx_merge() -> None:
@@ -48,3 +53,21 @@ def test_finalize_reflect_context_lane_is_top_level_for_cortex_ctx_merge() -> No
     )
     assert "llm_lane" in ctx
     assert "options" not in ctx or "llm_lane" not in ctx.get("options", {})
+
+
+def test_voice_finalize_context_routes_to_agent_without_chat_fallback() -> None:
+    thought = make_thought()
+    ctx = build_voice_finalize_context(
+        correlation_id="c-voice",
+        draft_text="draft",
+        thought=thought,
+        substrate_appraisal=make_appraisal(),
+        reflection=make_reflection(),
+        stance_harness_slice=thought.stance_harness_slice,
+        voice_contract={},
+        repair_overlay=make_repair_overlay(),
+        user_message="How are you?",
+    )
+    assert ctx["llm_route"] == "agent"
+    assert ctx["llm_lane"] == "agent"
+    assert ctx["allow_chat_fallback"] is False

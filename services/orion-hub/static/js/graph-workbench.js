@@ -1,73 +1,193 @@
 "use strict";
 (() => {
   const $ = (id) => document.getElementById(id);
-  const help = {
-    worldview: "Default view: up to the node limit in worldview. Pick a starting node to explore its neighborhood.",
-    substrate: "Default view: a neighborhood around the most activated concept. Search to choose your own starting node.",
-    crystallizations: "Default view: the 50 most recently updated active crystallizations, plus lineage within the node limit. Search to focus on one memory.",
+  const source = $("source");
+  const focus = $("seed");
+  const query = $("query");
+  const depth = $("depth");
+  const limit = $("limit");
+  const lineage = $("lineage");
+  const frame = $("graph-frame");
+  const status = $("status");
+  const focusStatus = $("focus-status");
+  const download = $("download");
+  const refresh = $("refresh");
+  if (!source || !focus || !query || !depth || !limit || !lineage || !frame || !status || !focusStatus || !download || !refresh) return;
+
+  const descriptions = {
+    crystallizations: {
+      overview: "Overview — recent memories",
+      help: "Recent memory crystallizations and the evidence connected to them.",
+      placeholder: "Type words from a memory…",
+      loading: "memory crystallizations",
+    },
+    worldview: {
+      overview: "Overview — current worldview",
+      help: "Orion’s beliefs and claims, with the evidence and revisions connecting them.",
+      placeholder: "Type a belief, claim, or concept…",
+      loading: "the worldview",
+    },
+    substrate: {
+      overview: "Overview — most active concept",
+      help: "Orion’s active concepts and the relationships between them.",
+      placeholder: "Type a concept or relationship…",
+      loading: "the substrate",
+    },
   };
-  let downloadUrl;
-  const clearDownload = () => {
-    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-    downloadUrl = null;
-    $("download").hidden = true;
-  };
+  let searchVersion = 0;
+  let searchTimer;
+  let loadVersion = 0;
+  let snapshotUrl;
+  let pendingImport;
+
   const errorText = async (response) => {
-    try { const data = await response.json(); return typeof data.detail === "string" ? data.detail : "Check the node id and limits."; }
-    catch (_) { return `Request failed (${response.status}).`; }
-  };
-  $("source").addEventListener("change", () => {
-    $("seed").replaceChildren(new Option("Default view", ""));
-    $("source-help").textContent = help[$("source").value];
-    $("lineage").disabled = $("source").value !== "crystallizations";
-    $("status").textContent = "";
-    clearDownload();
-  });
-  $("source").dispatchEvent(new Event("change"));
-  $("search").addEventListener("click", async () => {
-    const source = $("source").value;
-    $("search").disabled = true;
-    $("status").textContent = "Searching…";
     try {
-      const response = await fetch(`/api/graph-workbench/search/${source}?q=${encodeURIComponent($("query").value)}`, {cache:"no-store"});
+      const data = await response.json();
+      return typeof data.detail === "string" ? data.detail : `Request failed (${response.status}).`;
+    } catch (_) {
+      return `Request failed (${response.status}).`;
+    }
+  };
+
+  const exportUrl = () => {
+    const params = new URLSearchParams({
+      seed: focus.value,
+      depth: depth.value,
+      limit: limit.value,
+      lineage: lineage.checked,
+    });
+    return `/api/graph-workbench/export/${source.value}.gexf?${params}`;
+  };
+
+  const nativeCounts = () => {
+    try {
+      const text = frame.contentDocument?.body?.innerText || "";
+      const nodeMatch = text.match(/Nodes\n([\d,]+)/);
+      const edgeMatch = text.match(/Edges\n([\d,]+)/);
+      return {
+        nodes: nodeMatch ? Number(nodeMatch[1].replaceAll(",", "")) : 0,
+        edges: edgeMatch ? Number(edgeMatch[1].replaceAll(",", "")) : -1,
+      };
+    } catch (_) {
+      return {nodes: 0, edges: -1};
+    }
+  };
+
+  const confirmImport = async (version, expectedNodes, expectedEdges, summary) => {
+    for (let attempt = 0; attempt < 80 && version === loadVersion; attempt += 1) {
+      if (frame.contentWindow.__orionGraphImportVersion !== version) return;
+      const current = nativeCounts();
+      if (current.nodes === expectedNodes && current.edges === expectedEdges) {
+        frame.dataset.confirmedVersion = String(version);
+        frame.dataset.confirmedDocumentVersion = String(frame.contentWindow.__orionGraphImportVersion);
+        pendingImport = undefined;
+        status.textContent = `${summary} Ready. Use Gephi’s Data, Layout, Filters, and Metrics below.`;
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (version === loadVersion) {
+      pendingImport = undefined;
+      status.textContent = `${summary} Gephi opened, but import was not confirmed. Try Refresh graph.`;
+    }
+  };
+
+  const loadGraph = async () => {
+    const version = ++loadVersion;
+    const graphUrl = new URL(exportUrl(), window.location.origin);
+    const selectedSource = source.value;
+    status.textContent = `Preparing ${descriptions[selectedSource].loading}…`;
+    refresh.disabled = true;
+    try {
+      const response = await fetch(graphUrl, {cache: "no-store"});
+      if (!response.ok) throw new Error(await errorText(response));
+      const blob = await response.blob();
+      if (version !== loadVersion) return;
+      if (snapshotUrl) URL.revokeObjectURL(snapshotUrl);
+      snapshotUrl = URL.createObjectURL(blob);
+      const nodes = Number(response.headers.get("X-Graph-Nodes"));
+      const edges = Number(response.headers.get("X-Graph-Edges"));
+      const truncated = response.headers.get("X-Graph-Truncated") === "true";
+      const summary = `${nodes} nodes · ${edges} edges${truncated ? " · limited slice" : ""}.`;
+      download.href = snapshotUrl;
+      download.download = `${selectedSource}.gexf`;
+      frame.dataset.source = selectedSource;
+      frame.dataset.seed = focus.value;
+      frame.dataset.requestVersion = String(version);
+      frame.dataset.confirmedVersion = "";
+      frame.dataset.confirmedDocumentVersion = "";
+      const frameSrc = new URL(`/gephi-lite/?file=${encodeURIComponent(snapshotUrl)}`, window.location.origin).href;
+      pendingImport = {version, nodes, edges, summary, frameSrc};
+      frame.src = frameSrc;
+      status.textContent = `${summary} Opening Gephi…`;
+    } catch (error) {
+      if (version === loadVersion) status.textContent = `Graph unavailable: ${error.message}`;
+    } finally {
+      if (version === loadVersion) refresh.disabled = false;
+    }
+  };
+
+  const refreshFocus = async (text = "") => {
+    const version = ++searchVersion;
+    const selectedSource = source.value;
+    const description = descriptions[selectedSource];
+    const activeValue = focus.value;
+    const activeLabel = (focus.selectedOptions[0]?.textContent || "Current focus").replace(/ — currently shown$/, "");
+    focus.disabled = true;
+    focusStatus.textContent = text ? "Filtering…" : "Loading named choices…";
+    try {
+      const response = await fetch(`/api/graph-workbench/search/${selectedSource}?q=${encodeURIComponent(text)}`, {cache: "no-store"});
       if (!response.ok) throw new Error(await errorText(response));
       const {matches} = await response.json();
-      if (source !== $("source").value) return;
-      $("seed").replaceChildren(new Option("Default view", ""), ...matches.map(n => new Option(`${n.label} · ${n.kind || "node"}`, n.id)));
-      if (matches.length) $("seed").value = matches[0].id;
-      $("status").textContent = `${matches.length} matching nodes. Select one, then open the workbench.`;
-    } catch (error) { $("status").textContent = error.message; }
-    finally { $("search").disabled = false; }
+      if (version !== searchVersion || selectedSource !== source.value) return;
+      const choices = [new Option(description.overview, "")];
+      if (activeValue && !matches.some((node) => String(node.id) === activeValue)) {
+        choices.push(new Option(`${activeLabel} — currently shown`, activeValue));
+      }
+      choices.push(...matches.map((node) => new Option(`${node.label} — ${node.kind || "node"}`, node.id)));
+      focus.replaceChildren(...choices);
+      if (choices.some((option) => option.value === activeValue)) focus.value = activeValue;
+      focusStatus.textContent = text ? `${matches.length} matching choices` : `${matches.length} named choices`;
+    } catch (error) {
+      if (version === searchVersion) focusStatus.textContent = `Choices unavailable: ${error.message}`;
+    } finally {
+      if (version === searchVersion) focus.disabled = false;
+    }
+  };
+
+  const applySource = () => {
+    const description = descriptions[source.value];
+    $("source-help").textContent = description.help;
+    query.value = "";
+    query.placeholder = description.placeholder;
+    focus.replaceChildren(new Option(description.overview, ""));
+    lineage.disabled = source.value !== "crystallizations";
+    refreshFocus();
+    loadGraph();
+  };
+
+  source.addEventListener("change", applySource);
+  focus.addEventListener("change", loadGraph);
+  query.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => refreshFocus(query.value.trim()), 250);
   });
-  $("query").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") { event.preventDefault(); $("search").click(); }
-  });
-  $("workbench-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    // Open immediately on the gesture to avoid popup blockers after the fetch.
-    const tab = window.open("about:blank", "_blank");
-    if (!tab) { $("status").textContent = "Allow popups for Hub to open Gephi Lite."; return; }
-    tab.opener = null;
-    const source = $("source").value;
-    const params = new URLSearchParams({seed:$("seed").value, depth:$("depth").value, limit:$("limit").value, lineage:$("lineage").checked});
-    $("open").disabled = true;
-    $("status").textContent = "Preparing graph…";
-    clearDownload();
+  depth.addEventListener("change", loadGraph);
+  limit.addEventListener("change", loadGraph);
+  lineage.addEventListener("change", loadGraph);
+  refresh.addEventListener("click", loadGraph);
+  frame.addEventListener("load", () => {
+    const pending = pendingImport;
+    if (!pending || pending.version !== loadVersion) return;
     try {
-      const response = await fetch(`/api/graph-workbench/export/${source}.gexf?${params}`, {cache:"no-store"});
-      if (!response.ok) throw new Error(await errorText(response));
-      // Keep the checked export available for download. Gephi loads a fresh
-      // snapshot from the same authenticated endpoint, so its URL is reloadable.
-      const blob = await response.blob();
-      downloadUrl = URL.createObjectURL(blob);
-      $("download").href = downloadUrl;
-      $("download").download = `${source}.gexf`;
-      $("download").hidden = false;
-      const file = new URL(`/api/graph-workbench/export/${source}.gexf?${params}`, location.origin);
-      tab.location = `/gephi-lite/?file=${encodeURIComponent(file.href)}`;
-      const truncated = response.headers.get("X-Graph-Truncated") === "true";
-      $("status").textContent = `${response.headers.get("X-Graph-Nodes")} nodes · ${response.headers.get("X-Graph-Edges")} edges.${truncated ? " Limited view: choose a smaller neighborhood or raise the node limit." : ""}`;
-    } catch (error) { tab.close(); $("status").textContent = error.message; }
-    finally { $("open").disabled = false; }
+      if (frame.contentWindow.location.href !== pending.frameSrc) return;
+      frame.contentWindow.__orionGraphImportVersion = pending.version;
+    } catch (_) {
+      return;
+    }
+    confirmImport(pending.version, pending.nodes, pending.edges, pending.summary);
   });
+  window.addEventListener("beforeunload", () => { if (snapshotUrl) URL.revokeObjectURL(snapshotUrl); });
+
+  applySource();
 })();

@@ -25,7 +25,7 @@ def main():
     import asyncpg
     import uvicorn
     from fastapi import FastAPI
-    from fastapi.responses import Response
+    from fastapi.responses import HTMLResponse, Response
     from fastapi.staticfiles import StaticFiles
     from scripts import graph_workbench_routes as routes
     routes.ASSET_ROOT = args.assets
@@ -45,6 +45,33 @@ def main():
     app = FastAPI(lifespan=lifespan)
     app.include_router(routes.router)
     app.mount("/static", StaticFiles(directory=hub / "static"))
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return Response(status_code=204)
+
+    @app.get("/eval/hub", response_class=HTMLResponse)
+    async def hub_shell():
+        # Render the real Hub template and tab controller without starting Hub's
+        # workers. Browser evals can therefore catch broken hash routing/lazy
+        # iframe wiring rather than testing only the inner workbench page.
+        html = (hub / "templates/index.html").read_text()
+        replacements = {
+            "{{HUB_UI_ASSET_VERSION}}": "graph-eval",
+            "{{NOTIFY_TOAST_SECONDS}}": "8",
+            "{{HUB_CFG}}": '{"apiBaseOverride":"","wsBaseOverride":""}',
+            "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}": "Orion",
+            "{{HUB_MEMORY_STORE_BANNER_CLASS}}": "hidden",
+            "{{HUB_MEMORY_STORE_BANNER_TEXT}}": "",
+            "{{HUB_MEMORY_STORE_READY}}": "false",
+            "{{HUB_AITOWN_TAB_NAV}}": "",
+            "{{HUB_AITOWN_PANEL}}": "",
+            "{{HUB_PROPOSAL_REVIEW_PANEL}}": "",
+            "{{HUB_PROPOSAL_REVIEW_SCRIPT}}": "",
+        }
+        for token, value in replacements.items():
+            html = html.replace(token, value)
+        return HTMLResponse(html)
 
     @app.get("/eval/parallel.gexf")
     async def parallel_fixture():

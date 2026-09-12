@@ -37,15 +37,27 @@ def test_workbench_uses_hubs_existing_network_boundary_without_a_second_login(cl
 
 
 def test_launcher_and_asset_security(client):
-    http, _ = client
+    http, routes = client
     page = http.get("/graph-workbench")
     assert page.status_code == 200
     assert '/static/js/graph-workbench.js' in page.text
+    assert 'id="graph-frame"' in page.text
+    assert 'value="crystallizations" selected' in page.text
+    assert 'id="open"' not in page.text
+    assert 'target="_blank"' not in page.text
     response = http.get("/gephi-lite/")
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     assert "connect-src 'self' blob:" in response.headers["Content-Security-Policy"]
     assert http.get("/gephi-lite/%2e%2e%2fapp/settings.py").status_code == 404
+
+    hub = (routes.SERVICE_ROOT / "templates/index.html").read_text()
+    app = (routes.SERVICE_ROOT / "static/js/app.js").read_text()
+    assert 'href="#graph-workbench"' in hub
+    assert 'data-src="/graph-workbench"' in hub
+    assert 'id="graphWorkbenchPanelFrame"' in hub
+    assert 'target="_blank"' not in hub.split('id="graphWorkbenchTabButton"', 1)[1].split("</a>", 1)[0]
+    assert 'setActiveTab("graph-workbench")' in app
 
 
 def test_gephi_fonts_stay_local_without_rewriting_the_manifest(client):

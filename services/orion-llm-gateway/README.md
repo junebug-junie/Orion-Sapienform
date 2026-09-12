@@ -46,6 +46,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `ORION_LLM_LLAMACPP_URL` | `None` | Legacy single-endpoint llama.cpp URL; route-table mode is primary. |
 | `LLM_GATEWAY_ROUTE_TABLE_JSON` | `None` | Preferred JSON route table for explicit single-subscriber routing. |
 | `LLM_ROUTE_DEFAULT` | `chat` | Default routing key when none provided. |
+| `LLM_LANE_ROUTING_ENABLED` | `true` | Honor trusted logical lane metadata when resolving physical `chat`, `agent`, `quick` (fast), and `metacog` routes. Set `false` only as a rollback to body-route-only behavior. |
 | `LLM_ROUTE_CHAT_URL` | `None` | Fallback URL for `route=chat` (if JSON not set). |
 | `LLM_ROUTE_METACOG_URL` | `None` | Fallback URL for `route=metacog` (if JSON not set). |
 | `LLM_ROUTE_LATENTS_URL` | `None` | Fallback URL for `route=latents` (if JSON not set). |

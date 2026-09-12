@@ -16,12 +16,12 @@ def test_stance_react_routes_chat_not_none():
     assert _default_llm_route_for_step(verb_name="stance_react", step_name="llm_stance_react", mode="brain") == "chat"
 
 
-def test_harness_finalize_reflect_routes_chat():
-    assert _default_llm_route_for_step(verb_name="harness_finalize_reflect", step_name="x", mode=None) == "chat"
+def test_harness_finalize_reflect_routes_agent():
+    assert _default_llm_route_for_step(verb_name="harness_finalize_reflect", step_name="x", mode=None) == "agent"
 
 
-def test_orion_voice_finalize_routes_chat():
-    assert _default_llm_route_for_step(verb_name="orion_voice_finalize", step_name="x", mode=None) == "chat"
+def test_orion_voice_finalize_routes_agent():
+    assert _default_llm_route_for_step(verb_name="orion_voice_finalize", step_name="x", mode=None) == "agent"
 
 
 def test_chat_general_stance_brief_routes_quick():

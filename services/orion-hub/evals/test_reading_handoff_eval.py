@@ -8,10 +8,30 @@ from uuid import uuid4
 
 import pytest
 
+from orion.harness.finalize import canonicalize_structured_output
 from orion.schemas.reading import ReadingRequestedV1
 from orion.schemas.world_pulse_read import WorldPulseReadSeedV1
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from scripts.world_pulse_read_pipeline import GenerateOutcome, WorldPulseReadPipeline, _build_stage1_prompt
+
+
+def test_reading_json_survives_structured_finalization_without_prose_rewrite():
+    raw = """```json
+    {"what_i_learned":"A bounded finding","candidate_priors":[],"open_threads":[]}
+    ```"""
+
+    finalized = canonicalize_structured_output(raw)
+
+    assert json.loads(finalized) == {
+        "what_i_learned": "A bounded finding",
+        "candidate_priors": [],
+        "open_threads": [],
+    }
+
+
+def test_reading_structured_finalization_rejects_prose():
+    with pytest.raises(ValueError):
+        canonicalize_structured_output("I learned something, but this is prose.")
 
 
 @pytest.mark.parametrize("context,requester", [("unified_chat", "juniper"), ("curiosity", "orion"), ("world_pulse", "world_pulse")])

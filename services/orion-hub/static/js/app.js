@@ -693,6 +693,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
+  const graphWorkbenchTabButton = document.getElementById("graphWorkbenchTabButton");
+  const graphWorkbenchPanel = document.getElementById("graph-workbench");
+  const graphWorkbenchPanelFrame = document.getElementById("graphWorkbenchPanelFrame");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
   const substrateLegacyTabButton = document.getElementById("substratePageLink");
@@ -1030,6 +1033,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "memory" && !memoryPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "graph-workbench" && !graphWorkbenchPanel) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "pressure" && !pressurePanel) {
       effectiveTab = "hub";
     }
@@ -1085,6 +1091,7 @@ document.addEventListener("DOMContentLoaded", () => {
       effectiveTab = "hub";
     }
     const isHub = effectiveTab === "hub";
+    const isGraphWorkbench = effectiveTab === "graph-workbench";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
     const isSubstrate = effectiveTab === "substrate";
@@ -1108,6 +1115,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const isReverie = effectiveTab === "reverie";
     const isExoExploration = effectiveTab === "exo-exploration";
     hubTabPanel.classList.toggle("hidden", !isHub);
+    if (graphWorkbenchPanel) {
+      graphWorkbenchPanel.classList.toggle("hidden", !isGraphWorkbench);
+      if (isGraphWorkbench && graphWorkbenchPanelFrame && !graphWorkbenchPanelFrame.getAttribute("src")) {
+        graphWorkbenchPanelFrame.setAttribute("src", graphWorkbenchPanelFrame.dataset.src || "/graph-workbench");
+      }
+    }
     // Cognitive EKG card's Biometrics preview toggle lives on this panel --
     // same isX ? activate() : deactivate() contract as every other lazy
     // panel below (review finding: without this, cardPollTimer keeps
@@ -1333,6 +1346,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
     styleTabButton(hubTabButton, isHub);
+    if (graphWorkbenchTabButton) {
+      styleTabButton(graphWorkbenchTabButton, isGraphWorkbench);
+    }
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
     styleTabButton(substrateTabButton, isSubstrate);
@@ -1946,7 +1962,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function applyHashToTab() {
     const h = window.location.hash;
-    if (h === "#topic-studio") {
+    if (h === "#graph-workbench" && graphWorkbenchPanel && graphWorkbenchTabButton) {
+      setActiveTab("graph-workbench");
+    } else if (h === "#topic-studio") {
       setActiveTab("topic-studio");
       refreshTopicStudio();
     } else if (h === "#service-logs") {
@@ -1994,6 +2012,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       if (
         h === "#pressure"
+        || h === "#graph-workbench"
         || h === "#substrate-lattice"
         || h === "#field-channel-glossary"
         || h === "#mood-arc-status"
@@ -13151,6 +13170,13 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("hub");
       history.replaceState(null, "", "#hub");
     });
+    if (graphWorkbenchTabButton && graphWorkbenchPanel) {
+      graphWorkbenchTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("graph-workbench");
+        history.replaceState(null, "", "#graph-workbench");
+      });
+    }
     topicStudioTabButton.addEventListener("click", () => {
       setActiveTab("topic-studio");
       history.replaceState(null, "", "#topic-studio");
@@ -14735,4 +14761,3 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 });
-

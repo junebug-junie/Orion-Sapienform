@@ -7,13 +7,19 @@
 
 ## Graph Workbench (Gephi Lite)
 
-Open **Graph Workbench ↗** in Hub's navigation, or `/graph-workbench`.
-Choose a graph, optionally search for a starting node, choose the neighborhood
-depth and node limit, and select **Open in Gephi Lite**. The workbench opens in
-a separate tab. **Data** exposes arbitrary node/edge attributes; **Layout**,
-**Filters**, and **Metrics** are Gephi's own controls. Save a Gephi workspace
-to preserve the snapshot, appearance, and filters. Browser-side edits affect
-that workspace only; there is no write-back to Orion.
+Open **Graphs** in Hub's navigation. It stays inside Hub and immediately loads a
+100-node Memory Crystallizations overview—there is no setup screen and no
+second open button. The descriptive **Graph** dropdown switches among memories,
+worldview, and substrate. **Focus** is automatically populated with named items;
+typing only filters that dropdown. Relationship hops and larger slices remain
+collapsed under **Advanced slice size**. **Data** exposes arbitrary node/edge
+attributes; **Layout**, **Filters**, and **Metrics** are Gephi's own controls.
+Save a Gephi workspace to preserve the snapshot, appearance, and filters.
+Browser-side edits affect that workspace only; there is no write-back to Orion.
+
+`/graph-workbench` remains the embedded page URL for direct diagnostics, but
+normal navigation lazy-loads it in Hub's `#graph-workbench` panel instead of
+leaving the Hub window.
 
 The pinned official `ouestware/gephi-lite` image supplies static assets in a
 multi-stage Hub build. FastAPI serves them at `/gephi-lite/` on the same origin;
@@ -25,7 +31,7 @@ compiled assets in the checkout. A missing distribution returns 503.
 ### Access boundary
 
 Graph Workbench uses Hub's existing access boundary and does not add a second
-login. Anyone who can reach Hub can reach the launcher, exports, search, source
+login. Anyone who can reach Hub can reach the workbench, exports, search, source
 catalog, and Gephi assets, so expose Hub only on the trusted local/Tailscale
 network (or place the whole Hub behind an authenticating HTTPS proxy). Export
 responses are `no-store`.
@@ -33,7 +39,7 @@ Gephi cannot send graph data to an external host under the served content
 security policy. External Google font imports are removed in the CSS response,
 using local fallback fonts.
 The upstream bundle requires `unsafe-eval` for its graph libraries; that
-allowance is confined to Gephi's pages. The launcher has a stricter policy.
+allowance is confined to Gephi's pages. The outer workbench has a stricter policy.
 Do not add a public GitHub integration or loosen `connect-src` to share memory.
 Saved downloads/workspaces remain private operator artifacts.
 
@@ -70,17 +76,18 @@ writes, and do **not** claim that the external projection is currently healthy.
 Intimate/unknown-sensitivity crystallizations are excluded both from search and
 neighborhood expansion; public/private records remain operator-visible.
 
-The launcher's download is its checked snapshot. Gephi reads the endpoint again
-so its URL remains reloadable; counts may change if the live graph changes
-between those reads. Metrics calculated in Gephi describe its loaded slice,
-not the whole source graph. Existing native Falkor traversal/centrality endpoints
-remain in Concept Atlas; this patch does not add a second analytics engine.
+The download and embedded Gephi frame independently read the same reloadable
+endpoint, so their counts may differ if the live graph changes between reads.
+Metrics calculated in Gephi describe its loaded slice, not the whole source
+graph. Existing native Falkor traversal/centrality endpoints remain in Concept
+Atlas; this patch does not add a second analytics engine.
 
 ### Verification and rollout
 
 ```bash
 python -m pytest services/orion-hub/tests/test_graph_workbench.py -q
 node --check services/orion-hub/static/js/graph-workbench.js
+node --check services/orion-hub/static/js/app.js
 scripts/safe_docker_build.sh orion-hub build hub-app
 ```
 

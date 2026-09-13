@@ -86,3 +86,16 @@ Use the bus harness in "Brain" mode.
 ```bash
 python scripts/bus_harness.py brain "hello world"
 ```
+
+## Resource-admitted Curiosity runs
+
+`context.metadata.durable_run.admission` selects the opt-in resource-admission
+path. Set `CORTEX_DURABLE_ADMISSION_ENABLED=true` only after the durable runner is
+ready. Cortex waits at most `CORTEX_DURABLE_RECEIPT_TIMEOUT_SEC` (10 by default)
+for a matching `durable.run.receipt.v1` confirming committed registration, then
+returns `status=accepted` with the run ID, workflow, resource and durable status
+in `metadata.durable_run`. Resource waiting never holds this RPC open. A missing
+or invalid receipt returns `AdmissionUnconfirmed`; retry the same run ID or
+inspect it at the runner, because registration may already have committed.
+Requests without admission retain the existing synchronous/legacy behavior.
+See `docs/architecture/durable-resource-admission.md` for ownership and rollout.

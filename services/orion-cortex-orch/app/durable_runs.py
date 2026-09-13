@@ -26,6 +26,9 @@ from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResu
 from orion.schemas.durable_run import (
     DURABLE_RUN_REQUEST_CHANNEL,
     DURABLE_RUN_REQUEST_KIND,
+    DURABLE_RUN_RECEIPT_KIND,
+    DURABLE_RUN_REPLY_PREFIX,
+    DurableRunReceiptV1,
     DurableRunRequestV1,
 )
 
@@ -64,10 +67,47 @@ async def dispatch_durable_run(
     req: CortexClientRequest,
     correlation_id: str,
     channel: str = DURABLE_RUN_REQUEST_CHANNEL,
+    admission_enabled: bool = False,
+    receipt_timeout_sec: float = 10.0,
 ) -> CortexClientResult:
     request = durable_run_request_from(req)
     assert request is not None  # caller checked has_durable_run_request
     verb = f"durable:{request.workflow}"
+    if request.admission is not None:
+        # Acceptance means registration committed, never merely that pub/sub
+        # had a subscriber. The short receipt RPC carries no execution wait.
+        try:
+            if not admission_enabled:
+                raise ValueError("durable admission is disabled at Cortex")
+            reply_channel = f"{DURABLE_RUN_REPLY_PREFIX}:{uuid4().hex}"
+            raw = await bus.rpc_request(
+                channel,
+                BaseEnvelope(kind=DURABLE_RUN_REQUEST_KIND, source=source,
+                             correlation_id=_corr(request.correlation_id), reply_to=reply_channel,
+                             payload=request.model_dump(mode="json")),
+                reply_channel=reply_channel, timeout_sec=receipt_timeout_sec,
+            )
+            decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+            if not decoded.ok or decoded.envelope.kind != DURABLE_RUN_RECEIPT_KIND:
+                raise ValueError("invalid durable admission receipt")
+            receipt = DurableRunReceiptV1.model_validate(decoded.envelope.payload)
+            if receipt.run_id != request.run_id or receipt.workflow_kind != request.workflow:
+                raise ValueError("durable admission receipt identity mismatch")
+            if receipt.requested_resource != request.admission.resource:
+                raise ValueError("durable admission receipt resource mismatch")
+            return CortexClientResult(
+                ok=True, mode=str(req.mode), verb=verb, status="accepted", steps=[],
+                correlation_id=correlation_id,
+                metadata={"durable_run": {**receipt.model_dump(mode="json"), "workflow": request.workflow}},
+            )
+        except Exception as exc:
+            logger.warning("durable_admission_unconfirmed run=%s err=%s", request.run_id, exc)
+            return CortexClientResult(
+                ok=False, mode=str(req.mode), verb=verb, status="fail", steps=[],
+                correlation_id=correlation_id,
+                error={"message": str(exc), "type": "AdmissionUnconfirmed", "run_id": request.run_id},
+                metadata=_meta(request, "admission_unconfirmed"),
+            )
     try:
         await publish_with_reconnect(
             bus,
@@ -76,7 +116,7 @@ async def dispatch_durable_run(
                 kind=DURABLE_RUN_REQUEST_KIND,
                 source=source,
                 correlation_id=_corr(request.correlation_id),
-                payload=request.model_dump(mode="json"),
+                payload=request.model_dump(mode="json", exclude_none=True),
             ),
             log_label="cortex_durable_run_dispatch",
         )

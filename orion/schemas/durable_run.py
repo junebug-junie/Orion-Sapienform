@@ -35,6 +35,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+from orion.schemas.resource_admission import ResourceLeaseV1, ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
 DURABLE_RUN_STATE_CHANNEL = "orion:durable:run:state"
@@ -43,6 +44,8 @@ CURIOSITY_TURN_REPLY_PREFIX = "orion:curiosity:turn:reply"
 
 DURABLE_RUN_REQUEST_KIND = "durable.run.request.v1"
 DURABLE_RUN_STATE_KIND = "durable.run.state.v1"
+DURABLE_RUN_RECEIPT_KIND = "durable.run.receipt.v1"
+DURABLE_RUN_REPLY_PREFIX = "orion:durable:run:reply"
 CURIOSITY_TURN_REQUEST_KIND = "curiosity.turn.request.v1"
 CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
@@ -58,7 +61,10 @@ CURIOSITY_NODES: tuple[str, ...] = (
     "finish",
 )
 
-DurableRunStatusV1 = Literal["running", "resumed", "completed", "failed", "abandoned"]
+DurableRunStatusV1 = Literal[
+    "accepted", "queued", "waiting_resource", "admitted", "running", "paused",
+    "resumed", "retrying", "completed", "failed", "cancelled", "abandoned",
+]
 
 
 def _utc_now() -> datetime:
@@ -111,6 +117,19 @@ class DurableRunRequestV1(BaseModel):
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
     brief: CuriosityRunBriefV1
+    admission: ResourceRequirementV1 | None = None
+
+
+class DurableRunReceiptV1(BaseModel):
+    """Runner acknowledgment emitted only after durable registration commits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["durable.run.receipt.v1"] = DURABLE_RUN_RECEIPT_KIND
+    run_id: str
+    status: DurableRunStatusV1
+    workflow_kind: DurableWorkflowV1
+    requested_resource: str
 
 
 class DurableRunStateV1(BaseModel):
@@ -155,6 +174,8 @@ class CuriosityTurnRequestV1(BaseModel):
     timeout_sec: float = Field(gt=0.0)
     source_tag: str = "curiosity_investigation"
     attempt: int = Field(default=1, ge=1)
+    lease: ResourceLeaseV1 | None = None
+    assigned_lane: str | None = None
 
 
 class CuriosityTurnResultV1(BaseModel):

@@ -113,3 +113,49 @@ def test_a_subscriber_check_that_errors_fails_open_to_accepted() -> None:
     bus.redis.pubsub_numsub.side_effect = RuntimeError("NUMSUB not supported")
     result = asyncio.run(dispatch_durable_run(bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": _durable_payload()}), correlation_id="corr-1"))
     assert result.ok is True and result.status == "accepted"
+
+
+def _admission_bus(payload=None, kind="durable.run.receipt.v1"):
+    from orion.core.bus.codec import OrionCodec
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    bus = _bus_with_subscriber()
+    bus.codec = OrionCodec()
+    receipt = payload or {
+        "run_id": "abc123def456", "status": "waiting_resource",
+        "workflow_kind": "curiosity.investigate", "requested_resource": "llm.route.agent",
+    }
+    bus.rpc_request.return_value = {"data": bus.codec.encode(BaseEnvelope(
+        kind=kind, source=ServiceRef(name="orion-durable-runs"), payload=receipt,
+    ))}
+    return bus
+
+
+def test_admission_accepts_only_a_persisted_matching_receipt():
+    payload = {**_durable_payload(), "admission": {}}
+    bus = _admission_bus()
+    result = asyncio.run(dispatch_durable_run(
+        bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": payload}),
+        correlation_id="corr-1", admission_enabled=True, receipt_timeout_sec=3,
+    ))
+    assert result.ok and result.status == "accepted"
+    assert result.metadata["durable_run"]["status"] == "waiting_resource"
+    assert result.metadata["durable_run"]["requested_resource"] == "llm.route.agent"
+    assert bus.rpc_request.await_args.kwargs["timeout_sec"] == 3
+    bus.publish.assert_not_awaited()
+
+
+@pytest.mark.parametrize("case", ["timeout", "wrong_kind", "wrong_run", "disabled"])
+def test_uncertain_admission_never_falls_back_to_pubsub(case):
+    bus = _admission_bus(kind="unrelated" if case == "wrong_kind" else "durable.run.receipt.v1")
+    if case == "timeout":
+        bus.rpc_request.side_effect = TimeoutError("receipt missing")
+    if case == "wrong_run":
+        bus = _admission_bus({"run_id": "another-run", "status": "queued",
+                              "workflow_kind": "curiosity.investigate", "requested_resource": "llm.route.agent"})
+    result = asyncio.run(dispatch_durable_run(
+        bus=bus, source=ServiceRef(name="orion-cortex-orch"),
+        req=_req({"durable_run": {**_durable_payload(), "admission": {}}}),
+        correlation_id="corr-1", admission_enabled=case != "disabled",
+    ))
+    assert not result.ok and result.error["type"] == "AdmissionUnconfirmed"
+    bus.publish.assert_not_awaited()

@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     llm_gateway_upstream_max_inflight: int = Field(
         8, alias="LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT"
     )
+    # Only requests carrying a durable lease opt into broker fencing.
+    llm_gateway_lease_validation_enabled: bool = Field(False, alias="LLM_GATEWAY_LEASE_VALIDATION_ENABLED")
+    llm_gateway_lease_validation_url: str = Field(
+        "http://durable-runs:8121/leases/validate", alias="LLM_GATEWAY_LEASE_VALIDATION_URL"
+    )
+    llm_gateway_lease_validation_timeout_sec: float = Field(2.0, gt=0, alias="LLM_GATEWAY_LEASE_VALIDATION_TIMEOUT_SEC")
+    llm_gateway_lease_check_interval_sec: float = Field(5.0, gt=0, alias="LLM_GATEWAY_LEASE_CHECK_INTERVAL_SEC")
     llm_route_chat_url: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_URL")
     llm_route_metacog_url: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_URL")
     llm_route_latents_url: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_URL")

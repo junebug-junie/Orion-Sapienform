@@ -1347,3 +1347,30 @@ async def test_reading_binding_is_runtime_context_not_model_payload(context, run
     assert binding.invocation_context == context
     assert binding.parent_run_id == run_id
     assert binding.parent_trace_id == _CORR_ID
+
+
+@pytest.mark.asyncio
+async def test_resource_lease_and_inference_budget_reach_governor():
+    from datetime import timedelta
+    from orion.schemas.resource_admission import ResourceLeaseV1
+    now = datetime.now(timezone.utc)
+    token = ResourceLeaseV1(run_id="run-one", demand_id="run-one:turn", lease_id="lease-one",
+        resource_key="llm.route.agent", lane="agent", backend_key="http://worker:8000", generation=1,
+        granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60))
+    harness_run = HarnessRunV1(correlation_id=_CORR_ID, final_text="A grounded finding.", finalize_ran=True,
+                              step_count=14, compliance_verdict="completed", grounding_status="grounded")
+    capture = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=capture)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(), correlation_id=_CORR_ID, session_id="s", user_message="Study this",
+            payload={"no_write": True, "fcc_model_label": "llamacpp/agent",
+                     "resource_lease": token.model_dump(mode="json"), "inference_timeout_sec": 42},
+            reading_context="curiosity", reading_parent_run_id="run-one",
+            emit_observation_fn=lambda **kwargs: None,
+        )
+    request = capture.await_args.args[0]
+    assert request.resource_lease == token
+    assert request.inference_timeout_sec == 42
+    assert request.fcc_model_label == "llamacpp/agent"
+    assert request.reading_binding.parent_run_id == "run-one"

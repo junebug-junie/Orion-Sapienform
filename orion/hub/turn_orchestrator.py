@@ -1154,6 +1154,8 @@ async def execute_unified_turn(
         if reading_context is not None else None
     )
     harness_req = HarnessRunRequestV1(
+        resource_lease=payload.get("resource_lease"),
+        inference_timeout_sec=payload.get("inference_timeout_sec"),
         reading_binding=reading_binding,
         reading_only=reading_only,
         correlation_id=correlation_id,

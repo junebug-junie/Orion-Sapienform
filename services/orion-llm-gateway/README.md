@@ -524,3 +524,24 @@ PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_route
 ```bash
 curl http://localhost:8210/health
 ```
+## Optional durable resource leases
+
+`LLM_GATEWAY_LEASE_VALIDATION_ENABLED=false` preserves legacy traffic. When
+enabled, requests carrying a typed `resource_lease` (bus) or the bounded
+`X-Orion-Resource-Lease` header (Anthropic HTTP) must validate against
+`LLM_GATEWAY_LEASE_VALIDATION_URL` (default
+`http://durable-runs:8121/leases/validate`). Checks occur before dispatch,
+periodically during execution/streaming, and before accepting the final result.
+The interval defaults to 5 seconds and validation timeout to 2 seconds. Missing
+tokens remain valid for existing synchronous traffic; malformed or stale tokens
+are rejected. Tokens never reach the model prompt or backend headers.
+
+The assigned route is resolved using Gateway's existing route machinery. A
+resolved backend that differs from the fenced physical backend fails closed;
+admitted requests do not silently fall back or escalate to another lane.
+Synchronous requests retain their current routing and overflow behavior. A
+cancelled blocking Python HTTP thread retains its existing upstream permit until
+the thread exits; stale results are rejected, but physical inference cannot be
+forcibly stopped by cancelling that thread.
+
+See [resource admission ownership and rollout](../../docs/architecture/durable-resource-admission.md).

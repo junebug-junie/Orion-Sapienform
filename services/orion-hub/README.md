@@ -2684,3 +2684,22 @@ Apply `services/orion-sql-db/manual_migration_general_reading_v1.sql` after the 
 A completed source can be reread in a later turn. Concurrent requests for an active URL retain their own provenance as aliases without another active read. Final `completed` requires the existing SQL journal rows; missed journal commands are replayed from saved artifacts without another model call or wallet debit. Reading stages have only WebFetch/WebSearch and produce attributed candidates through the existing server-owned adapter.
 
 See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md). The dedicated local/CI gate installs `tests/requirements-reading.txt`; `RUN_READING_POSTGRES=1` enables disposable local PostgreSQL integration tests, never a production DSN.
+
+## Curiosity resource admission
+
+`HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=false` preserves the current kickoff.
+When enabled, it requires `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=true` and includes an
+exclusive requirement for the configured `HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE` in both
+investigation and self-inquiry submissions. An uncertain receipt never triggers
+an unleased direct fallback or a budget refund: inspect/retry the same run ID.
+
+Hub validates admitted turn fences using `HUB_CURIOSITY_LEASE_VALIDATION_URL`
+(default `http://127.0.0.1:8124/leases/validate`, since Hub uses host networking).
+Each admitted turn uses its lease's assigned lane and request's inference timeout; concurrent
+admitted lanes bypass the legacy local turn lock. Duplicate turns coalesce by
+run ID plus lease identity/generation, and even cached results require a current
+fence. Shutdown cancels and joins active turn tasks. The typed lease passes
+through the unified turn and Harness request into FCC's per-process
+`X-Orion-Resource-Lease` header; it never enters the prompt or a global env value.
+Auxiliary stance/finalize calls keep their existing short synchronous routes.
+Full ownership and activation: `docs/architecture/durable-resource-admission.md`.

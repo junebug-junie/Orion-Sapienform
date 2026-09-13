@@ -230,12 +230,14 @@ async def default_fcc_runner(
     timeout_sec: float = 120.0,
     reading_binding: Any = None,
     reading_only: bool = False,
+    resource_lease: dict[str, Any] | None = None,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
     env = load_fcc_env(env_path)
     token = resolve_auth_token(env, override=os.environ.get("HARNESS_FCC_AUTH_TOKEN", ""))
     async for event in run_fcc_turn(
+        resource_lease=resource_lease,
         reading_binding=reading_binding,
         reading_only=reading_only,
         prompt=prompt,
@@ -414,12 +416,14 @@ class HarnessRunner:
         )
 
         async for event in self.fcc_runner(
+            **({"resource_lease": request.resource_lease.model_dump(mode="json")}
+               if request.resource_lease is not None else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             prompt=prompt,
             correlation_id=request.correlation_id,
             fcc_model_label=request.fcc_model_label,
-            timeout_sec=self.fcc_timeout_sec,
+            timeout_sec=request.inference_timeout_sec or self.fcc_timeout_sec,
         ):
             etype = str(event.get("type") or "")
             if etype == "step":

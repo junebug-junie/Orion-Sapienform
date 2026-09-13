@@ -282,6 +282,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         # an explicit metadata key, like workflow_request below.
         if has_durable_run_request(req):
             durable_result = await dispatch_durable_run(
+                admission_enabled=settings.durable_admission_enabled,
+                receipt_timeout_sec=settings.durable_receipt_timeout_sec,
                 bus=_bus_for_rpc(),
                 source=sref,
                 req=req,

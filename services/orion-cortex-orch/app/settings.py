@@ -9,6 +9,8 @@ _logger = logging.getLogger("orion.cortex.orch.settings")
 
 
 class Settings(BaseSettings):
+    durable_admission_enabled: bool = Field(False, alias="CORTEX_DURABLE_ADMISSION_ENABLED")
+    durable_receipt_timeout_sec: float = Field(10.0, gt=0, alias="CORTEX_DURABLE_RECEIPT_TIMEOUT_SEC")
     # Service identity
     service_name: str = Field("cortex-orch", alias="SERVICE_NAME")
     service_version: str = Field("0.2.0", alias="SERVICE_VERSION")

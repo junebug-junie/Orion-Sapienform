@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
+from uuid import NAMESPACE_URL, uuid5
 
 from orion.curiosity.journal import MaterialCounts, build_investigation_journal_entry
 from orion.schemas.durable_run import (
@@ -59,6 +60,13 @@ class CuriosityRunState(TypedDict, total=False):
     journal_entry_id: str | None
     # finish
     status: str
+    admission: dict[str, Any]
+    lease: dict[str, Any] | None
+    retry_at: str | None
+    last_error: str | None
+    requested_at: str
+    retry_node: str | None
+    tail_attempts: dict[str, int]
 
 
 class HarnessTurnFailed(RuntimeError):
@@ -79,23 +87,42 @@ def _brief(state: CuriosityRunState) -> CuriosityRunBriefV1:
     return CuriosityRunBriefV1.model_validate(state["brief"])
 
 
+def turn_correlation_id(state: CuriosityRunState) -> str:
+    """Fence the subprocess identity while keeping run-level lineage stable.
+
+    The governor's cancellation registry is keyed by correlation, including
+    cancellations arriving before process registration. A lost generation's
+    delayed cancellation must never address its successor's subprocess.
+    """
+    lease = state.get("lease")
+    if not lease:
+        return state["correlation_id"]
+    identity = f"orion:durable:turn:{state['run_id']}:{state['correlation_id']}:{lease['lease_id']}:{lease['generation']}"
+    return str(uuid5(NAMESPACE_URL, identity))
+
+
 def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[dict[str, Any]]]]:
     async def harness_turn(state: CuriosityRunState) -> dict[str, Any]:
         brief = _brief(state)
         attempt = int(state.get("attempt") or 0) + 1
         request = CuriosityTurnRequestV1(
             run_id=state["run_id"],
-            correlation_id=state["correlation_id"],
+            correlation_id=turn_correlation_id(state),
             prompt=brief.prompt,
             fcc_model_label=brief.fcc_model_label,
             timeout_sec=brief.timeout_sec,
             source_tag=brief.source_tag,
             attempt=attempt,
+            lease=state.get("lease"),
+            assigned_lane=(state.get("lease") or {}).get("lane"),
         )
         result = await deps.run_turn(request)
         if not result.ok or not result.text.strip():
             raise HarnessTurnFailed(result.error or "empty_generation")
-        return {"text": result.text, "debug": dict(result.debug), "attempt": attempt}
+        debug = dict(result.debug)
+        if state.get("lease"):
+            debug.update(turn_correlation_id=request.correlation_id, parent_correlation_id=state["correlation_id"])
+        return {"text": result.text, "debug": debug, "attempt": attempt}
 
     async def read_turn_result(state: CuriosityRunState) -> dict[str, Any]:
         found = await deps.read_turn_result(state["run_id"])

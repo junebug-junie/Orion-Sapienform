@@ -610,7 +610,9 @@ from orion.schemas.durable_run import (
     CuriosityTurnResultV1,
     DurableRunRequestV1,
     DurableRunStateV1,
+    DurableRunReceiptV1,
 )
+from orion.schemas.resource_admission import ResourceEventV1
 from orion.schemas.attention_salience import (
     AttentionLoopOutcomeV1,
     AttentionSalienceTraceV1,
@@ -1690,6 +1692,8 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # request, runner -> everyone state, runner <-> Hub turn RPC.
     "DurableRunRequestV1": SchemaRegistration(model=DurableRunRequestV1, kind="durable.run.request.v1"),
     "DurableRunStateV1": SchemaRegistration(model=DurableRunStateV1, kind="durable.run.state.v1"),
+    "DurableRunReceiptV1": SchemaRegistration(model=DurableRunReceiptV1, kind="durable.run.receipt.v1"),
+    "ResourceEventV1": SchemaRegistration(model=ResourceEventV1, kind="durable.resource.event.v1"),
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(

@@ -328,6 +328,14 @@ def test_extract_caption_none_on_failure_or_empty():
     assert visual_chain._extract_caption(_vision_result_payload("   ")) is None
 
 
+@pytest.fixture(autouse=True)
+def _isolate_visual_orchestration_from_live_thermal(monkeypatch):
+    # Thermal authority has its own suite. Unit orchestration must never read
+    # the operator Redis rail, including on CI hosts outside the tailnet.
+    from app import visual_chain
+    monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
+
+
 # --- run_visual_chain_once orchestration -----------------------------------
 
 

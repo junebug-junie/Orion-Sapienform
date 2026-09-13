@@ -85,6 +85,7 @@ SCENARIOS = [
 async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     from app import visual_chain
 
+    monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     # Streak 0 < default cap -- continuity behaves exactly as before Patch 4
     # for every scenario in this matrix; the reset path has its own

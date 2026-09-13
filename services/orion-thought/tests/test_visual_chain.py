@@ -7,6 +7,12 @@ live Redis/Postgres.
 """
 from __future__ import annotations
 
+def _receipt(chain, artifact):
+    from orion.schemas.reverie_visual import VisualProductionReceiptV1
+    return VisualProductionReceiptV1(chain_id=chain.chain_id, attempt_id=chain.chain_id,
+        sha256=artifact.sha256, bytes=artifact.bytes, path=artifact.path, produced_at=artifact.created_at)
+
+
 import struct
 from types import SimpleNamespace
 from typing import Any
@@ -322,6 +328,14 @@ def test_extract_caption_none_on_failure_or_empty():
     assert visual_chain._extract_caption(_vision_result_payload("   ")) is None
 
 
+@pytest.fixture(autouse=True)
+def _isolate_visual_orchestration_from_live_thermal(monkeypatch):
+    # Thermal authority has its own suite. Unit orchestration must never read
+    # the operator Redis rail, including on CI hosts outside the tailnet.
+    from app import visual_chain
+    monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
+
+
 # --- run_visual_chain_once orchestration -----------------------------------
 
 
@@ -331,7 +345,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -355,8 +369,8 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         visual_chain,
-        "persist_reverie_visual_artifact",
-        lambda a: persisted_artifacts.append(a) or True,
+        "acknowledge_visual_production",
+        lambda c, a: persisted_artifacts.append(a) or _receipt(c, a),
     )
 
     bus = _fake_bus(_vision_result_payload("a calm room with soft light"))
@@ -396,7 +410,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old description", 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -414,8 +428,8 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
     )
     monkeypatch.setattr(
         visual_chain,
-        "persist_reverie_visual_artifact",
-        lambda a: persisted_artifacts.append(a) or True,
+        "acknowledge_visual_production",
+        lambda c, a: persisted_artifacts.append(a) or _receipt(c, a),
     )
 
     bus = AsyncMock()
@@ -439,7 +453,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old description", 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -455,8 +469,8 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
     monkeypatch.setattr(
         visual_chain,
-        "persist_reverie_visual_artifact",
-        lambda a: persisted_artifacts.append(a) or True,
+        "acknowledge_visual_production",
+        lambda c, a: persisted_artifacts.append(a) or _receipt(c, a),
     )
 
     # Vision-host RPC itself raises (e.g. timeout) -- request_caption must
@@ -488,7 +502,7 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
@@ -502,7 +516,7 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     monkeypatch.setattr(
         visual_chain, "persist_reverie_visual_chain", lambda c: persisted_chains.append(c) or True
     )
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     bus = _fake_bus(_vision_result_payload("a rendering of that thought"))
     # Review finding: without an explicit cortex_client, a real context_slot_used here
@@ -531,7 +545,7 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
@@ -588,7 +602,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
+        lambda **kw: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
     )
 
     def fake_persist_chain(chain):
@@ -598,7 +612,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     generate_prompts: list[str] = []
 
@@ -644,7 +658,7 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
+        lambda **kw: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
     )
 
     def fake_persist_chain(chain):
@@ -654,7 +668,7 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
         return True
 
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     generate_prompts: list[str] = []
 
@@ -727,7 +741,7 @@ async def test_continuity_reset_survives_a_failed_generation(tmp_path, monkeypat
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (
+        lambda **kw: (
             "the same stale aqueduct",
             visual_chain.settings.visual_chain_continuity_max_runs,
             0,
@@ -768,7 +782,7 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (
+        lambda **kw: (
             "the same stale aqueduct",
             visual_chain.settings.visual_chain_continuity_max_runs,
             0,
@@ -781,8 +795,8 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
     monkeypatch.setattr(
         visual_chain,
-        "persist_reverie_visual_artifact",
-        lambda a: persisted_artifacts.append(a) or True,
+        "acknowledge_visual_production",
+        lambda c, a: persisted_artifacts.append(a) or _receipt(c, a),
     )
 
     # Vision-host RPC itself raises -- request_caption swallows it, returns None.
@@ -811,7 +825,7 @@ async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_js
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
@@ -823,7 +837,7 @@ async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_js
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "g" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     bus = _fake_bus(_vision_result_payload("a rendering of that observation"))
     chain = await visual_chain.run_visual_chain_once(
@@ -847,7 +861,7 @@ async def test_run_visual_chain_once_generation_failure_records_self_study_text(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
@@ -887,7 +901,7 @@ async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -899,7 +913,7 @@ async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "h" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     bus = _fake_bus(_vision_result_payload("a rendering of that memory"))
     chain = await visual_chain.run_visual_chain_once(
@@ -923,7 +937,7 @@ async def test_run_visual_chain_once_generation_failure_records_memory_text(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -967,7 +981,7 @@ async def test_run_visual_chain_once_uses_only_one_context_seed_per_run_when_all
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "the coalition narration"
@@ -981,7 +995,7 @@ async def test_run_visual_chain_once_uses_only_one_context_seed_per_run_when_all
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "i" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     bus = _fake_bus(_vision_result_payload("a rendering"))
     chain = await visual_chain.run_visual_chain_once(
@@ -1025,7 +1039,7 @@ async def test_context_slot_rotation_advances_across_successive_runs(tmp_path, m
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
+        lambda **kw: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
     )
 
     def fake_persist_chain(chain):
@@ -1035,7 +1049,7 @@ async def test_context_slot_rotation_advances_across_successive_runs(tmp_path, m
         return True
 
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "j" * 64)
 
@@ -1173,7 +1187,7 @@ async def test_run_visual_chain_once_uses_interpreted_text_in_prompt(tmp_path, m
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -1190,7 +1204,7 @@ async def test_run_visual_chain_once_uses_interpreted_text_in_prompt(tmp_path, m
     )
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "e" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     client = _FakeCortexClient(
         result={"final_text": "a tangle of unplugged Ethernet cables coiled beside an empty rack slot"}
@@ -1219,7 +1233,7 @@ async def test_run_visual_chain_once_falls_back_to_raw_slot_text_on_interpretati
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -1234,7 +1248,7 @@ async def test_run_visual_chain_once_falls_back_to_raw_slot_text_on_interpretati
     )
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "f" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     client = _FakeCortexClient(error=RuntimeError("metacog lane down"))
     bus = _fake_bus(_vision_result_payload("a rendering"))
@@ -1252,7 +1266,7 @@ async def test_run_visual_chain_once_skips_interpretation_when_disabled(tmp_path
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain.settings, "visual_chain_interpretation_enabled", False)
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -1262,7 +1276,7 @@ async def test_run_visual_chain_once_skips_interpretation_when_disabled(tmp_path
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "g" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     client = _FakeCortexClient(result={"final_text": "should never be called"})
     bus = _fake_bus(_vision_result_payload("a rendering"))
@@ -1284,7 +1298,7 @@ async def test_run_visual_chain_once_skips_interpretation_when_no_slot_available
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -1292,7 +1306,7 @@ async def test_run_visual_chain_once_skips_interpretation_when_no_slot_available
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "h" * 64)
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
-    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "acknowledge_visual_production", lambda c, a: _receipt(c, a))
 
     client = _FakeCortexClient(result={"final_text": "should never be called"})
     bus = _fake_bus(_vision_result_payload("a rendering"))

@@ -101,7 +101,7 @@ def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
         sess.close()
     assert original_created_at is not None
 
-    _merge(_make_emit(summary="second delivery", success=False))
+    _merge(_make_emit(summary="second delivery", success=None, visual_outcome="deferred_thermal"))
 
     sess = Session()
     try:
@@ -109,7 +109,8 @@ def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
         assert len(rows) == 1
         row = rows[0]
         assert row.summary == "second delivery"
-        assert row.success is False
+        assert row.success is None
+        assert row.visual_outcome == "deferred_thermal"
         assert row.created_at == original_created_at
     finally:
         sess.close()
@@ -117,8 +118,9 @@ def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
 
 def test_emit_roundtrips_from_outcome() -> None:
     ref = ActionOutcomeRefV1(
-        action_id="fetch-1",
-        kind="web.fetch.readonly",
+        action_id="visual-1",
+        kind="express",
+        visual_outcome="already_satisfied",
         summary="fetched 1 article(s)",
         success=True,
         surprise=0.2,

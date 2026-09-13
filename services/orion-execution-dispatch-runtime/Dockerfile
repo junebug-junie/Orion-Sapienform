@@ -8,6 +8,7 @@ COPY services/orion-execution-dispatch-runtime/requirements.txt ./requirements.t
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY orion /app/orion
+COPY config/proposals /app/config/proposals
 COPY config/execution_dispatch /app/config/execution_dispatch
 COPY services/orion-execution-dispatch-runtime /app
 

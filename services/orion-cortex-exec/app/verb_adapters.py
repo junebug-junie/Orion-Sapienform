@@ -1640,17 +1640,24 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
         base_url = str(settings.thought_service_url).rstrip("/")
+        from orion.schemas.reverie_visual import VisualRunRequestV1
+        extra = payload.args.extra or {}
+        skill_args = extra.get("skill_args") or extra
+        request = VisualRunRequestV1.model_validate({
+            **{key: skill_args[key] for key in ("dispatch_id", "proposal_id", "decision_id", "visual_baseline") if key in skill_args},
+            "correlation_id": str(ctx.meta.get("correlation_id") or payload.args.request_id or "unknown"),
+        })
         try:
             raw = await asyncio.to_thread(
                 _http_json_post,
                 f"{base_url}/visual-chain/run-once",
-                body={},
+                body=request.model_dump(mode="json"),
                 timeout_sec=float(settings.thought_http_timeout_sec),
             )
         except Exception as exc:
             return _skill_result_output(
                 skill_name="skills.imagination.render_scene.v1",
-                result={"ran": False, "refused": False, "reason": str(exc)},
+                result={"ran": False, "refused": False, "reason": str(exc), "outcome": "unknown"},
                 ok=False,
                 status="unavailable",
                 error={"message": str(exc)},
@@ -1658,6 +1665,8 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
         data = raw if isinstance(raw, dict) else {}
         result = {
+            "outcome": data.get("outcome", "unknown"),
+            "execution_receipt": data.get("execution_receipt"),
             "ran": bool(data.get("ran")),
             "refused": bool(data.get("refused")),
             "chain_id": data.get("chain_id"),

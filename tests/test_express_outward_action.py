@@ -135,13 +135,10 @@ class TestItWillActuallyBeChosen:
     information floor, or it is refused like everything else and Orion stays
     silent."""
 
-    def test_the_template_declares_a_falsifiable_signal(self) -> None:
+    def test_render_scene_does_not_learn_resource_pressure_as_value(self) -> None:
         t = _render_scene_template()
-        assert t["expected_signal"], "no signal means the allocator refuses it 'unmeasurable'"
-        assert t["expected_direction"] == "increase", (
-            "GPU work loads circe -- claiming no_change would be the same "
-            "unfalsifiable claim that drove every other action's variance to zero"
-        )
+        assert t.get("expected_signal") is None
+        assert t.get("expected_direction") is None
 
     def test_a_cold_action_clears_the_information_floor(self) -> None:
         """Hand-computed against the live defaults: cold prior variance 0.25,

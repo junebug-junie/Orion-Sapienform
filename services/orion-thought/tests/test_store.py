@@ -481,7 +481,7 @@ def _rows_result(payloads: list[dict]):
             return self
 
         def all(self):
-            return [{"thought_json": p} for p in payloads]
+            return [{"thought_json": p, "text_chain_id": "settled-chain"} for p in payloads]
 
     class _FakeConn:
         def __enter__(self):
@@ -507,7 +507,7 @@ def test_load_latest_reverie_interpretation_returns_grounded_candidate() -> None
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
     try:
-        assert store.load_latest_reverie_interpretation() == (
+        assert store.load_latest_reverie_interpretation().text == (
             "a real, grounded reverie thought about the mesh"
         )
     finally:
@@ -556,7 +556,7 @@ def test_load_latest_reverie_interpretation_skips_hollow_falls_through_to_next()
     # ORDER BY created_at DESC -- hollow_payload is the newer (first) row.
     monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([hollow_payload, real_payload]))
     try:
-        assert store.load_latest_reverie_interpretation() == "a real, grounded reverie thought about the mesh"
+        assert store.load_latest_reverie_interpretation().text == "a real, grounded reverie thought about the mesh"
     finally:
         monkeypatch.undo()
 
@@ -572,7 +572,7 @@ def test_load_latest_reverie_interpretation_skips_unparsable_row() -> None:
         store, "_get_engine", lambda: _rows_result([{"not": "a valid payload"}, real_payload])
     )
     try:
-        assert store.load_latest_reverie_interpretation() == "a real, grounded reverie thought about the mesh"
+        assert store.load_latest_reverie_interpretation().text == "a real, grounded reverie thought about the mesh"
     finally:
         monkeypatch.undo()
 
@@ -590,7 +590,7 @@ def test_load_latest_reverie_interpretation_truncates_at_word_boundary() -> None
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
     try:
-        value = store.load_latest_reverie_interpretation()
+        value = store.load_latest_reverie_interpretation().text
     finally:
         monkeypatch.undo()
 
@@ -613,7 +613,7 @@ def test_load_latest_reverie_interpretation_char_limit_override() -> None:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
     try:
-        value = store.load_latest_reverie_interpretation(char_limit=20)
+        value = store.load_latest_reverie_interpretation(char_limit=20).text
     finally:
         monkeypatch.undo()
 
@@ -631,7 +631,7 @@ def _capturing_engine(payload: dict, captured: dict):
             return self
 
         def all(self):
-            return [{"thought_json": payload}]
+            return [{"thought_json": payload, "text_chain_id": "settled-chain"}]
 
     class _FakeConn:
         def __enter__(self):
@@ -664,7 +664,7 @@ def test_load_latest_reverie_interpretation_max_age_sec_adds_and_binds_the_claus
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _capturing_engine(payload, captured))
     try:
-        value = store.load_latest_reverie_interpretation(max_age_sec=900.0)
+        value = store.load_latest_reverie_interpretation(max_age_sec=900.0).text
     finally:
         monkeypatch.undo()
 
@@ -1341,3 +1341,14 @@ def test_resonance_alert_cooldown_mark_never_raises_on_db_failure() -> None:
         assert store.resonance_alert_cooldown_mark("k", datetime.now(timezone.utc)) is False
     finally:
         monkeypatch.undo()
+
+
+def test_visual_context_preserves_full_producer_evidence_bound():
+    from orion.schemas.reverie import MAX_EVIDENCE_REFS
+    from orion.schemas.reverie_visual import ReverieVisualContextV1
+    refs = [f"node-{i}" for i in range(MAX_EVIDENCE_REFS)]
+    context = ReverieVisualContextV1(text="grounded context", thought_id="thought",
+        thought_correlation_id="correlation", thought_created_at="2026-09-13T00:00:00Z",
+        text_chain_id="settled", coalition={"attended_node_ids": refs, "open_loop_ids": [], "selected_open_loop_id": None,
+        "generated_at": "2026-09-13T00:00:00Z"}, evidence_refs=refs)
+    assert context.evidence_refs == refs

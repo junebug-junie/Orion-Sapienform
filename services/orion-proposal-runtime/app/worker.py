@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
+from datetime import datetime, timezone
+from urllib.request import urlopen
+from orion.reverie.baseline import load_baseline_policy
+from orion.schemas.reverie_visual import VisualActivityV1
 from pathlib import Path
 
 from orion.proposals.builder import build_proposal_frame
@@ -130,13 +135,29 @@ class ProposalRuntimeWorker:
         if reverie_candidates:
             external_candidates.extend(reverie_candidates)
 
+        eligibility = None
+        baseline_reason = None
+        baseline_policy = load_baseline_policy()
+        if baseline_policy.enabled:
+            try:
+                with urlopen(baseline_policy.thought_url.rstrip("/") + "/visual-chain/activity", timeout=baseline_policy.timeout_sec) as response:
+                    activity = VisualActivityV1.model_validate(json.load(response))
+                eligibility, baseline_reason = self._store.baseline_eligibility(activity,
+                    now=datetime.now(timezone.utc), policy=baseline_policy)
+            except Exception:
+                baseline_reason = "visual_activity_unavailable"
+                logger.warning("visual_baseline_activity_unavailable", exc_info=True)
+
         frame = build_proposal_frame(
             field=field,
             attention=attention,
             policy=self._policy,
             previous_frame=previous,
             external_candidates=external_candidates or None,
+            baseline_eligibility=eligibility,
         )
+        if baseline_reason:
+            frame.warnings.append(baseline_reason)
         if not self._settings.enable_transport_proposals:
             filtered = [
                 c

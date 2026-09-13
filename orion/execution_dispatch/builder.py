@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from orion.reverie.baseline import validate_eligibility
 from datetime import datetime, timezone
 
 from orion.execution_dispatch.envelopes import build_cortex_request_envelope
@@ -223,6 +224,11 @@ def _admit_candidates(
         admitted_items.append(item)
         admitted_ids.add(id(item))
 
+    for item in ranked:
+        if capacity and item.candidate.visual_baseline is not None:
+            _admit(item)
+            break
+
     for scope, reserved in sorted(limits.reserved_slots_by_scope.items()):
         taken = 0
         for item in ranked:
@@ -238,7 +244,8 @@ def _admit_candidates(
         if id(item) not in admitted_ids:
             _admit(item)
 
-    admitted = [e for e in ranked if id(e) in admitted_ids]
+    admitted = sorted([e for e in ranked if id(e) in admitted_ids],
+        key=lambda e: e.candidate.visual_baseline is None)
     starved = [e for e in ranked if id(e) not in admitted_ids]
     return admitted, starved
 
@@ -280,6 +287,8 @@ def build_expected_effect(
     different things is two different actions with two different effects.
     Keying on the template would pool them into one meaningless average.
     """
+    if candidate.visual_baseline is not None or candidate_template_key(candidate) == "render_scene":
+        return None
     signal = candidate.expected_signal
     direction = candidate.expected_direction
     if signal is None or direction is None:
@@ -385,6 +394,7 @@ def build_execution_dispatch_frame(
             target_id=candidate.target_id if candidate else "unknown",
             target_kind=candidate.target_kind if candidate else "system",
             expected_effect=blocked_effect,
+            visual_baseline=candidate.visual_baseline if candidate else decision.visual_baseline,
             reasons=reasons,
             blocked_by=blocked_by,
             risk_score=decision.risk_score,
@@ -406,6 +416,14 @@ def build_execution_dispatch_frame(
             continue
 
         hard_hits = _is_hard_blocked(candidate, policy)
+        if candidate.visual_baseline != decision.visual_baseline:
+            hard_hits.append("visual_baseline_provenance_mismatch")
+        if candidate.visual_baseline is not None:
+            denial = validate_eligibility(candidate.visual_baseline, now=generated_at,
+                target_id=candidate.target_id, template=candidate_template_key(candidate) or "",
+                proposal_kind=candidate.proposal_kind)
+            if denial:
+                hard_hits.append(denial)
         if hard_hits:
             blocked.append(
                 make_blocked(
@@ -449,6 +467,12 @@ def build_execution_dispatch_frame(
                     blocked_by=[candidate.proposal_kind],
                 )
             )
+            continue
+
+        if candidate.visual_baseline is not None and (route.cortex_verb != "skills.imagination.render_scene.v1"
+                or route.dispatch_kind != "express" or route.allowed_scope != EXPRESS_SCOPE
+                or decision.allowed_scope != EXPRESS_SCOPE or decision.decision != "approved_express"):
+            blocked.append(make_blocked(decision, candidate, reasons=["visual_baseline_route_mismatch"], blocked_by=["route"]))
             continue
 
         # `maintenance_bounded` is the only non-read-only scope, and it passes
@@ -568,6 +592,13 @@ def build_execution_dispatch_frame(
             field_tick_id=field_tick_id,
             dry_run=dry_run,
         )
+        if route.cortex_verb == "skills.imagination.render_scene.v1":
+            context = envelope["context"]
+            context.setdefault("skill_args", {}).update({
+                "dispatch_id": stable_dispatch_id(proposal_id=decision.proposal_id, policy_id=policy.policy_id),
+                "proposal_id": candidate.proposal_id, "decision_id": decision.decision_id,
+                "visual_baseline": candidate.visual_baseline.model_dump(mode="json") if candidate.visual_baseline else None,
+            })
         dispatch_status = dispatch_status_default
         if dispatch_mode == "dispatch_read_only" and policy.mode.allow_dispatch_read_only:
             dispatch_status = "prepared_for_dispatch"
@@ -587,6 +618,7 @@ def build_execution_dispatch_frame(
             cortex_verb=route.cortex_verb,
             cortex_mode=route.cortex_mode,
             request_envelope=envelope,
+            visual_baseline=candidate.visual_baseline,
             expected_effect=build_expected_effect(
                 candidate, route.dispatch_kind, effect_posteriors
             ),

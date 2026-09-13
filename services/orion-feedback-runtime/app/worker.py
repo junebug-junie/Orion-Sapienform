@@ -213,6 +213,7 @@ class FeedbackRuntimeWorker:
                 priors=self._store.load_effect_posteriors(),
                 control_priors=self._store.load_control_posteriors(),
                 latency_by_dispatch_id=_latencies(cortex_results),
+                cortex_results=cortex_results,
             )
         except Exception:
             logger.exception(

@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.schemas.reverie_visual import VisualRunOutcome
 from orion.core.schemas.drives import TensionEventV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -197,6 +198,7 @@ class ActionOutcomeRefV1(BaseModel):
     kind: str
     summary: str
     success: bool | None = None
+    visual_outcome: VisualRunOutcome | None = None
     surprise: float = Field(default=0.0, ge=0.0, le=1.0)
     observed_at: datetime | None = None
     query: str | None = None
@@ -218,6 +220,7 @@ class ActionOutcomeEmitV1(BaseModel):
     kind: str
     summary: str
     success: bool | None = None
+    visual_outcome: VisualRunOutcome | None = None
     surprise: float = Field(default=0.0, ge=0.0, le=1.0)
     observed_at: datetime | None = None
 
@@ -229,6 +232,7 @@ class ActionOutcomeEmitV1(BaseModel):
             kind=outcome.kind,
             summary=outcome.summary,
             success=outcome.success,
+            visual_outcome=outcome.visual_outcome,
             surprise=outcome.surprise,
             observed_at=outcome.observed_at,
         )
@@ -239,6 +243,7 @@ class ActionOutcomeEmitV1(BaseModel):
             kind=self.kind,
             summary=self.summary,
             success=self.success,
+            visual_outcome=self.visual_outcome,
             surprise=self.surprise,
             observed_at=self.observed_at,
         )

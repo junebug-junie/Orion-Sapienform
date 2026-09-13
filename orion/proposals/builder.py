@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from orion.reverie.baseline import validate_eligibility
+from orion.schemas.reverie_visual import VisualBaselineEligibilityV1
+
 from orion.field.action_warrant import action_warrant
 from orion.field.pressure import field_pressures as compute_field_pressures
 from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
@@ -195,6 +198,7 @@ def build_proposal_frame(
     previous_frame: ProposalFrameV1 | None = None,
     now: datetime | None = None,
     external_candidates: list[ProposalCandidateV1] | None = None,
+    baseline_eligibility: VisualBaselineEligibilityV1 | None = None,
 ) -> ProposalFrameV1:
     """Build a ProposalFrameV1 directly from FieldStateV1 + FieldAttentionFrameV1.
 
@@ -238,7 +242,32 @@ def build_proposal_frame(
     # scheduler (stream-of-consciousness hop-chain design, "not a merge, a sibling
     # producer under the same contract").
     for candidate in external_candidates or []:
+        if candidate.visual_baseline is not None:
+            warnings.append(f"visual_baseline_untrusted:{candidate.proposal_id}")
+            continue
         built.append(candidate)
+
+    baseline = []
+    if baseline_eligibility is not None and "render_scene" not in policy.proposal_templates:
+        warnings.append("visual_baseline_template_unavailable")
+    if baseline_eligibility is not None and "render_scene" in policy.proposal_templates:
+        for candidate in reversed(built):
+            if (candidate.execution_intent.get("template") != "render_scene"
+                    or candidate.proposal_kind != "express"
+                    or candidate.target_id != policy.proposal_templates["render_scene"].target_id):
+                continue
+            denial = validate_eligibility(baseline_eligibility, now=generated_at,
+                target_id=candidate.target_id, template="render_scene", proposal_kind=candidate.proposal_kind)
+            if denial:
+                warnings.append(denial)
+                break
+            baseline = [candidate.model_copy(update={"visual_baseline": baseline_eligibility,
+                "expected_signal": None, "expected_direction": None,
+                "reasons": [*candidate.reasons, "visual_baseline_due"]})]
+            built = [other for other in built if not (
+                other.execution_intent.get("template") == "render_scene"
+                and other.proposal_kind == "express" and other.target_id == candidate.target_id)]
+            break
 
     built.sort(key=lambda c: (-c.priority_score, c.proposal_id))
 
@@ -292,7 +321,7 @@ def build_proposal_frame(
             else:
                 active.append(candidate)
 
-    active = active[: policy.limits.max_candidates]
+    active = (baseline + active)[: max(0, policy.limits.max_candidates)]
     suppressed = suppressed[: policy.limits.max_suppressed]
 
     overall_risk = _overall_risk(active)

@@ -457,3 +457,53 @@ def test_control_cell_upsert_lets_a_null_frame_id_through() -> None:
         r"IS DISTINCT FROM EXCLUDED\.last_dispatch_frame_id",
         guard,
     ), "the unguarded IS DISTINCT FROM form is back"
+
+
+@pytest.mark.parametrize("outcome", ["deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown", None])
+def test_visual_non_observations_do_not_learn_even_with_measured_field(outcome):
+    candidate = _candidate("visual", effect=_effect()).model_copy(update={
+        "cortex_verb": "skills.imagination.render_scene.v1",
+        "target_id": "host:circe_gpu",
+    })
+    evidence = [{"dispatch_id": "visual", "status": "success", "visual_outcome": outcome}]
+    res = resolve_action_outcomes(
+        dispatch_frame=_frame([candidate]), feedback_frame_id="feedback:visual",
+        field_before=_field("before", {"execution_pressure": .8}),
+        field_after=_field("after", {"execution_pressure": .3}),
+        cortex_results=evidence,
+    )
+    assert res.records == []
+    assert res.posteriors == {}
+    assert res.skipped == {"visual": f"visual_non_observation:{outcome or 'unknown'}"}
+    assert res.control_observations == []  # Deferral is not an untreated control tick.
+
+
+def test_visual_produced_can_score_a_valid_future_claim_but_not_retired_resource_claim():
+    for signal in ("execution_pressure", "resource_pressure"):
+        candidate = _candidate("visual", effect=_effect(signal)).model_copy(update={
+            "source_proposal_id": "proposal:render_scene:host:circe_gpu",
+            "target_id": "host:circe_gpu", "visual_outcome": "produced",
+        })
+        res = resolve_action_outcomes(
+            dispatch_frame=_frame([candidate]), feedback_frame_id="feedback:visual",
+            field_before=_field("before", {signal: .8}),
+            field_after=_field("after", {signal: .3}),
+        )
+        if signal == "resource_pressure":
+            assert not res.records and not res.posteriors
+            assert res.skipped["visual"] == "retired_render_scene_resource_pressure"
+        else:
+            assert len(res.records) == 1
+
+
+def test_visual_baseline_production_without_claim_is_not_a_posterior():
+    candidate = _candidate("visual", effect=None).model_copy(update={
+        "cortex_verb": "skills.imagination.render_scene.v1", "visual_outcome": "produced",
+    })
+    res = resolve_action_outcomes(
+        dispatch_frame=_frame([candidate]), feedback_frame_id="feedback:visual",
+        field_before=_field("before", {"resource_pressure": .8}),
+        field_after=_field("after", {"resource_pressure": .3}),
+    )
+    assert not res.records and not res.posteriors
+    assert res.skipped == {"visual": "no_declared_signal"}

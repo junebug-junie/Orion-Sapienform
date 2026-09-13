@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
+from orion.reverie.baseline import validate_eligibility
 
 from orion.policy.policy import SubstratePolicyV1
 from orion.policy.rules import (
@@ -86,6 +88,7 @@ def _finish(
         evidence_refs=sorted(set(evidence_refs)),
         blocked_by=blocked_by,
         execution_constraints=constraints,
+        visual_baseline=candidate.visual_baseline,
     )
 
 
@@ -94,6 +97,7 @@ def evaluate_proposal_candidate(
     candidate: ProposalCandidateV1,
     proposal_frame: ProposalFrameV1,
     policy: SubstratePolicyV1,
+    now: datetime | None = None,
 ) -> PolicyDecisionV1:
     rule = kind_rule(policy, candidate.proposal_kind)
     allowed_scope = rule.allowed_scope if rule else "none"
@@ -112,6 +116,12 @@ def evaluate_proposal_candidate(
     )
 
     blocked = hard_block_hits(candidate, policy)
+    if candidate.visual_baseline is not None:
+        denial = validate_eligibility(candidate.visual_baseline, now=now,
+            target_id=candidate.target_id, template=candidate.execution_intent.get("template", ""),
+            proposal_kind=candidate.proposal_kind)
+        if denial:
+            blocked.append(denial)
     if blocked:
         return _finish(
             candidate=candidate,

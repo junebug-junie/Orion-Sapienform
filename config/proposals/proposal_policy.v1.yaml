@@ -599,8 +599,6 @@ proposal_templates:
   # whether it actually runs.
   render_scene:
     kind: express
-    expected_signal: resource_pressure
-    expected_direction: increase
     target_kind: system
     target_id: host:circe_gpu
     proposed_effect: increase_observability

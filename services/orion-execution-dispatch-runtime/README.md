@@ -527,3 +527,13 @@ docker compose up -d --build
 ```bash
 ./scripts/smoke_execution_dispatch_v1.sh
 ```
+
+Visual baseline eligibility is validated against `config/proposals/visual_baseline.v1.yaml`
+(disabled by default), copied across blocked/prepared dispatches and given one bounded
+capacity slot. It needs an approved express route and a finite positive motor cost.
+The allocator charges its full estimated cost before information-ranked extras;
+missing allocation fails closed even in advisory/probe paths. Daily risk/motor gates
+and measured result durations still apply. Request IDs and the typed visual outcome
+survive the verb boundary. `render_scene` no longer predicts resource pressure;
+ordinary extras without a justified signal remain unmeasurable. This is not an
+image-quality or continuity reward.

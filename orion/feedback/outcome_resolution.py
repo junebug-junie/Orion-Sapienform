@@ -32,7 +32,7 @@ from orion.autonomy.contrast import (
     baseline_bin,
 )
 from orion.autonomy.prediction import EffectPosterior, score_observation
-from orion.feedback.extractors import PRESSURE_DELTA_EPSILON
+from orion.feedback.extractors import PRESSURE_DELTA_EPSILON, is_visual_candidate, normalize_cortex_result_evidence
 from orion.field.pressure import field_pressures
 from orion.schemas.action_prediction import (
     ActionOutcomeRecordV1,
@@ -182,9 +182,15 @@ def resolve_action_outcomes(
     priors: dict[TreatedCellKey, EffectPosterior] | None = None,
     control_priors: dict[ControlCellKey, ControlCell] | None = None,
     latency_by_dispatch_id: dict[str, float] | None = None,
+    cortex_results: list[dict[str, object]] | None = None,
     now: datetime | None = None,
 ) -> OutcomeResolution:
     observed_at = now or datetime.now(timezone.utc)
+    result_outcomes = {
+        str(r["dispatch_id"]): r["visual_outcome"]
+        for raw in (cortex_results or [])
+        if "visual_outcome" in (r := normalize_cortex_result_evidence(raw))
+    }
     working: dict[TreatedCellKey, EffectPosterior] = dict(priors or {})
     control_working: dict[ControlCellKey, ControlCell] = dict(control_priors or {})
     records: list[ActionOutcomeRecordV1] = []
@@ -274,6 +280,19 @@ def resolve_action_outcomes(
         if effect is None:
             skipped[candidate.dispatch_id] = "no_declared_signal"
             continue
+        is_visual = is_visual_candidate(candidate)
+        # Kill queued historical claims too; retained posterior rows are history.
+        if is_visual and effect.signal_id == "resource_pressure":
+            skipped[candidate.dispatch_id] = "retired_render_scene_resource_pressure"
+            continue
+        if candidate.visual_baseline:
+            skipped[candidate.dispatch_id] = "visual_baseline_no_effect"
+            continue
+        visual_outcome = result_outcomes.get(candidate.dispatch_id, candidate.visual_outcome)
+        if arm == "dispatched" and (is_visual or visual_outcome is not None):
+            if visual_outcome != "produced":
+                skipped[candidate.dispatch_id] = f"visual_non_observation:{visual_outcome or 'unknown'}"
+                continue
         signal = effect.signal_id
         if not have_window:
             skipped[candidate.dispatch_id] = "missing_field_window"

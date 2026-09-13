@@ -681,12 +681,16 @@ async def lifespan(app: FastAPI):
                     kind TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     success BOOLEAN NULL,
+                    visual_outcome TEXT NULL,
                     surprise DOUBLE PRECISION NOT NULL DEFAULT 0.0,
                     observed_at TIMESTAMPTZ NULL,
                     correlation_id TEXT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 """
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE action_outcomes ADD COLUMN IF NOT EXISTS visual_outcome TEXT NULL;"
             )
             # Composite covers the read query (WHERE subject=? ORDER BY observed_at DESC);
             # a standalone subject index would be redundant with this prefix.

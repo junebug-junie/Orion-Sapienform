@@ -89,6 +89,8 @@ say. Percentages sum to 100% no matter how worthless the set.
 
 from __future__ import annotations
 
+from orion.schemas.reverie_visual import VisualBaselineEligibilityV1
+
 import logging
 import math
 from dataclasses import dataclass
@@ -216,6 +218,7 @@ class Candidate:
     # any observation -- i.e. this action has never run. Load-bearing: see the
     # cold-start exemption in allocate().
     cold_start: bool = False
+    visual_baseline: VisualBaselineEligibilityV1 | None = None
 
     @property
     def measurable(self) -> bool:
@@ -298,7 +301,23 @@ def allocate(
     refused: list[tuple[Candidate, RefusalReason]] = []
 
     scored: list[Candidate] = []
+    baseline: list[Candidate] = []
     for candidate in candidates:
+        if candidate.visual_baseline is not None:
+            from orion.reverie.baseline import validate_eligibility
+            denial = validate_eligibility(candidate.visual_baseline, target_id=candidate.target_id,
+                proposal_kind=candidate.dispatch_kind)
+            if denial:
+                refused.append((candidate, "unmeasurable"))
+            elif candidate.confidently_harmful:
+                refused.append((candidate, "confidently_harmful"))
+            elif candidate.cost_sec is None or not math.isfinite(candidate.cost_sec) or candidate.cost_sec <= 0:
+                refused.append((candidate, "no_cost_estimate"))
+            elif baseline:
+                refused.append((candidate, "allowance_exhausted"))
+            else:
+                baseline.append(candidate)
+            continue
         if not candidate.measurable:
             # Refused with its own reason, not folded into the information
             # floor: "we have learned what this does" and "this can never be
@@ -360,7 +379,8 @@ def allocate(
     scored.sort(key=lambda c: (-(c.nats_per_sec or 0.0), c.dispatch_id))
 
     spent = 0.0
-    for candidate in scored:
+    allowance_sec = allowance_sec if math.isfinite(allowance_sec) and allowance_sec > 0 else 0.0
+    for candidate in baseline + scored:
         cost = candidate.cost_sec or 0.0
         if spent + cost > allowance_sec:
             refused.append((candidate, "allowance_exhausted"))
@@ -387,6 +407,7 @@ def candidate_from_dispatch(
     cost_sec: float | None,
     cold_variance: float,
     observation_variance: float = DEFAULT_OBSERVATION_VARIANCE,
+    visual_baseline: VisualBaselineEligibilityV1 | None = None,
 ) -> Candidate:
     """Build a scored Candidate from what a dispatch frame actually carries.
 
@@ -425,4 +446,5 @@ def candidate_from_dispatch(
         cost_sec=cost_sec,
         claimed_direction=claimed_direction,
         cold_start=cold_start,
+        visual_baseline=visual_baseline,
     )

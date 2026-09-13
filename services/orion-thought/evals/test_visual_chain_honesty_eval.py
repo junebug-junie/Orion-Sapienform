@@ -21,6 +21,12 @@ Run: pytest services/orion-thought/evals -q
 """
 from __future__ import annotations
 
+def _receipt(chain, artifact):
+    from orion.schemas.reverie_visual import VisualProductionReceiptV1
+    return VisualProductionReceiptV1(chain_id=chain.chain_id, attempt_id=chain.chain_id,
+        sha256=artifact.sha256, bytes=artifact.bytes, path=artifact.path, produced_at=artifact.created_at)
+
+
 import struct
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -79,12 +85,13 @@ SCENARIOS = [
 async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     from app import visual_chain
 
+    monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     # Streak 0 < default cap -- continuity behaves exactly as before Patch 4
     # for every scenario in this matrix; the reset path has its own
     # dedicated coverage in test_visual_chain.py.
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old", 0, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old", 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -114,7 +121,7 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     persisted_artifacts = []
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
     monkeypatch.setattr(
-        visual_chain, "persist_reverie_visual_artifact", lambda a: persisted_artifacts.append(a) or True
+        visual_chain, "acknowledge_visual_production", lambda c, a: persisted_artifacts.append(a) or _receipt(c, a)
     )
 
     bus = AsyncMock()

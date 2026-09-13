@@ -673,6 +673,7 @@ class ExecutionDispatchRuntimeWorker:
                         or self._settings.orion_dispatch_motor_typical_cost_sec
                     ),
                     cold_variance=DEFAULT_PRIOR_VARIANCE,
+                    visual_baseline=item.visual_baseline,
                 )
             )
 
@@ -1167,7 +1168,8 @@ class ExecutionDispatchRuntimeWorker:
         # leaves every candidate eligible -- an absent allocation must never be
         # read as a refusal of everything.
         allocator_admitted_ids: set[str] | None = None
-        if self._settings.orion_dispatch_allocator_enforce and allocation is not None:
+        has_baseline = any(c.visual_baseline is not None for c in frame.candidates)
+        if (self._settings.orion_dispatch_allocator_enforce or has_baseline) and allocation is not None:
             allocator_admitted_ids = {c.dispatch_id for c in allocation.admitted}
 
         # A PROBE TICK IS EXEMPT. Without this the allocator refuses the probe
@@ -1190,8 +1192,14 @@ class ExecutionDispatchRuntimeWorker:
         cumulative_risk = 0.0
         allocator_skipped = 0
         allocator_refused: list[ExecutionDispatchCandidateV1] = []
-        for candidate in frame.candidates:
+        allocation_ids = {c.dispatch_id for c in allocation.admitted} if allocation is not None else set()
+        ordered_candidates = sorted(frame.candidates, key=lambda c: c.visual_baseline is None)
+        for candidate in ordered_candidates:
             if candidate.dispatch_status != "prepared_for_dispatch":
+                continue
+            if candidate.visual_baseline is not None and candidate.dispatch_id not in allocation_ids:
+                allocator_skipped += 1
+                allocator_refused.append(candidate)
                 continue
             if allocator_admitted_ids is not None and candidate.dispatch_id not in allocator_admitted_ids:
                 allocator_skipped += 1
@@ -1743,6 +1751,8 @@ class ExecutionDispatchRuntimeWorker:
         candidate: ExecutionDispatchCandidateV1,
     ) -> ExecutionDispatchCandidateV1:
         now = datetime.now(timezone.utc)
+        if candidate.cortex_verb == "skills.imagination.render_scene.v1":
+            candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
         result_id = f"result:{candidate.dispatch_id}"
 
         # Idempotency guard: dispatch_id is deterministic (stable_dispatch_id
@@ -1754,6 +1764,8 @@ class ExecutionDispatchRuntimeWorker:
         # -- replay the stored result instead of resending.
         existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
         if existing is not None:
+            if candidate.visual_outcome is not None:
+                candidate = candidate.model_copy(update={"visual_outcome": existing["result_json"].get("visual_outcome") or "unknown"})
             logger.info(
                 "execution_dispatch_result_replayed dispatch_id=%s status=%s",
                 candidate.dispatch_id,
@@ -1876,6 +1888,7 @@ class ExecutionDispatchRuntimeWorker:
                 frame_id=frame.frame_id,
                 status="failed",
                 result_json={
+                    "visual_outcome": candidate.visual_outcome,
                     "error": str(exc)[:2000],
                     "evidence_refs": [result_id],
                     "latency_ms": latency_ms,
@@ -1931,6 +1944,7 @@ class ExecutionDispatchRuntimeWorker:
                 # entirely.
                 status="failed",
                 result_json={
+                    "visual_outcome": candidate.visual_outcome,
                     "error": reason[:2000],
                     "plan_status": plan_status,
                     # The verb's own payload is still preserved -- a failed
@@ -1971,6 +1985,14 @@ class ExecutionDispatchRuntimeWorker:
         latency_ms = (perf_counter() - send_started) * 1000.0
         final_text = extract_final_text(payload)
         observation_data = parse_structured_observation(final_text)
+        if candidate.cortex_verb == "skills.imagination.render_scene.v1":
+            structured = observation_data.get("structured_result") or {}
+            visual = structured.get("result", structured)
+            outcome = visual.get("outcome", "unknown") if isinstance(visual, dict) else "unknown"
+            if outcome not in {"produced", "deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown"}:
+                outcome = "unknown"
+            candidate = candidate.model_copy(update={"visual_outcome": outcome})
+            observation_data["visual_outcome"] = outcome
         raw_len = len(observation_data["observation"])
         # Success is decided by `result_kind`, NOT by `len(observation)`.
         #
@@ -1994,6 +2016,7 @@ class ExecutionDispatchRuntimeWorker:
             frame_id=frame.frame_id,
             status=status,
             result_json={
+                    "visual_outcome": candidate.visual_outcome,
                 **observation_data,
                 "evidence_refs": [result_id],
                 "latency_ms": latency_ms,
@@ -2079,7 +2102,8 @@ class ExecutionDispatchRuntimeWorker:
                 action_id=candidate.dispatch_id,
                 kind=candidate.dispatch_kind,
                 summary=summary[:ACTION_OUTCOME_SUMMARY_MAX_CHARS],
-                success=success,
+                success=success if candidate.visual_outcome is None else candidate.visual_outcome == "produced",
+                visual_outcome=candidate.visual_outcome,
                 surprise=surprise if surprise is not None else 0.0,
                 observed_at=observed_at,
             )

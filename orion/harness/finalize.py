@@ -361,7 +361,7 @@ def build_finalize_reflect_context(
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "repair_overlay": repair_overlay.model_dump(mode="json"),
-        "finalize_overlay": repair_overlay.finalize_overlay,
+        "finalize_overlay": "",
         "user_message": user_message,
         # Finalize is an automated continuation of the already-selected turn,
         # never interactive chat traffic. Keep both routing axes explicit so
@@ -834,7 +834,7 @@ def build_voice_finalize_context(
         "voice_contract": contract_dump,
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
-        "finalize_overlay": repair_overlay.finalize_overlay,
+        "finalize_overlay": "",
         "user_message": user_message,
         # See build_finalize_reflect_context: 5c is part of the same automated
         # finalize chain and must not consume Juniper's reserved chat worker.
@@ -1017,6 +1017,8 @@ async def emit_turn_outcome_molecule(
     draft_text: str,
     final_text: str,
     finalize_changed: bool,
+    response_repair_ran: bool = False,
+    response_repair_reason: str | None = None,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     finalize_failed: bool = False,
     failure_reason: str | None = None,
@@ -1034,7 +1036,6 @@ async def emit_turn_outcome_molecule(
         not finalize_failed
         and reflection.alignment_verdict == "aligned"
         and not reflection.strain_unresolved
-        and (finalize_changed or substrate_appraisal.surprise_level < _quick_gate_epsilon())
     )
     molecule = HarnessTurnOutcomeMoleculeV1(
         correlation_id=correlation_id,
@@ -1045,6 +1046,8 @@ async def emit_turn_outcome_molecule(
         draft_hash=substrate_appraisal.draft_hash,
         final_hash=_text_hash(final_text),
         finalize_changed=finalize_changed,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
         alignment_verdict=reflection.alignment_verdict,
         surprise_level_at_draft=substrate_appraisal.surprise_level,
         surprise_resolved=surprise_resolved,

@@ -78,11 +78,7 @@ def _format_context_provenance_block(context_provenance: dict[str, str]) -> list
 
 
 def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
-    """Compact motor self block: identity + relationship + continuity/memory only.
-
-    Response policy is intentionally excluded here — it is reserved for the voice
-    finalize pass to respect the motor single-context-window budget.
-    """
+    """Compact motor self block: identity + relationship + continuity/memory + policy."""
     lines: list[str] = ["WHO YOU ARE"]
     lines.extend(f"- {item}" for item in capsule.identity_summary)
     if capsule.relationship_summary:
@@ -92,6 +88,9 @@ def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     if digest:
         lines.append("DURABLE MEMORY / CONTINUITY")
         lines.append(digest)
+    if capsule.response_policy_summary:
+        lines.append("RESPONSE POLICY")
+        lines.extend(f"- {item}" for item in capsule.response_policy_summary)
     lines.extend(_format_context_provenance_block(capsule.context_provenance))
     return lines
 

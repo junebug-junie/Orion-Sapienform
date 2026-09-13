@@ -17,8 +17,8 @@ def test_prefix_renders_compact_self_block_when_capsule_present() -> None:
     assert "I am Oríon" in prompt
     assert "Juniper is my collaborator" in prompt
     assert "We were mid-way through the grounding refactor." in prompt
-    # Response policy is reserved for the voice pass (motor budget discipline).
-    assert "no generic-assistant framing" not in prompt
+    assert "RESPONSE POLICY" in prompt
+    assert "no generic-assistant framing" in prompt
     # Self block precedes the imperative.
     assert prompt.index("WHO YOU ARE") < prompt.index("Imperative:")
 

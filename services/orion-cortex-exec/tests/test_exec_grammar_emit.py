@@ -45,7 +45,7 @@ def test_trace_lane_isolates_harness_finalize_verbs() -> None:
 
     assert trace_lane_for_verb("stance_react") == "stance_react"
     assert trace_lane_for_verb("harness_finalize_reflect") == "harness_finalize_reflect"
-    assert trace_lane_for_verb("orion_voice_finalize") == "orion_voice_finalize"
+    assert trace_lane_for_verb("orion_response_repair") == "orion_response_repair"
     assert trace_lane_for_verb("chat_general") is None
 
     stance = CortexExecGrammarCollector(

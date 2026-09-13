@@ -46,11 +46,11 @@ def test_harness_finalize_reflect_uses_agent_route() -> None:
     assert sent_req.route == "agent"
 
 
-def test_orion_voice_finalize_uses_agent_route() -> None:
+def test_orion_response_repair_uses_agent_route() -> None:
     """Automated voice finalization uses the dedicated agent lane."""
     step = ExecutionStep(
-        step_name="llm_orion_voice_finalize",
-        verb_name="orion_voice_finalize",
+        step_name="llm_orion_response_repair",
+        verb_name="orion_response_repair",
         services=["LLMGatewayService"],
         order=0,
         prompt_template="{{ raw_user_text }}",

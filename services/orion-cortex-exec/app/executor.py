@@ -436,7 +436,7 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
         return int(settings.llm_memory_graph_suggest_max_tokens), requested, "settings.llm_memory_graph_suggest_max_tokens"
 
     # Unified turn 5b/5c return strict JSON; default 512 truncates mid-object (finish_reason=length).
-    if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
+    if step.verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_harness_finalize"
 
     # stance_react (unified-turn stance evaluation, ThoughtEventV1 strict JSON): same
@@ -1689,7 +1689,7 @@ def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tupl
         return max(1, int(settings.llm_chat_general_max_tokens)), "general_default", requested
     if step.verb_name == "memory_graph_suggest" and step.step_name == "llm_memory_graph_suggest":
         return max(1, int(settings.llm_memory_graph_suggest_max_tokens)), "memory_graph_suggest_default", requested
-    if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
+    if step.verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
         return max(1, int(settings.llm_chat_general_max_tokens)), "harness_finalize_default", requested
     return max(1, int(settings.llm_chat_fallback_max_tokens)), "fallback_default", requested
 
@@ -2086,7 +2086,7 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     without spinning up the full executor.
 
     Default lane mapping:
-    - harness_finalize_reflect / orion_voice_finalize: AGENT lane. These are
+    - harness_finalize_reflect / orion_response_repair: AGENT lane. These are
       automated continuation calls, not Juniper chat. Their fat prompts exceed
       quick/fast context, and live gateway evidence on 2026-09-12 showed 27
       autonomous finalize completions consuming the reserved chat worker in
@@ -2134,7 +2134,7 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     - introspect_spark internal analysis: FAST lane ("quick")
     - metacog mode: METACOG lane
     """
-    if verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
+    if verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
         return "agent"
     if verb_name == "stance_react":
         return "chat"

@@ -1,7 +1,7 @@
 # Kill mandatory voice finalize — design
 
 **Date:** 2026-09-12  
-**Status:** approved for implementation planning  
+**Status:** implemented  
 **Incident seed:** corr `18b2540e-8499-40df-817b-4986fea84915` — motor draft `hey. i'm here. what's on your mind?` rewritten by 5c into assumption / next-concrete-move scaffold despite `aligned` + task-tracking hazard.
 
 ## Arsonist summary

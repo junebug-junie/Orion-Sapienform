@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from orion.harness.finalize import (
     build_finalize_reflect_context,
-    build_voice_finalize_context,
+    build_response_repair_context,
 )
 from orion.harness.tests.fixtures import (
     make_appraisal,
@@ -17,7 +17,7 @@ def test_finalize_reflect_context_routes_to_agent_lane() -> None:
     or `background`.
 
     Was `background` until confirmed wrong live 2026-08-16
-    (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize call
+    (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_response_repair call
     also runs on `background`/atlas-worker-2 and can occupy it for 90s+, which
     starved this call's LLMGatewayService RPC entirely (cortex-exec's internal 300s
     timeout fired with no reply at all). `chat` was considered and rejected: it
@@ -55,17 +55,11 @@ def test_finalize_reflect_context_lane_is_top_level_for_cortex_ctx_merge() -> No
     assert "options" not in ctx or "llm_lane" not in ctx.get("options", {})
 
 
-def test_voice_finalize_context_routes_to_agent_without_chat_fallback() -> None:
-    thought = make_thought()
-    ctx = build_voice_finalize_context(
-        correlation_id="c-voice",
+def test_response_repair_context_routes_to_agent_without_chat_fallback() -> None:
+    ctx = build_response_repair_context(
+        correlation_id="c-repair",
         draft_text="draft",
-        thought=thought,
-        substrate_appraisal=make_appraisal(),
         reflection=make_reflection(),
-        stance_harness_slice=thought.stance_harness_slice,
-        voice_contract={},
-        repair_overlay=make_repair_overlay(),
         user_message="How are you?",
     )
     assert ctx["llm_route"] == "agent"

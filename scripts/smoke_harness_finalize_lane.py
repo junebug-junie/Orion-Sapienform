@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from dotenv import load_dotenv
 
 from orion.harness.cortex_client import HarnessCortexClient
-from orion.harness.finalize import build_voice_finalize_plan_request
+from orion.harness.finalize import build_response_repair_plan_request
 from orion.harness.tests.fixtures import (
     make_appraisal,
     make_reflection,
@@ -55,7 +55,7 @@ async def _smoke(channel: str, timeout_sec: float) -> None:
     thought = make_thought(correlation_id=corr)
     appraisal = make_appraisal(correlation_id=corr)
     reflection = make_reflection(correlation_id=corr)
-    plan = build_voice_finalize_plan_request(
+    plan = build_response_repair_plan_request(
         correlation_id=corr,
         draft_text="Smoke draft: harness finalize lane must respond while legacy chat is busy.",
         thought=thought,
@@ -75,7 +75,7 @@ async def _smoke(channel: str, timeout_sec: float) -> None:
         result_prefix="orion:exec:result",
         source_name="smoke-harness-finalize",
         timeout_sec=timeout_sec,
-        voice_finalize_timeout_sec=timeout_sec,
+        response_repair_timeout_sec=timeout_sec,
     )
     started = time.monotonic()
     try:
@@ -105,7 +105,7 @@ def main() -> None:
     parser.add_argument(
         "--timeout-sec",
         type=float,
-        default=float(os.environ.get("VOICE_FINALIZE_TIMEOUT_SEC", "120")),
+        default=float(os.environ.get("RESPONSE_REPAIR_TIMEOUT_SEC", "120")),
         help="RPC wait budget",
     )
     args = parser.parse_args()

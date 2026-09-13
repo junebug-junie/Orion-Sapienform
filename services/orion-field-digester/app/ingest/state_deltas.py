@@ -428,7 +428,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # compliance_verdict/etc.). Before this gate, `key in hints` was always true
         # regardless of source, so every execution_run delta -- including the SAME
         # turn's own cortex-exec sub-lanes (":harness_finalize_reflect",
-        # ":orion_voice_finalize") and every later unrelated cortex-exec-only turn's
+        # ":orion_response_repair") and every later unrelated cortex-exec-only turn's
         # bare trace -- emitted a mode="replace" perturbation for these channels
         # targeting the same node_key (always "node:athena" for both producers),
         # stomping the real value. Confirmed live: a real harness_step_load=0.6892 was

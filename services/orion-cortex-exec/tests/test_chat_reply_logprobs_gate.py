@@ -2,7 +2,7 @@
 
 Regression coverage for a 2026-08-20 code review finding: an earlier version of this gate
 keyed off llm_route == "chat", which is shared by stance_react (the real live reply) AND
-harness_finalize_reflect / orion_voice_finalize (internal calls whose "chat" llm_route is
+harness_finalize_reflect / orion_response_repair (internal calls whose "chat" llm_route is
 vestigial -- see _default_llm_route_for_step's docstring). That version would have silently
 attached return_logprobs to those two internal calls too. This gate is keyed on exact
 (verb_name, step_name) identity instead, via _REAL_CHAT_REPLY_STEPS.
@@ -50,10 +50,10 @@ def test_harness_finalize_reflect_never_requests_logprobs_even_when_enabled() ->
         ) is False
 
 
-def test_orion_voice_finalize_never_requests_logprobs_even_when_enabled() -> None:
+def test_orion_response_repair_never_requests_logprobs_even_when_enabled() -> None:
     with patch("app.executor.settings", SimpleNamespace(cortex_chat_return_logprobs=True)):
         assert _should_request_chat_reply_logprobs(
-            _step("orion_voice_finalize", "llm_orion_voice_finalize"), {}
+            _step("orion_response_repair", "llm_orion_response_repair"), {}
         ) is False
 
 

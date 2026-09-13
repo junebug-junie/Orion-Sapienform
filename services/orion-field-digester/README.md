@@ -1257,7 +1257,7 @@ last). Before this fix, `compute_pressure_hints()` unconditionally included thes
 keys in every `execution_run`'s `pressure_hints` dict regardless of source (defaulting
 to `0.0`/`"unknown"` for cortex-exec-only runs), so `key in hints` was always true and
 every execution_run delta targeting the same node -- including the very same turn's
-own `:harness_finalize_reflect`/`:orion_voice_finalize` cortex-exec sub-lanes, and
+own `:harness_finalize_reflect`/`:orion_response_repair` cortex-exec sub-lanes, and
 every later unrelated cortex-exec-only turn -- emitted a `mode="replace"` perturbation
 that reset the real value. Live-reproduced within hours of the initial deploy: a real
 `harness_step_load=0.6892` was overwritten back to `0.0` within 15 seconds by the same

@@ -31,7 +31,7 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
         repair_overlay=make_repair_overlay(),
     )
     appraisal = make_appraisal(surprise_level=0.5)
-    reflection = make_reflection()
+    reflection = make_reflection(alignment_verdict="misaligned")
     verdict_calls: list[str] = []
     outcome_calls: list[str] = []
     cortex_calls: list[object] = []
@@ -63,7 +63,7 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
             lambda result: reflection.model_dump(mode="json"),
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "final for juniper",
         )
         chain = await run_harness_finalize_chain(
@@ -82,6 +82,8 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
         )
 
     assert chain.final_text == "final for juniper"
+    assert chain.response_repair_ran is True
+    assert chain.response_repair_reason == "misaligned"
     assert chain.substrate_appraisal is appraisal
     assert verdict_calls == ["verdict"]
     assert outcome_calls == ["outcome"]
@@ -92,7 +94,7 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
 
 
 @pytest.mark.asyncio
-async def test_voice_finalize_cannot_reintroduce_false_reading_acceptance() -> None:
+async def test_response_repair_cannot_reintroduce_false_reading_acceptance() -> None:
     thought = make_thought()
     draft_text = (
         "The reading recommendation was not confirmed by a durable receipt; "
@@ -127,7 +129,7 @@ async def test_voice_finalize_cannot_reintroduce_false_reading_acceptance() -> N
             lambda _result: reflection.model_dump(mode="json"),
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "I logged it and will process it later. FABRICATED_SUMMARY",
         )
         chain = await run_harness_finalize_chain(
@@ -201,7 +203,7 @@ async def test_structured_reading_output_skips_voice_rewrite_and_stays_json() ->
 
 
 @pytest.mark.asyncio
-async def test_ordinary_finalize_remains_voice_finalized_for_backward_compatibility() -> None:
+async def test_ordinary_aligned_finalize_passthrough() -> None:
     thought = make_thought()
     molecule = build_draft_molecule(
         correlation_id="c-prose",
@@ -211,16 +213,16 @@ async def test_ordinary_finalize_remains_voice_finalized_for_backward_compatibil
         coalition_snapshot=build_coalition_snapshot(thought),
         repair_overlay=make_repair_overlay(),
     )
-    reflection = make_reflection()
+    reflection = make_reflection(alignment_verdict="aligned")
     calls = 0
 
     async def substrate_client(_mol: object):
-        return make_appraisal()
+        return make_appraisal(surprise_level=0.5)
 
     async def cortex_client(_req: object):
         nonlocal calls
         calls += 1
-        return {"final_text": "Orion's voiced reply"}
+        return {"final_text": reflection.model_dump(mode="json"), "trace_id": "t"}
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
@@ -240,8 +242,9 @@ async def test_ordinary_finalize_remains_voice_finalized_for_backward_compatibil
             substrate_client=substrate_client,
         )
 
-    assert chain.final_text == "Orion's voiced reply"
-    assert calls == 1
+    assert chain.final_text == "motor draft"
+    assert chain.response_repair_ran is False
+    assert calls == 1  # 5b only
 
 
 @pytest.mark.asyncio

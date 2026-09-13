@@ -183,7 +183,7 @@ def test_execution_run_fcc_channels_ignored_off_lane() -> None:
     avg_step_chars_pressure/compliance_deficit/turn_incompletion in EVERY
     execution_run's pressure_hints dict, including cortex-exec-only runs. Before this
     lane gate, ANY execution_run delta -- a bare cortex-exec trace, or even the SAME
-    turn's own :harness_finalize_reflect/:orion_voice_finalize cortex-exec sub-lanes
+    turn's own :harness_finalize_reflect/:orion_response_repair cortex-exec sub-lanes
     -- emitted a mode="replace" perturbation for these channels targeting the same
     node_key, silently resetting a real harness-motor value back to whatever that
     unrelated delta happened to carry (0.0/"unknown" defaults). Confirmed live: a
@@ -200,7 +200,7 @@ def test_execution_run_fcc_channels_ignored_off_lane() -> None:
             pressure_hints={"harness_step_load": 0.5, "context_gathering_ratio": 0.9},
         ),
         _make_execution_run_delta(
-            lane="orion_voice_finalize",
+            lane="orion_response_repair",
             pressure_hints={"harness_step_load": 0.5, "context_gathering_ratio": 0.9},
         ),
         _make_execution_run_delta(lane=None, pressure_hints={"turn_incompletion": 1.0}),

@@ -28,7 +28,7 @@ def _make_plan_request(verb_name: str) -> PlanExecutionRequest:
 
 
 @pytest.mark.asyncio
-async def test_voice_finalize_uses_voice_timeout() -> None:
+async def test_response_repair_uses_repair_timeout() -> None:
     bus = AsyncMock()
     decode_result = MagicMock(ok=True, envelope=MagicMock(payload={"result": {}}))
     bus.codec = MagicMock()
@@ -40,10 +40,10 @@ async def test_voice_finalize_uses_voice_timeout() -> None:
         request_channel="orion:cortex:exec:request",
         result_prefix="orion:exec:result",
         timeout_sec=180.0,
-        voice_finalize_timeout_sec=300.0,
+        response_repair_timeout_sec=300.0,
     )
 
-    await client(_make_plan_request("orion_voice_finalize"))
+    await client(_make_plan_request("orion_response_repair"))
 
     assert bus.rpc_request.await_args.kwargs["timeout_sec"] == 300.0
 
@@ -75,7 +75,7 @@ async def test_system_error_reply_raises_instead_of_returning_as_result() -> Non
     )
 
     with pytest.raises(RuntimeError, match="tts_synthesis_failed"):
-        await client(_make_plan_request("orion_voice_finalize"))
+        await client(_make_plan_request("orion_response_repair"))
 
 
 @pytest.mark.asyncio
@@ -91,7 +91,7 @@ async def test_finalize_reflect_uses_reflect_timeout() -> None:
         request_channel="orion:cortex:exec:request",
         result_prefix="orion:exec:result",
         timeout_sec=180.0,
-        voice_finalize_timeout_sec=300.0,
+        response_repair_timeout_sec=300.0,
     )
 
     await client(_make_plan_request("harness_finalize_reflect"))

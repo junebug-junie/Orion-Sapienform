@@ -95,7 +95,7 @@ async def test_system_error_v1_kind_is_also_recognized() -> None:
     bus, redis = _bus_with_mock_redis()
     error_envelope = _envelope(
         kind="system.error.v1",
-        payload={"error": "finalize_failed", "phase": "orion_voice_finalize"},
+        payload={"error": "finalize_failed", "phase": "orion_response_repair"},
     )
 
     await bus.publish("orion:tts:result:cc50e621-37e3-4c95-9484-e145fca32564", error_envelope)

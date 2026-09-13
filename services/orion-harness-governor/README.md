@@ -151,7 +151,9 @@ Fails open to no line at all (never a placeholder) on: no label, a non-llamacpp 
 
 ### Reflection fail-closed fallback
 
-If the 5b reflect LLM call itself fails (`run_finalize_reflection` in `orion/harness/finalize.py`) and the deterministic quick-lane gate is also blocked, the degraded fallback verdict is `alignment_verdict="misaligned"` (`reflection_source="degraded_llm_failure_fallback"`) — not `"aligned"`. Reflection failing is not evidence the draft is fine, so the fallback fails closed instead of open. For ordinary turns, the 5c voice-finalize pass always runs regardless of verdict; a `"misaligned"` verdict is the documented signal (in `orion_voice_finalize.j2`) to materially revise the draft rather than pass it through unreviewed. Reading-only machine turns instead validate and canonicalize the motor JSON and skip prose-oriented 5c. This does not fix why 5b failed — check `alignment_notes` on the verdict artifact (`reflect_llm_failed: <exception excerpt>`) for that.
+If the 5b reflect LLM call itself fails (`run_finalize_reflection` in `orion/harness/finalize.py`) and the deterministic quick-lane gate is also blocked, the degraded fallback verdict is `alignment_verdict="misaligned"` (`reflection_source="degraded_llm_failure_fallback"`) — not `"aligned"`. Reflection failing is not evidence the draft is fine, so the fallback fails closed instead of open.
+
+Mandatory `orion_voice_finalize` is gone. After 5a/5b, an ordinary turn either returns the exact motor draft (aligned + strain resolved) or runs conditional `orion_response_repair` only when 5b marks the draft `misaligned`, `uncertain`, or `strain_unresolved`. Fail-closed: if repair is required and fails, the known-bad draft is not published. `finalize_ran=true` means 5a/5b completed — it is not “a rewrite LLM ran.” Use `response_repair_ran` / `response_repair_reason` for the repair pass. Reading-only machine turns still validate and canonicalize motor JSON and skip prose repair. This does not fix why 5b failed — check `alignment_notes` on the verdict artifact (`reflect_llm_failed: <exception excerpt>`) for that.
 
 ### Required secrets
 

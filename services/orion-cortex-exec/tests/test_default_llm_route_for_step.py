@@ -20,8 +20,8 @@ def test_harness_finalize_reflect_routes_agent():
     assert _default_llm_route_for_step(verb_name="harness_finalize_reflect", step_name="x", mode=None) == "agent"
 
 
-def test_orion_voice_finalize_routes_agent():
-    assert _default_llm_route_for_step(verb_name="orion_voice_finalize", step_name="x", mode=None) == "agent"
+def test_orion_response_repair_routes_agent():
+    assert _default_llm_route_for_step(verb_name="orion_response_repair", step_name="x", mode=None) == "agent"
 
 
 def test_chat_general_stance_brief_routes_quick():

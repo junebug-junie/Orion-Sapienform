@@ -10,13 +10,13 @@ from typing import Any
 # perfectly non-empty final_text, sailed past an emptiness-only check, and
 # was delivered/persisted into a real chat thread as if Orion had said it)
 # and built the fix, but only for its own bare cortex_client.chat() path.
-# `extract_cortex_payload_text()`/`extract_voice_finalize_text()`/
+# `extract_cortex_payload_text()`/`extract_response_repair_text()`/
 # `extract_finalize_reflection_payload()` in orion/harness/finalize.py --
 # the SHARED code path every real unified turn's finalize chain runs
 # through, not just outreach's -- had the identical "if text: return text"
 # vulnerability with no detection at all. Confirmed live, 2026-08-19: a real
 # circe-worker outage produced the exact string
-# "[Error: llamacpp timed out after waiting]" as `orion_voice_finalize`'s
+# "[Error: llamacpp timed out after waiting]" as `orion_response_repair`'s
 # own `final_text`, which the harness governor would have delivered as
 # Orion's real spoken answer had outreach's OWN defense-in-depth backstop
 # (a second copy of this exact check) not happened to also be in the call

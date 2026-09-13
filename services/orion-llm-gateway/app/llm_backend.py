@@ -176,7 +176,7 @@ def _ctx_ladder() -> List[Tuple[str, int]]:
     return _CTX_LADDER
 
 
-def _post_with_ctx_escalation(client, url: str, payload: dict, route: str, corr: Any):
+def _post_with_ctx_escalation(client, url: str, payload: dict, route: str, corr: Any, *, allow_escalation: bool = True):
     """POST, and on a context overflow retry on a lane that can hold the prompt.
 
     Returns (response, final_route, final_url). Only a CONTEXT OVERFLOW escalates -- every
@@ -186,7 +186,7 @@ def _post_with_ctx_escalation(client, url: str, payload: dict, route: str, corr:
     attempts = 1
     while True:
         r = client.post(url, json=payload)
-        if attempts >= ctx_overflow.MAX_ATTEMPTS:
+        if not allow_escalation or attempts >= ctx_overflow.MAX_ATTEMPTS:
             return r, route, url
         try:
             body = r.json()
@@ -1174,7 +1174,8 @@ def _execute_openai_chat(
 
     try:
         with _common_http_client(body) as client:
-            r, route, url = _post_with_ctx_escalation(client, url, payload, route, body.trace_id)
+            r, route, url = _post_with_ctx_escalation(client, url, payload, route, body.trace_id,
+                allow_escalation=(body.options or {}).get("resource_lease") is None)
 
             if r.status_code == 404:
                 return {
@@ -1434,7 +1435,7 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
     """Lane routing (when enabled) plus route-table resolution. Cheap, no I/O."""
     route_table = get_route_targets()
     lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False)) and bool(route_table)
-    if lane_routing:
+    if lane_routing and (body.options or {}).get("resource_lease") is None:
         decision = resolve_llm_lane_route(
             body.options,
             body.route,

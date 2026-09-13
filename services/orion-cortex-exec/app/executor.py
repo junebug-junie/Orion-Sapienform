@@ -4370,6 +4370,7 @@ async def call_step_services(
                     **lane_opts,
                 }
                 for _fwd_key in (
+                    "resource_lease",
                     "structured_output_schema",
                     "structured_output_schema_name",
                     "structured_output_method",

@@ -592,6 +592,27 @@ async def run_bus_worker(
     await bus.connect()
     logger.info("subscribed lane=%s channel=%s", lane, channel)
 
+    legacy_lock = asyncio.Lock()
+    tasks: set[asyncio.Task] = set()
+    admitted_inflight: dict[str, asyncio.Task] = {}
+
+    async def dispatch(msg: dict[str, Any], admitted: bool) -> None:
+        try:
+            if admitted:
+                await _handle_bus_message(bus, msg)
+            else:
+                async with legacy_lock:
+                    await _handle_bus_message(bus, msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("unhandled bus worker error lane=%s", lane)
+
+    def finished(task: asyncio.Task) -> None:
+        tasks.discard(task)
+        for key in [key for key, running in admitted_inflight.items() if running is task]:
+            admitted_inflight.pop(key, None)
+
     try:
         async with bus.subscribe(channel) as pubsub:
             while True:
@@ -607,12 +628,31 @@ async def run_bus_worker(
                 if not msg or msg.get("type") not in ("message", "pmessage"):
                     continue
                 try:
-                    await _handle_bus_message(bus, msg)
+                    decoded = bus.codec.decode(msg.get("data"))
+                    payload = decoded.envelope.payload if decoded.ok else {}
+                    lease = (payload or {}).get("resource_lease") if isinstance(payload, dict) else None
+                    admitted = isinstance(lease, dict)
+                    key = None
+                    if admitted:
+                        # One outstanding motor per fenced turn. Duplicate
+                        # pub/sub delivery shares the original reply channel.
+                        request = HarnessRunRequestV1.model_validate(payload)
+                        key = f"{request.correlation_id}:{request.resource_lease.lease_id}:{request.resource_lease.generation}"
+                        if key in admitted_inflight:
+                            continue
+                    task = asyncio.create_task(dispatch(msg, admitted))
+                    tasks.add(task)
+                    task.add_done_callback(finished)
+                    if key is not None:
+                        admitted_inflight[key] = task
                 except Exception:
                     logger.exception("unhandled bus worker error lane=%s", lane)
     except asyncio.CancelledError:
         raise
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         if owns_bus:
             with suppress(Exception):
                 await bus.close()

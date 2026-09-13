@@ -249,3 +249,43 @@ async def test_shared_bus_is_used_directly_and_never_closed_by_the_worker(monkey
     await bus_listener.run_bus_worker("chat:channel", stop_event, lane="chat", bus=shared_bus)
 
     assert close_calls == 0, "the worker does not own this bus and must not close it"
+
+
+@pytest.mark.asyncio
+async def test_admitted_lanes_share_intake_without_serializing_execution(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from orion.harness.tests.fixtures import make_thought
+    from orion.schemas.cognition.answer_contract import AnswerContract
+    from orion.schemas.context_exec import ContextExecPermissionV1
+    from orion.schemas.harness_finalize import HarnessRunRequestV1
+    from orion.schemas.resource_admission import ResourceLeaseV1
+    queue = asyncio.Queue()
+    bus = _FakeBus({"agent:channel": queue})
+    monkeypatch.setattr(bus_listener.settings, "orion_bus_enabled", True)
+    monkeypatch.setattr(bus_listener.settings, "orion_harness_governor_enabled", True)
+    entered = set()
+    both = asyncio.Event()
+    release = asyncio.Event()
+    async def handle(_bus, msg):
+        entered.add(msg["data"]["correlation_id"])
+        if len(entered) == 2:
+            both.set()
+        await release.wait()
+    monkeypatch.setattr(bus_listener, "_handle_bus_message", handle)
+    now = datetime.now(timezone.utc)
+    for name, lane in (("one", "agent"), ("two", "chat")):
+        lease = ResourceLeaseV1(run_id=name, demand_id=name, lease_id=name, resource_key=f"llm.route.{lane}",
+            lane=lane, backend_key=f"http://{lane}:8000", generation=1,
+            granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60))
+        request = HarnessRunRequestV1(correlation_id=name, thought_event=make_thought(), user_message="study",
+            permissions=ContextExecPermissionV1(), answer_contract=AnswerContract(), resource_lease=lease)
+        await queue.put({"type": "message", "data": request.model_dump(mode="json")})
+    stop = asyncio.Event()
+    task = asyncio.create_task(bus_listener.run_bus_worker("agent:channel", stop, lane="agent", bus=bus))
+    try:
+        await asyncio.wait_for(both.wait(), 1)
+        assert entered == {"one", "two"}
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

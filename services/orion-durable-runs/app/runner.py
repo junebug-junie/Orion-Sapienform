@@ -71,6 +71,7 @@ def _corr_uuid(raw: str) -> UUID:
 
 
 class DurableRunner:
+    _corr_for_admission = staticmethod(_corr_uuid)
     def __init__(self, settings: Settings, *, bus: OrionBusAsync | None, checkpointer: Any) -> None:
         self._settings = settings
         self._bus = bus
@@ -111,7 +112,7 @@ class DurableRunner:
             source=self._source(),
             correlation_id=_corr_uuid(request.correlation_id),
             reply_to=reply_channel,
-            payload=request.model_dump(mode="json"),
+            payload=request.model_dump(mode="json", exclude_none=True),
         )
         try:
             raw = await self._bus.rpc_request(
@@ -290,6 +291,8 @@ class DurableRunner:
             return
         snapshot = await self._graph.aget_state(self._config(run_id))
         if snapshot and snapshot.values:
+            if not snapshot.next or snapshot.values.get("admission"):
+                return
             logger.info("durable_run_request_for_existing_thread run=%s -> resume", run_id)
             self._spawn(run_id, None, resumed_from=snapshot.next[0] if snapshot.next else None)
             return
@@ -379,6 +382,8 @@ class DurableRunner:
             snap = await self._graph.aget_state(self._config(thread_id))
             if not snap or not snap.next:
                 continue
+            if snap.values.get("admission"):
+                continue  # admission runtime owns these graph interrupts
             out.append((thread_id, str(snap.next[0]), ts))
         return out
 

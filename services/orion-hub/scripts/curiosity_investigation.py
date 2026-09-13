@@ -134,7 +134,9 @@ from orion.curiosity.worldview import (
     read_snapshot,
     read_turn_outcome,
 )
-from orion.llm.routes import fcc_model_for_route
+from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route
+from orion.llm.resource_lease import validate_resource_lease
+from orion.schemas.resource_admission import ResourceRequirementV1, ResourceLeaseV1
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.curiosity.journal import (  # moved 2026-09-06; names unchanged for callers/tests
     INVESTIGATION_TAG,
@@ -483,6 +485,8 @@ class CuriosityInvestigation:
         step_relay_provider: Optional[Callable[[], Any]] = None,
         reader: Optional[WorldviewReader] = None,
         kickoff_via_cortex: bool = False,
+        durable_admission_enabled: bool = False,
+        lease_validation_url: str = "http://127.0.0.1:8124/leases/validate",
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
         # --- the self-inquiry line -----------------------------------------
@@ -496,6 +500,11 @@ class CuriosityInvestigation:
         # runner calls back on `orion:curiosity:turn:request` for the turn and
         # reports completion on `orion:durable:run:state` (outreach stays here).
         self.kickoff_via_cortex = bool(kickoff_via_cortex)
+        self.durable_admission_enabled = bool(durable_admission_enabled)
+        if self.durable_admission_enabled and not self.kickoff_via_cortex:
+            raise ValueError("durable admission requires kickoff_via_cortex")
+        self.lease_validation_url = lease_validation_url
+        self._turn_tasks: set[asyncio.Task] = set()
         self.cortex_request_channel = cortex_request_channel
         self.cortex_result_prefix = cortex_result_prefix
         self._turn_listener_task: Optional[asyncio.Task] = None
@@ -690,6 +699,10 @@ class CuriosityInvestigation:
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
                 setattr(self, attr, None)
+        for task in self._turn_tasks:
+            task.cancel()
+        await asyncio.gather(*self._turn_tasks, return_exceptions=True)
+        self._turn_tasks.clear()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -1331,10 +1344,16 @@ class CuriosityInvestigation:
                 # below refunds -- this call sits outside that try/except, so
                 # without this a cancellation here left the cap slot and
                 # cooldown stamp spent for a run cortex never confirmed.
-                await self._refund_investigation(previous_stamp)
+                if not self.durable_admission_enabled:
+                    await self._refund_investigation(previous_stamp)
                 raise
             if dispatched:
                 return "dispatched"
+            if self.durable_admission_enabled:
+                # Registration may have committed before the receipt was lost.
+                # Never bypass admission or refund a potentially queued run.
+                logger.warning("curiosity_admission_unconfirmed run=%s", run_id)
+                return None
             # A failed dispatch falls back to the direct path so the run this
             # tick already paid for still happens; the log line says so.
             logger.warning(
@@ -1651,10 +1670,16 @@ class CuriosityInvestigation:
                     line=LINE_SELF_INQUIRY,
                 )
             except asyncio.CancelledError:
-                await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
+                if not self.durable_admission_enabled:
+                    await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
                 raise
             if dispatched:
                 return "dispatched"
+            if self.durable_admission_enabled:
+                # Registration may have committed before the receipt was lost.
+                # Never bypass admission or refund a potentially queued run.
+                logger.warning("curiosity_admission_unconfirmed run=%s", run_id)
+                return None
             logger.warning(
                 "curiosity_durable_dispatch_fell_back run=%s line=%s -- running the turn in-process",
                 run_id,
@@ -1805,6 +1830,9 @@ class CuriosityInvestigation:
         source: str = INVESTIGATION_TAG,
         require_lookup: bool = True,
         parent_run_id: str | None = None,
+        fcc_model_label: str | None = None,
+        timeout_sec: float | None = None,
+        resource_lease: ResourceLeaseV1 | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -1827,6 +1855,11 @@ class CuriosityInvestigation:
         from orion.hub.turn_orchestrator import execute_unified_turn
 
         started = time.monotonic()
+        turn_timeout = self.timeout_sec if timeout_sec is None else timeout_sec
+        payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
+        if resource_lease is not None:
+            payload["resource_lease"] = resource_lease.model_dump(mode="json")
+            payload["inference_timeout_sec"] = turn_timeout
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
@@ -1847,7 +1880,7 @@ class CuriosityInvestigation:
                     # Orion-mode turns that happen to run elsewhere, not Hub
                     # Agent-mode turns. Omitted entirely when unresolved, so
                     # `.get()` sees no key rather than an empty string.
-                    payload=_turn_payload(source, self._fcc_model_label),
+                    payload=payload,
                     continuity_messages=None,
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,
                     # THE RELAY IS PASSED, THE QUEUE IS NOT, and that pairing is
@@ -1872,7 +1905,7 @@ class CuriosityInvestigation:
                     ),
                     harness_step_queue=None,
                 ),
-                timeout=self.timeout_sec,
+                timeout=turn_timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
             # `elapsed_sec` here too, though this path cannot journal today:
@@ -1886,7 +1919,7 @@ class CuriosityInvestigation:
             # failing test. Cheaper to be right now than to notice then.
             return "", {
                 "error": "timeout",
-                "timeout_sec": self.timeout_sec,
+                "timeout_sec": turn_timeout,
                 "elapsed_sec": round(time.monotonic() - started, 3),
             }
         except Exception as exc:  # noqa: BLE001
@@ -2050,6 +2083,10 @@ class CuriosityInvestigation:
             workflow="curiosity.investigate",
             correlation_id=correlation_id,
             brief=self._run_brief(prompt=prompt, material=material, line=line),
+            admission=(ResourceRequirementV1(
+                preferred_lane=self.llm_route or "agent",
+                resource=f"llm.route.{self.llm_route or 'agent'}",
+            ) if self.durable_admission_enabled else None),
         )
         payload = {
             "mode": "brain",
@@ -2057,7 +2094,7 @@ class CuriosityInvestigation:
                 "messages": [{"role": "user", "content": "curiosity.investigate"}],
                 "user_message": "curiosity.investigate",
                 "session_id": self.session_id,
-                "metadata": {"durable_run": request.model_dump(mode="json")},
+                "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
             },
         }
         reply_channel = f"{self.cortex_result_prefix}:{correlation_id}"
@@ -2096,22 +2133,34 @@ class CuriosityInvestigation:
         return accepted
 
     async def _turn_request_loop(self) -> None:
-        """Serve the runner's harness-turn requests. One at a time, under the
-        same lock the tick holds, so a resumed turn and a fresh tick cannot
-        overlap (the reason the cooldown exists)."""
+        """Keep intake available while admitted lanes execute independently.
+
+        Legacy turns still serialize with the tick in `_turn_result_for`.
+        Only broker-admitted turns can bypass that local lock.
+        """
         if self._bus is None:
             return
         try:
             async with self._bus.subscribe(CURIOSITY_TURN_REQUEST_CHANNEL) as pubsub:
                 async for msg in self._bus.iter_messages(pubsub):
                     try:
-                        await self._handle_turn_request(msg)
+                        task = asyncio.create_task(self._serve_turn_request(msg))
+                        self._turn_tasks.add(task)
+                        task.add_done_callback(self._turn_tasks.discard)
                     except Exception:  # noqa: BLE001
                         logger.exception("curiosity_turn_request_failed")
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
             logger.exception("curiosity_turn_request_loop_failed")
+
+    async def _serve_turn_request(self, msg: dict[str, Any]) -> None:
+        try:
+            await self._handle_turn_request(msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("curiosity_turn_request_failed")
 
     async def _handle_turn_request(self, msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(msg.get("data"))
@@ -2126,7 +2175,14 @@ class CuriosityInvestigation:
         logger.info(
             "curiosity_turn_request run=%s attempt=%s corr=%s", request.run_id, request.attempt, request.correlation_id
         )
-        result = await self._turn_result_for(request, hold_lock=True)
+        try:
+            result = await self._turn_result_for(request, hold_lock=request.lease is None)
+        except Exception as exc:
+            # A stale fence is a prompt refusal, not a full inference RPC wait.
+            result = CuriosityTurnResultV1(
+                run_id=request.run_id, correlation_id=request.correlation_id,
+                ok=False, error=f"{type(exc).__name__}: {exc}"[:300],
+            )
         if env.reply_to:
             await self._bus.publish(
                 env.reply_to,
@@ -2147,22 +2203,34 @@ class CuriosityInvestigation:
         `False` from inside the tick, which already holds `_run_lock`
         (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
-        cached = self._turn_results.get(request.run_id)
+        key = request.run_id
+        if request.lease is not None:
+            lease = request.lease
+            if lease.run_id != request.run_id or request.assigned_lane != lease.lane:
+                raise ValueError("curiosity resource lease identity mismatch")
+            await validate_resource_lease(
+                lease.model_dump(mode="json"), lane=lease.lane, backend_key=lease.backend_key,
+                validation_url=self.lease_validation_url,
+            )
+            key = f"{request.run_id}:{lease.lease_id}:{lease.generation}"
+        cached = self._turn_results.get(key)
         if cached is not None and now - cached[1] <= TURN_RESULT_CACHE_SEC and cached[0].ok:
             logger.info("curiosity_turn_request_served_from_cache run=%s attempt=%s", request.run_id, request.attempt)
             return cached[0]
-        inflight = self._turn_inflight.get(request.run_id)
+        inflight = self._turn_inflight.get(key)
         if inflight is not None and not inflight.done():
             logger.info("curiosity_turn_request_joined_inflight run=%s attempt=%s", request.run_id, request.attempt)
-            return await inflight
+            return await asyncio.shield(inflight)
         future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._turn_inflight[request.run_id] = future
+        self._turn_inflight[key] = future
 
         async def _run_turn() -> CuriosityTurnResultV1:
             try:
                 text, debug = await self._generate(
                     request.prompt, request.correlation_id, source=request.source_tag,
                     parent_run_id=request.run_id,
+                    **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{request.lease.lane}", "timeout_sec": request.timeout_sec,
+                        "resource_lease": request.lease} if request.lease is not None else {}),
                 )
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
@@ -2185,7 +2253,7 @@ class CuriosityInvestigation:
                     result = await _run_turn()
             else:
                 result = await _run_turn()
-            self._turn_results[request.run_id] = (result, time.monotonic())
+            self._turn_results[key] = (result, time.monotonic())
             # Bounded: forget results older than the cache window.
             cutoff = time.monotonic() - TURN_RESULT_CACHE_SEC
             for rid in [r for r, (_, ts) in self._turn_results.items() if ts < cutoff]:
@@ -2196,9 +2264,10 @@ class CuriosityInvestigation:
         except BaseException as exc:
             if not future.done():
                 future.set_exception(exc)
+                future.exception()  # retrieve even if no duplicate caller joined
             raise
         finally:
-            self._turn_inflight.pop(request.run_id, None)
+            self._turn_inflight.pop(key, None)
 
     async def _run_state_loop(self) -> None:
         """Outreach stays here: a `completed` run whose outcome asked to reach

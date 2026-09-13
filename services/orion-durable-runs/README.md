@@ -53,3 +53,45 @@ PYTHONPATH=. .venv/bin/python -m pytest services/orion-durable-runs/tests -q
 python scripts/check_service_env_compose_parity.py orion-durable-runs
 curl -fsS http://localhost:8124/health
 ```
+
+## Optional resource admission
+
+The admission path extends this graph with persisted demand, resource-wait and
+retry-wait boundaries. Waiting uses a LangGraph interrupt and releases the run
+task. The legacy maximum-age sweep excludes admitted threads: their queue wait
+has no deadline unless the request explicitly supplies one. Inference timeout
+starts after a validated lease, independently of queue age and lease renewal.
+
+Apply `services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql`
+to the same Postgres database as the existing checkpointer before enabling
+`DURABLE_RUNS_ADMISSION_ENABLED`. Admission tables are operator-managed; startup
+fails if they are missing. LangGraph continues to manage its checkpoint tables.
+No migration is applied to production by this patch.
+
+Internal operator endpoints (host port 8124, container port 8121):
+
+| Endpoint | Result |
+| --- | --- |
+| `POST /runs` | `DurableRunRequestV1` body; persisted receipt, HTTP 202 |
+| `GET /runs/{run_id}` | Graph position, control, lease, lane decision and history |
+| `POST /runs/{run_id}/pause` | Revoke lease, stop active attempt, retain checkpoint |
+| `POST /runs/{run_id}/resume` | Continue checkpoint; cancellation stays terminal |
+| `POST /runs/{run_id}/cancel` | Revoke lease and durably cancel |
+| `GET /admission` | Queue/lease counts, ages, first-admission wait histogram and event counts |
+| `POST /leases/validate` | Authoritative fencing validation used by Hub/Gateway |
+
+These follow the existing internal unauthenticated service API boundary; keep
+them on the trusted service network. Submission via Cortex remains the normal
+Curiosity entry point. Retry an ambiguous receipt with the same request/run ID.
+
+Defaults, lane declarations, shadow mode, activation order, recovery limits,
+metrics provenance and the actual Hub/FCC/Exec execution path are documented in
+[the ADR](../../docs/architecture/durable-resource-admission.md).
+
+Run the real Postgres tests and the separate fairness eval with an explicitly
+disposable database (each creates a fresh schema):
+
+```bash
+ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python -m pytest services/orion-durable-runs/tests -q
+ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/admission_fairness.py
+```

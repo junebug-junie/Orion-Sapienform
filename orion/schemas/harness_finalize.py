@@ -195,9 +195,12 @@ class HarnessAttachmentV1(BaseModel):
 
 
 from orion.schemas.reading import ReadingToolBindingV1
+from orion.schemas.resource_admission import ResourceLeaseV1
 
 
 class HarnessRunRequestV1(BaseModel):
+    resource_lease: ResourceLeaseV1 | None = None
+    inference_timeout_sec: float | None = Field(default=None, gt=0)
     reading_binding: ReadingToolBindingV1 | None = None
     reading_only: bool = False
     schema_version: Literal["harness.run.request.v1"] = "harness.run.request.v1"

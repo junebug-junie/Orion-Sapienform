@@ -5,12 +5,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
-from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DurableRunRequestV1
+from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DURABLE_RUN_RECEIPT_KIND, DurableRunRequestV1, DurableRunReceiptV1
+from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
 
 from app.settings import get_settings
 
@@ -25,6 +26,8 @@ heartbeat: HeartbeatOnly | None = None
 _stop = asyncio.Event()
 _sweep_task: asyncio.Task[None] | None = None
 _checkpointer_cm: Any = None
+admission: Any = None
+_admission_task: asyncio.Task | None = None
 
 
 def _chassis_cfg() -> ChassisConfig:
@@ -40,6 +43,10 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == RESOURCE_EVENT_KIND:
+        if admission is not None:
+            await admission.wakeup(ResourceEventV1.model_validate(env.payload))
+        return
     if env.kind != DURABLE_RUN_REQUEST_KIND:
         logger.warning("durable_run_request_unexpected_kind kind=%s", env.kind)
         return
@@ -52,6 +59,16 @@ async def _handle_request(env: BaseEnvelope) -> None:
         logger.warning("durable_run_request_dropped reason=runner_not_started run=%s", request.run_id)
         return
     logger.info("durable_run_request run=%s workflow=%s corr=%s", request.run_id, request.workflow, request.correlation_id)
+    if request.admission is not None:
+        if admission is None:
+            logger.error("durable_admission_disabled run=%s", request.run_id)
+            return
+        receipt = DurableRunReceiptV1(**await admission.submit(request))
+        if env.reply_to and rpc_bus is not None:
+            await rpc_bus.publish(env.reply_to, BaseEnvelope(kind=DURABLE_RUN_RECEIPT_KIND,
+                source=ServiceRef(name=_settings.service_name, version=_settings.service_version, node=_settings.node_name),
+                correlation_id=env.correlation_id, payload=receipt.model_dump(mode="json")))
+        return
     await runner.start_run(request)
 
 
@@ -87,7 +104,7 @@ async def _open_checkpointer():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global runner, rpc_bus, hunter, heartbeat, _sweep_task
+    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task
     from app.runner import DurableRunner
 
     try:
@@ -103,6 +120,12 @@ async def lifespan(app: FastAPI):
             rpc_bus = OrionBusAsync(url=_settings.orion_bus_url)
             await rpc_bus.connect()
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
+        if _settings.admission_enabled:
+            from app.admission_runtime import AdmissionRuntime
+            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
+            # Admission migration is operator-managed, unlike saver migrations.
+            # Fail startup if it has not been applied; never accept into memory.
+            await admission.store.queue_snapshot()
         if _settings.resume_on_boot:
             try:
                 counts = await runner.resume_unfinished()
@@ -111,8 +134,10 @@ async def lifespan(app: FastAPI):
                 logger.exception("durable_runs_resume_on_boot_failed")
         _stop.clear()
         _sweep_task = asyncio.create_task(runner.sweep_forever(_stop))
+        if admission is not None:
+            _admission_task = asyncio.create_task(admission.run(_stop))
         if _settings.orion_bus_enabled:
-            hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=[_settings.request_channel])
+            hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=[_settings.request_channel, RESOURCE_EVENT_CHANNEL])
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
     else:
@@ -124,6 +149,11 @@ async def lifespan(app: FastAPI):
         _stop.set()
         if _sweep_task is not None:
             _sweep_task.cancel()
+        if _admission_task is not None:
+            _admission_task.cancel()
+            await asyncio.gather(_admission_task, return_exceptions=True)
+        if admission is not None:
+            await admission.close()
         for closer in (hunter, heartbeat):
             if closer is not None:
                 try:
@@ -152,6 +182,8 @@ async def health() -> dict[str, Any]:
         "service": _settings.service_name,
         "enabled": _settings.enabled,
         "active_runs": runner.active_run_ids if runner is not None else [],
+        "admission_enabled": admission is not None,
+        "admitted_active_runs": sorted(admission.active) if admission is not None else [],
     }
 
 
@@ -161,3 +193,49 @@ async def unfinished() -> dict[str, Any]:
         return {"threads": []}
     threads = await runner.unfinished_threads()
     return {"threads": [{"thread_id": t, "next_node": n, "checkpoint_ts": ts.isoformat() if ts else None} for t, n, ts in threads]}
+
+
+def _admission():
+    if admission is None:
+        raise HTTPException(503, "durable resource admission is disabled")
+    return admission
+
+
+@app.post("/runs", status_code=202)
+async def submit(request: DurableRunRequestV1):
+    try:
+        return await _admission().submit(request)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.get("/runs/{run_id}")
+async def run_status(run_id: str):
+    try:
+        return await _admission().status(run_id)
+    except KeyError as exc:
+        raise HTTPException(404, "run not found") from exc
+
+
+@app.post("/runs/{run_id}/{action}")
+async def run_control(run_id: str, action: str):
+    if action not in {"pause", "resume", "cancel"}:
+        raise HTTPException(400, "action must be pause, resume or cancel")
+    try:
+        return await _admission().control(run_id, action)
+    except KeyError as exc:
+        raise HTTPException(404, "run not found") from exc
+
+
+@app.post("/leases/validate")
+async def validate_lease(payload: dict[str, Any]):
+    lease = payload.get("lease") or {}
+    if payload.get("lane") != lease.get("lane") or payload.get("backend_key") != lease.get("backend_key"):
+        return {"valid": False, "reason": "route_mismatch"}
+    valid = await _admission().store.validate(lease)
+    return {"valid": valid, "reason": "valid" if valid else "stale_or_lost_lease"}
+
+
+@app.get("/admission")
+async def admission_snapshot():
+    return await _admission().store.queue_snapshot()

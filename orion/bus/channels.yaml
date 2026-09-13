@@ -3028,6 +3028,26 @@ channels:
     since: "2026-09-06"
     description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver."
 
+  - name: "orion:durable:run:reply:*"
+    kind: "result"
+    schema_id: "DurableRunReceiptV1"
+    message_kind: "durable.run.receipt.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-09-12"
+    description: "Short acceptance receipt emitted after Postgres commit; never waits for inference or resource capacity."
+
+  - name: "orion:durable:resource:event"
+    kind: "event"
+    schema_id: "ResourceEventV1"
+    message_kind: "durable.resource.event.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-09-12"
+    description: "Persisted admission lifecycle outbox and lease grant wakeups. Consumers reconcile Postgres after missed/duplicate events; broker never executes cognition."
+
   - name: "orion:curiosity:turn:request"
     kind: "request"
     schema_id: "CuriosityTurnRequestV1"
@@ -3075,7 +3095,7 @@ channels:
     kind: "event"
     schema_id: "HarnessRunCancelV1"
     message_kind: "harness.run.cancel.v1"
-    producer_services: ["orion-hub"]
+    producer_services: ["orion-hub", "orion-durable-runs"]
     consumer_services: ["orion-harness-governor"]
     stability: "experimental"
     since: "2026-07-10"

@@ -1,12 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 652,
+  "metric_count": 654,
   "_last_change": {
-    "base": "merge base 52ca280cb (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base af7695f55 (origin/main)",
+    "change_count": 4,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   removed metric://bus_channel/orion-hub/orion:harness:run:cancel",
+      "medium added metric://bus_channel/orion-durable-runs/orion:durable:resource:event",
+      "medium added metric://bus_channel/orion-durable-runs/orion:durable:run:reply:*",
+      "medium added metric://bus_channel/orion-durable-runs/orion:harness:run:cancel"
     ]
   },
   "definitions": {
@@ -1208,6 +1211,28 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:durable:resource:event": {
+      "schema_id": "ResourceEventV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:durable:run:reply:*": {
+      "schema_id": "DurableRunReceiptV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:durable:run:state": {
       "schema_id": "DurableRunStateV1",
       "all_producers": [
@@ -1216,6 +1241,18 @@
       "declared_consumers": [
         "orion-hub",
         "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:harness:run:cancel": {
+      "schema_id": "HarnessRunCancelV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1629,17 +1666,6 @@
         "orion-agent-council"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:harness:run:cancel": {
-      "schema_id": "HarnessRunCancelV1",
-      "all_producers": [
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-harness-governor"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:harness:run:request": {

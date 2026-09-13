@@ -39,6 +39,7 @@ import math
 from .admission_ledger import get_ledger
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
+from .resource_lease import LeaseGuard, ResourceLeaseRejected
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -267,6 +268,20 @@ def _executor(loop: asyncio.AbstractEventLoop) -> ThreadPoolExecutor:
 
 
 async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, Any]:
+    plan = plan_llm_chat(body)
+    guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route, backend_key=plan.upstream)
+    try:
+        await guard.check()
+        return await guard.run(_dispatch_chat_unfenced(body, correlation_id=correlation_id, plan=plan, guard=guard))
+    except ResourceLeaseRejected as exc:
+        logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
+        return {"text": "", "content": "", "route": plan.route,
+                "raw": {"error": "resource_lease_rejected", "details": {"reason": str(exc)}}}
+
+
+async def _dispatch_chat_unfenced(
+    body: ChatBody, *, correlation_id: str, plan: ChatDispatchPlan, guard: LeaseGuard,
+) -> Dict[str, Any]:
     """Admission on the event loop, generation on a thread.
 
     One deadline for the whole stay: `resolve_caller_budget_sec` (the caller's own
@@ -286,7 +301,6 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, An
     else. The lane permit is released when the executor thread finishes, not when the
     awaiting task ends (see `_Admission.release_when_done`).
     """
-    plan = plan_llm_chat(body)
     if plan.error is not None:
         return dict(plan.error)
     if plan.has_route_table and plan.route_target is None:
@@ -330,6 +344,7 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, An
                 update={"options": {**(plan.body.options or {}), "gateway_read_timeout_sec": remaining}}
             )
             run_plan = dataclasses.replace(plan, body=run_body)
+            await guard.check()
             future = _executor(loop).submit(run_llm_chat, run_body, run_plan)
             admission.release_when_done(future, loop)
             return await asyncio.wrap_future(future)

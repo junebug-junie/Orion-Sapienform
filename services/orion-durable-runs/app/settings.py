@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_CHANNEL, DURABLE_RUN_STATE_CHANNEL
@@ -40,6 +40,26 @@ class Settings(BaseSettings):
     graph_host: str = Field("", alias="DURABLE_RUNS_GRAPH_HOST")
     graph_port: int = Field(6379, alias="DURABLE_RUNS_GRAPH_PORT")
     graph_own: str = Field("orion_worldview", alias="DURABLE_RUNS_GRAPH_OWN")
+
+    admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
+    admission_shadow: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_SHADOW")
+    admission_tick_sec: float = Field(5.0, gt=0.0, alias="DURABLE_RUNS_ADMISSION_TICK_SEC")
+    lease_seconds: float = Field(90.0, ge=15.0, alias="DURABLE_RUNS_LEASE_SECONDS")
+    lease_heartbeat_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_LEASE_HEARTBEAT_SEC")
+    widening_enabled: bool = Field(False, alias="DURABLE_RUNS_WIDENING_ENABLED")
+    widening_after_sec: float = Field(1200.0, ge=0.0, alias="DURABLE_RUNS_WIDENING_AFTER_SEC")
+    widening_hysteresis_sec: float = Field(120.0, ge=0.0, alias="DURABLE_RUNS_WIDENING_HYSTERESIS_SEC")
+    lane_policy_json: str = Field("{}", alias="DURABLE_RUNS_LANE_POLICY_JSON")
+    gateway_url: str = Field("http://llm-gateway:8210", alias="DURABLE_RUNS_GATEWAY_URL")
+    retry_max_attempts: int = Field(3, ge=1, le=20, alias="DURABLE_RUNS_RETRY_MAX_ATTEMPTS")
+    retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
+    retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
+
+    @model_validator(mode="after")
+    def valid_lease_heartbeat(self):
+        if self.lease_heartbeat_sec >= self.lease_seconds:
+            raise ValueError("lease heartbeat interval must be shorter than lease duration")
+        return self
 
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL

@@ -727,10 +727,32 @@ def _build_subprocess_env(
     turn_deadline_epoch: Optional[float] = None,
     turn_step_stall_sec: Optional[float] = None,
     n_ctx: Optional[int] = None,
+    resource_lease: dict | None = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
-    env["ANTHROPIC_AUTH_TOKEN"] = auth_token
+    from orion.llm.resource_lease import LEASE_HEADER, encode_lease_header
+    # Never inherit another run's lease; preserve unrelated custom headers.
+    headers = [line for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
+               if line.partition(":")[0].strip().lower() != LEASE_HEADER.lower()]
+    if resource_lease is not None:
+        headers.append(f"{LEASE_HEADER}: {encode_lease_header(resource_lease)}")
+    if headers:
+        env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
+    else:
+        env.pop("ANTHROPIC_CUSTOM_HEADERS", None)
+    if resource_lease is not None:
+        # FCC's external proxy has no header-forwarding contract. Send this
+        # protected request directly to the existing Anthropic Gateway route.
+        env["ANTHROPIC_BASE_URL"] = os.environ.get(
+            "HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210"
+        ).rstrip("/")
+        # Claude requires a token, but Gateway authorizes this request using
+        # its broker fence. Do not send the external FCC proxy's credential.
+        env["ANTHROPIC_AUTH_TOKEN"] = "orion-resource-lease"
+        env.pop("ANTHROPIC_API_KEY", None)
+    else:
+        env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
+        env["ANTHROPIC_AUTH_TOKEN"] = auth_token
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["TERM"] = "dumb"
     # cwd=workspace below is the repo checkout, so this claude -p subprocess
@@ -823,6 +845,7 @@ async def run_fcc_turn(
     stream_read_limit: int = DEFAULT_STREAM_READ_LIMIT,
     reading_binding=None,
     reading_only=False,
+    resource_lease: dict | None = None,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -963,6 +986,7 @@ async def run_fcc_turn(
             *argv,
             cwd=workspace,
             env=_build_subprocess_env(
+                resource_lease=resource_lease,
                 n_ctx=lane_n_ctx,
                 fcc_server_url=fcc_server_url,
                 auth_token=auth_token,

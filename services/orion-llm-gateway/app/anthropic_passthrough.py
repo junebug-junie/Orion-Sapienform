@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
+from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
 
 logger = logging.getLogger("orion-llm-gateway.anthropic")
 
@@ -273,6 +274,11 @@ async def handle_messages_post(request: Request) -> Response:
         return JSONResponse(error_payload, status_code=status)
 
     assert target is not None and route_key is not None and upstream_model is not None
+    try:
+        guard = LeaseGuard.from_headers(request.headers, lane=route_key, backend_key=target.url)
+        await guard.check()
+    except ResourceLeaseRejected as exc:
+        return JSONResponse(lease_error(str(exc)), status_code=409)
     upstream_url = f"{target.url.rstrip('/')}/v1/messages"
     forward_body = dict(body)
     if forward_body.get("model") != upstream_model:
@@ -300,7 +306,10 @@ async def handle_messages_post(request: Request) -> Response:
                 upstream_request = client.build_request(
                     "POST", upstream_url, headers=headers, json=forward_body
                 )
-                upstream = await client.send(upstream_request, stream=True)
+                upstream = await guard.run(client.send(upstream_request, stream=True))
+            except ResourceLeaseRejected as exc:
+                await client.aclose()
+                return JSONResponse(lease_error(str(exc)), status_code=409)
             except httpx.TimeoutException:
                 await client.aclose()
                 logger.error(
@@ -354,8 +363,11 @@ async def handle_messages_post(request: Request) -> Response:
 
             async def _body() -> AsyncIterator[bytes]:
                 try:
-                    async for chunk in upstream.aiter_bytes():
+                    async for chunk in guard.chunks(upstream.aiter_bytes()):
                         yield chunk
+                except ResourceLeaseRejected as exc:
+                    payload = {"type": "error", **lease_error(str(exc))}
+                    yield ("event: error\ndata: " + json.dumps(payload) + "\n\n").encode()
                 finally:
                     await upstream.aclose()
                     await client.aclose()
@@ -368,7 +380,7 @@ async def handle_messages_post(request: Request) -> Response:
             )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            upstream = await client.post(upstream_url, headers=headers, json=forward_body)
+            upstream = await guard.run(client.post(upstream_url, headers=headers, json=forward_body))
             if upstream.status_code == 404:
                 logger.error(
                     "anthropic_passthrough_upstream_404 route=%s upstream=%s corr=%s",
@@ -386,6 +398,8 @@ async def handle_messages_post(request: Request) -> Response:
                 headers=response_headers,
                 media_type=content_type or "application/json",
             )
+    except ResourceLeaseRejected as exc:
+        return JSONResponse(lease_error(str(exc)), status_code=409)
     except httpx.TimeoutException:
         logger.error(
             "anthropic_passthrough_timeout route=%s upstream=%s corr=%s",

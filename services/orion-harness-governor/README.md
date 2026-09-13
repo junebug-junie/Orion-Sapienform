@@ -192,3 +192,24 @@ Reading acceptance is transcript-grounded, not inferred from the draft. The moto
 Stage 1/2 reading turns instead set the trusted `reading_only` flag. Their actual process receives `--tools WebFetch,WebSearch --strict-mcp-config --setting-sources ''` and an explicit empty MCP config. This prevents source content from reaching shell, mutable graph tools or plugin execution while the server-owned queue/journal/Concept Atlas path retains responsibility for persistence. During finalization, 5b reflection still runs on the `agent` lane, but the structured motor response is deterministically parsed and canonicalized rather than passed through prose-oriented 5c. Invalid JSON fails the turn instead of masquerading as a successful empty-shell result. Ordinary turns retain the existing 5c voice pass. The general chat/curiosity tool configuration is unchanged apart from the new narrow entry.
 
 Rebuild this service and Hub after applying the additive queue migration. See the [reading implementation report](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md) for exact tests, restart commands and unverified production behavior.
+
+## Broker-admitted turns
+
+`HarnessRunRequestV1.resource_lease` and `inference_timeout_sec` are optional.
+Admitted requests can execute concurrently on independently leased backends even
+when they share an intake channel; legacy requests retain one executing turn per
+channel. Intake owns and cancels its tasks on shutdown, and duplicate in-flight
+requests for the same correlation and lease generation do not start a second
+motor. The FCC subprocess receives only its own encoded lease in
+`ANTHROPIC_CUSTOM_HEADERS`; inherited resource-lease headers are removed while
+unrelated custom headers survive. Gateway lease validation must be enabled before
+Hub's admission flag is enabled. Stance/finalize continue their existing separate
+Cortex routes. See `docs/architecture/durable-resource-admission.md`.
+
+For leased turns only, `ANTHROPIC_BASE_URL` targets the existing
+`HARNESS_LLM_GATEWAY_URL` directly (default `http://llm-gateway:8210`). The external
+FCC proxy has no repository-controlled guarantee that it forwards lease headers.
+Direct Gateway delivery makes fencing inspectable and leaves the legacy FCC proxy
+path unchanged. A leased subprocess uses a nonsecret CLI placeholder token and
+removes the inherited Anthropic API key; the FCC proxy credential is not sent to
+Gateway. The broker fence is the protected request's admission authority.

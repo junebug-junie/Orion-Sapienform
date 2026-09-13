@@ -109,6 +109,11 @@ NEVER_SYNC_KEYS = frozenset(
 
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
+    # Durable admission spans runner, Orch, Hub and Gateway. Hub's existing
+    # HUB_CURIOSITY_ prefix already covers its side; these three were missing.
+    "DURABLE_RUNS_",
+    "CORTEX_DURABLE_",
+    "LLM_GATEWAY_LEASE_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them
@@ -385,6 +390,8 @@ DEFAULT_SERVICES = (
     "orion-graphiti-adapter",
     "orion-hub",
     "orion-cortex-exec",
+    "orion-cortex-orch",
+    "orion-durable-runs",
     "orion-context-exec",
     "orion-self-experiments",
     "orion-actions",

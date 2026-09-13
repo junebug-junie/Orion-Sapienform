@@ -59,12 +59,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Minimal, verified dep set -- every gate below was confirmed to pass in
-      # a fresh venv containing exactly these three packages.
+      # Static gate dependencies plus pytest for the env-sync regression suite.
       - name: Install minimal deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pydantic pydantic-settings PyYAML
+          python -m pip install pydantic pydantic-settings PyYAML pytest
+
+      - name: Env sync preserves overrides and reaches admission templates
+        run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
 
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.

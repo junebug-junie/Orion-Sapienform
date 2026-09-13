@@ -55,6 +55,21 @@ def test_missing_key_only_warns(tmp_path):
     assert len(warnings) == 1 and "HEARTBEAT_INTERVAL_SEC" in warnings[0]
 
 
+def test_missing_key_remedy_names_service_and_bypasses_default_allowlist(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "primary"
+    services = root / "services"
+    services.mkdir(parents=True)
+    _svc(services, "UNLISTED_FEATURE=true\nORION_BUS_URL=placeholder\n", "EXISTING=local\n")
+    monkeypatch.setattr(mod, "main_worktree_root", lambda: root)
+    monkeypatch.setattr(mod.sys, "argv", ["check_env_template_parity.py", "svc"])
+    assert mod.main() == 0
+    output = capsys.readouterr().out
+    assert "python scripts/sync_local_env_from_example.py --all-keys svc" in output
+    assert "NEVER_SYNC_KEYS" in output
+    assert "--force" not in output
+    assert "placeholder" not in output
+
+
 def test_differing_scalar_is_allowed(tmp_path):
     """Local overrides are legitimate: secrets, host URLs, tuned thresholds.
     A gate that fires on these trains everyone to reach for the escape hatch."""

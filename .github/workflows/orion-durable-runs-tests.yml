@@ -7,7 +7,12 @@ on:
       - "orion/schemas/durable_run.py"
       - "orion/schemas/resource_admission.py"
       - "orion/durable_admission/**"
+      - "services/orion-llm-gateway/**"
+      - "orion/harness/finalize.py"
+      - "orion/schemas/thought.py"
+      - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql"
+      - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
       - "orion/curiosity/journal.py"
       - "orion/curiosity/attention_schema.py"
       - ".github/workflows/orion-durable-runs-tests.yml"
@@ -16,6 +21,13 @@ on:
     paths:
       - "services/orion-durable-runs/**"
       - "orion/schemas/durable_run.py"
+      - "orion/schemas/resource_admission.py"
+      - "orion/durable_admission/**"
+      - "services/orion-llm-gateway/**"
+      - "orion/harness/finalize.py"
+      - "orion/schemas/thought.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
 
 jobs:
   unit:
@@ -55,3 +67,26 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/admission_fairness.py
+      - name: Gateway capacity contention eval on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/gateway_capacity.py
+
+  gateway:
+    name: Gateway — shared capacity and transport lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Gateway and test dependencies
+        run: |
+          python -m pip install -r services/orion-llm-gateway/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Gateway transport regressions
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest services/orion-llm-gateway/tests -q -p no:cacheprovider

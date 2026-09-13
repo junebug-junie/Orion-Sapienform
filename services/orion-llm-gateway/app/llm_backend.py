@@ -1175,7 +1175,8 @@ def _execute_openai_chat(
     try:
         with _common_http_client(body) as client:
             r, route, url = _post_with_ctx_escalation(client, url, payload, route, body.trace_id,
-                allow_escalation=(body.options or {}).get("resource_lease") is None)
+                allow_escalation=(body.options or {}).get("resource_lease") is None
+                and not settings.llm_gateway_capacity_enabled)
 
             if r.status_code == 404:
                 return {

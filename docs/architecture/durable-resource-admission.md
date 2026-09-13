@@ -276,6 +276,11 @@ slashes. This slice does not claim global physical exclusivity across legacy
 callers. Next: share an authoritative Gateway capacity reservation across both
 HTTP and bus traffic before broadening strict exclusive workloads.
 
+That implementation is documented in
+[Gateway capacity and durable leases](durable-gateway-capacity.md): an optional
+shared Postgres authority closes this race for participating Gateway transports,
+with owner propagation through stance and finalization.
+
 Lease fencing prevents stale dispatch/result acceptance. A blocking upstream
 HTTP thread or already-issued model inference may continue consuming hardware
 until it exits; its existing Gateway permit is retained. Tool effects already

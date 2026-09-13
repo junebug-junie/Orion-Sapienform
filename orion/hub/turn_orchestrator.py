@@ -41,6 +41,7 @@ from orion.schemas.pre_turn_appraisal import (
     TurnAppraisalBundleV1,
 )
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
+from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal.turn_window import build_turn_window
 from orion.llm.routes import fcc_model_for_route, is_agent_route_model_label
 from orion.hub.runtime_activity import get_runtime_activity
@@ -860,6 +861,11 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
+    stance_lease = (
+        ResourceLeaseV1.model_validate(payload["resource_lease"])
+        if payload.get("resource_lease") is not None
+        else None
+    )
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
@@ -867,13 +873,13 @@ async def execute_unified_turn(
         association=association,
         repair_bundle=repair_bundle,
         stance_inputs={"user_message": user_message},
-        # Same fact HarnessRunRequestV1.fcc_model_label carries further down
-        # (resolved_fcc_model_label, computed once above) -- stance_react's
-        # own gateway route has no other way to hear "this turn prefers the
-        # agent lane" (see StanceReactRequestV1.llm_route's own docstring).
-        # None (the default) means today's unchanged behaviour: cortex-exec's
-        # _default_llm_route_for_step still hardcodes stance_react -> "chat".
-        llm_route="agent" if is_agent_route_model_label(resolved_fcc_model_label) else None,
+        # Admission owns the lane for the whole turn. Without a lease, preserve
+        # the resolved motor preference: agent override or Exec's chat default.
+        llm_route=(
+            stance_lease.lane if stance_lease is not None
+            else "agent" if is_agent_route_model_label(resolved_fcc_model_label) else None
+        ),
+        resource_lease=stance_lease,
     )
     await _deliver_cockpit_frames(
         [

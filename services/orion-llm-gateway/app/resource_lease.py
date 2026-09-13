@@ -19,7 +19,8 @@ class LeaseGuard:
         self.lease = lease
         self.lane = lane
         self.backend_key = backend_key
-        self.enabled = bool(settings.llm_gateway_lease_validation_enabled and lease is not None)
+        self.enabled = bool((settings.llm_gateway_lease_validation_enabled or settings.llm_gateway_capacity_enabled)
+                            and lease is not None)
 
     @classmethod
     def from_headers(cls, headers: Any, *, lane: str, backend_key: str) -> "LeaseGuard":

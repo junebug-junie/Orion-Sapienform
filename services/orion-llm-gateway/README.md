@@ -539,9 +539,50 @@ are rejected. Tokens never reach the model prompt or backend headers.
 The assigned route is resolved using Gateway's existing route machinery. A
 resolved backend that differs from the fenced physical backend fails closed;
 admitted requests do not silently fall back or escalate to another lane.
-Synchronous requests retain their current routing and overflow behavior. A
+With shared capacity disabled, synchronous requests retain their current routing and overflow behavior. A
 cancelled blocking Python HTTP thread retains its existing upstream permit until
 the thread exits; stale results are rejected, but physical inference cannot be
 forcibly stopped by cancelling that thread.
 
 See [resource admission ownership and rollout](../../docs/architecture/durable-resource-admission.md).
+
+## Shared request capacity
+
+`LLM_GATEWAY_CAPACITY_ENABLED=false` is the rollout default. Enabling it makes
+bus chat, Anthropic Messages and OpenAI chat completions acquire a Postgres-backed
+request permit through `LLM_GATEWAY_CAPACITY_URL` (default
+`http://durable-runs:8121/capacity`). This includes requests without durable
+leases: foreground calls can no longer enter a backend held exclusively by a
+durable run. Route aliases share the canonical upstream URL as their resource
+key. Embeddings use their existing separate vector-host path.
+
+`LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT` bounds ordinary concurrent requests per
+physical upstream across Gateway processes. A durable lease owner may hold one
+request permit at a time; its stance, study and finalization calls reuse the same
+lease sequentially. Owner tokens are validated even when the older optional
+lease-validation flag is off. The local bus semaphore still isolates executor
+threads by upstream, but shared admission also covers the two HTTP protocols.
+Shared admission precedes the local bus semaphore. Admitted owners bypass the
+legacy background semaphore so unrelated waiters cannot block their own lease.
+
+Acquisition polls within the caller's remaining budget. Retries after a lost
+acquire acknowledgement retain the same request ID and original request payload.
+The authority's permit TTL determines heartbeat cadence (TTL/3, capped at 15
+seconds); individual authority calls use the existing 2-second validation timeout.
+An unavailable authority fails closed. Permit loss rejects dispatch and stale
+results. Context-overflow escalation is disabled in capacity mode because another
+backend requires its own admission decision.
+
+For bus work, a separate supervisor retains the request permit and heartbeat
+until the real blocking executor future finishes, including after handler
+cancellation or lease loss. For HTTP work, cancellation closes the upstream
+connection before releasing its permit. Streams retain ownership until their
+body completes or closes, and cleanup also runs if sending headers fails before
+body iteration. Closing an HTTP connection does not prove that an arbitrary
+backend stopped computing; a Gateway process crash recovers permits by expiry.
+
+Enable the durable authority first, then enable capacity on every Gateway
+instance serving the protected upstreams. Partial rollout leaves older Gateway
+instances outside the shared capacity count. Direct worker HTTP calls also
+remain outside this Gateway boundary. Disable the capacity flag to restore the
+existing admission behavior; no production activation is performed by this patch.

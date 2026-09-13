@@ -112,8 +112,10 @@ class Settings(BaseSettings):
     # `gateway_overloaded` instead of being generated for a caller that already
     # gave up. Incident: 2026-09-05 stance_react starvation.
     llm_gateway_upstream_max_inflight: int = Field(
-        8, alias="LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT"
+        8, ge=1, le=128, alias="LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT"
     )
+    llm_gateway_capacity_enabled: bool = Field(False, alias="LLM_GATEWAY_CAPACITY_ENABLED")
+    llm_gateway_capacity_url: str = Field("http://durable-runs:8121/capacity", alias="LLM_GATEWAY_CAPACITY_URL")
     # Only requests carrying a durable lease opt into broker fencing.
     llm_gateway_lease_validation_enabled: bool = Field(False, alias="LLM_GATEWAY_LEASE_VALIDATION_ENABLED")
     llm_gateway_lease_validation_url: str = Field(

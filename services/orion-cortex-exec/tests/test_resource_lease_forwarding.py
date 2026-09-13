@@ -13,14 +13,20 @@ from orion.schemas.resource_admission import ResourceLeaseV1
 
 
 @pytest.mark.parametrize("location", ["options", "context"])
-def test_admitted_token_reaches_gateway_with_existing_route_override(location):
+@pytest.mark.parametrize("lease_lane,override,expected_route", [
+    ("metacog", "metacog", "metacog"),
+    ("harness", "harness", "harness"),
+    ("catalog-alias", None, "catalog-alias"),
+    ("metacog", "agent", "agent"),
+])
+def test_admitted_token_reaches_gateway_with_existing_route_override(location, lease_lane, override, expected_route):
     now = datetime.now(timezone.utc)
     token = ResourceLeaseV1(
         run_id="study-one", demand_id="study-one:harness", lease_id="lease-one",
-        resource_key="llm.route.metacog", lane="metacog", backend_key="http://worker:8000", generation=2,
+        resource_key=f"llm.route.{lease_lane}", lane=lease_lane, backend_key="http://worker:8000", generation=2,
         granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60),
     ).model_dump(mode="json")
-    ctx = {"mode": "brain", "llm_route": "metacog", "session_id": "study-session",
+    ctx = {"mode": "brain", "llm_route": override, "session_id": "study-session",
            "raw_user_text": "Evaluate this study result.",
            "messages": [{"role": "user", "content": "Evaluate this study result."}]}
     if location == "options":
@@ -36,5 +42,5 @@ def test_admitted_token_reaches_gateway_with_existing_route_override(location):
                             step=step, ctx=ctx, correlation_id=str(uuid4())))
     assert result.status == "success"
     req = chat.await_args.kwargs["req"]
-    assert req.route == "metacog"
+    assert req.route == expected_route
     assert req.options["resource_lease"] == token

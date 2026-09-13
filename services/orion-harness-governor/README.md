@@ -203,8 +203,9 @@ requests for the same correlation and lease generation do not start a second
 motor. The FCC subprocess receives only its own encoded lease in
 `ANTHROPIC_CUSTOM_HEADERS`; inherited resource-lease headers are removed while
 unrelated custom headers survive. Gateway lease validation must be enabled before
-Hub's admission flag is enabled. Stance/finalize continue their existing separate
-Cortex routes. See `docs/architecture/durable-resource-admission.md`.
+Hub's admission flag is enabled. Stance and finalization carry the same owning
+lease through their Cortex requests and use its assigned lane. See
+`docs/architecture/durable-resource-admission.md`.
 
 For leased turns only, `ANTHROPIC_BASE_URL` targets the existing
 `HARNESS_LLM_GATEWAY_URL` directly (default `http://llm-gateway:8210`). The external
@@ -213,3 +214,10 @@ Direct Gateway delivery makes fencing inspectable and leaves the legacy FCC prox
 path unchanged. A leased subprocess uses a nonsecret CLI placeholder token and
 removes the inherited Anthropic API key; the FCC proxy credential is not sent to
 Gateway. The broker fence is the protected request's admission authority.
+
+## Durable admission owner
+
+Admitted harness turns carry the same resource lease through the FCC motor,
+reflection, optional re-reflection, and voice finalization. These LLM calls use
+the lease's assigned lane and generation, so a continuation does not wait behind
+its own reservation. Ordinary finalization keeps the existing agent route.

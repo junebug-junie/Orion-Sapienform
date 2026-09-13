@@ -84,6 +84,13 @@ These follow the existing internal unauthenticated service API boundary; keep
 them on the trusted service network. Submission via Cortex remains the normal
 Curiosity entry point. Retry an ambiguous receipt with the same request/run ID.
 
+`DURABLE_RUNS_CAPACITY_ENABLED=false` independently enables the shared Gateway
+request authority at `/capacity`. Apply the additive
+`manual_migration_gateway_capacity_v1.sql` first. Its acquire/renew/release APIs
+share the broker's transaction so an ordinary request and a durable lease cannot
+both win the same capacity. Capacity can operate while cognition admission is
+off. See [API, rollout and limits](../../docs/architecture/durable-gateway-capacity.md).
+
 Defaults, lane declarations, shadow mode, activation order, recovery limits,
 metrics provenance and the actual Hub/FCC/Exec execution path are documented in
 [the ADR](../../docs/architecture/durable-resource-admission.md).

@@ -165,7 +165,13 @@ def build_stance_react_context(
         context["surface_context"] = surface_context
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
-    if request.llm_route:
+    if request.resource_lease is not None:
+        # Stance is part of the already admitted turn, including when admission
+        # assigned a different lane from the original caller's preference.
+        context["resource_lease"] = request.resource_lease.model_dump(mode="json")
+        context["llm_route"] = request.resource_lease.lane
+        context["llm_lane"] = request.resource_lease.lane
+    elif request.llm_route:
         # Caller-requested gateway route override for stance_react's own LLM
         # call (see StanceReactRequestV1.llm_route's own docstring -- today
         # only orion.hub.turn_orchestrator's agent-lane resolution sets

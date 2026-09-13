@@ -416,6 +416,7 @@ class TestLLMBackendExecution(unittest.TestCase):
             settings.atlas_metacog_profile_name = original_profile
             _load_route_targets.cache_clear()
 
+    @patch.object(settings, "llm_lane_routing_enabled", False)
     def test_missing_route_fails_closed_when_route_table_active(self):
         original = settings.llm_route_table_json
         try:

@@ -34,6 +34,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.reading import ReadingRecommendationOutcomeV1
+from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
 from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
@@ -353,6 +354,7 @@ def build_finalize_reflect_context(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> dict[str, Any]:
     return {
         "draft_text": draft_text,
@@ -363,11 +365,11 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
-        # Finalize is an automated continuation of the already-selected turn,
-        # never interactive chat traffic. Keep both routing axes explicit so
-        # this stays on agent whether gateway lane routing is enabled or an
-        # older deployment still honors only the body route.
-        "llm_route": "agent",
+        # An admitted continuation uses its owning lane and generation, so
+        # it cannot queue behind the reservation that this same turn holds.
+        # Ordinary finalization keeps its existing agent route. Set both
+        # routing axes for Gateway deployments with or without lane routing.
+        "llm_route": resource_lease.lane if resource_lease else "agent",
         # Was `background` until confirmed wrong live 2026-08-16
         # (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize
         # call also runs on `background`/atlas-worker-2 and can occupy it for 90s+,
@@ -380,9 +382,9 @@ def build_finalize_reflect_context(
         # unused by any other verb, isolating this call from both. See
         # test_finalize_reflect_lane.py and
         # test_llm_lane_propagation.py::test_finalize_reflect_ctx_llm_lane_resolves_agent
-        # for the fuller incident writeup. Both finalizers now share the
-        # isolated agent lane.
-        "llm_lane": "agent",
+        # for the fuller incident writeup. Ordinary finalizers share agent.
+        "llm_lane": resource_lease.lane if resource_lease else "agent",
+        **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
             "correlation_id": correlation_id,
@@ -400,6 +402,7 @@ def build_finalize_reflect_plan_request(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("harness_finalize_reflect", mode="brain")
     return PlanExecutionRequest(
@@ -417,6 +420,7 @@ def build_finalize_reflect_plan_request(
             repair_overlay=repair_overlay,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
+            resource_lease=resource_lease,
         ),
     )
 
@@ -459,6 +463,7 @@ async def run_finalize_reflection(
     user_message: str = "",
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -485,6 +490,7 @@ async def run_finalize_reflection(
         repair_overlay=overlay,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
+        resource_lease=resource_lease,
     )
     try:
         exec_result = await cortex_client(plan_request)
@@ -583,6 +589,7 @@ async def maybe_run_finalize_tool_retry(
     bus: Any = None,
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
@@ -748,6 +755,7 @@ async def maybe_run_finalize_tool_retry(
             user_message=user_message,
             grammar_receipts=receipts,
             cortex_client=cortex_client,
+            resource_lease=resource_lease,
         )
     except Exception as exc:
         logger.warning(
@@ -814,6 +822,7 @@ def build_voice_finalize_context(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> dict[str, Any]:
     contract_dump = (
         voice_contract.model_dump(mode="json")
@@ -836,10 +845,10 @@ def build_voice_finalize_context(
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
-        # See build_finalize_reflect_context: 5c is part of the same automated
-        # finalize chain and must not consume Juniper's reserved chat worker.
-        "llm_route": "agent",
-        "llm_lane": "agent",
+        # Same owner as 5b; ordinary finalization retains the agent lane.
+        "llm_route": resource_lease.lane if resource_lease else "agent",
+        "llm_lane": resource_lease.lane if resource_lease else "agent",
+        **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
             "correlation_id": correlation_id,
@@ -860,6 +869,7 @@ def build_voice_finalize_plan_request(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_voice_finalize", mode="brain")
     return PlanExecutionRequest(
@@ -880,6 +890,7 @@ def build_voice_finalize_plan_request(
             repair_overlay=repair_overlay,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
+            resource_lease=resource_lease,
         ),
     )
 
@@ -941,6 +952,7 @@ async def run_orion_voice_finalize(
     user_message: str = "",
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Orion capability: Orion's voiced final answer (beat 5c).
 
@@ -970,6 +982,7 @@ async def run_orion_voice_finalize(
         repair_overlay=overlay,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
+        resource_lease=resource_lease,
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_voice_finalize_text(exec_result)
@@ -1294,6 +1307,7 @@ async def run_harness_finalize_chain(
     system_error_publish_fn: PublishFn | None = None,
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
+    resource_lease: ResourceLeaseV1 | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn draft-to-voice finalization.
 
@@ -1309,6 +1323,10 @@ async def run_harness_finalize_chain(
     ``preserve_structured_output``: their draft is parsed and canonicalized as
     JSON in place of prose-oriented 5c. The default remains false, preserving
     the existing voice pass for ordinary turns.
+
+    ``resource_lease`` carries the same admission owner through reflection,
+    any re-reflection, and voice finalization. Each LLM call uses the reserved
+    lane instead of waiting as an unrelated caller on its own reservation.
 
     Runtime evidence: substrate appraisal, verdict and outcome molecules
     (outcome carries finalize_loop_retried/finalize_loop_tool when 5b-prime
@@ -1330,6 +1348,7 @@ async def run_harness_finalize_chain(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
+        resource_lease=resource_lease,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
@@ -1354,6 +1373,7 @@ async def run_harness_finalize_chain(
                 user_message=user_message,
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
+                resource_lease=resource_lease,
                 bus=bus,
                 grammar_channel=grammar_channel,
                 grammar_publish_fn=grammar_publish_fn,
@@ -1409,6 +1429,7 @@ async def run_harness_finalize_chain(
                 user_message=user_message,
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
+                resource_lease=resource_lease,
             )
     except Exception as exc:
         partial = await emit_finalize_failure_artifacts(

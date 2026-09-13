@@ -53,6 +53,7 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 )
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import (
@@ -2004,6 +2005,10 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     selector sends the latter). "chat_quick"/"quick_chat"/"chat_kids_story" are
     legacy aliases for "quick".
 
+    A typed resource lease permits its broker-assigned catalog route, including
+    internal routes outside the public picker. An explicit different route is
+    forwarded for Gateway's ownership check to reject rather than overwritten.
+
     Returns (accepted, attempted):
     - accepted: the value to actually route with, or None if no override was
       supplied or it was outside `orion.llm.routes.ACCEPTED_LLM_ROUTES` -- callers fall
@@ -2017,9 +2022,18 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
       override was ever attempted" -- that exact log line is what traced the
       original "agent" bug live.
     """
-    raw = ctx.get("llm_route") or (
-        (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
-    )
+    options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    raw = ctx.get("llm_route") or options.get("llm_route")
+    lease_value = options.get("resource_lease")
+    if lease_value is None:
+        lease_value = ctx.get("resource_lease")
+    if lease_value is not None:
+        lease = ResourceLeaseV1.model_validate(lease_value)
+        # Broker assignments can name internal/catalog routes unavailable to
+        # the human picker. Preserve an explicit different override too:
+        # Gateway must reject the mismatch instead of silently rerouting it.
+        attempted = str(raw).strip() if raw else None
+        return attempted or lease.lane, attempted
     # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
     # override stays visible in the llm_route_selected log line (see docstring).
     resolved = str(raw or "").strip().lower()

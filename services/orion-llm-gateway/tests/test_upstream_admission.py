@@ -386,7 +386,9 @@ async def test_a_cancelled_handler_keeps_its_permit_until_the_thread_finishes(_t
 
 
 @pytest.mark.asyncio
-async def test_an_unconfigured_route_never_takes_a_permit_or_a_thread(_two_lanes) -> None:
+async def test_an_unconfigured_route_never_takes_a_permit_or_a_thread(_two_lanes, monkeypatch) -> None:
+    # Test the route-table seam independently of legacy lane fallback policy.
+    monkeypatch.setattr(settings, "llm_lane_routing_enabled", False)
     out = await gw_main._dispatch_chat(_body("nope"), correlation_id="x")
     assert out["raw"]["error"] == "route_not_configured"
     assert ua.get_upstream_admission().snapshot() == {}

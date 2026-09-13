@@ -7,9 +7,11 @@ Embeddings proxy to ORION_LLM_OLLAMA_URL when configured (AI Town memory vectors
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -20,11 +22,14 @@ from .anthropic_passthrough import (
     _forwardable_request_headers,
     _forwardable_response_headers,
     _httpx_timeout,
+    _passthrough_read_timeout_sec,
     normalize_anthropic_model_name,
 )
 from .llm_backend import RouteTarget, get_route_targets
 from .priority_admission import background_admission
 from .settings import settings
+from .capacity import CapacityPermit, CapacityRejected, CapacityStreamingResponse, capacity_error, stream_cleanup
+from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
 
 logger = logging.getLogger("orion-llm-gateway.openai")
 
@@ -133,10 +138,20 @@ async def _proxy_upstream_json(
     route_key: str,
     correlation_id: Optional[str],
     log_event: str,
+    capacity: CapacityPermit | None = None,
+    guard: LeaseGuard | None = None,
 ) -> Response:
     stream = bool(forward_body.get("stream"))
     headers = _forwardable_request_headers(request)
     timeout = _httpx_timeout()
+    stream_transferred = False
+
+    async def run(operation):
+        if guard is not None:
+            operation = guard.run(operation)
+        if capacity is not None:
+            operation = capacity.run(operation)
+        return await operation
 
     logger.info(
         "%s corr=%s route=%s upstream=%s stream=%s",
@@ -148,13 +163,17 @@ async def _proxy_upstream_json(
     )
 
     try:
+        if capacity is not None:
+            await capacity.acquire()
+        if guard is not None:
+            await guard.check()
         if stream:
             client = httpx.AsyncClient(timeout=timeout)
             try:
                 upstream_request = client.build_request(
                     "POST", upstream_url, headers=headers, json=forward_body
                 )
-                upstream = await client.send(upstream_request, stream=True)
+                upstream = await run(client.send(upstream_request, stream=True))
             except httpx.TimeoutException:
                 await client.aclose()
                 return JSONResponse(
@@ -167,27 +186,40 @@ async def _proxy_upstream_json(
                     {"error": {"message": f"Upstream request failed: {exc}", "type": "upstream_error"}},
                     status_code=502,
                 )
+            except BaseException:
+                await client.aclose()
+                raise
 
             response_headers = _forwardable_response_headers(upstream.headers)
             media_type = upstream.headers.get("content-type") or "text/event-stream"
+            close_stream = stream_cleanup(upstream, client, capacity)
 
             async def _body() -> AsyncIterator[bytes]:
                 try:
-                    async for chunk in upstream.aiter_bytes():
+                    chunks = upstream.aiter_bytes()
+                    if guard is not None:
+                        chunks = guard.chunks(chunks)
+                    if capacity is not None:
+                        chunks = capacity.chunks(chunks)
+                    async for chunk in chunks:
                         yield chunk
+                except (CapacityRejected, ResourceLeaseRejected) as exc:
+                    error = capacity_error(str(exc)) if isinstance(exc, CapacityRejected) else lease_error(str(exc))
+                    yield ("data: " + json.dumps(error) + "\n\n").encode()
                 finally:
-                    await upstream.aclose()
-                    await client.aclose()
+                    await close_stream()
 
-            return StreamingResponse(
+            stream_transferred = True
+            return CapacityStreamingResponse(
                 _body(),
+                cleanup=close_stream,
                 status_code=upstream.status_code,
                 headers=response_headers,
                 media_type=media_type,
             )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            upstream = await client.post(upstream_url, headers=headers, json=forward_body)
+            upstream = await run(client.post(upstream_url, headers=headers, json=forward_body))
             response_headers = _forwardable_response_headers(upstream.headers)
             content_type = response_headers.pop("content-type", None) or response_headers.pop(
                 "Content-Type", None
@@ -198,6 +230,10 @@ async def _proxy_upstream_json(
                 headers=response_headers,
                 media_type=content_type or "application/json",
             )
+    except CapacityRejected as exc:
+        return JSONResponse(capacity_error(str(exc)), status_code=503)
+    except ResourceLeaseRejected as exc:
+        return JSONResponse(lease_error(str(exc)), status_code=409)
     except httpx.TimeoutException:
         return JSONResponse(
             {"error": {"message": "Upstream OpenAI request timed out", "type": "timeout"}},
@@ -208,6 +244,9 @@ async def _proxy_upstream_json(
             {"error": {"message": f"Upstream request failed: {exc}", "type": "upstream_error"}},
             status_code=502,
         )
+    finally:
+        if capacity is not None and not stream_transferred:
+            await capacity.close()
 
 
 async def handle_chat_completions_post(request: Request) -> Response:
@@ -241,28 +280,41 @@ async def handle_chat_completions_post(request: Request) -> Response:
     if forward_body.get("model") != upstream_model:
         forward_body["model"] = upstream_model
     upstream_url = f"{target.url.rstrip('/')}/v1/chat/completions"
+    try:
+        guard = LeaseGuard.from_headers(request.headers, lane=route_key, backend_key=target.url)
+    except ResourceLeaseRejected as exc:
+        return JSONResponse(lease_error(str(exc)), status_code=409)
+    capacity = CapacityPermit(lane=route_key, backend_key=target.url,
+                              correlation_id=_extract_correlation_id(request) or str(uuid4()),
+                              budget_sec=_passthrough_read_timeout_sec(), lease=guard.lease)
 
-    if target.priority == "background":
+    if target.priority == "background" and not (capacity.enabled and guard.lease is not None):
         # See priority_admission.py's docstring: wait for upstream slot slack
         # before dispatching so a background-tagged route (e.g. AI Town's
         # quick_background) never competes evenly with foreground traffic
         # sharing the same llama.cpp process. Fail-open -- always forwards
         # eventually, never drops the request.
-        async with background_admission(
-            route_key,
-            target,
-            concurrency=settings.llm_gateway_background_concurrency,
-            poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
-            max_wait_sec=settings.llm_gateway_background_max_wait_sec,
-        ):
-            return await _proxy_upstream_json(
-                request=request,
-                upstream_url=upstream_url,
-                forward_body=forward_body,
-                route_key=route_key,
-                correlation_id=_extract_correlation_id(request),
-                log_event="openai_chat_passthrough",
-            )
+        try:
+            async with asyncio.timeout(capacity.remaining if capacity.enabled else None):
+                async with background_admission(
+                    route_key,
+                    target,
+                    concurrency=settings.llm_gateway_background_concurrency,
+                    poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
+                    max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+                ):
+                    return await _proxy_upstream_json(
+                        request=request,
+                        upstream_url=upstream_url,
+                        forward_body=forward_body,
+                        route_key=route_key,
+                        correlation_id=_extract_correlation_id(request),
+                        log_event="openai_chat_passthrough",
+                        capacity=capacity,
+                        guard=guard,
+                    )
+        except TimeoutError:
+            return JSONResponse(capacity_error("capacity_wait_budget_exhausted"), status_code=503)
 
     return await _proxy_upstream_json(
         request=request,
@@ -271,6 +323,8 @@ async def handle_chat_completions_post(request: Request) -> Response:
         route_key=route_key,
         correlation_id=_extract_correlation_id(request),
         log_event="openai_chat_passthrough",
+        capacity=capacity,
+        guard=guard,
     )
 
 

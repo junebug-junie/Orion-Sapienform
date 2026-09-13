@@ -31,10 +31,11 @@ class PostgresAdmissionStore:
         self.clock = clock  # Test-only fake clock; production uses the DB clock.
 
     async def setup(self) -> None:
-        path = Path(__file__).resolve().parents[2] / "services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql"
+        directory = Path(__file__).resolve().parents[2] / "services/orion-sql-db"
         async with self.pool.connection() as conn:
             async with conn.transaction():
-                await conn.execute(path.read_text(), prepare=False)
+                for name in ("manual_migration_durable_resource_admission_v1.sql", "manual_migration_gateway_capacity_v1.sql"):
+                    await conn.execute((directory / name).read_text(), prepare=False)
 
     async def now(self, conn: Any) -> datetime:
         if self.clock:

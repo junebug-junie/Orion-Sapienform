@@ -68,3 +68,49 @@ class ResourceEventV1(BaseModel):
     correlation_id: str
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class CapacityAcquireV1(BaseModel):
+    """Internal HTTP request permit; no model content or workflow state."""
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    request_id: str = Field(min_length=1, max_length=128)
+    correlation_id: str = Field(min_length=1, max_length=256)
+    lane: str = Field(min_length=1, max_length=128)
+    backend_key: str = Field(min_length=1, max_length=2048)
+    max_inflight: int = Field(ge=1, le=128)
+    budget_sec: float = Field(gt=0, le=86400)
+    lease: ResourceLeaseV1 | None = None
+
+
+class CapacityTokenV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str = Field(min_length=1, max_length=128)
+    permit_id: str = Field(min_length=1, max_length=128)
+
+
+class CapacityPermitV1(CapacityTokenV1):
+    correlation_id: str
+    lane: str
+    backend_key: str
+    lease_id: str | None = None
+    generation: int | None = None
+    granted_at: datetime
+    heartbeat_at: datetime
+    expires_at: datetime
+    status: Literal["active", "released", "expired"]
+
+
+class CapacityAcquireResultV1(BaseModel):
+    acquired: bool
+    reason: str
+    permit: CapacityPermitV1 | None = None
+
+
+class CapacityRenewResultV1(BaseModel):
+    valid: bool
+    permit: CapacityPermitV1 | None = None
+
+
+class CapacityReleaseResultV1(BaseModel):
+    released: bool

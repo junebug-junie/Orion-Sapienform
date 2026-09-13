@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from app.bus_listener import build_stance_react_context
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from pydantic import ValidationError
+
+from app.bus_listener import build_stance_react_context, build_stance_react_plan_request
+from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
 
 
@@ -28,6 +34,8 @@ def test_context_without_llm_route_has_no_key() -> None:
     unless a caller actually asked for a route override."""
     ctx = build_stance_react_context(_request())
     assert "llm_route" not in ctx
+    assert "llm_lane" not in ctx
+    assert "resource_lease" not in ctx
 
 
 def test_context_with_agent_llm_route_threads_it_through() -> None:
@@ -47,3 +55,28 @@ def test_context_with_none_llm_route_omits_key() -> None:
     doing `"llm_route" in ctx`."""
     ctx = build_stance_react_context(_request(llm_route=None))
     assert "llm_route" not in ctx
+
+
+@pytest.mark.parametrize("lane", ["agent", "chat", "metacog"])
+def test_admitted_stance_plan_uses_owning_lease_and_assigned_lane(lane: str) -> None:
+    now = datetime.now(timezone.utc)
+    lease = ResourceLeaseV1(
+        run_id="run-1", demand_id="run-1:turn", lease_id="lease-1",
+        resource_key=f"llm.route.{lane}", lane=lane, backend_key="http://worker:8000",
+        generation=7, granted_at=now, heartbeat_at=now,
+        expires_at=now + timedelta(seconds=60),
+    )
+    request = _request(llm_route="agent", resource_lease=lease.model_dump(mode="json"))
+
+    plan = build_stance_react_plan_request(request)
+
+    assert isinstance(request.resource_lease, ResourceLeaseV1)
+    assert plan.context["resource_lease"] == lease.model_dump(mode="json")
+    assert plan.context["llm_route"] == lane
+    assert plan.context["llm_lane"] == lane
+    assert plan.context["metadata"]["correlation_id"] == request.correlation_id
+
+
+def test_stance_rejects_invalid_lease_instead_of_dispatching_without_ownership() -> None:
+    with pytest.raises(ValidationError):
+        _request(resource_lease={"lease_id": "lease-1", "generation": 0})

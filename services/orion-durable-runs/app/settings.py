@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     graph_own: str = Field("orion_worldview", alias="DURABLE_RUNS_GRAPH_OWN")
 
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
+    capacity_enabled: bool = Field(False, alias="DURABLE_RUNS_CAPACITY_ENABLED")
     admission_shadow: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_SHADOW")
     admission_tick_sec: float = Field(5.0, gt=0.0, alias="DURABLE_RUNS_ADMISSION_TICK_SEC")
     lease_seconds: float = Field(90.0, ge=15.0, alias="DURABLE_RUNS_LEASE_SECONDS")

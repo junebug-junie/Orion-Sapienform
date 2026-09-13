@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+from orion.schemas.resource_admission import ResourceLeaseV1
 
 
 class CoalitionSnapshotV1(BaseModel):
@@ -164,6 +165,9 @@ class StanceReactRequestV1(BaseModel):
     # that omits it, or an older consumer reading a payload that carries it,
     # both continue to work unchanged.
     llm_route: str | None = None
+    # The turn's existing reservation owns stance inference too. Producers omit
+    # this field when absent so ordinary requests keep their previous wire shape.
+    resource_lease: ResourceLeaseV1 | None = None
 
 
 def __getattr__(name: str) -> object:

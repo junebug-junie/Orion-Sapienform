@@ -2706,5 +2706,7 @@ run ID plus lease identity/generation, and even cached results require a current
 fence. Shutdown cancels and joins active turn tasks. The typed lease passes
 through the unified turn and Harness request into FCC's per-process
 `X-Orion-Resource-Lease` header; it never enters the prompt or a global env value.
-Auxiliary stance/finalize calls keep their existing short synchronous routes.
+Stance, reflection, re-reflection, and conditional response repair use the same lease and
+assigned lane through their Cortex requests. Ordinary turns keep their existing
+routes; Hub omits an absent lease from the legacy stance bus payload.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.

@@ -15,6 +15,7 @@ from langgraph.types import Command
 from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, build_admitted_graph
 from app.graph import finish_detail, turn_correlation_id
 from orion.durable_admission.broker import ResourceBroker
+from orion.durable_admission.capacity import PostgresCapacityStore
 from orion.durable_admission.store import PostgresAdmissionStore, SubmissionConflict
 from orion.schemas.durable_run import DurableRunRequestV1, DurableRunStateV1, DURABLE_RUN_STATE_KIND
 from orion.schemas.harness_finalize import HarnessRunCancelV1
@@ -31,7 +32,8 @@ class AdmissionRuntime:
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.broker = broker or ResourceBroker(self.store, lanes={}, lease_seconds=settings.lease_seconds,
             widen_after_seconds=settings.widening_after_sec, hysteresis_seconds=settings.widening_hysteresis_sec,
-            widening_enabled=settings.widening_enabled, shadow=settings.admission_shadow)
+            widening_enabled=settings.widening_enabled, shadow=settings.admission_shadow,
+            capacity=PostgresCapacityStore(self.store, ttl_seconds=settings.lease_seconds) if settings.capacity_enabled else None)
         self.graph = build_admitted_graph(runner._deps(), AdmissionDeps(
             self.register, self.store.get_lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,

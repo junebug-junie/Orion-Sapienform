@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -35,6 +35,7 @@ os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
 os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import (
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
@@ -109,6 +110,32 @@ async def test_thought_client_react_returns_thought_event() -> None:
     sent_envelope = bus.rpc_request.await_args.args[1]
     assert sent_envelope.kind == "stance.react.request.v1"
     assert bus.rpc_request.await_args.args[0] == settings.CHANNEL_THOUGHT_REQUEST
+    assert sent_envelope.payload == _stance_request().model_dump(mode="json", exclude={"resource_lease"})
+    assert "resource_lease" not in sent_envelope.payload
+    assert sent_envelope.payload["repair_bundle"] is None
+    assert sent_envelope.payload["llm_route"] is None
+
+
+@pytest.mark.asyncio
+async def test_thought_client_serializes_same_lease_generation_on_actual_rpc() -> None:
+    now = datetime.now(timezone.utc)
+    lease = ResourceLeaseV1(
+        run_id="run-1", demand_id="run-1:turn", lease_id="lease-1",
+        resource_key="llm.route.agent", lane="agent", backend_key="http://worker:8000",
+        generation=7, granted_at=now, heartbeat_at=now,
+        expires_at=now + timedelta(seconds=60),
+    )
+    request = _stance_request().model_copy(update={"resource_lease": lease})
+    bus = MagicMock()
+    bus.redis.pubsub_numsub = AsyncMock(return_value=[(settings.CHANNEL_THOUGHT_REQUEST, 1)])
+    bus.rpc_request = AsyncMock(side_effect=TimeoutError())
+
+    await ThoughtClient(bus).react(request)
+
+    envelope = bus.rpc_request.await_args.args[1]
+    assert envelope.payload["resource_lease"] == lease.model_dump(mode="json")
+    assert StanceReactRequestV1.model_validate(envelope.payload).resource_lease == lease
+    assert envelope.payload["repair_bundle"] is None
 
 
 @pytest.mark.asyncio

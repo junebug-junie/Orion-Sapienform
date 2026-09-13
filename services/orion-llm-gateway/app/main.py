@@ -40,6 +40,7 @@ from .admission_ledger import get_ledger
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import LeaseGuard, ResourceLeaseRejected
+from .capacity import CapacityPermit, CapacityRejected
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -273,10 +274,11 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, An
     try:
         await guard.check()
         return await guard.run(_dispatch_chat_unfenced(body, correlation_id=correlation_id, plan=plan, guard=guard))
-    except ResourceLeaseRejected as exc:
+    except (ResourceLeaseRejected, CapacityRejected) as exc:
         logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
         return {"text": "", "content": "", "route": plan.route,
-                "raw": {"error": "resource_lease_rejected", "details": {"reason": str(exc)}}}
+                "raw": {"error": "gateway_capacity_rejected" if isinstance(exc, CapacityRejected) else "resource_lease_rejected",
+                        "details": {"reason": str(exc)}}}
 
 
 async def _dispatch_chat_unfenced(
@@ -297,8 +299,9 @@ async def _dispatch_chat_unfenced(
     Gate order: a background route waits for /slots slack FIRST, holding only its
     route's background permit, never an upstream lane permit, so a background request
     polling for 30s does not occupy a permit a foreground request on the same upstream
-    needs. Only once it may dispatch does it queue for a lane permit like everyone
-    else. The lane permit is released when the executor thread finishes, not when the
+    needs. Then shared admission precedes the local lane permit so ordinary
+    waiters cannot starve the durable owner. Admitted owners bypass the legacy
+    background gate. The lane permit is released when the executor thread finishes, not when the
     awaiting task ends (see `_Admission.release_when_done`).
     """
     if plan.error is not None:
@@ -316,41 +319,55 @@ async def _dispatch_chat_unfenced(
         return deadline - time.monotonic()
 
     async def _admit_and_run() -> Dict[str, Any]:
-        admission = gate.admit(plan.upstream, max_wait_s=_remaining())
-        async with admission as admitted:
-            lane = gate.lane(plan.upstream).public()
-            remaining = _remaining()
-            if not admitted or remaining <= 0.0:
-                stage = "upstream_queue" if not admitted else "budget_exhausted"
-                logger.warning(
-                    "gateway_overloaded correlation_id=%s stage=%s route=%s upstream=%s waited=%.1fs "
-                    "budget=%.1fs inflight=%s waiting=%s max_inflight=%s",
-                    correlation_id, stage, plan.route, plan.upstream, admission.waited_s, budget_s,
-                    lane["inflight"], lane["waiting"], lane["max_inflight"],
-                )
-                return _overloaded_result(
-                    plan, stage=stage, waited_s=admission.waited_s, budget_s=budget_s, lane=lane
-                )
-            if admission.queued:
-                logger.info(
-                    "gateway_upstream_queued correlation_id=%s route=%s upstream=%s waited=%.3fs "
-                    "remaining=%.1fs inflight=%s waiting=%s",
-                    correlation_id, plan.route, plan.upstream, admission.waited_s, remaining,
-                    lane["inflight"], lane["waiting"],
-                )
-            # The upstream read gets what the caller has left (llm_backend still floors
-            # it at 30s for the HTTP client), not the original full budget.
-            run_body = plan.body.model_copy(
-                update={"options": {**(plan.body.options or {}), "gateway_read_timeout_sec": remaining}}
-            )
-            run_plan = dataclasses.replace(plan, body=run_body)
-            await guard.check()
-            future = _executor(loop).submit(run_llm_chat, run_body, run_plan)
-            admission.release_when_done(future, loop)
-            return await asyncio.wrap_future(future)
+        # Shared admission goes first: ordinary requests waiting behind a
+        # durable owner must not occupy its process-local executor permits.
+        capacity = CapacityPermit(lane=plan.route, backend_key=plan.upstream,
+                                  correlation_id=correlation_id, budget_sec=_remaining(),
+                                  lease=(body.options or {}).get("resource_lease"))
+        try:
+            await capacity.acquire()
+            admission = gate.admit(plan.upstream, max_wait_s=_remaining())
+            async with admission as admitted:
+                lane = gate.lane(plan.upstream).public()
+                remaining = _remaining()
+                if not admitted or remaining <= 0.0:
+                    stage = "upstream_queue" if not admitted else "budget_exhausted"
+                    logger.warning(
+                        "gateway_overloaded correlation_id=%s stage=%s route=%s upstream=%s waited=%.1fs "
+                        "budget=%.1fs inflight=%s waiting=%s max_inflight=%s",
+                        correlation_id, stage, plan.route, plan.upstream, admission.waited_s, budget_s,
+                        lane["inflight"], lane["waiting"], lane["max_inflight"],
+                    )
+                    return _overloaded_result(
+                        plan, stage=stage, waited_s=admission.waited_s, budget_s=budget_s, lane=lane
+                    )
+                if admission.queued:
+                    logger.info(
+                        "gateway_upstream_queued correlation_id=%s route=%s upstream=%s waited=%.3fs "
+                        "remaining=%.1fs inflight=%s waiting=%s",
+                        correlation_id, plan.route, plan.upstream, admission.waited_s, remaining,
+                        lane["inflight"], lane["waiting"],
+                    )
+                await guard.check()
+                def submit():
+                    if _remaining() <= 0:
+                        raise CapacityRejected("capacity_wait_budget_exhausted")
+                    run_body = plan.body.model_copy(update={"options": {
+                        **(plan.body.options or {}), "gateway_read_timeout_sec": _remaining(),
+                    }})
+                    run_plan = dataclasses.replace(plan, body=run_body)
+                    future = _executor(loop).submit(run_llm_chat, run_body, run_plan)
+                    admission.release_when_done(future, loop)
+                    return future
+                return await capacity.run_blocking(submit)
+        finally:
+            await capacity.close()
 
     target = plan.route_target
-    if target is None or target.priority != "background":
+    if (target is None or target.priority != "background"
+            or (settings.llm_gateway_capacity_enabled and guard.lease is not None)):
+        # An admitted owner must not wait behind an ordinary background caller
+        # whose legacy semaphore is held while waiting for that owner's lease.
         return await _admit_and_run()
 
     background = background_admission(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, Mapping, Optional, Tuple
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
 from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
+from .capacity import CapacityPermit, CapacityRejected, CapacityStreamingResponse, capacity_error, stream_cleanup
 
 logger = logging.getLogger("orion-llm-gateway.anthropic")
 
@@ -279,6 +281,15 @@ async def handle_messages_post(request: Request) -> Response:
         await guard.check()
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
+    capacity = CapacityPermit(lane=route_key, backend_key=target.url,
+                              correlation_id=_extract_correlation_id(request) or str(uuid4()),
+                              budget_sec=_passthrough_read_timeout_sec(), lease=guard.lease)
+    try:
+        await capacity.acquire()
+    except CapacityRejected as exc:
+        await capacity.close()
+        return JSONResponse(capacity_error(str(exc)), status_code=503)
+    stream_transferred = False
     upstream_url = f"{target.url.rstrip('/')}/v1/messages"
     forward_body = dict(body)
     if forward_body.get("model") != upstream_model:
@@ -306,7 +317,10 @@ async def handle_messages_post(request: Request) -> Response:
                 upstream_request = client.build_request(
                     "POST", upstream_url, headers=headers, json=forward_body
                 )
-                upstream = await guard.run(client.send(upstream_request, stream=True))
+                upstream = await capacity.run(guard.run(client.send(upstream_request, stream=True)))
+            except CapacityRejected as exc:
+                await client.aclose()
+                return JSONResponse(capacity_error(str(exc)), status_code=503)
             except ResourceLeaseRejected as exc:
                 await client.aclose()
                 return JSONResponse(lease_error(str(exc)), status_code=409)
@@ -335,6 +349,9 @@ async def handle_messages_post(request: Request) -> Response:
                     {"error": {"type": "upstream_error", "message": f"Upstream request failed: {exc}"}},
                     status_code=502,
                 )
+            except BaseException:
+                await client.aclose()
+                raise
 
             if upstream.status_code >= 400:
                 logger.error(
@@ -348,9 +365,11 @@ async def handle_messages_post(request: Request) -> Response:
                 content_type = response_headers.pop("content-type", None) or response_headers.pop(
                     "Content-Type", None
                 )
-                error_body = await upstream.aread()
-                await upstream.aclose()
-                await client.aclose()
+                try:
+                    error_body = await capacity.run(guard.run(upstream.aread()))
+                finally:
+                    await upstream.aclose()
+                    await client.aclose()
                 return Response(
                     content=error_body,
                     status_code=upstream.status_code,
@@ -360,27 +379,32 @@ async def handle_messages_post(request: Request) -> Response:
 
             response_headers = _forwardable_response_headers(upstream.headers)
             media_type = upstream.headers.get("content-type") or "text/event-stream"
+            close_stream = stream_cleanup(upstream, client, capacity)
 
             async def _body() -> AsyncIterator[bytes]:
                 try:
-                    async for chunk in guard.chunks(upstream.aiter_bytes()):
+                    async for chunk in capacity.chunks(guard.chunks(upstream.aiter_bytes())):
                         yield chunk
                 except ResourceLeaseRejected as exc:
                     payload = {"type": "error", **lease_error(str(exc))}
                     yield ("event: error\ndata: " + json.dumps(payload) + "\n\n").encode()
+                except CapacityRejected as exc:
+                    payload = {"type": "error", **capacity_error(str(exc))}
+                    yield ("event: error\ndata: " + json.dumps(payload) + "\n\n").encode()
                 finally:
-                    await upstream.aclose()
-                    await client.aclose()
+                    await close_stream()
 
-            return StreamingResponse(
+            stream_transferred = True
+            return CapacityStreamingResponse(
                 _body(),
+                cleanup=close_stream,
                 status_code=upstream.status_code,
                 headers=response_headers,
                 media_type=media_type,
             )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            upstream = await guard.run(client.post(upstream_url, headers=headers, json=forward_body))
+            upstream = await capacity.run(guard.run(client.post(upstream_url, headers=headers, json=forward_body)))
             if upstream.status_code == 404:
                 logger.error(
                     "anthropic_passthrough_upstream_404 route=%s upstream=%s corr=%s",
@@ -398,6 +422,8 @@ async def handle_messages_post(request: Request) -> Response:
                 headers=response_headers,
                 media_type=content_type or "application/json",
             )
+    except CapacityRejected as exc:
+        return JSONResponse(capacity_error(str(exc)), status_code=503)
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
     except httpx.TimeoutException:
@@ -423,6 +449,9 @@ async def handle_messages_post(request: Request) -> Response:
             {"error": {"type": "upstream_error", "message": f"Upstream request failed: {exc}"}},
             status_code=502,
         )
+    finally:
+        if not stream_transferred:
+            await capacity.close()
 
 
 def handle_messages_get() -> Response:

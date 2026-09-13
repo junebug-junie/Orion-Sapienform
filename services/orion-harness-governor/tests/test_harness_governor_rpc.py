@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from uuid import uuid4
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -19,6 +20,7 @@ from orion.harness.tests.fixtures import (
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
+from orion.schemas.resource_admission import ResourceLeaseV1
 
 
 def _motor_result(thought) -> HarnessMotorResult:
@@ -42,16 +44,24 @@ def _motor_result(thought) -> HarnessMotorResult:
 
 
 @pytest.mark.asyncio
-async def test_harness_run_artifact_published() -> None:
+@pytest.mark.parametrize("admitted", [False, True])
+async def test_harness_run_artifact_published(admitted) -> None:
     from app import bus_listener
 
     thought = make_thought()
+    now = datetime.now(timezone.utc)
+    lease = ResourceLeaseV1(
+        run_id="r-1", demand_id="r-1:turn", lease_id="lease-1", generation=7,
+        lane="metacog", resource_key="llm.route.metacog", backend_key="http://worker:8000",
+        granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60),
+    ) if admitted else None
     req = HarnessRunRequestV1(
         correlation_id="c-1",
         thought_event=thought,
         user_message="hello",
         permissions=ContextExecPermissionV1(),
         answer_contract=AnswerContract(),
+        resource_lease=lease,
     )
     appraisal = make_appraisal()
     reflection = make_reflection()
@@ -110,6 +120,7 @@ async def test_harness_run_artifact_published() -> None:
     assert run.final_text == "final for juniper"
     assert run.draft_text == "internal draft"
     assert finalize_kwargs["preserve_structured_output"] is False
+    assert finalize_kwargs["resource_lease"] == lease
     assert bus.publish.await_count >= 2
     channels = [call.args[0] for call in bus.publish.await_args_list]
     assert "orion:harness:run:result:c-1" in channels

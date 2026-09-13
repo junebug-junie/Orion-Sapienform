@@ -14,7 +14,7 @@ from .store import PostgresAdmissionStore
 class ResourceBroker:
     def __init__(self, store: PostgresAdmissionStore, lanes: dict[str, dict[str, Any]], *, lease_seconds: float = 300,
                  widen_after_seconds: float = 1200, hysteresis_seconds: float = 120,
-                 widening_enabled: bool = False, shadow: bool = False):
+                 widening_enabled: bool = False, shadow: bool = False, capacity=None):
         if lease_seconds <= 0 or widen_after_seconds < 0 or hysteresis_seconds < 0:
             raise ValueError("invalid admission timing")
         self.store, self.lanes = store, lanes
@@ -22,6 +22,7 @@ class ResourceBroker:
         self.widen_after_seconds = widen_after_seconds
         self.hysteresis_seconds = hysteresis_seconds
         self.widening_enabled, self.shadow = widening_enabled, shadow
+        self.capacity = capacity
 
     async def tick(self) -> list[dict[str, Any]]:
         # Route aliases must contend for the same physical reservation even
@@ -35,6 +36,11 @@ class ResourceBroker:
             active = await (await conn.execute("SELECT l.*,r.request FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) WHERE l.status='active'")).fetchall()
             remaining = {row["backend_key"]: max(self.lease_seconds,
                 float(row["request"]["brief"]["timeout_sec"]) - (now-row["granted_at"]).total_seconds()) for row in active}
+            if self.capacity is not None:
+                for permit in await self.capacity.active(conn, now):
+                    backend = permit["backend_key"]
+                    remaining[backend] = max(remaining.get(backend, 0), self.lease_seconds,
+                                             (permit["deadline_at"]-now).total_seconds())
             for meta in self.lanes.values():
                 if meta.get("external_busy", False) is not False:
                     key = meta.get("backend_key")
@@ -70,6 +76,14 @@ class ResourceBroker:
                     if detail["reason"] == "experimental_pin":
                         detail["reason"] = "run_assignment_locked"
                 detail["shadow"] = self.shadow
+                if self.capacity is not None:
+                    # Reserve drain priority only on lanes actually selectable
+                    # now. Hysteresis-suppressed candidates cannot block native
+                    # traffic, and shadow evaluation reserves no capacity.
+                    detail["eligible_backend_keys"] = [] if self.shadow else sorted({
+                        self.lanes[lane]["backend_key"] for lane in decision.eligible_lanes
+                        if lane not in decision.suppressed
+                        and isinstance(self.lanes[lane].get("external_busy", False), bool)})
                 previous = demand["decision"] or {}
                 if detail != previous:
                     await conn.execute("UPDATE durable_resource_demands SET decision=%s WHERE demand_id=%s", (Jsonb(detail), demand["demand_id"]))

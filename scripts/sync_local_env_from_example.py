@@ -114,6 +114,7 @@ SYNC_PREFIXES = (
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
     "LLM_GATEWAY_LEASE_",
+    "LLM_GATEWAY_CAPACITY_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them

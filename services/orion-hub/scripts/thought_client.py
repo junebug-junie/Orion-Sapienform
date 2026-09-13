@@ -83,12 +83,17 @@ class ThoughtClient:
         correlation_id = correlation_id or request.correlation_id or str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_THOUGHT_RESULT_PREFIX}{correlation_id}"
         wait_sec = max(0.1, float(timeout_sec if timeout_sec is not None else settings.TIMEOUT_SEC))
+        payload = request.model_dump(mode="json")
+        if request.resource_lease is None:
+            # Preserve every legacy field (including its nulls); only the new
+            # optional lease is omitted for consumers that reject extra fields.
+            payload.pop("resource_lease", None)
         envelope = BaseEnvelope(
             kind="stance.react.request.v1",
             source=self._source,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            payload=request.model_dump(mode="json"),
+            payload=payload,
         )
         if not await _wait_for_thought_subscriber(
             self.bus,

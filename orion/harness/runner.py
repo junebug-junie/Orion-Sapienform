@@ -506,7 +506,10 @@ class HarnessRunner:
                     grounding_status = error_code or "partial"
                 else:
                     compliance_verdict = "failed"
-                    grounding_status = apply_context_overflow_hint(error_msg) or error_code or error_msg or "failed"
+                    # Prefer structured error_code (e.g. fcc_timeout) over the
+                    # human message so Hub/tests can key off stable codes.
+                    hinted = apply_context_overflow_hint(error_msg) if error_msg else ""
+                    grounding_status = error_code or hinted or error_msg or "failed"
                     motor_failed = True
                 if step_count > 0:
                     collector.record_step_failed(

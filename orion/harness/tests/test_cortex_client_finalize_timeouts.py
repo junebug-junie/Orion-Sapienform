@@ -28,7 +28,7 @@ def _make_plan_request(verb_name: str) -> PlanExecutionRequest:
 
 
 @pytest.mark.asyncio
-async def test_voice_finalize_uses_voice_timeout() -> None:
+async def test_response_repair_uses_repair_timeout() -> None:
     bus = AsyncMock()
     decode_result = MagicMock(ok=True, envelope=MagicMock(payload={"result": {}}))
     bus.codec = MagicMock()
@@ -40,7 +40,7 @@ async def test_voice_finalize_uses_voice_timeout() -> None:
         request_channel="orion:cortex:exec:request",
         result_prefix="orion:exec:result",
         timeout_sec=180.0,
-        voice_finalize_timeout_sec=300.0,
+        response_repair_timeout_sec=300.0,
     )
 
     await client(_make_plan_request("orion_response_repair"))
@@ -91,7 +91,7 @@ async def test_finalize_reflect_uses_reflect_timeout() -> None:
         request_channel="orion:cortex:exec:request",
         result_prefix="orion:exec:result",
         timeout_sec=180.0,
-        voice_finalize_timeout_sec=300.0,
+        response_repair_timeout_sec=300.0,
     )
 
     await client(_make_plan_request("harness_finalize_reflect"))

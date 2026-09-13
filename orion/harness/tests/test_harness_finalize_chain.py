@@ -94,7 +94,7 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
 
 
 @pytest.mark.asyncio
-async def test_voice_finalize_cannot_reintroduce_false_reading_acceptance() -> None:
+async def test_response_repair_cannot_reintroduce_false_reading_acceptance() -> None:
     thought = make_thought()
     draft_text = (
         "The reading recommendation was not confirmed by a durable receipt; "

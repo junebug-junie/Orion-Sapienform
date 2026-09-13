@@ -37,8 +37,8 @@ def test_5a_affects_5b_verdict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_5b_affects_5c_text() -> None:
-    """Misaligned reflection must change voice finalize output vs aligned."""
+async def test_5b_affects_repair_text() -> None:
+    """When repair runs, misaligned reflection must change output vs aligned stub."""
     thought = make_thought()
     appraisal = make_appraisal()
     draft_text = "Motor draft."

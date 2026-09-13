@@ -1,6 +1,6 @@
 """looks_like_error_text -- promoted 2026-08-19 from
 services/orion-hub/scripts/endogenous_outreach.py to this shared module, so
-that orion/harness/finalize.py's extract_voice_finalize_text()/
+that orion/harness/finalize.py's extract_response_repair_text()/
 extract_finalize_reflection_payload() (the SAME finalize chain every real
 unified turn runs through) can use it too, not just outreach's own bare
 cortex_client.chat() path. See this module's own comment for the two real

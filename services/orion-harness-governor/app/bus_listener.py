@@ -260,7 +260,7 @@ async def handle_harness_run_request(
         result_prefix=settings.channel_cortex_exec_result_prefix,
         source_name=settings.service_name,
         timeout_sec=settings.finalize_reflect_timeout_sec,
-        voice_finalize_timeout_sec=settings.voice_finalize_timeout_sec,
+        response_repair_timeout_sec=settings.response_repair_timeout_sec,
     )
     substrate = substrate_client or HarnessSubstrateClient(
         bus,

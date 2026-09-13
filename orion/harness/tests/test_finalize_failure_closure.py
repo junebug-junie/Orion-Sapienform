@@ -93,13 +93,13 @@ async def test_emit_finalize_failure_artifacts_publishes_outcome_closure_and_sys
 
 
 @pytest.mark.asyncio
-async def test_run_harness_finalize_chain_voice_failure_raises_with_partial_state() -> None:
+async def test_run_harness_finalize_chain_repair_failure_raises_with_partial_state() -> None:
     thought = make_thought()
     coalition = build_coalition_snapshot(thought)
     receipts = [GrammarReceiptV1(step_index=0, summary="step", grammar_event_id="g-1")]
     draft_text = "internal draft"
     molecule = build_draft_molecule(
-        correlation_id="c-voice-fail",
+        correlation_id="c-repair-fail",
         thought=thought,
         draft_text=draft_text,
         grammar_receipts=receipts,
@@ -133,8 +133,8 @@ async def test_run_harness_finalize_chain_voice_failure_raises_with_partial_stat
             lambda result: reflection.model_dump(mode="json"),
         )
         with pytest.raises(HarnessFinalizeFailedError) as exc_info:
-            await run_harness_finalize_chain(
-                correlation_id="c-voice-fail",
+            result = await run_harness_finalize_chain(
+                correlation_id="c-repair-fail",
                 draft_text=draft_text,
                 draft_molecule=molecule,
                 thought=thought,
@@ -147,10 +147,15 @@ async def test_run_harness_finalize_chain_voice_failure_raises_with_partial_stat
                 closure_publish_fn=closure_publish,
                 system_error_publish_fn=error_publish,
             )
+            # Fail-closed: must not return a successful chain result that publishes
+            # the known-bad motor draft as final_text.
+            assert result.final_text != draft_text  # pragma: no cover
 
     partial = exc_info.value.partial
     assert partial.outcome_molecule.finalize_failed is True
     assert partial.outcome_molecule.surprise_resolved is False
+    assert partial.outcome_molecule.final_text == ""
     assert len(closures) == 1
     assert closures[0].surprise_unresolved is True
     assert len(errors) == 1
+    assert errors[0]["phase"] == "orion_response_repair"

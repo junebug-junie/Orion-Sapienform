@@ -1110,6 +1110,23 @@ def _outcome_molecule_id(molecule: HarnessTurnOutcomeMoleculeV1) -> str:
     )
 
 
+def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
+    return (
+        reflection.alignment_verdict in {"misaligned", "uncertain"}
+        or reflection.strain_unresolved
+    )
+
+
+def response_repair_reason_for(reflection: FinalizeReflectionV1) -> str | None:
+    if not needs_response_repair(reflection):
+        return None
+    if reflection.alignment_verdict == "misaligned":
+        return "misaligned"
+    if reflection.alignment_verdict == "uncertain":
+        return "uncertain"
+    return "strain_unresolved"
+
+
 async def run_substrate_finalize_appraisal(
     *,
     draft_molecule: HarnessDraftMoleculeV1,
@@ -1128,6 +1145,8 @@ class HarnessFinalizeChainResult:
     finalize_changed: bool
     quick_lane_skipped_5b: bool
     verdict_molecule_id: str
+    response_repair_ran: bool = False
+    response_repair_reason: str | None = None
 
 
 @dataclass
@@ -1386,21 +1405,23 @@ async def run_harness_finalize_chain(
     try:
         if preserve_structured_output:
             # Reading Stage 1/2 are machine-to-machine calls. Their consumer
-            # requires JSON, while 5c is intentionally a prose voice writer.
+            # requires JSON, while prose repair is intentionally a text writer.
             # Validate and canonicalize the motor result instead of asking a
-            # prose model to preserve syntax probabilistically. Ordinary chat
-            # keeps the existing 5c behavior because this flag defaults false.
+            # prose model to preserve syntax probabilistically.
             final_text = canonicalize_structured_output(draft_text)
             voice_meta = {
                 "finalize_changed": final_text.strip() != draft_text.strip(),
                 "structured_output_preserved": True,
+                "response_repair_ran": False,
+                "response_repair_reason": None,
             }
             logger.info(
                 "harness_structured_output_preserved corr=%s chars=%s",
                 correlation_id,
                 len(final_text),
             )
-        else:
+        elif needs_response_repair(reflection):
+            reason = response_repair_reason_for(reflection)
             final_text, voice_meta = await run_orion_voice_finalize(
                 correlation_id=correlation_id,
                 draft_text=draft_text,
@@ -1413,6 +1434,22 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
             )
+            voice_meta = {
+                **voice_meta,
+                "response_repair_ran": True,
+                "response_repair_reason": reason,
+            }
+        else:
+            logger.info(
+                "response_repair_skipped corr=%s reason=aligned",
+                correlation_id,
+            )
+            final_text = draft_text
+            voice_meta = {
+                "finalize_changed": False,
+                "response_repair_ran": False,
+                "response_repair_reason": None,
+            }
     except Exception as exc:
         partial = await emit_finalize_failure_artifacts(
             correlation_id=correlation_id,
@@ -1443,6 +1480,10 @@ async def run_harness_finalize_chain(
         grounded_final_text != draft_text
     )
     final_text = grounded_final_text
+    response_repair_ran = bool(voice_meta.get("response_repair_ran"))
+    response_repair_reason = voice_meta.get("response_repair_reason")
+    if response_repair_reason is not None:
+        response_repair_reason = str(response_repair_reason)
 
     outcome_molecule = await emit_turn_outcome_molecule(
         correlation_id=correlation_id,
@@ -1453,6 +1494,8 @@ async def run_harness_finalize_chain(
         draft_text=draft_text,
         final_text=final_text,
         finalize_changed=finalize_changed,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
         grammar_receipts=grammar_receipts,
         publish_fn=outcome_publish_fn,
         bus=bus,
@@ -1478,6 +1521,8 @@ async def run_harness_finalize_chain(
         finalize_changed=finalize_changed,
         quick_lane_skipped_5b=quick_lane_skipped_5b,
         verdict_molecule_id=verdict_molecule_id,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
     )
 
 

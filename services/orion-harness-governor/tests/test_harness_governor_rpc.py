@@ -350,7 +350,7 @@ async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finali
         "run_harness_finalize_chain",
         AsyncMock(
             side_effect=HarnessFinalizeFailedError(
-                "orion_voice_finalize exec failed: LLMGatewayService: RPC timeout",
+                "orion_response_repair exec failed: LLMGatewayService: RPC timeout",
                 partial=partial,
             )
         ),
@@ -369,7 +369,7 @@ async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finali
     assert run.reflection is reflection
     assert run.verdict_molecule_id == "verdict-fail"
     assert run.quick_lane_skipped_5b is True
-    assert "orion_voice_finalize" in (run.grounding_status or "")
+    assert "orion_response_repair" in (run.grounding_status or "")
 
 
 @pytest.mark.asyncio

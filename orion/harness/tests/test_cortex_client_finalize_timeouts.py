@@ -43,7 +43,7 @@ async def test_voice_finalize_uses_voice_timeout() -> None:
         voice_finalize_timeout_sec=300.0,
     )
 
-    await client(_make_plan_request("orion_voice_finalize"))
+    await client(_make_plan_request("orion_response_repair"))
 
     assert bus.rpc_request.await_args.kwargs["timeout_sec"] == 300.0
 
@@ -75,7 +75,7 @@ async def test_system_error_reply_raises_instead_of_returning_as_result() -> Non
     )
 
     with pytest.raises(RuntimeError, match="tts_synthesis_failed"):
-        await client(_make_plan_request("orion_voice_finalize"))
+        await client(_make_plan_request("orion_response_repair"))
 
 
 @pytest.mark.asyncio

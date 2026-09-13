@@ -68,7 +68,7 @@ async def test_aligned_chain_passthrough_skips_repair_llm() -> None:
             lambda _result: reflection.model_dump(mode="json"),
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "assumption: checking in. next concrete move: story or quiet.",
         )
         chain = await run_harness_finalize_chain(
@@ -120,7 +120,7 @@ async def test_misaligned_chain_invokes_repair() -> None:
             lambda _result: reflection.model_dump(mode="json"),
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "repaired text",
         )
         chain = await run_harness_finalize_chain(

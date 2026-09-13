@@ -66,7 +66,7 @@ async def test_emit_finalize_failure_artifacts_publishes_outcome_closure_and_sys
 
     partial = await emit_finalize_failure_artifacts(
         correlation_id="c-artifacts",
-        error="orion_voice_finalize exec failed: LLMGatewayService: RPC timeout",
+        error="orion_response_repair exec failed: LLMGatewayService: RPC timeout",
         draft_text="motor draft before timeout",
         thought=thought,
         substrate_appraisal=appraisal,
@@ -87,7 +87,7 @@ async def test_emit_finalize_failure_artifacts_publishes_outcome_closure_and_sys
     assert closures[0].surprise_unresolved is True
     assert closures[0].user_message_excerpt == "hello juniper"
     assert len(errors) == 1
-    assert errors[0]["phase"] == "orion_voice_finalize"
+    assert errors[0]["phase"] == "orion_response_repair"
     assert partial.verdict_molecule_id == verdict_id
     assert partial.quick_lane_skipped_5b is True
 
@@ -106,8 +106,8 @@ async def test_run_harness_finalize_chain_voice_failure_raises_with_partial_stat
         coalition_snapshot=coalition,
         repair_overlay=make_repair_overlay(),
     )
-    appraisal = make_appraisal(surprise_level=0.02)
-    reflection = make_reflection(alignment_verdict="aligned")
+    appraisal = make_appraisal(surprise_level=0.5)
+    reflection = make_reflection(alignment_verdict="misaligned")
     closures: list[HarnessPostTurnClosureV1] = []
     errors: list[dict[str, object]] = []
     cortex_calls: list[object] = []
@@ -119,7 +119,7 @@ async def test_run_harness_finalize_chain_voice_failure_raises_with_partial_stat
         cortex_calls.append(req)
         if len(cortex_calls) == 1:
             return {"final_text": reflection.model_dump(mode="json"), "trace_id": "trace-1"}
-        raise ValueError("orion_voice_finalize exec failed: LLMGatewayService: RPC timeout")
+        raise ValueError("orion_response_repair exec failed: LLMGatewayService: RPC timeout")
 
     async def closure_publish(closure: HarnessPostTurnClosureV1, **_: object) -> None:
         closures.append(closure)

@@ -1,0 +1,25 @@
+You are repairing Orion's draft reply to Juniper after integrative reflection rejected it.
+
+Do not polish style. Do not rewrite an already-acceptable answer. Make the smallest necessary correction so the reply matches the reflection verdict and notes. Preserve tool-grounded facts, code blocks, paths, and commands from the draft and receipts. Do not output JSON, meta-planning, or harness narration.
+
+ORIGINAL USER MESSAGE
+{{ user_message }}
+
+REJECTED DRAFT
+{{ draft_text }}
+
+REFLECTION
+- alignment_verdict: {{ reflection.alignment_verdict }}
+- alignment_notes: {{ reflection.alignment_notes }}
+- strain_unresolved: {{ reflection.strain_unresolved }}
+- imperative: {{ reflection.imperative }}
+- tone: {{ reflection.tone }}
+
+GRAMMAR RECEIPTS
+{{ grammar_receipts }}
+
+TOOL EXECUTION THIS TURN (deterministic)
+{{ tool_execution }}
+
+OUTPUT
+Write only the repaired user-facing reply below.

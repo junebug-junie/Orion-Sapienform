@@ -431,7 +431,7 @@ async def test_harness_finalize_chain_records_retry_on_outcome_molecule(
                 "final_text": reflection.model_dump(mode="json"),
                 "trace_id": "trace-first" if first_call else "trace-retry",
             }
-        if verb == "orion_voice_finalize":
+        if verb == "orion_response_repair":
             return {"final_text": "final for juniper"}
         raise AssertionError(f"unexpected verb {verb}")
 
@@ -449,7 +449,7 @@ async def test_harness_finalize_chain_records_retry_on_outcome_molecule(
             lambda result: result["final_text"],
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "final for juniper",
         )
         chain = await run_harness_finalize_chain(
@@ -467,8 +467,10 @@ async def test_harness_finalize_chain_records_retry_on_outcome_molecule(
             verdict_publish_fn=verdict_publish_fn,
         )
 
-    assert cortex_calls == ["harness_finalize_reflect", "look_at_camera", "harness_finalize_reflect", "orion_voice_finalize"]
+    assert cortex_calls == ["harness_finalize_reflect", "look_at_camera", "harness_finalize_reflect"]
     assert chain.reflection.alignment_verdict == "aligned"  # the SECOND reflection won
+    assert chain.final_text == draft_text  # aligned → no repair LLM
+    assert chain.response_repair_ran is False
     assert len(outcome_holder) == 1
     outcome = outcome_holder[0]
     assert outcome.finalize_loop_retried is True
@@ -524,7 +526,7 @@ async def test_max_retries_constant_is_load_bearing(monkeypatch: pytest.MonkeyPa
             lambda result: result["final_text"],
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "final for juniper",
         )
         await run_harness_finalize_chain(
@@ -582,7 +584,7 @@ async def test_harness_finalize_chain_flag_off_no_retry_field_set(
             lambda result: result["final_text"],
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "final for juniper",
         )
         await run_harness_finalize_chain(

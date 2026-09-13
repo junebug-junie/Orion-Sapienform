@@ -63,7 +63,7 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
             lambda result: reflection.model_dump(mode="json"),
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "final for juniper",
         )
         chain = await run_harness_finalize_chain(
@@ -129,7 +129,7 @@ async def test_voice_finalize_cannot_reintroduce_false_reading_acceptance() -> N
             lambda _result: reflection.model_dump(mode="json"),
         )
         mp.setattr(
-            "orion.harness.finalize.extract_voice_finalize_text",
+            "orion.harness.finalize.extract_response_repair_text",
             lambda _result: "I logged it and will process it later. FABRICATED_SUMMARY",
         )
         chain = await run_harness_finalize_chain(

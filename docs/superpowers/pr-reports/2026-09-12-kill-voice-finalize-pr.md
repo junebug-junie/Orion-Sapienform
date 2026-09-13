@@ -48,14 +48,8 @@ See `git log origin/main..HEAD --stat`. Primary seams: `orion/harness/*`, `orion
 ## Tests run
 
 ```text
-pytest orion/cognition/prompts/tests/test_response_repair_prompt.py \
-  orion/harness/tests/test_response_repair_gate.py \
-  orion/harness/tests/test_finalize_failure_closure.py \
-  orion/harness/tests -q
-# 327 passed; 1 failed unrelated:
-#   test_harness_runner_surfaces_fcc_error_code
-#   (expects grounding_status==fcc_timeout; runner prefers error message via
-#    apply_context_overflow_hint — pre-existing, runner.py untouched)
+pytest orion/harness/tests -q
+# 328 passed
 
 pytest services/orion-cortex-exec/tests/test_default_llm_route_for_step.py \
   services/orion-cortex-exec/tests/test_harness_finalize_route.py \
@@ -100,8 +94,8 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 ## Risks / concerns
 
 - Severity: low
-- Concern: `test_harness_runner_surfaces_fcc_error_code` fails on this tree; unrelated to voice kill (runner prefers human error string over `error_code`).
-- Mitigation: track as separate fix; do not block this PR on it unless CI gates on that test alone and fails the job.
+- Concern: Formal Task-tool subagent reviews were quota-blocked mid-plan; controller finished Tasks 4–8 inline.
+- Mitigation: Focused pytest green on harness (328) + cortex-exec/hub finalize suites; live smoke after restart still needed.
 
 ## PR link
 

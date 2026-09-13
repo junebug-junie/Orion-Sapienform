@@ -8,6 +8,10 @@ Wants=local-fs.target
 Type=simple
 RuntimeDirectory=orion-audio
 RuntimeDirectoryMode=0755
+# Preserve across restarts so Docker binds (orion-biometrics) do not pin an
+# emptied inode after the ambient reader unit cycles. Same class of failure
+# as /run/orion-sensors (2026-09-12).
+RuntimeDirectoryPreserve=yes
 # Paths below are rewritten to the installing checkout by
 # scripts/setup_athena_ambient_audio.sh (@ORION_ROOT@ → real repo root).
 WorkingDirectory=@ORION_ROOT@

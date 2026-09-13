@@ -315,7 +315,10 @@ and the extended `scripts/smoke_field_digester_biometrics.sh`.
 
 Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
 `CABINET_SENSOR_STALE_AFTER_SEC` (default `10`). Missing/stale ⇒ omit cabinet measurement keys
-(never zero-fill).
+(never zero-fill). `/health` exposes `host_snapshots.cabinet_sensors.readable` /
+`ambient_audio.readable` so an emptied Docker bind (systemd recreated
+`RuntimeDirectory` under `/run` while this container stayed up) is visible without
+`docker exec`. Top-level `ok` stays true — these paths are optional off Athena.
 
 ## Cabinet ambient audio (Athena USB mic, levels-only)
 

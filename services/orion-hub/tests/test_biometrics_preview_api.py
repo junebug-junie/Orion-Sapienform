@@ -443,6 +443,56 @@ import asyncio
 _LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"
 
 
+def test_preview_history_queries_bind_sql_writer_varchar_cutoff(monkeypatch):
+    """Preview routes share the same TEXT timestamp column — ISO-Z must not return."""
+    from datetime import datetime, timezone
+
+    captured: dict[str, Any] = {}
+
+    class FakeConnection:
+        async def fetch(self, sql, *args):
+            captured.setdefault("calls", []).append((sql, args))
+            return []
+
+    class FakePool:
+        def acquire(self, timeout=None):
+            class _Ctx:
+                async def __aenter__(self_inner):
+                    return FakeConnection()
+
+                async def __aexit__(self_inner, *exc):
+                    return False
+
+            return _Ctx()
+
+    async def fake_pool():
+        return FakePool()
+
+    now = datetime(2026, 9, 13, 3, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(biometrics_preview_routes, "_pg_pool", fake_pool)
+    monkeypatch.setattr(biometrics_preview_routes, "_now_utc", lambda: now)
+
+    asyncio.run(
+        biometrics_preview_routes.query_channel_history_rows(
+            node="athena", channel="strain", column="composites", hours=24
+        )
+    )
+    asyncio.run(
+        biometrics_preview_routes.query_multi_channel_history_rows(
+            node="athena",
+            columns_by_channel={"strain": "composites"},
+            hours=24,
+        )
+    )
+    expected = "2026-09-12 03:00:00.000000+00"
+    assert len(captured["calls"]) == 2
+    for _sql, args in captured["calls"]:
+        assert args[0] == "athena"
+        assert args[1] == expected
+        assert "T" not in args[1]
+        assert args[1].endswith("+00")
+
+
 def _local_postgres_reachable() -> bool:
     try:
         import asyncpg

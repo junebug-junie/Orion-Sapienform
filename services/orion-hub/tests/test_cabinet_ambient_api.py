@@ -169,6 +169,21 @@ def test_downsample_points_averages_each_bucket_and_respects_cap():
     ]
 
 
+def test_biometrics_summary_cutoff_matches_sql_writer_varchar_form():
+    """sql-writer stores TEXT timestamps as `YYYY-MM-DD HH:MM:SS.ffffff+00`.
+
+    ISO-Z cutoffs (`...T...Z`) sort AFTER same-day stored rows because
+    space < 'T', so a 24h window falsely returns zero. Confirmed live
+    2026-09-13 against orion_biometrics_summary.
+    """
+    cutoff = cabinet_ambient_routes.biometrics_summary_cutoff(NOW)
+    assert cutoff == "2026-08-26 03:00:05.000000+00"
+    # Same calendar day, later sample in sql-writer form must clear the cutoff.
+    assert "2026-08-26 07:02:11.914495+00" >= cutoff
+    # The old ISO-Z form must NOT win against that same-day sample.
+    assert not ("2026-08-26 07:02:11.914495+00" >= "2026-08-26T03:00:05.000000Z")
+
+
 def test_history_query_uses_index_compatible_timestamp_range(monkeypatch):
     captured = {}
 
@@ -193,7 +208,7 @@ def test_history_query_uses_index_compatible_timestamp_range(monkeypatch):
 
     asyncio.run(cabinet_ambient_routes.query_history_rows(node="athena", hours=72))
 
-    assert captured["args"] == ("athena", "2026-08-23T03:00:05Z")
+    assert captured["args"] == ("athena", "2026-08-23 03:00:05.000000+00")
     assert "timestamp >= $2" in captured["sql"]
     assert "ORDER BY timestamp ASC" in captured["sql"]
     assert "timestamp::timestamptz" not in captured["sql"]

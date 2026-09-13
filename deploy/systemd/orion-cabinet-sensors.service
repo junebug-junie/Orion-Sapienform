@@ -8,6 +8,13 @@ Wants=local-fs.target
 Type=simple
 RuntimeDirectory=orion-sensors
 RuntimeDirectoryMode=0755
+# Keep /run/orion-sensors across unit restarts. Without this, a restart
+# deletes and recreates the RuntimeDirectory (new inode); Docker bind mounts
+# stay pinned to the old empty dir, so orion-biometrics silently loses
+# cabinet snapshots while Hub (remounted later) still sees them. Confirmed
+# live 2026-09-12 ~07:02 after cabinet unit restarts during a host package
+# event — biometrics wrote summaries with zero cabinet_* keys for ~20h.
+RuntimeDirectoryPreserve=yes
 # Paths below are rewritten to the installing checkout by
 # scripts/setup_athena_cabinet_sensors.sh (@ORION_ROOT@ → real repo root).
 WorkingDirectory=@ORION_ROOT@

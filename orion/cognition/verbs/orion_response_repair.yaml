@@ -1,0 +1,25 @@
+name: orion_response_repair
+label: Orion Response Repair
+description: >
+  Conditional post-reflection repair for unified turns. Invoked only when 5b
+  marks the motor draft misaligned, uncertain, or strain_unresolved. Makes the
+  smallest necessary correction — never a style polish pass.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 300000
+
+services:
+  - LLMGatewayService
+
+prompt_template: orion_response_repair.j2
+
+steps:
+  - name: llm_orion_response_repair
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: orion_response_repair.j2
+    requires_gpu: true

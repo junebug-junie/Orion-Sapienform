@@ -147,7 +147,7 @@ def to_attention_schema(frame: AttentionFrameV1, *, leg: str | None = None) -> A
     only" would have emptied the lane.
 
     `leg` names which of a turn's cortex legs built this frame (the verb,
-    e.g. `harness_finalize_reflect` vs `orion_voice_finalize`). A unified
+    e.g. `harness_finalize_reflect` vs `orion_response_repair`). A unified
     turn runs more than one brain-mode leg under ONE correlation id and no
     turn_id, so without it both legs collided on `entry_id` and the writer
     kept whichever arrived first (review finding 2026-09-06). Absent a leg

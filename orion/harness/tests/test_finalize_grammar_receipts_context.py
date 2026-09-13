@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from orion.harness.finalize import (
     build_finalize_reflect_context,
-    build_voice_finalize_context,
+    build_response_repair_context,
 )
 from orion.harness.tests.fixtures import (
     make_appraisal,
@@ -10,7 +10,6 @@ from orion.harness.tests.fixtures import (
     make_repair_overlay,
     make_thought,
 )
-from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import GrammarReceiptV1
 
 
@@ -33,18 +32,12 @@ def test_build_finalize_reflect_context_includes_grammar_receipts() -> None:
     ]
 
 
-def test_build_voice_finalize_context_includes_grammar_receipts() -> None:
-    thought = make_thought()
+def test_build_response_repair_context_includes_grammar_receipts() -> None:
     receipts = [GrammarReceiptV1(step_index=1, tool_name="Grep", summary="grep coalition")]
-    ctx = build_voice_finalize_context(
+    ctx = build_response_repair_context(
         correlation_id="c-1",
         draft_text="draft",
-        thought=thought,
-        substrate_appraisal=make_appraisal(),
         reflection=make_reflection(),
-        stance_harness_slice=thought.stance_harness_slice,
-        voice_contract=AnswerContract(),
-        repair_overlay=make_repair_overlay(),
         user_message="hello",
         grammar_receipts=receipts,
     )

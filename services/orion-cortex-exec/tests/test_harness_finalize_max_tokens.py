@@ -94,7 +94,7 @@ def test_self_study_reflect_uses_general_max_tokens_budget(monkeypatch) -> None:
     assert src == "settings.llm_chat_general_max_tokens_self_study_reflect"
 
 
-def test_orion_voice_finalize_uses_general_max_tokens_budget(monkeypatch) -> None:
+def test_orion_response_repair_uses_general_max_tokens_budget(monkeypatch) -> None:
     import app.executor as executor_mod
 
     monkeypatch.setattr(
@@ -109,7 +109,7 @@ def test_orion_voice_finalize_uses_general_max_tokens_budget(monkeypatch) -> Non
             llm_chat_fallback_max_tokens=512,
         ),
     )
-    step = _step(verb_name="orion_voice_finalize", step_name="llm_orion_voice_finalize")
+    step = _step(verb_name="orion_response_repair", step_name="llm_orion_response_repair")
     eff, src, _ = _resolve_llm_max_tokens(ctx={}, step=step)
     assert eff == 8000
     assert src == "harness_finalize_default"

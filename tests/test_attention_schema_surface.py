@@ -254,7 +254,7 @@ def test_cortex_two_legs_of_one_turn_do_not_collide() -> None:
     kept whichever arrived first."""
     frame = _frame(turn_id=None)
     a = cortex_to_attention_schema(frame, leg="harness_finalize_reflect")
-    b = cortex_to_attention_schema(frame, leg="orion_voice_finalize")
+    b = cortex_to_attention_schema(frame, leg="orion_response_repair")
     assert a.entry_id != b.entry_id and a.correlation_id == b.correlation_id == "corr-1"
     # No leg at all: the generated_at stamp still separates distinct builds.
     c = cortex_to_attention_schema(frame)

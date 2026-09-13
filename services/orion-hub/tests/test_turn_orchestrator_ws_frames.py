@@ -973,6 +973,25 @@ def test_harness_error_frame_voice_finalize_without_substrate_appraisal() -> Non
     assert "orion_voice_finalize" in frame["error"]
 
 
+def test_finalize_phase_error_recognizes_legacy_voice_and_repair_status() -> None:
+    from orion.hub.turn_orchestrator import _finalize_phase_error
+
+    legacy = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text=None,
+        draft_text="draft",
+        finalize_ran=False,
+        step_count=1,
+        compliance_verdict="failed",
+        grounding_status="orion_voice_finalize exec failed: timeout",
+    )
+    modern = legacy.model_copy(
+        update={"grounding_status": "orion_response_repair exec failed: timeout"}
+    )
+    assert _finalize_phase_error(legacy) is True
+    assert _finalize_phase_error(modern) is True
+
+
 @pytest.mark.asyncio
 async def test_turn_orchestrator_finalize_failure_surfaces_partial_draft() -> None:
     failed_run = HarnessRunV1(

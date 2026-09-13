@@ -260,7 +260,7 @@ async def handle_harness_run_request(
         result_prefix=settings.channel_cortex_exec_result_prefix,
         source_name=settings.service_name,
         timeout_sec=settings.finalize_reflect_timeout_sec,
-        voice_finalize_timeout_sec=settings.voice_finalize_timeout_sec,
+        response_repair_timeout_sec=settings.response_repair_timeout_sec,
     )
     substrate = substrate_client or HarnessSubstrateClient(
         bus,
@@ -450,6 +450,8 @@ async def handle_harness_run_request(
         verdict_molecule_id=chain.verdict_molecule_id,
         finalize_ran=True,
         finalize_changed=chain.finalize_changed,
+        response_repair_ran=chain.response_repair_ran,
+        response_repair_reason=chain.response_repair_reason,
         quick_lane_skipped_5b=chain.quick_lane_skipped_5b,
         step_count=motor.step_count,
         exit_code=motor.exit_code,

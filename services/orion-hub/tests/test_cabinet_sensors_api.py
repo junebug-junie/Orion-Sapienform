@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -299,6 +300,35 @@ def test_rows_to_sensor_series_skips_nulls_and_zero_fills_nothing():
     assert len(series["proximity_activity"]) == 1
     assert len(series["magnetic_ut"]) == 2
     assert series["imu_yaw_deg"][0]["v"] == pytest.approx(-42.0)
+
+
+def test_sensor_history_query_binds_sql_writer_varchar_cutoff(monkeypatch):
+    captured = {}
+
+    class FakeConnection:
+        async def fetch(self, sql, *args):
+            captured["sql"] = sql
+            captured["args"] = args
+            return []
+
+        async def close(self):
+            captured["closed"] = True
+
+    class FakeAsyncpg:
+        @staticmethod
+        async def connect(*, dsn):
+            return FakeConnection()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/db")
+    monkeypatch.setitem(sys.modules, "asyncpg", FakeAsyncpg)
+    monkeypatch.setattr(cabinet_sensors_routes, "_now_utc", lambda: NOW)
+
+    asyncio.run(cabinet_sensors_routes.query_sensor_history_rows(node="athena", hours=24))
+
+    assert captured["args"] == ("athena", "2026-08-23 12:00:05.000000+00")
+    assert "timestamp >= $2" in captured["sql"]
+    assert "timestamp::timestamptz" not in captured["sql"]
+    assert captured["closed"] is True
 
 
 def test_history_defaults_to_24h_and_returns_empty_series(client, monkeypatch):

@@ -208,12 +208,12 @@ def test_harness_turn_outcome_molecule_roundtrip() -> None:
         surprise_resolved=False,
         final_text="",
         finalize_failed=True,
-        failure_reason="orion_voice_finalize exec failed: timeout",
+        failure_reason="orion_response_repair exec failed: timeout",
         draft_text_excerpt="partial motor draft",
     )
     restored = HarnessTurnOutcomeMoleculeV1.model_validate(outcome.model_dump(mode="json"))
     assert restored.finalize_failed is True
-    assert restored.failure_reason.startswith("orion_voice_finalize")
+    assert restored.failure_reason.startswith("orion_response_repair")
 
 
 def test_harness_post_turn_closure_roundtrip() -> None:

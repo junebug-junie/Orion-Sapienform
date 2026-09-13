@@ -8,7 +8,7 @@ from orion.cognition.cortex_payload_extract import (
 )
 from orion.harness.finalize import (
     extract_finalize_reflection_payload,
-    extract_voice_finalize_text,
+    extract_response_repair_text,
     parse_finalize_reflection_payload,
 )
 
@@ -90,7 +90,7 @@ def test_cortex_exec_failure_detail_reads_structured_rejection_preview() -> None
     assert "structured_output_rejected" in detail
 
 
-def test_extract_voice_finalize_text_rejects_error_shaped_text() -> None:
+def test_extract_response_repair_text_rejects_error_shaped_text() -> None:
     """Confirmed live, 2026-08-19: a real circe-worker outage made this exec
     result's own text field literally this string -- a genuine upstream
     failure reported only in the text, which an emptiness-only check (the
@@ -100,13 +100,13 @@ def test_extract_voice_finalize_text_rejects_error_shaped_text() -> None:
     shipping the error text as Orion's real answer."""
     payload = {"final_text": "[Error: llamacpp timed out after waiting]"}
     with pytest.raises(ValueError, match="error-shaped text"):
-        extract_voice_finalize_text(payload)
+        extract_response_repair_text(payload)
 
 
-def test_extract_voice_finalize_text_accepts_real_text() -> None:
+def test_extract_response_repair_text_accepts_real_text() -> None:
     """Guards the test above: the happy path must not be over-gated."""
     payload = {"final_text": "I keep circling the same unresolved thing."}
-    assert extract_voice_finalize_text(payload) == "I keep circling the same unresolved thing."
+    assert extract_response_repair_text(payload) == "I keep circling the same unresolved thing."
 
 
 def test_extract_finalize_reflection_payload_rejects_error_shaped_text() -> None:

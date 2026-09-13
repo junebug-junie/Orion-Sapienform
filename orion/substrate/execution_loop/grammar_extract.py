@@ -212,7 +212,7 @@ def extract_execution_state_from_events(
     # two colons (trace_id.split(":", 2)), so for any lane-suffixed trace_id
     # (e.g. HarnessGrammarCollector's "harness_motor" lane, or
     # CortexExecGrammarCollector's stance_react/harness_finalize_reflect/
-    # orion_voice_finalize lanes) the parsed "correlation_id" slot actually
+    # orion_response_repair lanes) the parsed "correlation_id" slot actually
     # contains "{correlation_id}:{lane}" -- both real producers already
     # populate event.correlation_id cleanly (see
     # orion/harness/grammar_emit.py's _event()/build_harness_grammar_events()

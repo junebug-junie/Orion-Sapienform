@@ -314,7 +314,8 @@ def _finalize_phase_error(run: HarnessRunV1) -> bool:
         return False
     if run.substrate_appraisal is not None or run.reflection is not None:
         return True
-    return "orion_voice_finalize" in (run.grounding_status or "")
+    status = run.grounding_status or ""
+    return "orion_response_repair" in status or "orion_voice_finalize" in status
 
 
 def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str, Any]:

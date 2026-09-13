@@ -23,7 +23,8 @@ from test_admission_runtime_postgres import DSN, request, with_database
 pytestmark = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 
 
-def test_capacity_one_stance_reflection_retry_and_voice_share_reservation(monkeypatch):
+@pytest.mark.parametrize("repair_required", [False, True])
+def test_capacity_one_stance_retry_and_conditional_repair_share_owner(monkeypatch, repair_required):
     monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
     # Give Thought a distinct package name: these service integration tests
     # already loaded durable-runs' unrelated `app` package.
@@ -76,7 +77,7 @@ def test_capacity_one_stance_reflection_retry_and_voice_share_reservation(monkey
                 if verb == "harness_finalize_reflect":
                     reflection_count += 1
                     reflection = make_reflection(
-                        alignment_verdict="misaligned" if reflection_count == 1 else "aligned",
+                        alignment_verdict="misaligned" if reflection_count == 1 or repair_required else "aligned",
                         recommended_tool="look_at_camera" if reflection_count == 1 else None,
                     )
                     return {"final_text": json.dumps(reflection.model_dump(mode="json"))}
@@ -111,9 +112,10 @@ def test_capacity_one_stance_reflection_retry_and_voice_share_reservation(monkey
             user_message="What does the camera show?", voice_contract=None,
             cortex_client=cortex_client, substrate_client=substrate_client, resource_lease=lease,
         )
-        assert result.final_text == "A grounded final answer."
+        assert result.final_text == ("A grounded final answer." if repair_required else draft)
+        assert result.response_repair_ran is repair_required
         assert seen == ["stance_react", "harness_finalize_reflect", "look_at_camera",
-                        "harness_finalize_reflect", "orion_voice_finalize"]
+                        "harness_finalize_reflect"] + (["orion_response_repair"] if repair_required else [])
         assert (await capacity.snapshot())["active_permits"] == []
         assert await store.validate(lease.model_dump(mode="json"))
         assert (await capacity.acquire(acquisition("still-foreign")))["reason"] == "durable_lease_active"

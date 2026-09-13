@@ -256,7 +256,9 @@ async def query_sensor_history_rows(*, node: str, hours: int) -> Sequence[Mappin
 
     import asyncpg
 
-    cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
+    from .cabinet_ambient_routes import biometrics_summary_cutoff
+
+    cutoff = biometrics_summary_cutoff(_now_utc() - timedelta(hours=hours))
     connection = await asyncpg.connect(dsn=database_url)
     try:
         return await connection.fetch(

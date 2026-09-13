@@ -2458,7 +2458,12 @@ while `#cabinet` is visible; sensor history fetches on tab activation, window to
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
 biometrics → sql-writer rows with `cabinet_temp_c` and related keys on node
-`CABINET_AMBIENT_HISTORY_NODE` (default `athena`).
+`CABINET_AMBIENT_HISTORY_NODE` (default `athena`). History cutoffs use sql-writer's varchar
+timestamp form (`YYYY-MM-DD HH:MM:SS+00`); ISO-Z cutoffs falsely empty the default 24h window
+(space sorts before `T`). Live tiles read host `/run/orion-sensors` and do not need Postgres.
+If charts go empty while tiles stay live, check `curl -fsS :8100/health | jq .host_snapshots`
+— a cabinet unit restart can recreate `RuntimeDirectory=orion-sensors` and leave a long-lived
+biometrics container on an empty mount until recreate.
 
 ### Cabinet ambient audio (live + multi-day charts)
 
@@ -2701,7 +2706,7 @@ run ID plus lease identity/generation, and even cached results require a current
 fence. Shutdown cancels and joins active turn tasks. The typed lease passes
 through the unified turn and Harness request into FCC's per-process
 `X-Orion-Resource-Lease` header; it never enters the prompt or a global env value.
-Stance, reflection, re-reflection, and voice finalization use the same lease and
+Stance, reflection, re-reflection, and conditional response repair use the same lease and
 assigned lane through their Cortex requests. Ordinary turns keep their existing
 routes; Hub omits an absent lease from the legacy stance bus payload.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from orion.harness.finalize import (
     build_finalize_reflect_context,
-    build_voice_finalize_context,
+    build_response_repair_context,
     format_tool_execution_digest,
     tools_called_this_turn,
 )
@@ -19,7 +19,6 @@ from orion.harness.tests.fixtures import (
     make_repair_overlay,
     make_thought,
 )
-from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import GrammarReceiptV1
 
 
@@ -73,17 +72,11 @@ def test_reflect_context_includes_tool_execution() -> None:
     assert "mcp__github__list_pull_requests" in ctx["tool_execution"]
 
 
-def test_voice_context_includes_tool_execution() -> None:
-    thought = make_thought()
-    ctx = build_voice_finalize_context(
+def test_repair_context_includes_tool_execution() -> None:
+    ctx = build_response_repair_context(
         correlation_id="c-1",
         draft_text="fix(action-outcome): reconcile index ownership",
-        thought=thought,
-        substrate_appraisal=make_appraisal(),
         reflection=make_reflection(alignment_verdict="misaligned"),
-        stance_harness_slice=thought.stance_harness_slice,
-        voice_contract=AnswerContract(),
-        repair_overlay=make_repair_overlay(),
         user_message="grab the latest pr title; skip bash",
         grammar_receipts=_receipts(),
     )

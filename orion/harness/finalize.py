@@ -363,7 +363,7 @@ def build_finalize_reflect_context(
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "repair_overlay": repair_overlay.model_dump(mode="json"),
-        "finalize_overlay": repair_overlay.finalize_overlay,
+        "finalize_overlay": "",
         "user_message": user_message,
         # An admitted continuation uses its owning lane and generation, so
         # it cannot queue behind the reservation that this same turn holds.
@@ -371,7 +371,7 @@ def build_finalize_reflect_context(
         # routing axes for Gateway deployments with or without lane routing.
         "llm_route": resource_lease.lane if resource_lease else "agent",
         # Was `background` until confirmed wrong live 2026-08-16
-        # (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize
+        # (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_response_repair
         # call also runs on `background`/atlas-worker-2 and can occupy it for 90s+,
         # starving this call's LLMGatewayService RPC entirely (no reply within
         # cortex-exec's own 300s internal timeout). `chat` was considered and
@@ -810,42 +810,22 @@ async def emit_verdict_molecule(
     return molecule
 
 
-def build_voice_finalize_context(
+def build_response_repair_context(
     *,
     correlation_id: str,
     draft_text: str,
-    thought: ThoughtEventV1,
-    substrate_appraisal: SubstrateFinalizeAppraisalV1,
     reflection: FinalizeReflectionV1,
-    stance_harness_slice: StanceHarnessSliceV1,
-    voice_contract: AnswerContract | dict[str, Any],
-    repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
 ) -> dict[str, Any]:
-    contract_dump = (
-        voice_contract.model_dump(mode="json")
-        if isinstance(voice_contract, AnswerContract)
-        else dict(voice_contract)
-    )
     return {
         "draft_text": draft_text,
-        "thought_event": thought.model_dump(mode="json"),
-        "substrate_appraisal": substrate_appraisal.model_dump(mode="json"),
         "reflection": reflection.model_dump(mode="json"),
-        "stance_harness_slice": stance_harness_slice.model_dump(mode="json"),
-        "grounding_capsule": (
-            thought.grounding_capsule.model_dump(mode="json")
-            if thought.grounding_capsule is not None
-            else None
-        ),
-        "voice_contract": contract_dump,
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
-        "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
-        # Same owner as 5b; ordinary finalization retains the agent lane.
+        # Same owner as 5b; ordinary response repair retains the agent lane.
         "llm_route": resource_lease.lane if resource_lease else "agent",
         "llm_lane": resource_lease.lane if resource_lease else "agent",
         **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
@@ -857,21 +837,16 @@ def build_voice_finalize_context(
     }
 
 
-def build_voice_finalize_plan_request(
+def build_response_repair_plan_request(
     *,
     correlation_id: str,
     draft_text: str,
-    thought: ThoughtEventV1,
-    substrate_appraisal: SubstrateFinalizeAppraisalV1,
     reflection: FinalizeReflectionV1,
-    stance_harness_slice: StanceHarnessSliceV1,
-    voice_contract: AnswerContract | dict[str, Any],
-    repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
 ) -> PlanExecutionRequest:
-    plan = build_plan_for_verb("orion_voice_finalize", mode="brain")
+    plan = build_plan_for_verb("orion_response_repair", mode="brain")
     return PlanExecutionRequest(
         plan=plan,
         args=PlanExecutionArgs(
@@ -879,15 +854,10 @@ def build_voice_finalize_plan_request(
             trigger_source="orion-harness-governor",
             extra={"llm_profile": "brain", "mode": "brain"},
         ),
-        context=build_voice_finalize_context(
+        context=build_response_repair_context(
             correlation_id=correlation_id,
             draft_text=draft_text,
-            thought=thought,
-            substrate_appraisal=substrate_appraisal,
             reflection=reflection,
-            stance_harness_slice=stance_harness_slice,
-            voice_contract=voice_contract,
-            repair_overlay=repair_overlay,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
             resource_lease=resource_lease,
@@ -895,42 +865,23 @@ def build_voice_finalize_plan_request(
     )
 
 
-def extract_voice_finalize_text(result: dict[str, Any]) -> str:
-    """Extracts 5c's user-visible answer text -- the last stage allowed to
-    change what Juniper reads (see `run_orion_voice_finalize`'s own
-    docstring), so this is the last point that can refuse a bad answer
-    before it ships.
-
-    Confirmed live, 2026-08-19: a real circe-worker outage made this exec
-    result's own text field literally `"[Error: llamacpp timed out after
-    waiting]"` -- a genuine upstream failure reported only in the text, no
-    different in shape from `ok=False`. An emptiness check alone (the only
-    gate here before this fix) does not catch it: the string is non-empty.
-    Checked explicitly via `looks_like_error_text()` (same real incident
-    class `services/orion-hub/scripts/endogenous_outreach.py`'s own
-    backstop was built for, on 2026-08-14 -- see cortex_payload_extract.py's
-    module comment for the full account of why this is now the shared,
-    canonical check rather than a second copy). Raising here routes into
-    this file's own existing, already-correct failure path
-    (`run_orion_voice_finalize`'s caller already wraps this in
-    `emit_finalize_failure_artifacts`/`HarnessFinalizeFailedError` on any
-    exception) instead of shipping the error text as Orion's real answer.
-    """
+def extract_response_repair_text(result: dict[str, Any]) -> str:
+    """Extract repair-pass user-visible text; refuse error-shaped payloads."""
     text = extract_cortex_payload_text(result)
     if text:
         if looks_like_error_text(text):
             raise ValueError(
-                f"orion_voice_finalize returned error-shaped text: {_excerpt(text, max_len=200)}"
+                f"orion_response_repair returned error-shaped text: {_excerpt(text, max_len=200)}"
             )
         return text
 
     detail = cortex_exec_failure_detail(result)
     if detail:
-        raise ValueError(f"orion_voice_finalize exec failed: {detail}")
-    raise ValueError("orion_voice_finalize exec result missing final_text")
+        raise ValueError(f"orion_response_repair exec failed: {detail}")
+    raise ValueError("orion_response_repair exec result missing final_text")
 
 
-def _voice_finalize_changed(
+def _response_repair_changed(
     draft_text: str,
     final_text: str,
     reflection: FinalizeReflectionV1,
@@ -940,7 +891,7 @@ def _voice_finalize_changed(
     return final_text.strip() != draft_text.strip()
 
 
-async def run_orion_voice_finalize(
+async def run_orion_response_repair(
     *,
     correlation_id: str,
     draft_text: str,
@@ -954,39 +905,26 @@ async def run_orion_voice_finalize(
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Orion capability: Orion's voiced final answer (beat 5c).
+    """Orion capability: minimal post-reflection response repair.
 
-    Converts the motor draft into the user-visible text through the voice
-    finalize Cortex plan (bus-mediated, not a local call), then records
-    whether the result differs from the draft. This is the last stage allowed
-    to change what Juniper reads.
-
-    Runtime evidence: finalize_changed and alignment_verdict in the returned
-    metadata, plus the cortex trace id. Start here when the final text
-    diverged from the draft unexpectedly, or 5c failed after appraisal and
-    reflection succeeded.
+    Invoked only when needs_response_repair(reflection) is true. Makes the
+    smallest necessary correction — not a style polish pass.
     """
+    _ = thought, substrate_appraisal, voice_contract, repair_overlay
     if cortex_client is None:
-        raise ValueError("cortex_client is required for orion voice finalize")
+        raise ValueError("cortex_client is required for orion response repair")
 
-    overlay = repair_overlay or HarnessRepairOverlayV1()
-    contract = voice_contract or AnswerContract()
-    plan_request = build_voice_finalize_plan_request(
+    plan_request = build_response_repair_plan_request(
         correlation_id=correlation_id,
         draft_text=draft_text,
-        thought=thought,
-        substrate_appraisal=substrate_appraisal,
         reflection=reflection,
-        stance_harness_slice=thought.stance_harness_slice,
-        voice_contract=contract,
-        repair_overlay=overlay,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
     )
     exec_result = await cortex_client(plan_request)
-    final_text = extract_voice_finalize_text(exec_result)
-    finalize_changed = _voice_finalize_changed(draft_text, final_text, reflection)
+    final_text = extract_response_repair_text(exec_result)
+    finalize_changed = _response_repair_changed(draft_text, final_text, reflection)
     meta = {
         "finalize_changed": finalize_changed,
         "alignment_verdict": reflection.alignment_verdict,
@@ -1030,6 +968,8 @@ async def emit_turn_outcome_molecule(
     draft_text: str,
     final_text: str,
     finalize_changed: bool,
+    response_repair_ran: bool = False,
+    response_repair_reason: str | None = None,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     finalize_failed: bool = False,
     failure_reason: str | None = None,
@@ -1047,7 +987,6 @@ async def emit_turn_outcome_molecule(
         not finalize_failed
         and reflection.alignment_verdict == "aligned"
         and not reflection.strain_unresolved
-        and (finalize_changed or substrate_appraisal.surprise_level < _quick_gate_epsilon())
     )
     molecule = HarnessTurnOutcomeMoleculeV1(
         correlation_id=correlation_id,
@@ -1058,6 +997,8 @@ async def emit_turn_outcome_molecule(
         draft_hash=substrate_appraisal.draft_hash,
         final_hash=_text_hash(final_text),
         finalize_changed=finalize_changed,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
         alignment_verdict=reflection.alignment_verdict,
         surprise_level_at_draft=substrate_appraisal.surprise_level,
         surprise_resolved=surprise_resolved,
@@ -1120,6 +1061,23 @@ def _outcome_molecule_id(molecule: HarnessTurnOutcomeMoleculeV1) -> str:
     )
 
 
+def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
+    return (
+        reflection.alignment_verdict in {"misaligned", "uncertain"}
+        or reflection.strain_unresolved
+    )
+
+
+def response_repair_reason_for(reflection: FinalizeReflectionV1) -> str | None:
+    if not needs_response_repair(reflection):
+        return None
+    if reflection.alignment_verdict == "misaligned":
+        return "misaligned"
+    if reflection.alignment_verdict == "uncertain":
+        return "uncertain"
+    return "strain_unresolved"
+
+
 async def run_substrate_finalize_appraisal(
     *,
     draft_molecule: HarnessDraftMoleculeV1,
@@ -1138,6 +1096,8 @@ class HarnessFinalizeChainResult:
     finalize_changed: bool
     quick_lane_skipped_5b: bool
     verdict_molecule_id: str
+    response_repair_ran: bool = False
+    response_repair_reason: str | None = None
 
 
 @dataclass
@@ -1162,7 +1122,7 @@ async def emit_harness_finalize_system_error(
     *,
     correlation_id: str,
     error: str,
-    phase: str = "orion_voice_finalize",
+    phase: str = "orion_response_repair",
     channel: str = SYSTEM_ERROR_CHANNEL,
     publish_fn: PublishFn | None = None,
     bus: Any = None,
@@ -1309,7 +1269,7 @@ async def run_harness_finalize_chain(
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
 ) -> HarnessFinalizeChainResult:
-    """Orion capability: unified-turn draft-to-voice finalization.
+    """Orion capability: unified-turn reflection and conditional response repair.
 
     Orchestrates finalize beats 5a → 5b → 5b-prime → 5c → 6b: substrate
     appraisal (5a), integrative reflection or its deterministic quick lane
@@ -1322,11 +1282,11 @@ async def run_harness_finalize_chain(
     may change it. Machine-to-machine reading turns set
     ``preserve_structured_output``: their draft is parsed and canonicalized as
     JSON in place of prose-oriented 5c. The default remains false, preserving
-    the existing voice pass for ordinary turns.
+    conditional response repair for ordinary turns.
 
     ``resource_lease`` carries the same admission owner through reflection,
-    any re-reflection, and voice finalization. Each LLM call uses the reserved
-    lane instead of waiting as an unrelated caller on its own reservation.
+    any re-reflection, and conditional response repair. Each LLM call uses the
+    reserved lane instead of waiting as an unrelated caller on its own reservation.
 
     Runtime evidence: substrate appraisal, verdict and outcome molecules
     (outcome carries finalize_loop_retried/finalize_loop_tool when 5b-prime
@@ -1403,22 +1363,24 @@ async def run_harness_finalize_chain(
     try:
         if preserve_structured_output:
             # Reading Stage 1/2 are machine-to-machine calls. Their consumer
-            # requires JSON, while 5c is intentionally a prose voice writer.
+            # requires JSON, while prose repair is intentionally a text writer.
             # Validate and canonicalize the motor result instead of asking a
-            # prose model to preserve syntax probabilistically. Ordinary chat
-            # keeps the existing 5c behavior because this flag defaults false.
+            # prose model to preserve syntax probabilistically.
             final_text = canonicalize_structured_output(draft_text)
             voice_meta = {
                 "finalize_changed": final_text.strip() != draft_text.strip(),
                 "structured_output_preserved": True,
+                "response_repair_ran": False,
+                "response_repair_reason": None,
             }
             logger.info(
                 "harness_structured_output_preserved corr=%s chars=%s",
                 correlation_id,
                 len(final_text),
             )
-        else:
-            final_text, voice_meta = await run_orion_voice_finalize(
+        elif needs_response_repair(reflection):
+            reason = response_repair_reason_for(reflection)
+            final_text, voice_meta = await run_orion_response_repair(
                 correlation_id=correlation_id,
                 draft_text=draft_text,
                 thought=thought,
@@ -1431,6 +1393,22 @@ async def run_harness_finalize_chain(
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
             )
+            voice_meta = {
+                **voice_meta,
+                "response_repair_ran": True,
+                "response_repair_reason": reason,
+            }
+        else:
+            logger.info(
+                "response_repair_skipped corr=%s reason=aligned",
+                correlation_id,
+            )
+            final_text = draft_text
+            voice_meta = {
+                "finalize_changed": False,
+                "response_repair_ran": False,
+                "response_repair_reason": None,
+            }
     except Exception as exc:
         partial = await emit_finalize_failure_artifacts(
             correlation_id=correlation_id,
@@ -1461,6 +1439,10 @@ async def run_harness_finalize_chain(
         grounded_final_text != draft_text
     )
     final_text = grounded_final_text
+    response_repair_ran = bool(voice_meta.get("response_repair_ran"))
+    response_repair_reason = voice_meta.get("response_repair_reason")
+    if response_repair_reason is not None:
+        response_repair_reason = str(response_repair_reason)
 
     outcome_molecule = await emit_turn_outcome_molecule(
         correlation_id=correlation_id,
@@ -1471,6 +1453,8 @@ async def run_harness_finalize_chain(
         draft_text=draft_text,
         final_text=final_text,
         finalize_changed=finalize_changed,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
         grammar_receipts=grammar_receipts,
         publish_fn=outcome_publish_fn,
         bus=bus,
@@ -1496,6 +1480,8 @@ async def run_harness_finalize_chain(
         finalize_changed=finalize_changed,
         quick_lane_skipped_5b=quick_lane_skipped_5b,
         verdict_molecule_id=verdict_molecule_id,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
     )
 
 

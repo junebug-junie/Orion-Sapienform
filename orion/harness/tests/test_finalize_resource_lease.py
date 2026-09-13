@@ -12,7 +12,8 @@ from orion.schemas.resource_admission import ResourceLeaseV1
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lane", ["agent", "metacog"])
-async def test_reflection_retry_and_voice_keep_the_owning_lease(monkeypatch, lane):
+@pytest.mark.parametrize("repair_required", [False, True])
+async def test_reflection_retry_and_conditional_repair_keep_owner(monkeypatch, lane, repair_required):
     monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
     now = datetime.now(timezone.utc)
     lease = ResourceLeaseV1(
@@ -48,11 +49,11 @@ async def test_reflection_retry_and_voice_keep_the_owning_lease(monkeypatch, lan
         if verb == "harness_finalize_reflect":
             reflection_count += 1
             reflection = make_reflection(
-                alignment_verdict="misaligned" if reflection_count == 1 else "aligned",
+                alignment_verdict="misaligned" if reflection_count == 1 or repair_required else "aligned",
                 recommended_tool="look_at_camera" if reflection_count == 1 else None,
             )
             return {"final_text": json.dumps(reflection.model_dump(mode="json"))}
-        assert verb == "orion_voice_finalize"
+        assert verb == "orion_response_repair"
         return {"final_text": "The grounded final answer."}
 
     result = await run_harness_finalize_chain(
@@ -61,6 +62,9 @@ async def test_reflection_retry_and_voice_keep_the_owning_lease(monkeypatch, lan
         user_message="What does the camera show?", voice_contract=None,
         cortex_client=cortex_client, substrate_client=substrate_client, resource_lease=lease,
     )
-    assert result.final_text == "The grounded final answer."
-    assert calls == ["harness_finalize_reflect", "look_at_camera", "harness_finalize_reflect", "orion_voice_finalize"]
+    assert result.final_text == ("The grounded final answer." if repair_required else draft)
+    assert result.response_repair_ran is repair_required
+    assert calls == ["harness_finalize_reflect", "look_at_camera", "harness_finalize_reflect"] + (
+        ["orion_response_repair"] if repair_required else []
+    )
 

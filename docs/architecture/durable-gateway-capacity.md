@@ -28,7 +28,7 @@ without enabling durable cognition. Gateway remains responsible for route
 resolution, caller deadlines and actual inference; the authority makes no model
 calls. The existing local bus semaphore still protects the thread pool.
 
-Hub/Thought stance and governor reflection/voice calls carry the owning lease
+Hub/Thought stance and governor reflection/response-repair calls carry the owning lease
 and assigned lane, preventing a study from waiting against its own reservation.
 Gateway bus chat, Anthropic Messages and OpenAI chat use the same authority when enabled. Backend
 escalation after planning must not bypass the permit's resolved backend.
@@ -43,7 +43,7 @@ escalation after planning must not bypass the permit's resolved backend.
    cancellation of the caller and revocation of its durable lease.
 4. Preserve existing unprotected behavior when the new flags are off. Fail closed
    on unavailable authority when enforcement is enabled.
-5. Test the stance/reflection/voice producer-consumer chain with the assigned
+5. Test the stance/reflection/response-repair producer-consumer chain with the assigned
    lease. Run separate transport checks, an isolated real-Postgres smoke/eval,
    affected Docker builds and independent review before publishing the PR.
 
@@ -106,7 +106,7 @@ the caller budget. Streams close their upstream before releasing capacity.
 Context-overflow escalation to another backend is disabled in capacity mode;
 the original error returns instead of invoking an unreserved destination.
 
-Stance/Thought and reflection/rereflection/voice contexts carry the typed owning
+Stance/Thought and reflection/rereflection/response-repair contexts carry the typed owning
 lease and assigned route. Exec accepts a route from this contract even when the
 public model picker does not list it. Conflicting explicit route overrides are
 preserved and rejected by Gateway fencing. Legacy requests omit the new optional

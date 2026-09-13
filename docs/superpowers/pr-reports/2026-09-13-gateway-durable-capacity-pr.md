@@ -3,7 +3,7 @@
 Ordinary Gateway requests could start between the durable broker's upstream idle
 sample and its Postgres lease grant. This patch makes request admission and
 workflow reservation use the same Postgres transaction lock. The owning workflow
-can make its stance, reflection, retry and final voice calls on the same lease;
+can make its stance, reflection, retry and conditional response-repair calls on the same lease;
 foreign requests wait until that reservation ends.
 
 ## Implementation
@@ -19,7 +19,7 @@ foreign requests wait until that reservation ends.
 - Make acquisitions idempotent, share the caller budget across admission and
   inference, and prevent context-overflow escalation to an unreserved backend.
 - Carry the typed owner through Hub/Thought stance and governor finalization,
-  including re-reflection and internal broker-assigned routes in Exec.
+  including conditional response repair, re-reflection and internal broker-assigned routes in Exec.
 - Add an isolated Postgres contention eval and run the full Gateway suite in CI.
 
 The architecture, API, evidence provenance and rollout limits are documented in
@@ -31,14 +31,16 @@ facts, and the contention eval verifies that those facts return to zero at rest.
 
 - Gateway complete suite: 345 passed, including all bus and HTTP transport
   regressions and the original routing/admission tests.
-- Durable runner suite: 50 passed against isolated Postgres, including concurrent
+- Durable runner suite: 51 passed against isolated Postgres, including concurrent
   acquisition, owner serialization, stale identity rejection, expiry, API
   contracts, capacity-only startup behavior and the auxiliary-call chain.
 - Admission fairness eval: 20/20 served, queue and leases drained.
 - Gateway contention eval: 40 races, two competing clients, exactly one resource
   owner per race; ordinary and durable callers both win, final occupancy zero.
-- Auxiliary regressions: 55 Harness, 16 governor, 20 Exec, and 62 Hub/Thought tests
-  passed. Existing Thought/Mind enrichment evals: 3 passed.
+- After integrating PR #2208: 332 Harness tests, 15 governor RPC tests,
+  23 Exec route/lease tests, and 51 Hub tests passed. Thought lease-route tests
+  passed; existing Thought/Mind enrichment evals: 3 passed. Harness layer
+  attribution and unified-turn grounding evals: 4 passed.
 - All static workflow checks passed, including env sync, metric lineage and
   definition drift, schema registration, graph preservation, hostname/compose
   checks, nonblocking routes and Hub JavaScript tests.
@@ -79,6 +81,16 @@ not claim that an actual cognition run has completed.
   Fix: pin that mode in those tests; production fallback behavior is preserved.
 
 Independent review found no remaining material issue after these corrections.
+The subsequent PR #2208 merge was inspected locally and checked with the suites
+below; an additional subagent review was unavailable because its usage limit
+was reached.
+
+## Current-main integration
+
+PR #2208 replaced mandatory voice finalization while this patch was being
+verified. The branch incorporates that change and carries the lease through
+reflection, re-reflection, and conditional response repair. Accepted drafts
+remain unchanged and do not make an extra repair call.
 
 ## Configuration and rollout
 

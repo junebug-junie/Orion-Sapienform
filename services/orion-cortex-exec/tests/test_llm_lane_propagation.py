@@ -87,7 +87,7 @@ def test_finalize_reflect_ctx_llm_lane_resolves_agent() -> None:
     not chat or background.
 
     Was `background` until confirmed wrong live 2026-08-16
-    (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize call also
+    (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_response_repair call also
     resolves to `background`/atlas-worker-2 and can occupy it for 90s+, starving this
     call's LLMGatewayService RPC entirely. `chat` was considered and rejected: it maps
     to circe-worker-1, the same worker chat_general's own live draft generation uses,

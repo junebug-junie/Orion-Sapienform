@@ -35,7 +35,7 @@ CORTEX_EXEC_ISOLATED_TRACE_LANES = frozenset({
     # Unified-turn auxiliary cortex runs that share correlation_id with harness motor.
     "stance_react",
     "harness_finalize_reflect",
-    "orion_voice_finalize",
+    "orion_response_repair",
     # "harness_motor" is RESERVED -- it is HarnessGrammarCollector's own
     # lane (orion/harness/grammar_emit.py), added to isolate the harness
     # governor's primary trace from an unlaned cortex-exec root call

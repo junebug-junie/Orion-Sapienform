@@ -48,7 +48,6 @@ def test_default_mode_overlay_maps_to_empty_harness_overlay() -> None:
     assert overlay.mode == "default"
     assert overlay.rule_lines == []
     assert overlay.prefix_overlay == ""
-    assert overlay.finalize_overlay == ""
 
 
 def test_default_overlay_does_not_change_harness_prefix() -> None:

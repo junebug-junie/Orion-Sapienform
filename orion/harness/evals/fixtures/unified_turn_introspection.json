@@ -155,11 +155,11 @@
       }
     },
     "voice_finalize_failure": {
-      "summary": "Starts a finalize-phase failure investigation at the voice finalize stage",
-      "any_of": ["run_orion_voice_finalize", "voice finaliz", "finalize chain"],
+      "summary": "Starts a finalize-phase failure investigation at response repair (legacy: voice finalize)",
+      "any_of": ["run_orion_response_repair", "response repair", "finalize chain", "orion_voice_finalize"],
       "evidence": {
         "file": "orion/harness/finalize.py",
-        "symbol": "async def run_orion_voice_finalize"
+        "symbol": "async def run_orion_response_repair"
       }
     },
     "run_result_boundary": {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from orion.harness.finalize import maybe_quick_lane_verdict, run_orion_voice_finalize
+from orion.harness.finalize import maybe_quick_lane_verdict, run_orion_response_repair
 from orion.harness.tests.fixtures import make_appraisal, make_reflection, make_repair_overlay, make_thought
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.harness_finalize import HarnessPostTurnClosureV1, HarnessTurnOutcomeMoleculeV1
@@ -37,8 +37,8 @@ def test_5a_affects_5b_verdict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_5b_affects_5c_text() -> None:
-    """Misaligned reflection must change voice finalize output vs aligned."""
+async def test_5b_affects_repair_text() -> None:
+    """When repair runs, misaligned reflection must change output vs aligned stub."""
     thought = make_thought()
     appraisal = make_appraisal()
     draft_text = "Motor draft."
@@ -49,7 +49,7 @@ async def test_5b_affects_5c_text() -> None:
             return {"final_text": "Voice revised for misalignment."}
         return {"final_text": draft_text}
 
-    aligned_final, _ = await run_orion_voice_finalize(
+    aligned_final, _ = await run_orion_response_repair(
         correlation_id="c-1",
         draft_text=draft_text,
         thought=thought,
@@ -58,7 +58,7 @@ async def test_5b_affects_5c_text() -> None:
         user_message="hello",
         cortex_client=cortex_stub,
     )
-    misaligned_final, meta = await run_orion_voice_finalize(
+    misaligned_final, meta = await run_orion_response_repair(
         correlation_id="c-1",
         draft_text=draft_text,
         thought=thought,

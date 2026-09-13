@@ -127,6 +127,8 @@ class HarnessTurnOutcomeMoleculeV1(BaseModel):
     draft_hash: str
     final_hash: str
     finalize_changed: bool
+    response_repair_ran: bool = False
+    response_repair_reason: str | None = None
     alignment_verdict: Literal["aligned", "misaligned", "uncertain"]
     surprise_level_at_draft: float
     surprise_resolved: bool
@@ -168,7 +170,6 @@ class HarnessRepairOverlayV1(BaseModel):
     mode: Literal["default", "concrete_bias", "repair_concrete"] = "default"
     rule_lines: list[str] = Field(default_factory=list)
     prefix_overlay: str = ""
-    finalize_overlay: str = ""
 
 
 class HarnessAttachmentV1(BaseModel):
@@ -282,8 +283,12 @@ class HarnessRunV1(BaseModel):
     substrate_appraisal: SubstrateFinalizeAppraisalV1 | None = None
     reflection: FinalizeReflectionV1 | None = None
     verdict_molecule_id: str | None = None
+    # finalize_ran=True means 5a/5b finalization completed (appraisal + reflection),
+    # not that a voice/repair LLM rewrote the draft.
     finalize_ran: bool
     finalize_changed: bool = False
+    response_repair_ran: bool = False
+    response_repair_reason: str | None = None
     quick_lane_skipped_5b: bool = False
     # Set only when finalize (5a substrate appraisal) could not be reached due to an
     # infra failure (e.g. substrate RPC timeout) and draft_text was used as final_text

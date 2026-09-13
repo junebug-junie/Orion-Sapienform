@@ -53,8 +53,8 @@ _HOP_PATTERNS: dict[str, re.Pattern[str]] = {
         re.I,
     ),
     "cortex_5c": re.compile(
-        r"(?:harness cortex RPC -> .*verb=orion_voice_finalize|"
-        r"final_text_assembly\s+corr_id=.*verb=orion_voice_finalize.*result_len=(?P<result_len>\d+))",
+        r"(?:harness cortex RPC -> .*verb=orion_response_repair|"
+        r"final_text_assembly\s+corr_id=.*verb=orion_response_repair.*result_len=(?P<result_len>\d+))",
         re.I,
     ),
     "verdict": re.compile(

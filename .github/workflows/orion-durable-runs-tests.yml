@@ -9,6 +9,13 @@ on:
       - "orion/durable_admission/**"
       - "services/orion-llm-gateway/**"
       - "orion/harness/finalize.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/fcc_motor.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "services/orion-cortex-orch/app/durable_runs.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-harness-governor/app/bus_listener.py"
+      - "services/orion-cortex-exec/app/executor.py"
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql"
@@ -25,6 +32,13 @@ on:
       - "orion/durable_admission/**"
       - "services/orion-llm-gateway/**"
       - "orion/harness/finalize.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/fcc_motor.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "services/orion-cortex-orch/app/durable_runs.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-harness-governor/app/bus_listener.py"
+      - "services/orion-cortex-exec/app/executor.py"
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
@@ -56,6 +70,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-durable-runs/requirements.txt
           python -m pip install -r requirements-dev.txt
+          python -m pip install -r services/orion-durable-runs/tests/requirements-acceptance.txt
       - name: Pytest services/orion-durable-runs/tests
         env:
           PYTHONPATH: ${{ github.workspace }}

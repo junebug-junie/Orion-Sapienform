@@ -61,6 +61,10 @@ retry-wait boundaries. Waiting uses a LangGraph interrupt and releases the run
 task. The legacy maximum-age sweep excludes admitted threads: their queue wait
 has no deadline unless the request explicitly supplies one. Inference timeout
 starts after a validated lease, independently of queue age and lease renewal.
+For admitted turns, the Hub RPC permits at least the declared inference budget;
+the admission runtime owns the actual inference/overall deadline. Replies must
+match the expected kind, run and attempt correlation before becoming graph state.
+Legacy turns retain their configured RPC timeout.
 
 Apply `services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql`
 to the same Postgres database as the existing checkpointer before enabling
@@ -95,10 +99,20 @@ Defaults, lane declarations, shadow mode, activation order, recovery limits,
 metrics provenance and the actual Hub/FCC/Exec execution path are documented in
 [the ADR](../../docs/architecture/durable-resource-admission.md).
 
-Run the real Postgres tests and the separate fairness eval with an explicitly
-disposable database (each creates a fresh schema):
+Run the real Postgres tests and separate evals with an explicitly disposable
+database (each creates a fresh schema). The acceptance suite additionally needs
+the test-only dependencies below:
 
 ```bash
+python -m pip install -r services/orion-durable-runs/requirements.txt -r requirements-dev.txt -r services/orion-durable-runs/tests/requirements-acceptance.txt
 ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python -m pytest services/orion-durable-runs/tests -q
 ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/admission_fairness.py
+ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/gateway_capacity.py
 ```
+
+The [connected acceptance contract](../../docs/architecture/durable-run-acceptance.md)
+exercises Cortex receipt, Postgres wait/recovery, grant-driven wakeup, Hub's real
+turn adapters and Gateway ownership through accepted drafts and conditional
+response repair. It also kills a runner process while an independently held
+backend permit drains. Model outputs, FCC execution and external knowledge reads
+are explicit isolated fixtures; this is not evidence of production cognition.

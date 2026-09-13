@@ -88,6 +88,24 @@ def _iso_utc(value: Any) -> str:
     return _parse_db_timestamp(value).isoformat().replace("+00:00", "Z")
 
 
+def biometrics_summary_cutoff(value: Any) -> str:
+    """Format a UTC instant for TEXT compares on ``orion_biometrics_summary.timestamp``.
+
+    sql-writer stores that column as varchar shaped like
+    ``YYYY-MM-DD HH:MM:SS.ffffff+00`` (space separator, ``+00`` not ``Z`` /
+    ``+00:00``). Hub used to bind ISO-Z cutoffs from ``_iso_utc``; against a
+    same-day stored row, space (0x20) sorts before ``T`` (0x54), so a 24h
+    window returns zero rows while 3d/7d still draw. Confirmed live
+    2026-09-13: ISO-Z cutoff → 0 cabinet rows; this form → 505.
+    """
+    parsed = _parse_db_timestamp(value)
+    return (
+        f"{parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d} "
+        f"{parsed.hour:02d}:{parsed.minute:02d}:{parsed.second:02d}."
+        f"{parsed.microsecond:06d}+00"
+    )
+
+
 def rows_to_points(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Convert selected DB rows without inventing absent optional values."""
     points: list[dict[str, Any]] = []
@@ -200,7 +218,7 @@ async def query_history_rows(*, node: str, hours: int) -> Sequence[Mapping[str, 
 
     import asyncpg
 
-    cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
+    cutoff = biometrics_summary_cutoff(_now_utc() - timedelta(hours=hours))
     connection = await asyncpg.connect(dsn=database_url)
     try:
         return await connection.fetch(

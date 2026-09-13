@@ -292,16 +292,15 @@ async def query_channel_history_rows(
 ) -> Sequence[Mapping[str, Any]]:
     """No `::timestamptz` cast on the bound cutoff parameter (confirmed live
     2026-09-02): asyncpg infers a `$n::timestamptz` cast as "this parameter
-    must already be a datetime.datetime", and errors on the plain ISO string
-    `_iso_utc()` produces -- `invalid input for query argument $2: ...
-    expected a datetime.date or datetime.datetime instance, got 'str'`. This
-    table's `timestamp` column is TEXT (see BiometricsSummarySQL), and
-    cabinet_sensors_routes.py's query_sensor_history_rows already compares it
-    as plain text successfully in production against the same table -- match
-    that proven pattern rather than re-adding a cast that only unit tests
-    (which mock the DB layer) failed to catch.
+    must already be a datetime.datetime", and errors on a plain string.
+    This table's `timestamp` column is TEXT (see BiometricsSummarySQL). Bind
+    ``biometrics_summary_cutoff()`` — sql-writer's ``YYYY-MM-DD HH:MM:SS+00``
+    form — not ISO-Z; space vs ``T`` made default 24h windows empty
+    (2026-09-13).
     """
-    cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
+    from .cabinet_ambient_routes import biometrics_summary_cutoff
+
+    cutoff = biometrics_summary_cutoff(_now_utc() - timedelta(hours=hours))
     pool = await _pg_pool()
     async with pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT_SEC) as connection:
         return await connection.fetch(
@@ -378,7 +377,9 @@ async def query_multi_channel_history_rows(
     Same no-`::timestamptz`-cast-on-the-bound-parameter fix as
     query_channel_history_rows above -- see that function's docstring.
     """
-    cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
+    from .cabinet_ambient_routes import biometrics_summary_cutoff
+
+    cutoff = biometrics_summary_cutoff(_now_utc() - timedelta(hours=hours))
     # Channel names are validated against the fixed _CHANNEL_COLUMN whitelist
     # before reaching here (never raw user input as a SQL identifier);
     # aliased positionally (c0, c1, ...) rather than by channel name so the

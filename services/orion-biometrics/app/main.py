@@ -3,6 +3,7 @@ import logging
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional
 
 from fastapi import FastAPI, Query
@@ -762,8 +763,39 @@ def _power_telemetry_health() -> Dict[str, Any]:
     }
 
 
+def _host_snapshot_health() -> Dict[str, Any]:
+    """Whether Docker still sees the host RuntimeDirectory bind mounts.
+
+    Cabinet/ambient readers write under ``/run/orion-*``. Systemd
+    ``RuntimeDirectory=`` recreates those dirs on unit restart unless
+    ``RuntimeDirectoryPreserve=yes`` is set; a long-lived biometrics
+    container then keeps an empty bind while Hub (restarted later) still
+    sees live files. Surface that as health so the next dropout is not a
+    20-hour silent chart gap.
+    """
+    cabinet_path = Path(settings.CABINET_SENSORS_PATH)
+    ambient_path = Path(settings.AMBIENT_AUDIO_PATH)
+    cabinet_ok = cabinet_path.is_file()
+    ambient_ok = ambient_path.is_file()
+    return {
+        "cabinet_sensors": {
+            "path": str(cabinet_path),
+            "readable": cabinet_ok,
+            "reason": None if cabinet_ok else "missing_or_unreadable",
+        },
+        "ambient_audio": {
+            "path": str(ambient_path),
+            "readable": ambient_ok,
+            "reason": None if ambient_ok else "missing_or_unreadable",
+        },
+    }
+
+
 @app.get("/health")
 def health():
+    # host_snapshots is diagnostic only — cabinet/ambient files are optional on
+    # non-athena nodes (same pattern as power_telemetry). Never flip top-level
+    # ok/status for a missing optional RuntimeDirectory bind.
     return {
         "ok": True,
         "status": "ok",
@@ -780,4 +812,5 @@ def health():
         "node": settings.NODE_NAME,
         "mode": settings.BIOMETRICS_MODE,
         "power_telemetry": _power_telemetry_health(),
+        "host_snapshots": _host_snapshot_health(),
     }

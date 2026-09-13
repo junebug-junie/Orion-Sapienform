@@ -29,7 +29,8 @@ graded by whether existing tooling can already see them.
 2. MISSING KEYS -> WARN, do not block. 29 services are missing at least one key,
    mostly infrastructure defaults (`HEARTBEAT_INTERVAL_SEC`, `NODE_NAME`,
    `ORION_BUS_URL`) that have code fallbacks. These are real and worth fixing,
-   but `sync_local_env_from_example.py` already adds them automatically, so they
+   but `sync_local_env_from_example.py --all-keys <service>` adds ordinary
+   missing keys while preserving existing values, so they
    are a backlog with an existing remedy rather than a reason to stop a deploy.
    Warning keeps them visible without training everyone to reach for the escape
    hatch.
@@ -53,6 +54,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -172,8 +174,11 @@ def main() -> int:
         for w in items:
             print(f"env parity WARN  {name}: {w}")
     if warned:
+        remedy = shlex.join(["python", "scripts/sync_local_env_from_example.py",
+                             "--all-keys", *sorted(warned)])
         print(f"env parity: {len(warned)} service(s) missing whole keys -- not blocking; "
-              f"`python scripts/sync_local_env_from_example.py` adds these.")
+              f"`{remedy}` adds ordinary missing keys and preserves existing values.")
+        print("Protected NEVER_SYNC_KEYS (host addresses/secrets) require manual handling.")
 
     allowed = os.environ.get("ORION_ALLOW_ENV_DRIFT") == "1"
 

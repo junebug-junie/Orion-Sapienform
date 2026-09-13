@@ -21,6 +21,52 @@ def test_orion_bus_url_never_synced() -> None:
     assert should_sync_key("ORION_BUS_URL", all_keys=True) is False
 
 
+def test_default_sync_reaches_admission_templates_and_preserves_overrides(tmp_path, monkeypatch, capsys):
+    """The documented default command must populate the real admission contract."""
+    prefixes = {
+        "orion-durable-runs": ("DURABLE_RUNS_",),
+        "orion-cortex-orch": ("CORTEX_DURABLE_",),
+        "orion-hub": ("HUB_CURIOSITY_DURABLE_", "HUB_CURIOSITY_LEASE_"),
+        "orion-llm-gateway": ("LLM_GATEWAY_LEASE_",),
+    }
+    branch = tmp_path / "branch"
+    primary = tmp_path / "primary"
+    expected = {}
+    for name in sync_mod.DEFAULT_SERVICES:
+        example_dir = branch / "services" / name
+        env_dir = primary / "services" / name
+        example_dir.mkdir(parents=True)
+        env_dir.mkdir(parents=True)
+        values = {}
+        if name in prefixes:
+            values = {key: value for key, value in sync_mod.parse_kv(
+                ROOT / "services" / name / ".env_example").items()
+                if key.startswith(prefixes[name])}
+        (example_dir / ".env_example").write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+        (env_dir / ".env").write_text("ORION_BUS_URL=redis://100.92.216.81:6379/0\n")
+        if name in prefixes:
+            assert values
+            expected[name] = values
+    assert set(expected) == set(prefixes), "an admission service is missing from the default scan"
+    live = primary / "services" / "orion-durable-runs" / ".env"
+    live.write_text(live.read_text() + "DURABLE_RUNS_LEASE_SECONDS=180\n")
+    monkeypatch.setattr(sync_mod, "ROOT", branch)
+    monkeypatch.setattr(sync_mod, "main_worktree_root", lambda: primary)
+    monkeypatch.setattr(sys, "argv", ["sync_local_env_from_example.py"])
+    assert sync_mod.main() == 0
+    first = {}
+    for name, values in expected.items():
+        path = primary / "services" / name / ".env"
+        actual = sync_mod.parse_kv(path)
+        assert actual["ORION_BUS_URL"] == "redis://100.92.216.81:6379/0"
+        for key, value in values.items():
+            assert actual[key] == ("180" if key == "DURABLE_RUNS_LEASE_SECONDS" else value)
+        first[name] = path.read_bytes()
+    assert sync_mod.main() == 0
+    assert all((primary / "services" / name / ".env").read_bytes() == data for name, data in first.items())
+    capsys.readouterr()
+
+
 def test_recall_graphiti_chat_keys_never_synced() -> None:
     """RECALL_GRAPHITI_IN_CHAT and RECALL_GRAPHITI_ADAPTER_URL gate real chat-time graph
     search (orion-recall). Both must change together by hand or the feature silently

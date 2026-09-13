@@ -1,0 +1,4 @@
+# Test-only: real Hub/Exec provider imports used by test_durable_acceptance.py.
+# Providers remain isolated; do not install this into the durable-runs image.
+# Matches the existing Hub and Cortex Exec pin.
+SQLAlchemy==2.0.43

@@ -48,6 +48,7 @@ from orion.schemas.durable_run import (
     CURIOSITY_TURN_REPLY_PREFIX,
     CURIOSITY_TURN_REQUEST_CHANNEL,
     CURIOSITY_TURN_REQUEST_KIND,
+    CURIOSITY_TURN_RESULT_KIND,
     DURABLE_RUN_STATE_KIND,
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -115,11 +116,18 @@ class DurableRunner:
             payload=request.model_dump(mode="json", exclude_none=True),
         )
         try:
+            # The admitted graph owns the inference deadline. Its declared
+            # budget may exceed the legacy Hub RPC ceiling; transport must not
+            # turn that valid long attempt into an early retry. Queue waiting
+            # never reaches this RPC at all.
+            rpc_timeout = self._settings.turn_rpc_timeout_sec
+            if request.lease is not None:
+                rpc_timeout = max(rpc_timeout, request.timeout_sec)
             raw = await self._bus.rpc_request(
                 CURIOSITY_TURN_REQUEST_CHANNEL,
                 envelope,
                 reply_channel=reply_channel,
-                timeout_sec=self._settings.turn_rpc_timeout_sec,
+                timeout_sec=rpc_timeout,
             )
         except Exception as exc:  # noqa: BLE001 -- surfaced as a failed node, retried by the sweep
             logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=%s", request.run_id, request.attempt, exc)
@@ -130,7 +138,15 @@ class DurableRunner:
         try:
             decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
             payload = decoded.envelope.payload if decoded.ok else None
-            return CuriosityTurnResultV1.model_validate(payload or {})
+            result = CuriosityTurnResultV1.model_validate(payload or {})
+            if request.lease is not None:
+                if decoded.envelope.kind != CURIOSITY_TURN_RESULT_KIND:
+                    raise ValueError("unexpected admitted turn reply kind")
+                if (decoded.envelope.correlation_id != envelope.correlation_id
+                        or result.run_id != request.run_id
+                        or result.correlation_id != request.correlation_id):
+                    raise ValueError("admitted turn reply identity mismatch")
+            return result
         except Exception as exc:  # noqa: BLE001
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"bad_reply:{exc}")
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from orion.schemas.reverie_visual import VisualBaselineEligibilityV1, VisualRunOutcome
+
 from datetime import datetime
 from typing import Literal
 
@@ -9,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class ExecutionDispatchCandidateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    visual_baseline: VisualBaselineEligibilityV1 | None = None
+    visual_outcome: VisualRunOutcome | None = None
 
     dispatch_id: str
 

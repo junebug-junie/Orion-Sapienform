@@ -177,6 +177,8 @@ ORION_VISUAL_CHAIN_ENABLED.
 """
 
 from __future__ import annotations
+from orion.schemas.reverie_visual import (ReverieVisualContextV1, VisualSourceV1, VisualContextSelectionV1)
+
 
 import asyncio
 import hashlib
@@ -202,11 +204,11 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 from .cortex_client import CortexExecClient
 from .settings import settings
 from .store import (
+    acknowledge_visual_production,
     load_latest_memory_crystallization,
     load_latest_reverie_interpretation,
     load_latest_self_study_reflection,
     load_latest_visual_chain_continuity_state,
-    persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
 )
 
@@ -714,7 +716,8 @@ async def request_caption(
 
 
 async def run_visual_chain_once(
-    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None
+    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None,
+    attempt_id: str | None = None, run_request: dict | None = None,
 ) -> ReverieVisualChainV1 | None:
     """One generate -> store -> observe -> persist run. Returns the chain
     readout, or None if a run was already in flight (single-flight no-op,
@@ -756,15 +759,20 @@ async def run_visual_chain_once(
     # "thermal_refused" rather than returning None, so "Orion declined because
     # the room is hot" is a row someone can find -- an absence would be
     # indistinguishable from the worker having died.
+    thermal_gate = {"state": "disabled", "reason": "disabled", "allows_gpu_work": True, "degraded": False}
     if settings.thermal_gate_enabled:
         verdict = await evaluate_thermal_gate()
+        thermal_gate = {"state": verdict.state, "temp_c": verdict.temp_c, "age_sec": verdict.age_sec,
+                        "hot_c": settings.thermal_hot_c, "hot_rearm_c": settings.thermal_hot_rearm_c,
+                        "reason": verdict.reason, "allows_gpu_work": verdict.allows_gpu_work,
+                        "degraded": verdict.degraded}
         if verdict.degraded:
             logger.warning(
                 "thermal gate degraded (%s): allowing GPU work on no reading",
                 verdict.reason,
             )
         if not verdict.allows_gpu_work:
-            chain_id = f"visual-{uuid4().hex[:12]}"
+            chain_id = attempt_id or f"visual-{uuid4().hex[:12]}"
             logger.info(
                 "visual chain refused by thermal gate chain=%s state=%s %s",
                 chain_id,
@@ -775,16 +783,8 @@ async def run_visual_chain_once(
                 chain_id=chain_id,
                 created_at=now_fn(),
                 terminal_reason="thermal_refused",
-                chain_json={
-                    "thermal_gate": {
-                        "state": verdict.state,
-                        "temp_c": verdict.temp_c,
-                        "age_sec": verdict.age_sec,
-                        "hot_c": settings.thermal_hot_c,
-                        "hot_rearm_c": settings.thermal_hot_rearm_c,
-                        "reason": verdict.reason,
-                    }
-                },
+                chain_json={"thermal_gate": thermal_gate, "run_request": run_request,
+                            "source_selection_status": "source_selection_not_reached"},
             )
             # to_thread, matching the other persist site: the store call is
             # SYNCHRONOUS and blocking, so awaiting it directly would raise
@@ -810,12 +810,15 @@ async def run_visual_chain_once(
     # unconditionally true, and anything reasoning from that invariant must not
     # assume it across a deadline event.
     global _visual_chain_started_at, _visual_chain_body_chain_id
+    if _visual_chain_lock.locked():
+        return None
     async with _visual_chain_lock:
         started = time.monotonic()
         _visual_chain_started_at = started
         try:
             return await asyncio.wait_for(
-                _run_visual_chain_body(bus, now_fn=now_fn, cortex_client=cortex_client),
+                _run_visual_chain_body(bus, now_fn=now_fn, cortex_client=cortex_client,
+                                       attempt_id=attempt_id, run_request=run_request, thermal_gate=thermal_gate),
                 timeout=settings.visual_chain_run_deadline_sec,
             )
         except asyncio.TimeoutError:
@@ -840,6 +843,7 @@ async def run_visual_chain_once(
                     # links them, so the hub renders an apparently-successful
                     # chain and an unexplained abandonment as unrelated events.
                     "abandoned_chain_id": _visual_chain_body_chain_id,
+                    "thermal_gate": thermal_gate, "run_request": run_request,
                 },
             )
             logger.error(
@@ -872,7 +876,8 @@ async def run_visual_chain_once(
 
 
 async def _run_visual_chain_body(
-    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None
+    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None,
+    attempt_id: str | None = None, run_request: dict | None = None, thermal_gate: dict | None = None,
 ) -> ReverieVisualChainV1:
     """The actual run. Called only by `run_visual_chain_once`, which owns the
     single-flight lock and the deadline around this.
@@ -914,9 +919,11 @@ async def _run_visual_chain_body(
             chain_id=chain_id,
             created_at=now_fn(),
             terminal_reason="generation_failed",
+            context_selection=context_selection,
             prior_description=prior_description,
             chain_json={
                 "prompt": prompt,
+                "thermal_gate": thermal_gate, "run_request": run_request,
                 "context_text": context_text,
                 "self_study_text": self_study_text,
                 "memory_text": memory_text,
@@ -933,7 +940,7 @@ async def _run_visual_chain_body(
         return chain
 
     global _visual_chain_body_chain_id
-    chain_id = str(uuid4())
+    chain_id = attempt_id or str(uuid4())
     _visual_chain_body_chain_id = chain_id
     # Four independent reads (different tables, no data dependency) --
     # concurrent so the cost is max() of the round trips, not sum()
@@ -946,12 +953,12 @@ async def _run_visual_chain_body(
     # separate round trips to the same row wasted a query and left a
     # theoretical read-your-own-write race), not three gathered reads.
     (
-        (prior_description, continuity_streak, context_slot_rotation),
-        context_text,
-        self_study_text,
-        memory_text,
+        continuity_state,
+        reverie_context,
+        self_study_context,
+        memory_context,
     ) = await asyncio.gather(
-        asyncio.to_thread(load_latest_visual_chain_continuity_state),
+        asyncio.to_thread(load_latest_visual_chain_continuity_state, with_identity=True),
         asyncio.to_thread(
             load_latest_reverie_interpretation,
             char_limit=settings.reverie_context_char_limit,
@@ -961,13 +968,20 @@ async def _run_visual_chain_body(
             load_latest_self_study_reflection,
             char_limit=settings.self_study_context_char_limit,
             max_age_sec=settings.self_study_context_max_age_sec,
+            with_identity=True,
         ),
         asyncio.to_thread(
             load_latest_memory_crystallization,
             char_limit=settings.memory_crystallization_context_char_limit,
             max_age_sec=settings.memory_crystallization_context_max_age_sec,
+            with_identity=True,
         ),
     )
+    prior_description, continuity_streak, context_slot_rotation = continuity_state[:3]
+    prior_chain_id = continuity_state[3] if len(continuity_state) > 3 else None
+    context_text = reverie_context.text if isinstance(reverie_context, ReverieVisualContextV1) else reverie_context
+    self_study_text = self_study_context.text if isinstance(self_study_context, VisualSourceV1) else self_study_context
+    memory_text = memory_context.text if isinstance(memory_context, VisualSourceV1) else memory_context
     # Patch 4 (module docstring): cap how many consecutive runs may
     # carry prior_description continuity before forcing one reset --
     # computed here (before generation) so a failed run still records
@@ -998,6 +1012,15 @@ async def _run_visual_chain_body(
     # rotation value it used, same discipline as continuity_streak.
     context_slot_used, context_slot_text, context_slot_rotation = select_context_slot(
         context_text, self_study_text, memory_text, context_slot_rotation
+    )
+    continuity_source = VisualSourceV1(source_id=prior_chain_id, text=effective_prior) if prior_chain_id and effective_prior else None
+    selected_kind = {"context_text": "reverie", "self_study_text": "self_study", "memory_text": "memory",
+                     "context": "reverie", "reverie": "reverie", "self_study": "self_study", "memory": "memory"}.get(context_slot_used)
+    context_selection = VisualContextSelectionV1(
+        source_kind=selected_kind or ("prior_visual" if effective_prior else "default_seed"),
+        reverie=reverie_context if selected_kind == "reverie" and isinstance(reverie_context, ReverieVisualContextV1) else None,
+        source=(self_study_context if selected_kind == "self_study" and isinstance(self_study_context, VisualSourceV1) else memory_context if selected_kind == "memory" and isinstance(memory_context, VisualSourceV1) else continuity_source if not selected_kind else None),
+        continuity=continuity_source,
     )
     # Patch 8 (module docstring): turn the raw selected clause into a concrete visual
     # metaphor before composing the prompt. Fails open to None -- build_visual_prompt then
@@ -1105,9 +1128,11 @@ async def _run_visual_chain_body(
         chain_id=chain_id,
         created_at=now_fn(),
         terminal_reason="max_steps",
+        context_selection=context_selection,
         prior_description=next_prior_description,
         chain_json={
             "prompt": prompt,
+                "thermal_gate": thermal_gate, "run_request": run_request,
             "context_text": context_text,
             "self_study_text": self_study_text,
             "memory_text": memory_text,
@@ -1117,6 +1142,7 @@ async def _run_visual_chain_body(
             "continuity_streak": continuity_streak,
             "continuity_reset": continuity_reset,
             "artifact_sha256": stored.sha256,
+            "production_receipt": None,
             "description": description,
         },
     )
@@ -1145,7 +1171,9 @@ async def _run_visual_chain_body(
         path=stored.path,
         description=description,
     )
-    await asyncio.to_thread(persist_reverie_visual_artifact, artifact)
+    receipt = await asyncio.to_thread(acknowledge_visual_production, chain, artifact)
+    if receipt is not None:
+        chain.chain_json["production_receipt"] = receipt.model_dump(mode="json")
 
     logger.info(
         "visual chain complete chain=%s sha=%s described=%s",

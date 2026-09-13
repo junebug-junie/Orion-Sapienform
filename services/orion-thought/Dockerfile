@@ -13,6 +13,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY services/orion-thought/app ./app
 COPY orion ./orion
+COPY config/proposals ./config/proposals
 
 EXPOSE 7155
 

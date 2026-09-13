@@ -323,3 +323,13 @@ python services/orion-sql-writer/scripts/smoke_chatgpt_turn_sql.py
 
 Expected output includes `found_in_chat_gpt_log: True`; sql-writer logs should include:
 `Written ChatGptLogTurnV1 -> chat_gpt_log`.
+
+Visual execution adds nullable `visual_outcome` to `action.outcome.emit.v1` and
+`action_outcomes`. The shared schema restricts it to `produced`,
+`deferred_thermal`, `deferred_busy`, `already_satisfied`, `failed`, or `unknown`;
+nonvisual and historical rows may omit it. The normal writer row mapper persists
+it and repeated action IDs upsert the same row. Boot DDL adds the column on
+existing databases; the standalone additive migration is
+`services/orion-sql-db/manual_migration_action_outcomes_visual_outcome.sql`.
+Apply that migration before deploying producers/writers that use this field.
+This patch does not run the migration or rewrite historical rows.

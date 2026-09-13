@@ -79,3 +79,32 @@ docker compose --env-file ../../.env --env-file .env up -d --build
 ```bash
 curl -s http://localhost:8080/api/substrate/feedback/latest | jq
 ```
+
+### Visual execution outcomes
+
+Dispatch persists the explicit `visual_outcome` in
+`substrate_dispatch_results.result_json`. `load_cortex_result_evidence` retains
+that field and measured latency; `normalize_cortex_result_evidence` preserves it
+for both the feedback builder and the effect resolver. Transport `success` or
+`ok=True` does not establish visual production. The builder records `produced`
+as completed, thermal/busy deferrals as deferred, `already_satisfied` as not
+attempted, `failed` as an operational failure, and absent/unknown visual receipts
+as unknown. Correlation and artifact references remain available without copying
+source text into feedback.
+
+Only `produced` can qualify for a visual effect observation, and it must still
+carry a justified declared signal and measured field window. Baseline runs use
+`expected_effect=None`, so even production never advances an effect posterior.
+Historical `render_scene` resource-pressure claims are rejected at resolution
+(including queued dispatches); existing rows remain historical data. Deferrals,
+already-satisfied, failed and unknown results do not become treated observations
+or manufacture an untreated control tick. Failure latency remains recorded.
+
+Focused regression: `tests/test_feedback_runtime_store.py` exercises persisted
+result rows through SQL evidence loading, normalization, feedback and resolution;
+`tests/test_action_outcome_resolution.py` covers field-present non-observation and
+retired claims. These are deterministic tests, not live runtime verification.
+This service has no periodic eval harness; follow-up: replay recorded visual
+outcome sequences through feedback after an approved deployment and confirm no
+posterior changes on non-observations. The visual-baseline integration eval is
+owned by the visual producer/dispatch patch.

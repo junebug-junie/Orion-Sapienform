@@ -407,7 +407,7 @@ def persist_reverie_visual_chain(chain) -> bool:
                     "terminal_reason": chain.terminal_reason,
                     "ema_salience": float(chain.ema_salience),
                     "prior_description": chain.prior_description,
-                    "chain_json": json.dumps(chain.chain_json),
+                    "chain_json": json.dumps({**chain.chain_json, **({"context_selection": chain.context_selection.model_dump(mode="json")} if chain.context_selection else {})}),
                 },
             )
         return True
@@ -487,7 +487,7 @@ def visual_chain_age_minutes() -> float | None:
         return None
 
 
-def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:
+def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
     """Most recent visual-chain row's `prior_description`, `continuity_
     streak`, AND `context_slot_rotation`, in ONE round trip (review finding
     on the original 2-value version: two separate single-column SELECTs
@@ -535,7 +535,7 @@ def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:
             row = (
                 conn.execute(
                     text(
-                        "SELECT prior_description, chain_json FROM reverie_visual_chain "
+                        "SELECT chain_id, prior_description, chain_json FROM reverie_visual_chain "
                         "ORDER BY created_at DESC LIMIT 1"
                     )
                 )
@@ -543,7 +543,7 @@ def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:
                 .first()
             )
         if not row:
-            return None, 0, 0
+            return (None, 0, 0, None) if with_identity else (None, 0, 0)
         value = row.get("prior_description")
         prior = str(value).strip() or None if value else None
         cj = row.get("chain_json")
@@ -558,10 +558,10 @@ def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:
                 rotation = max(0, int(cj.get("context_slot_rotation") or 0))
             except (TypeError, ValueError):
                 rotation = 0
-        return prior, streak, rotation
+        return (prior, streak, rotation, row.get("chain_id")) if with_identity else (prior, streak, rotation)
     except Exception as exc:
         logger.debug("visual chain continuity state load failed: %s", exc)
-        return None, 0, 0
+        return (None, 0, 0, None) if with_identity else (None, 0, 0)
 
 
 # Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
@@ -584,7 +584,7 @@ _REVERIE_CONTEXT_CANDIDATE_LIMIT = 10
 
 def load_latest_reverie_interpretation(
     *, char_limit: int | None = None, max_age_sec: float | None = None
-) -> str | None:
+) -> ReverieVisualContextV1 | None:
     """Most recent real (non-hollow, non-empty) text-chain thought's
     interpretation, already linked into a SETTLED chain -- the visual
     chain's context-seed (design doc §8: "which specific recent-activity/
@@ -662,6 +662,7 @@ def load_latest_reverie_interpretation(
 
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
         from orion.schemas.reverie import SpontaneousThoughtV1
+        from orion.schemas.reverie_visual import ReverieVisualContextV1
 
         where_sql = (
             "t.interpretation <> '' "
@@ -691,7 +692,10 @@ def load_latest_reverie_interpretation(
             rows = (
                 conn.execute(
                     text(
-                        "SELECT thought_json FROM substrate_reverie_thought t "
+                        "SELECT thought_json, (SELECT c.chain_id FROM substrate_reverie_chain c "
+                        "WHERE c.chain_json -> 'thought_ids' ? t.thought_id "
+                        "ORDER BY c.created_at DESC, c.chain_id LIMIT 1) AS text_chain_id "
+                        "FROM substrate_reverie_thought t "
                         f"WHERE {where_sql} "
                         "ORDER BY t.created_at DESC LIMIT :limit"
                     ),
@@ -721,7 +725,15 @@ def load_latest_reverie_interpretation(
                 # Reverie tab.
                 limit_chars = MAX_REVERIE_CONTEXT_CHARS if char_limit is None else char_limit
                 trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
-                return trimmed
+                if not trimmed or not row.get("text_chain_id"):
+                    continue
+                return ReverieVisualContextV1(
+                    text=trimmed, thought_id=thought.thought_id,
+                    thought_correlation_id=thought.correlation_id,
+                    thought_created_at=thought.created_at,
+                    text_chain_id=row["text_chain_id"], coalition=thought.coalition,
+                    evidence_refs=thought.evidence_refs,
+                )
         return None
     except Exception as exc:
         logger.debug("reverie context-seed load failed: %s", exc)
@@ -783,7 +795,7 @@ MAX_SELF_STUDY_CONTEXT_CHARS = 150
 
 
 def load_latest_self_study_reflection(
-    *, char_limit: int | None = None, max_age_sec: float | None = None
+    *, char_limit: int | None = None, max_age_sec: float | None = None, with_identity: bool = False
 ) -> str | None:
     """Most recent real self-study analysis body -- a second, richer
     context-seed for the visual chain alongside `load_latest_reverie_
@@ -855,7 +867,7 @@ def load_latest_self_study_reflection(
             row = (
                 conn.execute(
                     text(
-                        f"SELECT body FROM journal_entries WHERE {where_sql} "
+                        f"SELECT body, entry_id AS source_id FROM journal_entries WHERE {where_sql} "
                         "ORDER BY created_at DESC LIMIT 1"
                     ),
                     params,
@@ -870,6 +882,9 @@ def load_latest_self_study_reflection(
             return None
         limit_chars = MAX_SELF_STUDY_CONTEXT_CHARS if char_limit is None else char_limit
         trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        if with_identity:
+            from orion.schemas.reverie_visual import VisualSourceV1
+            return VisualSourceV1(source_id=str(row["source_id"]), text=trimmed)
         return trimmed
     except Exception as exc:
         logger.debug("self-study context-seed load failed: %s", exc)
@@ -890,7 +905,7 @@ MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 180
 
 
 def load_latest_memory_crystallization(
-    *, char_limit: int | None = None, max_age_sec: float | None = None
+    *, char_limit: int | None = None, max_age_sec: float | None = None, with_identity: bool = False
 ) -> str | None:
     """Most recent GENUINELY REVIEWED memory crystallization's `summary` --
     a third context-seed for the visual chain (design doc §17), sourced
@@ -968,7 +983,7 @@ def load_latest_memory_crystallization(
             row = (
                 conn.execute(
                     text(
-                        f"SELECT mc.summary FROM memory_crystallizations mc WHERE {where_sql} "
+                        f"SELECT mc.summary, mc.crystallization_id AS source_id FROM memory_crystallizations mc WHERE {where_sql} "
                         "ORDER BY mc.created_at DESC LIMIT 1"
                     ),
                     params,
@@ -985,6 +1000,9 @@ def load_latest_memory_crystallization(
             MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS if char_limit is None else char_limit
         )
         trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        if with_identity:
+            from orion.schemas.reverie_visual import VisualSourceV1
+            return VisualSourceV1(source_id=str(row["source_id"]), text=trimmed)
         return trimmed
     except Exception as exc:
         logger.debug("memory crystallization context-seed load failed: %s", exc)
@@ -1342,4 +1360,280 @@ def resonance_alert_cooldown_mark(check_key: str, now) -> bool:
         return True
     except Exception as exc:
         logger.warning("resonance alert cooldown mark failed key=%s err=%s", check_key, exc)
+        return False
+
+
+def acknowledge_visual_production(chain, artifact):
+    """Verify stored bytes and atomically acknowledge this run, including hash reuse.
+
+    The chain must exist first. A failed acknowledgement leaves an explicit null
+    receipt, so the historical activity predicate can never credit a new failure.
+    """
+    from hashlib import sha256
+    from pathlib import Path
+    from sqlalchemy import text
+    from orion.schemas.reverie_visual import VisualProductionReceiptV1
+
+    try:
+        data = Path(artifact.path).read_bytes()
+        if not data or len(data) != artifact.bytes or sha256(data).hexdigest() != artifact.sha256:
+            raise ValueError("stored artifact integrity mismatch")
+        receipt = VisualProductionReceiptV1(
+            chain_id=chain.chain_id, attempt_id=chain.chain_id,
+            sha256=artifact.sha256, bytes=artifact.bytes, path=artifact.path,
+            produced_at=artifact.created_at,
+        )
+        with _get_engine().begin() as conn:
+            prior = conn.execute(text("SELECT chain_json->'production_receipt' AS receipt FROM reverie_visual_chain WHERE chain_id=:id FOR UPDATE"),
+                                 {"id": chain.chain_id}).mappings().first()
+            if prior and prior["receipt"]:
+                existing_receipt = VisualProductionReceiptV1.model_validate(prior["receipt"])
+                if (existing_receipt.sha256 != artifact.sha256
+                        or existing_receipt.bytes != artifact.bytes
+                        or existing_receipt.chain_id != chain.chain_id
+                        or existing_receipt.attempt_id != chain.chain_id):
+                    raise ValueError("attempt already acknowledged a different artifact")
+                canonical = conn.execute(text("SELECT bytes, path FROM reverie_visual_artifact WHERE sha256=:sha"),
+                                         {"sha": existing_receipt.sha256}).mappings().one()
+                canonical_data = Path(canonical["path"]).read_bytes()
+                if (canonical["path"] != existing_receipt.path
+                        or canonical["bytes"] != existing_receipt.bytes
+                        or len(canonical_data) != existing_receipt.bytes
+                        or sha256(canonical_data).hexdigest() != existing_receipt.sha256):
+                    raise ValueError("acknowledged canonical artifact integrity mismatch")
+                return existing_receipt
+            conn.execute(text("""
+                INSERT INTO reverie_visual_artifact
+                (sha256, chain_id, step_index, mime, bytes, width, height, path, description, created_at)
+                VALUES (:sha256, :chain_id, :step_index, :mime, :bytes, :width, :height, :path, :description, :created_at)
+                ON CONFLICT (sha256) DO NOTHING
+            """), artifact.model_dump())
+            existing = conn.execute(text("SELECT bytes, path FROM reverie_visual_artifact WHERE sha256=:sha"),
+                                    {"sha": artifact.sha256}).mappings().one()
+            existing_data = Path(existing["path"]).read_bytes()
+            if (existing["bytes"] != len(data) or len(existing_data) != len(data)
+                    or sha256(existing_data).hexdigest() != artifact.sha256):
+                raise ValueError("existing content-addressed artifact integrity mismatch")
+            # Preserve the canonical artifact pointer on duplicate-byte runs.
+            receipt.path = existing["path"]
+            result = conn.execute(text("""
+                UPDATE reverie_visual_chain SET chain_json =
+                    jsonb_set(chain_json, '{production_receipt}', CAST(:receipt AS jsonb))
+                WHERE chain_id=:chain_id AND terminal_reason='max_steps'
+                  AND chain_json->>'artifact_sha256'=:sha
+                  AND chain_json ? 'production_receipt'
+                RETURNING chain_json->'production_receipt' AS receipt
+            """), {"receipt": receipt.model_dump_json(), "chain_id": chain.chain_id, "sha": artifact.sha256}).first()
+            if result is None:
+                raise ValueError("matching production chain missing")
+        return receipt
+    except Exception as exc:
+        logger.warning("visual production acknowledgement failed chain=%s err=%s", chain.chain_id, exc)
+        return None
+
+
+# Receipt rows join by hash, allowing identical bytes produced by distinct runs.
+# Historical rows require their own artifact; a deadline row itself never counts,
+# while a committed abandoned body is still found through its own chain ID.
+_VISUAL_PRODUCTION_SQL = """
+WITH production AS (
+    SELECT c.chain_id, a.sha256, c.chain_json->'production_receipt' AS receipt,
+           CASE WHEN c.chain_json ? 'production_receipt'
+                THEN (c.chain_json->'production_receipt'->>'produced_at')::timestamptz
+                ELSE a.created_at END AS produced_at
+    FROM reverie_visual_chain c
+    JOIN reverie_visual_artifact a ON a.sha256=c.chain_json->>'artifact_sha256'
+    WHERE c.terminal_reason='max_steps' AND a.bytes>0 AND length(trim(a.path))>0
+      AND (
+        (NOT (c.chain_json ? 'production_receipt') AND a.chain_id=c.chain_id)
+        OR (
+          c.chain_json->'production_receipt'->>'chain_id'=c.chain_id
+          AND c.chain_json->'production_receipt'->>'attempt_id'=c.chain_id
+          AND c.chain_json->'production_receipt'->>'sha256'=a.sha256
+          AND c.chain_json->'production_receipt'->>'path'=a.path
+          AND (c.chain_json->'production_receipt'->>'bytes')::bigint=a.bytes
+          AND c.chain_json->'production_receipt'->>'produced_at' IS NOT NULL
+        )
+      )
+)
+"""
+_VISUAL_ACTIVITY_SQL = _VISUAL_PRODUCTION_SQL + """
+, latest AS (
+    SELECT * FROM production ORDER BY produced_at DESC, chain_id DESC LIMIT 1
+), attempt AS (
+    SELECT created_at, terminal_reason, chain_json FROM reverie_visual_chain
+    ORDER BY created_at DESC, chain_id DESC LIMIT 1
+)
+SELECT l.chain_id AS last_success_chain_id, l.sha256 AS last_success_sha256,
+       l.produced_at AS last_success_at, t.created_at AS last_attempt_at,
+       CASE WHEN t.terminal_reason='thermal_refused' THEN 'deferred_thermal'
+            WHEN t.terminal_reason='generation_failed' THEN 'failed'
+            WHEN t.terminal_reason='run_deadline_exceeded' THEN 'unknown'
+            WHEN EXISTS (SELECT 1 FROM production p WHERE p.chain_id=(
+                SELECT chain_id FROM reverie_visual_chain ORDER BY created_at DESC, chain_id DESC LIMIT 1
+            )) THEN 'produced' ELSE 'failed' END AS last_attempt_outcome
+FROM (SELECT 1) anchor LEFT JOIN latest l ON true LEFT JOIN attempt t ON true
+"""
+
+
+def load_visual_activity():
+    from sqlalchemy import text
+    from orion.schemas.reverie_visual import VisualActivityV1
+
+    try:
+        with _get_engine().connect() as conn:
+            row = dict(conn.execute(text(_VISUAL_ACTIVITY_SQL)).mappings().one())
+            if conn.execute(text("SELECT to_regclass('reverie_visual_attempt')")).scalar():
+                active = conn.execute(text(_VISUAL_PRODUCTION_SQL + """
+                    SELECT a.attempt_id FROM reverie_visual_attempt a
+                    WHERE a.outcome IN ('active','unknown')
+                      AND NOT EXISTS (SELECT 1 FROM production p WHERE p.chain_id=a.attempt_id
+                                      AND p.receipt IS NOT NULL AND p.receipt <> 'null'::jsonb)
+                    ORDER BY a.started_at DESC LIMIT 1
+                """)).scalar()
+                row["active_attempt_id"] = active
+        if row["last_attempt_at"] is None:
+            row["last_attempt_outcome"] = None
+        return VisualActivityV1(history_status="ok", **row)
+    except Exception as exc:
+        logger.warning("visual activity unavailable: %s", exc)
+        return VisualActivityV1(history_status="unavailable")
+
+
+def _reconcile_visual_attempt(conn, attempt):
+    """One bounded reconciliation, based solely on the valid production join."""
+    from sqlalchemy import text
+    from orion.schemas.reverie_visual import (VisualProductionReceiptV1, VisualExecutionReceiptV1,
+                                             VisualContextSelectionV1, VisualRunRequestV1)
+
+    if attempt["outcome"] not in {"active", "unknown"}:
+        return attempt
+    row = conn.execute(text(_VISUAL_PRODUCTION_SQL + """
+        SELECT p.receipt, c.chain_json FROM production p
+        JOIN reverie_visual_chain c ON c.chain_id=p.chain_id WHERE p.chain_id=:id
+          AND p.receipt IS NOT NULL AND p.receipt <> 'null'::jsonb
+    """), {"id": attempt["attempt_id"]}).mappings().first()
+    if row is None:
+        return attempt
+    receipt = VisualProductionReceiptV1.model_validate(row["receipt"])
+    payload = row["chain_json"]
+    selection = (VisualContextSelectionV1.model_validate(payload["context_selection"])
+                 if payload.get("context_selection") else None)
+    source_refs = ([selection.reverie.thought_id, selection.reverie.text_chain_id]
+                   if selection and selection.reverie else
+                   [selection.source.source_id] if selection and selection.source else [])
+    execution_receipt = VisualExecutionReceiptV1(
+        request=VisualRunRequestV1.model_validate(attempt["request_json"]),
+        attempt_id=attempt["attempt_id"], outcome="produced", gate_reason="production_reconciled",
+        thermal_gate=payload.get("thermal_gate") or {},
+        source_selection_status="selected" if selection else "source_selection_not_reached",
+        source_kind=selection.source_kind if selection else None, source_refs=source_refs,
+        artifact_persisted=True, production_receipt=receipt,
+    )
+    result = {
+        "ok": True, "ran": True, "outcome": "produced", "reason": "production_reconciled",
+        "attempt_id": attempt["attempt_id"], "chain_id": receipt.chain_id,
+        "artifact_persisted": True, "artifact_sha256": receipt.sha256,
+        "produced_at": receipt.produced_at.isoformat(),
+        "production_receipt": receipt.model_dump(mode="json"),
+        "execution_receipt": execution_receipt.model_dump(mode="json"),
+    }
+    conn.execute(text("UPDATE reverie_visual_attempt SET outcome='produced', result_json=CAST(:result AS jsonb) WHERE dispatch_id=:id"),
+                 {"id": attempt["dispatch_id"], "result": json.dumps(result)})
+    return {**attempt, "outcome": "produced", "result_json": result}
+
+
+def _visual_dispatch_replay(conn, request):
+    from sqlalchemy import text
+
+    if not request.dispatch_id:
+        return None
+    replay = conn.execute(text("SELECT * FROM reverie_visual_attempt WHERE dispatch_id=:id FOR UPDATE"),
+                          {"id": request.dispatch_id}).mappings().first()
+    if replay is None:
+        return None
+    # A dispatch ID identifies one immutable request, not reusable permission.
+    if replay["request_json"] != request.model_dump(mode="json"):
+        return {"ok": False, "ran": False, "outcome": "failed", "reason": "dispatch_request_mismatch"}
+    replay = _reconcile_visual_attempt(conn, replay)
+    return replay["result_json"] or {"ok": True, "ran": False, "outcome": "unknown", "reason": "attempt_unresolved", "attempt_id": replay["attempt_id"]}
+
+
+def replay_visual_attempt(request):
+    """Read/reconcile an existing dispatch without authorizing any new work."""
+    from sqlalchemy import text
+
+    if not request.dispatch_id:
+        return None
+    with _get_engine().begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(719031340)"))
+        # Existing ordinary renders remain usable before the additive baseline
+        # migration; enabled new claims still require the table and fail closed.
+        if not conn.execute(text("SELECT to_regclass('reverie_visual_attempt')")).scalar():
+            return None
+        return _visual_dispatch_replay(conn, request)
+
+
+def claim_visual_attempt(request, *, retry_sec: float, now: datetime):
+    """Serialize claims across replicas and reread activity under the same lock.
+
+    Returns (attempt_id, replay_result). Unknown/active work has NO expiry:
+    cancelling an asyncio waiter cannot prove a diffusion thread has stopped.
+    Only a durable production receipt or explicit operator reconciliation can
+    release an ambiguous attempt. Baseline remains disabled pending rail smoke.
+    """
+    from datetime import timedelta
+    from uuid import uuid4
+    from sqlalchemy import text
+
+    dispatch_id = request.dispatch_id or f"manual-{uuid4()}"
+    need = request.visual_baseline
+    with _get_engine().begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(719031340)"))
+        replay = _visual_dispatch_replay(conn, request)
+        if replay is not None:
+            return None, replay
+        # Reconcile only positive production evidence. Silence is never proof
+        # that a timed-out blocking diffusion operation has stopped.
+        active = conn.execute(text("SELECT * FROM reverie_visual_attempt WHERE outcome IN ('active','unknown') ORDER BY started_at LIMIT 1 FOR UPDATE")).mappings().first()
+        if active:
+            active = _reconcile_visual_attempt(conn, active)
+            if active["outcome"] != "produced":
+                return None, {"ok": True, "ran": False, "outcome": "deferred_busy", "reason": "attempt_unresolved", "attempt_id": active["attempt_id"]}
+        if need:
+            activity = conn.execute(text(_VISUAL_ACTIVITY_SQL)).mappings().one()
+            if (activity["last_success_at"] != need.last_success_at
+                    or activity["last_success_chain_id"] != need.last_success_chain_id
+                    or activity["last_success_sha256"] != need.last_success_sha256):
+                return None, {"ok": True, "ran": False, "outcome": "already_satisfied", "reason": "activity_changed"}
+        recent = conn.execute(text("SELECT retry_after FROM reverie_visual_attempt ORDER BY started_at DESC LIMIT 1")).scalar()
+        if recent and recent > now:
+            return None, {"ok": True, "ran": False, "outcome": "deferred_busy", "reason": "retry_cooldown"}
+        attempt_id = str(uuid4())
+        conn.execute(text("""
+            INSERT INTO reverie_visual_attempt
+            (dispatch_id, need_id, attempt_id, started_at, retry_after, outcome, request_json)
+            VALUES (:dispatch, :need, :attempt, :now, :retry, 'active', CAST(:request AS jsonb))
+        """), {"dispatch": dispatch_id, "need": need.need_id if need else None,
+                 "attempt": attempt_id, "now": now, "retry": now + timedelta(seconds=retry_sec),
+                 "request": request.model_dump_json()})
+        return attempt_id, None
+
+
+def finish_visual_attempt(attempt_id: str, result: dict) -> None:
+    from sqlalchemy import text
+    with _get_engine().begin() as conn:
+        conn.execute(text("UPDATE reverie_visual_attempt SET outcome=:outcome, result_json=CAST(:result AS jsonb) WHERE attempt_id=:id"),
+                     {"id": attempt_id, "outcome": result["outcome"], "result": json.dumps(result)})
+
+
+def persist_visual_execution_receipt(chain_id, receipt):
+    from sqlalchemy import text
+    try:
+        with _get_engine().begin() as conn:
+            conn.execute(text("UPDATE reverie_visual_chain SET chain_json=jsonb_set(chain_json, '{execution_receipt}', CAST(:receipt AS jsonb)) WHERE chain_id=:id"),
+                         {"id": chain_id, "receipt": receipt.model_dump_json()})
+        return True
+    except Exception:
+        logger.exception("visual execution receipt persistence failed chain=%s", chain_id)
         return False

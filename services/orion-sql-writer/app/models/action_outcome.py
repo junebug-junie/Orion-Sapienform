@@ -27,6 +27,7 @@ class ActionOutcomeSQL(Base):
     kind = Column(String, nullable=False)
     summary = Column(String, nullable=False)
     success = Column(Boolean, nullable=True)
+    visual_outcome = Column(String, nullable=True)
     surprise = Column(Float, nullable=False, default=0.0)
     observed_at = Column(DateTime(timezone=True), nullable=True)
     correlation_id = Column(String, nullable=True)

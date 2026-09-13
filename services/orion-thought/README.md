@@ -574,3 +574,42 @@ same upstream attention/signal starvation reverie's text chain was
 independently found to be hitting. Worth revisiting whether this watchdog's
 "staleness" threshold makes sense once that upstream problem is understood,
 rather than assuming a wedge every time render_scene goes quiet for a while.
+
+## Acknowledged visual activity and baseline execution
+
+`GET /visual-chain/activity` returns `VisualActivityV1`. `history_status=ok` with
+no success means confirmed empty history; `unavailable` blocks baseline admission.
+Activity counts acknowledged images, including caption failures and repeated image
+bytes. Failed/refused/deadline-only rows do not advance it. New chains have an
+explicit `production_receipt` key, initially null; a transaction verifies the stored
+object and content-addressed artifact, then acknowledges that particular chain.
+Historical rows use the stricter artifact/chain/hash/positive-bytes/path join.
+
+The selected context retains its real settled text chain/thought/coalition, journal
+entry, crystallization, or prior visual chain identity in `chain_json.context_selection`.
+Only the selected reverie is credited with attention grounding. Rotation is not a
+voluntary attention override. Excerpts remain within the existing visual artifact
+boundary; dispatch receipts carry IDs, never source excerpts.
+
+`POST /visual-chain/run-once` accepts optional `VisualRunRequestV1` (empty body is
+compatible). It returns explicit `outcome`, `artifact_persisted`, and an
+`execution_receipt`. `ran=True` alone is not production. Thermal policy is unchanged:
+hot refuses, missing/stale readings allow degraded operation, and disabled is recorded.
+
+Baseline policy lives in `config/proposals/visual_baseline.v1.yaml`, **disabled by
+default**. With it enabled, all endpoint attempts use the durable
+`reverie_visual_attempt` claim and a shared retry gap. Replays retain their result.
+An unresolved active/unknown attempt has no automatic expiry: cancellation cannot
+prove a blocking GPU thread stopped. A committed production receipt permits positive
+reconciliation; otherwise operator investigation is required. Never clear a hold
+merely because a deadline elapsed.
+
+Before enabling: apply `manual_migration_reverie_visual_attempt.sql`, deploy compatible
+policy/dispatch/feedback/SQL/exec readers, keep `ORION_VISUAL_CHAIN_ENABLED=false`, and
+verify the complete diffusion/receipt/activity rail. The initial interval is 90 minutes,
+retry gap 10 minutes; both remain ordinary scheduling parameters. No env template
+changes are needed. See the implementation PR report for evidence and rollout order.
+
+Database integration tests use a disposable PostgreSQL URL:
+`ORION_VISUAL_TEST_DATABASE_URL=... python -m pytest services/orion-thought/tests/test_visual_activity.py -q`.
+They create isolated schemas and never run by default against the operator database.

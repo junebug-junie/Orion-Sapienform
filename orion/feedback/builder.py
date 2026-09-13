@@ -7,6 +7,7 @@ from orion.feedback.extractors import (
     classify_pressure_deltas,
     extract_field_pressure_snapshot,
     normalize_cortex_result_evidence,
+    is_visual_candidate,
     pressure_delta,
 )
 from orion.feedback.policy import FeedbackPolicyV1
@@ -291,9 +292,26 @@ def build_feedback_frame(
     dispatched_ids = {c.dispatch_id for c in dispatch_frame.dispatched_candidates}
     matched: set[str] = set()
 
+    candidates_by_id = {
+        c.dispatch_id: c
+        for c in dispatch_frame.candidates + dispatch_frame.dispatched_candidates
+    }
     for raw in normalized_results:
         status = str(raw.get("status", "unknown"))
-        outcome = _cortex_status_to_outcome(status)
+        visual_outcome = raw.get("visual_outcome")
+        candidate = candidates_by_id.get(str(raw.get("dispatch_id") or ""))
+        if visual_outcome is None and candidate is not None and is_visual_candidate(candidate):
+            visual_outcome = candidate.visual_outcome or "unknown"
+        if visual_outcome is not None:
+            outcome = {
+                "produced": "completed",
+                "deferred_thermal": "deferred",
+                "deferred_busy": "deferred",
+                "already_satisfied": "not_attempted",
+                "failed": "failed",
+            }.get(str(visual_outcome), "unknown")
+        else:
+            outcome = _cortex_status_to_outcome(status)
         dispatch_id = str(raw.get("dispatch_id") or "")
         if dispatch_id:
             matched.add(dispatch_id)
@@ -307,7 +325,7 @@ def build_feedback_frame(
                 confidence=0.85,
                 observed_at=generated_at,
                 evidence_refs=list(raw.get("evidence_refs") or []),
-                reasons=[f"cortex_status:{status}"],
+                reasons=[f"cortex_status:{status}"] + ([f"visual_outcome:{visual_outcome}"] if visual_outcome is not None else []),
             )
         )
 

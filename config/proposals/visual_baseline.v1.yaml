@@ -1,0 +1,9 @@
+# Consumer-first rollout and a verified produced receipt are required before enabling.
+enabled: false
+policy_id: visual_baseline.v1
+interval_sec: 5400
+retry_sec: 600
+freshness_sec: 60
+timeout_sec: 2
+target_id: host:circe_gpu
+thought_url: http://orion-athena-thought:7155

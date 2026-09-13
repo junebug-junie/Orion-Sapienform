@@ -586,7 +586,11 @@ from orion.schemas.reverie import (
     ReverieRefractoryEntry,
     SpontaneousThoughtV1,
 )
-from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
+from orion.schemas.reverie_visual import (
+    ReverieVisualArtifactV1, ReverieVisualChainV1, VisualActivityV1,
+    ReverieVisualContextV1, VisualContextSelectionV1, VisualProductionReceiptV1,
+    VisualBaselineEligibilityV1, VisualRunRequestV1, VisualExecutionReceiptV1,
+)
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
     GroundingCapsuleV1,
@@ -1391,6 +1395,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
     "ResonanceAlertV1": ResonanceAlertV1,
+    "VisualActivityV1": VisualActivityV1,
+    "ReverieVisualContextV1": ReverieVisualContextV1,
+    "VisualContextSelectionV1": VisualContextSelectionV1,
+    "VisualProductionReceiptV1": VisualProductionReceiptV1,
+    "VisualBaselineEligibilityV1": VisualBaselineEligibilityV1,
+    "VisualRunRequestV1": VisualRunRequestV1,
+    "VisualExecutionReceiptV1": VisualExecutionReceiptV1,
     "ReverieVisualChainV1": ReverieVisualChainV1,
     "ReverieVisualArtifactV1": ReverieVisualArtifactV1,
     "StanceReactRequestV1": StanceReactRequestV1,
@@ -1552,6 +1563,13 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=MemoryCompactionDeltaV1,
         kind="dream.compaction.delta.v1",
     ),
+    "VisualActivityV1": SchemaRegistration(model=VisualActivityV1, kind="reverie.visual.activity.v1"),
+    "ReverieVisualContextV1": SchemaRegistration(model=ReverieVisualContextV1, kind="reverie.visual.context.v1"),
+    "VisualContextSelectionV1": SchemaRegistration(model=VisualContextSelectionV1, kind="reverie.visual.context-selection.v1"),
+    "VisualProductionReceiptV1": SchemaRegistration(model=VisualProductionReceiptV1, kind="reverie.visual.production-receipt.v1"),
+    "VisualBaselineEligibilityV1": SchemaRegistration(model=VisualBaselineEligibilityV1, kind="reverie.visual.baseline-eligibility.v1"),
+    "VisualRunRequestV1": SchemaRegistration(model=VisualRunRequestV1, kind="reverie.visual.run-request.v1"),
+    "VisualExecutionReceiptV1": SchemaRegistration(model=VisualExecutionReceiptV1, kind="reverie.visual.execution-receipt.v1"),
     "ReverieVisualChainV1": SchemaRegistration(
         model=ReverieVisualChainV1,
         kind="reverie.visual.chain.v1",

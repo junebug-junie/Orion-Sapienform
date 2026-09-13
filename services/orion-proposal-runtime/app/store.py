@@ -361,3 +361,14 @@ class ProposalRuntimeStore:
                     "created_at": now,
                 },
             )
+
+    def baseline_eligibility(self, activity, *, now, policy):
+        """Serialize scheduler replicas on one durable checkpoint row."""
+        from orion.reverie.baseline import schedule
+        with self._engine.begin() as conn:
+            conn.execute(text("CREATE TABLE IF NOT EXISTS visual_baseline_checkpoint (id INTEGER PRIMARY KEY CHECK (id = 1), state JSONB NOT NULL)"))
+            conn.execute(text("INSERT INTO visual_baseline_checkpoint VALUES (1, '{}'::jsonb) ON CONFLICT (id) DO NOTHING"))
+            row = conn.execute(text("SELECT state FROM visual_baseline_checkpoint WHERE id = 1 FOR UPDATE")).scalar_one()
+            eligibility, state, reason = schedule(activity, row, now=now, policy=policy)
+            conn.execute(text("UPDATE visual_baseline_checkpoint SET state = CAST(:state AS jsonb) WHERE id = 1"), {"state": json.dumps(state)})
+            return eligibility, reason

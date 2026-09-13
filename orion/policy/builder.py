@@ -46,6 +46,7 @@ def build_policy_decision_frame(
                     candidate=candidate,
                     proposal_frame=proposal_frame,
                     policy=policy,
+                    now=generated_at,
                 )
             )
         except Exception as exc:  # noqa: BLE001 -- deliberately total; see above

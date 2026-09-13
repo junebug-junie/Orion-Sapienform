@@ -8,6 +8,7 @@ COPY services/orion-policy-runtime/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY orion /app/orion
+COPY config/proposals /app/config/proposals
 COPY config/policy /app/config/policy
 COPY services/orion-policy-runtime /app
 

@@ -400,3 +400,44 @@ def test_save_idempotent_by_frame_id(monkeypatch) -> None:
 
     store.save_feedback_frame(_frame())
     assert any("ON CONFLICT (frame_id)" in sql for sql in calls)
+
+
+def test_visual_result_survives_sql_read_normalization_and_feedback_consumer(monkeypatch):
+    """Regression: ok=True on a thermal refusal used to become completed."""
+    from orion.feedback.builder import build_feedback_frame
+    from orion.feedback.policy import load_feedback_policy
+    from orion.feedback.outcome_resolution import resolve_action_outcomes
+    from orion.schemas.action_prediction import ExpectedEffectV1
+
+    store = FeedbackRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = fake_engine.connect.return_value.__enter__.return_value
+    monkeypatch.setattr(store, "_engine", fake_engine)
+    candidate = _candidate("dispatch:1").model_copy(update={
+        "cortex_verb": "skills.imagination.render_scene.v1",
+        "expected_effect": ExpectedEffectV1(signal_id="execution_pressure", direction="decrease", predicted_delta=-0.1, predictor_variance=0.25, predictor_n=0),
+    })
+    dispatch = _dispatch_frame([candidate]).model_copy(update={"dispatched_candidates": [candidate]})
+    policy = load_feedback_policy(REPO / "config/feedback/feedback_policy.v1.yaml")
+    for outcome, kind in [("produced", "completed"), ("deferred_thermal", "deferred"),
+                          ("deferred_busy", "deferred"), ("already_satisfied", "not_attempted"),
+                          ("failed", "failed"), ("unknown", "unknown"), (None, "unknown")]:
+        result_json = {"ok": True, "evidence_refs": ["receipt:visual"]}
+        if outcome is not None:
+            result_json["visual_outcome"] = outcome
+        conn.execute.return_value.mappings.return_value.all.return_value = [{
+            "result_id": "result:visual", "dispatch_id": "dispatch:1", "status": "success",
+            "result_json": result_json, "latency_ms": 42.5,
+        }]
+        evidence = store.load_cortex_result_evidence(dispatch)
+        assert evidence[0]["latency_ms"] == 42.5
+        frame = build_feedback_frame(dispatch_frame=dispatch, policy_frame=None, proposal_frame=None,
+            field_before=None, field_after=None, cortex_results=evidence, policy=policy)
+        result_obs = [o for o in frame.observations if o.source_kind == "cortex_result"]
+        assert len(result_obs) == 1 and result_obs[0].outcome_kind == kind
+        assert result_obs[0].evidence_refs == ["receipt:visual"]
+        resolution = resolve_action_outcomes(dispatch_frame=dispatch, feedback_frame_id=frame.frame_id,
+            field_before=None, field_after=None, cortex_results=evidence)
+        if outcome != "produced":
+            assert resolution.skipped["dispatch:1"] == f"visual_non_observation:{outcome or 'unknown'}"
+            assert not resolution.posteriors

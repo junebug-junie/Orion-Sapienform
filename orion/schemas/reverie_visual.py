@@ -26,7 +26,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from orion.schemas.thought import CoalitionSnapshotV1
+from orion.schemas.reverie import MAX_EVIDENCE_REFS
 
 # Cap on the verbatim thought/step window per chain (§ cap-all-collections),
 # mirrored from orion.schemas.reverie.MAX_CHAIN_THOUGHTS.
@@ -65,6 +67,92 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class ReverieVisualContextV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1)
+    thought_id: str
+    thought_correlation_id: str
+    thought_created_at: datetime
+    text_chain_id: str
+    coalition: CoalitionSnapshotV1
+    evidence_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+
+
+class VisualSourceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class VisualContextSelectionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    selection_method: Literal["round_robin"] = "round_robin"
+    source_kind: Literal["reverie", "self_study", "memory", "prior_visual", "default_seed"]
+    source: VisualSourceV1 | None = None
+    reverie: ReverieVisualContextV1 | None = None
+    continuity: VisualSourceV1 | None = None
+
+
+class VisualProductionReceiptV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    chain_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    bytes: int = Field(gt=0)
+    path: str = Field(min_length=1)
+    produced_at: datetime
+
+
+class VisualActivityV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["reverie.visual.activity.v1"] = "reverie.visual.activity.v1"
+    observed_at: datetime = Field(default_factory=_utc_now)
+    history_status: Literal["ok", "unavailable"]
+    last_success_at: datetime | None = None
+    last_success_chain_id: str | None = None
+    last_success_sha256: str | None = None
+    last_attempt_at: datetime | None = None
+    last_attempt_outcome: str | None = None
+    active_attempt_id: str | None = None
+
+
+class VisualBaselineEligibilityV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    need_id: str = Field(min_length=1)
+    observed_at: datetime
+    due_at: datetime
+    last_success_at: datetime | None = None
+    last_success_chain_id: str | None = None
+    last_success_sha256: str | None = None
+    policy_id: str = Field(min_length=1)
+
+
+class VisualRunRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dispatch_id: str | None = None
+    proposal_id: str | None = None
+    decision_id: str | None = None
+    correlation_id: str | None = None
+    visual_baseline: VisualBaselineEligibilityV1 | None = None
+
+
+VisualRunOutcome = Literal["produced", "deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown"]
+
+
+class VisualExecutionReceiptV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request: VisualRunRequestV1 = Field(default_factory=VisualRunRequestV1)
+    attempt_id: str | None = None
+    outcome: VisualRunOutcome
+    gate_reason: str
+    thermal_gate: dict = Field(default_factory=dict)
+    source_selection_status: Literal["selected", "source_selection_not_reached"] = "source_selection_not_reached"
+    source_refs: list[str] = Field(default_factory=list, max_length=4)
+    source_kind: str | None = None
+    artifact_persisted: bool = False
+    production_receipt: VisualProductionReceiptV1 | None = None
+
+
 class ReverieVisualChainV1(BaseModel):
     """Readout of one visual reverie chain — mirrors `reverie_visual_chain`.
 
@@ -94,7 +182,15 @@ class ReverieVisualChainV1(BaseModel):
     # `visual_chain.py` sets `prior_description = description or
     # continuity_fallback`, which carries the PREVIOUS run's caption forward
     # on a caption-failure row.
+    context_selection: VisualContextSelectionV1 | None = None
     chain_json: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def restore_selection(self):
+        if self.context_selection is None and self.chain_json.get("context_selection"):
+            self.context_selection = VisualContextSelectionV1.model_validate(self.chain_json["context_selection"])
+        return self
+
     stored_at: datetime = Field(default_factory=_utc_now)
 
 

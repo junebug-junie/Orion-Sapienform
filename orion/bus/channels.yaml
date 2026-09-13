@@ -181,6 +181,8 @@ channels:
     stability: "experimental"
     since: "2026-05-13"
 
+  # render_scene args preserve dispatch/proposal/decision/correlation IDs and
+  # optional visual_baseline eligibility; the thought endpoint rechecks history.
   - name: "orion:cortex:exec:request:background"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
@@ -2319,6 +2321,9 @@ channels:
     stability: "experimental"
     since: "2026-05-21"
 
+  # Visual express results optionally carry visual_outcome. Deferred, already
+  # satisfied and unknown attempts are not effect observations; only produced
+  # means a durable image receipt. Deploy closed-schema consumers first.
   - name: "orion:autonomy:action:outcome"
     kind: "event"
     schema_id: "ActionOutcomeEmitV1"

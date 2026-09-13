@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from orion.field.pressure import field_pressures
 from orion.schemas.field_state import FieldStateV1
+from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1
 
 # Below this, a pressure delta is not a movement. Was a bare literal at the
 # one call site below; named in 2026-08-21's control-arm patch because two
@@ -72,9 +73,25 @@ def normalize_cortex_result_evidence(result: dict[str, object]) -> dict[str, obj
         status = "success"
     if status in ("false", "0"):
         status = "failed"
-    return {
+    # Only the explicit dispatch contract is a visual result. Other verbs
+    # also use structured_result.outcome and must retain their own semantics.
+    visual_outcome = result.get("visual_outcome")
+    normalized = {
         "result_id": str(result.get("result_id") or result.get("correlation_id") or "unknown"),
         "dispatch_id": str(result.get("dispatch_id") or ""),
         "status": status,
         "evidence_refs": list(result.get("evidence_refs") or []),
     }
+
+    if visual_outcome is not None:
+        normalized["visual_outcome"] = str(visual_outcome)
+    return normalized
+
+
+def is_visual_candidate(candidate: ExecutionDispatchCandidateV1) -> bool:
+    """Recognize historical visual dispatches too (their target is a GPU host)."""
+    return (
+        candidate.cortex_verb == "skills.imagination.render_scene.v1"
+        or candidate.source_proposal_id.startswith("proposal:render_scene:")
+        or candidate.visual_baseline is not None
+    )

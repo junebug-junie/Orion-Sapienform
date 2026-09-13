@@ -14,6 +14,7 @@ from orion.autonomy.contrast import ControlCell, ControlCellKey, TreatedCellKey
 from orion.autonomy.prediction import EffectPosterior
 from orion.schemas.action_prediction import ActionOutcomeRecordV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
+from orion.feedback.extractors import normalize_cortex_result_evidence
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
@@ -554,6 +555,11 @@ class FeedbackRuntimeStore:
                     "status": row["status"],
                     "evidence_refs": evidence_refs,
                 }
+                if isinstance(payload, dict):
+                    # Preserve visual refusal across the actual database seam.
+                    normalized = normalize_cortex_result_evidence(payload)
+                    if "visual_outcome" in normalized:
+                        entry["visual_outcome"] = normalized["visual_outcome"]
                 # 2026-08-21: this dict used to be exactly the four keys above,
                 # which made worker.py::_latencies() UNREACHABLE -- it scans
                 # these entries for latency_ms/duration_ms/elapsed_ms and they

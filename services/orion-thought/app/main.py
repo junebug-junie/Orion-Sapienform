@@ -4,7 +4,8 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
+from orion.schemas.reverie_visual import VisualRunRequestV1, VisualExecutionReceiptV1, VisualProductionReceiptV1
 from fastapi.responses import JSONResponse
 
 from datetime import datetime, timezone
@@ -147,62 +148,102 @@ async def health() -> JSONResponse:
     )
 
 
+@app.get("/visual-chain/activity")
+async def visual_chain_activity() -> JSONResponse:
+    from .store import load_visual_activity
+    activity = await asyncio.to_thread(load_visual_activity)
+    return JSONResponse(activity.model_dump(mode="json"))
+
+
 @app.post("/visual-chain/run-once")
-async def visual_chain_run_once() -> JSONResponse:
-    """Run one visual chain NOW, because something chose to.
-
-    The visual chain has always fired on a 600s timer. A cron is not a decision:
-    it spends real GPU watts on circe at a fixed cadence whether or not making an
-    image is the best use of them, and nothing weighs it against the
-    alternatives. This endpoint is what makes it choosable -- the `express`
-    dispatch route calls it, so the action competes for motor-seconds against
-    everything else Orion could do and has to win on value-per-second.
-
-    Returns the chain readout either way, including a refusal. `terminal_reason`
-    carries the outcome -- "thermal_refused" when the room is too warm to justify
-    the watts. Returning nothing on a refusal would make it look like a crash.
-    """
+async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(default=None)) -> JSONResponse:
+    """Execute a typed request; `ran` is legacy, only `outcome` proves production."""
     from orion.core.bus.async_service import OrionBusAsync
+    from orion.reverie.baseline import load_baseline_policy, validate_eligibility
     from .visual_chain import run_visual_chain_once, visual_chain_in_flight_for
+    from .store import claim_visual_attempt, finish_visual_attempt, persist_visual_execution_receipt, replay_visual_attempt
 
-    # Own short-lived connection rather than sharing the worker's: the worker
-    # holds its bus inside its own loop and is not reachable from here, and a
-    # request-scoped connection cannot be left half-open by a request that dies.
+    request = request if isinstance(request, VisualRunRequestV1) else VisualRunRequestV1()
+    policy = load_baseline_policy()
+    attempt_id = None
+    # Replay does not grant authority to execute. Retrieve the exact immutable
+    # dispatch before checking authorization freshness for a new attempt.
+    if request.dispatch_id:
+        try:
+            replay = await asyncio.to_thread(replay_visual_attempt, request)
+        except Exception:
+            logger.exception("visual execution replay unavailable")
+            return JSONResponse({"ok": False, "ran": False, "outcome": "unknown", "reason": "replay_unavailable"})
+        if replay is not None:
+            return JSONResponse(replay)
+    if request.visual_baseline:
+        reason = validate_eligibility(request.visual_baseline, policy=policy)
+        if reason or settings.visual_chain_enabled:
+            return JSONResponse({"ok": False, "ran": False, "outcome": "failed",
+                                 "reason": reason or "legacy_visual_worker_enabled"})
+    if policy.enabled:
+        try:
+            attempt_id, replay = await asyncio.to_thread(
+                claim_visual_attempt, request, retry_sec=policy.retry_sec, now=datetime.now(timezone.utc)
+            )
+        except Exception:
+            logger.exception("visual execution claim unavailable")
+            return JSONResponse({"ok": False, "ran": False, "outcome": "unknown", "reason": "claim_unavailable"})
+        if replay is not None:
+            return JSONResponse(replay)
     bus = OrionBusAsync(url=settings.orion_bus_url)
-    await bus.connect()
+    chain = None
     try:
-        chain = await run_visual_chain_once(bus=bus)
+        await bus.connect()
+        chain = await run_visual_chain_once(bus=bus, attempt_id=attempt_id, run_request=request.model_dump(mode="json"))
+    except Exception:
+        # A failed waiter is ambiguous: its blocking GPU thread may still run.
+        logger.exception("visual run failed without a terminal chain")
+        result = {"ok": False, "ran": False, "outcome": "unknown", "reason": "execution_unresolved", "attempt_id": attempt_id}
+    else:
+        production = chain.chain_json.get("production_receipt") if chain else None
+        outcome = ("produced" if production else "deferred_busy" if chain is None else
+                   "deferred_thermal" if chain.terminal_reason == "thermal_refused" else
+                   "unknown" if chain.terminal_reason == "run_deadline_exceeded" else "failed")
+        thermal = chain.chain_json.get("thermal_gate") if chain else {"reason": "thermal_not_evaluated"}
+        receipt = VisualExecutionReceiptV1(
+            request=request, attempt_id=attempt_id or (chain.chain_id if chain else None),
+            outcome=outcome, gate_reason=chain.terminal_reason if chain else "already_in_flight",
+            thermal_gate=thermal or {},
+            source_selection_status="selected" if chain and chain.context_selection else "source_selection_not_reached",
+            source_kind=chain.context_selection.source_kind if chain and chain.context_selection else None,
+            source_refs=([chain.context_selection.reverie.thought_id, chain.context_selection.reverie.text_chain_id]
+                         if chain and chain.context_selection and chain.context_selection.reverie else
+                         [chain.context_selection.source.source_id]
+                         if chain and chain.context_selection and chain.context_selection.source else []),
+            artifact_persisted=production is not None,
+            production_receipt=VisualProductionReceiptV1.model_validate(production) if production else None,
+        )
+        result = {"ok": outcome not in {"failed", "unknown"}, "ran": chain is not None,
+                  "outcome": outcome, "attempt_id": receipt.attempt_id,
+                  "chain_id": chain.chain_id if chain else None,
+                  "terminal_reason": chain.terminal_reason if chain else None,
+                  "reason": receipt.gate_reason,
+                  "refused": outcome == "deferred_thermal", "detail": thermal,
+                  "artifact_persisted": receipt.artifact_persisted,
+                  "artifact_sha256": receipt.production_receipt.sha256 if receipt.production_receipt else None,
+                  "produced_at": receipt.production_receipt.produced_at.isoformat() if receipt.production_receipt else None,
+                  "execution_receipt": receipt.model_dump(mode="json")}
+        if chain is None:
+            held_sec = visual_chain_in_flight_for()
+            result["held_sec"] = None if held_sec is None else round(held_sec, 1)
+        else:
+            await asyncio.to_thread(persist_visual_execution_receipt, chain.chain_id, receipt)
     finally:
         with suppress(Exception):
             await bus.close()
-    if chain is None:
-        # Single-flight no-op: a run was already in progress. Distinct from a
-        # refusal, and the caller has to be able to tell them apart.
-        #
-        # `held_sec` is reported because "already in flight" alone is ambiguous
-        # between a healthy ~53s run and a wedged lock -- and that ambiguity is
-        # exactly what hid a live wedge (2026-08-31) until a restart cleared it.
-        # A caller now gets the age, so a dispatch that keeps bouncing off this
-        # can say whether it is bouncing off the same stuck run.
-        held_sec = visual_chain_in_flight_for()
-        return JSONResponse(
-            {
-                "ok": True,
-                "ran": False,
-                "reason": "already_in_flight",
-                "held_sec": None if held_sec is None else round(held_sec, 1),
-            }
-        )
-    return JSONResponse(
-        {
-            "ok": True,
-            "ran": True,
-            "chain_id": chain.chain_id,
-            "terminal_reason": chain.terminal_reason,
-            "refused": chain.terminal_reason == "thermal_refused",
-            "detail": chain.chain_json.get("thermal_gate"),
-        }
-    )
+    if attempt_id:
+        try:
+            await asyncio.to_thread(finish_visual_attempt, attempt_id, result)
+        except Exception:
+            # Durable active marker remains for positive-evidence reconciliation.
+            logger.exception("visual attempt completion persistence failed")
+    return JSONResponse(result)
 
 
 @app.get("/projections/reasoning_activity")

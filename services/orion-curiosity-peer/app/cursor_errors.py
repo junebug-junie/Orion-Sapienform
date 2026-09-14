@@ -6,8 +6,9 @@ from typing import Literal
 
 CursorFailureKind = Literal["token_unavailable", "other"]
 
+# Narrow markers — bare "token" matched unrelated prose ("tokenizing",
+# "take a token turn") and falsely routed to Claude fallback.
 _TOKEN_MARKERS = (
-    "token",
     "unauthorized",
     "401",
     "403",
@@ -20,7 +21,11 @@ _TOKEN_MARKERS = (
     "payment required",
     "api key",
     "apikey",
+    "access token",
+    "api_token",
     "authentication",
+    "auth failed",
+    "not authenticated",
 )
 
 

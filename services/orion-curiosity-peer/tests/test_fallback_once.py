@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -11,9 +13,23 @@ from pydantic import SecretStr
 from app.claude_fallback import CONTRACTOR_PEER_MARKER, run_claude_fallback
 from app.cursor_errors import TokenUnavailable, classify_cursor_failure
 from app.settings import Settings
-from app.worker import _default_persist, handle_help_request, make_bus_claude_fallback
+from app.worker import (
+    _default_persist,
+    _map_claude_result,
+    _run_coro_threadsafe,
+    apply_peer_brief_consumed,
+    handle_help_request,
+    make_bus_claude_fallback,
+)
+from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.codec import OrionCodec
 from orion.dev_economics.cursor_limit_events import CursorLimitObservation
-from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefV1
+from orion.schemas.curiosity_peer import (
+    PEER_BRIEF_KIND,
+    HelpRequestV1,
+    PeerBriefConsumedV1,
+    PeerBriefV1,
+)
 from orion.schemas.room_claude import ExternalRoomResponderV1, RoomClaudeUtteranceV1
 
 
@@ -35,6 +51,17 @@ def _clear_budget() -> CursorLimitObservation:
     return CursorLimitObservation(observed=True, state="clear", staleness_sec=1.0)
 
 
+@dataclass
+class _ClearClaudeLimit:
+    observed: bool = True
+    state: str = "clear"
+    staleness_sec: float | None = 1.0
+
+
+def _clear_claude() -> _ClearClaudeLimit:
+    return _ClearClaudeLimit()
+
+
 def test_classify_token_unavailable() -> None:
     assert classify_cursor_failure(TokenUnavailable("dry")) == "token_unavailable"
     assert classify_cursor_failure(RuntimeError("boom")) == "other"
@@ -42,6 +69,8 @@ def test_classify_token_unavailable() -> None:
         classify_cursor_failure(RuntimeError("401 Unauthorized: invalid api key"))
         == "token_unavailable"
     )
+    # Bare "token" must not false-positive (narrowed markers).
+    assert classify_cursor_failure(RuntimeError("tokenizing the input")) == "other"
 
 
 def test_cursor_token_failure_tries_claude_once() -> None:
@@ -61,12 +90,44 @@ def test_cursor_token_failure_tries_claude_once() -> None:
         cursor=cursor,
         claude=claude,
         observe_limit=lambda: _clear_budget(),
+        observe_claude_limit=_clear_claude,
         persist=persisted.append,
     )
     assert calls == {"cursor": 1, "claude": 1}
     assert brief.status == "ok"
     assert brief.peer == "claude_room"
     assert "ok summary" in brief.summary
+    assert "conversation-only" in brief.summary.lower()
+    assert brief.evidence_pointers == []
+    assert persisted == [brief]
+
+
+def test_claude_budget_refuse_skips_claude_spend() -> None:
+    calls = {"cursor": 0, "claude": 0}
+    persisted: list[PeerBriefV1] = []
+
+    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
+        calls["cursor"] += 1
+        raise TokenUnavailable("dry")
+
+    def claude(*_a: Any, **_k: Any) -> str:
+        calls["claude"] += 1
+        raise AssertionError("claude must not spend")
+
+    brief = handle_help_request(
+        _help(),
+        cursor=cursor,
+        claude=claude,
+        observe_limit=lambda: _clear_budget(),
+        observe_claude_limit=lambda: _ClearClaudeLimit(
+            observed=False, state="unknown", staleness_sec=None
+        ),
+        persist=persisted.append,
+    )
+    assert calls == {"cursor": 1, "claude": 0}
+    assert brief.status == "refused_budget"
+    assert brief.peer == "claude_room"
+    assert brief.refusal_reason and "claude_budget_unobserved" in brief.refusal_reason
     assert persisted == [brief]
 
 
@@ -87,6 +148,7 @@ def test_both_fail_yields_failed_brief() -> None:
         cursor=cursor,
         claude=claude,
         observe_limit=lambda: _clear_budget(),
+        observe_claude_limit=_clear_claude,
         persist=persisted.append,
     )
     assert calls == {"cursor": 1, "claude": 1}
@@ -176,6 +238,21 @@ def test_cursor_success_skips_claude() -> None:
     assert brief.status == "ok"
 
 
+def test_map_claude_result_strips_evidence_pointers() -> None:
+    raw = PeerBriefV1(
+        brief_id="b1",
+        help_id="help-1",
+        run_id="run-1",
+        peer="claude_room",
+        status="ok",
+        summary="notes",
+        evidence_pointers=["worker.py", "policy.py"],
+    )
+    mapped = _map_claude_result(_help(), raw)
+    assert mapped.evidence_pointers == []
+    assert "conversation-only" in mapped.summary.lower()
+
+
 def test_run_claude_fallback_publishes_and_waits_once() -> None:
     published: list[Any] = []
     waits = {"n": 0}
@@ -240,11 +317,7 @@ def test_run_claude_fallback_failure_raises() -> None:
 
 
 def test_bus_claude_fallback_unwraps_titanium_payload_envelope() -> None:
-    """Room companion publishes Titanium envelopes with utterance under `payload`.
-
-    Hub's room_claude_relay unwraps the same way; looking at `data` misses live
-    utterances and times out into dual-failure.
-    """
+    """Room companion publishes Titanium envelopes with utterance under `payload`."""
     order: list[str] = []
     settings = Settings()
     brief_body = '{"summary": "from enveloped utterance", "evidence_pointers": []}'
@@ -298,19 +371,40 @@ def test_bus_claude_fallback_unwraps_titanium_payload_envelope() -> None:
     assert "from enveloped utterance" in brief.summary
 
 
-def test_default_persist_runs_peer_brief_merge_when_graph_client_injected() -> None:
+def test_run_coro_threadsafe_uses_captured_loop() -> None:
+    """Worker-thread bus ops must not asyncio.run on a foreign OrionBusAsync loop."""
+    seen: list[str] = []
+
+    async def _main() -> None:
+        loop = asyncio.get_running_loop()
+
+        async def _work() -> str:
+            seen.append("on-loop")
+            return "ok"
+
+        def _from_thread() -> str:
+            return _run_coro_threadsafe(_work(), loop, timeout=2.0)
+
+        out = await asyncio.to_thread(_from_thread)
+        assert out == "ok"
+
+    asyncio.run(_main())
+    assert seen == ["on-loop"]
+
+
+def test_default_persist_publishes_base_envelope_codec_roundtrip() -> None:
     class FakeGraph:
         def __init__(self) -> None:
-            self.calls: list[str] = []
+            self.calls: list[tuple[str, Any]] = []
 
         def graph_query(self, cypher: str, params: Any = None) -> list:
-            self.calls.append(cypher)
+            self.calls.append((cypher, params))
             return []
 
-    published: list[tuple[str, dict[str, Any]]] = []
+    published: list[tuple[str, BaseEnvelope]] = []
 
     class FakeBus:
-        def publish(self, channel: str, payload: dict[str, Any]) -> None:
+        def publish(self, channel: str, payload: BaseEnvelope) -> None:
             published.append((channel, payload))
 
     graph = FakeGraph()
@@ -322,7 +416,7 @@ def test_default_persist_runs_peer_brief_merge_when_graph_client_injected() -> N
         peer="claude_room",
         status="ok",
         summary="merge me",
-        evidence_pointers=["worker.py"],
+        evidence_pointers=[],
     )
     settings = Settings(
         ORION_CURIOSITY_GRAPH_HOST="127.0.0.1",
@@ -333,18 +427,24 @@ def test_default_persist_runs_peer_brief_merge_when_graph_client_injected() -> N
     )
     _default_persist(brief, settings=settings, bus=FakeBus(), graph_client=graph)
     assert len(graph.calls) == 1
-    cypher = graph.calls[0]
+    cypher, params = graph.calls[0]
     assert "MERGE" in cypher
     assert "PeerBrief" in cypher
-    assert "brief-merge-1" in cypher
-    assert published and published[0][1]["brief_id"] == "brief-merge-1"
+    assert params["brief_id"] == "brief-merge-1"
+    assert published and isinstance(published[0][1], BaseEnvelope)
+    env = published[0][1]
+    assert env.kind == PEER_BRIEF_KIND
+    decoded = OrionCodec().decode(OrionCodec().encode(env))
+    assert decoded.ok
+    assert decoded.envelope.kind == PEER_BRIEF_KIND
+    assert decoded.envelope.payload["brief_id"] == "brief-merge-1"
 
 
 def test_default_persist_skips_graph_when_unconfigured(caplog: pytest.LogCaptureFixture) -> None:
-    published: list[tuple[str, dict[str, Any]]] = []
+    published: list[tuple[str, BaseEnvelope]] = []
 
     class FakeBus:
-        def publish(self, channel: str, payload: dict[str, Any]) -> None:
+        def publish(self, channel: str, payload: BaseEnvelope) -> None:
             published.append((channel, payload))
 
     brief = PeerBriefV1(
@@ -357,5 +457,30 @@ def test_default_persist_skips_graph_when_unconfigured(caplog: pytest.LogCapture
     )
     with caplog.at_level("WARNING"):
         _default_persist(brief, settings=Settings(), bus=FakeBus())
-    assert published and published[0][1]["brief_id"] == "brief-bus-only"
+    assert published and published[0][1].payload["brief_id"] == "brief-bus-only"
     assert any("graph_unconfigured" in r.message for r in caplog.records)
+
+
+def test_apply_peer_brief_consumed_marks_graph() -> None:
+    class FakeGraph:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+
+        def graph_query(self, cypher: str, params: Any = None) -> list:
+            self.calls.append((cypher, params))
+            return []
+
+    graph = FakeGraph()
+    payload = PeerBriefConsumedV1(brief_ids=["brief-a", "brief-b"]).model_dump(
+        mode="json"
+    )
+    ids = apply_peer_brief_consumed(
+        {"payload": payload},
+        settings=Settings(),
+        graph_client=graph,
+    )
+    assert ids == ["brief-a", "brief-b"]
+    assert graph.calls
+    cypher, params = graph.calls[0]
+    assert "SET b.consumed = true" in cypher
+    assert params["brief_ids"] == ["brief-a", "brief-b"]

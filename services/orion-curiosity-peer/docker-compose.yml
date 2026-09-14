@@ -37,6 +37,7 @@ services:
 
       - CHANNEL_HELP_REQUEST=${CHANNEL_HELP_REQUEST:-orion:curiosity:help:request}
       - CHANNEL_PEER_BRIEF=${CHANNEL_PEER_BRIEF:-orion:curiosity:peer:brief}
+      - CHANNEL_PEER_BRIEF_CONSUMED=${CHANNEL_PEER_BRIEF_CONSUMED:-orion:curiosity:peer:brief:consumed}
       - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
       - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
     volumes:

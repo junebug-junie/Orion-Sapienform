@@ -103,18 +103,22 @@ def test_persist_never_emits_prior_merge() -> None:
         summary="Fixture persist path only.",
         evidence_pointers=["orion/curiosity/peer_brief_persist.py"],
     )
-    graphs: list[str] = []
-    buses: list[tuple[str, dict]] = []
+    graphs: list[tuple[str, dict | None]] = []
+    buses: list[tuple[str, object]] = []
+
+    def graph_execute(cypher: str, params: dict | None = None) -> None:
+        graphs.append((cypher, params))
 
     result = persist_peer_brief(
         brief=brief,
-        graph_execute=graphs.append,
+        graph_execute=graph_execute,
         bus_publish=lambda channel, payload: buses.append((channel, payload)),
     )
     assert result == {"graph_ok": True, "bus_ok": True}
     assert len(graphs) == 1
-    cypher = graphs[0]
+    cypher, params = graphs[0]
     assert "MERGE (b:PeerBrief" in cypher
+    assert params is not None and params["brief_id"] == "brief-persist-gate"
     assert ":Prior" not in cypher
     assert "CREATE (:Prior" not in cypher
     assert "MERGE (p:Prior" not in cypher

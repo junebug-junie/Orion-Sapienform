@@ -609,7 +609,7 @@ from orion.schemas.attention_frame import (
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
-from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefV1
+from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -941,6 +941,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
+    "PeerBriefConsumedV1": PeerBriefConsumedV1,
     "AttentionSalienceTraceV1": AttentionSalienceTraceV1,
     "AttentionLoopOutcomeV1": AttentionLoopOutcomeV1,
     "PendingAttentionCardV1": PendingAttentionCardV1,
@@ -1726,6 +1727,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PeerBriefV1": SchemaRegistration(
         model=PeerBriefV1,
         kind="curiosity.peer.brief.v1",
+    ),
+    "PeerBriefConsumedV1": SchemaRegistration(
+        model=PeerBriefConsumedV1,
+        kind="curiosity.peer.brief.consumed.v1",
     ),
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(
         model=SelfStudyEnrichmentRequestV1,

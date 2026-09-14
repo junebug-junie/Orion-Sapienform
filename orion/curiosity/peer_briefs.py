@@ -15,7 +15,11 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.curiosity_peer import (
     HELP_REQUEST_CHANNEL,
     HELP_REQUEST_KIND,
+    MAX_SUMMARY_CHARS,
+    PEER_BRIEF_CONSUMED_CHANNEL,
+    PEER_BRIEF_CONSUMED_KIND,
     HelpRequestV1,
+    PeerBriefConsumedV1,
     PeerBriefV1,
     clip,
 )
@@ -36,38 +40,50 @@ _SELF_DEF_MARKERS = re.compile(
 )
 
 
-def peer_brief_merge_cypher(brief: PeerBriefV1) -> str:
-    """MERGE PeerBrief + ANSWERS edge. Escapes single quotes in strings."""
-
-    def q(value: object) -> str:
-        return "'" + str(value or "").replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-    pointers = ",".join(q(p) for p in brief.evidence_pointers)
-    opens = ",".join(q(p) for p in brief.open_questions)
-    looks = ",".join(q(p) for p in brief.suggested_next_looks)
-    prior = (
-        f", b.prior_id = {q(brief.prior_id)}" if brief.prior_id else ""
-    )
-    refusal = (
-        f", b.refusal_reason = {q(brief.refusal_reason)}"
+def peer_brief_merge_cypher(brief: PeerBriefV1) -> tuple[str, dict[str, Any]]:
+    """MERGE PeerBrief + ANSWERS edge. Parameterized (no string concat of prose)."""
+    params: dict[str, Any] = {
+        "brief_id": brief.brief_id,
+        "help_id": brief.help_id,
+        "run_id": brief.run_id,
+        "peer": brief.peer,
+        "status": brief.status,
+        "summary": brief.summary or "",
+        "evidence_pointers": list(brief.evidence_pointers or []),
+        "open_questions": list(brief.open_questions or []),
+        "suggested_next_looks": list(brief.suggested_next_looks or []),
+        "prior_id": brief.prior_id,
+        "refusal_reason": clip(brief.refusal_reason, MAX_SUMMARY_CHARS)
         if brief.refusal_reason
-        else ""
+        else None,
+    }
+    cypher = (
+        f"MERGE (b:{LABEL_PEER_BRIEF} {{brief_id: $brief_id}}) "
+        "SET b.help_id = $help_id, b.run_id = $run_id, "
+        "b.peer = $peer, b.status = $status, "
+        "b.summary = $summary, "
+        "b.evidence_pointers = $evidence_pointers, "
+        "b.open_questions = $open_questions, "
+        "b.suggested_next_looks = $suggested_next_looks, "
+        "b.written_at = timestamp(), b.consumed = false, "
+        "b.prior_id = $prior_id, b.refusal_reason = $refusal_reason "
+        "WITH b "
+        f"OPTIONAL MATCH (h:{LABEL_HELP_REQUEST} {{help_id: $help_id}}) "
+        "FOREACH (_ IN CASE WHEN h IS NULL THEN [] ELSE [1] END | "
+        "MERGE (b)-[:ANSWERS]->(h))"
     )
-    return (
-        f"MERGE (b:{LABEL_PEER_BRIEF} {{brief_id: {q(brief.brief_id)}}}) "
-        f"SET b.help_id = {q(brief.help_id)}, b.run_id = {q(brief.run_id)}, "
-        f"b.peer = {q(brief.peer)}, b.status = {q(brief.status)}, "
-        f"b.summary = {q(brief.summary)}, "
-        f"b.evidence_pointers = [{pointers}], "
-        f"b.open_questions = [{opens}], "
-        f"b.suggested_next_looks = [{looks}], "
-        f"b.written_at = timestamp(), b.consumed = false"
-        f"{prior}{refusal} "
-        f"WITH b "
-        f"OPTIONAL MATCH (h:{LABEL_HELP_REQUEST} {{help_id: {q(brief.help_id)}}}) "
-        f"FOREACH (_ IN CASE WHEN h IS NULL THEN [] ELSE [1] END | "
-        f"MERGE (b)-[:ANSWERS]->(h))"
+    return cypher, params
+
+
+def peer_brief_consume_cypher(brief_ids: Sequence[str]) -> tuple[str, dict[str, Any]]:
+    """Mark PeerBrief nodes consumed so UNUSED_* queries skip them."""
+    ids = [str(b).strip() for b in brief_ids if str(b or "").strip()]
+    cypher = (
+        "UNWIND $brief_ids AS bid "
+        f"MATCH (b:{LABEL_PEER_BRIEF} {{brief_id: bid}}) "
+        "SET b.consumed = true"
     )
+    return cypher, {"brief_ids": ids}
 
 
 def help_request_about_prior_cypher(help_id: str, prior_id: str) -> str:
@@ -181,6 +197,46 @@ async def publish_help_requests_for_run(
     return published
 
 
+def brief_ids_for_consume(briefs: Sequence[PeerBriefV1]) -> list[str]:
+    """Ids that soft-nudge would surface — mark consumed so they do not reappear."""
+    out: list[str] = []
+    for b in briefs:
+        if not b.brief_id:
+            continue
+        if b.status == "ok" and (b.summary or b.evidence_pointers):
+            out.append(b.brief_id)
+        elif b.status in ("refused_budget", "failed"):
+            out.append(b.brief_id)
+    return out
+
+
+async def publish_peer_briefs_consumed(
+    *,
+    bus: Any,
+    brief_ids: Sequence[str],
+    source_ref: Any = None,
+) -> int:
+    """Hub (RO worldview) asks peer service to MERGE consumed=true."""
+    ids = [str(b).strip() for b in brief_ids if str(b or "").strip()]
+    if not ids or bus is None:
+        return 0
+    try:
+        await bus.publish(
+            PEER_BRIEF_CONSUMED_CHANNEL,
+            BaseEnvelope(
+                kind=PEER_BRIEF_CONSUMED_KIND,
+                source=source_ref or {"name": "orion-hub"},
+                payload=PeerBriefConsumedV1(brief_ids=ids).model_dump(mode="json"),
+            ),
+        )
+        return len(ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "curiosity_peer_brief_consumed_publish_failed n=%s err=%s", len(ids), exc
+        )
+        return 0
+
+
 UNUSED_OK_BRIEFS_CYPHER = (
     f"MATCH (b:{LABEL_PEER_BRIEF}) "
     "WHERE coalesce(b.consumed, false) = false AND b.status = 'ok' "
@@ -241,6 +297,20 @@ def format_soft_nudge(briefs: Sequence[PeerBriefV1]) -> list[str]:
             "",
         ]
         for b in ok:
+            if b.peer == "claude_room":
+                # Room companion runs with --tools "" — conversation notes only.
+                lines.append(
+                    f"  brief {b.brief_id} (peer=claude_room, conversation-only): "
+                    f"{clip(b.summary, 400)}"
+                )
+                lines.append(
+                    "    note: this peer could not look at the repo; treat as "
+                    "conversation notes, not file evidence."
+                )
+                for look in b.suggested_next_looks[:4]:
+                    lines.append(f"    maybe look: {look}")
+                lines.append("")
+                continue
             lines.append(f"  brief {b.brief_id} (peer={b.peer}): {clip(b.summary, 400)}")
             for ptr in b.evidence_pointers[:6]:
                 lines.append(f"    evidence: {ptr}")

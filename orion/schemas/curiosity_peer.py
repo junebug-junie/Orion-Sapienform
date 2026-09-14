@@ -17,6 +17,8 @@ HELP_REQUEST_CHANNEL = "orion:curiosity:help:request"
 HELP_REQUEST_KIND = "curiosity.help.request.v1"
 PEER_BRIEF_CHANNEL = "orion:curiosity:peer:brief"
 PEER_BRIEF_KIND = "curiosity.peer.brief.v1"
+PEER_BRIEF_CONSUMED_CHANNEL = "orion:curiosity:peer:brief:consumed"
+PEER_BRIEF_CONSUMED_KIND = "curiosity.peer.brief.consumed.v1"
 
 CuriosityPeerModeV1 = Literal["world_curiosity", "self_inquiry"]
 CuriosityPeerNameV1 = Literal["cursor_auto", "claude_room"]
@@ -83,6 +85,36 @@ class PeerBriefV1(BaseModel):
     )
     @classmethod
     def _clip_lists(cls, v: object) -> list[str]:
+        if not v:
+            return []
+        out: list[str] = []
+        for item in list(v)[:MAX_LIST_ITEMS]:
+            text = clip(item, MAX_POINTER_CHARS)
+            if text:
+                out.append(text)
+        return out
+
+    @field_validator("refusal_reason", mode="before")
+    @classmethod
+    def _clip_refusal(cls, v: object) -> object:
+        if v is None:
+            return None
+        return clip(v, MAX_SUMMARY_CHARS)
+
+
+class PeerBriefConsumedV1(BaseModel):
+    """Hub signals that soft-nudge injected these briefs; peer MERGEs consumed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["curiosity.peer.brief.consumed.v1"] = (
+        "curiosity.peer.brief.consumed.v1"
+    )
+    brief_ids: List[str] = Field(default_factory=list)
+
+    @field_validator("brief_ids", mode="before")
+    @classmethod
+    def _clip_ids(cls, v: object) -> list[str]:
         if not v:
             return []
         out: list[str] = []

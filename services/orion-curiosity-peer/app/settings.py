@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # ── Channels ──────────────────────────────────────────────────────
     CHANNEL_HELP_REQUEST: str = Field(default="orion:curiosity:help:request")
     CHANNEL_PEER_BRIEF: str = Field(default="orion:curiosity:peer:brief")
+    CHANNEL_PEER_BRIEF_CONSUMED: str = Field(
+        default="orion:curiosity:peer:brief:consumed"
+    )
     CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
     CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
 

@@ -109,7 +109,15 @@ def _case_hire_cursor() -> tuple[str, PeerBriefV1, dict[str, int]]:
 
 
 def _case_fallback_once() -> tuple[str, PeerBriefV1, dict[str, int]]:
+    from dataclasses import dataclass
+
     calls = {"cursor": 0, "claude": 0}
+
+    @dataclass
+    class _ClearClaude:
+        observed: bool = True
+        state: str = "clear"
+        staleness_sec: float | None = 1.0
 
     def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
         calls["cursor"] += 1
@@ -124,6 +132,7 @@ def _case_fallback_once() -> tuple[str, PeerBriefV1, dict[str, int]]:
         cursor=cursor,
         claude=claude,
         observe_limit=_clear,
+        observe_claude_limit=lambda: _ClearClaude(),
         persist=lambda _b: None,
     )
     return "fallback_once", brief, calls
@@ -153,6 +162,10 @@ def _expect(
             fails.append(f"calls={calls} want cursor=1 claude=1")
         if "from claude once" not in brief.summary:
             fails.append("missing claude summary")
+        if brief.evidence_pointers:
+            fails.append("claude_room must not claim evidence_pointers")
+        if "conversation-only" not in brief.summary.lower():
+            fails.append("claude_room summary must be labeled conversation-only")
     else:
         fails.append(f"unknown case {name}")
     return fails

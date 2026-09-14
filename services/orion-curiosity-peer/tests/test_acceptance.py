@@ -181,7 +181,15 @@ def test_acceptance_3_tools_allowlist_no_edit_shell() -> None:
 
 def test_acceptance_4_fallback_once() -> None:
     """Token unavailable → exactly one Claude attempt; success skips second."""
+    from dataclasses import dataclass
+
     calls = {"cursor": 0, "claude": 0}
+
+    @dataclass
+    class _ClearClaude:
+        observed: bool = True
+        state: str = "clear"
+        staleness_sec: float | None = 1.0
 
     def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
         calls["cursor"] += 1
@@ -196,32 +204,38 @@ def test_acceptance_4_fallback_once() -> None:
         cursor=cursor,
         claude=claude,
         observe_limit=_clear_budget,
+        observe_claude_limit=lambda: _ClearClaude(),
         persist=lambda _b: None,
     )
     assert calls == {"cursor": 1, "claude": 1}
     assert brief.status == "ok"
     assert brief.peer == "claude_room"
     assert "fallback notes" in brief.summary
+    assert "conversation-only" in brief.summary.lower()
+    assert brief.evidence_pointers == []
 
 
 # --- 5 -----------------------------------------------------------------------
 
 
 def test_acceptance_5_persist_merge_and_bus() -> None:
-    """Persist path: MERGE PeerBrief callable + bus publish (live graph UNVERIFIED)."""
+    """Persist path: MERGE PeerBrief + BaseEnvelope bus (live graph UNVERIFIED)."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.core.bus.codec import OrionCodec
+    from orion.schemas.curiosity_peer import PEER_BRIEF_KIND
 
     class FakeGraph:
         def __init__(self) -> None:
-            self.calls: list[str] = []
+            self.calls: list[tuple[str, Any]] = []
 
         def graph_query(self, cypher: str, params: Any = None) -> list:
-            self.calls.append(cypher)
+            self.calls.append((cypher, params))
             return []
 
-    published: list[tuple[str, dict[str, Any]]] = []
+    published: list[tuple[str, BaseEnvelope]] = []
 
     class FakeBusSync:
-        def publish(self, channel: str, payload: dict[str, Any]) -> None:
+        def publish(self, channel: str, payload: BaseEnvelope) -> None:
             published.append((channel, payload))
 
     from pydantic import SecretStr
@@ -248,14 +262,20 @@ def test_acceptance_5_persist_merge_and_bus() -> None:
     )
     _default_persist(brief, settings=settings, bus=FakeBusSync(), graph_client=graph)
     assert len(graph.calls) == 1
-    cypher = graph.calls[0]
+    cypher, params = graph.calls[0]
     assert "MERGE" in cypher
     assert "PeerBrief" in cypher
-    assert "brief-accept-5" in cypher
+    assert params["brief_id"] == "brief-accept-5"
     assert "MERGE (p:Prior" not in cypher
     assert "CREATE (:Prior" not in cypher
     assert published and published[0][0] == PEER_BRIEF_CHANNEL
-    assert published[0][1]["brief_id"] == "brief-accept-5"
+    env = published[0][1]
+    assert isinstance(env, BaseEnvelope)
+    assert env.kind == PEER_BRIEF_KIND
+    decoded = OrionCodec().decode(OrionCodec().encode(env))
+    assert decoded.ok
+    assert decoded.envelope.kind == PEER_BRIEF_KIND
+    assert decoded.envelope.payload["brief_id"] == "brief-accept-5"
 
 
 # --- 6 -----------------------------------------------------------------------

@@ -88,8 +88,10 @@ from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_promp
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
+    brief_ids_for_consume,
     list_unused_ok_briefs_from_rows,
     publish_help_requests_for_run,
+    publish_peer_briefs_consumed,
 )
 from orion.curiosity.self_inquiry import (
     LEDGER_SQL_TEMPLATE,
@@ -1380,6 +1382,12 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
         )
+        if peer_briefs:
+            # Hub is RO on worldview; peer service MERGEs consumed=true.
+            await publish_peer_briefs_consumed(
+                bus=self._bus,
+                brief_ids=brief_ids_for_consume(peer_briefs),
+            )
         if self.kickoff_via_cortex:
             try:
                 dispatched = await self._dispatch_durable_run(
@@ -1715,6 +1723,11 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
         )
+        if peer_briefs:
+            await publish_peer_briefs_consumed(
+                bus=self._bus,
+                brief_ids=brief_ids_for_consume(peer_briefs),
+            )
         material = StudyMaterial(generated_at=now)
         if self.kickoff_via_cortex:
             try:

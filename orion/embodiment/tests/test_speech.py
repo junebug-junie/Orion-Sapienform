@@ -45,7 +45,9 @@ def test_build_speech_prompt_contains_interlocutor_and_recent_lines():
     assert "Juniper" in prompt
     assert "how are you?" in prompt
     assert "Your task is to answer this latest line from Juniper:\nhow are you?" in prompt
-    assert "responds to the latest line above" in prompt
+    assert "as a real reply to the latest line above" in prompt
+    assert "exactly one short spoken line" not in prompt
+    assert "Match substance to what they said" in prompt
 
 
 def test_latest_partner_line_ignores_orion_last_line():

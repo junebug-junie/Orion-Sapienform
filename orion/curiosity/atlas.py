@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from orion.curiosity.peer_briefs import LABEL_PEER_BRIEF
 from orion.curiosity.worldview import (
     CLOSED_STATUSES,
     LABEL_CONCEPT,
@@ -142,6 +143,17 @@ ATLAS_GROWTH_CYPHER = (
     "RETURN labels(n)[0] AS label, n.run_id AS run_id, count(n) AS n"
 )
 
+# Contractor PeerBriefs. Queried best-effort and separately from the core atlas
+# reads: a missing :PeerBrief label (or any brief-query failure) must empty this
+# list, never mark the whole atlas unavailable.
+ATLAS_PEER_BRIEFS_CYPHER = (
+    f"MATCH (b:{LABEL_PEER_BRIEF}) "
+    "RETURN b.brief_id AS brief_id, b.help_id AS help_id, b.run_id AS run_id, "
+    "b.peer AS peer, b.status AS status, b.summary AS summary, "
+    "b.refusal_reason AS refusal_reason "
+    "ORDER BY b.written_at DESC LIMIT 100"
+)
+
 
 def _stamp_ms(value: Any) -> Optional[int]:
     """Epoch milliseconds from what Orion actually wrote, ISO string included.
@@ -196,6 +208,19 @@ class AtlasPrior:
 
 
 @dataclass(frozen=True)
+class AtlasPeerBrief:
+    """One contractor PeerBrief for the operator page (ok or refused_budget)."""
+
+    brief_id: str
+    help_id: str
+    run_id: str
+    peer: str
+    status: str
+    summary: str
+    refusal_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class AtlasRevision:
     """One recorded movement of a prior. Orion writes these; Hub only reads."""
 
@@ -241,6 +266,7 @@ class AtlasView:
     priors: list[AtlasPrior] = field(default_factory=list)
     revisions: list[AtlasRevision] = field(default_factory=list)
     runs: list[AtlasRun] = field(default_factory=list)
+    peer_briefs: list[AtlasPeerBrief] = field(default_factory=list)
     concept_total: int = 0
     edge_total: int = 0
     unavailable_reason: Optional[str] = None
@@ -313,6 +339,41 @@ def _build_revision(row: dict[str, Any]) -> Optional[AtlasRevision]:
         to_status=_text(row.get("to_status"), 60),
         written_at=_stamp_ms(row.get("written_at")),
     )
+
+
+def _build_peer_brief(row: dict[str, Any]) -> Optional[AtlasPeerBrief]:
+    brief_id = _text(row.get("brief_id"), 200)
+    if not brief_id:
+        return None
+    refusal = row.get("refusal_reason")
+    return AtlasPeerBrief(
+        brief_id=brief_id,
+        help_id=_text(row.get("help_id"), 200),
+        run_id=_text(row.get("run_id"), 40),
+        peer=_text(row.get("peer"), 60),
+        status=_text(row.get("status"), 60),
+        summary=_text(row.get("summary"), 800),
+        refusal_reason=_text(refusal, 200) if refusal not in (None, "") else None,
+    )
+
+
+def _read_peer_briefs_best_effort(reader: WorldviewReader) -> list[AtlasPeerBrief]:
+    """PeerBriefs are additive. Failure here must not blank the atlas."""
+    try:
+        rows = reader.query(ATLAS_PEER_BRIEFS_CYPHER)
+    except WorldviewUnavailable as exc:
+        logger.warning(
+            "curiosity_atlas_peer_briefs_unavailable err=%s -- continuing without briefs",
+            exc,
+        )
+        return []
+    except Exception as exc:  # noqa: BLE001 — operator page must stay up
+        logger.warning(
+            "curiosity_atlas_peer_briefs_failed err=%s -- continuing without briefs",
+            exc,
+        )
+        return []
+    return [b for b in (_build_peer_brief(r) for r in rows) if b is not None]
 
 
 def assemble_runs(
@@ -470,6 +531,7 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
             finding_rows=finding_rows,
             priors=priors,
         ),
+        peer_briefs=_read_peer_briefs_best_effort(reader),
     )
 
 
@@ -542,4 +604,16 @@ def to_payload(view: AtlasView) -> dict[str, Any]:
         ],
         "runs": [{**asdict(r), "total_added": r.total_added} for r in view.runs],
         "revisions": [{**asdict(r), "delta": r.delta} for r in view.revisions],
+        "peer_briefs": [
+            {
+                "brief_id": b.brief_id,
+                "help_id": b.help_id,
+                "run_id": b.run_id,
+                "peer": b.peer,
+                "status": b.status,
+                "summary": b.summary,
+                "refusal_reason": b.refusal_reason,
+            }
+            for b in view.peer_briefs
+        ],
     }

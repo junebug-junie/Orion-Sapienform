@@ -20,6 +20,7 @@ def _base_ctx():
         "juniper_relationship_summary": "rel",
         "response_policy_summary": "policy",
         "chat_stance_brief": {"task_mode": "direct_response"},
+        "metadata": {},
     }
 
 
@@ -27,8 +28,9 @@ def test_prompts_render_without_situation_fragment():
     base = _base_ctx()
     quick = _render("orion/cognition/prompts/chat_quick.j2", **base)
     general = _render("orion/cognition/prompts/chat_general.j2", **base)
-    assert "situation_prompt_fragment" not in quick
-    assert "situation_prompt_fragment" not in general
+    # Conditional situation blocks should stay dark when fragment is unset.
+    assert "Situation context is grounding context only" not in quick
+    assert "do not force time/weather/location commentary" not in general
 
 
 def test_prompts_render_with_situation_fragment_scenarios():

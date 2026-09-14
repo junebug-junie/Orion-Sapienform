@@ -94,6 +94,20 @@ def test_chat_quick_frames_aitown_surface_as_currently_embodied_there() -> None:
     rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={"surface": "aitown"})
     assert "You are embodied in ai-town right now" in rendered
     assert "You are not currently in ai-town" not in rendered
+    assert "Do not shrink a substantive ask into a one-line nod" in rendered
+    assert "not a one-line nod when they asked for real substance" in rendered
+    # Hub-style "Compact" / "stay compact" are for non-aitown; town should not inherit that squeeze.
+    assert "- Compact\n" not in rendered
+    assert "but stay compact" not in rendered
+    assert "answer with enough substance for what they just said" in rendered
+
+
+def test_chat_quick_non_aitown_keeps_compact_style_target() -> None:
+    tpl = Environment().from_string(CHAT_QUICK_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = tpl.render(**_CHAT_QUICK_BASE_RENDER_ARGS, metadata={})
+    assert "- Compact\n" in rendered
+    assert "but stay compact" in rendered
+    assert "Do not shrink a substantive ask into a one-line nod" not in rendered
 
 
 def test_chat_quick_frames_non_aitown_surface_as_outside_the_game() -> None:

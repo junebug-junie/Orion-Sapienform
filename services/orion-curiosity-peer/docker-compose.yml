@@ -41,8 +41,9 @@ services:
       - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
       - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
     volumes:
-      # Read-only repo for Cursor Agent investigation.
-      - ${CURIOSITY_PEER_REPO_HOST_PATH:-../..}:${CURIOSITY_PEER_REPO_ROOT:-/repo}:ro
+      # Read-only repo for Cursor Agent investigation. Absolute host root only
+      # (relative mounts fail scripts/check_compose_no_relative_mounts.py).
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${CURIOSITY_PEER_REPO_ROOT:-/repo}:ro
       # Host Cursor Agent install (versioned cursor-agent + sibling node).
       - ${HOME}/.local/share/cursor-agent:/opt/cursor-agent:ro
       # Desktop CLI auth (auth.json from `agent login`).

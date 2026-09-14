@@ -97,3 +97,7 @@ intent from `/elastic/target` or the admission broker, atomic diffusion draining
 and authoritative lease/permit closure plus upstream idle evidence to restore.
 The "manual only" and build-on-flip behavior above describe the legacy GPU1
 adapter only. GPU2 restoration belongs to durable admission reconciliation.
+
+GPU2 control endpoints use the existing internal service/tailnet boundary without
+bearer tokens. Durable intent, generation fencing, lease/permit protection, and
+atomic diffusion draining remain enforced. The existing GPU1 API is unchanged.

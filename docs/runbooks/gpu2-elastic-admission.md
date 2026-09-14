@@ -38,10 +38,9 @@ DB **after** durable_resource_admission_v1 and gateway_capacity_v1:
 psql "$POSTGRES_URI" -v ON_ERROR_STOP=1 -f services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql
 ```
 
-Secrets, set privately on the appropriate hosts:
-
-- `GPU_LANE_CONTROLLER_TOKEN` = durable `DURABLE_RUNS_ELASTIC_CONTROLLER_TOKEN`.
-- `DIFFUSION_DRAIN_TOKEN` = controller `GPU2_DIFFUSION_TOKEN`.
+GPU2 activation, diffusion drain, and elastic intent use the existing internal
+service/tailnet boundary. No bearer token or shared secret is required.
+Keep these control-plane endpoints inside that boundary. GPU1 retains its existing contract.
 
 Controller: `GPU2_ENABLED=false`; diffusion/agent URLs are Circe:8014/:8016;
 `GPU2_AUTHORITY_URL=http://100.92.216.81:8124`; drain timeout 300s and model-ready
@@ -101,7 +100,7 @@ scripts/safe_docker_build.sh orion-llamacpp-host -f services/orion-llamacpp-host
 proposal-runtime and relevant schema consumers before any resource_deferred
 receipt can be emitted. Set Thought's status gate true only with the new controller
 status endpoint present; until then keep borrowing off. Deploy diffusion's
-additive drain API and configured private drain token.
+additive drain API.
 
 ```bash
 # Athena
@@ -133,17 +132,16 @@ assignments false. Inspect `/elastic/status`, `/admission`, real cabinet history
 and fresh `/visual-chain/activity`. Stage the audited compatibility policy and
 Hub opt-in; observe fake-free shadow predictions on new waiting runs.
 
-5. Controlled manual round-trip: shadow false, assignments still false. Use a
-private exported token; shell tracing must be off. The runtime records the intent;
+5. Controlled manual round-trip: shadow false, assignments still false. The runtime records the intent;
 the controller will refuse unrecorded/direct target requests. Poll both status
 endpoints until ready before the reverse command. No model request is required.
 
 ```bash
-curl -fsS -H "Authorization: Bearer $GPU_LANE_CONTROLLER_TOKEN" -H 'Content-Type: application/json' \
+curl -fsS -H 'Content-Type: application/json' \
   -d '{"target":"agent-burst"}' http://100.92.216.81:8124/elastic/target
 curl -fsS http://100.92.216.81:8124/elastic/status
 curl -fsS http://100.112.254.99:8090/v1/gpu-slots/circe-gpu2/status
-curl -fsS -H "Authorization: Bearer $GPU_LANE_CONTROLLER_TOKEN" -H 'Content-Type: application/json' \
+curl -fsS -H 'Content-Type: application/json' \
   -d '{"target":"diffusion"}' http://100.92.216.81:8124/elastic/target
 ```
 

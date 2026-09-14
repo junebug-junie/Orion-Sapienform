@@ -25,15 +25,15 @@ def targets():
     }
 
 
-def http(url, payload=None, token=""):
+def http(url, payload=None):
     req = urllib.request.Request(url, data=json.dumps(payload).encode() if payload is not None else None,
-        headers={"Content-Type": "application/json", **({"Authorization": "Bearer "+token} if token else {})})
+        headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as response:
         return json.load(response)
 
 
-async def request(url, payload=None, token=""):
-    return await asyncio.to_thread(http, url, payload, token)
+async def request(url, payload=None):
+    return await asyncio.to_thread(http, url, payload)
 
 
 def snapshots():
@@ -71,7 +71,7 @@ async def authority(req, *, require_drained=True):
 
 async def drain_diffusion():
     base = settings.GPU2_DIFFUSION_URL.rstrip("/")
-    await request(base+"/v1/lifecycle/drain", {"draining": True}, settings.GPU2_DIFFUSION_TOKEN)
+    await request(base+"/v1/lifecycle/drain", {"draining": True})
     deadline = time.monotonic()+settings.GPU2_DRAIN_TIMEOUT_SEC
     while True:
         state = await request(base+"/v1/lifecycle/status")
@@ -120,7 +120,7 @@ async def start(target):
         while True:
             try:
                 await request(settings.GPU2_DIFFUSION_URL.rstrip("/")+"/v1/lifecycle/drain",
-                              {"draining": False}, settings.GPU2_DIFFUSION_TOKEN)
+                              {"draining": False})
                 break
             except Exception:
                 if time.monotonic() >= deadline:
@@ -196,7 +196,7 @@ async def transition(req):
                         await start("diffusion")
                     else:
                         await request(settings.GPU2_DIFFUSION_URL.rstrip("/")+"/v1/lifecycle/drain",
-                                      {"draining": False}, settings.GPU2_DIFFUSION_TOKEN)
+                                      {"draining": False})
                     _state["restored"] = True
                 except Exception:
                     _state["restored"] = False

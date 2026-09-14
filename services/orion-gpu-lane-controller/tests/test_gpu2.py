@@ -90,12 +90,21 @@ def test_same_slot_concurrent_calls_do_not_race(monkeypatch):
         release.set();await first
     asyncio.run(scenario())
 
-@pytest.mark.parametrize("token,header,code",[("",None,503),("secret",None,401),("secret","Bearer wrong",401),("secret","secret",401)])
-def test_gpu2_auth(token,header,code,monkeypatch):
+def test_gpu2_activation_needs_no_token(monkeypatch):
     from fastapi.testclient import TestClient
-    monkeypatch.setattr(main_module.settings,"GPU_LANE_CONTROLLER_TOKEN",token)
-    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=req().model_dump(),headers={"Authorization":header} if header else {})
-    assert response.status_code == code
+    monkeypatch.setattr(main_module.settings,"GPU_LANE_CONTROLLER_TOKEN","")
+    flip=AsyncMock(return_value={"status":"success"})
+    monkeypatch.setattr(gpu,"flip",flip)
+    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=req().model_dump())
+    assert response.status_code == 200
+    flip.assert_awaited_once_with(req())
+
+
+def test_gpu2_tokenless_activation_still_disabled_by_feature_gate(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(gpu.settings,"GPU2_ENABLED",False)
+    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=req().model_dump())
+    assert response.status_code == 503
 
 
 def test_completed_duplicate_does_not_require_owners_to_drain(monkeypatch):
@@ -135,3 +144,20 @@ def test_previous_rollback_is_not_evidence_for_next_operation(monkeypatch):
     result=asyncio.run(gpu.transition(req()))
     assert result['status']=='failed'
     assert 'restored' not in result and 'cold_start_seconds' not in result
+
+
+@pytest.mark.parametrize("token,header,result,code", [
+    ("",None,"success",503), ("secret","secret","success",401),
+    ("secret","Bearer secret","failed",503), ("secret","Bearer secret","success",200),
+])
+def test_gpu1_slot_route_preserves_its_contract(token,header,result,code,monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main_module.settings,"GPU_LANE_CONTROLLER_TOKEN",token)
+    flip=AsyncMock(return_value={"status":result})
+    monkeypatch.setattr(main_module.lane_control,"flip",flip)
+    body={"slot":"circe-gpu1","target":"agent","operation_id":"legacy:1","generation":1}
+    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=body,
+        headers={"Authorization":header} if header else {})
+    assert response.status_code == code
+    if not token or header == token:
+        flip.assert_not_called()

@@ -3,7 +3,7 @@
 ## Summary
 
 - Borrow Circe GPU2 from diffusion for explicitly opted-in, long-waiting durable agent work.
-- Add a fixed slot API, authenticated atomic diffusion drain, and distinct stopped agent-burst worker/system route.
+- Add a fixed slot API, atomic diffusion drain, and distinct stopped agent-burst worker/system route.
 - Persist activation intent and restoration under the existing Postgres capacity authority; retain FIFO, fencing and full FCC request ownership.
 - Preserve acknowledged visual resource deferral and baseline debt without false images or posterior lessons.
 - Ship disabled new gates, consumer-first runbook, isolated acceptance/evals and independent review fixes.
@@ -58,12 +58,12 @@ The PR diff contains the complete file inventory. Principal seams:
 
 ## Env/config changes
 
-- Added keys: GPU2 controller enable/URLs/token/drain/readiness timeouts; diffusion drain token; durable elastic enable/shadow/assignment/restoration/thermal gates, controller token/URLs, declared budgets, idle/minimum/maximum timing; Thought status gate/URL; Hub per-run opt-in; burst port.
+- Added keys: GPU2 controller enable/URLs/drain/readiness timeouts; durable elastic enable/shadow/assignment/restoration/thermal gates, controller URLs, declared budgets, idle/minimum/maximum timing; Thought status gate/URL; Hub per-run opt-in; burst port.
 - Removed/Renamed keys: none.
 - `.env_example` updated: seven affected services. The Gateway template adds the stopped system route; lane policy remains `{}`.
 - New enable gates default false; elastic shadow defaults true. Existing enabled admission flags remain unchanged.
 - Local `.env` synced with `python scripts/sync_local_env_from_example.py`: **not run**, per explicit prohibition on production env writes. Only validation worktree envs were created from safe tracked templates; all are ignored.
-- Skipped keys requiring operator action: all new production keys and privately provisioned tokens, intentionally deferred to rollout. No token was committed or logged.
+- Skipped keys requiring operator action: all new production keys (GPU2 token requirements were subsequently removed), intentionally deferred to rollout. No token was committed or logged.
 
 ## Tests run
 

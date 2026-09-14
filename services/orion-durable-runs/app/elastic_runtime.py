@@ -135,7 +135,6 @@ class ElasticRuntime:
                         {"operation_id":row["operation_id"]},event_id=row["operation_id"]+":started")
                 async with httpx.AsyncClient(timeout=1200) as client:
                     response = await client.post(self.settings.elastic_controller_url.rstrip("/")+"/v1/gpu-slots/activate",
-                        headers={"Authorization":"Bearer "+self.settings.elastic_controller_token},
                         json={"slot":SLOT,"target":row["desired_target"],"operation_id":row["operation_id"],"generation":row["generation"]})
                     result = response.json()
                     if result.get("status") == "busy":

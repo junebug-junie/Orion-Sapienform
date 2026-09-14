@@ -305,24 +305,19 @@ async def elastic_status():
         not runtime.settings.elastic_shadow),"eligibility_reason":environment.get("reason","not_checked")}
 
 
-from fastapi import Header
 from pydantic import BaseModel, ConfigDict
 from typing import Literal
-import secrets
 
 class ElasticTargetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target: Literal["diffusion", "agent-burst"]
 
 @app.post("/elastic/target")
-async def elastic_target(req: ElasticTargetRequest, authorization: str | None = Header(default=None)):
+async def elastic_target(req: ElasticTargetRequest):
     runtime = _admission()
     elastic = runtime.elastic
-    token = runtime.settings.elastic_controller_token
-    if not elastic or not token or runtime.settings.elastic_shadow:
+    if not elastic or runtime.settings.elastic_shadow:
         raise HTTPException(503,"elastic_mutation_disabled")
-    if not secrets.compare_digest(authorization or "", "Bearer "+token):
-        raise HTTPException(401,"unauthorized")
     if req.target == "agent-burst" and not (await elastic.environment()).get("eligible"):
         raise HTTPException(409,"physical_eligibility_suppressed")
     async with runtime.store.transaction() as conn:

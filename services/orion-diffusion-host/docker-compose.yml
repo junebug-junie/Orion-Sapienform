@@ -10,7 +10,6 @@ services:
       - .env
 
     environment:
-      - DIFFUSION_DRAIN_TOKEN=${DIFFUSION_DRAIN_TOKEN:-}
       - LOG_LEVEL=${LOG_LEVEL}
       - NODE_NAME=${NODE_NAME:-circe}
 

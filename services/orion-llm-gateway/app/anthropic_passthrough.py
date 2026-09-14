@@ -49,6 +49,43 @@ _FORWARD_REQUEST_HEADERS = frozenset(
 )
 
 
+def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Hoist Claude hook system messages into Anthropic's system field.
+
+    Claude can append SessionStart context after a user message. Native
+    llama.cpp preserves that role, but its model template requires system
+    context at the beginning. Preserve every block and its cache metadata,
+    leaving conversational/tool order and the caller's request untouched.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not any(
+        isinstance(message, dict) and message.get("role") == "system"
+        for message in messages
+    ):
+        return dict(body)
+
+    def blocks(content: Any) -> list:
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}] if content else []
+        if content is None:
+            return []
+        if isinstance(content, list):
+            return list(content)
+        raise ValueError("System content must be a string or a list of blocks")
+
+    system = blocks(body.get("system"))
+    conversation = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "system":
+            additional = blocks(message.get("content"))
+            if system and additional:
+                system.append({"type": "text", "text": "\n\n"})
+            system.extend(additional)
+        else:
+            conversation.append(message)
+    return {**body, "system": system, "messages": conversation}
+
+
 def normalize_anthropic_model_name(model: Optional[str]) -> str:
     """Strip provider prefixes; return bare Orion lane key."""
     raw = str(model or "").strip()
@@ -277,6 +314,12 @@ async def handle_messages_post(request: Request) -> Response:
 
     assert target is not None and route_key is not None and upstream_model is not None
     try:
+        forward_body = normalize_anthropic_system_messages(body)
+    except ValueError as exc:
+        return JSONResponse(
+            {"error": {"type": "invalid_request", "message": str(exc)}}, status_code=400
+        )
+    try:
         guard = LeaseGuard.from_headers(request.headers, lane=route_key, backend_key=target.url)
         await guard.check()
     except ResourceLeaseRejected as exc:
@@ -291,7 +334,6 @@ async def handle_messages_post(request: Request) -> Response:
         return JSONResponse(capacity_error(str(exc)), status_code=503)
     stream_transferred = False
     upstream_url = f"{target.url.rstrip('/')}/v1/messages"
-    forward_body = dict(body)
     if forward_body.get("model") != upstream_model:
         forward_body["model"] = upstream_model
 

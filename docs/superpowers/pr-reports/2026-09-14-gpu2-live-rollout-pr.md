@@ -35,17 +35,43 @@ existing authentication and callers cannot supply arbitrary Docker arguments.
 - Durable intent `gpu2:2:diffusion` at `02:24:55.762490Z` restored diffusion
   after zero leases/permits and an idle upstream slot. Controller transition
   25.82 seconds, diffusion cold start 14.46 seconds; `/ready` returned true.
-- Automatic acceptance run `gpu2-live-20260914T022620` was submitted at
-  `02:26:21.287170Z` behind a real streamed Gateway inference on agent. It is
-  parked at `resource_wait`, has no lease, and holds no durable graph worker.
-  The real 1200-second observation is in progress; no backdating or manual
-  assignment was used. Final automatic evidence will be added after restoration.
+- Initial contention probe `gpu2-live-20260914T022620` was submitted at
+  `02:26:21.287170Z` behind real streamed Gateway inference on agent. Its wait
+  held no durable graph worker. The ordinary request reached Gateway's real
+  900-second deadline; the run correctly took the newly free preferred lane at
+  `02:41:21.037049Z`. This is not a passing automatic GPU2 acceptance.
+- A fresh test uses a temporary HTTP Gateway instance of the same production
+  image and shared capacity authority with a 3600-second request budget. It
+  does not consume bus requests or alter production activation/request flags.
+  Automatic evidence will be added after the full real wait and restoration.
+
+## FCC compatibility correction
+
+The first preferred-lane run exposed a real native Anthropic failure: Claude
+SessionStart hooks append a `system` message after the user message, causing
+the Qwen template to return HTTP 500 (`System message must be at the beginning`).
+Gateway now hoists those blocks into the top-level Anthropic system field,
+preserving content, cache metadata and conversational/tool order. A captured
+real Claude request reproduced the failure; the normalized request rendered
+successfully against the same live model. The automatic run below is the
+end-to-end inference evaluation. Gateway has no separate periodic eval harness.
+
+## Review findings fixed
+
+- Finding: malformed hook context could throw after acquiring a permit, before
+  entering its cleanup block.
+  - Fix: normalize and validate before capacity acquisition; reject unsupported
+    system content with HTTP 400.
+  - Evidence: both malformed-content regressions assert no capacity acquisition.
 
 ## Checks and review
 
+- 21 Gateway Anthropic tests pass, including the captured hook-message shape,
+  string/list system content, cache metadata, tool order and malformed content.
 - 15 focused elastic API/policy tests and the cabinet deployment-contract
   regression pass. Regression checks the host-network topology and agreement
-  of all cabinet defaults on a reachable tailnet address.
+  of all cabinet defaults on a tailnet address. Reachability was verified by a
+  live GET from inside the deployed durable-runs container.
 - All affected services built and deployed through `safe_docker_build.sh` in
   linked worktrees; primary ignored envs were synchronized.
 - Independent code review: no material findings. Added the recommended

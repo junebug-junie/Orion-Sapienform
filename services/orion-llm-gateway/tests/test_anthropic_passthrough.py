@@ -58,6 +58,33 @@ def test_normalize_anthropic_model_name() -> None:
     assert anthropic_passthrough.normalize_anthropic_model_name("llamacpp/harness") == "harness"
 
 
+@pytest.mark.parametrize("system", [None, "Original instructions", [
+    {"type": "text", "text": "Original instructions", "cache_control": {"type": "ephemeral"}}
+]])
+def test_hook_system_context_preserves_blocks_and_tool_order(system: Any) -> None:
+    hook = {"type": "text", "text": "SessionStart hook additional context", "cache_control": {"type": "ephemeral"}}
+    conversation = [
+        {"role": "user", "content": "Inspect evidence"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tool_1", "name": "Read", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool_1", "content": "Evidence"}]},
+    ]
+    body = {"system": system, "messages": [conversation[0], {"role": "system", "content": [hook]}, *conversation[1:], {"role": "system", "content": "Later context"}]}
+    original = json.loads(json.dumps(body))
+    normalized = anthropic_passthrough.normalize_anthropic_system_messages(body)
+    assert normalized["messages"] == conversation
+    assert normalized["system"][-3:] == [hook, {"type": "text", "text": "\n\n"}, {"type": "text", "text": "Later context"}]
+    if system:
+        expected = [{"type": "text", "text": system}] if isinstance(system, str) else system
+        assert normalized["system"][:len(expected)] == expected
+        assert normalized["system"][len(expected)] == {"type": "text", "text": "\n\n"}
+    assert body == original
+
+
+def test_standard_anthropic_body_unchanged() -> None:
+    body = {"system": "Instructions", "messages": [{"role": "user", "content": "Hi"}]}
+    assert anthropic_passthrough.normalize_anthropic_system_messages(body) == body
+
+
 def test_resolve_anthropic_route_resolves_harness(configured_routes: None) -> None:
     # This is the literal live path: ~/.fcc/.env sets MODEL=llamacpp/harness, and this is what
     # a real Claude Code CLI turn's `model` field resolves to via this function.
@@ -176,7 +203,8 @@ class TestAnthropicPassthroughHTTP:
                 "model": "llamacpp/agent",
                 "max_tokens": 64,
                 "stream": False,
-                "messages": [{"role": "user", "content": "Say OK."}],
+                "messages": [{"role": "user", "content": "Say OK."},
+                             {"role": "system", "content": "SessionStart context"}],
             },
         )
 
@@ -185,7 +213,21 @@ class TestAnthropicPassthroughHTTP:
         mock_client.post.assert_awaited_once()
         call_kwargs = mock_client.post.await_args.kwargs
         assert call_kwargs["json"]["model"] == "qwen-coder-local"
+        assert call_kwargs["json"]["system"] == [{"type": "text", "text": "SessionStart context"}]
+        assert call_kwargs["json"]["messages"] == [{"role": "user", "content": "Say OK."}]
         assert mock_client.post.await_args.args[0] == "http://agent:8011/v1/messages"
+
+    @pytest.mark.parametrize("content", [1, {"text": "invalid block container"}])
+    @patch("app.anthropic_passthrough.CapacityPermit.acquire", new_callable=AsyncMock)
+    def test_invalid_hook_context_never_acquires_permit(
+        self, acquire: AsyncMock, client: TestClient, content: Any
+    ) -> None:
+        response = client.post("/v1/messages", json={
+            "model": "agent", "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}, {"role": "system", "content": content}],
+        })
+        assert response.status_code == 400
+        acquire.assert_not_awaited()
 
     @patch("app.anthropic_passthrough.httpx.AsyncClient")
     def test_post_v1_messages_streaming_uses_streaming_response(

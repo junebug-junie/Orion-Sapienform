@@ -82,6 +82,12 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same `LLM_GATEWAY_ROUTE_TABLE_JSON` lanes (`agent`, `chat`, `quick`, `metacog`, etc.) but **does not** go through the bus-native `run_llm_chat()` path.
 
+Claude session hooks can append `role=system` context inside `messages` after a
+user turn. Gateway moves those blocks into Anthropic's top-level `system` field
+before forwarding to llama.cpp, whose model template requires system context
+first. Existing system blocks, cache metadata, and conversation/tool ordering
+are preserved. Lease and capacity checks still apply to the request.
+
 Topology:
 
 ```text

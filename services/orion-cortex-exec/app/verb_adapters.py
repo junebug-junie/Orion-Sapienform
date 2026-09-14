@@ -12,7 +12,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -23,12 +22,10 @@ import yaml
 import orion
 from pydantic import BaseModel, Field
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
-from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs.base import BaseVerb, VerbContext
 from orion.core.verbs.models import VerbEffectV1
 from orion.core.verbs.registry import verb
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.self_study import (
@@ -50,7 +47,6 @@ from .self_study_policy import (
     resolve_self_study_consumer_policy,
 )
 from .settings import settings
-from .llm_lane import resolve_llm_lane_for_step
 from .workflow_journal_exec import maybe_publish_workflow_journal_write
 from .executor import _truncate_list
 
@@ -279,373 +275,15 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
         return LegacyPlanOutput(result=result), []
 
 
-class JuniperCollapseActionOutput(BaseModel):
-    ok: bool = True
-    status: str = "success"
-    final_text: str | None = None
-    message_preview: str | None = None
-    notification_id: str | None = None
-    memory_used: bool = False
-    recall_debug: Dict[str, Any] = Field(default_factory=dict)
-    steps: List[Dict[str, Any]] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    timings: Dict[str, int] = Field(default_factory=dict)
-    error: Dict[str, Any] | None = None
-
-
 def _actions_source(source: ServiceRef | None) -> ServiceRef:
     if isinstance(source, ServiceRef):
         return source
     return ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name)
 
 
-def _collapse_to_fragment(entry: CollapseMirrorEntryV2) -> str:
-    parts = [f"Trigger: {entry.trigger}", f"Summary: {entry.summary}"]
-    if entry.what_changed_summary:
-        parts.append(f"What changed: {entry.what_changed_summary}")
-    if entry.observer_state:
-        parts.append("Observer state: " + "; ".join(entry.observer_state))
-    if entry.emergent_entity:
-        parts.append(f"Emergent entity: {entry.emergent_entity}")
-    if entry.mantra:
-        parts.append(f"Mantra: {entry.mantra}")
-    return "\n".join([p for p in parts if p])
-
-
-def _collapse_to_markdown(entry: CollapseMirrorEntryV2) -> str:
-    lines = [
-        "### Collapse Mirror",
-        f"- **observer**: {entry.observer}",
-        f"- **type**: {entry.type}",
-        f"- **emergent_entity**: {entry.emergent_entity}",
-    ]
-    if entry.tags:
-        lines.append(f"- **tags**: {', '.join(entry.tags)}")
-    lines.extend(["", f"**Trigger:** {entry.trigger}", "", f"**Summary:** {entry.summary}"])
-    if entry.what_changed_summary:
-        lines.extend(["", f"**What changed:** {entry.what_changed_summary}"])
-    if entry.observer_state:
-        lines.extend(["", "**Observer state:**", *[f"- {item}" for item in entry.observer_state]])
-    lines.extend(["", f"**Mantra:** {entry.mantra}"])
-    return "\n".join(lines).strip() + "\n"
-
-
-def _system_prompt() -> str:
-    return (
-        "You are Orion. A Collapse Mirror entry was authored by Juniper. "
-        "Do two things and use the exact delimiters below.\n\n"
-        "[INTROSPECT]\n"
-        "Write a brief introspect+synthesize view (private, not addressed to Juniper).\n"
-        "[/INTROSPECT]\n\n"
-        "[MESSAGE]\n"
-        "Write a supportive, specific message addressed to Juniper. "
-        "Be concise, grounded in the mirror and relevant memory.\n"
-        "[/MESSAGE]\n"
-    )
-
-
-_SECTION_RE = re.compile(r"\[(INTROSPECT|MESSAGE)\]\s*(.*?)\s*\[/\1\]", flags=re.DOTALL | re.IGNORECASE)
-
-
-def _extract_sections(text: str) -> tuple[str, str]:
-    introspect = ""
-    message = ""
-    if not text:
-        return introspect, message
-    matches = list(_SECTION_RE.finditer(text))
-    if not matches:
-        return "", text.strip()
-    for match in matches:
-        label = (match.group(1) or "").strip().lower()
-        content = (match.group(2) or "").strip()
-        if label == "introspect":
-            introspect = content
-        elif label == "message":
-            message = content
-    return introspect, message or text.strip()
-
-
-def _preview_text(message: str, max_len: int = 280) -> str:
-    msg = (message or "").strip()
-    return msg if len(msg) <= max_len else msg[: max_len - 1].rstrip() + "…"
-
-
 def _metadata_from_payload(payload: PlanExecutionRequest) -> Dict[str, Any]:
     metadata = payload.context.get("metadata") if isinstance(payload.context, dict) else {}
     return metadata if isinstance(metadata, dict) else {}
-
-
-def _decode_recall(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    try:
-        reply = RecallReplyV1.model_validate(payload)
-        return reply.bundle.rendered, reply.model_dump(mode="json")
-    except Exception:
-        bundle = payload.get("bundle") or {}
-        return str(bundle.get("rendered") or ""), payload
-
-
-def _decode_llm(payload: dict[str, Any]) -> str:
-    try:
-        return ChatResultPayload.model_validate(payload).text
-    except Exception:
-        return str(payload.get("content") or payload.get("text") or "")
-
-
-def _build_notify_request(*, entry: CollapseMirrorEntryV2, metadata: Dict[str, Any], correlation_id: str, introspect_text: str, message_text: str) -> NotificationRequest:
-    session_id = str(metadata.get("session_id") or "collapse_mirror")
-    recipient_group = str(metadata.get("recipient_group") or "juniper_primary")
-    dedupe_key = str(metadata.get("notify_dedupe_key") or f"actions:collapse_reply:{entry.event_id}")
-    dedupe_window_seconds = int(metadata.get("notify_dedupe_window_seconds") or 86400)
-    body_md = "## Orion — Collapse Mirror\n\n" + message_text.strip() + "\n"
-    if introspect_text.strip():
-        body_md += "\n---\n\n<details><summary>Introspect</summary>\n\n" + introspect_text.strip() + "\n\n</details>\n"
-    return NotificationRequest(
-        source_service=settings.service_name,
-        event_kind="orion.chat.message",
-        severity="info",
-        title="Orion — Collapse Mirror",
-        body_text=message_text.strip(),
-        body_md=body_md,
-        recipient_group=recipient_group,
-        session_id=session_id,
-        correlation_id=correlation_id,
-        dedupe_key=dedupe_key,
-        dedupe_window_seconds=dedupe_window_seconds,
-        tags=["chat", "message", "actions", "collapse"],
-        context={
-            "action_name": metadata.get("action_name") or "respond_to_juniper_collapse_mirror.v1",
-            "collapse_event_id": entry.event_id,
-            "collapse_id": entry.id,
-            "collapse_type": entry.type,
-            "collapse_tags": list(entry.tags or []),
-            "collapse_emergent_entity": entry.emergent_entity,
-            "preview_text": _preview_text(message_text),
-        },
-    )
-
-
-def _build_collapse_fallback_notify_request(*, entry: CollapseMirrorEntryV2, metadata: Dict[str, Any], correlation_id: str, reason: str) -> NotificationRequest:
-    safe_reason = (reason or "unknown_failure").strip()[:120]
-    fallback_text = "I saw your collapse mirror. I’m with you, and we can take this one small step at a time."
-    return NotificationRequest(
-        source_service=settings.service_name,
-        event_kind="orion.chat.message",
-        severity="info",
-        title="Orion — Collapse Mirror",
-        body_text=fallback_text,
-        body_md=f"## Orion — Collapse Mirror\n\n{fallback_text}\n",
-        recipient_group=str(metadata.get("recipient_group") or "juniper_primary"),
-        session_id=str(metadata.get("session_id") or "collapse_mirror"),
-        correlation_id=correlation_id,
-        dedupe_key=str(metadata.get("notify_dedupe_key") or f"actions:collapse_reply:{entry.event_id}:fallback"),
-        dedupe_window_seconds=int(metadata.get("notify_dedupe_window_seconds") or 86400),
-        tags=["chat", "message", "actions", "collapse", "fallback"],
-        context={
-            "action_name": metadata.get("action_name") or "respond_to_juniper_collapse_mirror.v1",
-            "collapse_event_id": entry.event_id,
-            "collapse_id": entry.id,
-            "collapse_type": entry.type,
-            "collapse_tags": list(entry.tags or []),
-            "collapse_emergent_entity": entry.emergent_entity,
-            "preview_text": _preview_text(fallback_text),
-            "fallback": True,
-            "fallback_reason": safe_reason,
-        },
-    )
-
-
-async def _try_send_collapse_fallback(*, entry: CollapseMirrorEntryV2, metadata: Dict[str, Any], correlation_id: str, reason: str) -> tuple[bool, str]:
-    try:
-        notify_request = _build_collapse_fallback_notify_request(
-            entry=entry,
-            metadata=metadata,
-            correlation_id=correlation_id,
-            reason=reason,
-        )
-        accepted = await asyncio.to_thread(
-            NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10).send,
-            notify_request,
-        )
-        return bool(accepted.ok), str(accepted.status or "unknown")
-    except Exception as exc:
-        logger.exception(
-            "collapse_mirror_fallback_failed corr=%s event_id=%s reason=%s error=%s",
-            correlation_id,
-            entry.event_id,
-            reason,
-            exc,
-        )
-        return False, f"exception:{type(exc).__name__}"
-
-
-@verb("actions.respond_to_juniper_collapse_mirror.v1")
-class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperCollapseActionOutput]):
-    input_model = PlanExecutionRequest
-    output_model = JuniperCollapseActionOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[JuniperCollapseActionOutput, List[VerbEffectV1]]:
-        bus = ctx.meta.get("bus")
-        source = _actions_source(ctx.meta.get("source"))
-        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or uuid4())
-        if bus is None:
-            return JuniperCollapseActionOutput(ok=False, status="fail", error={"message": "missing_bus"}), []
-
-        metadata = _metadata_from_payload(payload)
-        raw_entry = metadata.get("collapse_entry")
-        if not isinstance(raw_entry, dict):
-            return JuniperCollapseActionOutput(ok=False, status="fail", error={"message": "missing_collapse_entry"}), []
-        entry = CollapseMirrorEntryV2.model_validate(raw_entry)
-        output_mode = str(payload.context.get("output_mode") or metadata.get("output_mode") or "reflective_depth")
-        self_study_context = await _resolve_self_study_context(
-            consumer_name="actions.respond_to_juniper_collapse_mirror.v1",
-            output_mode=output_mode,
-            payload=payload,
-            correlation_id=correlation_id,
-            source=source,
-        )
-        self_study_payload = _self_study_payload(self_study_context)
-
-        logger.info("running verb actions.respond_to_juniper_collapse_mirror.v1 corr=%s event_id=%s", correlation_id, entry.event_id)
-        try:
-            recall_reply = f"orion:exec:result:RecallService:{uuid4()}"
-            recall_env = BaseEnvelope(
-                kind="recall.query.v1",
-                source=source,
-                correlation_id=correlation_id,
-                reply_to=recall_reply,
-                payload=RecallQueryV1(
-                    fragment=str(metadata.get("recall_fragment") or _collapse_to_fragment(entry)),
-                    profile=str(metadata.get("recall_profile") or "collapse_mirror.v1"),
-                    session_id=str(metadata.get("session_id") or "collapse_mirror"),
-                    node_id=settings.node_name,
-                    verb="collapse_mirror",
-                    intent="respond_to_juniper",
-                ).model_dump(mode="json"),
-            )
-            logger.info("collapse_mirror_recall_request corr=%s event_id=%s", correlation_id, entry.event_id)
-            recall_msg = await bus.rpc_request(
-                settings.channel_recall_intake,
-                recall_env,
-                reply_channel=recall_reply,
-                timeout_sec=float(settings.recall_rpc_timeout_sec),
-            )
-            recall_decoded = bus.codec.decode(recall_msg.get("data"))
-            if not recall_decoded.ok or recall_decoded.envelope is None:
-                raise RuntimeError(f"recall_decode_failed:{recall_decoded.error}")
-            memory_rendered, recall_debug = _decode_recall(recall_decoded.envelope.payload if isinstance(recall_decoded.envelope.payload, dict) else {})
-
-            llm_reply = f"orion:exec:result:LLMGatewayService:{uuid4()}"
-            _cm_lane = resolve_llm_lane_for_step(
-                step=SimpleNamespace(verb_name="log_orion_metacognition", step_name="collapse_mirror_llm"),
-                ctx={"execution_lane": "background", "options": {}},
-                settings=settings,
-            )
-            llm_env = BaseEnvelope(
-                kind="llm.chat.request",
-                source=source,
-                correlation_id=correlation_id,
-                reply_to=llm_reply,
-                payload=ChatRequestPayload(
-                    messages=[
-                        LLMMessage(role="system", content=_system_prompt()),
-                        LLMMessage(
-                            role="user",
-                            content=(
-                                _collapse_to_markdown(entry)
-                                + "\nRELEVANT MEMORY\n"
-                                + (memory_rendered or "").strip()
-                                + "\n\n"
-                                + self_study_payload["rendered"]
-                                + "\n"
-                            ),
-                        ),
-                    ],
-                    raw_user_text=entry.summary,
-                    # metacog_background (2026-09-07, not plain metacog): collapse_mirror
-                    # is background journal/reflection work, not a live chat turn -- it
-                    # should yield slot slack to Mind's now-live metacog traffic.
-                    route="metacog_background",
-                    profile=settings.atlas_metacog_profile_name,
-                    options={"max_tokens": 512, "temperature": 0.3, **_cm_lane},
-                    session_id=str(metadata.get("session_id") or "collapse_mirror"),
-                    user_id=None,
-                ).model_dump(mode="json"),
-            )
-            logger.info("collapse_mirror_llm_request corr=%s event_id=%s", correlation_id, entry.event_id)
-            llm_msg = await bus.rpc_request(settings.channel_llm_intake, llm_env, reply_channel=llm_reply, timeout_sec=200.0)
-            llm_decoded = bus.codec.decode(llm_msg.get("data"))
-            if not llm_decoded.ok or llm_decoded.envelope is None:
-                raise RuntimeError(f"llm_decode_failed:{llm_decoded.error}")
-            llm_text = _decode_llm(llm_decoded.envelope.payload if isinstance(llm_decoded.envelope.payload, dict) else {})
-            introspect_text, message_text = _extract_sections(llm_text)
-
-            notify_request = _build_notify_request(
-                entry=entry,
-                metadata=metadata,
-                correlation_id=correlation_id,
-                introspect_text=introspect_text,
-                message_text=message_text,
-            )
-            accepted = await asyncio.to_thread(
-                NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10).send,
-                notify_request,
-            )
-            logger.info(
-                "collapse_mirror_notify_result corr=%s event_id=%s ok=%s status=%s",
-                correlation_id,
-                entry.event_id,
-                bool(accepted.ok),
-                accepted.status,
-            )
-            if not accepted.ok:
-                fallback_ok, fallback_status = await _try_send_collapse_fallback(
-                    entry=entry,
-                    metadata=metadata,
-                    correlation_id=correlation_id,
-                    reason=accepted.detail or "notify_failed",
-                )
-                logger.warning(
-                    "collapse_mirror_delivery_gap corr=%s event_id=%s primary_status=%s fallback_ok=%s fallback_status=%s",
-                    correlation_id,
-                    entry.event_id,
-                    accepted.status,
-                    fallback_ok,
-                    fallback_status,
-                )
-
-            return JuniperCollapseActionOutput(
-                ok=bool(accepted.ok),
-                status="success" if accepted.ok else "fail",
-                final_text=message_text.strip(),
-                message_preview=_preview_text(message_text),
-                notification_id=str(accepted.notification_id) if accepted.notification_id else None,
-                memory_used=bool(memory_rendered.strip()),
-                recall_debug={**recall_debug, "self_study": self_study_payload},
-                metadata={"notify_status": accepted.status, "self_study": self_study_payload},
-                timings={},
-                error=None if accepted.ok else {"message": accepted.detail or "notify_failed"},
-            ), []
-        except Exception as exc:
-            fallback_ok, fallback_status = await _try_send_collapse_fallback(
-                entry=entry,
-                metadata=metadata,
-                correlation_id=correlation_id,
-                reason=str(exc),
-            )
-            logger.exception(
-                "collapse_mirror_action_failed corr=%s event_id=%s fallback_ok=%s fallback_status=%s",
-                correlation_id,
-                entry.event_id,
-                fallback_ok,
-                fallback_status,
-            )
-            return JuniperCollapseActionOutput(
-                ok=False,
-                status="fail",
-                memory_used=False,
-                metadata={"self_study": self_study_payload, "fallback_ok": fallback_ok, "fallback_status": fallback_status},
-                error={"message": str(exc)},
-            ), []
 
 
 class SkillVerbOutput(BaseModel):

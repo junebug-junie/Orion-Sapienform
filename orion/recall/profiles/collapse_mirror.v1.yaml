@@ -1,4 +1,4 @@
-# Lighter than reflect.v1 for actions.respond_to_juniper_collapse_mirror.v1:
+# Lighter than reflect.v1 for collapse-mirror journal/recall paths:
 # - disable query expansion (single fragment pass) to cut sequential backend fan-out
 # - shorter SQL window and smaller top_k vs reflect.v1 (7d / 200 rows)
 profile: collapse_mirror.v1

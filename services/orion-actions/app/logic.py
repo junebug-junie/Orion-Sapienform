@@ -18,7 +18,6 @@ from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequ
 
 
 ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1 = "respond_to_juniper_collapse_mirror.v1"
-ACTIONS_RESPOND_TO_JUNIPER_CORTEX_VERB = "actions.respond_to_juniper_collapse_mirror.v1"
 SKILL_BIOMETRICS_SNAPSHOT_V1 = "skills.biometrics.snapshot.v1"
 SKILL_GPU_NVIDIA_SMI_SNAPSHOT_V1 = "skills.gpu.nvidia_smi_snapshot.v1"
 SKILL_NOTIFY_CHAT_MESSAGE_V1 = "skills.system.notify_chat_message.v1"

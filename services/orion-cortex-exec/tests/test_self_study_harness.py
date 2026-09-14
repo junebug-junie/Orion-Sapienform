@@ -151,7 +151,7 @@ def test_consumer_modes_preserve_trust_boundaries() -> None:
     assert conceptual.summary_counts["induced"] > 0
     assert conceptual.summary_counts["reflective"] == 0
 
-    assert reflective.consumer_name == "actions.respond_to_juniper_collapse_mirror.v1"
+    assert reflective.consumer_name == "legacy.plan"
     assert reflective.retrieval_mode == "reflective"
     assert reflective.summary_counts["authoritative"] > 0
     assert reflective.summary_counts["induced"] > 0

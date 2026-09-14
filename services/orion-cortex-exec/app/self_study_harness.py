@@ -324,7 +324,7 @@ async def run_self_study_harness(
         ),
         _ConsumerScenario(
             name="reflective_consumer",
-            consumer_name="actions.respond_to_juniper_collapse_mirror.v1",
+            consumer_name="legacy.plan",
             output_mode="reflective_depth",
             config={"enabled": True, "retrieval_mode": "reflective", "filters": {"limit": 24}},
         ),

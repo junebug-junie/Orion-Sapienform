@@ -37,10 +37,10 @@ def test_legacy_plan_delivery_mode_stays_factual() -> None:
     assert decision.allowed_trust_tiers == ["authoritative"]
 
 
-def test_collapse_mirror_allows_reflective_mode() -> None:
+def test_legacy_plan_reflective_depth_allows_reflective_mode() -> None:
     decision = resolve_self_study_consumer_policy(
-        consumer_name="actions.respond_to_juniper_collapse_mirror.v1",
-        output_mode="implementation_guide",
+        consumer_name="legacy.plan",
+        output_mode="reflective_depth",
         config={"enabled": True, "retrieval_mode": "reflective"},
     )
 

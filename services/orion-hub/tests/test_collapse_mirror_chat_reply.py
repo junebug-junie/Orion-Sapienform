@@ -426,3 +426,38 @@ async def test_empty_reply_leaves_you_without_orion(monkeypatch) -> None:
     frames = _drain_queue(outreach)
     assert any(f.get("kind") == "collapse_mirror_you" for f in frames)
     assert not any(f.get("kind") == "orion_outreach" for f in frames)
+
+
+def test_default_turn_timeout_covers_thought_plus_harness() -> None:
+    from scripts.collapse_mirror_chat_reply import DEFAULT_TURN_TIMEOUT_SEC
+
+    # Live 2026-09-14: Thought ~100s + harness ~6m; 120s cancelled mid-turn.
+    assert DEFAULT_TURN_TIMEOUT_SEC >= 900.0
+
+
+@pytest.mark.asyncio
+async def test_timeout_leaves_you_and_pushes_status(monkeypatch) -> None:
+    bus = _FakeBus()
+    outreach = _outreach_with_session("live-sess")
+    outreach._bus = bus
+    handler = CollapseMirrorChatReplyHandler(
+        outreach=outreach, bus=bus, turn_timeout_sec=0.05
+    )
+
+    async def _slow(**kwargs):
+        await asyncio.sleep(1.0)
+        return [{"type": "final", "llm_response": "late"}]
+
+    import orion.hub.turn_orchestrator as turn_orchestrator
+
+    monkeypatch.setattr(turn_orchestrator, "execute_unified_turn", _slow)
+    _patch_history(monkeypatch)
+
+    result = await handler.handle(_request_env("evt-timeout"))
+    assert result["status"] == "failed"
+    assert result["reason"] == "timeout"
+    assert result["you_written"] is True
+    frames = _drain_queue(outreach)
+    assert any(f.get("kind") == "collapse_mirror_you" for f in frames)
+    assert any(f.get("kind") == "collapse_mirror_status" for f in frames)
+    assert not any(f.get("kind") == "orion_outreach" for f in frames)

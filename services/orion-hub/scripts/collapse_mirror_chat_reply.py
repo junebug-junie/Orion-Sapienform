@@ -22,8 +22,13 @@ from orion.schemas.notify import HubNotificationEvent
 logger = logging.getLogger("orion-hub.collapse_mirror_chat_reply")
 
 YOU_KIND = "collapse_mirror_you"
+STATUS_KIND = "collapse_mirror_status"
 SOURCE_TAG = "collapse_mirror_reply"
-DEFAULT_TURN_TIMEOUT_SEC = 120.0
+# Live 2026-09-14: Thought alone took ~100s on a real Juniper mirror; harness
+# then needed ~6 more minutes. 120s cancelled mid-turn (You written, no Orion)
+# while the governor kept running orphaned. Match a full chat-lane wall clock —
+# Thought RPC budget is 400s; leave room for harness after that.
+DEFAULT_TURN_TIMEOUT_SEC = 900.0
 
 
 class CollapseMirrorChatReplyHandler:
@@ -35,12 +40,14 @@ class CollapseMirrorChatReplyHandler:
         channel: str = COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL,
         dedupe_ttl_seconds: int = 86400,
         turn_timeout_sec: float = DEFAULT_TURN_TIMEOUT_SEC,
+        harness_step_relay: Any = None,
     ) -> None:
         self._outreach = outreach
         self._bus = bus
         self._channel = channel
         self._dedupe_ttl = int(dedupe_ttl_seconds)
         self._turn_timeout_sec = float(turn_timeout_sec)
+        self._harness_step_relay = harness_step_relay
         self._done_expiry: dict[str, float] = {}
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
@@ -131,17 +138,57 @@ class CollapseMirrorChatReplyHandler:
             correlation_id=correlation_id,
         )
 
+        # Marquee / "what's running" only learns about harness turns when
+        # execute_unified_turn reaches governor dispatch — after Thought, which
+        # can take minutes. Mark the turn requested up front so the header is
+        # not blank while stance is still chewing.
+        self._mark_turn_requested(correlation_id=correlation_id)
+        self._push_status(
+            text="Orion is responding to your Collapse Mirror…",
+            session_id=session_id,
+            correlation_id=correlation_id,
+        )
+
         try:
             text, debug = await self._run_chat_lane_turn(
                 user_message=req.mirror_text,
                 session_id=session_id,
                 correlation_id=correlation_id,
             )
+        except asyncio.TimeoutError:
+            logger.error(
+                "collapse_mirror_chat_reply_timeout event_id=%s corr=%s timeout_sec=%s",
+                event_id,
+                correlation_id,
+                self._turn_timeout_sec,
+            )
+            self._mark_turn_finished(correlation_id=correlation_id, error="timeout")
+            self._push_status(
+                text=(
+                    "Collapse Mirror reply timed out before Orion finished "
+                    f"(waited {int(self._turn_timeout_sec)}s). You bubble was kept."
+                ),
+                session_id=session_id,
+                correlation_id=correlation_id,
+            )
+            return {
+                "status": "failed",
+                "reason": "timeout",
+                "event_id": event_id,
+                "session_id": session_id,
+                "you_written": True,
+            }
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "collapse_mirror_chat_reply_turn_failed event_id=%s corr=%s",
                 event_id,
                 correlation_id,
+            )
+            self._mark_turn_finished(correlation_id=correlation_id, error=str(exc))
+            self._push_status(
+                text="Collapse Mirror reply failed before Orion could answer. You bubble was kept.",
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
             return {
                 "status": "failed",
@@ -152,14 +199,24 @@ class CollapseMirrorChatReplyHandler:
             }
 
         if not text or not str(text).strip():
+            reason = (debug or {}).get("error") if isinstance(debug, dict) else None
             logger.info(
-                "collapse_mirror_chat_reply_empty_reply event_id=%s corr=%s",
+                "collapse_mirror_chat_reply_empty_reply event_id=%s corr=%s reason=%s",
                 event_id,
                 correlation_id,
+                reason or "empty_reply",
+            )
+            self._mark_turn_finished(
+                correlation_id=correlation_id, error=str(reason or "empty_reply")
+            )
+            self._push_status(
+                text="Collapse Mirror reply produced no deliverable Orion text. You bubble was kept.",
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
             return {
                 "status": "failed",
-                "reason": "empty_reply",
+                "reason": str(reason or "empty_reply"),
                 "event_id": event_id,
                 "session_id": session_id,
                 "you_written": True,
@@ -175,12 +232,66 @@ class CollapseMirrorChatReplyHandler:
             notification_title="Collapse Mirror reply",
             notification_type=SOURCE_TAG,
         )
+        self._mark_turn_finished(correlation_id=correlation_id, error=None)
         return {
             "status": "delivered",
             "event_id": event_id,
             "session_id": session_id,
             "you_written": True,
         }
+
+    def _push_status(self, *, text: str, session_id: str, correlation_id: str) -> None:
+        payload = {
+            "kind": STATUS_KIND,
+            "text": text,
+            "correlation_id": correlation_id,
+            "session_id": session_id,
+        }
+        for connection_id, entry in list(self._outreach._connections.items()):
+            queue = entry.get("queue")
+            if queue is None:
+                continue
+            try:
+                queue.put_nowait(dict(payload))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "collapse_mirror_status_push_failed connection=%s err=%s",
+                    connection_id,
+                    exc,
+                )
+
+    def _mark_turn_requested(self, *, correlation_id: str) -> None:
+        try:
+            from orion.hub.runtime_activity import get_runtime_activity
+
+            get_runtime_activity().turn_requested(
+                correlation_id=correlation_id,
+                mode="orion",
+                model_label=None,
+                source=SOURCE_TAG,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "collapse_mirror_runtime_activity_request_failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
+
+    def _mark_turn_finished(self, *, correlation_id: str, error: str | None) -> None:
+        try:
+            from orion.hub.runtime_activity import get_runtime_activity
+
+            get_runtime_activity().turn_finished(
+                correlation_id=correlation_id,
+                run=None,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "collapse_mirror_runtime_activity_finish_failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
 
     async def _inject_you(self, *, text: str, session_id: str, correlation_id: str) -> None:
         message_id = str(uuid4())
@@ -238,20 +349,68 @@ class CollapseMirrorChatReplyHandler:
         }
         # Intentionally omit fcc_model_label → chat lane.
         bus = self._bus or self._outreach._bus
-        frames = await asyncio.wait_for(
-            execute_unified_turn(
-                bus=bus,
-                correlation_id=correlation_id,
-                session_id=session_id,
-                user_message=user_message,
-                payload=request_payload,
-                continuity_messages=None,
-                harness_rpc_bus=getattr(self._outreach, "_harness_rpc_bus", None) or bus,
-                harness_step_relay=None,
-                harness_step_queue=None,
-            ),
-            timeout=self._turn_timeout_sec,
-        )
+        relay = self._harness_step_relay
+        step_queue: asyncio.Queue | None = None
+        drain_task: asyncio.Task | None = None
+        if relay is not None:
+            step_queue = asyncio.Queue(maxsize=256)
+            relay.register_queue(correlation_id, step_queue)
+
+            async def _drain_steps() -> None:
+                assert step_queue is not None
+                while True:
+                    frame = await step_queue.get()
+                    # Fan out harness Soft-HUD / step frames to live sockets so
+                    # the turn is visible the same way a typed chat turn is.
+                    for connection_id, entry in list(self._outreach._connections.items()):
+                        queue = entry.get("queue")
+                        if queue is None:
+                            continue
+                        try:
+                            queue.put_nowait(dict(frame))
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "collapse_mirror_step_push_failed connection=%s",
+                                connection_id,
+                                exc_info=True,
+                            )
+
+            drain_task = asyncio.create_task(
+                _drain_steps(), name=f"collapse-mirror-steps-{correlation_id}"
+            )
+
+        try:
+            frames = await asyncio.wait_for(
+                execute_unified_turn(
+                    bus=bus,
+                    correlation_id=correlation_id,
+                    session_id=session_id,
+                    user_message=user_message,
+                    payload=request_payload,
+                    continuity_messages=None,
+                    harness_rpc_bus=getattr(self._outreach, "_harness_rpc_bus", None) or bus,
+                    harness_step_relay=relay,
+                    harness_step_queue=step_queue,
+                ),
+                timeout=self._turn_timeout_sec,
+            )
+        finally:
+            if relay is not None and step_queue is not None:
+                try:
+                    relay.unregister_queue(correlation_id, step_queue)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "collapse_mirror_step_unregister_failed corr=%s",
+                        correlation_id,
+                        exc_info=True,
+                    )
+            if drain_task is not None:
+                drain_task.cancel()
+                try:
+                    await drain_task
+                except asyncio.CancelledError:
+                    pass
+
         final = next(
             (f for f in frames if isinstance(f, dict) and f.get("type") == "final"),
             None,

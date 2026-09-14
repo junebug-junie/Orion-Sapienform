@@ -11472,6 +11472,17 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             return;
           }
+          if (d.kind === 'collapse_mirror_status') {
+            const statusText = String(d.text || '').trim();
+            if (statusText) {
+              appendMessage('System', statusText, 'text-yellow-400', {
+                correlationId: d.correlation_id,
+                turnId: d.correlation_id,
+                collapseMirror: true,
+              });
+            }
+            return;
+          }
           if (d.kind === 'orion_outreach') {
             // Orion spoke first (no turn of ours). Handled before the generic
             // assistant branch and returns early on purpose: that branch also

@@ -38,7 +38,7 @@ are recorded in the evidence note. No new cognition metric/detector is wired.
 
 ## Files changed
 
-See the generated file inventory below and the PR diff. Principal seams:
+The PR diff contains the complete file inventory. Principal seams:
 
 - `orion/durable_admission/elastic.py`: durable slot intent/status/completion.
 - `orion/durable_admission/broker.py`, `capacity.py`, `policy.py`: atomic closure, compatibility, opt-in and FIFO.
@@ -137,4 +137,6 @@ shadow, manual round-trip, borrowing without assignment, then controlled widenin
 
 ## PR link
 
-Pending creation; GitHub CI/mergeability will be checked before final handoff.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2215
+
+GitHub CI is tracked in the PR checks; mergeability was confirmed on creation.

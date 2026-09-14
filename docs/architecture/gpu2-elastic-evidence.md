@@ -13,6 +13,8 @@ exited (`orion-circe-affectgpt-worker`). Controller targets are compose
 `atlas-agent`, profile `agent-split`, in
 `services/orion-llamacpp-host/docker-compose.atlas-workers.yml`. Controller
 `_targets()` explicitly overrides `ATLAS_AGENT_CUDA_VISIBLE_DEVICES=1`.
+Affect's checked-in HOST_PORT is 32798 (internal 6610); live listener mapping
+was not available while its container was exited.
 GPU1 assignment is supported by the September 2 live deployment report;
 current device-level verification is UNVERIFIED: Tailscale SSH denied this user.
 

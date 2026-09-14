@@ -365,6 +365,10 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 Human chats never call `startConversationMessage` — Juniper's first NPC line is `continue`. The old continue contract (`Name a person, object, or task`) plus Nico's tease-plan produced a secret-hook on "hi" and a lockbox on "spill the tea" before any topic had repeated. The patch puts the no-quest / answer-first / do-not-withhold contract on continue, drops empty-shell social-memory topic bags (`Recent room themes:`, `recent shared topics include`), and rewrites Nico's plan to tell a specific piece of gossip.
 
+### Mechanical leave (`patches/orion-mechanical-leave.patch`)
+
+When an NPC–NPC chat hits duration or message cap, leave immediately via `conversation.leave` — do **not** ask the LLM to write a goodbye. Live 2026-09-14 Mara↔Orion: leave-via-`agentGenerateMessage` hung on empty stubs against a bloated transcript, so the chat never ended. Orion joins without a Convex `human` flag today, so this gate applies to Mara↔Orion as well as NPC↔NPC. Human (Juniper) partners still stay until they leave. Embodiment's `EMBODIMENT_CONVERSATION_ABANDON_SEC` is the independent backstop if a chat still sticks.
+
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 
 Upstream `player.tick()` deleted the human after `HUMAN_IDLE_TOO_LONG` (5 minutes). `lastInput` was only written at join, so that was a session fuse, not idle detection. The patch removes the kick. Juniper stays in the world until she actually leaves.

@@ -30,6 +30,7 @@ from orion.embodiment.speech import (
     is_injectable,
     should_speak,
 )
+from orion.embodiment.dead_chat import should_abandon_dead_chat
 from orion.journaler.schemas import JournalTriggerV1
 from orion.schemas.chat_history import ChatHistoryTurnEnvelope, ChatHistoryTurnV1
 from orion.schemas.social_chat import SocialRoomTurnV1
@@ -121,6 +122,10 @@ class EmbodimentWorker:
         # clears its lingering path so the engine (Conversation.tick) orients it
         # toward the partner. Bounded per-convo so we don't fight the engine.
         self._faced_conversations: set[str] = set()
+        # Dead-chat abandon clock: when Orion first reached participating, and how
+        # many successful injects it has landed in that conversation.
+        self._abandon_participating_since_ms: dict[str, float] = {}
+        self._abandon_own_utterances: dict[str, int] = {}
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -774,8 +779,57 @@ class EmbodimentWorker:
                 # own current tile) per conversation so the next tick orients Orion.
                 # Speech itself is driven by the turn-taking gate in `_speak_once`.
                 await self._face_partner_if_pathfinding(perception, own, cid)
+                await self._maybe_abandon_dead_chat(perception, own, cid)
             return
+        # No active conversation — drop abandon clocks so a later rejoin starts fresh.
+        self._abandon_participating_since_ms.clear()
+        self._abandon_own_utterances.clear()
         await self._maybe_initiate_conversation(perception)
+
+    async def _maybe_abandon_dead_chat(
+        self, perception: WorldPerceptionV1, own: str, cid: str
+    ) -> None:
+        """Leave a participating conversation that has gone dead. Fail-open."""
+        if not cid:
+            return
+        abandon_sec = float(getattr(self._settings, "conversation_abandon_sec", 0.0) or 0.0)
+        if abandon_sec <= 0:
+            return
+        if cid in self._speaking_conversations:
+            # Do not yank the rug while a speech inject is in flight.
+            return
+        now = _utcnow()
+        now_ms = now.timestamp() * 1000.0
+        if cid not in self._abandon_participating_since_ms:
+            self._abandon_participating_since_ms[cid] = now_ms
+        convo = perception.active_conversation or {}
+        if not should_abandon_dead_chat(
+            status=str(convo.get("status") or ""),
+            messages=list(convo.get("messages") or []),
+            own_player_id=own,
+            now_ms=now_ms,
+            abandon_after_ms=abandon_sec * 1000.0,
+            own_utterances_this_convo=int(self._abandon_own_utterances.get(cid, 0)),
+            participating_since_ms=self._abandon_participating_since_ms.get(cid),
+        ):
+            return
+        try:
+            await asyncio.to_thread(
+                aitown_client.leave_conversation,
+                player_id=own,
+                conversation_id=cid,
+                world_id=self._world_id or None,
+            )
+            logger.info("embodiment_dead_chat_abandoned convo=%s", cid)
+        except Exception:
+            logger.exception("embodiment_dead_chat_abandon_failed convo=%s", cid)
+            return
+        self._abandon_participating_since_ms.pop(cid, None)
+        self._abandon_own_utterances.pop(cid, None)
+        self._faced_conversations.discard(cid)
+        self._opened_conversations.discard(cid)
+        # Keep cid in _speaking_conversations if a race started speaking; that
+        # task's finally will discard. Do not discard here.
 
     async def _face_partner_if_pathfinding(
         self, perception: WorldPerceptionV1, own: str, cid: str
@@ -1013,6 +1067,9 @@ class EmbodimentWorker:
             if not messages:
                 # Opened the conversation; don't re-open on a later empty transcript.
                 self._opened_conversations.add(convo_id)
+            self._abandon_own_utterances[convo_id] = (
+                int(self._abandon_own_utterances.get(convo_id, 0)) + 1
+            )
             # Record Orion's contribution so the journal gate sees a real exchange
             # when this conversation later completes.
             if convo_id == getattr(self, "_active_conversation_id", None):

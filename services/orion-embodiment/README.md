@@ -88,6 +88,10 @@ This service guarantees the `!pathfinding` precondition for Orion:
 
 > **UNVERIFIED at runtime.** The live town is not runnable in CI, so the visual confirmation that Orion actually turns to face its partner is deferred to the operator. The logic (perception fields, `facing_partner`, the one-shot stop, and the heartbeat/log surfaces) is covered by unit tests, but "Orion visibly faces the partner in the live world" has not been observed by this change.
 
+## Dead-chat abandon
+
+`EMBODIMENT_CONVERSATION_ABANDON_SEC` (default `180`) walks Orion out of a `participating` conversation that has gone dead: either the latest transcript line is older than the window, or Orion has never successfully spoken and has been participating that long. Sends the town's `leaveConversation` input (mechanical; no LLM). `0` disables. Companion to AI Town's `orion-mechanical-leave.patch` (NPC duration leave without an LLM goodbye).
+
 ## Memory: journal facts vs conversation content
 
 Two independent flags, both off by default:

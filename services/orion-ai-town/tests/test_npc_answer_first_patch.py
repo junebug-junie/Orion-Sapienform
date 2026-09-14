@@ -25,9 +25,11 @@ def _apply_order() -> list[str]:
     ]
 
 
-def test_answer_first_patch_registered_last():
+def test_answer_first_patch_registered_before_mechanical_leave():
     order = _apply_order()
-    assert order[-1] == "orion-npc-answer-first.patch"
+    assert order.index("orion-npc-answer-first.patch") < order.index(
+        "orion-mechanical-leave.patch"
+    )
     assert order.index("orion-town-continuity-ingest.patch") < order.index(
         "orion-npc-answer-first.patch"
     )

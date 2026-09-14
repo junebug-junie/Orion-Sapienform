@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 from app.claude_fallback import CONTRACTOR_PEER_MARKER, run_claude_fallback
 from app.cursor_errors import TokenUnavailable, classify_cursor_failure
-from app.worker import handle_help_request
+from app.settings import Settings
+from app.worker import _default_persist, handle_help_request, make_bus_claude_fallback
 from orion.dev_economics.cursor_limit_events import CursorLimitObservation
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefV1
+from orion.schemas.room_claude import ExternalRoomResponderV1, RoomClaudeUtteranceV1
 
 
 def _help(**overrides: Any) -> HelpRequestV1:
@@ -175,14 +179,24 @@ def test_cursor_success_skips_claude() -> None:
 def test_run_claude_fallback_publishes_and_waits_once() -> None:
     published: list[Any] = []
     waits = {"n": 0}
+    order: list[str] = []
 
     def publish(req: Any) -> None:
+        order.append("publish")
         published.append(req)
 
-    def wait(request_id: str, *, timeout_sec: float) -> str:
+    def wait(
+        request_id: str,
+        *,
+        timeout_sec: float,
+        publish_request: Any = None,
+    ) -> str:
         waits["n"] += 1
-        assert request_id == published[0].request_id
+        order.append("subscribe")
         assert timeout_sec > 0
+        if publish_request is not None:
+            publish_request()
+        assert request_id == published[0].request_id
         return '{"summary": "room notes", "evidence_pointers": []}'
 
     brief = run_claude_fallback(
@@ -197,6 +211,7 @@ def test_run_claude_fallback_publishes_and_waits_once() -> None:
     assert req.invited_by in ("orion", "Orion", "system", "orion-system")
     assert CONTRACTOR_PEER_MARKER in req.prompt
     assert waits["n"] == 1
+    assert order == ["subscribe", "publish"]
     assert brief.peer == "claude_room"
     assert brief.status == "ok"
     assert "room notes" in brief.summary
@@ -206,7 +221,14 @@ def test_run_claude_fallback_failure_raises() -> None:
     def publish(_req: Any) -> None:
         return None
 
-    def wait(_request_id: str, *, timeout_sec: float) -> str:
+    def wait(
+        _request_id: str,
+        *,
+        timeout_sec: float,
+        publish_request: Any = None,
+    ) -> str:
+        if publish_request is not None:
+            publish_request()
         raise TimeoutError("no utterance")
 
     with pytest.raises(TimeoutError):
@@ -215,3 +237,125 @@ def test_run_claude_fallback_failure_raises() -> None:
             publish_request=publish,
             wait_utterance=wait,
         )
+
+
+def test_bus_claude_fallback_unwraps_titanium_payload_envelope() -> None:
+    """Room companion publishes Titanium envelopes with utterance under `payload`.
+
+    Hub's room_claude_relay unwraps the same way; looking at `data` misses live
+    utterances and times out into dual-failure.
+    """
+    order: list[str] = []
+    settings = Settings()
+    brief_body = '{"summary": "from enveloped utterance", "evidence_pointers": []}'
+
+    class _SubCtx:
+        async def __aenter__(self) -> "_SubCtx":
+            order.append("subscribe")
+            return self
+
+        async def __aexit__(self, *_a: Any) -> None:
+            return None
+
+    class FakeBus:
+        def __init__(self) -> None:
+            self._request_id: str | None = None
+
+        async def publish(self, channel: str, payload: dict[str, Any]) -> None:
+            order.append("publish")
+            assert channel == settings.CHANNEL_ROOM_CLAUDE_REQUEST
+            self._request_id = str(payload["request_id"])
+
+        def subscribe(self, channel: str) -> _SubCtx:
+            assert channel == settings.CHANNEL_ROOM_CLAUDE_UTTERANCE
+            return _SubCtx()
+
+        async def iter_messages(self, _pubsub: Any):
+            assert self._request_id is not None
+            utt = RoomClaudeUtteranceV1(
+                request_id=self._request_id,
+                room_id="curiosity-contractor-peer",
+                responder=ExternalRoomResponderV1(
+                    participant_id="claude",
+                    participant_name="Claude",
+                ),
+                text=brief_body,
+                model="claude-sonnet",
+                cost_usd=0.01,
+                ok=True,
+            )
+            envelope = {"payload": utt.model_dump(mode="json")}
+            yield {"type": "message", "data": json.dumps(envelope)}
+
+    bus = FakeBus()
+    claude = make_bus_claude_fallback(settings=settings, bus=bus, timeout_sec=2.0)
+    brief = claude(_help(), context_pack="")
+    assert order[0] == "subscribe"
+    assert "publish" in order
+    assert order.index("subscribe") < order.index("publish")
+    assert brief.peer == "claude_room"
+    assert brief.status == "ok"
+    assert "from enveloped utterance" in brief.summary
+
+
+def test_default_persist_runs_peer_brief_merge_when_graph_client_injected() -> None:
+    class FakeGraph:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def graph_query(self, cypher: str, params: Any = None) -> list:
+            self.calls.append(cypher)
+            return []
+
+    published: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeBus:
+        def publish(self, channel: str, payload: dict[str, Any]) -> None:
+            published.append((channel, payload))
+
+    graph = FakeGraph()
+    brief = PeerBriefV1(
+        brief_id="brief-merge-1",
+        help_id="help-1",
+        run_id="run-1",
+        prior_id="prior-1",
+        peer="claude_room",
+        status="ok",
+        summary="merge me",
+        evidence_pointers=["worker.py"],
+    )
+    settings = Settings(
+        ORION_CURIOSITY_GRAPH_HOST="127.0.0.1",
+        ORION_CURIOSITY_GRAPH_PORT="6379",
+        ORION_CURIOSITY_GRAPH_USER="orion_curiosity",
+        ORION_CURIOSITY_GRAPH_PASSWORD=SecretStr("secret"),
+        ORION_CURIOSITY_GRAPH_OWN="orion_worldview",
+    )
+    _default_persist(brief, settings=settings, bus=FakeBus(), graph_client=graph)
+    assert len(graph.calls) == 1
+    cypher = graph.calls[0]
+    assert "MERGE" in cypher
+    assert "PeerBrief" in cypher
+    assert "brief-merge-1" in cypher
+    assert published and published[0][1]["brief_id"] == "brief-merge-1"
+
+
+def test_default_persist_skips_graph_when_unconfigured(caplog: pytest.LogCaptureFixture) -> None:
+    published: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeBus:
+        def publish(self, channel: str, payload: dict[str, Any]) -> None:
+            published.append((channel, payload))
+
+    brief = PeerBriefV1(
+        brief_id="brief-bus-only",
+        help_id="help-1",
+        run_id="run-1",
+        peer="cursor_auto",
+        status="ok",
+        summary="bus only",
+    )
+    with caplog.at_level("WARNING"):
+        _default_persist(brief, settings=Settings(), bus=FakeBus())
+    assert published and published[0][1]["brief_id"] == "brief-bus-only"
+    assert any("graph_unconfigured" in r.message for r in caplog.records)

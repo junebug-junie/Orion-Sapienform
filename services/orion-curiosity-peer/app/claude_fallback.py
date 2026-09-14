@@ -81,12 +81,21 @@ def run_claude_fallback(
         social_memory_summary={},
         correlation_id=help_req.help_id,
     )
-    publish_request(request)
     logger.info(
         "curiosity_peer_claude_fallback_request request_id=%s help_id=%s",
         request.request_id,
         help_req.help_id,
     )
-    raw = wait_utterance(request.request_id, timeout_sec=timeout_sec)
+
+    # Subscribe-before-publish: Redis pubsub has no backlog. Wait starts the
+    # subscription, then calls publish_request once the listener is ready.
+    def _publish_after_subscribe() -> None:
+        publish_request(request)
+
+    raw = wait_utterance(
+        request.request_id,
+        timeout_sec=timeout_sec,
+        publish_request=_publish_after_subscribe,
+    )
     body = _utterance_text(raw) if not isinstance(raw, str) else raw
     return parse_peer_brief_body(body, help=help_req, peer="claude_room")

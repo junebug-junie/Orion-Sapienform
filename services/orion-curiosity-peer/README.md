@@ -4,8 +4,12 @@ Read-only contractor peer for Orion curiosity / self-inquiry runs.
 
 Consumes `HelpRequestV1` on `orion:curiosity:help:request`, runs a
 Cursor Auto investigation (Claude room fallback when Cursor tokens are
-dry), and publishes `PeerBriefV1` via `persist_peer_brief` (worldview +
-Postgres). Orion alone still writes `:Prior` / `:Finding` / `:SelfDefinition`.
+dry), and publishes `PeerBriefV1` via `persist_peer_brief`. Bus publish
+always runs (sql-writer / Postgres consumers). Worldview `:PeerBrief`
+MERGE runs only when `ORION_CURIOSITY_GRAPH_HOST` + port + user + password
+are set; otherwise the worker logs
+`curiosity_peer_persist_graph_unconfigured` and continues bus-only.
+Orion alone still writes `:Prior` / `:Finding` / `:SelfDefinition`.
 
 Design: `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 

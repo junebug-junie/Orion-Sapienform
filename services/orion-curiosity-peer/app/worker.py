@@ -120,12 +120,87 @@ def _map_claude_result(help_req: HelpRequestV1, result: Union[str, PeerBriefV1])
     return parse_peer_brief_body(str(result), help=help_req, peer="claude_room")
 
 
-def _default_persist(brief: PeerBriefV1, *, settings: Settings, bus: Any) -> None:
-    def _graph_execute(_cypher: str) -> None:
-        # Live worldview writer lands with operator wiring; bus publish is the
-        # sql-writer path. Best-effort no-op keeps dual-write contract callable.
-        _ = settings
+def _graph_credentials_ready(settings: Settings) -> bool:
+    host = (settings.ORION_CURIOSITY_GRAPH_HOST or "").strip()
+    port = (settings.ORION_CURIOSITY_GRAPH_PORT or "").strip()
+    user = (settings.ORION_CURIOSITY_GRAPH_USER or "").strip()
+    secret = settings.ORION_CURIOSITY_GRAPH_PASSWORD
+    password = secret.get_secret_value() if secret is not None else ""
+    return bool(host and port and user and str(password).strip())
+
+
+def _curiosity_graph_uri(settings: Settings) -> str:
+    from urllib.parse import quote
+
+    host = settings.ORION_CURIOSITY_GRAPH_HOST.strip()
+    port = settings.ORION_CURIOSITY_GRAPH_PORT.strip()
+    user = quote(settings.ORION_CURIOSITY_GRAPH_USER.strip(), safe="")
+    secret = settings.ORION_CURIOSITY_GRAPH_PASSWORD
+    password = quote(
+        secret.get_secret_value() if secret is not None else "",
+        safe="",
+    )
+    return f"redis://{user}:{password}@{host}:{port}/0"
+
+
+def _build_curiosity_graph_client(settings: Settings) -> Any:
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    return RedisGraphQueryClient(
+        uri=_curiosity_graph_uri(settings),
+        graph_name=(settings.ORION_CURIOSITY_GRAPH_OWN or "orion_worldview").strip()
+        or "orion_worldview",
+        read_only=False,
+    )
+
+
+def _unwrap_room_claude_utterance(body: Any) -> Optional[RoomClaudeUtteranceV1]:
+    """Unwrap a Titanium envelope the same way Hub's room_claude_relay does.
+
+    Redis pubsub ``msg['data']`` is the JSON envelope; the utterance lives under
+    ``payload``, not ``data``.
+    """
+    if not isinstance(body, dict):
         return None
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else body
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return RoomClaudeUtteranceV1.model_validate(payload)
+    except Exception:
+        return None
+
+
+def _default_persist(
+    brief: PeerBriefV1,
+    *,
+    settings: Settings,
+    bus: Any,
+    graph_client: Any = None,
+) -> None:
+    def _graph_execute(cypher: str) -> None:
+        client = graph_client
+        if client is None:
+            if not _graph_credentials_ready(settings):
+                logger.warning(
+                    "curiosity_peer_persist_graph_unconfigured brief_id=%s "
+                    "(set ORION_CURIOSITY_GRAPH_HOST/PORT/USER/PASSWORD for "
+                    "worldview PeerBrief MERGE; bus publish still attempted)",
+                    brief.brief_id,
+                )
+                return
+            try:
+                client = _build_curiosity_graph_client(settings)
+            except Exception:
+                logger.exception(
+                    "curiosity_peer_persist_graph_client_failed brief_id=%s",
+                    brief.brief_id,
+                )
+                raise
+        graph_query = getattr(client, "graph_query", None)
+        if graph_query is None:
+            raise RuntimeError("graph client has no graph_query()")
+        graph_query(cypher)
 
     def _bus_publish(channel: str, payload: dict[str, Any]) -> None:
         if bus is None:
@@ -156,24 +231,41 @@ def make_bus_claude_fallback(
     """Build a Claude callable that publishes + waits on the room channels.
 
     Safe to call from a worker thread (e.g. ``asyncio.to_thread``). Tests should
-    inject ``claude=`` instead of using this helper.
+    inject ``claude=`` instead of using this helper. Subscribes before publish
+    so a fast utterance cannot race past an unsubscribed listener.
     """
 
     def _claude(help_req: HelpRequestV1, *, context_pack: str = "") -> PeerBriefV1:
         import asyncio
 
-        def publish_request(req: RoomClaudeRequestV1) -> None:
-            payload = req.model_dump(mode="json")
-            result = bus.publish(settings.CHANNEL_ROOM_CLAUDE_REQUEST, payload)
-            if hasattr(result, "__await__"):
-                asyncio.run(result)
+        # Stash only — real bus publish is awaited inside wait after subscribe,
+        # so we never nest asyncio.run inside a running loop.
+        _pending_request: list[RoomClaudeRequestV1] = []
 
-        def wait_utterance(request_id: str, *, timeout_sec: float) -> str:
+        def publish_request(req: RoomClaudeRequestV1) -> None:
+            _pending_request.append(req)
+
+        def wait_utterance(
+            request_id: str,
+            *,
+            timeout_sec: float,
+            publish_request: Optional[Callable[[], Any]] = None,
+        ) -> str:
             async def _wait() -> str:
                 async def _consume() -> str:
                     async with bus.subscribe(
                         settings.CHANNEL_ROOM_CLAUDE_UTTERANCE
                     ) as pubsub:
+                        if publish_request is not None:
+                            publish_request()
+                        while _pending_request:
+                            req = _pending_request.pop(0)
+                            result = bus.publish(
+                                settings.CHANNEL_ROOM_CLAUDE_REQUEST,
+                                req.model_dump(mode="json"),
+                            )
+                            if hasattr(result, "__await__"):
+                                await result
                         async for msg in bus.iter_messages(pubsub):
                             data = msg.get("data") if isinstance(msg, dict) else msg
                             if isinstance(data, bytes):
@@ -183,19 +275,11 @@ def make_bus_claude_fallback(
                                     data = json.loads(data)
                                 except json.JSONDecodeError:
                                     continue
-                            if not isinstance(data, dict):
+                            utt = _unwrap_room_claude_utterance(data)
+                            if utt is None:
                                 continue
-                            inner = data.get("data", data)
-                            if isinstance(inner, str):
-                                try:
-                                    inner = json.loads(inner)
-                                except json.JSONDecodeError:
-                                    continue
-                            if not isinstance(inner, dict):
+                            if utt.request_id != request_id:
                                 continue
-                            if inner.get("request_id") != request_id:
-                                continue
-                            utt = RoomClaudeUtteranceV1.model_validate(inner)
                             if not utt.ok:
                                 raise RuntimeError(
                                     utt.error or "claude utterance not ok"

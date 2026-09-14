@@ -1221,6 +1221,40 @@ def apply_substrate_attention_schema_retention(
     return state
 
 
+def apply_curiosity_peer_brief_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for curiosity_peer_brief (PeerBriefV1 rows).
+
+    Bounded from the first commit that creates the table, same rule as AttentionSchema.
+    Sparse (one row per contractor-peer help response). Ages by `created_at` (write time).
+    Not a grammar lane -- plain `default_engine`.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="curiosity_peer_brief",
+        id_column="brief_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["curiosity_peer_brief"] = state
+    return state
+
+
 def apply_substrate_durable_run_state_retention(
     retention_days: int,
     *,
@@ -1354,6 +1388,7 @@ GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     ("orion_biometrics_cluster", apply_biometrics_cluster_retention),
     ("power_intent_settled", apply_power_intent_settled_retention),
     ("substrate_attention_schema", apply_substrate_attention_schema_retention),
+    ("curiosity_peer_brief", apply_curiosity_peer_brief_retention),
     ("substrate_durable_run_state", apply_substrate_durable_run_state_retention),
 )
 

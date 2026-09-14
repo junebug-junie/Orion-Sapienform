@@ -297,6 +297,10 @@ SYNC_PREFIXES = (
     # above: without an explicit prefix here, RECENT_ATTENTION_CUE_* keys added
     # to .env_example are silently invisible to should_sync_key().
     "RECENT_ATTENTION_CUE_",
+    # Contractor peer briefs (orion-sql-writer curiosity_peer_brief retention).
+    # Same blind spot: without this prefix the new retention key is invisible
+    # to default sync and the run reports "no changes".
+    "CURIOSITY_PEER_BRIEF_",
 )
 
 SYNC_EXACT = frozenset(

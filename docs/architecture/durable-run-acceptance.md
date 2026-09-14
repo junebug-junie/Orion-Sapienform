@@ -77,9 +77,12 @@ The [admission ADR](durable-resource-admission.md) records repository discovery,
 ownership, conservative estimated-start inputs, operator APIs and admission
 flags. The [capacity ADR](durable-gateway-capacity.md) adds the required request
 permit migration and consumer-first activation sequence. Both migrations are
-additive and operator-applied. Keep widening off until actual lane capabilities
-and compatibility have been audited. No activation or deployment is performed
-by this patch, and production acceptance remains **UNVERIFIED**.
+additive and operator-applied. Widening may be enabled before an alternative is
+approved; with an empty lane policy it keeps only the preferred lane eligible.
+The implementation patch performed no activation or deployment. The checked-in
+operator templates now select this path, but production acceptance remains
+**UNVERIFIED** until migrations, ordered restarts and the live artifact smoke
+have completed.
 
 The repository's existing Graph API and Hub/governor/FCC primary execution path
 are retained: replacing them with a new Functional API workflow or forcing FCC

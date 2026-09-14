@@ -223,44 +223,51 @@ Hub's consumer. Tokens are per-request/process, never global environment or mode
 content. The new HTTP control endpoints share the existing trusted internal
 network boundary and do not add public authentication.
 
-## Activation and rollback (not performed)
+## Activation and rollback
 
-All new behavior flags default off. No production configuration, database or
-deployment was changed. Relevant defaults:
+The checked-in operator templates now select the admitted Curiosity path. Code
+and compose fallbacks remain false when a deployment supplies no env contract;
+`DURABLE_RUNS_ADMISSION_SHADOW` also remains false because shadow mode does not
+execute admitted work. Relevant operator-template values:
 
 | Service | Settings |
 | --- | --- |
-| Runner | `DURABLE_RUNS_ADMISSION_ENABLED=false`, `DURABLE_RUNS_ADMISSION_SHADOW=false` |
-| Runner policy | `DURABLE_RUNS_WIDENING_ENABLED=false`, `DURABLE_RUNS_WIDENING_AFTER_SEC=1200`, `DURABLE_RUNS_WIDENING_HYSTERESIS_SEC=120`, `DURABLE_RUNS_LANE_POLICY_JSON={}` |
+| Runner | `DURABLE_RUNS_ADMISSION_ENABLED=true`, `DURABLE_RUNS_CAPACITY_ENABLED=true`, `DURABLE_RUNS_ADMISSION_SHADOW=false` |
+| Runner policy | `DURABLE_RUNS_WIDENING_ENABLED=true`, `DURABLE_RUNS_WIDENING_AFTER_SEC=1200`, `DURABLE_RUNS_WIDENING_HYSTERESIS_SEC=120`, `DURABLE_RUNS_LANE_POLICY_JSON={}` |
 | Runner timing | tick 5s, lease 90s, heartbeat 15s, retry attempts 3/base 30s/cap 300s |
 | Runner discovery | `DURABLE_RUNS_GATEWAY_URL=http://llm-gateway:8210` |
-| Orch | `CORTEX_DURABLE_ADMISSION_ENABLED=false`, receipt timeout 10s |
-| Hub | `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=false`, lease validator `http://127.0.0.1:8124/leases/validate` |
-| Gateway | `LLM_GATEWAY_LEASE_VALIDATION_ENABLED=false`, validator `http://durable-runs:8121/leases/validate`, timeout 2s, interval 5s |
+| Orch | `CORTEX_DURABLE_ADMISSION_ENABLED=true`, receipt timeout 10s |
+| Hub | `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true`, lease validator `http://127.0.0.1:8124/leases/validate` |
+| Gateway | `LLM_GATEWAY_CAPACITY_ENABLED=true`, `LLM_GATEWAY_LEASE_VALIDATION_ENABLED=true`, validator `http://durable-runs:8121/leases/validate`, timeout 2s, interval 5s |
 
-1. Apply the additive manual admission migration to the checkpoint database.
-   Retain LangGraph's existing saver setup/migrations. Back up as usual.
-2. Install consumers first: Gateway, governor, Exec and Hub with flags still off.
+Before restarting with those values, apply the additive manual admission
+migration to the checkpoint database, followed by the Gateway capacity migration.
+The runner fails startup rather than silently operating without either contract.
+The remaining consumer-first order is:
+
+1. Apply both migrations and retain LangGraph's existing saver setup/migrations.
+   Back up as usual.
+2. On a fresh rollout, install consumers first: Gateway, Thought, governor, Exec
+   and Hub with explicit false overrides until the authority is ready.
    Admitted FCC requests use existing `HARNESS_LLM_GATEWAY_URL` directly, with the
    scoped lease header, avoiding an unverified external proxy stripping the token.
    Legacy FCC requests keep their current proxy and authentication path.
-3. Enable the runner's admission and shadow flags. Submit dedicated shadow
+3. For a separate dry run, temporarily enable runner shadow and submit dedicated
    requests through `/runs`; inspect would-be decisions. Shadow never invokes
    the graph's cognition nodes, takes a lease or alters legacy routing. It is
    not a duplicated tap of live cognition. Cancel shadow fixtures before rollout.
-4. Enable Gateway validation, disable runner shadow, and verify `/routes`, `/slots`
-   and authority connectivity. Enable Orch admission, then Hub admission with
-   existing `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=true`. Start only this workflow.
+4. Restore runner shadow to false and verify `/routes`, `/slots` and authority
+   connectivity. Restart every Gateway replica, Thought, governor and Exec before
+   Orch and Hub. Start only the selected Curiosity workflow.
 5. Verify durable receipt, pending checkpoint, grant, fenced Gateway request,
    actual turn artifact and terminal release on the real rail. Only then declare
-   production verified. Enable widening after auditing compatibility declarations.
+   production verified. Approve alternative-lane policy only after auditing its
+   capability and compatibility declarations.
 
 Use `scripts/safe_docker_build.sh <service> up -d --build` from an isolated
 worktree for each affected service when rollout is authorized. Bus URLs remain
 `redis://100.92.216.81:6379/0`; container service names are not Redis addresses.
-Worktree `.env` files were synchronized with changed examples and remain ignored.
-The repository sync script resolves the primary checkout, so its primary run
-was dry-run only to honor the explicit no-production-config instruction.
+Local `.env` files must be synchronized with changed examples and remain ignored.
 
 To disable, stop new Hub admission submissions first, pause/cancel or drain
 existing admitted runs while the runner/validator are still available, then

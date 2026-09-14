@@ -2,9 +2,10 @@
 
 ## Evidence and next slice (2026-09-13)
 
-PRs #2205 and #2206 are merged and redeployed. A read-only check of the live
-runner reports healthy, two active legacy runs, and admission disabled. All
-admission flags remain false; this patch does not activate production cognition.
+PRs #2205 and #2206 are merged and redeployed. A read-only check at implementation
+time found the runner healthy, two active legacy runs, and admission disabled.
+That implementation patch did not activate production cognition. The later
+operator-template activation is documented below.
 
 `app/upstream_admission.py` owns process-local bus request semaphores. Anthropic
 and OpenAI HTTP paths bypass that gate, while the durable broker arbitrates
@@ -49,8 +50,10 @@ escalation after planning must not bypass the permit's resolved backend.
 
 ## Rollout boundary
 
-An additive migration and explicit defaults-off flags gate this change. First
-bring up the capacity authority, then every Gateway replica, then admitted
+An additive migration and explicit flags gate this change. The checked-in
+operator templates now enable the capacity authority and Gateway enforcement;
+code and compose fallbacks remain false without env configuration. Before any
+restart, apply the migration. Then bring up the capacity authority, every Gateway replica, then admitted
 Curiosity. The shared authority covers participating Gateway calls; direct
 backend access and already-running uncancellable upstream work remain outside
 that software guarantee. No production activation or migrations are performed
@@ -65,9 +68,9 @@ it contains no prompts, results, retries or graph position. Capacity mode fails
 startup without its migration. Admission without capacity mode continues using
 the original schema only.
 
-`DURABLE_RUNS_CAPACITY_ENABLED=false` gates the authority independently of
-`DURABLE_RUNS_ADMISSION_ENABLED`. Gateway opt-in is
-`LLM_GATEWAY_CAPACITY_ENABLED=false`, with
+`DURABLE_RUNS_CAPACITY_ENABLED=true` enables the authority independently of
+`DURABLE_RUNS_ADMISSION_ENABLED`. The operator template also sets
+`LLM_GATEWAY_CAPACITY_ENABLED=true`, with
 `LLM_GATEWAY_CAPACITY_URL=http://durable-runs:8121/capacity`.
 
 | Internal endpoint | Request / result |
@@ -131,7 +134,8 @@ upstream `/slots` remains a conservative occupancy check for durable grants.
 
 Roll out the migration and runner authority first, then all Gateway replicas with
 capacity enforcement, then updated Thought/Hub/governor/Exec consumers, then
-admitted Curiosity. Keep widening off until compatibility is audited. Before
+admitted Curiosity. Approve an alternative-lane policy only after compatibility
+is audited; an empty policy keeps widening on the preferred lane. Before
 disabling the authority, drain/pause admitted work and disable Gateway capacity
 enforcement. Retain additive SQL tables for history. The production
 Curiosity-to-model scenario remains **UNVERIFIED** until activation is performed.

@@ -526,8 +526,8 @@ curl http://localhost:8210/health
 ```
 ## Optional durable resource leases
 
-`LLM_GATEWAY_LEASE_VALIDATION_ENABLED=false` preserves legacy traffic. When
-enabled, requests carrying a typed `resource_lease` (bus) or the bounded
+`LLM_GATEWAY_LEASE_VALIDATION_ENABLED=true` is the operator-template default.
+Requests carrying a typed `resource_lease` (bus) or the bounded
 `X-Orion-Resource-Lease` header (Anthropic HTTP) must validate against
 `LLM_GATEWAY_LEASE_VALIDATION_URL` (default
 `http://durable-runs:8121/leases/validate`). Checks occur before dispatch,
@@ -548,8 +548,8 @@ See [resource admission ownership and rollout](../../docs/architecture/durable-r
 
 ## Shared request capacity
 
-`LLM_GATEWAY_CAPACITY_ENABLED=false` is the rollout default. Enabling it makes
-bus chat, Anthropic Messages and OpenAI chat completions acquire a Postgres-backed
+`LLM_GATEWAY_CAPACITY_ENABLED=true` is the operator-template default. Bus chat,
+Anthropic Messages and OpenAI chat completions acquire a Postgres-backed
 request permit through `LLM_GATEWAY_CAPACITY_URL` (default
 `http://durable-runs:8121/capacity`). This includes requests without durable
 leases: foreground calls can no longer enter a backend held exclusively by a

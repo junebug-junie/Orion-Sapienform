@@ -310,21 +310,27 @@ def _add_plain(facts: set[str], value: str | None) -> None:
         facts.add(value)
 
 
-def grounded_signal_names(tension_reason: Any | None) -> frozenset[str]:
+def grounded_signal_names(
+    tension_reason: Any | None,
+    *,
+    context_texts: Iterable[str] = (),
+) -> frozenset[str]:
     """The exhaustive list of specific technical/telemetry claims Orion is
     allowed to assert as current fact THIS tick -- the small subset of
     `known_real_signal_names()` that is actually true right now, not merely
     real somewhere.
 
-    Deliberately narrow: reads only what `TensionTriggerReason` (PR #2149,
+    Deliberately narrow: reads what `TensionTriggerReason` (PR #2149,
     `scripts.tension_outreach_trigger`) already carries as a real, per-tick
     fact -- `target_id`, and the `sustained_load_pressure_channel`/
     `_node_id` identity pair, gated on `sustained_load_pressure > 0.0`
     exactly the way `build_outreach_prompt` itself already gates naming
-    them. `tension_reason=None` (no real trigger fired this tick, or a
-    forced debug trigger) grounds nothing -- an empty tick licenses no
-    technical claims, which is the exact gap the 2026-09-08 incident fell
-    through.
+    them. Also unions compound registry names that appear in this tick's
+    talkable content (`context_texts`: open-prior previews, curiosity
+    evidence summaries) -- material handed to generation as real THIS tick,
+    so a prior-alone fire can name `node:athena` when the prior itself does
+    without getting blocked as fabrication. `tension_reason=None` with empty
+    context still grounds nothing.
 
     Does NOT include a live `harness_closure` prediction-error reading.
     Checked live 2026-09-08: no such reading reaches Hub today.
@@ -335,17 +341,32 @@ def grounded_signal_names(tension_reason: Any | None) -> frozenset[str]:
     follow-up, not solved in this patch (see this patch's PR report).
     """
     facts: set[str] = set()
-    if tension_reason is None:
-        return frozenset()
+    if tension_reason is not None:
+        _add_node_identity(facts, getattr(tension_reason, "target_id", None))
 
-    _add_node_identity(facts, getattr(tension_reason, "target_id", None))
+        sustained_load_pressure = float(
+            getattr(tension_reason, "sustained_load_pressure", 0.0) or 0.0
+        )
+        if sustained_load_pressure > 0.0:
+            _add_plain(facts, getattr(tension_reason, "sustained_load_pressure_channel", None))
+            _add_node_identity(
+                facts, getattr(tension_reason, "sustained_load_pressure_node_id", None)
+            )
 
-    sustained_load_pressure = float(
-        getattr(tension_reason, "sustained_load_pressure", 0.0) or 0.0
-    )
-    if sustained_load_pressure > 0.0:
-        _add_plain(facts, getattr(tension_reason, "sustained_load_pressure_channel", None))
-        _add_node_identity(facts, getattr(tension_reason, "sustained_load_pressure_node_id", None))
+    blobs = [str(b) for b in context_texts if b]
+    if blobs:
+        known = known_real_signal_names()
+        for blob in blobs:
+            for token in _extract_candidate_tokens(blob):
+                if "_" not in token and ":" not in token:
+                    continue
+                key = token.lower()
+                if key in known:
+                    facts.add(key)
+                    if key.startswith("node:") and len(key) > 5:
+                        facts.add(key.split(":", 1)[1])
+                    elif f"node:{key}" in known:
+                        facts.add(f"node:{key}")
 
     return frozenset(facts)
 

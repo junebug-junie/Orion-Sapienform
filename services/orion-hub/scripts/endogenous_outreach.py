@@ -1314,13 +1314,17 @@ class EndogenousOutreach:
             "last_result": dict(self._last_result),
         }
 
-    def _active_session_id(self) -> str:
-        """Session to persist into: the newest connection that has one."""
+    def live_session_id(self) -> str | None:
+        """Newest connected socket that has a session_id. None if none — no fallback."""
         for entry in reversed(list(self._connections.values())):
             sid = entry.get("session_id")
             if sid:
                 return str(sid)
-        return self.fallback_session_id
+        return None
+
+    def _active_session_id(self) -> str:
+        """Session to persist into: the newest connection that has one."""
+        return self.live_session_id() or self.fallback_session_id
 
     async def _should_roll(self) -> bool:
         """Real trigger check (2026-08-16) -- see module docstring.

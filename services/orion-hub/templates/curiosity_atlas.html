@@ -341,6 +341,17 @@ tr:last-child td { border-bottom: none; }
   </section>
 
   <section>
+    <h2>Contractor briefs</h2>
+    <p class="section-note">
+      Peer answers to Orion's <span class="mono">:HelpRequest</span> nodes —
+      including <span class="mono">refused_budget</span>. Read from
+      <span class="mono">:PeerBrief</span>; empty when none exist or the label
+      is not yet present.
+    </p>
+    <div class="card table-wrap"><table id="peer-briefs-table"></table></div>
+  </section>
+
+  <section>
     <h2>Confidence, before and after</h2>
     <p class="section-note" id="traj-note"></p>
     <div class="multiples" id="trajectories"></div>
@@ -772,6 +783,42 @@ function renderPriors(d) {
     </tr>`).join("") : `<tr><td colspan="6" class="dim">No priors.</td></tr>`}</tbody>`;
 }
 
+/* --- contractor peer briefs -------------------------------------------- */
+function clipSummary(s, n) {
+  const t = String(s || "").trim();
+  if (!t) return "—";
+  return t.length <= n ? t : t.slice(0, n - 1) + "…";
+}
+
+function renderPeerBriefs(d) {
+  const el = $("peer-briefs-table");
+  if (!el) return;
+  if (d.available === false) {
+    el.innerHTML = `<tbody><tr><td class="dim">Atlas unavailable.</td></tr></tbody>`;
+    return;
+  }
+  const briefs = d.peer_briefs || [];
+  el.innerHTML = `
+    <thead><tr>
+      <th>Status</th><th>Peer</th><th>Summary</th><th>Run</th><th>Help</th>
+    </tr></thead>
+    <tbody>${briefs.length ? briefs.map((b) => {
+      const refused = b.status === "refused_budget";
+      const summary = refused
+        ? (b.refusal_reason
+            ? `refused: ${clipSummary(b.refusal_reason, 120)}`
+            : "refused_budget")
+        : clipSummary(b.summary, 160);
+      return `<tr>
+      <td><span class="mono">${esc(b.status || "—")}</span></td>
+      <td>${esc(b.peer || "—")}</td>
+      <td>${esc(summary)}</td>
+      <td class="mono">${esc(b.run_id || "—")}</td>
+      <td class="mono">${esc(b.help_id || "—")}</td>
+    </tr>`;
+    }).join("") : `<tr><td colspan="5" class="dim">No contractor briefs yet.</td></tr>`}</tbody>`;
+}
+
 /* --- load --------------------------------------------------------------- */
 async function load() {
   try {
@@ -779,6 +826,7 @@ async function load() {
     const d = await res.json();
     renderBanners(d);
     renderTiles(d);
+    renderPeerBriefs(d);
     renderTrajectories(d);
     renderGrowth(d);
     renderSelf(d);

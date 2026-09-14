@@ -85,6 +85,14 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .endogenous_outreach import in_quiet_hours
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
+from orion.curiosity.peer_briefs import (
+    REFUSED_OR_FAILED_RECENT_CYPHER,
+    UNUSED_OK_BRIEFS_CYPHER,
+    brief_ids_for_consume,
+    list_unused_ok_briefs_from_rows,
+    publish_help_requests_for_run,
+    publish_peer_briefs_consumed,
+)
 from orion.curiosity.self_inquiry import (
     LEDGER_SQL_TEMPLATE,
     LEDGER_TS_COLUMNS,
@@ -490,6 +498,8 @@ class CuriosityInvestigation:
         lease_validation_url: str = "http://127.0.0.1:8124/leases/validate",
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
+        # --- contractor peer soft-nudge ------------------------------------
+        contractor_peer_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -586,6 +596,12 @@ class CuriosityInvestigation:
         self.max_hops = int(max_hops)
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
+        self.contractor_peer_enabled = bool(contractor_peer_enabled)
+        # Per-run dedupe: durable admission completes via `_handle_run_state`,
+        # while non-durable / dispatch-fallback journals in-process. Both call
+        # `_enqueue_help_requests_after_run`; a run that hits both must not
+        # double-publish the same HelpRequest envelopes.
+        self._help_enqueued_runs: set[str] = set()
         self._outreach_provider = outreach_provider
         self._step_relay_provider = step_relay_provider
 
@@ -803,6 +819,35 @@ class CuriosityInvestigation:
             return WorldviewSnapshot(
                 unavailable_reason=f"{type(exc).__name__}: {str(exc)[:160]}"
             )
+
+    async def _read_peer_briefs_for_nudge(self) -> tuple:
+        """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
+
+        Combines ok + refused/failed rows so `format_soft_nudge` can show both
+        "peer looked" and "could not hire". Empty on any graph fault — silence
+        over a false peer section.
+        """
+        if self._reader is None:
+            return ()
+        reader = self._reader
+
+        def _read() -> tuple:
+            rows: list[dict[str, Any]] = []
+            try:
+                rows.extend(reader.query(UNUSED_OK_BRIEFS_CYPHER))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_peer_briefs_ok_read_failed err=%s", exc)
+            try:
+                rows.extend(reader.query(REFUSED_OR_FAILED_RECENT_CYPHER))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_peer_briefs_refused_read_failed err=%s", exc)
+            return tuple(list_unused_ok_briefs_from_rows(rows))
+
+        try:
+            return await asyncio.to_thread(_read)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_peer_briefs_read_failed err=%s", exc)
+            return ()
 
     async def _read_turn_result(
         self, run_id: str
@@ -1317,6 +1362,9 @@ class CuriosityInvestigation:
             correlation_id,
         )
 
+        peer_briefs = ()
+        if self.contractor_peer_enabled:
+            peer_briefs = await self._read_peer_briefs_for_nudge()
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1331,7 +1379,15 @@ class CuriosityInvestigation:
             # disclosed to Orion and the write sections are dropped. Collapsing
             # them here would silence the disclosure -- see build_kickoff_prompt.
             graph_enabled=self.graph_enabled,
+            contractor_peer_enabled=self.contractor_peer_enabled,
+            peer_briefs=peer_briefs,
         )
+        if peer_briefs:
+            # Hub is RO on worldview; peer service MERGEs consumed=true.
+            await publish_peer_briefs_consumed(
+                bus=self._bus,
+                brief_ids=brief_ids_for_consume(peer_briefs),
+            )
         if self.kickoff_via_cortex:
             try:
                 dispatched = await self._dispatch_durable_run(
@@ -1409,6 +1465,7 @@ class CuriosityInvestigation:
             graph_footprint=footprint,
             hop_notes=hops,
         )
+        await self._enqueue_help_requests_after_run(run_id)
         # `evidence=` is OPERATOR TELEMETRY and stays out of the journal on
         # purpose. The journal is Orion's own written result; an orphan-rate
         # statistic there would be a health check wearing Orion's voice, and
@@ -1646,6 +1703,9 @@ class CuriosityInvestigation:
             correlation_id,
         )
 
+        peer_briefs = ()
+        if self.contractor_peer_enabled:
+            peer_briefs = await self._read_peer_briefs_for_nudge()
         prompt = build_self_inquiry_prompt(
             view=view,
             latest=latest,
@@ -1660,7 +1720,14 @@ class CuriosityInvestigation:
             max_hops=self.max_hops,
             stale_after=self.stale_prior_tests,
             graph_enabled=self.graph_enabled,
+            contractor_peer_enabled=self.contractor_peer_enabled,
+            peer_briefs=peer_briefs,
         )
+        if peer_briefs:
+            await publish_peer_briefs_consumed(
+                bus=self._bus,
+                brief_ids=brief_ids_for_consume(peer_briefs),
+            )
         material = StudyMaterial(generated_at=now)
         if self.kickoff_via_cortex:
             try:
@@ -1728,6 +1795,7 @@ class CuriosityInvestigation:
             hop_notes=hops,
             line=LINE_SELF_INQUIRY,
         )
+        await self._enqueue_help_requests_after_run(run_id)
         await self._mirror_self_definition(definition, run_id=run_id, correlation_id=correlation_id)
         logger.info(
             "curiosity_self_inquiry_journaled run=%s chars=%s wrote=%s evidence=%s hops=%s "
@@ -2289,6 +2357,28 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001
             logger.exception("curiosity_run_state_loop_failed")
 
+    async def _enqueue_help_requests_after_run(self, run_id: str) -> int:
+        """Enqueue HelpRequests for a finished run at most once.
+
+        Live default is durable admission: Hub returns after dispatch and the
+        in-process journal path never runs, so completion must enqueue from
+        `_handle_run_state`. Non-durable / fallback still enqueues after the
+        in-process journal. Deduped by `run_id` so a late completed state after
+        fallback cannot double-publish.
+        """
+        if not self.contractor_peer_enabled:
+            return 0
+        if run_id in self._help_enqueued_runs:
+            return 0
+        self._help_enqueued_runs.add(run_id)
+        return await publish_help_requests_for_run(
+            enabled=True,
+            run_id=run_id,
+            reader=self._reader,
+            bus=self._bus,
+            source_ref=self._source_ref,
+        )
+
     async def _handle_run_state(self, msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -2303,6 +2393,9 @@ class CuriosityInvestigation:
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}
+        # Same completion hook as SelfDefinition / outreach: durable admission
+        # never reaches the in-process journal enqueue.
+        await self._enqueue_help_requests_after_run(state.run_id)
         if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
             # The runner read the run's `:SelfDefinition` and carried it here;
             # Hub owns the mirror because Hub has the memory pool for the

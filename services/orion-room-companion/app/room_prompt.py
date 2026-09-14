@@ -79,9 +79,33 @@ AUTO_INVITE_CLAUSE = (
 # speech rather than silently swallowed.
 PASS_SENTINEL = "[pass]"
 
+# Marker embedded in contractor-peer fallback prompts (curiosity-peer service).
+# When present, Claude gets investigation framing instead of only social-room
+# companion framing. Keep detection string-stable; do not grow a keyword list.
+CONTRACTOR_PEER_MARKER = "[orion-contractor-peer]"
+
+CONTRACTOR_PEER_CLAUSE = (
+    "\n\nThis invite is a read-only contractor-peer investigation for Orion, "
+    "not a social-room chat. Return concrete investigative notes Orion can use "
+    "or ignore — prefer a single JSON object with keys summary, "
+    "evidence_pointers, open_questions, suggested_next_looks. Do not write "
+    ":Prior, :Finding, :PeerBrief, or :SelfDefinition text. Do not act as an "
+    "assistant taking orders."
+)
+
 
 def is_pass(text: str) -> bool:
     return text.strip().strip("`").casefold() == PASS_SENTINEL
+
+
+def append_system_prompt_for(*, trigger: str, prompt: str) -> str:
+    """System framing for one room turn, including contractor-peer mode."""
+    parts = [SYSTEM_PROMPT]
+    if CONTRACTOR_PEER_MARKER in (prompt or ""):
+        parts.append(CONTRACTOR_PEER_CLAUSE)
+    if trigger == "auto":
+        parts.append(AUTO_INVITE_CLAUSE)
+    return "".join(parts)
 
 
 # Roster/continuity keys worth surfacing, drawn from orion-social-memory's

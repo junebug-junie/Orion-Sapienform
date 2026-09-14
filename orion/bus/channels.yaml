@@ -3074,6 +3074,22 @@ channels:
     since: "2026-09-06"
     description: "Missing from the initial patch (2026-09-06): Hub's ORION_BUS_ENFORCE_CATALOG=true made every reply publish here raise ValueError, so no harness turn could ever complete -- the runner retried the same run for a full RPC timeout, forever, wasting a real generation each cycle. See orion:curiosity:turn:request above."
 
+  - name: "orion:curiosity:help:request"
+    kind: "event"
+    schema_id: "HelpRequestV1"
+    message_kind: "curiosity.help.request.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-curiosity-peer", "orion-sql-writer"]
+    description: "Orion-authored HelpRequest observed after a curiosity/self-inquiry run; enqueues a read-only contractor peer job. docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md"
+
+  - name: "orion:curiosity:peer:brief"
+    kind: "event"
+    schema_id: "PeerBriefV1"
+    message_kind: "curiosity.peer.brief.v1"
+    producer_services: ["orion-curiosity-peer", "orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-hub"]
+    description: "PeerBrief work product from Cursor Auto or Claude room fallback; dual-written to orion_worldview + Postgres. Hub consumes for kickoff soft-nudge / Atlas."
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

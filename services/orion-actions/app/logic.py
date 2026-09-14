@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 
-from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.journaler import JournalTriggerV1, build_compose_request
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.collapse_mirror_chat_reply import (
@@ -152,22 +152,6 @@ def should_trigger(entry: CollapseMirrorEntryV2) -> bool:
 
 def dedupe_key_for(entry: CollapseMirrorEntryV2, env: BaseEnvelope) -> str:
     return str(entry.event_id or "").strip() or str(entry.id or "").strip() or str(env.correlation_id)
-
-
-def collapse_to_fragment(entry: CollapseMirrorEntryV2) -> str:
-    parts: list[str] = [
-        f"Trigger: {entry.trigger}",
-        f"Summary: {entry.summary}",
-    ]
-    if entry.what_changed_summary:
-        parts.append(f"What changed: {entry.what_changed_summary}")
-    if entry.observer_state:
-        parts.append("Observer state: " + "; ".join(entry.observer_state))
-    if entry.emergent_entity:
-        parts.append(f"Emergent entity: {entry.emergent_entity}")
-    if entry.mantra:
-        parts.append(f"Mantra: {entry.mantra}")
-    return "\n".join([p for p in parts if p and str(p).strip()])
 
 
 def collapse_to_markdown(entry: CollapseMirrorEntryV2) -> str:

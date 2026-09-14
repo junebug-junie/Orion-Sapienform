@@ -93,7 +93,7 @@ Juniper submits Collapse Mirror
 | Duplicate `event_id` | Actions dedupe skips (unchanged) |
 | No connected Hub client with `session_id` | Hub skips; audit `skipped:no_live_session`; optional quiet notify; no You, no Orion text |
 | Unified turn deferred / degraded / empty / timeout / error | No fabricated reply. Audit failure. You bubble may already be present — leave it. Optional system/notify note |
-| Hub down at publish time | Bus redelivery + Hub idempotency on `event_id` so retries do not double You bubbles |
+| Hub down at publish time | Redis pub/sub has no redelivery. Actions audits the dispatch without delivery proof. If Hub later processes the same in-process message twice, Hub idempotency on `event_id` still prevents a double You bubble |
 | Multiple Hub tabs / sessions | Newest connected session with a `session_id` (same rule as outreach). No multi-session fanout |
 
 ## Non-goals

@@ -603,8 +603,8 @@ class Settings(BaseSettings):
     NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
     NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
-    # Actions → Hub: Juniper Collapse Mirror live chat-lane reply (Task 3 handler;
-    # main.py / app.js subscribe+render wired in Task 4).
+    # Actions → Hub: when Juniper writes a Collapse Mirror, Hub injects it as a
+    # You bubble in the live chat session and runs a chat-lane Orion reply.
     COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL: str = Field(
         default="orion:hub:collapse_mirror:chat_reply",
         alias="COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL",

@@ -89,12 +89,9 @@ class CollapseMirrorChatReplyHandler:
                             break
                         try:
                             decoded = self._bus.codec.decode(msg.get("data"))
-                            env = (
-                                BaseEnvelope.model_validate(decoded)
-                                if not isinstance(decoded, BaseEnvelope)
-                                else decoded
-                            )
-                            await self.handle(env)
+                            if not decoded.ok:
+                                continue
+                            await self.handle(decoded.envelope)
                         except Exception:  # noqa: BLE001
                             logger.exception("collapse_mirror_chat_reply_handle_failed")
             except asyncio.CancelledError:
@@ -173,7 +170,10 @@ class CollapseMirrorChatReplyHandler:
             session_id=session_id,
             correlation_id=correlation_id,
             model=debug.get("fcc_model_label") if isinstance(debug, dict) else None,
-            source_tag=SOURCE_TAG,
+            tags=[SOURCE_TAG],
+            unsolicited=False,
+            notification_title="Collapse Mirror reply",
+            notification_type=SOURCE_TAG,
         )
         return {
             "status": "delivered",
@@ -229,6 +229,7 @@ class CollapseMirrorChatReplyHandler:
     ) -> tuple[str, dict]:
         # Lazy import matches endogenous_outreach._attempt_unified_turn so tests
         # can patch orion.hub.turn_orchestrator.execute_unified_turn.
+        from orion.cognition.cortex_payload_extract import looks_like_error_text
         from orion.hub.turn_orchestrator import execute_unified_turn
 
         request_payload: dict[str, Any] = {
@@ -251,10 +252,28 @@ class CollapseMirrorChatReplyHandler:
             ),
             timeout=self._turn_timeout_sec,
         )
-        final = frames[-1] if frames else {}
-        text = str((final or {}).get("llm_response") or "").strip()
+        final = next(
+            (f for f in frames if isinstance(f, dict) and f.get("type") == "final"),
+            None,
+        )
+        if final is None:
+            other = frames[-1] if frames else {}
+            other_type = other.get("type") if isinstance(other, dict) else None
+            return "", {"error": "no_final_frame", "frame_type": other_type}
+
+        text = str(final.get("llm_response") or "").strip()
+        if final.get("context_overflow"):
+            return "", {"error": "context_overflow"}
+        if looks_like_error_text(text):
+            logger.warning(
+                "collapse_mirror_chat_reply_error_shaped_text corr=%s text=%r",
+                correlation_id,
+                text[:200],
+            )
+            return "", {"error": "error_shaped_text"}
+
         debug = {
-            "fcc_model_label": (final or {}).get("fcc_model_label"),
+            "fcc_model_label": final.get("fcc_model_label"),
         }
         return text, debug
 

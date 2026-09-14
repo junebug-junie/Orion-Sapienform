@@ -1,7 +1,7 @@
 # Collapse Mirror → live chat-lane reply
 
 **Date:** 2026-09-14  
-**Status:** approved design (implementation not started)  
+**Status:** implemented  
 **Owner seam:** Juniper Collapse Mirror reply delivery
 
 ## Arsonist summary

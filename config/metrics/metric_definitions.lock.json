@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 654,
+  "metric_count": 655,
   "_last_change": {
-    "base": "merge base ad789fe0c (origin/main)",
-    "change_count": 0,
+    "base": "merge base 5147a3fc8 (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-actions/orion:hub:collapse_mirror:chat_reply"
     ]
   },
   "definitions": {
@@ -337,6 +337,17 @@
         "orion-cortex-orch"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:hub:collapse_mirror:chat_reply": {
+      "schema_id": "CollapseMirrorChatReplyRequestV1",
+      "all_producers": [
+        "orion-actions"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-actions/orion:journal:write": {

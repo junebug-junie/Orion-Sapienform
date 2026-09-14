@@ -45,7 +45,7 @@ Juniper wants Orion’s reply to a causally dense (and any Juniper) Collapse Mir
 | Generation lane | Force **chat lane** only (`fcc_model_label` unset). No agent/FCC-first attempt |
 | Session | **Live Hub session only** (newest connected websocket with a `session_id`). No fixed `collapse_mirror` session fallback |
 | Old metacog+Notify reply | Retire as the live Juniper reply path in the same patch |
-| Context reuse | Mirror text = user message. Stance/recall come from unified turn. Do **not** re-run light `collapse_mirror.v1` + custom introspect prompt unless a later gap proves need |
+| Context reuse | Mirror text = user message. Stance/recall come from unified turn. Do **not** re-run light `collapse_mirror.v1` + custom introspect prompt unless a later gap proves need. **Amendment (live 2026-09-14):** Hub prefixes the *turn* user_message (not the You bubble / history user row) with a deterministic arrival frame so Thought/harness know the mirror already landed — raw markdown alone was misread as a preview ("Send it through when you're ready") |
 | Feature flag | **None.** Ships live on merge. Rollback = revert |
 | No live session | Fail closed: skip generation; audit `skipped:no_live_session`; optional quiet notify that a reply was held back. No You bubble |
 

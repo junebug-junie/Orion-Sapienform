@@ -24,11 +24,34 @@ logger = logging.getLogger("orion-hub.collapse_mirror_chat_reply")
 YOU_KIND = "collapse_mirror_you"
 STATUS_KIND = "collapse_mirror_status"
 SOURCE_TAG = "collapse_mirror_reply"
+# Live 2026-09-14: Thought + harness saw raw mirror markdown (trigger/summary
+# about "testing this feature") with no delivery semantics. Orion answered as
+# if Juniper were *about* to send a mirror ("Send it through when you're
+# ready") even though the You bubble had already landed. This prefix is
+# attached only to the unified-turn user_message (not the You bubble / history
+# user row) and only on this known source path — not content sniffing.
+TURN_ARRIVAL_PREFIX = (
+    "Juniper just submitted this Collapse Mirror into our live chat. "
+    "The document below is the mirror itself — already received and already "
+    "shown as their You bubble. Respond as the mind being mirrored. "
+    "Do not ask them to send it; do not treat this as a preview or a wiring request.\n\n"
+)
 # Live 2026-09-14: Thought alone took ~100s on a real Juniper mirror; harness
 # then needed ~6 more minutes. 120s cancelled mid-turn (You written, no Orion)
 # while the governor kept running orphaned. Match a full chat-lane wall clock —
 # Thought RPC budget is 400s; leave room for harness after that.
 DEFAULT_TURN_TIMEOUT_SEC = 900.0
+
+
+def frame_collapse_mirror_turn_message(mirror_text: str) -> str:
+    """Frame mirror markdown for Thought/harness without changing the You bubble."""
+    text = str(mirror_text or "").strip()
+    if not text:
+        return text
+    marker = "already received and already shown as their You bubble"
+    if marker in text[:400]:
+        return text
+    return TURN_ARRIVAL_PREFIX + text
 
 
 class CollapseMirrorChatReplyHandler:
@@ -385,7 +408,7 @@ class CollapseMirrorChatReplyHandler:
                     bus=bus,
                     correlation_id=correlation_id,
                     session_id=session_id,
-                    user_message=user_message,
+                    user_message=frame_collapse_mirror_turn_message(user_message),
                     payload=request_payload,
                     continuity_messages=None,
                     harness_rpc_bus=getattr(self._outreach, "_harness_rpc_bus", None) or bus,

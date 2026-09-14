@@ -2692,11 +2692,12 @@ See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-
 
 ## Curiosity resource admission
 
-`HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=false` preserves the current kickoff.
-When enabled, it requires `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=true` and includes an
+`HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.
+It requires `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=true` and includes an
 exclusive requirement for the configured `HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE` in both
 investigation and self-inquiry submissions. An uncertain receipt never triggers
 an unleased direct fallback or a budget refund: inspect/retry the same run ID.
+Set the flag false to preserve the prior non-admitted durable kickoff.
 
 Hub validates admitted turn fences using `HUB_CURIOSITY_LEASE_VALIDATION_URL`
 (default `http://127.0.0.1:8124/leases/validate`, since Hub uses host networking).

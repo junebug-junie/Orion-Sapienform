@@ -89,9 +89,10 @@ python scripts/bus_harness.py brain "hello world"
 
 ## Resource-admitted Curiosity runs
 
-`context.metadata.durable_run.admission` selects the opt-in resource-admission
-path. Set `CORTEX_DURABLE_ADMISSION_ENABLED=true` only after the durable runner is
-ready. Cortex waits at most `CORTEX_DURABLE_RECEIPT_TIMEOUT_SEC` (10 by default)
+`context.metadata.durable_run.admission` selects the resource-admission path.
+`CORTEX_DURABLE_ADMISSION_ENABLED=true` is the operator-template default and
+requires the migrated durable runner and Gateway authority to be ready first.
+Cortex waits at most `CORTEX_DURABLE_RECEIPT_TIMEOUT_SEC` (10 by default)
 for a matching `durable.run.receipt.v1` confirming committed registration, then
 returns `status=accepted` with the run ID, workflow, resource and durable status
 in `metadata.durable_run`. Resource waiting never holds this RPC open. A missing

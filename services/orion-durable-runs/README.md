@@ -36,15 +36,18 @@ Hub tick (scheduling, material, worldview, prompt)
 - A thread older than `DURABLE_RUNS_MAX_AGE_HOURS` is abandoned (one `abandoned` state
   event), never resumed into a different day's material.
 
-## Deploy order (consumer-first, learned the hard way on 2026-09-06)
+## Deploy order
 
-1. `orion-sql-writer` (new route/table + the `durable_run` value on `AttentionSchemaV1.process`)
-2. this service
-3. `orion-cortex-orch` (dispatch branch)
-4. `orion-hub` with `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=true`
+The operator templates select admitted Curiosity. Before restarting, apply both
+admission migrations named below. Then restart this authority, every LLM Gateway
+replica, Thought, governor, Cortex Exec, Cortex Orch, and Hub, in that order.
+Thought must carry the owning lease into stance execution before Hub submits an
+admitted study; an older Thought can otherwise block a study on its own reservation.
+`orion-sql-writer` must already contain the durable-run state route/table.
 
-`HUB_CURIOSITY_KICKOFF_VIA_CORTEX=false` (the default) keeps Hub's direct path exactly as
-before; this service then receives nothing.
+Set `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=false` to retain the earlier durable
+kickoff without resource admission. To return to Hub's direct in-process path,
+set both that admission flag and `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=false`.
 
 ## Checks
 
@@ -88,12 +91,13 @@ These follow the existing internal unauthenticated service API boundary; keep
 them on the trusted service network. Submission via Cortex remains the normal
 Curiosity entry point. Retry an ambiguous receipt with the same request/run ID.
 
-`DURABLE_RUNS_CAPACITY_ENABLED=false` independently enables the shared Gateway
-request authority at `/capacity`. Apply the additive
+`DURABLE_RUNS_CAPACITY_ENABLED=true` enables the shared Gateway request authority
+at `/capacity` in the operator template. Apply the additive
 `manual_migration_gateway_capacity_v1.sql` first. Its acquire/renew/release APIs
 share the broker's transaction so an ordinary request and a durable lease cannot
 both win the same capacity. Capacity can operate while cognition admission is
-off. See [API, rollout and limits](../../docs/architecture/durable-gateway-capacity.md).
+off. The service intentionally fails startup if an enabled authority lacks its
+tables. See [API, rollout and limits](../../docs/architecture/durable-gateway-capacity.md).
 
 Defaults, lane declarations, shadow mode, activation order, recovery limits,
 metrics provenance and the actual Hub/FCC/Exec execution path are documented in

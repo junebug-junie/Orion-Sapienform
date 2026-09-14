@@ -1,0 +1,38 @@
+name: Curiosity approved material pool by kind
+description: >-
+  Average approved inventory available at kickoff by material kind. This does
+  not claim each kind appeared in the random sample offered to a run.
+tableName: fct_curiosity_material_pool
+metricQuery:
+  exploreName: fct_curiosity_material_pool
+  dimensions:
+    - fct_curiosity_material_pool_material_kind
+  metrics:
+    - fct_curiosity_material_pool_average_available_count
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_material_pool_average_available_count
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_material_pool_material_kind
+      yField:
+        - fct_curiosity_material_pool_average_available_count
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_material_pool_material_kind
+            yRef:
+              field: fct_curiosity_material_pool_average_available_count
+          isFilteredOut: false
+slug: curiosity-material-pool-by-kind
+spaceSlug: orion-analytics
+version: 1

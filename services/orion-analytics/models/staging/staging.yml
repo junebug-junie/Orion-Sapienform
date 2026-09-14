@@ -128,3 +128,138 @@ models:
         description: UTC calendar date derived from event_at.
         tests:
           - not_null
+
+  - name: stg_curiosity_run_transitions
+    description: >-
+      Grain: one row per currently retained durable Curiosity transition.
+      Primary key: transition_id. Event time: event_at. SQL Writer retains
+      these rows for 90 days by default. Raw state detail, correlation IDs,
+      errors, and finding text are removed by the analytics_source security
+      view before dbt can read the row.
+    meta:
+      hidden: true
+    columns:
+      - name: transition_id
+        tests: [not_null, unique]
+      - name: run_id
+        tests: [not_null]
+      - name: workflow
+        tests:
+          - not_null
+          - accepted_values:
+              values: [curiosity.investigate]
+      - name: node
+        tests:
+          - not_null
+          - accepted_values:
+              values: [harness_turn, read_turn_result, publish_attention_row, journal, finish]
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [accepted, queued, waiting_resource, admitted, running, paused, resumed, retrying, completed, failed, cancelled, abandoned]
+      - name: event_at
+        tests: [not_null]
+      - name: event_date
+        tests: [not_null]
+      - name: run_type
+        tests:
+          - accepted_values:
+              values: [investigate, self_inquiry]
+      - name: attempt_count
+        description: Completion-reported generation attempts when present.
+      - name: error_present_flag
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+
+  - name: stg_curiosity_run_journals
+    description: >-
+      Grain: one row per persisted Curiosity journal artifact. The upstream
+      security view parses only the producer-appended final footer, buckets
+      unbounded grounding diagnostics, and never exposes the journal title/body
+      or graph prose.
+    meta:
+      hidden: true
+    columns:
+      - name: journal_id
+        tests: [not_null, unique]
+      - name: run_id
+        tests: [not_null]
+      - name: journaled_at
+        tests: [not_null]
+      - name: journal_date
+        tests: [not_null]
+      - name: run_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: [investigate, self_inquiry]
+      - name: graph_write_status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [wrote_elements, wrote_nothing, unavailable_or_unrecorded]
+
+  - name: stg_curiosity_run_graph_writes
+    description: >-
+      Grain: one row per journal and parsed graph element type. Counts come
+      from the graph footprint recorded by the producer; no node properties,
+      claims, finding text, hop notes, or graph JSON are retained.
+    meta:
+      hidden: true
+    columns:
+      - name: graph_write_id
+        tests: [not_null, unique]
+      - name: journal_id
+        tests: [not_null]
+      - name: run_id
+        tests: [not_null]
+      - name: journaled_at
+        tests: [not_null]
+      - name: journal_date
+        tests: [not_null]
+      - name: run_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: [investigate, self_inquiry]
+      - name: element_type
+        tests: [not_null]
+      - name: element_family
+        tests:
+          - not_null
+          - accepted_values:
+              values: [node, relationship]
+      - name: element_count
+        tests: [not_null]
+
+  - name: stg_curiosity_run_material_pool
+    description: >-
+      Grain: one row per journal and approved material kind present at kickoff.
+      This is available-pool inventory, not the composition of the random
+      sample shown to the run.
+    meta:
+      hidden: true
+    columns:
+      - name: material_pool_id
+        tests: [not_null, unique]
+      - name: journal_id
+        tests: [not_null]
+      - name: run_id
+        tests: [not_null]
+      - name: journaled_at
+        tests: [not_null]
+      - name: journal_date
+        tests: [not_null]
+      - name: run_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: [investigate, self_inquiry]
+      - name: material_kind
+        tests: [not_null]
+      - name: available_count
+        tests: [not_null]

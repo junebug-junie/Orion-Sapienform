@@ -182,6 +182,7 @@ def test_schema_and_role_names_are_fixed_security_policy() -> None:
     assert "ORION_ANALYTICS_READER_USER" not in env_example + profile + compose
     assert "user: orion_analytics_transformer" in profile
     assert "schema: analytics" in profile
+    assert "sslmode: disable" in profile
 
 
 def test_dashboard_references_every_starter_chart() -> None:
@@ -247,3 +248,110 @@ def test_reverie_overview_keeps_text_and_visual_queries_separate() -> None:
         "fct_visual_reverie_chains",
         "fct_visual_reverie_artifacts",
     }
+
+
+def test_curiosity_models_only_read_privacy_reduced_sources() -> None:
+    model_paths = list((ROOT / "models/staging").glob("stg_curiosity*.sql")) + list(
+        (ROOT / "models/marts").glob("fct_curiosity*.sql")
+    )
+    model_text = "\n".join(path.read_text().lower() for path in model_paths)
+    assert "source('curiosity_safe'" in model_text
+    for forbidden in (
+        "journal_entries",
+        "substrate_durable_run_state",
+        "correlation_id",
+        "finding_text",
+        "reach_out_why",
+        "self_definition",
+        "checkpoint",
+        "body",
+        "prompt",
+        "error_text",
+    ):
+        assert forbidden not in model_text
+
+    roles = (ROOT / "scripts/bootstrap_analytics_roles.sql").read_text().lower()
+    assert "with (security_barrier = true)" in roles
+    assert roles.count("reverse(split_part(reverse(rtrim(body") == 3
+    assert "regexp_match(body" not in roles
+    assert "when grounding[1] is not null then 'other'" in roles
+    assert "^((-> )?[a-za-z][a-za-z0-9_]{0,62}) ([0-9]+)$" in roles
+    assert "^([a-z][a-z0-9_]{0,62}) ([0-9]+)$" in roles
+    assert "grant select on all tables in schema analytics_source" in roles
+    assert "grant select on public.journal_entries" not in roles
+    assert "grant select on public.substrate_durable_run_state" not in roles
+    assert "transformer_raw_curiosity_sources_are_denied" in roles
+    assert "reader_curiosity_source_schema_is_denied" in roles
+
+
+def test_curiosity_metrics_keep_run_and_child_grains_separate() -> None:
+    models = _yaml("models/marts/curiosity.yml")["models"]
+    by_name = {model["name"]: model for model in models}
+    assert set(by_name) == {
+        "fct_curiosity_runs",
+        "fct_curiosity_run_transitions",
+        "fct_curiosity_graph_writes",
+        "fct_curiosity_material_pool",
+    }
+    assert by_name["fct_curiosity_runs"]["meta"]["primary_key"] == "run_id"
+    assert by_name["fct_curiosity_run_transitions"]["meta"]["primary_key"] == "transition_id"
+    assert by_name["fct_curiosity_graph_writes"]["meta"]["primary_key"] == "graph_write_id"
+    assert by_name["fct_curiosity_material_pool"]["meta"]["primary_key"] == "material_pool_id"
+    assert all("joins" not in model["meta"] for model in models)
+
+    run = by_name["fct_curiosity_runs"]
+    metrics = {
+        metric_name: metric
+        for column in run["columns"]
+        for metric_name, metric in column.get("meta", {}).get("metrics", {}).items()
+    }
+    assert metrics["observed_run_count"]["type"] == "count_distinct"
+    assert metrics["failed_transition_event_count"]["type"] == "sum"
+    assert "not failed runs" in metrics["failed_transition_event_count"]["description"].lower()
+    assert metrics["graph_write_coverage_rate"]["format"] == "percent"
+    assert "configured timeout" in metrics["average_whole_turn_seconds"]["description"].lower()
+
+
+def test_curiosity_dashboard_references_every_curiosity_chart() -> None:
+    dashboard = _yaml("lightdash/dashboards/curiosity-operations.yml")
+    referenced = {
+        tile["properties"]["chartSlug"]
+        for tile in dashboard["tiles"]
+        if "chartSlug" in tile["properties"]
+    }
+    chart_slugs = {
+        _yaml(str(path.relative_to(ROOT)))["slug"]
+        for path in (ROOT / "lightdash/charts").glob("curiosity-*.yml")
+    }
+    assert referenced == chart_slugs
+    assert len(referenced) == 8
+
+    explore_names = {
+        _yaml(str(path.relative_to(ROOT)))["metricQuery"]["exploreName"]
+        for path in (ROOT / "lightdash/charts").glob("curiosity-*.yml")
+    }
+    assert explore_names == {
+        "fct_curiosity_runs",
+        "fct_curiosity_run_transitions",
+        "fct_curiosity_graph_writes",
+        "fct_curiosity_material_pool",
+    }
+
+    scope = next(
+        tile for tile in dashboard["tiles"] if tile["tileSlug"] == "curiosity-operations-scope"
+    )["properties"]["content"].lower()
+    scope = " ".join(scope.split())
+    assert "not a live process claim" in scope
+    assert "does not invent historical budget-remaining" in scope
+    assert "retained for 90 days by default" in scope
+    assert "journal-only does not mean pre-durable" in scope
+
+
+def test_curiosity_lifecycle_contract_discloses_source_retention() -> None:
+    readme = (ROOT / "README.md").read_text().lower()
+    marts = (ROOT / "models/marts/curiosity.yml").read_text().lower()
+    assert "substrate_durable_run_state_retention_days=0" in readme
+    assert "currently retained evidence" in readme
+    assert "journal-only run may predate durable execution or may simply have" in readme
+    assert "lifecycle evidence is limited to the source's currently retained window" in marts
+    assert "journal-only does not imply a pre-durable run" in marts

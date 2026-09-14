@@ -1,0 +1,38 @@
+name: Curiosity graph writes by element type
+description: >-
+  Nodes and relationships attributed to Curiosity run IDs in producer-recorded
+  graph footprints. Counts show persisted structure, not correctness or value.
+tableName: fct_curiosity_graph_writes
+metricQuery:
+  exploreName: fct_curiosity_graph_writes
+  dimensions:
+    - fct_curiosity_graph_writes_element_type
+  metrics:
+    - fct_curiosity_graph_writes_graph_element_count
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_graph_writes_graph_element_count
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_graph_writes_element_type
+      yField:
+        - fct_curiosity_graph_writes_graph_element_count
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_graph_writes_element_type
+            yRef:
+              field: fct_curiosity_graph_writes_graph_element_count
+          isFilteredOut: false
+slug: curiosity-graph-writes-by-type
+spaceSlug: orion-analytics
+version: 1

@@ -1,0 +1,557 @@
+version: 2
+
+models:
+  - name: fct_curiosity_runs
+    description: >-
+      Grain: one row per Curiosity run ID observed in a durable lifecycle event
+      or persisted journal. Primary key: run_id. Event time: first durable
+      transition when available, otherwise journal time. Writer/owner: dbt from
+      privacy-reduced lifecycle and deterministic journal-footer sources.
+      Lifecycle evidence is limited to the source's currently retained window,
+      90 days by default; journal-only does not imply a pre-durable run.
+      Latest non-terminal means only that the newest persisted lifecycle row is
+      non-terminal; it is not proof that a process is currently executing.
+    meta:
+      label: Curiosity runs
+      group_label: Curiosity
+      primary_key: run_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+    columns:
+      - name: run_id
+        description: Curiosity run identifier shared by lifecycle and journal artifacts.
+        tests: [not_null, unique]
+        meta:
+          dimension:
+            label: Run ID
+          metrics:
+            observed_run_count:
+              type: count_distinct
+              label: Observed Curiosity runs
+              description: Distinct run IDs observed in a durable lifecycle event or Curiosity journal.
+              groups: [Run volume]
+      - name: run_type
+        description: Investigate or self-inquiry, derived from typed completion metadata or the producer-defined journal title.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [investigate, self_inquiry, unknown]
+        meta:
+          dimension:
+            label: Run type
+      - name: workflow
+        description: Durable workflow kind; null when no lifecycle row remains in the retained source window.
+        meta:
+          dimension:
+            label: Durable workflow
+      - name: observation_source
+        description: Whether the run is evidenced by currently retained lifecycle rows, a journal, or both.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [lifecycle_and_journal, lifecycle_only, journal_only]
+        meta:
+          dimension:
+            label: Evidence source
+      - name: event_at
+        description: First retained durable transition time, falling back to journal time when no lifecycle row remains.
+        tests: [not_null]
+        meta:
+          dimension:
+            label: First observed at
+          metrics:
+            minutes_since_last_observed_run:
+              type: number
+              sql: extract(epoch from (current_timestamp - max(${TABLE}.event_at))) / 60.0
+              label: Minutes since last observed run
+              description: Wall-clock minutes since the newest first-observed run timestamp in the selection.
+              round: 1
+              groups: [Run recency]
+      - name: event_date
+        description: UTC date derived from event_at.
+        tests: [not_null]
+        meta:
+          dimension:
+            label: First observed date (UTC)
+      - name: lifecycle_started_at
+        description: First persisted durable transition, null for journal-only runs.
+        meta:
+          dimension:
+            label: Lifecycle started at
+      - name: latest_transition_at
+        description: Newest persisted durable transition timestamp.
+        meta:
+          dimension:
+            label: Latest transition at
+      - name: latest_state_age_minutes
+        description: Wall-clock age of the newest persisted transition; null when no lifecycle row exists.
+        meta:
+          dimension:
+            label: Latest state age (minutes)
+      - name: completed_at
+        description: Newest completed transition timestamp, when recorded.
+        meta:
+          dimension:
+            label: Completed at
+      - name: latest_journaled_at
+        description: Newest matching Curiosity journal timestamp.
+        meta:
+          dimension:
+            label: Journaled at
+      - name: latest_status
+        description: Status on the newest persisted lifecycle transition.
+        meta:
+          dimension:
+            label: Latest recorded status
+      - name: latest_node
+        description: Node named by the newest persisted lifecycle transition.
+        meta:
+          dimension:
+            label: Latest recorded node
+      - name: latest_next_node
+        description: Next node named by the newest persisted lifecycle transition.
+        meta:
+          dimension:
+            label: Next recorded node
+      - name: latest_resumed_from_node
+        description: Resume origin on the newest transition when present.
+        meta:
+          dimension:
+            label: Latest resume origin
+      - name: transition_count
+        description: Currently retained durable lifecycle transitions for this run.
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Recorded transitions
+          metrics:
+            recorded_transition_count:
+              type: sum
+              label: Recorded lifecycle transitions
+              description: Sum of persisted state-transition events across selected runs.
+              groups: [Lifecycle]
+      - name: distinct_nodes_reached
+        description: Distinct durable workflow nodes represented by persisted transitions.
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Distinct nodes reached
+      - name: failed_transition_count
+        description: Persisted failed transition events; failures can later resume.
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Failed transition events
+          metrics:
+            failed_transition_event_count:
+              type: sum
+              label: Failed transition events
+              description: Recorded failed state events, not failed runs; a run can later resume and complete.
+              groups: [Lifecycle]
+      - name: resumed_transition_count
+        description: Persisted resumed transition events.
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Resume events
+          metrics:
+            resumed_transition_event_count:
+              type: sum
+              label: Resume events
+              description: Recorded resume events; repeated resume sweeps can produce more than one per run.
+              groups: [Lifecycle]
+      - name: attempt_count
+        description: Generation attempts reported on the completion event, when available.
+        meta:
+          dimension:
+            label: Attempts
+          metrics:
+            average_attempt_count:
+              type: average
+              label: Average attempts per completed run
+              description: Average completion-reported generation attempts; rows without completion metadata are excluded.
+              round: 1
+              groups: [Lifecycle]
+      - name: lifecycle_recorded_flag
+        description: One when at least one lifecycle row remains in the retained source window.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            lifecycle_tracked_run_count:
+              type: sum
+              label: Runs with retained lifecycle records
+              description: Runs with at least one durable state event in the currently retained source window.
+              groups: [Run volume]
+      - name: completed_flag
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            completed_run_count:
+              type: sum
+              label: Runs with retained completion evidence
+              description: Runs with a completed transition in the currently retained source window.
+              groups: [Run volume]
+      - name: latest_nonterminal_flag
+        description: One when the newest recorded lifecycle status is not completed, cancelled, or abandoned.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            latest_nonterminal_run_count:
+              type: sum
+              label: Runs with a latest non-terminal record
+              description: Latest persisted state only; this is not proof that a process is running now.
+              groups: [Run recency]
+      - name: journaled_flag
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            journaled_run_count:
+              type: sum
+              label: Runs with a journal artifact
+              description: Runs with at least one persisted Curiosity journal entry.
+              groups: [Run volume]
+      - name: journal_record_count
+        description: Matching Curiosity journal records for this run ID.
+        tests: [not_null]
+      - name: lifecycle_minutes
+        description: Wall-clock minutes from first durable transition through completed transition; includes waits and retries.
+        meta:
+          dimension:
+            label: Lifecycle wall time (minutes)
+          metrics:
+            average_lifecycle_minutes:
+              type: average
+              label: Average lifecycle wall time (minutes)
+              description: Average first-transition-to-completion wall time; includes waits and retries and excludes unfinished runs.
+              round: 1
+              groups: [Actual usage]
+      - name: offered_concept_count
+        description: Number of approved concepts offered in the journal-recorded input sample.
+        meta:
+          metrics:
+            average_offered_concepts:
+              type: average
+              label: Average concepts offered
+              description: Actual journal-recorded concept sample size; legacy rows without the footer are excluded.
+              round: 1
+              groups: [Material]
+      - name: available_concept_count
+        description: Approved concepts available to sample at kickoff.
+        meta:
+          metrics:
+            average_available_concepts:
+              type: average
+              label: Average approved concept pool
+              description: Average approved concept inventory recorded at kickoff, not selected sample composition.
+              round: 1
+              groups: [Material]
+      - name: offered_relation_count
+        description: Number of relation judgements offered in the journal-recorded input sample.
+        meta:
+          metrics:
+            average_offered_relations:
+              type: average
+              label: Average relations offered
+              description: Actual journal-recorded relation sample size; legacy rows without the footer are excluded.
+              round: 1
+              groups: [Material]
+      - name: available_relation_count
+        description: Relation judgements available to sample at kickoff.
+        meta:
+          metrics:
+            average_available_relations:
+              type: average
+              label: Average relation pool
+              description: Average available relation inventory recorded at kickoff.
+              round: 1
+              groups: [Material]
+      - name: harness_step_count
+        description: Harness steps reported in the deterministic journal footer.
+        meta:
+          metrics:
+            average_harness_steps:
+              type: average
+              label: Average harness steps
+              description: Actual recorded steps, not a configured step budget or a quality score.
+              round: 1
+              groups: [Actual usage]
+      - name: grounding_status
+        description: Whitelisted harness status code; unbounded diagnostics are bucketed as other.
+        meta:
+          dimension:
+            label: Grounding status
+      - name: whole_turn_seconds
+        description: Observed whole-turn wall time spanning stance, harness, and finalize.
+        meta:
+          metrics:
+            average_whole_turn_seconds:
+              type: average
+              label: Average whole-turn seconds
+              description: Actual observed wall time, not the configured timeout ceiling.
+              round: 0
+              groups: [Actual usage]
+      - name: harness_seconds
+        description: Observed FCC/harness leg elapsed seconds.
+        meta:
+          metrics:
+            average_harness_seconds:
+              type: average
+              label: Average harness seconds
+              description: Actual observed harness-leg time; it is a component of whole-turn time.
+              round: 0
+              groups: [Actual usage]
+      - name: graph_write_status
+        description: Whether the journal footer recorded graph elements, explicitly recorded none, or lacked usable evidence.
+        meta:
+          dimension:
+            label: Graph write evidence
+      - name: graph_element_count
+        description: Total graph nodes and edges in the journal-recorded run footprint.
+        meta:
+          dimension:
+            label: Graph elements written
+          metrics:
+            total_graph_element_count:
+              type: sum
+              label: Graph elements written
+              description: Persisted nodes and edges attributed to selected runs; count is not correctness or value.
+              groups: [Graph output]
+      - name: graph_written_flag
+        description: One for a non-empty recorded footprint, zero for an explicit empty footprint, null when unavailable.
+        tests:
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            graph_write_coverage_rate:
+              type: average
+              label: Graph-write coverage rate
+              description: Share of runs with usable graph evidence that recorded at least one node or edge.
+              format: percent
+              round: 1
+              groups: [Graph output]
+
+  - name: fct_curiosity_run_transitions
+    description: >-
+      Grain: one row per persisted durable Curiosity state transition. Primary
+      key: transition_id. Event time: event_at. This fact contains no raw detail
+      JSON, correlation ID, error text, finding text, prompt, or journal prose.
+    meta:
+      label: Curiosity lifecycle transitions
+      group_label: Curiosity
+      primary_key: transition_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+    columns:
+      - name: transition_id
+        tests: [not_null, unique]
+        meta:
+          metrics:
+            transition_event_count:
+              type: count_distinct
+              label: Transition events
+              groups: [Lifecycle]
+      - name: run_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('fct_curiosity_runs')
+              field: run_id
+        meta:
+          dimension:
+            label: Run ID
+      - name: workflow
+        meta:
+          dimension:
+            label: Workflow
+      - name: node
+        meta:
+          dimension:
+            label: Lifecycle node
+      - name: next_node
+        meta:
+          dimension:
+            label: Next node
+      - name: status
+        meta:
+          dimension:
+            label: Transition status
+      - name: resumed_from_node
+        meta:
+          dimension:
+            label: Resumed from node
+      - name: event_at
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Transition time
+      - name: event_date
+        tests: [not_null]
+      - name: failed_transition_flag
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            failed_transition_count:
+              type: sum
+              label: Failed transition events
+              description: Failed state events, not failed runs.
+              groups: [Lifecycle]
+      - name: resumed_transition_flag
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+        meta:
+          metrics:
+            resumed_transition_count:
+              type: sum
+              label: Resume events
+              groups: [Lifecycle]
+      - name: error_present_flag
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+
+  - name: fct_curiosity_graph_writes
+    description: >-
+      Grain: one row per Curiosity journal and graph element type in its
+      producer-recorded footprint. This is a separate explore so graph-type
+      rows cannot fan out run-level measures.
+    meta:
+      label: Curiosity graph writes
+      group_label: Curiosity
+      primary_key: graph_write_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+    columns:
+      - name: graph_write_id
+        tests: [not_null, unique]
+      - name: journal_id
+        tests: [not_null]
+      - name: run_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('fct_curiosity_runs')
+              field: run_id
+        meta:
+          metrics:
+            runs_writing_element:
+              type: count_distinct
+              label: Runs writing this element
+              groups: [Graph output]
+      - name: event_at
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Journal time
+      - name: event_date
+        tests: [not_null]
+      - name: run_type
+        meta:
+          dimension:
+            label: Run type
+      - name: element_type
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Graph element type
+      - name: element_family
+        tests:
+          - not_null
+          - accepted_values:
+              values: [node, relationship]
+        meta:
+          dimension:
+            label: Graph element family
+      - name: element_count
+        tests: [not_null]
+        meta:
+          metrics:
+            graph_element_count:
+              type: sum
+              label: Graph elements written
+              description: Sum of persisted graph nodes or edges attributed to the run IDs.
+              groups: [Graph output]
+
+  - name: fct_curiosity_material_pool
+    description: >-
+      Grain: one row per Curiosity journal and approved material kind available
+      at kickoff. This is inventory, not the composition of the random sample.
+    meta:
+      label: Curiosity material pool
+      group_label: Curiosity
+      primary_key: material_pool_id
+      default_time_dimension:
+        field: event_at
+        interval: DAY
+    columns:
+      - name: material_pool_id
+        tests: [not_null, unique]
+      - name: journal_id
+        tests: [not_null]
+      - name: run_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('fct_curiosity_runs')
+              field: run_id
+        meta:
+          metrics:
+            material_pool_observation_count:
+              type: count_distinct
+              label: Runs observing material kind
+              groups: [Material]
+      - name: event_at
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Journal time
+      - name: event_date
+        tests: [not_null]
+      - name: run_type
+        meta:
+          dimension:
+            label: Run type
+      - name: material_kind
+        tests: [not_null]
+        meta:
+          dimension:
+            label: Approved material kind
+      - name: available_count
+        tests: [not_null]
+        meta:
+          metrics:
+            average_available_count:
+              type: average
+              label: Average available items
+              description: Average approved inventory for this kind at kickoff.
+              round: 1
+              groups: [Material]

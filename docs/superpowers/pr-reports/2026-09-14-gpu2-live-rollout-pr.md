@@ -1,4 +1,10 @@
-# GPU2 live rollout and cabinet endpoint correction
+# GPU2 live rollout — completed
+
+The full physical sequence completed: real 1200-second queue wait, automatic
+GPU2 borrowing, fenced FCC execution, persisted result, ownership release and
+automatic diffusion restoration. The run required the runtime fixes and retries
+documented below. All activation and safety flags remain live. No runtime
+blocker remains. GitHub requires one approving review before PR #2218 can merge.
 
 The merged GPU2 controller and diffusion drain API are now deployed on Circe.
 The first physical round-trip exposed a deployment error: Hub uses host
@@ -84,7 +90,8 @@ World Pulse's reading queue is not integrated with this admission seam.
 ## Deployed identities
 
 All rebuilt services use source baseline `e642932d3`; durable-runs adds
-`1ab72f626`, Gateway adds `fefa6e782`, and governor adds `3bf2a697e`. The existing GPU1 agent container
+`e41318fff`, Gateway adds `fefa6e782`, governor adds `3bf2a697e`, and
+Cortex Orchestrator adds `e41318fff`. The existing GPU1 agent container
 was not recreated. Image digests below identify the actual containers.
 
 | Host | Container | Image SHA256 |
@@ -93,7 +100,7 @@ was not recreated. Image digests below identify the actual containers.
 | athena | `orion-athena-feedback-runtime` | `a1c1351cab8531eb290e93f70ddc948a0dff1dea0d4458ccfd0bcf7bb8d51ef3` |
 | athena | `orion-athena-execution-dispatch-runtime` | `643e05a418fbb4b4a2eb5a856333f24d52ddf56ac137b04e6d1ee4319a2d4a01` |
 | athena | `orion-athena-proposal-runtime` | `65e6cd910c7c2638f4b5363f8eb4ffa37b0befb1c28b7d2a273f922d154555a9` |
-| athena | `orion-athena-durable-runs` | `4e70d3c3afc88dc4348c4337d2720a855f245d17f93000641aa5c89f6493d267` |
+| athena | `orion-athena-durable-runs` | `bd485723ebc44fd57598a118a4f2e6c763fcf06cc8dc60eaab689df16730ecd3` |
 | athena | `orion-llm-gateway` | `c58a0d3a6c5bf7814d07363defa7f55b9f9cd8caed96f98dc5d309a70fe6d5f7` |
 | athena | `orion-athena-hub` | `f607e29cec3561a0ea4de67d55588ca36814590ce96b900514d62e67fd26ccb6` |
 | athena | `orion-athena-harness-governor` | `bc866cd89da8a654e8ad7cd69de39e9adde9e1c9c932f862e3bffcf5aef3ae3f` |
@@ -101,7 +108,7 @@ was not recreated. Image digests below identify the actual containers.
 | athena | `orion-athena-cortex-exec-chat` | `b65c0df725861537bdf38c60e846639e2a6a3a2b828bc23d97065f88320566a4` |
 | athena | `orion-athena-cortex-exec` | `1653bef8d40854aa51486d5ec1daa6b211da63f90d84790038ad959c624e37ed` |
 | athena | `orion-athena-cortex-exec-background` | `ae50861fdd08e70c8c16e69e2636dd6288d97885a4e5f0bfceb2b8d6247029e7` |
-| athena | `orion-athena-cortex-orch` | `e61c6e20a87640001b0b6b190bb99ee2c9f93396729a6f8fe21daf15644b47b6` |
+| athena | `orion-athena-cortex-orch` | `f398762a7d7888f2128d2cf66be27548acc4c209f9f80b6e807588464f8b4905` |
 | circe | `orion-circe-diffusion-host` | `b90400846444d114f00e1bfc34a344fb5ab388d276af340c792cea8df4bc3ad1` |
 | circe | `orion-circe-gpu-lane-controller` | `3bf6da7e35e9224c0f28594156139a5c225a1cc1f524022603be622386e68b7c` |
 | circe | `orion-circe-atlas-llamacpp-agent` | `684e9fea45b78201fcb0be21027a59dcecb2978a8080172061667e997d620f1b` |
@@ -233,3 +240,74 @@ The retained retry automatically requested `gpu2:5:agent-burst` at
 `03:38:29.039122Z`. An immediate `rpc:ConnectionError` released its lease and
 was retried by the existing policy. The following attempt reached the corrected
 FCC motor with correlation `f0e8a62e-ce7e-5b70-be56-e3218a150685`.
+
+## Completed FCC and persisted run result
+
+The successful attempt used lease `df15c9bc314445c18122d802526acc4f`,
+generation 4, granted at `03:40:00.813551Z` on the retained burst route.
+FCC session `57b1c972-dce0-4628-bcc2-6d07745e1632` completed its answer at
+`03:48:30Z`, after ten successful tool receipts and 37 grammar events. There
+were no API errors in this attempt. Finalization reported `finalize_failed=false`
+and `response_repair_skipped reason=aligned`: the original motor answer was
+retained, not substituted with repair text.
+
+The durable run completed at `03:49:24.643272Z`, with **3 attempts** including
+the two failures documented above. Journal identity:
+`curiosity-self-inquiry:gpu2-live-20260914T024447`. Stored finding: 3403
+characters; SHA256 `7c8def94567798fb7737d29f663aa886673d0934ea1fceeb14e84d7859344eea`.
+
+The answer contains a substantive source/eval audit. It also repeats deployment
+claims from an older report (including its old 404), so its rollout assessment
+is stale. This is a recorded eval limitation, not evidence of current runtime
+state. Current deployment claims in this report come from physical/container,
+HTTP, database and bus observations instead.
+
+After registry deployment, a real subscriber captured 55 resource events for
+this run, including its lease release and terminal completion. The production
+resource-event outbox reached **zero unpublished rows**. Cortex Orchestrator,
+the durable receipt consumer, was also rebuilt with the lookup correction.
+
+## Final automatic restoration and ownership evidence
+
+Baseline debt became urgent at its original due time. The persisted event
+requested `gpu2:6:diffusion` at `03:53:26.608673Z` with
+`reason=visual_baseline_urgent`. This is live evidence that preserved baseline
+debt affects ownership; no timer or safety flag was changed for the test.
+
+Restoration completed at `03:53:51.189758Z`: transition **24.54 seconds**,
+diffusion cold start **12.86 seconds**. Controller reports active diffusion,
+burst container exited, no error, generation 6. Diffusion `/ready` reports
+`ready=true`, `draining=false`, `model_loaded=true`, `load_error=null`.
+The authority reports **zero active leases and zero active permits**.
+
+All 17 burst permits in the automatic run are released and carried a lease.
+The successful attempt used these nine permit identities:
+
+```text
+f93f7e07c5a143c5a6b0971a07a07fbd
+8894321f395e47b2b684fce20a83ee0b
+677d94024c5e43ccbd3d9403e2ff9242
+30f9e50c9a60423da6f0952dbb9b7d6e
+4aad0e49f0cb4d7b9203a4e37a3353ec
+34e97062277c475a94bd04f2f22a6e61
+99543a0d73824dd7975839bc6db750cb
+2bd4f529fba44b79bbb742f233c63155
+f28554f7d0bf4c51b0e4a4a108763370
+```
+
+The original automatic drain acknowledged at `03:08:50.316140Z`; idle status
+followed at `03:08:50.319166Z` and application shutdown completed at
+`03:08:50.662764Z`. No generation was interrupted. Actual measured transitions
+fit the conservative declared budgets, so the budgets were not reduced.
+
+Final physical snapshots, complete polling history, FCC/run result, sanitized
+image/config inventory, bus delivery and permit records are retained in
+`/tmp/gpu2-live-evidence` on Athena. The temporary contention Gateway was removed.
+Athena primary checkout is clean; Circe’s three unrelated hardware-log files
+remain intact. No env was committed and no GPU2 credential was introduced.
+
+Final independent evidence review found no material misclaims. Final env parity
+passes for all 10 affected Athena service templates and all 3 Circe templates.
+Seven CI jobs pass on the code revision, including static registry parity,
+isolated-Postgres admission/fairness checks, Gateway transport, SQL writer,
+reading and browser smoke. No merge conflicts remain.

@@ -337,6 +337,15 @@ class TestTheEndpointReportsTheAge:
         import sys
 
         from app import main as thought_main
+        from orion.reverie import baseline
+
+        # This test owns only the process-local lock/age contract. Durable
+        # claim behavior has PostgreSQL coverage in test_visual_activity.py.
+        monkeypatch.setattr(
+            baseline,
+            "load_baseline_policy",
+            lambda: baseline.VisualBaselinePolicy(enabled=False),
+        )
 
         # Resolve the module the ENDPOINT will actually use. `app.main` imports
         # `.visual_chain` lazily inside the handler, and this service's conftest

@@ -1,5 +1,6 @@
-# Consumer-first rollout and a verified produced receipt are required before enabling.
-enabled: false
+# Consumer-first rollout shipped in PR #2211. Activation still requires the
+# additive attempt migration and a controlled receipt/activity smoke.
+enabled: true
 policy_id: visual_baseline.v1
 interval_sec: 5400
 retry_sec: 600

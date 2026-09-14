@@ -15,3 +15,14 @@ CREATE INDEX IF NOT EXISTS idx_reverie_visual_attempt_need
     ON reverie_visual_attempt (need_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reverie_visual_attempt_active
     ON reverie_visual_attempt (started_at DESC) WHERE outcome IN ('active', 'unknown');
+
+-- Proposal-runtime's singleton scheduler checkpoint. Creating it here makes
+-- activation explicit and reviewable instead of relying on the first enabled
+-- tick to create production schema as a side effect.
+CREATE TABLE IF NOT EXISTS visual_baseline_checkpoint (
+    id integer PRIMARY KEY CHECK (id = 1),
+    state jsonb NOT NULL
+);
+INSERT INTO visual_baseline_checkpoint (id, state)
+VALUES (1, '{}'::jsonb)
+ON CONFLICT (id) DO NOTHING;

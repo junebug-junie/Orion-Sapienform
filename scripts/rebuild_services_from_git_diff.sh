@@ -129,6 +129,7 @@ fi
 
 CORTEX_EXEC="orion-cortex-exec"
 CORTEX_LANES="cortex-exec cortex-exec-chat cortex-exec-spark cortex-exec-background"
+ANALYTICS="orion-analytics"
 
 FAILED=""
 REBUILT=0
@@ -151,6 +152,21 @@ for svc in $SERVICES; do
                 "$SAFE_BUILD" "$svc" up -d --build $CORTEX_LANES
         else
             "$SAFE_BUILD" "$svc" up -d --build $CORTEX_LANES
+        fi
+        rc=$?
+        set -e
+    elif [ "$svc" = "$ANALYTICS" ]; then
+        # Every long-running service in orion-analytics is intentionally behind
+        # the `analytics` Compose profile (`analytics-dbt` is a separate tools
+        # profile). Calling plain `up` selects nothing and exits with
+        # "no service selected", which made the first post-merge rebuild of
+        # the Curiosity dashboard fail despite a valid compose file.
+        set +e
+        if [ -n "$ALLOW_SHARED" ]; then
+            ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" \
+                "$SAFE_BUILD" "$svc" --profile analytics up -d --build
+        else
+            "$SAFE_BUILD" "$svc" --profile analytics up -d --build
         fi
         rc=$?
         set -e

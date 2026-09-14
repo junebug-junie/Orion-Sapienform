@@ -104,7 +104,7 @@ Journal prose is **not** queried as truth (`storage_surface=journal` is
 Policy (`self_study_policy.py`) is a closed list. Only:
 
 - `legacy.plan` (mode-capped: factual / conceptual / reflective)
-- `actions.respond_to_juniper_collapse_mirror.v1` (reflective)
+- `actions.respond_to_juniper_collapse_mirror.v1` consumer retired (chat-lane reply path)
 
 Unknown consumers get `enabled=False`. Opt-in is `metadata.self_study.enabled`
 (or the same key under options). Off unless someone turns it on.

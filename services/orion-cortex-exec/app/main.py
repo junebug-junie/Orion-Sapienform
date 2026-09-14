@@ -36,7 +36,7 @@ from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache
 from .world_context_capsule_cache import get_world_context_capsule_cache
 from .trace_cache import get_trace_cache
-from .verb_adapters import LegacyPlanVerb, RespondToJuniperCollapseMirrorVerb  # noqa: F401 - register verb adapter
+from .verb_adapters import LegacyPlanVerb  # noqa: F401 - register verb adapter
 from .collapse_verbs import (  # noqa: F401 - register collapse verbs
     LogCollapseMirrorVerb,
     EnrichCollapseMirrorVerb,

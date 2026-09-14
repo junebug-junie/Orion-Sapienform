@@ -59,7 +59,10 @@ class Settings(BaseSettings):
         "orion:cortex:exec:request:background",
         alias="CORTEX_EXEC_DAILY_REQUEST_CHANNEL",
     )
-    actions_verb: str = Field("actions.respond_to_juniper_collapse_mirror.v1", alias="ACTIONS_VERB")
+    collapse_mirror_chat_reply_channel: str = Field(
+        "orion:hub:collapse_mirror:chat_reply",
+        alias="ACTIONS_COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL",
+    )
 
     notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")

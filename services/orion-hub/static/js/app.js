@@ -6572,6 +6572,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // finds it.
       return;
     }
+    if (notification.notification_type === 'collapse_mirror_reply') {
+      // Success collapse replies already show as chat bubbles; toasting duplicates them.
+      return;
+    }
+    if (notification.notification_type === 'collapse_mirror_held_back') {
+      // Held-back note is informational only; do not toast as Orion's chat reply.
+      return;
+    }
     showToast(notification);
   }
 
@@ -11447,6 +11455,19 @@ document.addEventListener("DOMContentLoaded", () => {
                   durationMs: d.duration_ms || null,
                   ok: claudeOk,
                 },
+              });
+            }
+            return;
+          }
+          if (d.kind === 'collapse_mirror_you') {
+            const youText = String(d.text || '').trim();
+            if (youText) {
+              appendMessage('You', youText, 'text-white', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                unsolicited: false,
+                collapseMirror: true,
               });
             }
             return;

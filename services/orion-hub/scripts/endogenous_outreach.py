@@ -1314,13 +1314,17 @@ class EndogenousOutreach:
             "last_result": dict(self._last_result),
         }
 
-    def _active_session_id(self) -> str:
-        """Session to persist into: the newest connection that has one."""
+    def live_session_id(self) -> str | None:
+        """Newest connected socket that has a session_id. None if none — no fallback."""
         for entry in reversed(list(self._connections.values())):
             sid = entry.get("session_id")
             if sid:
                 return str(sid)
-        return self.fallback_session_id
+        return None
+
+    def _active_session_id(self) -> str:
+        """Session to persist into: the newest connection that has one."""
+        return self.live_session_id() or self.fallback_session_id
 
     async def _should_roll(self) -> bool:
         """Real trigger check (2026-08-16) -- see module docstring.
@@ -2050,6 +2054,10 @@ class EndogenousOutreach:
         correlation_id: str,
         model: Optional[str] = None,
         source_tag: Optional[str] = None,
+        unsolicited: bool = True,
+        tags: Optional[List[str]] = None,
+        notification_title: Optional[str] = None,
+        notification_type: Optional[str] = None,
     ) -> None:
         message_id = str(uuid4())
         self._push_to_sockets(text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id)
@@ -2060,9 +2068,17 @@ class EndogenousOutreach:
             message_id=message_id,
             model=model,
             source_tag=source_tag,
+            unsolicited=unsolicited,
+            tags=tags,
         )
         await self._publish_notification(
-            text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            message_id=message_id,
+            tags=tags,
+            notification_title=notification_title,
+            notification_type=notification_type,
         )
 
     def _push_to_sockets(self, *, text: str, session_id: str, correlation_id: str, message_id: str) -> None:
@@ -2097,6 +2113,8 @@ class EndogenousOutreach:
         message_id: str,
         model: Optional[str] = None,
         source_tag: Optional[str] = None,
+        unsolicited: bool = True,
+        tags: Optional[List[str]] = None,
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
@@ -2110,6 +2128,13 @@ class EndogenousOutreach:
             # additive `response_identity`/served-model field (see
             # worker.py::_ensure_chat_history_from_message, which prefers
             # `model` over `speaker` when both are present).
+            if tags is None:
+                # OUTREACH_TAG always for endogenous path, so every unsolicited
+                # message stays findable through one tag; source_tag is ADDITIVE.
+                history_tags = [OUTREACH_TAG] if not source_tag else [OUTREACH_TAG, source_tag]
+            else:
+                history_tags = list(tags)
+            client_meta = {"unsolicited": True} if unsolicited else {}
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",
@@ -2117,37 +2142,42 @@ class EndogenousOutreach:
                 correlation_id=correlation_id,
                 speaker="Orion",
                 model=model,
-                # OUTREACH_TAG always, so every unsolicited message stays
-                # findable through one tag however it was produced; the source
-                # tag is ADDITIVE, so a curiosity-composed message can also be
-                # traced back to the investigation that prompted it.
-                tags=[OUTREACH_TAG] if not source_tag else [OUTREACH_TAG, source_tag],
+                tags=history_tags,
                 message_id=message_id,
-                client_meta={"unsolicited": True},
+                client_meta=client_meta,
             )
             await publish_chat_history(self._bus, [env])
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_history_failed corr=%s err=%s", correlation_id, exc)
 
     async def _publish_notification(
-        self, *, text: str, session_id: str, correlation_id: str, message_id: str
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        tags: Optional[List[str]] = None,
+        notification_title: Optional[str] = None,
+        notification_type: Optional[str] = None,
     ) -> None:
         if not self._bus:
             return
         try:
+            notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
             notification = HubNotificationEvent(
                 notification_id=uuid4(),
                 created_at=datetime.now(timezone.utc),
                 severity="info",
                 event_kind=OUTREACH_EVENT_KIND,
                 source_service="orion-hub",
-                title="Orion reached out",
+                title=notification_title or "Orion reached out",
                 body_text=text,
-                tags=[OUTREACH_TAG],
+                tags=notify_tags,
                 correlation_id=correlation_id,
                 session_id=session_id,
                 message_id=UUID(message_id),
-                notification_type=OUTREACH_TAG,
+                notification_type=notification_type or OUTREACH_TAG,
             )
             env = BaseEnvelope(
                 kind="notify.in_app.v1",

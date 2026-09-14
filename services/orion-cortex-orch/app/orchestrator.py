@@ -49,7 +49,6 @@ from orion.schemas.cognition.answer_contract import AnswerContract
 logger = logging.getLogger("orion.cortex.orch")
 
 _DIRECT_VERB_TRIGGERS = {
-    "actions.respond_to_juniper_collapse_mirror.v1",
     "skills.system.time_now.v1",
     "skills.gpu.nvidia_smi_snapshot.v1",
     "skills.docker.ps_status.v1",

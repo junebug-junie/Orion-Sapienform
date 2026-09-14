@@ -292,6 +292,7 @@ notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 
 endogenous_outreach: Optional[EndogenousOutreach] = None
+collapse_mirror_chat_reply_handler = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
 reading_listener = None
 world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
@@ -401,7 +402,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -524,6 +525,15 @@ async def startup_event():
             # call this used before. harness_rpc_bus mirrors that call
             # site's own `harness_rpc_bus=rpc_bus or bus` convention.
             await endogenous_outreach.start(bus, harness_rpc_bus=rpc_bus)
+
+            from scripts.collapse_mirror_chat_reply import CollapseMirrorChatReplyHandler
+
+            collapse_mirror_chat_reply_handler = CollapseMirrorChatReplyHandler(
+                outreach=endogenous_outreach,
+                bus=bus,
+                channel=settings.COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL,
+            )
+            await collapse_mirror_chat_reply_handler.start(bus)
 
             # Orion notices what Juniper has been talking about, and goes and
             # finds out why (2026-08-26). Same lifecycle and the same real
@@ -1293,7 +1303,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1381,6 +1391,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_stage2_stop_failed", exc_info=True)
         world_pulse_read_stage2 = None
+    if collapse_mirror_chat_reply_handler is not None:
+        try:
+            await collapse_mirror_chat_reply_handler.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("collapse_mirror_chat_reply_stop_failed")
+        collapse_mirror_chat_reply_handler = None
     if endogenous_outreach is not None:
         try:
             await endogenous_outreach.stop()

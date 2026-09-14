@@ -59,9 +59,6 @@ def resolve_self_study_consumer_policy(
         else:
             consumer_kind = "delivery_debug"
             max_mode = "factual"
-    elif consumer_name == "actions.respond_to_juniper_collapse_mirror.v1":
-        consumer_kind = "metacog_self"
-        max_mode = "reflective"
     else:
         return SelfStudyConsumerPolicyDecisionV1(
             consumer_name=consumer_name,

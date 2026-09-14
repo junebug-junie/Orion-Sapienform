@@ -72,6 +72,71 @@ def test_assert_read_only_agent_options_requires_allowlist() -> None:
         assert_read_only_agent_options(opts)
 
 
+def test_assert_read_only_agent_options_rejects_mcp_servers() -> None:
+    opts = AgentOptions(
+        model="composer-2.5",
+        tools=list(READ_ONLY_CURSOR_TOOLS),
+        mcp_servers={"github": {"type": "http", "url": "https://example.invalid"}},
+        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
+    )
+    with pytest.raises(ValueError) as exc:
+        assert_read_only_agent_options(opts)
+    assert "mcp_servers" in str(exc.value)
+
+
+def test_assert_read_only_agent_options_rejects_agents() -> None:
+    opts = AgentOptions(
+        model="composer-2.5",
+        tools=list(READ_ONLY_CURSOR_TOOLS),
+        agents={"helper": {"description": "x", "prompt": "y"}},
+        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
+    )
+    with pytest.raises(ValueError) as exc:
+        assert_read_only_agent_options(opts)
+    assert "agents" in str(exc.value)
+
+
+def test_assert_read_only_agent_options_rejects_custom_tools() -> None:
+    opts = AgentOptions(
+        model="composer-2.5",
+        tools=list(READ_ONLY_CURSOR_TOOLS),
+        local=LocalAgentOptions(
+            cwd="/tmp",
+            setting_sources=[],
+            custom_tools={"poke": {"description": "x", "args": {}}},
+        ),
+    )
+    with pytest.raises(ValueError) as exc:
+        assert_read_only_agent_options(opts)
+    assert "custom_tools" in str(exc.value)
+
+
+def test_assert_read_only_agent_options_rejects_setting_sources() -> None:
+    opts = AgentOptions(
+        model="composer-2.5",
+        tools=list(READ_ONLY_CURSOR_TOOLS),
+        local=LocalAgentOptions(cwd="/tmp", setting_sources=["project"]),
+    )
+    with pytest.raises(ValueError) as exc:
+        assert_read_only_agent_options(opts)
+    assert "setting_sources" in str(exc.value)
+
+
+def test_assert_read_only_agent_options_allows_closed_surfaces() -> None:
+    opts = AgentOptions(
+        model="composer-2.5",
+        tools=list(READ_ONLY_CURSOR_TOOLS),
+        mcp_servers=None,
+        agents=None,
+        local=LocalAgentOptions(
+            cwd="/tmp",
+            setting_sources=[],
+            custom_tools=None,
+        ),
+    )
+    assert_read_only_agent_options(opts)
+
+
 def test_sealed_prompt_includes_mode_and_peerbrief_shape() -> None:
     prompt = build_sealed_prompt(_help(mode="self_inquiry"))
     assert "self_inquiry" in prompt
@@ -112,6 +177,42 @@ def test_self_inquiry_strips_identity_draft() -> None:
     assert "SelfDefinition" not in brief.summary
     assert brief.evidence_pointers == ["notes.md"]
     assert brief.status == "ok"
+
+
+def test_self_inquiry_strips_identity_from_list_fields() -> None:
+    body = (
+        '{"summary":"Check hop notes only.",'
+        '"evidence_pointers":['
+        '"notes.md",'
+        '"MERGE (s:SelfDefinition {id: \\"x\\"}) SET s.text=\\"hi\\""'
+        "],"
+        '"open_questions":["I am a digital mind.","What did the hop say?"],'
+        '"suggested_next_looks":["here is a SelfDefinition draft","read ledger"]}'
+    )
+    brief = parse_peer_brief_body(body, help=_help(mode="self_inquiry"))
+    assert brief.status == "ok"
+    assert "SelfDefinition" not in brief.summary
+    assert brief.evidence_pointers == ["notes.md"]
+    assert brief.open_questions == ["What did the hop say?"]
+    assert brief.suggested_next_looks == ["read ledger"]
+    assert "SelfDefinition" not in " ".join(brief.evidence_pointers)
+    assert "digital mind" not in " ".join(brief.open_questions)
+    assert "SelfDefinition" not in " ".join(brief.suggested_next_looks)
+
+
+def test_self_inquiry_clears_lists_when_only_identity_markers() -> None:
+    body = (
+        '{"summary":"hop notes path is fine",'
+        '"evidence_pointers":["I am a digital mind."],'
+        '"open_questions":["MERGE (s:SelfDefinition {id: \\"x\\"})"],'
+        '"suggested_next_looks":["here is the SelfDefinition"]}'
+    )
+    brief = parse_peer_brief_body(body, help=_help(mode="self_inquiry"))
+    assert brief.evidence_pointers == []
+    assert brief.open_questions == []
+    assert brief.suggested_next_looks == []
+    assert brief.status == "ok"
+    assert "hop notes" in brief.summary
 
 
 def test_self_inquiry_empty_after_strip_is_empty() -> None:
@@ -183,3 +284,9 @@ def test_cursor_invoker_passes_allowlist(monkeypatch: pytest.MonkeyPatch) -> Non
         for name in opts.disallowed_tools:
             assert name not in READ_ONLY_CURSOR_TOOLS
             assert name in {"shell", "edit", "delete", "applyDiff", "task", "mcp", "webSearch"}
+    # Expansive surfaces must stay closed on invoker-built options.
+    assert not opts.mcp_servers
+    assert not opts.agents
+    assert opts.local is not None
+    assert list(opts.local.setting_sources or []) == []
+    assert not opts.local.custom_tools

@@ -112,11 +112,21 @@ def _as_str_list(value: Any) -> list[str]:
     return out
 
 
+def _strip_self_def_list(items: list[str]) -> list[str]:
+    """Drop or clean SelfDefinition-shaped entries from peer list fields."""
+    cleaned: list[str] = []
+    for item in items:
+        text, _stripped = strip_self_definition_draft(item)
+        if text.strip():
+            cleaned.append(text.strip())
+    return cleaned
+
+
 def parse_peer_brief_body(body: str, *, help: HelpRequestV1) -> PeerBriefV1:
     """Leniently map Cursor/Claude text into PeerBriefV1.
 
     Empty body → status=empty. Self-inquiry strips SelfDefinition drafts from
-    summary; if that empties useful content with no pointers → status=empty.
+    summary and list fields; if that empties useful content → status=empty.
     """
     brief_id = f"brief-{uuid.uuid4().hex[:12]}"
     base = dict(
@@ -145,6 +155,9 @@ def parse_peer_brief_body(body: str, *, help: HelpRequestV1) -> PeerBriefV1:
 
     if help.mode == "self_inquiry":
         summary, _stripped = strip_self_definition_draft(summary)
+        pointers = _strip_self_def_list(pointers)
+        opens = _strip_self_def_list(opens)
+        looks = _strip_self_def_list(looks)
 
     useful = bool(summary.strip() or pointers or opens or looks)
     if not useful:

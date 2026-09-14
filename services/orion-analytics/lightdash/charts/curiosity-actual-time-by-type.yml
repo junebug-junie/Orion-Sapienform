@@ -1,0 +1,47 @@
+name: Curiosity actual time by pipeline type
+description: >-
+  Average observed whole-turn and harness-leg seconds. These are actual usage,
+  not configured timeout ceilings; harness time is part of whole-turn time.
+tableName: fct_curiosity_runs
+metricQuery:
+  exploreName: fct_curiosity_runs
+  dimensions:
+    - fct_curiosity_runs_run_type
+  metrics:
+    - fct_curiosity_runs_average_whole_turn_seconds
+    - fct_curiosity_runs_average_harness_seconds
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_runs_average_whole_turn_seconds
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_runs_run_type
+      yField:
+        - fct_curiosity_runs_average_whole_turn_seconds
+        - fct_curiosity_runs_average_harness_seconds
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_runs_run_type
+            yRef:
+              field: fct_curiosity_runs_average_whole_turn_seconds
+          isFilteredOut: false
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_runs_run_type
+            yRef:
+              field: fct_curiosity_runs_average_harness_seconds
+          isFilteredOut: false
+slug: curiosity-actual-time-by-type
+spaceSlug: orion-analytics
+version: 1

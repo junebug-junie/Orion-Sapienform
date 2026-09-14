@@ -1,0 +1,38 @@
+name: Curiosity lifecycle events by status
+description: >-
+  Persisted durable state events grouped by status. Failed and resumed values
+  are event counts; one run can contribute many of each before completion.
+tableName: fct_curiosity_run_transitions
+metricQuery:
+  exploreName: fct_curiosity_run_transitions
+  dimensions:
+    - fct_curiosity_run_transitions_status
+  metrics:
+    - fct_curiosity_run_transitions_transition_event_count
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_run_transitions_transition_event_count
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_run_transitions_status
+      yField:
+        - fct_curiosity_run_transitions_transition_event_count
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_run_transitions_status
+            yRef:
+              field: fct_curiosity_run_transitions_transition_event_count
+          isFilteredOut: false
+slug: curiosity-lifecycle-by-status
+spaceSlug: orion-analytics
+version: 1

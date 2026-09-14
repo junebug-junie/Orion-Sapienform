@@ -10,6 +10,11 @@ public.reverie_visual_chain                ├─> shared outcome/date dimension
   -> visual-chain staging/fact views       ├─> Lightdash OSS
 public.reverie_visual_artifact             │
   -> visual-artifact staging/fact views ───┘
+
+public.substrate_durable_run_state ─┐
+public.journal_entries ─────────────┴─> privacy-barrier structural views
+                                      -> run / transition / material / graph facts
+                                      -> Lightdash OSS
 ```
 
 It does not add a second warehouse, copy operational data, or expose reverie
@@ -19,6 +24,11 @@ hidden from Lightdash users. That `hidden` setting is a presentation boundary,
 not removal from the analytics database; database readers can still query the
 key. Text and visual Reverie remain separate facts because their grains,
 schedules, and meanings differ.
+
+Curiosity is projected through operator-owned security-barrier views in the
+`analytics_source` schema. dbt never receives access to raw lifecycle detail or
+journal bodies. Prompts, journal prose, findings, claims, hop notes, error text,
+correlation IDs, and checkpoint payloads stay outside analytics.
 
 ## What exists in PostgreSQL
 
@@ -55,6 +65,21 @@ remain unknown and are excluded from the rate. Artifact counts were exactly
 zero or one per chain in that sample, but the models preserve the declared
 one-to-many relationship.
 
+The Curiosity runtime persists `DurableRunStateV1` transitions in
+`public.substrate_durable_run_state`. The deterministic footer on
+`journal_entries` with `source_ref=curiosity:<run_id>` records structural
+metadata about what the run was offered, actual harness usage, and what node or
+relationship types it wrote to Orion's world-view graph. The role bootstrap
+parses only that bounded metadata into `analytics_source`; neither raw source is
+granted to the transformer.
+
+Live inspection on 2026-09-14 found 640 durable transitions across 50 run IDs,
+all with matching journals. Across the full 96-journal history, 94 entries had
+parseable material metadata, 95 had a step count, 65 had both whole-turn and
+harness timing, 68 recorded a non-empty graph footprint, and 26 explicitly
+recorded no graph writes. The two legacy entries without the modern footer stay
+unknown rather than becoming zeroes.
+
 ## Models and grains
 
 - `stg_reverie_chains`: one row per persisted source `chain_id`; selects only
@@ -81,11 +106,27 @@ one-to-many relationship.
   artifact persistence. Its source foreign key is tested against the visual
   chain fact, but the facts are not joined in Lightdash: that would invite
   cross-grain measures.
+- `stg_curiosity_run_transitions`: one row per safe durable transition.
+- `stg_curiosity_run_journals`: one row per safe journal metadata record.
+- `fct_curiosity_runs`: one row per run ID observed in either source. It keeps
+  journal-only history without pretending that absence from the currently
+  retained lifecycle source means the run predated durable execution.
+- `fct_curiosity_run_transitions`: one row per persisted transition event.
+- `fct_curiosity_graph_writes`: one row per journal and graph element type.
+- `fct_curiosity_material_pool`: one row per journal and approved material
+  kind available at kickoff. The latter three facts remain separate explores
+  so their one-to-many grains cannot multiply run measures.
 
 All are ordinary PostgreSQL views in the configured `analytics` schema. A
 missing fact row means only that no chain reached persistence; it is not proof
 that the service was down. Stop reasons are never relabeled as successes or
 failures.
+
+`substrate_durable_run_state` has destructive retention of 90 days by default
+(`SUBSTRATE_DURABLE_RUN_STATE_RETENTION_DAYS=0` disables it). Curiosity
+lifecycle counts therefore mean **currently retained evidence**, not all-time
+history. A journal-only run may predate durable execution or may simply have
+aged out of the lifecycle table; analytics does not infer which.
 
 ## Metric-quality gate: visual Reverie
 
@@ -156,15 +197,22 @@ The visual-chain Explore additionally exposes images per chain, chains without
 an artifact, continuity-used rate, average artifact bytes, captioned image
 count, and minutes since the latest selected persisted chain.
 
+The `Curiosity Operations` dashboard adds a run ledger, pipeline-type volume,
+durable lifecycle event counts, actual whole-turn/harness usage, material
+offered to each run type, approved material-pool inventory, graph-write counts
+by node/relationship type, and graph-write coverage. A newest non-terminal row
+is displayed as a recorded state with age; it is not labelled as proof that a
+process is currently executing.
+
 ## Credentials and read boundaries
 
 Do not reuse the PostgreSQL superuser or Orion's `orion_readonly` self-inquiry
 role. The idempotent bootstrap script creates two separate principals:
 
-- `orion_analytics_transformer`: `SELECT` on exactly
-  `public.substrate_reverie_chain`, `public.reverie_visual_chain`, and
-  `public.reverie_visual_artifact`, plus ownership of the `analytics` schema so
-  dbt can create views there;
+- `orion_analytics_transformer`: `SELECT` on exactly the three declared
+  Reverie relations plus four privacy-reduced Curiosity views in
+  `analytics_source`; it is explicitly denied both raw Curiosity tables and
+  owns only the `analytics` schema used for dbt views;
 - `orion_analytics_reader`: `SELECT` on analytics views only, a read-only
   transaction default, and a 30-second statement timeout. This is the
   Lightdash warehouse credential.
@@ -250,9 +298,8 @@ Open <http://localhost:8265>. On first launch:
 4. Set the dbt project path/subdirectory to `services/orion-analytics` when
    using a Git connection, or deploy the local project once with the pinned
    Lightdash CLI.
-5. Confirm the `Reverie chains`, `Visual reverie chains`, and `Visual reverie
-   artifacts` Explores contain the dimensions and measures above. Lightdash's
-   query panel exposes the generated SQL.
+5. Confirm the Reverie and Curiosity Explores contain the dimensions and
+   measures above. Lightdash's query panel exposes the generated SQL.
 6. Authenticate the CLI, deploy the semantic project, and upload the starter
    content:
 
@@ -301,6 +348,8 @@ No agent service or Model Context Protocol server is added here.
   row. Theme keys and JSON are excluded for privacy.
 - The operational 45-minute visual-chain watchdog setting is mirrored as a dbt
   variable. Change and deploy them together if the runtime contract changes.
-- Next smallest useful subject: reverie-thought expectation verdicts, but only
-  after checking live coverage of `expectation_verdict` and confirming that no
-  narrative text needs to enter the mart.
+- Configured Curiosity daily caps, cooldowns, outer timeout, governor timeout,
+  and stream-stall timeout are not persisted per run. The dashboard therefore
+  shows actual usage but no historical configured-budget or remaining-budget
+  metric. The next Curiosity patch should add typed, non-narrative kickoff
+  telemetry and validate it live before exposing those measures.

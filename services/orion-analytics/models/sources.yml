@@ -135,3 +135,79 @@ sources:
             description: UTC application timestamp recorded for the artifact row.
             tests:
               - not_null
+
+  - name: curiosity_safe
+    description: >-
+      Privacy-reduced PostgreSQL views created by bootstrap_analytics_roles.sql.
+      They project lifecycle and deterministic journal-footer metadata without
+      exposing raw state detail, correlation IDs, errors, prompts, findings,
+      journals, graph prose, or checkpoint payloads.
+    schema: analytics_source
+    tables:
+      - name: curiosity_run_transitions
+        description: >-
+          One safe row per currently retained DurableRunStateV1 transition.
+          Producer: services/orion-durable-runs/app/runner.py::DurableRunner._emit_state;
+          persistence: orion-sql-writer's DurableRunStateSQL. SQL Writer
+          deletes rows after 90 days by default; zero disables that retention.
+        columns:
+          - name: transition_id
+            tests: [not_null, unique]
+          - name: run_id
+            tests: [not_null]
+          - name: workflow
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [curiosity.investigate]
+          - name: node
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [harness_turn, read_turn_result, publish_attention_row, journal, finish]
+          - name: status
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [accepted, queued, waiting_resource, admitted, running, paused, resumed, retrying, completed, failed, cancelled, abandoned]
+          - name: event_at
+            tests: [not_null]
+      - name: curiosity_run_journals
+        description: >-
+          Structural metadata parsed inside a security-barrier view from the
+          producer-appended final Curiosity journal footer. Raw titles, bodies,
+          and unbounded grounding diagnostics are not projected.
+        columns:
+          - name: journal_id
+            tests: [not_null, unique]
+          - name: run_id
+            tests: [not_null]
+          - name: journaled_at
+            tests: [not_null]
+          - name: run_type
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [investigate, self_inquiry]
+      - name: curiosity_run_graph_writes
+        description: One safe row per journal and parsed graph element type/count.
+        columns:
+          - name: graph_write_id
+            tests: [not_null, unique]
+          - name: run_id
+            tests: [not_null]
+          - name: element_type
+            tests: [not_null]
+          - name: element_count
+            tests: [not_null]
+      - name: curiosity_run_material_pool
+        description: One safe row per journal and approved material kind/count available at kickoff.
+        columns:
+          - name: material_pool_id
+            tests: [not_null, unique]
+          - name: run_id
+            tests: [not_null]
+          - name: material_kind
+            tests: [not_null]
+          - name: available_count
+            tests: [not_null]

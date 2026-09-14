@@ -1,0 +1,47 @@
+name: Curiosity offered material by pipeline type
+description: >-
+  Average concepts and relation judgements actually offered to each run type,
+  as recorded in the journal footer. This is input volume, not quality.
+tableName: fct_curiosity_runs
+metricQuery:
+  exploreName: fct_curiosity_runs
+  dimensions:
+    - fct_curiosity_runs_run_type
+  metrics:
+    - fct_curiosity_runs_average_offered_concepts
+    - fct_curiosity_runs_average_offered_relations
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_runs_run_type
+      descending: false
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_runs_run_type
+      yField:
+        - fct_curiosity_runs_average_offered_concepts
+        - fct_curiosity_runs_average_offered_relations
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_runs_run_type
+            yRef:
+              field: fct_curiosity_runs_average_offered_concepts
+          isFilteredOut: false
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_runs_run_type
+            yRef:
+              field: fct_curiosity_runs_average_offered_relations
+          isFilteredOut: false
+slug: curiosity-offered-material-by-type
+spaceSlug: orion-analytics
+version: 1

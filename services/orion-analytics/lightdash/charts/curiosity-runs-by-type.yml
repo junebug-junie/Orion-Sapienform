@@ -1,0 +1,36 @@
+name: Curiosity runs by pipeline type
+description: Distinct observed run IDs grouped by investigate versus self-inquiry.
+tableName: fct_curiosity_runs
+metricQuery:
+  exploreName: fct_curiosity_runs
+  dimensions:
+    - fct_curiosity_runs_run_type
+  metrics:
+    - fct_curiosity_runs_observed_run_count
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_runs_observed_run_count
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_runs_run_type
+      yField:
+        - fct_curiosity_runs_observed_run_count
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_runs_run_type
+            yRef:
+              field: fct_curiosity_runs_observed_run_count
+          isFilteredOut: false
+slug: curiosity-runs-by-type
+spaceSlug: orion-analytics
+version: 1

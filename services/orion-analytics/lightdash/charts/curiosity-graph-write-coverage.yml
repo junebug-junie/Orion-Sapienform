@@ -1,0 +1,38 @@
+name: Curiosity graph-write coverage by pipeline type
+description: >-
+  Share of runs with usable graph evidence that wrote at least one graph
+  element. Missing/unrecorded legacy evidence is excluded from the denominator.
+tableName: fct_curiosity_runs
+metricQuery:
+  exploreName: fct_curiosity_runs
+  dimensions:
+    - fct_curiosity_runs_run_type
+  metrics:
+    - fct_curiosity_runs_graph_write_coverage_rate
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_runs_run_type
+      descending: false
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: cartesian
+  config:
+    layout:
+      xField: fct_curiosity_runs_run_type
+      yField:
+        - fct_curiosity_runs_graph_write_coverage_rate
+    eChartsConfig:
+      series:
+        - type: bar
+          encode:
+            xRef:
+              field: fct_curiosity_runs_run_type
+            yRef:
+              field: fct_curiosity_runs_graph_write_coverage_rate
+          isFilteredOut: false
+slug: curiosity-graph-write-coverage
+spaceSlug: orion-analytics
+version: 1

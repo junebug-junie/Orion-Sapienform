@@ -1,0 +1,187 @@
+name: Curiosity Operations
+description: Curiosity pipeline types, durable lifecycle, actual usage, offered material, and graph output.
+slug: curiosity-operations
+spaceSlug: orion-analytics
+version: 1
+tiles:
+  - x: 0
+    "y": 0
+    h: 5
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: What this dashboard can prove
+      content: |-
+        Runs are observed from durable lifecycle events or persisted Curiosity
+        journals. The ledger shows the newest persisted state, not a live
+        process claim. Failed and resumed values are event counts; one run can
+        contribute many before completing. Lifecycle rows are retained for 90
+        days by default, so lifecycle measures are retained-window evidence,
+        not all-time history; journal-only does not mean pre-durable.
+
+        Time, steps, offered material, and graph counts are actual recorded
+        usage/output. They are not quality scores. Configured daily caps and
+        timeout ceilings are not yet persisted per run, so this dashboard does
+        not invent historical budget-remaining numbers. Prompts, journals,
+        findings, claims, hop notes, errors, correlation IDs, and raw graph or
+        checkpoint payloads are deliberately excluded.
+    tileSlug: curiosity-operations-scope
+  - x: 0
+    "y": 5
+    h: 2
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: Run ledger and pipeline types
+      content: The newest observed runs and the investigate/self-inquiry split.
+    tileSlug: curiosity-operations-runs-heading
+  - x: 0
+    "y": 7
+    h: 10
+    w: 25
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-run-ledger
+    tileSlug: curiosity-run-ledger
+  - x: 25
+    "y": 7
+    h: 10
+    w: 11
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-runs-by-type
+    tileSlug: curiosity-runs-by-type
+  - x: 0
+    "y": 17
+    h: 2
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: Durable lifecycle
+      content: Recorded state-machine events and retry/resume history.
+    tileSlug: curiosity-operations-lifecycle-heading
+  - x: 0
+    "y": 19
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-lifecycle-by-status
+    tileSlug: curiosity-lifecycle-by-status
+  - x: 18
+    "y": 19
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-actual-time-by-type
+    tileSlug: curiosity-actual-time-by-type
+  - x: 0
+    "y": 27
+    h: 2
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: Actual material supplied
+      content: Recorded sample volume and approved input inventory; not configured caps or output quality.
+    tileSlug: curiosity-operations-material-heading
+  - x: 0
+    "y": 29
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-offered-material-by-type
+    tileSlug: curiosity-offered-material-by-type
+  - x: 18
+    "y": 29
+    h: 8
+    w: 18
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-material-pool-by-kind
+    tileSlug: curiosity-material-pool-by-kind
+  - x: 0
+    "y": 37
+    h: 2
+    w: 36
+    tabUuid: null
+    type: markdown
+    properties:
+      title: Graph lifecycle output
+      content: Per-run node and relationship counts recorded from Orion's own world-view graph.
+    tileSlug: curiosity-operations-graph-heading
+  - x: 0
+    "y": 39
+    h: 9
+    w: 24
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-graph-writes-by-type
+    tileSlug: curiosity-graph-writes-by-type
+  - x: 24
+    "y": 39
+    h: 9
+    w: 12
+    tabUuid: null
+    type: saved_chart
+    properties:
+      title: ""
+      hideTitle: false
+      chartSlug: curiosity-graph-write-coverage
+    tileSlug: curiosity-graph-write-coverage
+filters:
+  metrics: []
+  dimensions:
+    - target:
+        fieldId: fct_curiosity_runs_event_at_day
+        fieldName: event_at_day
+        tableName: fct_curiosity_runs
+      values:
+        - 30
+      disabled: false
+      operator: inThePast
+      settings:
+        completed: false
+        unitOfTime: days
+      tileTargets:
+        curiosity-lifecycle-by-status:
+          fieldId: fct_curiosity_run_transitions_event_at_day
+          tableName: fct_curiosity_run_transitions
+        curiosity-material-pool-by-kind:
+          fieldId: fct_curiosity_material_pool_event_at_day
+          tableName: fct_curiosity_material_pool
+        curiosity-graph-writes-by-type:
+          fieldId: fct_curiosity_graph_writes_event_at_day
+          tableName: fct_curiosity_graph_writes
+  tableCalculations: []
+tabs: []
+config:
+  isDateZoomDisabled: false
+  dateZoomGranularities: [Day, Week, Month]
+  defaultDateZoomGranularity: Day

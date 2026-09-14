@@ -1,0 +1,42 @@
+name: Curiosity run ledger
+description: >-
+  Newest observed Curiosity runs with their pipeline type, latest persisted
+  lifecycle position, attempts, retries, actual usage, and graph-write evidence.
+  Lifecycle evidence is limited to the retained source window. A latest
+  non-terminal state is not proof that a process is executing now.
+tableName: fct_curiosity_runs
+metricQuery:
+  exploreName: fct_curiosity_runs
+  dimensions:
+    - fct_curiosity_runs_event_at
+    - fct_curiosity_runs_run_id
+    - fct_curiosity_runs_run_type
+    - fct_curiosity_runs_observation_source
+    - fct_curiosity_runs_latest_status
+    - fct_curiosity_runs_latest_node
+    - fct_curiosity_runs_latest_next_node
+    - fct_curiosity_runs_latest_state_age_minutes
+    - fct_curiosity_runs_attempt_count
+    - fct_curiosity_runs_failed_transition_count
+    - fct_curiosity_runs_resumed_transition_count
+    - fct_curiosity_runs_harness_step_count
+    - fct_curiosity_runs_harness_seconds
+    - fct_curiosity_runs_graph_write_status
+    - fct_curiosity_runs_graph_element_count
+  metrics: []
+  filters: {}
+  sorts:
+    - fieldId: fct_curiosity_runs_event_at
+      descending: true
+  limit: 100
+  tableCalculations: []
+  additionalMetrics: []
+  customDimensions: []
+chartConfig:
+  type: table
+  config:
+    showTableNames: false
+    hideRowNumbers: false
+slug: curiosity-run-ledger
+spaceSlug: orion-analytics
+version: 1

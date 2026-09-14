@@ -1,0 +1,57 @@
+services:
+  curiosity-peer:
+    build:
+      context: ../..
+      dockerfile: services/orion-curiosity-peer/Dockerfile
+    container_name: ${PROJECT}-curiosity-peer
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - INSTANCE_ID=${INSTANCE_ID}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+
+      - CURIOSITY_PEER_NODE_NAME=${CURIOSITY_PEER_NODE_NAME:-${NODE_NAME}}
+      # Dual kill switch (service side). Hub also needs
+      # HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED=true at enqueue time.
+      - CURIOSITY_PEER_ENABLED=${CURIOSITY_PEER_ENABLED:-false}
+
+      # Cursor Agent CLI (desktop login). No CURSOR_API_KEY / cursor-sdk.
+      # Host mounts below provide the binary + auth.json.
+      - CURIOSITY_PEER_AGENT_BIN=${CURIOSITY_PEER_AGENT_BIN:-/opt/cursor-agent/versions/2026.05.20-2b5dd59/cursor-agent}
+      - CURIOSITY_PEER_REPO_ROOT=${CURIOSITY_PEER_REPO_ROOT:-/repo}
+      - CURIOSITY_PEER_MODEL=${CURIOSITY_PEER_MODEL:-composer-2.5}
+
+      - ORION_CURIOSITY_GRAPH_HOST=${ORION_CURIOSITY_GRAPH_HOST:-}
+      - ORION_CURIOSITY_GRAPH_PORT=${ORION_CURIOSITY_GRAPH_PORT:-}
+      - ORION_CURIOSITY_GRAPH_USER=${ORION_CURIOSITY_GRAPH_USER:-}
+      - ORION_CURIOSITY_GRAPH_PASSWORD=${ORION_CURIOSITY_GRAPH_PASSWORD:-}
+      - ORION_CURIOSITY_GRAPH_OWN=${ORION_CURIOSITY_GRAPH_OWN:-orion_worldview}
+
+      - CHANNEL_HELP_REQUEST=${CHANNEL_HELP_REQUEST:-orion:curiosity:help:request}
+      - CHANNEL_PEER_BRIEF=${CHANNEL_PEER_BRIEF:-orion:curiosity:peer:brief}
+      - CHANNEL_PEER_BRIEF_CONSUMED=${CHANNEL_PEER_BRIEF_CONSUMED:-orion:curiosity:peer:brief:consumed}
+      - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
+      - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
+    volumes:
+      # Read-only repo for Cursor Agent investigation. Absolute host root only
+      # (relative mounts fail scripts/check_compose_no_relative_mounts.py).
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${CURIOSITY_PEER_REPO_ROOT:-/repo}:ro
+      # Host Cursor Agent install (versioned cursor-agent + sibling node).
+      - ${HOME}/.local/share/cursor-agent:/opt/cursor-agent:ro
+      # Desktop CLI auth (auth.json from `agent login`).
+      - ${HOME}/.config/cursor:/root/.config/cursor:ro
+    # DELIBERATELY ABSENT: no docker.sock, no SSH/gh mounts, no host network.
+    # Credential isolation is the point of this container existing.
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

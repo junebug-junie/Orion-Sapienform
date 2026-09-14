@@ -21,8 +21,10 @@ from orion.curiosity.kickoff_prompt import (
     _access_section,
     _budget_section,
     _continuation_section,
+    _help_request_section,
     _hops_section,
     _outcome_section,
+    _peer_briefs_section,
     _priors_section,
 )
 from orion.curiosity.self_inquiry import (
@@ -225,6 +227,8 @@ def build_self_inquiry_prompt(
     max_hops: int = 5,
     stale_after: int = 3,
     graph_enabled: bool = True,
+    contractor_peer_enabled: bool = False,
+    peer_briefs: Sequence = (),
 ) -> str:
     """Assemble the whole invitation. Same three graph states as
     `build_kickoff_prompt`, same gating: read sections on `graph_enabled`,
@@ -239,6 +243,7 @@ def build_self_inquiry_prompt(
         lines += _continuation_section(view.continuation)
         lines += _previous_section(latest, count=definition_count)
         lines += _priors_section(view, stale_after=stale_after)
+        lines += _peer_briefs_section(peer_briefs)
 
     lines += _records_section(ledger, repo_root=repo_root)
     lines += _access_section(
@@ -254,6 +259,17 @@ def build_self_inquiry_prompt(
 
     if writable:
         lines += _self_write_section(own_graph=own_graph, run_id=run_id)
+        if contractor_peer_enabled:
+            lines += _help_request_section(
+                own_graph=own_graph,
+                run_id=run_id,
+                mode="self_inquiry",
+                extra_lines=(
+                    "If you hire help: the peer may point at evidence only. They "
+                    "must never draft :SelfDefinition text for you. You alone "
+                    "write the definition.",
+                ),
+            )
         lines += _outcome_section(run_id=run_id)
 
     lines.append(_INSTRUCTION)

@@ -610,6 +610,7 @@ from orion.schemas.attention_frame import (
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
+from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -940,6 +941,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
+    "HelpRequestV1": HelpRequestV1,
+    "PeerBriefV1": PeerBriefV1,
+    "PeerBriefConsumedV1": PeerBriefConsumedV1,
     "AttentionSalienceTraceV1": AttentionSalienceTraceV1,
     "AttentionLoopOutcomeV1": AttentionLoopOutcomeV1,
     "PendingAttentionCardV1": PendingAttentionCardV1,
@@ -1718,6 +1722,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ResourceEventV1": SchemaRegistration(model=ResourceEventV1, kind="durable.resource.event.v1"),
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
+    "HelpRequestV1": SchemaRegistration(
+        model=HelpRequestV1,
+        kind="curiosity.help.request.v1",
+    ),
+    "PeerBriefV1": SchemaRegistration(
+        model=PeerBriefV1,
+        kind="curiosity.peer.brief.v1",
+    ),
+    "PeerBriefConsumedV1": SchemaRegistration(
+        model=PeerBriefConsumedV1,
+        kind="curiosity.peer.brief.consumed.v1",
+    ),
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(
         model=SelfStudyEnrichmentRequestV1,
         kind="self_study.enrichment.request.v1",

@@ -54,6 +54,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "journal.entry.write.v1": "JournalEntrySQL",
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "attention.schema.v1": "AttentionSchemaSQL",
+    "curiosity.peer.brief.v1": "CuriosityPeerBriefSQL",
     "durable.run.state.v1": "DurableRunStateSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
@@ -167,6 +168,7 @@ class Settings(BaseSettings):
             "orion:journal:write",
             "orion:self_study:items:write",
             "orion:attention:schema",
+            "orion:curiosity:peer:brief",
             "orion:durable:run:state",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
@@ -389,6 +391,11 @@ class Settings(BaseSettings):
     substrate_attention_schema_retention_days: int = Field(
         90, alias="SUBSTRATE_ATTENTION_SCHEMA_RETENTION_DAYS"
     )
+    # curiosity_peer_brief: one row per contractor-peer brief. Sparse (per help
+    # request), 90 days like attention schema. 0 disables retention.
+    curiosity_peer_brief_retention_days: int = Field(
+        90, alias="CURIOSITY_PEER_BRIEF_RETENTION_DAYS"
+    )
     # substrate_durable_run_state: a handful of rows per curiosity run (5 nodes,
     # plus resumes/failures), a few runs a day. 90 days like its sibling.
     substrate_durable_run_state_retention_days: int = Field(
@@ -589,6 +596,14 @@ class Settings(BaseSettings):
         # than merges.
         if "orion:attention:schema" not in channels:
             channels.append("orion:attention:schema")
+        # Same guarantee again, same reason. curiosity.peer.brief.v1 is a
+        # code-default route with no feature toggle; SQL_WRITER_SUBSCRIBE_
+        # CHANNELS replaces rather than merges -- a stale already-deployed
+        # operator .env that predates this channel would otherwise leave
+        # the route/model/table all correct and the write silently going
+        # nowhere.
+        if "orion:curiosity:peer:brief" not in channels:
+            channels.append("orion:curiosity:peer:brief")
         # Same guarantee again, same reason. cockpit.hop.v1 is a
         # code-default route with no feature toggle; SQL_WRITER_SUBSCRIBE_
         # CHANNELS replaces rather than merges -- a stale already-deployed

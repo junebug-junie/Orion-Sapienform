@@ -876,6 +876,13 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_CURIOSITY_OUTREACH_ENABLED"
     )
+    # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
+    # on kickoff / self-inquiry). Off by default — kill switch for the peer
+    # hire path; when false, prompts never mention HelpRequest or load briefs.
+    HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
+    )
     # Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-
     # cognition-runs-from-cortex-design.md). True (default) = the curiosity tick
     # still owns scheduling, material, worldview and the prompt, but hands the

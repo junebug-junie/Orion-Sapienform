@@ -1,12 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 655,
+  "metric_count": 658,
   "_last_change": {
     "base": "merge base 5147a3fc8 (origin/main)",
-    "change_count": 1,
+    "change_count": 4,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-actions/orion:hub:collapse_mirror:chat_reply"
+      "medium added metric://bus_channel/orion-actions/orion:hub:collapse_mirror:chat_reply",
+      "medium added metric://bus_channel/orion-curiosity-peer/orion:curiosity:peer:brief",
+      "medium added metric://bus_channel/orion-hub/orion:curiosity:help:request",
+      "medium added metric://bus_channel/orion-hub/orion:curiosity:peer:brief:consumed"
     ]
   },
   "definitions": {
@@ -1178,6 +1181,19 @@
       "notes": "kind=request stability=stable",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-curiosity-peer/orion:curiosity:peer:brief": {
+      "schema_id": "PeerBriefV1",
+      "all_producers": [
+        "orion-curiosity-peer",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=None",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-diffusion-host/orion:power:intent": {
       "schema_id": "PowerIntentV1",
       "all_producers": [
@@ -1652,6 +1668,29 @@
         "orion-cortex-exec"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:curiosity:help:request": {
+      "schema_id": "HelpRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-curiosity-peer",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=None",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:curiosity:peer:brief:consumed": {
+      "schema_id": "PeerBriefConsumedV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-curiosity-peer"
+      ],
+      "notes": "kind=event stability=None",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:curiosity:turn:reply:*": {

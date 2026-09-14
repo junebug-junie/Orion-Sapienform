@@ -115,7 +115,7 @@ From repo root:
 ./scripts/smoke_proposal_frame_v1.sh
 ```
 
-Visual baseline scheduling is disabled by `config/proposals/visual_baseline.v1.yaml`.
+Visual baseline scheduling is controlled by `config/proposals/visual_baseline.v1.yaml`.
 When enabled, each existing field tick reads thought's bounded `/visual-chain/activity`
 API and serializes the history-derived need through the singleton Postgres
 `visual_baseline_checkpoint` row. Due time is last acknowledged production plus
@@ -125,5 +125,9 @@ any qualifying voluntary production resets it. This state is scheduling policy,
 not a learned value signal. The actual warrant and every express policy gate remain
 visible and unchanged. Run the replay with `pytest services/orion-proposal-runtime/evals`.
 Consumer-first rollout is required before enabling optional closed-schema fields.
+Apply `services/orion-sql-db/manual_migration_reverie_visual_attempt.sql` first;
+it installs both the cross-replica execution claim and the singleton checkpoint.
+Proposal-runtime does not create production schema during a tick, so a missing
+migration fails the baseline read visibly.
 Live receipts and concurrent diffusion behavior remain UNVERIFIED until an operator
 collects the correlated production trace described in the design document.

@@ -6572,6 +6572,10 @@ document.addEventListener("DOMContentLoaded", () => {
       // finds it.
       return;
     }
+    if (notification.notification_type === 'collapse_mirror_reply') {
+      // Success collapse replies already show as chat bubbles; toasting duplicates them.
+      return;
+    }
     if (notification.notification_type === 'collapse_mirror_held_back') {
       // Held-back note is informational only; do not toast as Orion's chat reply.
       return;

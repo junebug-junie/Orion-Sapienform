@@ -6,13 +6,27 @@ Hub's WorldviewReader stays RO. MERGE Cypher here is for the system writer
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from typing import Any, Sequence
 
-from orion.schemas.curiosity_peer import PeerBriefV1, clip
+from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.schemas.curiosity_peer import (
+    HELP_REQUEST_CHANNEL,
+    HELP_REQUEST_KIND,
+    HelpRequestV1,
+    PeerBriefV1,
+    clip,
+)
+
+logger = logging.getLogger("orion.curiosity.peer_briefs")
 
 LABEL_HELP_REQUEST = "HelpRequest"
 LABEL_PEER_BRIEF = "PeerBrief"
+
+# Same run_id contract as orion.curiosity.worldview (uuid4().hex[:12]).
+_RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
 
 _SELF_DEF_MARKERS = re.compile(
     r"(?is)(?:\bselfdefinition\b|\bself-definition\b|"
@@ -65,6 +79,106 @@ def help_request_about_prior_cypher(help_id: str, prior_id: str) -> str:
         f"(p:Prior {{prior_id: {q(prior_id)}}}) "
         f"MERGE (h)-[:ABOUT]->(p)"
     )
+
+
+def list_help_requests_for_run_cypher(run_id: str) -> str:
+    """RO Cypher: HelpRequests Orion wrote during one run (optional ABOUT prior)."""
+    rid = str(run_id or "").strip()
+    if not _RUN_ID_RE.match(rid):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH (h:{LABEL_HELP_REQUEST}) WHERE h.run_id = '{rid}' "
+        "OPTIONAL MATCH (h)-[:ABOUT]->(p:Prior) "
+        "RETURN h.help_id AS help_id, h.run_id AS run_id, "
+        "coalesce(h.prior_id, p.prior_id) AS prior_id, "
+        "h.mode AS mode, h.question AS question, "
+        "h.tried_summary AS tried_summary, "
+        "h.success_criteria AS success_criteria, "
+        "h.written_at AS written_at "
+        "ORDER BY h.written_at ASC"
+    )
+
+
+def list_help_requests_from_rows(rows: Sequence[dict[str, Any]]) -> list[HelpRequestV1]:
+    out: list[HelpRequestV1] = []
+    for row in rows:
+        try:
+            prior = row.get("prior_id")
+            out.append(
+                HelpRequestV1(
+                    help_id=str(row.get("help_id") or ""),
+                    run_id=str(row.get("run_id") or ""),
+                    prior_id=str(prior) if prior else None,
+                    mode=row.get("mode") or "world_curiosity",
+                    question=str(row.get("question") or ""),
+                    tried_summary=str(row.get("tried_summary") or ""),
+                    success_criteria=str(row.get("success_criteria") or ""),
+                )
+            )
+        except Exception:
+            continue
+    return out
+
+
+async def publish_help_requests_for_run(
+    *,
+    enabled: bool,
+    run_id: str,
+    reader: Any,
+    bus: Any,
+    source_ref: Any = None,
+) -> int:
+    """RO-query HelpRequests for run_id and publish each on HELP_REQUEST_CHANNEL.
+
+    Acceptance 1: flag off or zero HelpRequests → zero publishes.
+    Returns the number of envelopes published.
+    """
+    if not enabled:
+        return 0
+    if reader is None or bus is None:
+        return 0
+
+    def _read() -> list[HelpRequestV1]:
+        try:
+            rows = reader.query(list_help_requests_for_run_cypher(run_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_help_request_read_failed run=%s err=%s", run_id, exc
+            )
+            return []
+        return list_help_requests_from_rows(rows or [])
+
+    try:
+        helps = await asyncio.to_thread(_read)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "curiosity_help_request_read_failed run=%s err=%s", run_id, exc
+        )
+        return 0
+
+    published = 0
+    for help_req in helps:
+        try:
+            await bus.publish(
+                HELP_REQUEST_CHANNEL,
+                BaseEnvelope(
+                    kind=HELP_REQUEST_KIND,
+                    source=source_ref or {"name": "orion-hub"},
+                    payload=help_req.model_dump(mode="json"),
+                ),
+            )
+            published += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_help_request_publish_failed help_id=%s err=%s",
+                help_req.help_id,
+                exc,
+            )
+    if published:
+        logger.info(
+            "curiosity_help_requests_enqueued run=%s n=%s", run_id, published
+        )
+    return published
 
 
 UNUSED_OK_BRIEFS_CYPHER = (

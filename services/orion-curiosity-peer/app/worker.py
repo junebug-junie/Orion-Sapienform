@@ -36,16 +36,19 @@ def parse_help_request(raw: HelpInput) -> HelpRequestV1:
         raw = raw.decode("utf-8")
     if isinstance(raw, str):
         raw = json.loads(raw)
-    if isinstance(raw, dict) and "data" in raw and isinstance(raw["data"], (str, dict)):
-        # Bus envelope: prefer inner payload when present.
-        inner = raw["data"]
-        if isinstance(inner, str):
-            try:
-                inner = json.loads(inner)
-            except json.JSONDecodeError:
-                pass
-        if isinstance(inner, dict) and "help_id" in inner:
-            raw = inner
+    if isinstance(raw, dict):
+        # Bus envelope: Hub publishes BaseEnvelope with HelpRequest under
+        # `payload`; some paths nest under `data`.
+        for key in ("payload", "data"):
+            inner = raw.get(key)
+            if isinstance(inner, str):
+                try:
+                    inner = json.loads(inner)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(inner, dict) and "help_id" in inner:
+                raw = inner
+                break
     return HelpRequestV1.model_validate(raw)
 
 

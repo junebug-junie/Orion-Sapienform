@@ -89,6 +89,7 @@ from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
     list_unused_ok_briefs_from_rows,
+    publish_help_requests_for_run,
 )
 from orion.curiosity.self_inquiry import (
     LEDGER_SQL_TEMPLATE,
@@ -1451,6 +1452,13 @@ class CuriosityInvestigation:
             graph_footprint=footprint,
             hop_notes=hops,
         )
+        await publish_help_requests_for_run(
+            enabled=self.contractor_peer_enabled,
+            run_id=run_id,
+            reader=self._reader,
+            bus=self._bus,
+            source_ref=self._source_ref,
+        )
         # `evidence=` is OPERATOR TELEMETRY and stays out of the journal on
         # purpose. The journal is Orion's own written result; an orphan-rate
         # statistic there would be a health check wearing Orion's voice, and
@@ -1774,6 +1782,13 @@ class CuriosityInvestigation:
             graph_footprint=footprint,
             hop_notes=hops,
             line=LINE_SELF_INQUIRY,
+        )
+        await publish_help_requests_for_run(
+            enabled=self.contractor_peer_enabled,
+            run_id=run_id,
+            reader=self._reader,
+            bus=self._bus,
+            source_ref=self._source_ref,
         )
         await self._mirror_self_definition(definition, run_id=run_id, correlation_id=correlation_id)
         logger.info(

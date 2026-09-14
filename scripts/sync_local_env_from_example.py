@@ -104,6 +104,10 @@ NEVER_SYNC_KEYS = frozenset(
         # accident of the prefix list. Now it is a decision. Flattening it
         # would silently cost Orion write access to its own worldview graph.
         "HUB_CURIOSITY_GRAPH_ORION_PASSWORD",
+        # Cursor Auto key + worldview graph password for orion-curiosity-peer.
+        # Empty in .env_example; --force must never wipe a pasted live value.
+        "CURSOR_API_KEY",
+        "ORION_CURIOSITY_GRAPH_PASSWORD",
     }
 )
 
@@ -301,6 +305,10 @@ SYNC_PREFIXES = (
     # Same blind spot: without this prefix the new retention key is invisible
     # to default sync and the run reports "no changes".
     "CURIOSITY_PEER_BRIEF_",
+    # orion-curiosity-peer service kill switch + repo/model + graph wiring.
+    # CURIOSITY_PEER_ also covers CURIOSITY_PEER_BRIEF_* (sql-writer) above.
+    "CURIOSITY_PEER_",
+    "ORION_CURIOSITY_GRAPH_",
 )
 
 SYNC_EXACT = frozenset(
@@ -318,6 +326,8 @@ SYNC_EXACT = frozenset(
         "AUTONOMY_GRAPH_TIMEOUT_SEC",
         "CHANNEL_MEMORY_TURN_PERSISTED",
         "CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
+        "CHANNEL_HELP_REQUEST",
+        "CHANNEL_PEER_BRIEF",
         # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
         "CHANNEL_MIND_ARTIFACT",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
@@ -427,6 +437,10 @@ DEFAULT_SERVICES = (
     # -- by adding four real keys to its .env_example and watching the sync say
     # nothing was needed.
     "orion-cocreation-signals",
+    # Contractor peer (Cursor read-only + Claude fallback). Same dual-half
+    # requirement as orion-cocreation-signals: DEFAULT_SERVICES visit +
+    # CURIOSITY_PEER_ / ORION_CURIOSITY_GRAPH_ prefixes above.
+    "orion-curiosity-peer",
 )
 
 

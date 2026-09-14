@@ -1,0 +1,51 @@
+services:
+  curiosity-peer:
+    build:
+      context: ../..
+      dockerfile: services/orion-curiosity-peer/Dockerfile
+    container_name: ${PROJECT}-curiosity-peer
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - INSTANCE_ID=${INSTANCE_ID}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+
+      - CURIOSITY_PEER_NODE_NAME=${CURIOSITY_PEER_NODE_NAME:-${NODE_NAME}}
+      # Dual kill switch (service side). Hub also needs
+      # HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED=true at enqueue time.
+      - CURIOSITY_PEER_ENABLED=${CURIOSITY_PEER_ENABLED:-false}
+
+      # CURSOR_API_KEY lives HERE — never in orion-hub. Empty is fine while
+      # the service is disabled; Task 12 will require it when enabled.
+      - CURSOR_API_KEY=${CURSOR_API_KEY:-}
+      - CURIOSITY_PEER_REPO_ROOT=${CURIOSITY_PEER_REPO_ROOT:-/repo}
+      - CURIOSITY_PEER_MODEL=${CURIOSITY_PEER_MODEL:-composer-2.5}
+
+      - ORION_CURIOSITY_GRAPH_HOST=${ORION_CURIOSITY_GRAPH_HOST:-}
+      - ORION_CURIOSITY_GRAPH_PORT=${ORION_CURIOSITY_GRAPH_PORT:-}
+      - ORION_CURIOSITY_GRAPH_USER=${ORION_CURIOSITY_GRAPH_USER:-}
+      - ORION_CURIOSITY_GRAPH_PASSWORD=${ORION_CURIOSITY_GRAPH_PASSWORD:-}
+      - ORION_CURIOSITY_GRAPH_OWN=${ORION_CURIOSITY_GRAPH_OWN:-orion_worldview}
+
+      - CHANNEL_HELP_REQUEST=${CHANNEL_HELP_REQUEST:-orion:curiosity:help:request}
+      - CHANNEL_PEER_BRIEF=${CHANNEL_PEER_BRIEF:-orion:curiosity:peer:brief}
+      - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
+      - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
+    volumes:
+      # Read-only repo for Cursor Auto investigation (Task 12+).
+      - ${CURIOSITY_PEER_REPO_HOST_PATH:-../..}:${CURIOSITY_PEER_REPO_ROOT:-/repo}:ro
+    # DELIBERATELY ABSENT: no docker.sock, no SSH/gh mounts, no host network.
+    # Credential isolation is the point of this container existing.
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

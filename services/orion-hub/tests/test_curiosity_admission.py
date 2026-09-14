@@ -29,15 +29,17 @@ def request(run="run-one", lane="agent", generation=1):
     )
 
 
-def test_admission_kickoff_declares_resource_and_keeps_ambiguous_run_queued():
+@pytest.mark.parametrize("elastic", [False, True])
+def test_admission_kickoff_declares_resource_and_keeps_ambiguous_run_queued(elastic):
     bus = _CortexBus(raise_on_rpc=True)
-    loop = _loop(bus, kickoff_via_cortex=True, durable_admission_enabled=True, llm_route="agent")
+    loop = _loop(bus, kickoff_via_cortex=True, durable_admission_enabled=True, elastic_activation_enabled=elastic, llm_route="agent")
     assert asyncio.run(loop.tick()) is None
     assert not bus.journal
     assert bus.redis.values.get("orion:curiosity:last_investigation_at") is not None
     durable = bus.rpc_calls[0][1].payload["context"]["metadata"]["durable_run"]
     assert durable["admission"]["resource"] == "llm.route.agent"
     assert durable["admission"]["mode"] == "exclusive"
+    assert durable["admission"]["allow_elastic_activation"] is elastic
 
 
 def test_admitted_turns_use_assigned_route_and_do_not_hold_legacy_lock(monkeypatch):

@@ -38,24 +38,34 @@ def cortex_dispatch():
     return module.dispatch_durable_run
 
 
-@pytest.mark.parametrize("widen", [False, True], ids=["preferred", "widened"])
+@pytest.mark.parametrize("widen", [False, True, "elastic"], ids=["preferred", "widened", "elastic-burst"])
 @pytest.mark.parametrize("repair_required", [False, True], ids=["accepted-draft", "conditional-repair"])
 def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, widen, repair_required):
     async def scenario(pool, saver, store):
+        alternate = "agent-burst" if widen == "elastic" else "metacog"
         bus = TypedBus()
         settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI=DSN, ORION_BUS_ENABLED=False,
             DURABLE_RUNS_ADMISSION_ENABLED=True, DURABLE_RUNS_ADMISSION_SHADOW=False,
             DURABLE_RUNS_CAPACITY_ENABLED=True, DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=0.05,
             DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1, DURABLE_RUNS_LEASE_SECONDS=90,
             DURABLE_RUNS_WIDENING_ENABLED=True, DURABLE_RUNS_WIDENING_AFTER_SEC=1200,
-            DURABLE_RUNS_LANE_POLICY_JSON=json.dumps({"metacog": {"compatible_with": ["agent"]}}))
+            DURABLE_RUNS_LANE_POLICY_JSON=json.dumps({alternate: {"compatible_with": ["agent"]}}))
         capacity = PostgresCapacityStore(store)
         lanes = {lane: {"backend_key": backend, "configured": True, "healthy": True,
                        "capabilities": {"structured_output": True, "context_tokens": 32768},
-                       "compatible_with": ["agent"] if lane == "metacog" else []}
-                 for lane, backend in (("agent", "http://fixture-backend"), ("metacog", "http://fixture-metacog"))}
+                       "compatible_with": ["agent"] if lane == alternate else []}
+                 for lane, backend in (("agent", "http://fixture-backend"), (alternate, "http://fixture-metacog"))}
         broker = ResourceBroker(store, lanes, lease_seconds=90, widening_enabled=True,
                                 widen_after_seconds=1200, hysteresis_seconds=120, capacity=capacity)
+        if widen == "elastic":
+            from orion.durable_admission.elastic import ElasticStore
+            broker.elastic = ElasticStore(store,"http://fixture-metacog")
+            await broker.elastic.initialize()
+            broker.elastic_shadow = False
+            broker.elastic_environment = {"eligible":True}
+            broker.elastic_budget = {"drain":300,"transition":60,"cold":600}
+            lanes[alternate].update(healthy=False,activatable=True,
+                activation_capabilities={"structured_output":True,"context_tokens":32768})
         runner = DurableRunner(settings, bus=bus, checkpointer=saver)
         runtime = AdmissionRuntime(settings, runner, pool, store=store, broker=broker)
         monkeypatch.setenv("POSTGRES_URI", DSN)
@@ -71,7 +81,7 @@ def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, wid
 
         async def submit(run_id, *, line="investigate", budget=3600):
             request = DurableRunRequestV1(run_id=run_id, workflow="curiosity.investigate",
-                correlation_id=str(uuid4()), admission={"requirements": {
+                correlation_id=str(uuid4()), admission={"allow_elastic_activation": widen == "elastic", "requirements": {
                     "structured_output": True, "minimum_context_tokens": 32768}},
                 brief={"prompt": "Inspect the isolated fixture ledger and state one bounded conclusion.",
                        "session_id": "isolated-durable-acceptance", "line": line,
@@ -118,14 +128,22 @@ def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, wid
                 restarted.now = lambda: now
             else:
                 await store.finish_projection(holder.run_id, "completed", {})
+            if widen == "elastic":
+                assert await broker.tick() == []
+                intent=await broker.elastic.snapshot()
+                assert intent["state"] == "requested" and intent["run_id"] == study.run_id
+                assert not adapter.stages and not bus.inflight_rpc
+                # Physical model is a fixture; SQL/FCC/Gateway fencing below is real.
+                await broker.elastic.complete(intent["operation_id"],{"status":"success"},healthy=True,assignments=True)
+                broker.lanes[alternate]["healthy"]=True
             grants = await broker.tick()
             assert len(grants) == 1
             granted = grants[0]
-            expected_lane = "metacog" if widen else "agent"
+            expected_lane = alternate if widen else "agent"
             assert granted["lane"] == expected_lane
             if widen:
                 decision = (await store.get_demand(study.run_id))["decision"]
-                assert decision["eligible_lanes"] == ["agent", "metacog"]
+                assert decision["eligible_lanes"] == ["agent", alternate]
                 assert await store.get_lease(holder.run_id), "widening stole the occupied preferred lane"
             # Deliver the persisted grant through the production handler before
             # reconciliation. Leave it unacked to exercise duplicate delivery too.

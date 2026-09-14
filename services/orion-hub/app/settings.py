@@ -882,6 +882,7 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_KICKOFF_VIA_CORTEX: bool = Field(
         default=True, alias="HUB_CURIOSITY_KICKOFF_VIA_CORTEX"
     )
+    HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED: bool = Field(False, alias="HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED")
     HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED: bool = Field(
         default=False, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
     )

@@ -6,6 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    GPU2_ENABLED: bool = False
+    GPU2_DIFFUSION_URL: str = "http://100.112.254.99:8014"
+    GPU2_AGENT_URL: str = "http://100.112.254.99:8016"
+    GPU2_AUTHORITY_URL: str = "http://100.92.216.81:8124"
+    GPU2_DIFFUSION_TOKEN: str = ""
+    GPU2_DRAIN_TIMEOUT_SEC: float = 300.0
+    GPU2_MODEL_READY_TIMEOUT_SEC: float = 600.0
+
     SERVICE_NAME: str = "gpu-lane-controller"
     SERVICE_VERSION: str = "0.1.0"
     NODE_NAME: str = "circe"

@@ -486,6 +486,7 @@ class CuriosityInvestigation:
         reader: Optional[WorldviewReader] = None,
         kickoff_via_cortex: bool = False,
         durable_admission_enabled: bool = False,
+        elastic_activation_enabled: bool = False,
         lease_validation_url: str = "http://127.0.0.1:8124/leases/validate",
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
@@ -501,6 +502,7 @@ class CuriosityInvestigation:
         # reports completion on `orion:durable:run:state` (outreach stays here).
         self.kickoff_via_cortex = bool(kickoff_via_cortex)
         self.durable_admission_enabled = bool(durable_admission_enabled)
+        self.elastic_activation_enabled = bool(elastic_activation_enabled)
         if self.durable_admission_enabled and not self.kickoff_via_cortex:
             raise ValueError("durable admission requires kickoff_via_cortex")
         self.lease_validation_url = lease_validation_url
@@ -2084,6 +2086,7 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             brief=self._run_brief(prompt=prompt, material=material, line=line),
             admission=(ResourceRequirementV1(
+                allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
             ) if self.durable_admission_enabled else None),

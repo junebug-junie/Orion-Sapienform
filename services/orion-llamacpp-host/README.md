@@ -577,3 +577,13 @@ bash services/orion-llamacpp-host/scripts/verify_atlas_quick_llamacpp_thinking_o
 ```
 
 **Via `orion-llm-gateway` (bus):** callers may pass `options.chat_template_kwargs` (e.g. `{"enable_thinking": false}`) on `ChatRequestPayload`; the gateway forwards that field to `llamacpp` / `llama-cola` OpenAI-compatible backends on each request.
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.

@@ -44,6 +44,7 @@ VisualTerminalReason = Literal[
     "refractory",
     "low_salience",
     "generation_failed",
+    "resource_deferred",
     # Added 2026-08-31. The whole run exceeded ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC
     # and was abandoned so the single-flight lock could be released. Distinct from
     # "generation_failed" (a hop returned an error) -- here a hop never returned at
@@ -136,7 +137,7 @@ class VisualRunRequestV1(BaseModel):
     visual_baseline: VisualBaselineEligibilityV1 | None = None
 
 
-VisualRunOutcome = Literal["produced", "deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown"]
+VisualRunOutcome = Literal["produced", "deferred_thermal", "deferred_busy", "deferred_resource", "already_satisfied", "failed", "unknown"]
 
 
 class VisualExecutionReceiptV1(BaseModel):

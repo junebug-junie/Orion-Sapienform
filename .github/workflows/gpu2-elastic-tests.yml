@@ -1,0 +1,19 @@
+name: GPU2 fixed-slot and diffusion safety
+on:
+  pull_request:
+    paths:
+      - 'services/orion-gpu-lane-controller/**'
+      - 'services/orion-diffusion-host/**'
+      - 'orion/schemas/gpu_slot.py'
+      - '.github/workflows/gpu2-elastic-tests.yml'
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-gpu-lane-controller/requirements.txt -r requirements-dev.txt httpx pillow
+      - run: python -m pytest services/orion-gpu-lane-controller/tests -q
+      - run: python -m pytest services/orion-diffusion-host/tests -q

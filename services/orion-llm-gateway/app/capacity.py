@@ -159,6 +159,8 @@ class CapacityPermit:
         self._lost.set()
 
     async def acquire(self) -> "CapacityPermit":
+        if self.lane == "agent-burst" and (not self.enabled or not self.lease):
+            raise CapacityRejected("agent_burst_requires_durable_capacity_lease")
         if not self.enabled:
             return self
         payload = CapacityAcquireV1(

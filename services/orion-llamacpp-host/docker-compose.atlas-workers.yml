@@ -164,6 +164,46 @@ services:
           devices:
             - capabilities: [gpu]
 
+  atlas-agent-burst:
+    profiles: ["agent-burst"]
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-agent-burst
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=circe-worker-agent-burst-1
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=2
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${ATLAS_AGENT_BURST_HOST_PORT:-8016}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
 networks:
   app-net:
     external: true

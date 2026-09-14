@@ -52,6 +52,15 @@ class PostgresCapacityStore:
                     return {"acquired": False, "reason": "resource_lease_stale"}
             elif held:
                 return {"acquired": False, "reason": "durable_lease_active"}
+            table = await (await conn.execute("SELECT to_regclass('durable_elastic_slot') AS name")).fetchone()
+            elastic = await (await conn.execute("SELECT * FROM durable_elastic_slot WHERE backend_key=%s", (backend,))).fetchone() if table["name"] else None
+            if request.lane == "agent-burst" and not elastic:
+                return {"acquired": False, "reason": "elastic_unavailable"}
+            # No unleased traffic on this physical backend, even via an alias.
+            # A previously granted lease retains its whole sequential FCC path
+            # while NEW leases are closed by the broker.
+            if elastic and (not request.lease or request.lane != "agent-burst"):
+                return {"acquired": False, "reason": "elastic_requires_owner"}
             if old:
                 return {"acquired": True, "reason": "duplicate", "permit": self.public(old)}
 

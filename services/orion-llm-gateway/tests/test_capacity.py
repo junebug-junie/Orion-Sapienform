@@ -430,3 +430,13 @@ def test_capacity_mode_disables_context_overflow_lane_migration(authority, monke
                                  backend_name="llamacpp", route="agent")
     assert client.post.call_count == 1
     ladder.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_burst_refuses_unleased_calls_even_with_capacity_disabled(monkeypatch):
+    from app.capacity import CapacityPermit,CapacityRejected,settings
+    for enabled in (False,True):
+        monkeypatch.setattr(settings,"llm_gateway_capacity_enabled",enabled)
+        ticket=CapacityPermit(lane="agent-burst",backend_key="http://burst",correlation_id="test",budget_sec=1)
+        with pytest.raises(CapacityRejected,match="agent_burst_requires"):
+            await ticket.acquire()

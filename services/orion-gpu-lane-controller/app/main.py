@@ -12,7 +12,8 @@ from pydantic import BaseModel, ConfigDict
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
-from . import lane_control
+from . import lane_control, gpu2
+from orion.schemas.gpu_slot import GpuSlotRequestV1
 from .settings import settings
 
 heartbeat_chassis: HeartbeatOnly | None = None
@@ -102,3 +103,23 @@ async def flip(req: GpuLaneFlipRequest, authorization: Optional[str] = Header(de
         return JSONResponse(result, status_code=409)
     ok = status in ("success", "noop")
     return JSONResponse(result, status_code=200 if ok else 502)
+
+
+@app.get("/v1/gpu-slots/{slot}/status")
+async def slot_status(slot: str):
+    if slot == "circe-gpu1":
+        return await asyncio.to_thread(lane_control.get_status)
+    if slot == "circe-gpu2":
+        return await gpu2.status()
+    return JSONResponse({"error": "unknown_slot"}, status_code=404)
+
+
+@app.post("/v1/gpu-slots/activate")
+async def activate_slot(req: GpuSlotRequestV1, authorization: Optional[str] = Header(default=None)):
+    if not settings.GPU_LANE_CONTROLLER_TOKEN:
+        return JSONResponse({"error": "mutation_disabled"}, status_code=503)
+    if not str(authorization or "").lower().startswith("bearer ") or not _authorized(authorization):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    result = await lane_control.flip(req.target) if req.slot == "circe-gpu1" else await gpu2.flip(req)
+    return JSONResponse(result, status_code=200 if result.get("status") in {"success", "noop"} else
+                        409 if result.get("status") == "busy" else 503)

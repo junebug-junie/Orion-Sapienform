@@ -586,3 +586,13 @@ instance serving the protected upstreams. Partial rollout leaves older Gateway
 instances outside the shared capacity count. Direct worker HTTP calls also
 remain outside this Gateway boundary. Disable the capacity flag to restore the
 existing admission behavior; no production activation is performed by this patch.
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.

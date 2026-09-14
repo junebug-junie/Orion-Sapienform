@@ -89,7 +89,7 @@ from typing import FrozenSet, Optional
 #: other. `harness` is also in SYSTEM_LLM_ROUTES below: it is never meant to be a human's
 #: interactive Compute choice, and that is enforced, not just documented -- see that set for why.
 ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
-    {"chat", "quick", "metacog", "metacog_background", "quick_background", "agent", "harness"}
+    {"chat", "quick", "metacog", "metacog_background", "quick_background", "agent", "harness", "agent-burst"}
 )
 
 #: Historical spellings of `quick`, kept working because live config still carries them.
@@ -117,6 +117,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "metacog_background",
     "agent",
     "harness",
+    "agent-burst",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -189,7 +190,7 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # ordinary chooseable lane. `priority: "system"` is the route-table value that signals this; the
 # fail-safe/fail-open reasoning for keeping a *definitional* copy here, not just relying on the
 # route table, mirrors BACKGROUND_LLM_ROUTES above.
-SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness"})
+SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness", "agent-burst"})
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(

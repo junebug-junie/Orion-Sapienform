@@ -1419,3 +1419,58 @@ async def test_watchdog_tick_failure_does_not_kill_the_loop(monkeypatch):
     await visual_chain.run_visual_chain_watchdog(stop_event)
 
     assert calls["n"] == 2  # survived the first tick's exception and ran again
+
+
+@pytest.mark.asyncio
+async def test_resource_deferral_writes_no_failure_or_image(tmp_path, monkeypatch):
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old description", 0, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
+
+    def fake_generate(prompt, *, base_url, timeout_sec):
+        raise visual_chain.DiffusionResourceDeferred("controller_displacement")
+
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
+
+    persisted_chains = []
+    persisted_artifacts = []
+    monkeypatch.setattr(
+        visual_chain, "persist_reverie_visual_chain", lambda c: persisted_chains.append(c) or True
+    )
+    monkeypatch.setattr(
+        visual_chain,
+        "acknowledge_visual_production",
+        lambda c, a: persisted_artifacts.append(a) or _receipt(c, a),
+    )
+
+    bus = AsyncMock()
+    chain = await visual_chain.run_visual_chain_once(bus)
+
+    assert chain is not None
+    assert chain.terminal_reason == "resource_deferred"
+    # Nothing was generated, so prior_description is carried forward as-is.
+    assert chain.chain_json["resource_gate"]["reason"] == "controller_displacement"
+    assert len(persisted_chains) == 1
+    assert persisted_artifacts == []  # no artifact row for a chain with no image
+    bus.rpc_request.assert_not_called()  # never reached the vision-host hop
+
+
+def test_verified_diffusion_rollback_allows_visual_generation(monkeypatch):
+    import io,json
+    from app import visual_chain as v
+    monkeypatch.setattr(v.settings,'visual_elastic_status_enabled',True)
+    calls=[]
+    def open_url(req,**kwargs):
+        calls.append(req)
+        if isinstance(req,str):
+            return io.BytesIO(json.dumps({'enabled':True,'active':'diffusion','state':'failed','restored':True}).encode())
+        return io.BytesIO(b'image fixture')
+    monkeypatch.setattr(v.urllib.request,'urlopen',open_url)
+    assert v.call_diffusion_generate('fixture',base_url='http://fixture-diffusion',timeout_sec=1)==b'image fixture'
+    assert len(calls)==2

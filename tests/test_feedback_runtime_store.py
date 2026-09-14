@@ -420,7 +420,7 @@ def test_visual_result_survives_sql_read_normalization_and_feedback_consumer(mon
     dispatch = _dispatch_frame([candidate]).model_copy(update={"dispatched_candidates": [candidate]})
     policy = load_feedback_policy(REPO / "config/feedback/feedback_policy.v1.yaml")
     for outcome, kind in [("produced", "completed"), ("deferred_thermal", "deferred"),
-                          ("deferred_busy", "deferred"), ("already_satisfied", "not_attempted"),
+                          ("deferred_busy", "deferred"), ("deferred_resource", "deferred"), ("already_satisfied", "not_attempted"),
                           ("failed", "failed"), ("unknown", "unknown"), (None, "unknown")]:
         result_json = {"ok": True, "evidence_refs": ["receipt:visual"]}
         if outcome is not None:

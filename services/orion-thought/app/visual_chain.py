@@ -590,6 +590,10 @@ def resolve_visual_chain_continuity(
     return prior_description, streak + 1, False
 
 
+class DiffusionResourceDeferred(RuntimeError):
+    """Capacity deferral: never an image failure or reward observation."""
+
+
 class DiffusionGenerationError(RuntimeError):
     """orion-diffusion-host's /generate call failed or returned non-2xx."""
 
@@ -600,6 +604,19 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
     section 10 -- no dependency for one POST call), same choice
     foveal_probe.py and this service's own cortex_client make elsewhere.
     """
+    if settings.visual_elastic_status_enabled:
+        try:
+            with urllib.request.urlopen(settings.visual_elastic_controller_url.rstrip("/") +
+                    "/v1/gpu-slots/circe-gpu2/status", timeout=3) as response:
+                slot = json.load(response)
+            if slot.get("enabled") and (slot.get("active") != "diffusion" or
+                    slot.get("state") in {"draining", "activating"} or
+                    (slot.get("state") == "failed" and slot.get("restored") is not True)):
+                raise DiffusionResourceDeferred("controller_displacement")
+        except DiffusionResourceDeferred:
+            raise
+        except (urllib.error.URLError, OSError, ValueError):
+            raise DiffusionResourceDeferred("resource_status_unavailable")
     url = str(base_url).rstrip("/") + "/generate"
     body = json.dumps({"prompt": prompt}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
@@ -613,10 +630,21 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
         # response (including orion-diffusion-host's documented 429
         # busy-reject) under the generic "failed" message, losing the status
         # code/reason a caller needs to tell "busy" from "broken".
+        if exc.code in (429, 503):
+            reason = "diffusion_busy" if exc.code == 429 else "model_unready"
+            try:
+                body = json.loads(exc.read())
+                if body.get("reason") == "controller_displacement":
+                    reason = "controller_displacement"
+            except (ValueError, OSError):
+                pass
+            raise DiffusionResourceDeferred(reason) from exc
         raise DiffusionGenerationError(
             f"diffusion-host /generate returned HTTP {exc.code}: {exc.reason}"
         ) from exc
     except (urllib.error.URLError, OSError) as exc:
+        if settings.visual_elastic_status_enabled:
+            raise DiffusionResourceDeferred("diffusion_unreachable") from exc
         raise DiffusionGenerationError(f"diffusion-host /generate failed: {exc}") from exc
     if not data:
         raise DiffusionGenerationError("diffusion-host /generate returned empty body")
@@ -1048,6 +1076,13 @@ async def _run_visual_chain_body(
             base_url=settings.diffusion_host_base_url,
             timeout_sec=settings.visual_chain_diffusion_timeout_sec,
         )
+    except DiffusionResourceDeferred as exc:
+        chain = ReverieVisualChainV1(chain_id=chain_id, created_at=now_fn(),
+            terminal_reason="resource_deferred", context_selection=context_selection,
+            chain_json={"resource_gate": {"reason": str(exc)}, "thermal_gate": thermal_gate,
+                        "run_request": run_request})
+        await asyncio.to_thread(persist_reverie_visual_chain, chain)
+        return chain
     except Exception as exc:
         return await _generation_failed(
             chain_id=chain_id,

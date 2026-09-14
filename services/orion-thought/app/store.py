@@ -1467,6 +1467,7 @@ _VISUAL_ACTIVITY_SQL = _VISUAL_PRODUCTION_SQL + """
 SELECT l.chain_id AS last_success_chain_id, l.sha256 AS last_success_sha256,
        l.produced_at AS last_success_at, t.created_at AS last_attempt_at,
        CASE WHEN t.terminal_reason='thermal_refused' THEN 'deferred_thermal'
+            WHEN t.terminal_reason='resource_deferred' THEN 'deferred_resource'
             WHEN t.terminal_reason='generation_failed' THEN 'failed'
             WHEN t.terminal_reason='run_deadline_exceeded' THEN 'unknown'
             WHEN EXISTS (SELECT 1 FROM production p WHERE p.chain_id=(

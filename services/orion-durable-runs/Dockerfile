@@ -8,6 +8,7 @@ COPY services/orion-durable-runs/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY orion /app/orion
+COPY config/proposals/visual_baseline.v1.yaml /app/config/proposals/visual_baseline.v1.yaml
 COPY services/orion-durable-runs /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8121"]

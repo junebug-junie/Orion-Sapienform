@@ -352,3 +352,22 @@ def test_optional_replay_before_attempt_table_migration(database):
     # New baseline claims still require their durable claim table.
     with pytest.raises(Exception):
         store.claim_visual_attempt(VisualRunRequestV1(dispatch_id="new-claim"), retry_sec=600, now=NOW)
+
+
+def test_resource_deferral_retains_success_and_outstanding_baseline(database,tmp_path):
+    from orion.reverie.baseline import schedule,VisualBaselinePolicy
+    store,engine=database
+    chain,artifact=production(store,tmp_path)
+    assert store.acknowledge_visual_production(chain,artifact)
+    later=NOW+timedelta(hours=2)
+    assert store.persist_reverie_visual_chain(ReverieVisualChainV1(chain_id="deferred-resource",
+        created_at=later,terminal_reason="resource_deferred",chain_json={"resource_gate":{"reason":"controller_displacement"}}))
+    activity=store.load_visual_activity()
+    assert activity.last_success_at == NOW
+    assert activity.last_attempt_outcome == "deferred_resource"
+    activity=activity.model_copy(update={"observed_at":later})
+    need,state,_=schedule(activity,{},now=later,policy=VisualBaselinePolicy(enabled=True))
+    assert need is not None
+    activity=activity.model_copy(update={"observed_at":later+timedelta(seconds=601)})
+    again,_,_=schedule(activity,state,now=later+timedelta(seconds=601),policy=VisualBaselinePolicy(enabled=True))
+    assert again.need_id == need.need_id

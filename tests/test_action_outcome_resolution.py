@@ -459,7 +459,7 @@ def test_control_cell_upsert_lets_a_null_frame_id_through() -> None:
     ), "the unguarded IS DISTINCT FROM form is back"
 
 
-@pytest.mark.parametrize("outcome", ["deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown", None])
+@pytest.mark.parametrize("outcome", ["deferred_thermal", "deferred_busy", "deferred_resource", "already_satisfied", "failed", "unknown", None])
 def test_visual_non_observations_do_not_learn_even_with_measured_field(outcome):
     candidate = _candidate("visual", effect=_effect()).model_copy(update={
         "cortex_verb": "skills.imagination.render_scene.v1",

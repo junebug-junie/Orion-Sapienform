@@ -32,6 +32,9 @@ MIND_ENRICHMENT_MIN_VIABLE_WALL_MS: int = int(
 
 
 class ThoughtSettings(BaseSettings):
+    visual_elastic_status_enabled: bool = Field(False, alias="ORION_VISUAL_ELASTIC_STATUS_ENABLED")
+    visual_elastic_controller_url: str = Field("http://100.112.254.99:8090", alias="ORION_VISUAL_ELASTIC_CONTROLLER_URL")
+
     service_name: str = Field("orion-thought", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
     node_name: str = Field("athena", alias="NODE_NAME")

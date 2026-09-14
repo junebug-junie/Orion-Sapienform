@@ -18,7 +18,7 @@ from orion.schemas.room_claude import (
 )
 
 from .claude_session import ClaudeTurnResult, run_room_turn
-from .room_prompt import AUTO_INVITE_CLAUSE, SYSTEM_PROMPT, build_turn_prompt, filtered_summary, is_pass
+from .room_prompt import append_system_prompt_for, build_turn_prompt, filtered_summary, is_pass
 from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
@@ -177,8 +177,9 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         # arrive as system framing.
         # Auto-invites additionally get permission to stay quiet. A manual
         # invite is someone actually asking, so passing there would be rude.
-        append_system_prompt=(
-            SYSTEM_PROMPT + AUTO_INVITE_CLAUSE if request.trigger == "auto" else SYSTEM_PROMPT
+        append_system_prompt=append_system_prompt_for(
+            trigger=request.trigger,
+            prompt=request.prompt,
         ),
         env=build_subprocess_env(settings),
         cwd=settings.ROOM_COMPANION_WORKSPACE,

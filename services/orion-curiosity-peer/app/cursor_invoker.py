@@ -18,7 +18,11 @@ from app.policy import (
     assert_read_only_agent_options,
 )
 from orion.curiosity.peer_briefs import strip_self_definition_draft
-from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefV1
+from orion.schemas.curiosity_peer import (
+    CuriosityPeerNameV1,
+    HelpRequestV1,
+    PeerBriefV1,
+)
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 
@@ -122,7 +126,12 @@ def _strip_self_def_list(items: list[str]) -> list[str]:
     return cleaned
 
 
-def parse_peer_brief_body(body: str, *, help: HelpRequestV1) -> PeerBriefV1:
+def parse_peer_brief_body(
+    body: str,
+    *,
+    help: HelpRequestV1,
+    peer: CuriosityPeerNameV1 = "cursor_auto",
+) -> PeerBriefV1:
     """Leniently map Cursor/Claude text into PeerBriefV1.
 
     Empty body → status=empty. Self-inquiry strips SelfDefinition drafts from
@@ -134,7 +143,7 @@ def parse_peer_brief_body(body: str, *, help: HelpRequestV1) -> PeerBriefV1:
         help_id=help.help_id,
         run_id=help.run_id,
         prior_id=help.prior_id,
-        peer="cursor_auto",
+        peer=peer,
     )
 
     raw = (body or "").strip()

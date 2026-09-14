@@ -9,9 +9,8 @@ Postgres). Orion alone still writes `:Prior` / `:Finding` / `:SelfDefinition`.
 
 Design: `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 
-**Scaffold status (Task 11):** chassis only — subscribe loop no-ops when
-disabled; Cursor invoker / Claude fallback / full worker logic land in
-Tasks 12–13.
+**Status:** Patch 1 worker armed (Tasks 12–13). Kill switches still default
+off. Cursor meter remains fail-closed until a live reading exists.
 
 ## Why this is a separate service
 

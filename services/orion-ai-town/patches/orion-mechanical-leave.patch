@@ -1,0 +1,28 @@
+diff --git a/convex/aiTown/agent.ts b/convex/aiTown/agent.ts
+--- a/convex/aiTown/agent.ts
++++ b/convex/aiTown/agent.ts
+@@ -207,19 +207,12 @@ export class Agent {
+         // NPC-NPC chats wind down on their own. With a human partner, stay until they leave.
+         if (!otherPlayer.human) {
+           const tooLongDeadline = started + MAX_CONVERSATION_DURATION;
+           if (tooLongDeadline < now || conversation.numMessages > MAX_CONVERSATION_MESSAGES) {
+-            console.log(`${player.id} leaving conversation with ${otherPlayer.id}.`);
+-            const messageUuid = crypto.randomUUID();
+-            conversation.setIsTyping(now, player, messageUuid);
+-            this.startOperation(game, now, 'agentGenerateMessage', {
+-              worldId: game.worldId,
+-              playerId: player.id,
+-              agentId: this.id,
+-              conversationId: conversation.id,
+-              otherPlayerId: otherPlayer.id,
+-              messageUuid,
+-              type: 'leave',
+-            });
++            // Mechanical leave: do not require an LLM goodbye. Live 2026-09-14
++            // Mara↔Orion deadlock: leave-via-agentGenerateMessage hung on empty
++            // stubs against a bloated transcript, so the chat never ended.
++            console.log(`${player.id} leaving conversation with ${otherPlayer.id} (mechanical).`);
++            conversation.leave(game, now, player);
+             return;
+           }
+         }

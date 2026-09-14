@@ -69,6 +69,17 @@ def test_start_conversation_sends_input(monkeypatch):
     )
 
 
+def test_leave_conversation_sends_input(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    with patch.object(aitown_client, "send_input", return_value=None) as s:
+        aitown_client.leave_conversation(player_id="p:29", conversation_id="c:1", world_id="w1")
+    s.assert_called_once_with(
+        name="leaveConversation",
+        args={"playerId": "p:29", "conversationId": "c:1"},
+        world_id="w1",
+    )
+
+
 def test_get_world_map_returns_map(monkeypatch):
     monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
     gd = {"worldMap": {"width": 2, "height": 2, "objectTiles": []}}

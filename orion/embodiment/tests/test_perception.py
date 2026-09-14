@@ -43,8 +43,11 @@ def test_build_perception_shapes_active_conversation():
     assert convo["other"] == {
         "player_id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}, "is_human": False,
     }
-    # whitespace-only message dropped; author_id preserved for turn-taking
-    assert convo["messages"] == [{"author_id": "p9", "author": "Juniper", "text": "hey Orion"}]
+    # whitespace-only message dropped; author_id preserved for turn-taking;
+    # created_ms forwarded (None when Convex omitted _creationTime).
+    assert convo["messages"] == [
+        {"author_id": "p9", "author": "Juniper", "text": "hey Orion", "created_ms": None}
+    ]
 
 
 def test_build_perception_forwards_is_human_for_nearby_and_partner():

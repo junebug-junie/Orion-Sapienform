@@ -199,6 +199,17 @@ def start_conversation(*, player_id: str, invitee_id: str, world_id: Optional[st
     )
 
 
+def leave_conversation(
+    *, player_id: str, conversation_id: str, world_id: Optional[str] = None
+) -> Any:
+    """Leave an active conversation (mechanical; no LLM goodbye)."""
+    return send_input(
+        name="leaveConversation",
+        args={"playerId": player_id, "conversationId": conversation_id},
+        world_id=world_id,
+    )
+
+
 def move_to(*, player_id: str, x: float, y: float, world_id: Optional[str] = None) -> Any:
     kwargs: Dict[str, Any] = {
         "name": "moveTo",

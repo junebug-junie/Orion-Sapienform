@@ -84,6 +84,7 @@ def _active_conversation(
                 "author_id": str(m.get("author")) if m.get("author") is not None else None,
                 "author": m.get("authorName") or m.get("author"),
                 "text": str(m.get("text") or "").strip(),
+                "created_ms": m.get("_creationTime"),
             }
             for m in (messages or [])
             if str(m.get("text") or "").strip()

@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # Manhattan/euclidean tile distance under which Orion will initiate with a
     # nearby player when idle and past the social cooldown. 0 = never self-initiate.
     social_initiate_distance: float = Field(0.0, alias="EMBODIMENT_SOCIAL_INITIATE_DISTANCE")
+    # Walk out of a participating conversation that has gone dead (stale last
+    # line, or never successfully spoke). 0 = never self-abandon. Default 180s
+    # matches the town's human-reply grace window order of magnitude and is
+    # well above speech_timeout so in-flight replies are not cut off.
+    conversation_abandon_sec: float = Field(180.0, alias="EMBODIMENT_CONVERSATION_ABANDON_SEC")
 
     channel_intent: str = Field("orion:embodiment:intent", alias="EMBODIMENT_CHANNEL_INTENT")
     channel_outcome: str = Field("orion:embodiment:outcome", alias="EMBODIMENT_CHANNEL_OUTCOME")

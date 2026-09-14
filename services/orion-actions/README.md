@@ -11,7 +11,11 @@
 - operational notifications (including recurring-schedule attention notifications),
 - bounded operational side effects (daily pulse/metacog, journaling triggers, collapse-response dispatch).
 
-**Recall profile for dispatch:** `ACTIONS_RECALL_PROFILE` (default `collapse_mirror.v1`) is passed into Cortex `recall.profile` and metadata `recall_profile` for collapse-mirror response and journaling paths that use `settings.actions_recall_profile`. See `services/orion-actions/.env_example`.
+**Juniper Collapse Mirror chat reply:** when Juniper writes a Collapse Mirror, Actions publishes `collapse.mirror.chat_reply.request.v1` on `orion:hub:collapse_mirror:chat_reply` (`ACTIONS_COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL`). Hub owns generation and the live chat You-bubble. Actions keeps the Juniper observer gate and `event_id` dedupe only.
+
+**Not used for that reply path:** `ACTIONS_SESSION_ID` and `ACTIONS_RECALL_PROFILE` remain for journal/skills/other Cortex dispatches — they are **not** used for Juniper collapse chat reply.
+
+**Recall profile for other Cortex dispatch:** `ACTIONS_RECALL_PROFILE` (default `collapse_mirror.v1`) is passed into Cortex `recall.profile` and metadata `recall_profile` for journaling and other paths that use `settings.actions_recall_profile`. See `services/orion-actions/.env_example`.
 
 **Env/settings/compose contract (2026-07 single-source-of-truth pilot):** `docker-compose.yml` uses `env_file: [.env]` to pass every key in `.env` through to the container -- it does **not** also hand-duplicate `.env_example`'s ~90 keys in an `environment:` list the way it used to. That duplicate list was deleted because it was a second, competing place a default could drift from `app/settings.py`'s `Field(...)` default (several entries carried their own `${KEY:-default}` compose-level fallback). `docker-compose.yml`'s `environment:` block now only carries genuinely non-app config (Python interpreter flags), not anything modeled in `app/settings.py` or `.env_example`. Two gates protect this:
 

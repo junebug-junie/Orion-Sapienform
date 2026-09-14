@@ -57,12 +57,13 @@ from .logic import (
     ActionDedupe,
     scheduler_docker_findings,
     build_audit_envelope,
-    build_cortex_orch_envelope,
+    build_collapse_mirror_chat_reply_envelope,
     build_skill_cortex_orch_envelope,
     dispatch_cortex_request,
     dedupe_key_for,
     extract_message_sections,
     new_reply_channel,
+    publish_collapse_mirror_chat_reply,
     should_trigger,
 )
 from .settings import settings
@@ -1542,20 +1543,14 @@ async def lifespan(app: FastAPI):
         try:
             await sem.acquire()
             acquired = True
-            req_env = build_cortex_orch_envelope(
+            req_env = build_collapse_mirror_chat_reply_envelope(
                 env,
                 source=src,
                 entry=entry,
-                session_id=settings.actions_session_id,
-                recipient_group=settings.actions_recipient_group,
-                dedupe_key=event_id,
-                dedupe_window_seconds=settings.actions_notify_dedupe_window_seconds,
-                recall_profile=settings.actions_recall_profile,
-                verb=settings.actions_verb,
             )
-            await dispatch_cortex_request(
+            await publish_collapse_mirror_chat_reply(
                 bus=hunter.bus,
-                channel=settings.cortex_request_channel,
+                channel=settings.collapse_mirror_chat_reply_channel,
                 envelope=req_env,
             )
 
@@ -1568,15 +1563,15 @@ async def lifespan(app: FastAPI):
                 action_name=ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
                 extra={
                     "duration_ms": dt_ms,
-                    "verb": settings.actions_verb,
-                    "channel": settings.cortex_request_channel,
+                    "channel": settings.collapse_mirror_chat_reply_channel,
+                    "kind": req_env.kind,
                 },
             )
             logger.info(
-                "dispatched cortex.orch.request verb=%s event_id=%s corr=%s",
-                settings.actions_verb,
+                "dispatched collapse mirror chat reply event_id=%s corr=%s channel=%s",
                 event_id,
                 env.correlation_id,
+                settings.collapse_mirror_chat_reply_channel,
             )
 
         except Exception as exc:

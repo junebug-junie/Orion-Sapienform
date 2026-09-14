@@ -68,6 +68,9 @@ jobs:
       - name: Env sync preserves overrides and reaches admission templates
         run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
 
+      - name: Bus schema lookup and kind registry agree
+        run: python -m pytest tests/test_agent_trace_schema_registry.py -q
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)

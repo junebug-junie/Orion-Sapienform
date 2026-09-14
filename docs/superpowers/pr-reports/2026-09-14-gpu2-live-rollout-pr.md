@@ -84,7 +84,7 @@ World Pulse's reading queue is not integrated with this admission seam.
 ## Deployed identities
 
 All rebuilt services use source baseline `e642932d3`; durable-runs adds
-`1ab72f626` and Gateway adds `fefa6e782`. The existing GPU1 agent container
+`1ab72f626`, Gateway adds `fefa6e782`, and governor adds `3bf2a697e`. The existing GPU1 agent container
 was not recreated. Image digests below identify the actual containers.
 
 | Host | Container | Image SHA256 |
@@ -96,7 +96,7 @@ was not recreated. Image digests below identify the actual containers.
 | athena | `orion-athena-durable-runs` | `4e70d3c3afc88dc4348c4337d2720a855f245d17f93000641aa5c89f6493d267` |
 | athena | `orion-llm-gateway` | `c58a0d3a6c5bf7814d07363defa7f55b9f9cd8caed96f98dc5d309a70fe6d5f7` |
 | athena | `orion-athena-hub` | `f607e29cec3561a0ea4de67d55588ca36814590ce96b900514d62e67fd26ccb6` |
-| athena | `orion-athena-harness-governor` | `ddf751a357a0a03cab8feb1059f20d86cce35253511b8eeec0ebb1dc72285084` |
+| athena | `orion-athena-harness-governor` | `bc866cd89da8a654e8ad7cd69de39e9adde9e1c9c932f862e3bffcf5aef3ae3f` |
 | athena | `orion-athena-cortex-exec-spark` | `67acd57d0ad32beaaeae1a5f0a564f9c45d491e4eb9e3a0933b45421dfd47382` |
 | athena | `orion-athena-cortex-exec-chat` | `b65c0df725861537bdf38c60e846639e2a6a3a2b828bc23d97065f88320566a4` |
 | athena | `orion-athena-cortex-exec` | `1653bef8d40854aa51486d5ec1daa6b211da63f90d84790038ad959c624e37ed` |
@@ -207,3 +207,29 @@ found no material issue. All 51 focused motor/context-budget tests pass, includi
 2500 progress ticks with a valid small result and oversized real thinking that
 still triggers the ceiling. The failed attempt is not counted as successful FCC
 acceptance; its normal durable retry retains the assigned burst lane.
+
+The corrected live motor probe completed with a real `Read` tool receipt,
+11 recorded steps and exit code 0 in 74.762 seconds. Its answer accurately
+described the inspected README; session `584a27e7-7275-4d10-86ee-6a46ef0cf899`.
+
+The failed automatic attempt released ownership. Protected restoration intent
+`gpu2:4:diffusion` at `03:28:01.175818Z` completed at `03:28:25.603059Z`,
+transition 24.37 seconds and cold start 12.63 seconds. `/ready` reported
+`ready=true`, `draining=false`, `model_loaded=true`, `load_error=null`.
+The run remained durable with no lease/worker during the configured 600-second
+diffusion residency interval, retaining its original burst assignment for retry.
+
+## Resource-event registry correction
+
+Live resource-event publication raised `Unknown schema_id: ResourceEventV1`.
+The model existed in the kind registry but was missing from the lookup used by
+real bus envelope validation. The existing global parity test reproduced this
+and also caught the related missing `DurableRunReceiptV1` lookup. Both aliases
+now resolve; a service regression exercises the actual resolver, and the global
+parity test is now a static CI step. Two global registry tests and the dedicated
+resource-event regression pass.
+
+The retained retry automatically requested `gpu2:5:agent-burst` at
+`03:38:29.039122Z`. An immediate `rpc:ConnectionError` released its lease and
+was retried by the existing policy. The following attempt reached the corrected
+FCC motor with correlation `f0e8a62e-ce7e-5b70-be56-e3218a150685`.

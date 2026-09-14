@@ -147,6 +147,12 @@ Fails open to no line at all (never a placeholder) on: no label, a non-llamacpp 
 
 ### Draft length ceiling
 
+Claude's `system/thinking_tokens` progress counters are excluded from draft
+accounting and grammar steps. Their UUID/session metadata is not model context;
+counting each counter prematurely exhausted the ceiling and bloated finalization.
+Actual assistant `thinking` text counts against the same context ceiling as
+other content. Whole-turn and stalled-stream deadlines remain in force.
+
 `orion/harness/fcc_motor.py::run_fcc_turn` kills the fcc subprocess with `error_code=fcc_draft_length_ceiling_exceeded` if the accumulated draft size reaches the model's context ceiling (`max_context_chars()` in `orion/fcc/context_budget.py` — `HARNESS_FCC_MAX_CONTEXT_TOKENS` tokens times `ORION_FCC_CHARS_PER_TOKEN`, 65536 × 4 chars by default). The ceiling is deliberately generous: it never fires on normal turns, and it explicitly skips the terminal `"result"` stream event (the CLI's own signal that a turn already finished), so a legitimately long-but-completed answer can't get its own already-generated payload double-counted into a false-positive kill. It only fires on true runaway generation.
 
 ### Reflection fail-closed fallback

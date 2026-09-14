@@ -193,6 +193,8 @@ def measure_step_payload_chars(step: dict[str, Any]) -> int:
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
     if not isinstance(raw, dict):
         return len(json.dumps(step, default=str))
+    if raw.get("type") == "system" and raw.get("subtype") == "thinking_tokens":
+        return 0
     message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
     content = message.get("content")
     if isinstance(content, str):
@@ -204,6 +206,8 @@ def measure_step_payload_chars(step: dict[str, Any]) -> int:
                 continue
             if block.get("type") == "text" and isinstance(block.get("text"), str):
                 total += len(block["text"])
+            elif block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+                total += len(block["thinking"])
             elif block.get("type") == "tool_result":
                 total += len(tool_result_body_text(block.get("content")))
             elif block.get("type") == "tool_use":

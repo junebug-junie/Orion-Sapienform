@@ -526,15 +526,6 @@ async def startup_event():
             # site's own `harness_rpc_bus=rpc_bus or bus` convention.
             await endogenous_outreach.start(bus, harness_rpc_bus=rpc_bus)
 
-            from scripts.collapse_mirror_chat_reply import CollapseMirrorChatReplyHandler
-
-            collapse_mirror_chat_reply_handler = CollapseMirrorChatReplyHandler(
-                outreach=endogenous_outreach,
-                bus=bus,
-                channel=settings.COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL,
-            )
-            await collapse_mirror_chat_reply_handler.start(bus)
-
             # Orion notices what Juniper has been talking about, and goes and
             # finds out why (2026-08-26). Same lifecycle and the same real
             # unified-turn pipeline as outreach above -- see
@@ -693,6 +684,22 @@ async def startup_event():
                 last_seen_max_entries=settings.HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES,
             )
             await harness_step_relay.start(bus)
+
+            # After harness_step_relay: collapse replies need the same Soft-HUD
+            # step fanout as typed chat, and a long enough wall timeout for
+            # Thought + harness (live 2026-09-14: 120s cancelled mid-turn).
+            from scripts.collapse_mirror_chat_reply import CollapseMirrorChatReplyHandler
+
+            collapse_mirror_chat_reply_handler = CollapseMirrorChatReplyHandler(
+                outreach=endogenous_outreach,
+                bus=bus,
+                channel=settings.COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL,
+                turn_timeout_sec=max(
+                    900.0, float(settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC) * 3.0
+                ),
+                harness_step_relay=harness_step_relay,
+            )
+            await collapse_mirror_chat_reply_handler.start(bus)
 
             if settings.HUB_RUNTIME_ACTIVITY_ENABLED:
                 runtime_activity_feeds = RuntimeActivityFeeds(

@@ -85,6 +85,11 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .endogenous_outreach import in_quiet_hours
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
+from orion.curiosity.peer_briefs import (
+    REFUSED_OR_FAILED_RECENT_CYPHER,
+    UNUSED_OK_BRIEFS_CYPHER,
+    list_unused_ok_briefs_from_rows,
+)
 from orion.curiosity.self_inquiry import (
     LEDGER_SQL_TEMPLATE,
     LEDGER_TS_COLUMNS,
@@ -490,6 +495,8 @@ class CuriosityInvestigation:
         lease_validation_url: str = "http://127.0.0.1:8124/leases/validate",
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
+        # --- contractor peer soft-nudge ------------------------------------
+        contractor_peer_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -586,6 +593,7 @@ class CuriosityInvestigation:
         self.max_hops = int(max_hops)
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
+        self.contractor_peer_enabled = bool(contractor_peer_enabled)
         self._outreach_provider = outreach_provider
         self._step_relay_provider = step_relay_provider
 
@@ -803,6 +811,35 @@ class CuriosityInvestigation:
             return WorldviewSnapshot(
                 unavailable_reason=f"{type(exc).__name__}: {str(exc)[:160]}"
             )
+
+    async def _read_peer_briefs_for_nudge(self) -> tuple:
+        """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
+
+        Combines ok + refused/failed rows so `format_soft_nudge` can show both
+        "peer looked" and "could not hire". Empty on any graph fault — silence
+        over a false peer section.
+        """
+        if self._reader is None:
+            return ()
+        reader = self._reader
+
+        def _read() -> tuple:
+            rows: list[dict[str, Any]] = []
+            try:
+                rows.extend(reader.query(UNUSED_OK_BRIEFS_CYPHER))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_peer_briefs_ok_read_failed err=%s", exc)
+            try:
+                rows.extend(reader.query(REFUSED_OR_FAILED_RECENT_CYPHER))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_peer_briefs_refused_read_failed err=%s", exc)
+            return tuple(list_unused_ok_briefs_from_rows(rows))
+
+        try:
+            return await asyncio.to_thread(_read)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_peer_briefs_read_failed err=%s", exc)
+            return ()
 
     async def _read_turn_result(
         self, run_id: str
@@ -1317,6 +1354,9 @@ class CuriosityInvestigation:
             correlation_id,
         )
 
+        peer_briefs = ()
+        if self.contractor_peer_enabled:
+            peer_briefs = await self._read_peer_briefs_for_nudge()
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1331,6 +1371,8 @@ class CuriosityInvestigation:
             # disclosed to Orion and the write sections are dropped. Collapsing
             # them here would silence the disclosure -- see build_kickoff_prompt.
             graph_enabled=self.graph_enabled,
+            contractor_peer_enabled=self.contractor_peer_enabled,
+            peer_briefs=peer_briefs,
         )
         if self.kickoff_via_cortex:
             try:
@@ -1646,6 +1688,9 @@ class CuriosityInvestigation:
             correlation_id,
         )
 
+        peer_briefs = ()
+        if self.contractor_peer_enabled:
+            peer_briefs = await self._read_peer_briefs_for_nudge()
         prompt = build_self_inquiry_prompt(
             view=view,
             latest=latest,
@@ -1660,6 +1705,8 @@ class CuriosityInvestigation:
             max_hops=self.max_hops,
             stale_after=self.stale_prior_tests,
             graph_enabled=self.graph_enabled,
+            contractor_peer_enabled=self.contractor_peer_enabled,
+            peer_briefs=peer_briefs,
         )
         material = StudyMaterial(generated_at=now)
         if self.kickoff_via_cortex:

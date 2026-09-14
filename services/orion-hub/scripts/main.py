@@ -579,6 +579,7 @@ async def startup_event():
                 # are the same interruption. Read through a callable because
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
+                contractor_peer_enabled=settings.HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
                 elastic_activation_enabled=settings.HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED,

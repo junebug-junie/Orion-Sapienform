@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     GPU2_DIFFUSION_URL: str = "http://100.112.254.99:8014"
     GPU2_AGENT_URL: str = "http://100.112.254.99:8016"
     GPU2_AUTHORITY_URL: str = "http://100.92.216.81:8124"
-    GPU2_DIFFUSION_TOKEN: str = ""
     GPU2_DRAIN_TIMEOUT_SEC: float = 300.0
     GPU2_MODEL_READY_TIMEOUT_SEC: float = 600.0
 

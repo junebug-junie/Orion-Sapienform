@@ -46,7 +46,6 @@ class Settings(BaseSettings):
     elastic_assignments: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_ASSIGNMENTS")
     elastic_restoration: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_RESTORATION")
     elastic_controller_url: str = Field("http://100.112.254.99:8090", alias="DURABLE_RUNS_ELASTIC_CONTROLLER_URL")
-    elastic_controller_token: str = Field("", alias="DURABLE_RUNS_ELASTIC_CONTROLLER_TOKEN")
     elastic_backend: str = Field("http://100.112.254.99:8016", alias="DURABLE_RUNS_ELASTIC_BACKEND")
     elastic_drain_budget: float = Field(300.0, alias="DURABLE_RUNS_ELASTIC_DRAIN_BUDGET_SEC", ge=0, allow_inf_nan=False)
     elastic_transition_budget: float = Field(60.0, alias="DURABLE_RUNS_ELASTIC_TRANSITION_BUDGET_SEC", ge=0, allow_inf_nan=False)

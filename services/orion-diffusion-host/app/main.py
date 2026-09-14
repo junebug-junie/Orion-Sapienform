@@ -50,7 +50,6 @@ import asyncio
 import inspect
 import io
 import uuid
-import secrets
 from datetime import datetime, timedelta, timezone
 import time
 import traceback
@@ -58,7 +57,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -400,13 +399,8 @@ class DrainRequest(BaseModel):
 
 
 @app.post("/v1/lifecycle/drain")
-async def drain(req: DrainRequest, authorization: str | None = Header(default=None)):
+async def drain(req: DrainRequest):
     global _draining
-    token = settings.DIFFUSION_DRAIN_TOKEN
-    if not token:
-        raise HTTPException(503, "drain_disabled")
-    if not secrets.compare_digest(authorization or "", "Bearer " + token):
-        raise HTTPException(401, "unauthorized")
     # No await between latch change and generation admission. Single uvicorn
     # worker only: new requests cannot race the controller's idle observation.
     _draining = req.draining

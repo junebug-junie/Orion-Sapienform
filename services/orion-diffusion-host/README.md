@@ -337,3 +337,7 @@ GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
 and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
 for this service's exact flags, HTTP contracts and operator commands.
 No production env sync, migration, GPU transition or deployment was performed.
+
+GPU2 control endpoints use the existing internal service/tailnet boundary without
+bearer tokens. Durable intent, generation fencing, lease/permit protection, and
+atomic diffusion draining remain enforced. The existing GPU1 API is unchanged.

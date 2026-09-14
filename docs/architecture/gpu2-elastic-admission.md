@@ -60,7 +60,7 @@ Rollback/failure never fabricates availability. The SQL row retains desired
 ownership and error state, and retries the same operation. A failed burst startup
 restores diffusion when safe. A failed drain merely unlatches diffusion; it never
 recreates a container while generation is active. An exhausted activation window
-requests restoration. Explicit authenticated operator retry uses the same intent
+requests restoration. Explicit internal operator retry uses the same intent
 when the target has not changed. Additive tables remain on rollback.
 
 ## Diffusion and visual meaning

@@ -32,3 +32,20 @@ Circe needs deployment, physical mapping/headroom checks and the controlled
 round-trip before end-to-end activation can be claimed. Local env flags alone
 are not runtime proof. Existing main templates still mention retired keys until
 this patch merges; deploy parity warns about those keys but passes without bypass.
+
+## Athena deployment evidence
+
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/2216
+
+- Deployed tokenless durable-runs from this worktree through safe_docker_build.sh.
+  `/health`: ok, admission enabled, capacity enabled. `/elastic/status`: enabled
+  true, state idle, no lease/permit; activation eligible false because the remote
+  prerequisites are unavailable. No GPU mutation occurred.
+- Rebuilt/deployed Gateway from this worktree. `/routes` now contains the system
+  agent-burst route to Circe:8016 and honestly reports it down with model/context
+  unknown while its worker is stopped.
+- Thought and Hub activation flags are staged in local envs; those containers
+  were not recreated while Circe still lacks the required status endpoint.
+- Lane compatibility policy remains unstaged pending capability/physical checks
+  and the controlled Circe round-trip. Complete activation is BLOCKED on Circe
+  access, not on bearer credentials. No credentials were generated.

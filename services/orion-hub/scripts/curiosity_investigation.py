@@ -595,6 +595,11 @@ class CuriosityInvestigation:
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
+        # Per-run dedupe: durable admission completes via `_handle_run_state`,
+        # while non-durable / dispatch-fallback journals in-process. Both call
+        # `_enqueue_help_requests_after_run`; a run that hits both must not
+        # double-publish the same HelpRequest envelopes.
+        self._help_enqueued_runs: set[str] = set()
         self._outreach_provider = outreach_provider
         self._step_relay_provider = step_relay_provider
 
@@ -1452,13 +1457,7 @@ class CuriosityInvestigation:
             graph_footprint=footprint,
             hop_notes=hops,
         )
-        await publish_help_requests_for_run(
-            enabled=self.contractor_peer_enabled,
-            run_id=run_id,
-            reader=self._reader,
-            bus=self._bus,
-            source_ref=self._source_ref,
-        )
+        await self._enqueue_help_requests_after_run(run_id)
         # `evidence=` is OPERATOR TELEMETRY and stays out of the journal on
         # purpose. The journal is Orion's own written result; an orphan-rate
         # statistic there would be a health check wearing Orion's voice, and
@@ -1783,13 +1782,7 @@ class CuriosityInvestigation:
             hop_notes=hops,
             line=LINE_SELF_INQUIRY,
         )
-        await publish_help_requests_for_run(
-            enabled=self.contractor_peer_enabled,
-            run_id=run_id,
-            reader=self._reader,
-            bus=self._bus,
-            source_ref=self._source_ref,
-        )
+        await self._enqueue_help_requests_after_run(run_id)
         await self._mirror_self_definition(definition, run_id=run_id, correlation_id=correlation_id)
         logger.info(
             "curiosity_self_inquiry_journaled run=%s chars=%s wrote=%s evidence=%s hops=%s "
@@ -2351,6 +2344,28 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001
             logger.exception("curiosity_run_state_loop_failed")
 
+    async def _enqueue_help_requests_after_run(self, run_id: str) -> int:
+        """Enqueue HelpRequests for a finished run at most once.
+
+        Live default is durable admission: Hub returns after dispatch and the
+        in-process journal path never runs, so completion must enqueue from
+        `_handle_run_state`. Non-durable / fallback still enqueues after the
+        in-process journal. Deduped by `run_id` so a late completed state after
+        fallback cannot double-publish.
+        """
+        if not self.contractor_peer_enabled:
+            return 0
+        if run_id in self._help_enqueued_runs:
+            return 0
+        self._help_enqueued_runs.add(run_id)
+        return await publish_help_requests_for_run(
+            enabled=True,
+            run_id=run_id,
+            reader=self._reader,
+            bus=self._bus,
+            source_ref=self._source_ref,
+        )
+
     async def _handle_run_state(self, msg: dict[str, Any]) -> None:
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -2365,6 +2380,9 @@ class CuriosityInvestigation:
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}
+        # Same completion hook as SelfDefinition / outreach: durable admission
+        # never reaches the in-process journal enqueue.
+        await self._enqueue_help_requests_after_run(state.run_id)
         if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
             # The runner read the run's `:SelfDefinition` and carried it here;
             # Hub owns the mirror because Hub has the memory pool for the

@@ -92,8 +92,10 @@ existing degraded-sensor behavior. There is no new learned thermal score.
 
 New HTTP: typed `/v1/gpu-slots/activate`, fixed-slot status,
 `/v1/lifecycle/drain`, lifecycle status, `/elastic/status`, `/elastic/target`.
-Every mutation requires a configured bearer secret. Controller callers cannot
-supply Docker paths/services/profiles/commands/GPU/env. Compose operators remain
+GPU2 activation, diffusion drain, and durable elastic intent use the internal
+service/tailnet boundary without bearer tokens. GPU1 retains its existing token
+authentication. Controller callers cannot supply Docker paths, services,
+profiles, commands, GPU IDs, or environment overrides. Compose operators remain
 trusted; known targets come from local code. Every subprocess names exactly one
 service. GPU2 uses `up -d --no-build --no-deps`; GPU1 retains its existing build
 behavior for compatibility. Single uvicorn process per controller and diffusion

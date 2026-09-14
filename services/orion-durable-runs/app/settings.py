@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     elastic_idle_grace: float = Field(300.0, alias="DURABLE_RUNS_ELASTIC_IDLE_GRACE_SEC", ge=0, allow_inf_nan=False)
     elastic_min_residency: float = Field(600.0, alias="DURABLE_RUNS_ELASTIC_MIN_RESIDENCY_SEC", ge=0, allow_inf_nan=False)
     elastic_max_borrow: float = Field(3600.0, alias="DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC", ge=0, allow_inf_nan=False)
-    elastic_cabinet_url: str = Field("http://orion-athena-hub:8080/api/cabinet/sensors/latest", alias="DURABLE_RUNS_ELASTIC_CABINET_URL")
+    elastic_cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="DURABLE_RUNS_ELASTIC_CABINET_URL")
     elastic_thermal_enabled: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_THERMAL_ENABLED")
 
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")

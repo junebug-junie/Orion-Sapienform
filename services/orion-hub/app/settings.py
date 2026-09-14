@@ -609,6 +609,13 @@ class Settings(BaseSettings):
         default="orion:hub:collapse_mirror:chat_reply",
         alias="COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL",
     )
+    # Wall-clock for Thought + harness on that reply. Live 2026-09-14: Thought
+    # alone ~100s then harness ~6m; a 120s handler cancelled mid-turn. Default
+    # 900s matches DEFAULT_TURN_TIMEOUT_SEC in collapse_mirror_chat_reply.py.
+    HUB_COLLAPSE_MIRROR_CHAT_REPLY_TIMEOUT_SEC: float = Field(
+        default=900.0,
+        alias="HUB_COLLAPSE_MIRROR_CHAT_REPLY_TIMEOUT_SEC",
+    )
 
     # --- Endogenous outreach (Orion speaks first; real deviation-tension trigger) ---
     # See scripts/endogenous_outreach.py. The only path by which Orion emits

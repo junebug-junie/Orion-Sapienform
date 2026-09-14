@@ -694,8 +694,8 @@ async def startup_event():
                 outreach=endogenous_outreach,
                 bus=bus,
                 channel=settings.COLLAPSE_MIRROR_CHAT_REPLY_CHANNEL,
-                turn_timeout_sec=max(
-                    900.0, float(settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC) * 3.0
+                turn_timeout_sec=float(
+                    settings.HUB_COLLAPSE_MIRROR_CHAT_REPLY_TIMEOUT_SEC
                 ),
                 harness_step_relay=harness_step_relay,
             )

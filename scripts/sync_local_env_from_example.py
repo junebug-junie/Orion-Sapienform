@@ -206,6 +206,12 @@ SYNC_PREFIXES = (
     "HUB_CONTEXT_EXEC_",
     # Endogenous outreach (Orion speaks first) -- services/orion-hub
     "HUB_ENDOGENOUS_OUTREACH_",
+    # Collapse Mirror → live Hub chat-lane reply (PR follow-up 2026-09-14).
+    # Without this prefix, HUB_COLLAPSE_MIRROR_CHAT_REPLY_TIMEOUT_SEC lands in
+    # .env_example and the default sync reports "no changes" (same failure
+    # shape as HUB_CURIOSITY_ / HUB_RUNTIME_ACTIVITY_ above).
+    "HUB_COLLAPSE_MIRROR_",
+    "COLLAPSE_MIRROR_",
     # Conversation-history rehydration on connect -- services/orion-hub
     "HUB_HISTORY_REHYDRATE_",
     "CONTEXT_EXEC_",

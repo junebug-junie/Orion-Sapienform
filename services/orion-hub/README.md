@@ -353,6 +353,17 @@ post-deploy firing-rate data, unlike the trigger's other internals. The message 
 and real chat history, and lands on the same rails a normal turn uses — that
 part never changed.
 
+**Content, not just spark** (2026-09-14). Tension alone is a body-spark, not
+a topic. Organic fire now requires talkable content: an open worldview
+prior can fire with no tension; tension fires only when accompanied by at
+least one of {open prior, curiosity evidence summary, daydream}. Tension
+without that content records `tension_without_content` and does not
+generate. Open prior previews also enter the prompt and
+`grounding.priors_count`; compound registry names that appear in those
+previews / curiosity summaries count as grounded for the closed-vocabulary
+guard so prior-alone talk about `node:athena` is not dropped as
+fabrication.
+
 **Poll cadence root-caused live, 2026-08-19** — Orion had never once reached
 out since this shipped. Two stacked causes: (1) the trigger's own query was
 broken 2026-08-16→2026-08-18 (the `make_interval` bug PR #1715 fixed — see
@@ -598,6 +609,8 @@ The trace is written only for cycles that actually built a prompt. Rows WITHOUT 
 |---|---|
 | gated (`quiet_hours`, `cooldown`, `daily_cap`, `turn_in_flight`, `already_sending`) | returned before context was gathered |
 | `no_grounding_context` | context was gathered but `is_empty()` skipped the tick, so no prompt exists for lanes to reach |
+| `tension_without_content` | tension spark fired but no talkable content (no open prior, curiosity summary, or daydream) |
+| `no_tension_trigger` | no tension spark and no open prior peeked this tick |
 | `source`-tagged rows from `offer_message` | the curiosity loop composes its text elsewhere and never builds an `OutreachContext` |
 
 None of these inherit a previous cycle's lanes: the summary is a local passed into

@@ -11,6 +11,12 @@ guessed. The message itself is generated from live substrate signals and real
 chat history, and lands on the same three rails a normal turn uses -- none of
 that changed.
 
+CONTENT, NOT JUST SPARK (2026-09-14). Tension alone is a body-spark, not a
+topic. Organic fire now requires talkable content: an open worldview prior
+(can fire with no tension), OR tension plus at least one of {open prior,
+curiosity evidence summary, daydream}. Tension without that content records
+``tension_without_content`` and does not generate. See ``has_talkable_content``.
+
 LEVEL-AWARE, NOT JUST CHANGE-AWARE (2026-08-19). The trigger's own reason
 object now also carries ``sustained_load_pressure`` -- a real, currently-
 loaded reading (`orion.field.significance`, `loaded_steady` regime, no
@@ -243,9 +249,9 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -274,6 +280,9 @@ _MAX_TURN_CHARS = 400
 # 120s (curiosity_hint's agent-lane window) is far too tight for an outreach
 # that fires every few minutes at most, so widen it here.
 _CURIOSITY_MAX_AGE_SEC = 3600.0
+# Open worldview priors that can make it into one outreach prompt. Small on
+# purpose: this is "something to talk about", not a dump of the whole atlas.
+_MAX_OPEN_PRIOR_PREVIEWS = 3
 
 # --- Reverie daydream (the visual chain's generated-image caption) ---
 # `reverie_visual_chain` gets one row roughly every 600s from orion-thought's
@@ -475,13 +484,31 @@ class OutreachContext:
     # own a reason to interrupt Juniper, so this is deliberately NOT part of
     # `is_empty()`.
     daydream: Optional[Tuple[float, str]] = None
+    # Live open :Prior claim previews from Orion's worldview graph (same
+    # graph curiosity_investigation reads). Talkable content: a prior alone
+    # is enough to build a prompt and enough to fire outreach. See
+    # `_fetch_open_prior_previews` and `has_talkable_content`.
+    open_prior_previews: List[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return (
             not self.curiosity_summaries
             and not self.recent_turns
             and self.tension_reason is None
+            and not self.open_prior_previews
         )
+
+
+def has_talkable_content(ctx: OutreachContext) -> bool:
+    """True when the context has something meaningful to speak *about*.
+
+    Distinct from `is_empty()`: tension alone is enough to *build* a prompt
+    (a change happened), but not enough to *send* one -- a short body-spark
+    without an open prior, curiosity evidence, or daydream is a twitch, not
+    a topic. Recent chat turns are continuity, not content, so they do not
+    count here.
+    """
+    return bool(ctx.open_prior_previews or ctx.curiosity_summaries or ctx.daydream)
 
 
 def _fetch_curiosity_summaries() -> List[str]:
@@ -505,6 +532,73 @@ def _fetch_curiosity_summaries() -> List[str]:
         if len(summaries) >= _MAX_CURIOSITY_SUMMARIES:
             break
     return summaries
+
+
+def _fetch_open_prior_previews() -> List[str]:
+    """Live open worldview :Prior claim previews, or [].
+
+    Same graph + credential gate curiosity_investigation uses
+    (`HUB_CURIOSITY_GRAPH_*`). Fail-open: missing creds, unavailable graph,
+    or any read error degrades to [] so a broken worldview half cannot
+    invent a fire reason and cannot crash the outreach tick.
+
+    Thin read on purpose: one `LIVE_PRIORS_CYPHER` query, not the full
+    `read_snapshot` (which also pulls concepts/settled/recent runs). Quiet
+    ticks peek this path every ~10s; keep it one RO query. All still-open
+    priors count (including well-tested ones) -- outreach wants "something
+    to talk about", not the investigation queue's retire-soon sample.
+    """
+    try:
+        from app.settings import get_settings
+        from orion.curiosity.worldview import (
+            LIVE_PRIORS_CYPHER,
+            WorldviewReader,
+            build_prior,
+            collapse_duplicate_priors,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_prior_import_failed err=%s", exc)
+        return []
+
+    try:
+        cfg = get_settings()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_prior_settings_failed err=%s", exc)
+        return []
+
+    host = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_HOST", "") or "").strip()
+    user = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_USER", "") or "").strip()
+    password = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_PASSWORD", "") or "").strip()
+    if not (host and user and password):
+        return []
+
+    try:
+        reader = WorldviewReader(
+            host=host,
+            port=int(getattr(cfg, "HUB_CURIOSITY_GRAPH_PORT", 6380) or 6380),
+            graph_name=str(
+                getattr(cfg, "HUB_CURIOSITY_GRAPH_OWN", "orion_worldview") or "orion_worldview"
+            ),
+        )
+        rows = reader.query(LIVE_PRIORS_CYPHER)
+        built = [p for p in (build_prior(r) for r in rows) if p is not None]
+        live_priors, _dupes = collapse_duplicate_priors(built)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_prior_read_failed err=%s", exc)
+        return []
+
+    previews: List[str] = []
+    for prior in live_priors:
+        try:
+            preview = str(prior.preview() or "").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if not preview or preview in previews:
+            continue
+        previews.append(preview)
+        if len(previews) >= _MAX_OPEN_PRIOR_PREVIEWS:
+            break
+    return previews
 
 
 def _fetch_embodied_presence() -> Optional[Dict[str, Any]]:
@@ -821,6 +915,7 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
                 ctx.embodied_presence.get("since_sec"),
             )
         ),
+        "priors_count": len(ctx.open_prior_previews),
     }
 
 
@@ -890,6 +985,14 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
                     f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
                     f"or may not be the same thing as the change above."
                 )
+        lines.append("")
+
+    if ctx.open_prior_previews:
+        lines.append(
+            "Open claims you are still holding -- your own worldview priors, "
+            "not fresh telemetry. These are things you have been working on:"
+        )
+        lines.extend(f"- {p}" for p in ctx.open_prior_previews)
         lines.append("")
 
     if ctx.curiosity_summaries:
@@ -1377,16 +1480,27 @@ class EndogenousOutreach:
             return None
 
     def _named_ungrounded_terms(
-        self, text: str, tension_reason: Optional[Any], correlation_id: str
+        self,
+        text: str,
+        tension_reason: Optional[Any],
+        correlation_id: str,
+        *,
+        context_texts: Optional[Iterable[str]] = None,
     ) -> List[str]:
         """Shared closed-vocabulary grounding check (see module docstring's
         "CLOSED-VOCABULARY GROUNDING GUARD" section) -- both delivery paths
         (`_outreach_once` and `offer_message`) call this so the enforcement
         cannot diverge between them. Logs and returns the offending terms;
         the caller decides what to do with a non-empty result.
+
+        ``context_texts``: this tick's talkable content (prior previews,
+        curiosity summaries) whose compound registry names count as grounded.
         """
         offending_terms = find_ungrounded_signal_mentions(
-            text, grounded_signal_names(tension_reason)
+            text,
+            grounded_signal_names(
+                tension_reason, context_texts=list(context_texts or ())
+            ),
         )
         if offending_terms:
             logger.warning(
@@ -1445,6 +1559,7 @@ class EndogenousOutreach:
         # immune to that -- it belongs to this call's own stack frame, not
         # the shared instance.
         tension_reason: Optional[Any] = None
+        peeked_priors: Optional[List[str]] = None
         if force:
             # A forced (debug-endpoint) call skips the trigger check
             # entirely -- it must not carry over whatever reason the LAST
@@ -1455,14 +1570,35 @@ class EndogenousOutreach:
             fired = await self._should_roll()
             tension_reason = self._last_tension_reason
             if not fired:
-                return self._record(
-                    {"outreach": False, "reason": "no_tension_trigger"},
-                    forced=force,
-                    tension_reason=tension_reason,
-                )
+                # No body-spark. Still fire if Orion has talkable content:
+                # an open worldview prior. Peek priors alone (cheap relative
+                # to full gather) so empty ticks stay cheap.
+                try:
+                    peeked_priors = await asyncio.to_thread(_fetch_open_prior_previews)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "endogenous_outreach_prior_peek_failed err=%s", exc
+                    )
+                    peeked_priors = []
+                if not peeked_priors:
+                    return self._record(
+                        {"outreach": False, "reason": "no_tension_trigger"},
+                        forced=force,
+                        tension_reason=tension_reason,
+                    )
 
         session_id = self._active_session_id()
-        ctx = await self._gather_context(session_id)
+        ctx = await self._gather_context(
+            session_id, open_prior_previews=peeked_priors
+        )
+        if not force and tension_reason is not None and not has_talkable_content(ctx):
+            # Spark without a topic -- do not send a twitch dressed as talk.
+            return self._record(
+                {"outreach": False, "reason": "tension_without_content"},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding_summary(ctx),
+            )
         prompt = build_outreach_prompt(ctx)
         if not prompt:
             # No `grounding` on this row on purpose: the key means "lanes that
@@ -1521,7 +1657,12 @@ class EndogenousOutreach:
         # turn. This is deterministic closed-vocabulary schema enforcement
         # against `scripts.outreach_vocabulary`'s registry, not a fuzzy
         # "does this look suspicious" text classifier.
-        offending_terms = self._named_ungrounded_terms(text, tension_reason, correlation_id)
+        offending_terms = self._named_ungrounded_terms(
+            text,
+            tension_reason,
+            correlation_id,
+            context_texts=list(ctx.open_prior_previews) + list(ctx.curiosity_summaries),
+        )
         if offending_terms:
             return self._record(
                 {
@@ -1755,8 +1896,18 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_decision_hook_failed err=%s", exc)
         return result
 
-    async def _gather_context(self, session_id: Optional[str]) -> OutreachContext:
-        """Read grounding signals off the main loop; failures degrade to empty."""
+    async def _gather_context(
+        self,
+        session_id: Optional[str],
+        open_prior_previews: Optional[List[str]] = None,
+    ) -> OutreachContext:
+        """Read grounding signals off the main loop; failures degrade to empty.
+
+        ``open_prior_previews``: when the fire gate already peeked priors
+        (no-tension path), pass that list so this tick does not hit the
+        worldview graph twice. ``None`` means "fetch here" (tension path /
+        force path).
+        """
 
         async def _safe(fn, *args):
             try:
@@ -1765,19 +1916,27 @@ class EndogenousOutreach:
                 logger.warning("endogenous_outreach_context_read_failed fn=%s err=%s", fn.__name__, exc)
                 return None
 
-        # Concurrent, not sequential (review finding, 2026-08-25): four
-        # independent DB reads, each already dispatched via
-        # asyncio.to_thread inside `_safe` -- awaiting them one after
-        # another made this tick's wall time the SUM of all four round
-        # trips instead of the slowest one. `_safe` already swallows each
-        # call's own failure into None, so a `gather` result is never a
-        # raised exception to handle here.
-        summaries, turns, embodied_presence, daydream = await asyncio.gather(
-            _safe(_fetch_curiosity_summaries),
-            _safe(_fetch_recent_turns, session_id),
-            _safe(_fetch_embodied_presence),
-            _safe(_fetch_current_daydream),
-        )
+        # Concurrent, not sequential (review finding, 2026-08-25): independent
+        # DB/graph reads, each already dispatched via asyncio.to_thread inside
+        # `_safe` -- awaiting them one after another made this tick's wall
+        # time the SUM of all round trips instead of the slowest one.
+        if open_prior_previews is None:
+            summaries, turns, embodied_presence, daydream, priors = await asyncio.gather(
+                _safe(_fetch_curiosity_summaries),
+                _safe(_fetch_recent_turns, session_id),
+                _safe(_fetch_embodied_presence),
+                _safe(_fetch_current_daydream),
+                _safe(_fetch_open_prior_previews),
+            )
+            prior_list = list(priors or [])
+        else:
+            summaries, turns, embodied_presence, daydream = await asyncio.gather(
+                _safe(_fetch_curiosity_summaries),
+                _safe(_fetch_recent_turns, session_id),
+                _safe(_fetch_embodied_presence),
+                _safe(_fetch_current_daydream),
+            )
+            prior_list = list(open_prior_previews)
 
         presence = None
         try:
@@ -1796,6 +1955,7 @@ class EndogenousOutreach:
             tension_reason=self._last_tension_reason,
             embodied_presence=embodied_presence,
             daydream=daydream,
+            open_prior_previews=prior_list,
         )
 
     async def _generate(

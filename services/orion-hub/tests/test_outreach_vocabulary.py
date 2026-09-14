@@ -93,6 +93,20 @@ def test_no_tension_reason_grounds_nothing() -> None:
     assert grounded_signal_names(None) == frozenset()
 
 
+def test_context_texts_ground_compound_registry_names_without_tension() -> None:
+    """Talkable content (priors / curiosity summaries) can ground registry
+    names that appear in them even when tension_reason is None."""
+    grounded = grounded_signal_names(
+        None,
+        context_texts=[
+            "`node:athena` baseline drift; disk_capacity_pressure still elevated"
+        ],
+    )
+    assert "node:athena" in grounded
+    assert "athena" in grounded
+    assert "disk_capacity_pressure" in grounded
+
+
 def test_target_id_alone_grounds_the_node_in_both_forms() -> None:
     reason = TensionTriggerReason(
         target_id="node:athena", run_length=9, peak_deviation_pressure=0.62

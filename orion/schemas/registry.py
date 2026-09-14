@@ -933,6 +933,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionSelfModelV1": AttentionSelfModelV1,
     "AttentionSchemaV1": AttentionSchemaV1,
     "DurableRunRequestV1": DurableRunRequestV1,
+    "DurableRunReceiptV1": DurableRunReceiptV1,
+    "ResourceEventV1": ResourceEventV1,
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,

@@ -840,3 +840,44 @@ async def test_reading_motor_can_only_fetch_and_search(monkeypatch, tmp_path):
     assert "mcp__plugin_context-mode_context-mode" not in argv
     assert "ORION_CURIOSITY_PG_DSN" not in captured["env"]
     assert events[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thinking_size,should_fail", [(20, False), (500, True)])
+async def test_thinking_progress_is_not_draft_or_grammar(
+    monkeypatch: pytest.MonkeyPatch, thinking_size: int, should_fail: bool
+) -> None:
+    import json
+
+    progress = json.dumps({"type": "system", "subtype": "thinking_tokens",
+        "estimated_tokens": 1, "estimated_tokens_delta": 1,
+        "session_id": "session", "uuid": "progress-event"})
+    proc = _FakeProc([progress] * 2500 + [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "x" * thinking_size}]}}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Evidence verified."}]}}),
+        json.dumps({"type": "result", "result": "Evidence verified."}),
+    ])
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "200")
+    monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "1")
+    events = [ev async for ev in motor.run_fcc_turn(
+        prompt="inspect", fcc_model_label="MODEL_HAIKU", correlation_id="progress-budget",
+        workspace="/tmp", fcc_server_url="http://127.0.0.1:8082", auth_token="tok",
+        claude_bin="claude", timeout_sec=30.0,
+    )]
+    assert proc.killed is should_fail
+    if should_fail:
+        assert events[-1]["error_code"] == "fcc_draft_length_ceiling_exceeded"
+    else:
+        assert events[-1]["type"] == "final"
+        assert events[-1]["llm_response"] == "Evidence verified."
+        assert len([ev for ev in events if ev["type"] == "step"]) == 3

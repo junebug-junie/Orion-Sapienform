@@ -52,7 +52,9 @@ Durable: `ELASTIC_ENABLED=false`, `ELASTIC_SHADOW=true`,
 `ELASTIC_ASSIGNMENTS=false`, `ELASTIC_RESTORATION=false`,
 `ELASTIC_THERMAL_ENABLED=false` (all prefixed `DURABLE_RUNS_`). URLs are
 controller Circe:8090, backend Circe:8016, cabinet Hub
-`http://orion-athena-hub:8080/api/cabinet/sensors/latest`. Budgets:
+`http://100.92.216.81:8080/api/cabinet/sensors/latest`. Hub uses host
+networking, so its container name does not resolve from durable-runs' bridge
+network; use Athena's Tailscale address. Budgets:
 `ELASTIC_DRAIN_BUDGET_SEC=300`, `ELASTIC_TRANSITION_BUDGET_SEC=60`,
 `ELASTIC_COLD_BUDGET_SEC=600`; idle grace 300s, minimum residency 600s,
 maximum borrow 3600s. These are declarations, not measured timing.

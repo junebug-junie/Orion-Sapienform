@@ -168,3 +168,12 @@ def test_extend_fcc_subprocess_env_preserves_explicit_claude_config_dir_override
     env = {"CLAUDE_CONFIG_DIR": operator_dir}
     extend_fcc_subprocess_env(env)
     assert env["CLAUDE_CONFIG_DIR"] == operator_dir
+
+
+def test_thinking_budget_counts_content_not_progress_metadata() -> None:
+    assert measure_step_payload_chars({"type": "system", "subtype": "thinking_tokens",
+        "estimated_tokens_delta": 1, "uuid": "x" * 1000}) == 0
+    assert measure_step_payload_chars({"type": "assistant", "message": {"content": [
+        {"type": "thinking", "thinking": "x" * 400},
+        {"type": "text", "text": "done"},
+    ]}}) == 404

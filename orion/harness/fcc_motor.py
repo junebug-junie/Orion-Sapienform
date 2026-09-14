@@ -1054,6 +1054,13 @@ async def run_fcc_turn(
             parsed = parse_stream_json_line(line_bytes.decode("utf-8", errors="replace"))
             if parsed is None:
                 continue
+            # Claude emits a counter update for individual thinking tokens.
+            # Its UUID/session metadata is neither prompt content nor a
+            # reasoning step. Publishing thousands of these inflated both
+            # the draft budget and the finalizer's grammar receipts. Actual
+            # thinking text is counted in the completed assistant block.
+            if parsed.get("type") == "system" and parsed.get("subtype") == "thinking_tokens":
+                continue
             steps_seen += 1
 
             step = build_step_frame(parsed)

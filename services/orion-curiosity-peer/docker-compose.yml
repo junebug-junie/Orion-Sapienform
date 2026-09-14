@@ -23,9 +23,9 @@ services:
       # HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED=true at enqueue time.
       - CURIOSITY_PEER_ENABLED=${CURIOSITY_PEER_ENABLED:-false}
 
-      # CURSOR_API_KEY lives HERE — never in orion-hub. Empty is fine while
-      # the service is disabled; Task 12 will require it when enabled.
-      - CURSOR_API_KEY=${CURSOR_API_KEY:-}
+      # Cursor Agent CLI (desktop login). No CURSOR_API_KEY / cursor-sdk.
+      # Host mounts below provide the binary + auth.json.
+      - CURIOSITY_PEER_AGENT_BIN=${CURIOSITY_PEER_AGENT_BIN:-/opt/cursor-agent/versions/2026.05.20-2b5dd59/cursor-agent}
       - CURIOSITY_PEER_REPO_ROOT=${CURIOSITY_PEER_REPO_ROOT:-/repo}
       - CURIOSITY_PEER_MODEL=${CURIOSITY_PEER_MODEL:-composer-2.5}
 
@@ -41,8 +41,12 @@ services:
       - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
       - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
     volumes:
-      # Read-only repo for Cursor Auto investigation (Task 12+).
+      # Read-only repo for Cursor Agent investigation.
       - ${CURIOSITY_PEER_REPO_HOST_PATH:-../..}:${CURIOSITY_PEER_REPO_ROOT:-/repo}:ro
+      # Host Cursor Agent install (versioned cursor-agent + sibling node).
+      - ${HOME}/.local/share/cursor-agent:/opt/cursor-agent:ro
+      # Desktop CLI auth (auth.json from `agent login`).
+      - ${HOME}/.config/cursor:/root/.config/cursor:ro
     # DELIBERATELY ABSENT: no docker.sock, no SSH/gh mounts, no host network.
     # Credential isolation is the point of this container existing.
 

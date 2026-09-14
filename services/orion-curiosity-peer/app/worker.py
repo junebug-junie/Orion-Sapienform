@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
+import subprocess
 import uuid
 from typing import Any, Callable, Optional, Union
 
@@ -117,22 +120,59 @@ def context_pack_from_help(help_req: HelpRequestV1) -> str:
     )
 
 
+def _resolve_agent_bin(agent_bin: str) -> str:
+    """Return an absolute path to the Cursor Agent CLI, or raise TokenUnavailable."""
+    raw = (agent_bin or "").strip()
+    if not raw:
+        raise TokenUnavailable("CURIOSITY_PEER_AGENT_BIN missing")
+    if os.path.isfile(raw) and os.access(raw, os.X_OK):
+        return raw
+    which = shutil.which(raw)
+    if which and os.path.isfile(which):
+        return which
+    raise TokenUnavailable(f"cursor agent binary not found: {raw}")
+
+
+def _preflight_agent_auth(agent_bin: str) -> None:
+    """Best-effort ``agent status``; map missing desktop login → TokenUnavailable."""
+    try:
+        proc = subprocess.run(
+            [agent_bin, "status"],
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise TokenUnavailable(f"cursor agent binary not found: {agent_bin}") from exc
+    except subprocess.TimeoutExpired:
+        # Status hung — do not block the hire; the real job will fail loudly.
+        return
+    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+    if proc.returncode != 0:
+        err = RuntimeError(f"cursor agent status exited {proc.returncode}: {combined[:1000]}")
+        if classify_cursor_failure(err) == "token_unavailable":
+            raise TokenUnavailable(str(err)) from err
+        # Non-auth status failures are soft: proceed to the real ask job.
+        return
+    if combined and classify_cursor_failure(RuntimeError(combined)) == "token_unavailable":
+        raise TokenUnavailable(combined[:1000])
+
+
 def _default_cursor(
     help_req: HelpRequestV1,
     *,
     settings: Settings,
     context_pack: str,
 ) -> PeerBriefV1:
-    secret = settings.CURSOR_API_KEY
-    api_key = secret.get_secret_value() if secret is not None else ""
-    if not api_key.strip():
-        raise TokenUnavailable("CURSOR_API_KEY missing")
+    agent_bin = _resolve_agent_bin(settings.CURIOSITY_PEER_AGENT_BIN)
+    _preflight_agent_auth(agent_bin)
     sealed = build_sealed_prompt(help_req, context_pack=context_pack)
     try:
         return run_cursor_job(
             help_req,
             sealed,
-            api_key=api_key,
+            agent_bin=agent_bin,
             cwd=settings.CURIOSITY_PEER_REPO_ROOT,
             model=settings.CURIOSITY_PEER_MODEL,
         )
@@ -595,8 +635,8 @@ async def run_help_consumer(settings: Settings, bus: Any, stop: Any) -> None:
                     channel,
                     len(data) if isinstance(data, str) else 0,
                 )
-                # Sync peer path (Cursor SDK + optional Claude wait) off the
-                # consumer loop; pass ``loop`` so bus I/O uses
+                # Sync peer path (Cursor Agent CLI + optional Claude wait) off
+                # the consumer loop; pass ``loop`` so bus I/O uses
                 # run_coroutine_threadsafe instead of asyncio.run.
                 await asyncio.to_thread(
                     handle_help_request,

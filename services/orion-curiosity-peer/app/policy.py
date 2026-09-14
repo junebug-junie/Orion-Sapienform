@@ -1,109 +1,104 @@
-"""Read-only Cursor tool policy for contractor peer jobs.
+"""Read-only Cursor Agent CLI argv policy for contractor peer jobs.
 
-Allowlist is the real gate. Deny names are optional defense-in-depth and must
-only use SDK-documented public tool names (unknown names raise at create).
+`--mode ask` is the read-only gate (CLI: ask = Q&A / read-only). Never pass
+`--force`, `--yolo`, `--approve-mcps`, or omit mode. Plan mode is rejected —
+it may propose edits; this peer stays ask-only.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Optional, Sequence
 
-READ_ONLY_CURSOR_TOOLS: tuple[str, ...] = ("read", "grep", "glob", "ls")
-
-# Documented mutating / expansive capabilities only. Prefer allowlist alone if
-# a name drifts and Agent.create starts rejecting it.
-PINNED_DISALLOWED_CURSOR_TOOLS: tuple[str, ...] = ("shell", "edit", "task")
-
-
-def assert_read_only_tools(tools: Sequence[str]) -> None:
-    """Raise ValueError if any tool is outside the read-only allowlist."""
-    allowed = set(READ_ONLY_CURSOR_TOOLS)
-    bad = [t for t in tools if t not in allowed]
-    if bad:
-        raise ValueError(
-            "read-only Cursor tools allowlist violated: "
-            + ", ".join(bad)
-            + f" (allowed={list(READ_ONLY_CURSOR_TOOLS)})"
-        )
+# Forbidden mutation / expansion flags (exact argv tokens).
+FORBIDDEN_CLI_FLAGS: frozenset[str] = frozenset(
+    {
+        "--force",
+        "-f",
+        "--yolo",
+        "--approve-mcps",
+        "--plan",  # shorthand for --mode=plan
+    }
+)
 
 
-def _options_get(options: Any, key: str) -> Any:
-    if options is None:
-        return None
-    if isinstance(options, Mapping):
-        return options.get(key)
-    return getattr(options, key, None)
+def build_cursor_agent_argv(
+    *,
+    agent_bin: str,
+    prompt: str,
+    workspace: str,
+    model: Optional[str] = None,
+) -> list[str]:
+    """Build print-mode ask argv for a sealed contractor prompt.
 
-
-def _is_nonempty_collection(value: Any) -> bool:
-    """True when value is a present, non-empty mapping/sequence (None/[]/{} ok)."""
-    if value is None:
-        return False
-    if isinstance(value, Mapping):
-        return len(value) > 0
-    if isinstance(value, (str, bytes)):
-        return bool(value)
-    if isinstance(value, Sequence):
-        return len(value) > 0
-    # Fallback for SDK objects that expose __len__ / truthiness.
-    try:
-        return len(value) > 0  # type: ignore[arg-type]
-    except TypeError:
-        return bool(value)
-
-
-def assert_read_only_agent_options(options: Any) -> None:
-    """Raise ValueError unless AgentOptions.tools is exactly the allowlist.
-
-    Also rejects cloud agents (tool restrictions are local-only) and any
-    disallowed_tools entry that would re-enable nothing but must not include
-    allowlisted names.
-
-    Expansive surfaces must stay closed: mcp_servers, agents,
-    local.custom_tools, and local.setting_sources must be None or empty.
+    Shape mirrors FCC / ``claude -p``: subprocess argv, host/desktop auth,
+    no Python SDK.
     """
-    if options is None:
-        raise ValueError("AgentOptions required for read-only Cursor jobs")
+    argv: list[str] = [
+        agent_bin,
+        "-p",
+        "--mode",
+        "ask",
+        "--output-format",
+        "text",
+        "--workspace",
+        workspace,
+        "--trust",
+    ]
+    if model and str(model).strip():
+        argv.extend(["--model", str(model).strip()])
+    argv.append(prompt)
+    return argv
 
-    tools = _options_get(options, "tools")
-    if tools is None:
+
+def _has_print_flag(argv: Sequence[str]) -> bool:
+    return "-p" in argv or "--print" in argv
+
+
+def _mode_is_ask(argv: Sequence[str]) -> bool:
+    """True when argv selects ask mode via ``--mode ask`` or ``--mode=ask``."""
+    for i, tok in enumerate(argv):
+        if tok == "--mode" and i + 1 < len(argv):
+            return argv[i + 1] == "ask"
+        if tok.startswith("--mode="):
+            return tok.split("=", 1)[1] == "ask"
+    return False
+
+
+def _has_flag_with_value(argv: Sequence[str], flag: str) -> bool:
+    """True when ``flag`` appears followed by a non-option value, or ``flag=``."""
+    for i, tok in enumerate(argv):
+        if tok == flag and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            return True
+        if tok.startswith(f"{flag}="):
+            return True
+    return False
+
+
+def assert_read_only_cli_argv(argv: Sequence[str]) -> None:
+    """Raise ValueError unless argv is a read-only print-mode ask invocation."""
+    if not argv:
+        raise ValueError("cursor agent argv is empty")
+
+    tokens = list(argv)
+    for tok in tokens:
+        if tok in FORBIDDEN_CLI_FLAGS:
+            raise ValueError(f"forbidden cursor agent flag: {tok}")
+        # Combined forms like --force=true
+        bare = tok.split("=", 1)[0]
+        if bare in FORBIDDEN_CLI_FLAGS:
+            raise ValueError(f"forbidden cursor agent flag: {tok}")
+
+    if not _has_print_flag(tokens):
+        raise ValueError("cursor agent argv must include -p / --print")
+
+    if not _mode_is_ask(tokens):
         raise ValueError(
-            "tools allowlist required; omitting tools offers the full toolset"
-        )
-    tool_list = list(tools)
-    assert_read_only_tools(tool_list)
-    if tuple(tool_list) != READ_ONLY_CURSOR_TOOLS:
-        raise ValueError(
-            f"tools must be exactly {list(READ_ONLY_CURSOR_TOOLS)}, got {tool_list}"
+            "cursor agent argv must use --mode ask "
+            "(plan mode is not allowed for this peer)"
         )
 
-    cloud = _options_get(options, "cloud")
-    if cloud is not None:
-        raise ValueError("read-only peer jobs must use local agents, not cloud")
+    if not _has_flag_with_value(tokens, "--workspace"):
+        raise ValueError("cursor agent argv must include --workspace <path>")
 
-    local = _options_get(options, "local")
-    if local is None:
-        raise ValueError("local=LocalAgentOptions(...) required for read-only jobs")
-
-    mcp_servers = _options_get(options, "mcp_servers")
-    if _is_nonempty_collection(mcp_servers):
-        raise ValueError("mcp_servers must be empty/None for read-only peer jobs")
-
-    agents = _options_get(options, "agents")
-    if _is_nonempty_collection(agents):
-        raise ValueError("agents must be empty/None for read-only peer jobs")
-
-    custom_tools = _options_get(local, "custom_tools")
-    if _is_nonempty_collection(custom_tools):
-        raise ValueError("local.custom_tools must be empty/None for read-only peer jobs")
-
-    setting_sources = _options_get(local, "setting_sources")
-    if _is_nonempty_collection(setting_sources):
-        raise ValueError(
-            "local.setting_sources must be empty/None for read-only peer jobs"
-        )
-
-    disallowed = _options_get(options, "disallowed_tools") or ()
-    for name in disallowed:
-        if name in READ_ONLY_CURSOR_TOOLS:
-            raise ValueError(f"disallowed_tools must not include allowlisted tool {name!r}")
+    if "--trust" not in tokens:
+        raise ValueError("cursor agent argv must include --trust")

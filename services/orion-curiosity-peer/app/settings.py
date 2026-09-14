@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,16 +41,15 @@ class Settings(BaseSettings):
         ),
     )
 
-    # ── Cursor credential — lives HERE, never in Hub ──────────────────
-    # Same isolation rationale as room-companion's Claude OAuth token:
-    # Hub is root-equivalent with docker.sock; a key there is one Orion's
-    # FCC turns can read. SecretStr so logs / model_dump do not leak it.
-    CURSOR_API_KEY: Optional[SecretStr] = Field(default=None)
-
-    @field_validator("CURSOR_API_KEY", mode="before")
-    @classmethod
-    def _strip_pasted_key(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+    # ── Cursor Agent CLI (desktop login) — lives HERE, never in Hub ───
+    # Same isolation rationale as room-companion's Claude credential:
+    # Hub is root-equivalent with docker.sock. Auth is host `agent login`
+    # (~/.config/cursor/auth.json), not CURSOR_API_KEY / cursor-sdk.
+    # Compose mounts the host install + config; default points at the
+    # versioned binary under the share mount (wrapper needs sibling node).
+    CURIOSITY_PEER_AGENT_BIN: str = Field(
+        default="/opt/cursor-agent/versions/2026.05.20-2b5dd59/cursor-agent"
+    )
 
     CURIOSITY_PEER_REPO_ROOT: str = Field(default="/repo")
     CURIOSITY_PEER_MODEL: str = Field(default="composer-2.5")

@@ -1,22 +1,19 @@
-"""Cursor Auto invoker — read-only tools, sealed prompt, PeerBrief parse.
+"""Cursor Agent CLI invoker — sealed prompt, ask-mode argv, PeerBrief parse.
 
-Never call the live Cursor API from tests; inject Agent.create via monkeypatch.
+Same idea as FCC / ``claude -p``: subprocess argv, print mode, host/desktop
+auth. Never import ``cursor_sdk``. Tests inject ``subprocess.run``.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from cursor_sdk import Agent, AgentOptions, LocalAgentOptions
-
-from app.policy import (
-    PINNED_DISALLOWED_CURSOR_TOOLS,
-    READ_ONLY_CURSOR_TOOLS,
-    assert_read_only_agent_options,
-)
+from app.cursor_errors import TokenUnavailable, classify_cursor_failure
+from app.policy import assert_read_only_cli_argv, build_cursor_agent_argv
 from orion.curiosity.peer_briefs import strip_self_definition_draft
 from orion.schemas.curiosity_peer import (
     CuriosityPeerNameV1,
@@ -25,6 +22,9 @@ from orion.schemas.curiosity_peer import (
 )
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
+
+# Injectable for tests (never call a live agent from pytest).
+SubprocessRun = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def build_sealed_prompt(
@@ -189,45 +189,51 @@ def parse_peer_brief_body(
     )
 
 
-def _agent_text(run: Any, result: Any) -> str:
-    if hasattr(run, "text"):
-        try:
-            text = run.text()
-            if text:
-                return str(text)
-        except Exception:
-            pass
-    if result is not None and getattr(result, "result", None):
-        return str(result.result)
-    return ""
+def _combined_cli_output(proc: subprocess.CompletedProcess[str]) -> str:
+    parts = [proc.stdout or "", proc.stderr or ""]
+    return "\n".join(p for p in parts if p).strip()
 
 
 def run_cursor_job(
     help: HelpRequestV1,
     sealed_prompt: str,
     *,
-    api_key: str,
+    agent_bin: str,
     cwd: str,
     model: str,
+    timeout_sec: float = 600.0,
+    run: Optional[SubprocessRun] = None,
 ) -> PeerBriefV1:
-    """Run one read-only Cursor Auto job and map output to PeerBriefV1."""
-    options = AgentOptions(
+    """Spawn Cursor Agent CLI in ask/print mode; map stdout to PeerBriefV1."""
+    argv = build_cursor_agent_argv(
+        agent_bin=agent_bin,
+        prompt=sealed_prompt,
+        workspace=cwd,
         model=model,
-        api_key=api_key,
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        # Allowlist is authoritative; pin only documented mutating names.
-        disallowed_tools=list(PINNED_DISALLOWED_CURSOR_TOOLS),
-        local=LocalAgentOptions(cwd=cwd, setting_sources=[]),
     )
-    assert_read_only_agent_options(options)
+    assert_read_only_cli_argv(argv)
 
-    with Agent.create(options) as agent:
-        run = agent.send(sealed_prompt)
-        result = run.wait()
-        if getattr(result, "status", None) == "error":
-            raise RuntimeError(
-                f"cursor run failed: {getattr(result, 'id', 'unknown')}"
-            )
-        body = _agent_text(run, result)
+    runner = run or subprocess.run
+    try:
+        proc = runner(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise TokenUnavailable(f"cursor agent binary not found: {agent_bin}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"cursor agent timed out after {exc.timeout}s") from exc
 
-    return parse_peer_brief_body(body, help=help)
+    combined = _combined_cli_output(proc)
+    if proc.returncode != 0:
+        err = RuntimeError(
+            f"cursor agent exited {proc.returncode}: {combined[:2000]}"
+        )
+        if classify_cursor_failure(err) == "token_unavailable":
+            raise TokenUnavailable(str(err)) from err
+        raise err
+
+    return parse_peer_brief_body(combined, help=help)

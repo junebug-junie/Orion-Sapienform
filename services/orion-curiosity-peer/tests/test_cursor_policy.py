@@ -1,24 +1,22 @@
-"""Read-only Cursor tool policy + invoker (no live Cursor API)."""
+"""Read-only Cursor Agent CLI policy + invoker (no live agent)."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import pytest
-from cursor_sdk import AgentOptions, LocalAgentOptions
 
+from app.cursor_errors import TokenUnavailable
 from app.cursor_invoker import (
     build_sealed_prompt,
     parse_peer_brief_body,
     run_cursor_job,
 )
 from app.policy import (
-    READ_ONLY_CURSOR_TOOLS,
-    assert_read_only_agent_options,
-    assert_read_only_tools,
+    assert_read_only_cli_argv,
+    build_cursor_agent_argv,
 )
 from orion.schemas.curiosity_peer import HelpRequestV1
-
 
 def _help(**overrides) -> HelpRequestV1:
     base = dict(
@@ -34,107 +32,74 @@ def _help(**overrides) -> HelpRequestV1:
     return HelpRequestV1(**base)
 
 
-def test_policy_rejects_write_tools() -> None:
-    with pytest.raises(ValueError) as exc:
-        assert_read_only_tools(["read", "edit"])
-    assert "edit" in str(exc.value)
+def test_build_argv_is_ask_print_mode() -> None:
+    argv = build_cursor_agent_argv(
+        agent_bin="/opt/cursor-agent/versions/x/cursor-agent",
+        prompt="sealed",
+        workspace="/repo",
+        model="composer-2.5",
+    )
+    assert_read_only_cli_argv(argv)
+    assert argv[0].endswith("cursor-agent")
+    assert "-p" in argv
+    assert argv[argv.index("--mode") + 1] == "ask"
+    assert "--workspace" in argv
+    assert argv[argv.index("--workspace") + 1] == "/repo"
+    assert "--trust" in argv
+    assert "--output-format" in argv
+    assert argv[argv.index("--output-format") + 1] == "text"
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "composer-2.5"
+    assert argv[-1] == "sealed"
+    for bad in ("--force", "--yolo", "--approve-mcps", "--plan"):
+        assert bad not in argv
 
 
-def test_policy_rejects_shell_and_delete() -> None:
-    for bad in ("shell", "delete", "applyDiff", "task"):
+def test_policy_rejects_force_yolo_approve_mcps() -> None:
+    base = build_cursor_agent_argv(
+        agent_bin="cursor-agent",
+        prompt="x",
+        workspace="/repo",
+    )
+    for bad in ("--force", "-f", "--yolo", "--approve-mcps"):
         with pytest.raises(ValueError) as exc:
-            assert_read_only_tools(["read", bad])
-        assert bad in str(exc.value)
+            assert_read_only_cli_argv([*base[:-1], bad, base[-1]])
+        assert bad in str(exc.value) or "forbidden" in str(exc.value).lower()
 
 
-def test_policy_accepts_allowlist() -> None:
-    assert_read_only_tools(list(READ_ONLY_CURSOR_TOOLS))
-
-
-def test_assert_read_only_agent_options_rejects_extra_tools() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=["read", "shell"],
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
-    )
+def test_policy_rejects_plan_mode() -> None:
+    argv = [
+        "cursor-agent",
+        "-p",
+        "--mode",
+        "plan",
+        "--workspace",
+        "/repo",
+        "--trust",
+        "prompt",
+    ]
     with pytest.raises(ValueError) as exc:
-        assert_read_only_agent_options(opts)
-    assert "shell" in str(exc.value)
+        assert_read_only_cli_argv(argv)
+    assert "ask" in str(exc.value).lower()
 
 
-def test_assert_read_only_agent_options_requires_allowlist() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=None,
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
+def test_policy_rejects_missing_print_or_trust_or_workspace() -> None:
+    good = build_cursor_agent_argv(
+        agent_bin="cursor-agent", prompt="x", workspace="/repo"
     )
+    no_print = [t for t in good if t not in ("-p", "--print")]
     with pytest.raises(ValueError):
-        assert_read_only_agent_options(opts)
+        assert_read_only_cli_argv(no_print)
 
+    no_trust = [t for t in good if t != "--trust"]
+    with pytest.raises(ValueError):
+        assert_read_only_cli_argv(no_trust)
 
-def test_assert_read_only_agent_options_rejects_mcp_servers() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        mcp_servers={"github": {"type": "http", "url": "https://example.invalid"}},
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
-    )
-    with pytest.raises(ValueError) as exc:
-        assert_read_only_agent_options(opts)
-    assert "mcp_servers" in str(exc.value)
-
-
-def test_assert_read_only_agent_options_rejects_agents() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        agents={"helper": {"description": "x", "prompt": "y"}},
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
-    )
-    with pytest.raises(ValueError) as exc:
-        assert_read_only_agent_options(opts)
-    assert "agents" in str(exc.value)
-
-
-def test_assert_read_only_agent_options_rejects_custom_tools() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        local=LocalAgentOptions(
-            cwd="/tmp",
-            setting_sources=[],
-            custom_tools={"poke": {"description": "x", "args": {}}},
-        ),
-    )
-    with pytest.raises(ValueError) as exc:
-        assert_read_only_agent_options(opts)
-    assert "custom_tools" in str(exc.value)
-
-
-def test_assert_read_only_agent_options_rejects_setting_sources() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=["project"]),
-    )
-    with pytest.raises(ValueError) as exc:
-        assert_read_only_agent_options(opts)
-    assert "setting_sources" in str(exc.value)
-
-
-def test_assert_read_only_agent_options_allows_closed_surfaces() -> None:
-    opts = AgentOptions(
-        model="composer-2.5",
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        mcp_servers=None,
-        agents=None,
-        local=LocalAgentOptions(
-            cwd="/tmp",
-            setting_sources=[],
-            custom_tools=None,
-        ),
-    )
-    assert_read_only_agent_options(opts)
+    # Drop --workspace and its value.
+    idx = good.index("--workspace")
+    no_ws = good[:idx] + good[idx + 2 :]
+    with pytest.raises(ValueError):
+        assert_read_only_cli_argv(no_ws)
 
 
 def test_sealed_prompt_includes_mode_and_peerbrief_shape() -> None:
@@ -221,72 +186,94 @@ def test_self_inquiry_empty_after_strip_is_empty() -> None:
     assert brief.status == "empty"
 
 
-def test_cursor_invoker_passes_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cursor_invoker_spawns_read_only_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict = {}
 
-    class FakeRun:
-        def wait(self):
-            return SimpleNamespace(
-                status="finished",
-                id="run-fake",
-                result=(
-                    '{"summary":"found it",'
-                    '"evidence_pointers":["a.py"],'
-                    '"open_questions":[],'
-                    '"suggested_next_looks":[]}'
-                ),
-            )
-
-        def text(self):
-            return self.wait().result
-
-    class FakeAgent:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def send(self, prompt: str):
-            captured["prompt"] = prompt
-            return FakeRun()
-
-    def fake_create(options=None, **kwargs):
-        captured["options"] = options
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
         captured["kwargs"] = kwargs
-        assert_read_only_agent_options(options)
-        tools = getattr(options, "tools", None) if options is not None else None
-        if tools is None and isinstance(options, dict):
-            tools = options.get("tools")
-        assert tuple(tools) == READ_ONLY_CURSOR_TOOLS
-        return FakeAgent()
-
-    monkeypatch.setattr("app.cursor_invoker.Agent.create", fake_create)
+        assert_read_only_cli_argv(argv)
+        body = (
+            '{"summary":"found it",'
+            '"evidence_pointers":["a.py"],'
+            '"open_questions":[],'
+            '"suggested_next_looks":[]}'
+        )
+        return SimpleNamespace(returncode=0, stdout=body, stderr="")
 
     help_req = _help()
     sealed = build_sealed_prompt(help_req)
     brief = run_cursor_job(
         help_req,
         sealed,
-        api_key="cursor_test_key",
+        agent_bin="/opt/cursor-agent/versions/x/cursor-agent",
         cwd="/tmp/repo",
         model="composer-2.5",
+        run=fake_run,
     )
     assert brief.status == "ok"
     assert brief.peer == "cursor_auto"
     assert brief.help_id == "help-1"
     assert "found it" in brief.summary
-    assert captured["prompt"] == sealed
-    opts = captured["options"]
-    assert tuple(opts.tools) == READ_ONLY_CURSOR_TOOLS
-    # Allowlist is the contract; deny list may be empty or pinned known names only.
-    if opts.disallowed_tools:
-        for name in opts.disallowed_tools:
-            assert name not in READ_ONLY_CURSOR_TOOLS
-            assert name in {"shell", "edit", "delete", "applyDiff", "task", "mcp", "webSearch"}
-    # Expansive surfaces must stay closed on invoker-built options.
-    assert not opts.mcp_servers
-    assert not opts.agents
-    assert opts.local is not None
-    assert list(opts.local.setting_sources or []) == []
-    assert not opts.local.custom_tools
+    argv = captured["argv"]
+    assert argv[-1] == sealed
+    assert argv[argv.index("--mode") + 1] == "ask"
+    assert "--force" not in argv
+    assert "--yolo" not in argv
+    assert captured["kwargs"].get("capture_output") is True
+
+
+def test_cursor_invoker_maps_login_failure_to_token_unavailable() -> None:
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Error: not logged in. Please run `agent login`.",
+        )
+
+    with pytest.raises(TokenUnavailable):
+        run_cursor_job(
+            _help(),
+            "sealed",
+            agent_bin="cursor-agent",
+            cwd="/repo",
+            model="composer-2.5",
+            run=fake_run,
+        )
+
+
+def test_cursor_invoker_raises_on_other_nonzero() -> None:
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=2,
+            stdout="",
+            stderr="internal boom",
+        )
+
+    with pytest.raises(RuntimeError) as exc:
+        run_cursor_job(
+            _help(),
+            "sealed",
+            agent_bin="cursor-agent",
+            cwd="/repo",
+            model="composer-2.5",
+            run=fake_run,
+        )
+    assert "exited 2" in str(exc.value)
+
+
+def test_cursor_invoker_missing_binary_is_token_unavailable() -> None:
+    def fake_run(argv, **kwargs):
+        raise FileNotFoundError(argv[0])
+
+    with pytest.raises(TokenUnavailable):
+        run_cursor_job(
+            _help(),
+            "sealed",
+            agent_bin="/missing/cursor-agent",
+            cwd="/repo",
+            model="composer-2.5",
+            run=fake_run,
+        )

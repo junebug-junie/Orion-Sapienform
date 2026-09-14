@@ -4,9 +4,9 @@
 
 **Goal:** Let Orion hire a read-only frontier peer (Cursor Auto, Claude fallback) via `:HelpRequest`, land a `:PeerBrief` in worldview + Postgres, and soft-nudge the next curiosity/self-inquiry kickoff — without the peer writing beliefs or forcing citation.
 
-**Architecture:** Patch 0 lands contracts, kickoff Cypher/teach, dual-write persistence, soft-nudge, Atlas, and the kill switch with **no live hire**. Patch 1 arms `services/orion-curiosity-peer` behind the flag: post-run HelpRequest enqueue → contested Cursor budget → Cursor SDK read-only tools allowlist → one Claude room fallback → PeerBrief dual-write. Supervisor stays report-only. Orion alone MERGEs `:Prior` / `:Finding` / `:SelfDefinition`.
+**Architecture:** Patch 0 lands contracts, kickoff Cypher/teach, dual-write persistence, soft-nudge, Atlas, and the kill switch with **no live hire**. Patch 1 arms `services/orion-curiosity-peer` behind the flag: post-run HelpRequest enqueue → contested Cursor budget → Cursor Agent CLI (`agent -p --mode ask`) → one Claude room fallback → PeerBrief dual-write. Supervisor stays report-only. Orion alone MERGEs `:Prior` / `:Finding` / `:SelfDefinition`.
 
-**Tech Stack:** Python 3.12, Pydantic v2, Redis streams (Orion bus), FalkorDB Cypher, SQLAlchemy (orion-sql-writer), Cursor Python SDK (`cursor-sdk`), pytest, existing Hub curiosity kickoff / Atlas / room-companion Claude transport.
+**Tech Stack:** Python 3.12, Pydantic v2, Redis streams (Orion bus), FalkorDB Cypher, SQLAlchemy (orion-sql-writer), Cursor Agent CLI (subprocess / desktop login — not `cursor-sdk`), pytest, existing Hub curiosity kickoff / Atlas / room-companion Claude transport.
 
 **Spec:** [`docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`](../specs/2026-09-14-orion-contractor-peer-design.md)
 
@@ -24,9 +24,9 @@
 - Env parity: any new `.env_example` key → run `python scripts/sync_local_env_from_example.py` and keep `settings.py` / compose in sync.
 - Bus contract changes require schema + `orion/schemas/registry.py` (both `_REGISTRY` and `SCHEMA_REGISTRY`) + `orion/bus/channels.yaml` + `check_schema_registry.py` + `check_bus_channels.py`.
 - Hub never writes belief nodes to `orion_worldview`; PeerBrief MERGE is allowed only in the peer dual-write helper (system writer), never via Hub RO `WorldviewReader`.
-- Cursor credential isolation: `CURSOR_API_KEY` lives in `orion-curiosity-peer`, not Hub (same reason Claude stays in room-companion).
+- Cursor credential isolation: desktop CLI auth (`agent login` / `~/.config/cursor`) is mounted into `orion-curiosity-peer`, not Hub (same reason Claude stays in room-companion). No `CURSOR_API_KEY` / `cursor-sdk`.
 - Juniper transcripts / `~/.claude/projects` stay out of the contractor packet.
-- Prefer Python Cursor SDK (`cursor-sdk`) to match the repo; local runtime with explicit `tools=[...]` allowlist for read-only.
+- Transport is Cursor Agent CLI (`agent -p --mode ask --workspace … --trust`); read-only gate is argv policy, not SDK tool allowlists.
 
 ---
 

@@ -19,12 +19,15 @@ def test_curiosity_peer_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "CURIOSITY_PEER_ENABLED",
         "CURIOUSITY_PEER_ENABLED",
         "CURSOR_API_KEY",
+        "CURIOSITY_PEER_AGENT_BIN",
     ):
         monkeypatch.delenv(key, raising=False)
 
     settings = Settings(_env_file=None)
     assert settings.CURIOSITY_PEER_ENABLED is False
-    assert settings.CURSOR_API_KEY is None or settings.CURSOR_API_KEY.get_secret_value() == ""
+    assert "CURSOR_API_KEY" not in Settings.model_fields
+    assert "CURIOSITY_PEER_AGENT_BIN" in Settings.model_fields
+    assert settings.CURIOSITY_PEER_AGENT_BIN.endswith("cursor-agent")
 
 
 def test_curiosity_peer_enabled_only_when_explicitly_true(
@@ -41,6 +44,17 @@ def test_curiousity_typo_alias_enables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CURIOUSITY_PEER_ENABLED", "true")
     settings = Settings(_env_file=None)
     assert settings.CURIOSITY_PEER_ENABLED is True
+
+
+def test_agent_bin_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "CURIOSITY_PEER_AGENT_BIN",
+        "/opt/cursor-agent/versions/test/cursor-agent",
+    )
+    settings = Settings(_env_file=None)
+    assert settings.CURIOSITY_PEER_AGENT_BIN == (
+        "/opt/cursor-agent/versions/test/cursor-agent"
+    )
 
 
 def test_hub_enqueue_flag_is_separate_contract() -> None:

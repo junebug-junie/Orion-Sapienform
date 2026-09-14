@@ -4,7 +4,7 @@ Maps design acceptances 1–8 without a live Cursor hire:
 
   1 — no HelpRequest → no peer job
   2 — budget refuse → refused_budget + soft-nudge text
-  3 — Cursor tools allowlist; no edit/shell
+  3 — Cursor CLI argv read-only; no --force/--yolo; --mode ask required
   4 — Claude fallback exactly once on token unavailable
   5 — persist MERGE callable + bus payload (sql shape covered elsewhere; live UNVERIFIED)
   6 — kickoff soft-nudge for ok; empty not success
@@ -20,14 +20,8 @@ from typing import Any
 
 import pytest
 
-from cursor_sdk import AgentOptions, LocalAgentOptions
-
 from app.cursor_errors import TokenUnavailable
-from app.policy import (
-    READ_ONLY_CURSOR_TOOLS,
-    assert_read_only_agent_options,
-    assert_read_only_tools,
-)
+from app.policy import assert_read_only_cli_argv, build_cursor_agent_argv
 from app.worker import _default_persist, handle_help_request
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.curiosity.kickoff_prompt import build_kickoff_prompt
@@ -44,7 +38,6 @@ from orion.schemas.curiosity_peer import (
     HelpRequestV1,
     PeerBriefV1,
 )
-
 
 SOURCE = ServiceRef(name="orion-curiosity-peer", version="0.1.0", node="test")
 RUN_ID = "abcd1234abcd"
@@ -150,30 +143,33 @@ def test_acceptance_2_budget_refuse_and_soft_nudge() -> None:
 # --- 3 -----------------------------------------------------------------------
 
 
-def test_acceptance_3_tools_allowlist_no_edit_shell() -> None:
-    """Invoker policy: allowlist only; edit/shell refused."""
-    for bad in ("edit", "shell", "delete", "applyDiff", "task"):
-        with pytest.raises(ValueError) as exc:
-            assert_read_only_tools(["read", bad])
-        assert bad in str(exc.value)
-
-    ok = AgentOptions(
+def test_acceptance_3_cli_argv_read_only_no_force() -> None:
+    """Invoker policy: ask/print argv only; force/yolo/plan refused."""
+    ok = build_cursor_agent_argv(
+        agent_bin="cursor-agent",
+        prompt="investigate",
+        workspace="/repo",
         model="composer-2.5",
-        tools=list(READ_ONLY_CURSOR_TOOLS),
-        mcp_servers=None,
-        agents=None,
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=[], custom_tools=None),
     )
-    assert_read_only_agent_options(ok)
+    assert_read_only_cli_argv(ok)
+    assert ok[ok.index("--mode") + 1] == "ask"
+    for bad in ("--force", "--yolo", "--approve-mcps"):
+        with pytest.raises(ValueError):
+            assert_read_only_cli_argv([*ok[:-1], bad, ok[-1]])
 
-    bad_opts = AgentOptions(
-        model="composer-2.5",
-        tools=["read", "shell"],
-        local=LocalAgentOptions(cwd="/tmp", setting_sources=[]),
-    )
+    plan = [
+        "cursor-agent",
+        "-p",
+        "--mode",
+        "plan",
+        "--workspace",
+        "/repo",
+        "--trust",
+        "x",
+    ]
     with pytest.raises(ValueError) as exc:
-        assert_read_only_agent_options(bad_opts)
-    assert "shell" in str(exc.value)
+        assert_read_only_cli_argv(plan)
+    assert "ask" in str(exc.value).lower()
 
 
 # --- 4 -----------------------------------------------------------------------

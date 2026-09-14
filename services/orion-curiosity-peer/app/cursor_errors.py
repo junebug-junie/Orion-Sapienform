@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 CursorFailureKind = Literal["token_unavailable", "other"]
@@ -26,6 +27,21 @@ _TOKEN_MARKERS = (
     "authentication",
     "auth failed",
     "not authenticated",
+    # Desktop Cursor Agent CLI login (host auth.json), not API-key billing.
+    "not logged in",
+    "login required",
+    "please log in",
+    "please login",
+    "authentication required",
+    "run `agent login`",
+    "run agent login",
+    "cursor agent binary not found",
+)
+
+# Regex forms that need a bit more structure than a substring.
+_TOKEN_REGEXES = (
+    re.compile(r"please run\b.*\blogin\b", re.IGNORECASE),
+    re.compile(r"\blogin\b.*\brequired\b", re.IGNORECASE),
 )
 
 
@@ -39,5 +55,7 @@ def classify_cursor_failure(exc: BaseException) -> CursorFailureKind:
         return "token_unavailable"
     msg = str(exc or "").lower()
     if any(marker in msg for marker in _TOKEN_MARKERS):
+        return "token_unavailable"
+    if any(rx.search(msg) for rx in _TOKEN_REGEXES):
         return "token_unavailable"
     return "other"

@@ -71,6 +71,15 @@ def test_classify_token_unavailable() -> None:
     )
     # Bare "token" must not false-positive (narrowed markers).
     assert classify_cursor_failure(RuntimeError("tokenizing the input")) == "other"
+    # Desktop CLI login markers.
+    assert (
+        classify_cursor_failure(RuntimeError("not logged in — please run agent login"))
+        == "token_unavailable"
+    )
+    assert (
+        classify_cursor_failure(RuntimeError("Please run `agent login` to continue"))
+        == "token_unavailable"
+    )
 
 
 def test_cursor_token_failure_tries_claude_once() -> None:

@@ -51,7 +51,7 @@ Grounded 2026-09-14, not assumed.
 | Contested Claude scarcity design | Spec + dry-run | Budget gate pattern to extend to Cursor |
 | Curiosity supervisor Patch 1 (`HopReadingV1`) | Offline report | Circling detection later; **no hire in v1** |
 | Supervisor design `hand_off_to_claude` | Spec only | Becomes end-state A after v1 proves HelpRequest |
-| Cursor SDK (`cursor-sdk` / `@cursor/sdk`) | External | Programmatic Cursor Auto jobs |
+| Cursor Agent CLI (`agent` / `cursor-agent`, desktop login) | External | Read-only print-mode ask jobs (`-p --mode ask`) |
 | Substrate `FrontierInvocation*` | Live elsewhere | **Unrelated** — do not overload |
 
 ### What is missing

@@ -57,6 +57,7 @@ from orion.schemas.self_sense import SelfSenseEvalV1
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
+from orion.schemas.collapse_mirror_chat_reply import CollapseMirrorChatReplyRequestV1
 from orion.schemas.cortex.contracts import (
     AgentTraceStepV1,
     AgentTraceSummaryV1,
@@ -817,6 +818,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PlanExecutionResult": PlanExecutionResult,
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,  # change_type dict coercion support
     "CollapseMirrorStoredV1": CollapseMirrorStoredV1,
+    "CollapseMirrorChatReplyRequestV1": CollapseMirrorChatReplyRequestV1,
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacognitiveTraceV1": MetacognitiveTraceV1,

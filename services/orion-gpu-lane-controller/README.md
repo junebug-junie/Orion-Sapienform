@@ -81,3 +81,19 @@ curl http://localhost:8090/v1/gpu-lane/status
   — not built here.
 - **No concurrent GPU1 sharing.** Exclusive swap only; `affect` and `agent`
   are never both resident on GPU1 by design.
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.
+
+GPU2 ordinary transitions never build images. They require a matching durable
+intent from `/elastic/target` or the admission broker, atomic diffusion draining,
+and authoritative lease/permit closure plus upstream idle evidence to restore.
+The "manual only" and build-on-flip behavior above describe the legacy GPU1
+adapter only. GPU2 restoration belongs to durable admission reconciliation.

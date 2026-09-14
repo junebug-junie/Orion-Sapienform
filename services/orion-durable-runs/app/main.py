@@ -138,6 +138,8 @@ async def lifespan(app: FastAPI):
             # Admission migration is operator-managed, unlike saver migrations.
             # Fail startup if it has not been applied; never accept into memory.
             await admission.store.queue_snapshot()
+            if admission.elastic:
+                await admission.elastic.store.initialize()
         if _settings.resume_on_boot:
             try:
                 counts = await runner.resume_unfinished()
@@ -284,3 +286,50 @@ async def release_capacity(token: CapacityTokenV1):
 @app.get("/capacity")
 async def capacity_snapshot():
     return await _capacity().snapshot()
+
+
+@app.get("/elastic/status")
+async def elastic_status():
+    runtime = _admission()
+    if not runtime.elastic:
+        return {"enabled": False, "can_transition": False}
+    row = await runtime.elastic.store.snapshot()
+    environment = runtime.broker.elastic_environment
+    checked = environment.get("checked_at")
+    fresh = False
+    if checked:
+        from datetime import datetime
+        age = (runtime.now()-datetime.fromisoformat(checked)).total_seconds()
+        fresh = 0 <= age <= max(30, runtime.settings.admission_tick_sec*3)
+    return {**row,"activation_eligible":bool(fresh and environment.get("eligible") and
+        not runtime.settings.elastic_shadow),"eligibility_reason":environment.get("reason","not_checked")}
+
+
+from fastapi import Header
+from pydantic import BaseModel, ConfigDict
+from typing import Literal
+import secrets
+
+class ElasticTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: Literal["diffusion", "agent-burst"]
+
+@app.post("/elastic/target")
+async def elastic_target(req: ElasticTargetRequest, authorization: str | None = Header(default=None)):
+    runtime = _admission()
+    elastic = runtime.elastic
+    token = runtime.settings.elastic_controller_token
+    if not elastic or not token or runtime.settings.elastic_shadow:
+        raise HTTPException(503,"elastic_mutation_disabled")
+    if not secrets.compare_digest(authorization or "", "Bearer "+token):
+        raise HTTPException(401,"unauthorized")
+    if req.target == "agent-burst" and not (await elastic.environment()).get("eligible"):
+        raise HTTPException(409,"physical_eligibility_suppressed")
+    async with runtime.store.transaction() as conn:
+        row = await elastic.store.row(conn)
+        if row is None:
+            raise HTTPException(503,"elastic_not_initialized")
+        if row["desired_target"] != req.target:
+            await elastic.store.intent(conn,req.target,row["run_id"],{"reason":"operator_request"})
+    runtime._wake.set()
+    return await elastic.store.snapshot()

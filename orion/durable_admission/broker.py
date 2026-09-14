@@ -23,6 +23,9 @@ class ResourceBroker:
         self.hysteresis_seconds = hysteresis_seconds
         self.widening_enabled, self.shadow = widening_enabled, shadow
         self.capacity = capacity
+        self.elastic = None
+        self.elastic_environment = {"eligible": False, "reason": "not_checked"}
+        self.elastic_budget = {}
 
     async def tick(self) -> list[dict[str, Any]]:
         # Route aliases must contend for the same physical reservation even
@@ -32,6 +35,12 @@ class ResourceBroker:
         grants: list[dict[str, Any]] = []
         async with self.store.transaction() as conn:
             now = await self.store.now(conn)
+            elastic_row = await self.elastic.row(conn) if self.elastic else None
+            for lane, meta in self.lanes.items():
+                if lane == "agent-burst" or (elastic_row and meta["backend_key"] == elastic_row["backend_key"]):
+                    meta["healthy"] = bool(meta.get("healthy") and lane == "agent-burst" and
+                        elastic_row and elastic_row["admissions_open"])
+
             await self.store._expire(conn, now)
             active = await (await conn.execute("SELECT l.*,r.request FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) WHERE l.status='active'")).fetchall()
             remaining = {row["backend_key"]: max(self.lease_seconds,
@@ -46,6 +55,8 @@ class ResourceBroker:
                     key = meta.get("backend_key")
                     remaining[key] = max(remaining.get(key, 0), float(meta.get("busy_budget_seconds", 3600)))
             pending = await (await conn.execute("SELECT d.*,r.request,(SELECT l.lane FROM durable_resource_leases l WHERE l.run_id=d.run_id ORDER BY l.generation LIMIT 1) AS first_assigned_lane FROM durable_resource_demands d JOIN durable_admission_runs r USING(run_id) WHERE d.status='pending' AND r.control IS NULL AND r.terminal IS NULL ORDER BY d.created_at,d.demand_id FOR UPDATE OF d")).fetchall()
+            if elastic_row and elastic_row["admissions_open"]:
+                await conn.execute("UPDATE durable_elastic_slot SET admission_observed=true WHERE slot='circe-gpu2'")
             ahead: dict[str, float] = {}
             for demand in pending:
                 requirement = demand["requirement"]
@@ -65,6 +76,21 @@ class ResourceBroker:
                                        hysteresis_seconds=self.hysteresis_seconds,
                                        widening_enabled=self.widening_enabled)
                 detail = decision.detail()
+                if self.elastic and retained_lane in {None,"agent-burst"}:
+                    from .elastic import activation_decision
+                    meta = self.lanes.get("agent-burst", {})
+                    elastic_detail = activation_decision(demand["requirement"], meta,
+                        retained_burst=retained_lane == "agent-burst",
+                        waited=(now-demand["created_at"]).total_seconds(), threshold=self.widen_after_seconds,
+                        widening=self.widening_enabled, preferred_start=decision.estimates.get("agent"),
+                        queued_ahead=ahead.get(meta.get("backend_key"),0), budget=self.elastic_budget,
+                        hysteresis=self.hysteresis_seconds, environment=self.elastic_environment)
+                    detail["elastic"] = elastic_detail
+                    if (elastic_detail["suppression_reason"] is None and not decision.assigned_lane
+                            and elastic_row and elastic_row["state"] == "idle"
+                            and not self.shadow and not getattr(self, "elastic_shadow", True)):
+                        elastic_row = await self.elastic.intent(conn,"agent-burst",demand["run_id"],elastic_detail)
+
                 if retain_assignment:
                     detail["retained_assigned_lane"] = retained_lane
                     detail["suppressed"] = {

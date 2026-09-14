@@ -7,6 +7,7 @@ on:
       - "orion/schemas/durable_run.py"
       - "orion/schemas/resource_admission.py"
       - "orion/durable_admission/**"
+      - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
       - "services/orion-llm-gateway/**"
       - "orion/harness/finalize.py"
       - "orion/harness/runner.py"
@@ -30,6 +31,7 @@ on:
       - "orion/schemas/durable_run.py"
       - "orion/schemas/resource_admission.py"
       - "orion/durable_admission/**"
+      - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
       - "services/orion-llm-gateway/**"
       - "orion/harness/finalize.py"
       - "orion/harness/runner.py"
@@ -87,6 +89,12 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/gateway_capacity.py
+
+      - name: Inactive elastic lane fairness eval
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/elastic_fairness.py
 
   gateway:
     name: Gateway — shared capacity and transport lifecycle

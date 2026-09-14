@@ -82,6 +82,7 @@ services:
       # Host ambient-audio snapshot (systemd reader -> /run/orion-audio/latest.json).
       - /run/orion-audio:/run/orion-audio:ro
     environment:
+      - HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED=${HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED:-false}
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-false}
       - HUB_CURIOSITY_LEASE_VALIDATION_URL=${HUB_CURIOSITY_LEASE_VALIDATION_URL:-http://127.0.0.1:8124/leases/validate}
       # Core service identity

@@ -613,3 +613,13 @@ changes are needed. See the implementation PR report for evidence and rollout or
 Database integration tests use a disposable PostgreSQL URL:
 `ORION_VISUAL_TEST_DATABASE_URL=... python -m pytest services/orion-thought/tests/test_visual_activity.py -q`.
 They create isolated schemas and never run by default against the operator database.
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.

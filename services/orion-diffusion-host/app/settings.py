@@ -14,6 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    DIFFUSION_DRAIN_TOKEN: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     SERVICE_NAME: str = "diffusion-host"

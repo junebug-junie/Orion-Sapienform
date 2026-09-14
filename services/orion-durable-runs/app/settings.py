@@ -41,6 +41,22 @@ class Settings(BaseSettings):
     graph_port: int = Field(6379, alias="DURABLE_RUNS_GRAPH_PORT")
     graph_own: str = Field("orion_worldview", alias="DURABLE_RUNS_GRAPH_OWN")
 
+    elastic_enabled: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_ENABLED")
+    elastic_shadow: bool = Field(True, alias="DURABLE_RUNS_ELASTIC_SHADOW")
+    elastic_assignments: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_ASSIGNMENTS")
+    elastic_restoration: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_RESTORATION")
+    elastic_controller_url: str = Field("http://100.112.254.99:8090", alias="DURABLE_RUNS_ELASTIC_CONTROLLER_URL")
+    elastic_controller_token: str = Field("", alias="DURABLE_RUNS_ELASTIC_CONTROLLER_TOKEN")
+    elastic_backend: str = Field("http://100.112.254.99:8016", alias="DURABLE_RUNS_ELASTIC_BACKEND")
+    elastic_drain_budget: float = Field(300.0, alias="DURABLE_RUNS_ELASTIC_DRAIN_BUDGET_SEC", ge=0, allow_inf_nan=False)
+    elastic_transition_budget: float = Field(60.0, alias="DURABLE_RUNS_ELASTIC_TRANSITION_BUDGET_SEC", ge=0, allow_inf_nan=False)
+    elastic_cold_budget: float = Field(600.0, alias="DURABLE_RUNS_ELASTIC_COLD_BUDGET_SEC", ge=0, allow_inf_nan=False)
+    elastic_idle_grace: float = Field(300.0, alias="DURABLE_RUNS_ELASTIC_IDLE_GRACE_SEC", ge=0, allow_inf_nan=False)
+    elastic_min_residency: float = Field(600.0, alias="DURABLE_RUNS_ELASTIC_MIN_RESIDENCY_SEC", ge=0, allow_inf_nan=False)
+    elastic_max_borrow: float = Field(3600.0, alias="DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC", ge=0, allow_inf_nan=False)
+    elastic_cabinet_url: str = Field("http://orion-athena-hub:8080/api/cabinet/sensors/latest", alias="DURABLE_RUNS_ELASTIC_CABINET_URL")
+    elastic_thermal_enabled: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_THERMAL_ENABLED")
+
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
     capacity_enabled: bool = Field(False, alias="DURABLE_RUNS_CAPACITY_ENABLED")
     admission_shadow: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_SHADOW")
@@ -58,6 +74,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def valid_lease_heartbeat(self):
+        if self.elastic_enabled and not (self.enabled and self.admission_enabled and self.capacity_enabled):
+            raise ValueError("elastic requires enabled durable admission and capacity")
+        if self.elastic_enabled and not self.elastic_shadow and not self.elastic_restoration:
+            raise ValueError("elastic actuation requires restoration enabled")
+        if self.elastic_min_residency > self.elastic_max_borrow:
+            raise ValueError("elastic minimum residency exceeds maximum borrowing window")
         if self.lease_heartbeat_sec >= self.lease_seconds:
             raise ValueError("lease heartbeat interval must be shorter than lease duration")
         return self

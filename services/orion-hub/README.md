@@ -2711,3 +2711,13 @@ Stance, reflection, re-reflection, and conditional response repair use the same 
 assigned lane through their Cortex requests. Ordinary turns keep their existing
 routes; Hub omits an absent lease from the legacy stance bus payload.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.

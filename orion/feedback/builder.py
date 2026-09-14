@@ -307,6 +307,7 @@ def build_feedback_frame(
                 "produced": "completed",
                 "deferred_thermal": "deferred",
                 "deferred_busy": "deferred",
+                "deferred_resource": "deferred",
                 "already_satisfied": "not_attempted",
                 "failed": "failed",
             }.get(str(visual_outcome), "unknown")

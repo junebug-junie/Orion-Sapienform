@@ -42,6 +42,8 @@ class AdmissionRuntime:
         self.active: dict[str, asyncio.Task] = {}
         self._wake = asyncio.Event()
         self._catalog_at = 0.0
+        from app.elastic_runtime import ElasticRuntime
+        self.elastic = ElasticRuntime(self) if getattr(settings,"elastic_enabled",False) else None
 
     @staticmethod
     def config(run_id):
@@ -305,9 +307,24 @@ class AdmissionRuntime:
                 "configured": bool(route.get("upstream")), "capabilities": capabilities,
                 "quality_tier": declaration.get("quality_tier", 0),
                 "external_busy": occupancy_by_backend.get(route.get("upstream"))}
+        burst = lanes.get("agent-burst")
+        if burst:
+            preferred = next((r for r in routes if r["id"] == "agent"), {})
+            actual = next((r for r in routes if r["id"] == "agent-burst"), {})
+            same_model = preferred.get("model") and burst.get("activation_model") == preferred.get("model")
+            burst["activatable"] = bool(burst.get("activatable") and self.elastic and same_model
+                and burst["backend_key"].rstrip("/") == self.settings.elastic_backend.rstrip("/"))
+            # A stopped route has no measured context. Activation may use the
+            # audited same-model contract; assignment requires live facts again.
+            burst["activation_capabilities"] = {**burst["capabilities"],
+                "context_tokens":preferred.get("n_ctx"),"vision":preferred.get("vision")} if same_model else {}
+            burst["healthy"] = bool(burst["healthy"] and same_model and actual.get("model") == preferred.get("model")
+                and actual.get("n_ctx") == preferred.get("n_ctx") and actual.get("vision") == preferred.get("vision"))
         self.broker.lanes = lanes
 
     async def reconcile(self):
+        if self.elastic:
+            await self.elastic.tick()
         await self.broker.tick()
         for row in await self.store.list_pending():
             run_id = row["run_id"]
@@ -395,6 +412,8 @@ class AdmissionRuntime:
                 "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds())}
 
     async def close(self):
+        if self.elastic:
+            await self.elastic.close()
         tasks = list(self.active.values())
         for task in tasks:
             task.cancel()

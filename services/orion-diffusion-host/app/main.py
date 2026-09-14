@@ -50,6 +50,7 @@ import asyncio
 import inspect
 import io
 import uuid
+import secrets
 from datetime import datetime, timedelta, timezone
 import time
 import traceback
@@ -57,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -76,6 +77,8 @@ settings = Settings()
 _pipe = None
 _load_error: Optional[str] = None
 _generation_lock = asyncio.Lock()
+_draining = False
+_generation_future: asyncio.Future | None = None
 _heartbeat_chassis: Optional[HeartbeatOnly] = None
 # One-shot latch so the no-bus error below cannot spam once per generation.
 _power_intent_no_bus_warned: bool = False
@@ -375,11 +378,39 @@ async def health() -> dict:
 @app.get("/ready")
 async def ready():
     body = {
-        "ready": _pipe is not None,
+        "ready": _pipe is not None and not _draining,
+        "draining": _draining,
         "model_loaded": _pipe is not None,
         "load_error": _load_error,
     }
     return JSONResponse(body, status_code=200 if body["ready"] else 503)
+
+
+@app.get("/v1/lifecycle/status")
+async def lifecycle_status():
+    return {"draining": _draining, "accepting": not _draining and _pipe is not None,
+            "in_flight": _generation_lock.locked() or
+                (_generation_future is not None and not _generation_future.done()),
+            "model_ready": _pipe is not None}
+
+
+class DrainRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    draining: bool
+
+
+@app.post("/v1/lifecycle/drain")
+async def drain(req: DrainRequest, authorization: str | None = Header(default=None)):
+    global _draining
+    token = settings.DIFFUSION_DRAIN_TOKEN
+    if not token:
+        raise HTTPException(503, "drain_disabled")
+    if not secrets.compare_digest(authorization or "", "Bearer " + token):
+        raise HTTPException(401, "unauthorized")
+    # No await between latch change and generation admission. Single uvicorn
+    # worker only: new requests cannot race the controller's idle observation.
+    _draining = req.draining
+    return await lifecycle_status()
 
 
 def _pipe_accepts(param_name: str) -> bool:
@@ -617,6 +648,9 @@ async def _publish_power_intent() -> None:
 
 @app.post("/generate")
 async def generate(req: GenerateRequest) -> Response:
+    global _generation_future
+    if _draining:
+        return JSONResponse({"outcome": "resource_deferred", "reason": "controller_displacement"}, status_code=503)
     if len(req.prompt) > settings.DIFFUSION_MAX_PROMPT_CHARS:
         raise HTTPException(
             status_code=422,
@@ -627,7 +661,7 @@ async def generate(req: GenerateRequest) -> Response:
             status_code=503,
             detail=f"model not loaded{': ' + _load_error if _load_error else ' (still loading)'}",
         )
-    if _generation_lock.locked():
+    if _generation_lock.locked() or (_generation_future is not None and not _generation_future.done()):
         # Fast-reject, not queue-and-wait -- module docstring "Concurrency".
         raise HTTPException(status_code=429, detail="another generation is already in flight")
 
@@ -647,7 +681,10 @@ async def generate(req: GenerateRequest) -> Response:
         loop = asyncio.get_running_loop()
         start = time.monotonic()
         try:
-            png_bytes = await loop.run_in_executor(_gpu_executor, _run_generation, req)
+            _generation_future = loop.run_in_executor(_gpu_executor, _run_generation, req)
+            # Cancellation of the HTTP waiter never cancels the GPU future.
+            # Lifecycle status and subsequent admissions retain its occupancy.
+            png_bytes = await asyncio.shield(_generation_future)
         except Exception as exc:  # noqa: BLE001 -- report to caller, do not crash the service
             # Full exception (message + traceback) logged server-side only.
             # The client-facing detail is deliberately generic -- review

@@ -187,7 +187,11 @@ def _snapshot(runner: SafeCommandRunner, repo_root: Path, target: LaneTarget) ->
         proc = runner.run(cmd, cwd=str(repo_root))
     except Exception as exc:  # noqa: BLE001
         return {"running": False, "state": "unknown", "containers": [], "error": str(exc)}
-    rows = _compose_ps_rows(proc.stdout) if proc.returncode == 0 else []
+    if proc.returncode != 0:
+        return {"running": False, "state": "unknown", "containers": [], "error": "docker_ps_failed"}
+    rows = _compose_ps_rows(proc.stdout)
+    if not rows and proc.stdout.strip() not in {"", "[]"}:
+        return {"running": False, "state": "unknown", "containers": [], "error": "docker_ps_invalid"}
     if not rows:
         return {"running": False, "state": "absent", "containers": []}
     running = all(

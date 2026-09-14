@@ -136,7 +136,7 @@ def build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, *, au
         "llm_gateway_openai_passthrough_enabled": True,
         "llm_route_table_json": json.dumps({lane: {
             "url": url, "backend": "llamacpp", "model": "fixture-model"}
-            for lane, url in (("agent", "http://fixture-backend"), ("metacog", "http://fixture-metacog"))}),
+            for lane, url in (("agent", "http://fixture-backend"), ("metacog", "http://fixture-metacog"), ("agent-burst", "http://fixture-metacog"))}),
     }.items():
         monkeypatch.setattr(gateway.settings, name, value)
     backend._load_route_targets.cache_clear()

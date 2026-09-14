@@ -581,6 +581,7 @@ async def startup_event():
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
+                elastic_activation_enabled=settings.HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED,
                 lease_validation_url=settings.HUB_CURIOSITY_LEASE_VALIDATION_URL,
                 # The self-inquiry line: own budget, same loop. See the
                 # settings' own comment and orion/curiosity/self_inquiry.py.

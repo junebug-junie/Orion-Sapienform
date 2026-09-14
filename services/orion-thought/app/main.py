@@ -204,6 +204,7 @@ async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(defaul
         production = chain.chain_json.get("production_receipt") if chain else None
         outcome = ("produced" if production else "deferred_busy" if chain is None else
                    "deferred_thermal" if chain.terminal_reason == "thermal_refused" else
+                   "deferred_resource" if chain.terminal_reason == "resource_deferred" else
                    "unknown" if chain.terminal_reason == "run_deadline_exceeded" else "failed")
         thermal = chain.chain_json.get("thermal_gate") if chain else {"reason": "thermal_not_evaluated"}
         receipt = VisualExecutionReceiptV1(

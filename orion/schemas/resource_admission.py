@@ -21,6 +21,7 @@ class ResourceRequirementV1(BaseModel):
     lease_scope: Literal["run"] = "run"
     priority: Literal["background"] = "background"
     preferred_lane: str = "agent"
+    allow_elastic_activation: bool = False
     alternatives: list[str] = Field(default_factory=list)
     requirements: dict[str, Any] = Field(default_factory=dict)
     operator_override: str | None = None

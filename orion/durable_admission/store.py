@@ -34,7 +34,7 @@ class PostgresAdmissionStore:
         directory = Path(__file__).resolve().parents[2] / "services/orion-sql-db"
         async with self.pool.connection() as conn:
             async with conn.transaction():
-                for name in ("manual_migration_durable_resource_admission_v1.sql", "manual_migration_gateway_capacity_v1.sql"):
+                for name in ("manual_migration_durable_resource_admission_v1.sql", "manual_migration_gateway_capacity_v1.sql", "manual_migration_gpu2_elastic_v1.sql"):
                     await conn.execute((directory / name).read_text(), prepare=False)
 
     async def now(self, conn: Any) -> datetime:
@@ -75,7 +75,12 @@ class PostgresAdmissionStore:
                 await self._event(conn, run_id, "run.accepted", {}, event_id=f"accepted:{run_id}", now=now)
                 return inserted
             row = await (await conn.execute("SELECT * FROM durable_admission_runs WHERE run_id=%s", (run_id,))).fetchone()
-            if {k: v for k, v in row["request"].items() if k != "requested_at"} != {k: v for k, v in request.items() if k != "requested_at"}:
+            def comparable(value):
+                result = {k: v for k, v in value.items() if k != "requested_at"}
+                if result.get("admission") is not None:
+                    result["admission"] = {"allow_elastic_activation": False, **result["admission"]}
+                return result
+            if comparable(row["request"]) != comparable(request):
                 raise SubmissionConflict("run_id already exists with a different request")
             return row
 

@@ -61,6 +61,9 @@ def decide_lane(
     estimates: dict[str, float | None] = {}
 
     def compatible(lane: str) -> bool:
+        if lane == "agent-burst" and not requirement.get("allow_elastic_activation"):
+            suppressed[lane] = "run_elastic_disabled"
+            return False
         meta = lanes.get(lane)
         if not meta or not meta.get("configured") or not meta.get("backend_key"):
             suppressed[lane] = "route_not_configured"

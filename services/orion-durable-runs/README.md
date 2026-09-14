@@ -120,3 +120,13 @@ turn adapters and Gateway ownership through accepted drafts and conditional
 response repair. It also kills a runner process while an independently held
 backend permit drains. Model outputs, FCC execution and external knowledge reads
 are explicit isolated fixtures; this is not evidence of production cognition.
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.

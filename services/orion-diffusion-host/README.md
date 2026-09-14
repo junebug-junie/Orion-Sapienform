@@ -327,3 +327,13 @@ a dedicated test proving `tokenizer_2`'s check uses the passed-in
 `max_sequence_length`, not the tokenizer's own raw `model_max_length`
 (a T5-style tokenizer often reports an effectively-unbounded placeholder
 there, not the pipeline's real effective limit).
+
+
+## Optional GPU2 elastic admission
+
+GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
+[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
+[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
+and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
+for this service's exact flags, HTTP contracts and operator commands.
+No production env sync, migration, GPU transition or deployment was performed.

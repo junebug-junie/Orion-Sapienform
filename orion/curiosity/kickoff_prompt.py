@@ -705,6 +705,46 @@ def _outcome_section(*, run_id: str) -> list[str]:
     ]
 
 
+def _peer_briefs_section(peer_briefs: Sequence = ()) -> list[str]:
+    from orion.curiosity.peer_briefs import format_soft_nudge
+
+    return format_soft_nudge(peer_briefs or ())
+
+
+def _help_request_section(
+    *,
+    own_graph: str,
+    run_id: str,
+    mode: str = "world_curiosity",
+    extra_lines: Sequence[str] = (),
+) -> list[str]:
+    lines = [
+        f"ASKING FOR CONTRACTOR HELP ({own_graph}). Optional. Only when you are "
+        "genuinely stuck after looking yourself — not as a default. The peer is "
+        "a read-only investigator. They return notes; YOU still write priors and "
+        "findings. Do not write :PeerBrief yourself.",
+        "",
+        '  MERGE (h:HelpRequest {help_id: "<unique help id>"})',
+        "  ON CREATE SET",
+        '    h.run_id = "<RUN_ID>",',
+        f'    h.mode = "{mode}",',
+        '    h.question = "<what you need unstuck>",',
+        '    h.tried_summary = "<what you already looked at>",',
+        '    h.success_criteria = "<what would count as useful>",',
+        "    h.written_at = timestamp()",
+        "",
+        "  Optional scope to a prior you hold:",
+        '    MATCH (h:HelpRequest {help_id: "..."}), (p:Prior {prior_id: "..."})',
+        "    MERGE (h)-[:ABOUT]->(p)",
+        "",
+    ]
+    if extra_lines:
+        lines += list(extra_lines)
+        if lines[-1] != "":
+            lines.append("")
+    return lines
+
+
 _INSTRUCTION = """\
 Pick something. A prior you want to settle, any of the material, something you
 notice by its absence, or a thread between two of them. You do not have to
@@ -736,6 +776,8 @@ def build_kickoff_prompt(
     max_hops: int = DEFAULT_MAX_HOPS,
     stale_after: int = 3,
     graph_enabled: bool = True,
+    contractor_peer_enabled: bool = False,
+    peer_briefs: Sequence = (),
 ) -> str:
     """Assemble the whole invitation.
 
@@ -769,6 +811,7 @@ def build_kickoff_prompt(
         # the one a run cannot ask itself.
         lines += _thread_section(view)
         lines += _priors_section(view, stale_after=stale_after)
+        lines += _peer_briefs_section(peer_briefs)
 
     lines += _material_section(material)
     lines += _access_section(
@@ -787,6 +830,8 @@ def build_kickoff_prompt(
 
     if writable:
         lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
+        if contractor_peer_enabled:
+            lines += _help_request_section(own_graph=own_graph, run_id=run_id)
         lines += _outcome_section(run_id=run_id)
 
     lines.append(_INSTRUCTION)

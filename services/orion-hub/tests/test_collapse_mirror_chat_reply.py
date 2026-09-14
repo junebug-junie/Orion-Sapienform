@@ -221,7 +221,9 @@ async def test_live_session_injects_you_runs_chat_lane_and_delivers(monkeypatch)
     payload = turn_calls[0]["payload"]
     assert payload.get("source") == "collapse_mirror_reply"
     assert "fcc_model_label" not in payload or payload.get("fcc_model_label") in (None, "")
-    assert turn_calls[0]["user_message"].startswith("### Collapse Mirror")
+    turn_text = turn_calls[0]["user_message"]
+    assert "already received and already shown as their You bubble" in turn_text
+    assert "### Collapse Mirror" in turn_text
     # You + Orion history (You first)
     roles = [getattr(e.payload, "role", None) for e in history]
     assert roles[0] == "user"
@@ -232,9 +234,11 @@ async def test_live_session_injects_you_runs_chat_lane_and_delivers(monkeypatch)
     assert "endogenous_outreach" not in tags
     meta = getattr(assistant.payload, "client_meta", None) or {}
     assert meta.get("unsolicited") is not True
-    # socket got You then Orion
+    # socket got You then Orion — You stays the raw mirror, unframed
     frames = _drain_queue(outreach)
-    assert any(f.get("kind") == "collapse_mirror_you" for f in frames)
+    you = next(f for f in frames if f.get("kind") == "collapse_mirror_you")
+    assert you["text"].startswith("### Collapse Mirror")
+    assert "already received and already shown" not in you["text"]
     assert any(f.get("kind") == "orion_outreach" for f in frames)
     # notify must not look like unsolicited outreach
     notify = [env for ch, env in bus.published if ch == "orion:notify:in_app"]
@@ -433,6 +437,18 @@ def test_default_turn_timeout_covers_thought_plus_harness() -> None:
 
     # Live 2026-09-14: Thought ~100s + harness ~6m; 120s cancelled mid-turn.
     assert DEFAULT_TURN_TIMEOUT_SEC >= 900.0
+
+
+def test_frame_collapse_mirror_turn_message_marks_arrival() -> None:
+    from scripts.collapse_mirror_chat_reply import frame_collapse_mirror_turn_message
+
+    mirror = "### Collapse Mirror\n- **mantra**: Here we go, again."
+    framed = frame_collapse_mirror_turn_message(mirror)
+    assert framed.startswith("Juniper just submitted this Collapse Mirror")
+    assert "already received and already shown as their You bubble" in framed
+    assert mirror in framed
+    # Idempotent if already framed.
+    assert frame_collapse_mirror_turn_message(framed) == framed
 
 
 @pytest.mark.asyncio

@@ -84,4 +84,4 @@ PYTHONPATH=. python3 services/orion-ai-town/scripts/resync_agent_descriptions.py
 
 ## PR link
 
-(filled after open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2228

@@ -281,9 +281,12 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         # work (app/durable_runs.py). Checked before every routing branch --
         # an explicit metadata key, like workflow_request below.
         if has_durable_run_request(req):
+            # Must use get_settings() — bare `settings` is undefined here and
+            # NameError'd every curiosity durable kickoff (live 2026-09-15).
+            s = get_settings()
             durable_result = await dispatch_durable_run(
-                admission_enabled=settings.durable_admission_enabled,
-                receipt_timeout_sec=settings.durable_receipt_timeout_sec,
+                admission_enabled=s.durable_admission_enabled,
+                receipt_timeout_sec=s.durable_receipt_timeout_sec,
                 bus=_bus_for_rpc(),
                 source=sref,
                 req=req,

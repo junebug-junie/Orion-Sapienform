@@ -9,6 +9,10 @@
 > uses Cursor/Claude. Preference: frontier does heavy lifting; Orion does
 > epistemology, self-concept formation, summation, and "internal soul
 > recognizing."
+>
+> **Addendum (2026-09-15):** what *grounds* the hire vs keep decision — Mind
+> intent / progress disclosure, not tools-only or attention-winner — is in
+> `docs/superpowers/specs/2026-09-15-orion-hire-determination-grounding-design.md`.
 
 ## Arsonist summary
 
@@ -252,3 +256,6 @@ curiosity/self-inquiry run
   `2026-08-27-claude-quota-contested-scarcity-design.md`, extended to Cursor.
 - Does not implement substrate frontier invocation
   (`orion/core/schemas/frontier_curiosity.py`).
+- **Hire determination grounding** (Mind `user_intent`, curiosity appraisal
+  target, keep-local, no attention-winner trigger):
+  `2026-09-15-orion-hire-determination-grounding-design.md`.

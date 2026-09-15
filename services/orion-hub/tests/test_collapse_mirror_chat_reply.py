@@ -477,3 +477,40 @@ async def test_timeout_leaves_you_and_pushes_status(monkeypatch) -> None:
     assert any(f.get("kind") == "collapse_mirror_you" for f in frames)
     assert any(f.get("kind") == "collapse_mirror_status" for f in frames)
     assert not any(f.get("kind") == "orion_outreach" for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_partial_draft_on_turn_error_is_delivered(monkeypatch) -> None:
+    """Motor draft must survive finalize failure (live 2026-09-15 corr=536de7ab)."""
+    bus = _FakeBus()
+    outreach = _outreach_with_session("live-sess")
+    outreach._bus = bus
+    handler = CollapseMirrorChatReplyHandler(outreach=outreach, bus=bus)
+
+    async def _finalize_failed(**kwargs):
+        return [
+            {
+                "type": "turn_error",
+                "phase": "finalize",
+                "error": "RPC timeout waiting on orion:exec:result:…",
+                "partial_draft": "I'm sitting with this. Thank you for the mirror.",
+                "finalize_ran": False,
+            }
+        ]
+
+    import orion.hub.turn_orchestrator as turn_orchestrator
+
+    monkeypatch.setattr(turn_orchestrator, "execute_unified_turn", _finalize_failed)
+    history = _patch_history(monkeypatch)
+
+    result = await handler.handle(_request_env("evt-partial-draft"))
+    assert result["status"] == "delivered"
+    assert result.get("you_written") is True
+    roles = [getattr(e.payload, "role", None) for e in history]
+    assert "user" in roles
+    assert "assistant" in roles
+    frames = _drain_queue(outreach)
+    assert any(f.get("kind") == "collapse_mirror_you" for f in frames)
+    outreach_frames = [f for f in frames if f.get("kind") == "orion_outreach"]
+    assert outreach_frames
+    assert "Thank you for the mirror" in str(outreach_frames[0].get("llm_response") or "")

@@ -1,0 +1,170 @@
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+index 1111111..2222222 100644
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -93,6 +93,49 @@
+   return content;
+ }
+ 
++// Returned from continueConversationMessage when an exact self-repeat is exhausted.
++// agentGenerateMessage turns this into leaveConversationMessage + leave.
++// Must not be a normal spoken line (clampTownReply never invents this token).
++export const SELF_REPEAT_LEAVE_SENTINEL = '__orion_self_repeat_leave__';
++
++function normalizeTownLine(text: string): string {
++  return text
++    .toLowerCase()
++    .replace(/[^a-z0-9\s]/g, ' ')
++    .replace(/\s+/g, ' ')
++    .trim();
++}
++
++function ownPriorLines(messages: LLMMessage[], playerName: string): string[] {
++  const prefix = `${playerName} to `;
++  const out: string[] = [];
++  for (const m of messages) {
++    const content = typeof m.content === 'string' ? m.content : '';
++    if (!content.startsWith(prefix)) {
++      continue;
++    }
++    const idx = content.indexOf(': ');
++    if (idx < 0) {
++      continue;
++    }
++    const line = content.slice(idx + 2).trim();
++    if (line) {
++      out.push(line);
++    }
++  }
++  // Only the last few own lines — short tokens like "ok"/"thanks" from early
++  // in a long chat should not force leave forever.
++  return out.slice(-4);
++}
++
++function isSelfRepeat(reply: string, ownLines: string[]): boolean {
++  const norm = normalizeTownLine(reply);
++  if (!norm) {
++    return false;
++  }
++  return ownLines.some((line) => normalizeTownLine(line) === norm);
++}
++
+ export async function continueConversationMessage(
+   ctx: ActionCtx,
+   worldId: Id<'worlds'>,
+@@ -131,28 +174,56 @@
+     `Ground your reply in something specific and concrete -- a real object, task, or event -- rather than extended metaphor or abstract imagery. If the conversation is drifting into vague poetic language (light, shadows, glow, echoes, silence, and similar) without a concrete referent, name the actual thing you mean instead of continuing the metaphor.`,
+   );
+ 
++  const priorMessages = await previousMessages(
++    ctx,
++    worldId,
++    player,
++    otherPlayer,
++    conversation.id as GameId<'conversations'>,
++  );
+   const llmMessages: LLMMessage[] = [
+     {
+       role: 'system',
+       content: prompt.join('\n'),
+     },
+-    ...(await previousMessages(
+-      ctx,
+-      worldId,
+-      player,
+-      otherPlayer,
+-      conversation.id as GameId<'conversations'>,
+-    )),
++    ...priorMessages,
+   ];
+   const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
+   llmMessages.push({ role: 'user', content: lastPrompt });
+ 
++  const ownLines = ownPriorLines(priorMessages, player.name);
+   const { content } = await chatCompletion({
+     messages: llmMessages,
+     max_tokens: 120,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+-  return clampTownReply(trimContentPrefx(content, lastPrompt));
++  let response = clampTownReply(trimContentPrefx(content, lastPrompt));
++  if (isSelfRepeat(response, ownLines)) {
++    // Live 2026-09-15 Sofia↔Juniper: exact line reposted after goodbye.
++    // One retry, then sentinel so agentGenerateMessage leaves (not a bare
++    // empty continue — those can happen for other reasons mid-chat).
++    const firstAttempt = response;
++    const retryMessages: LLMMessage[] = [
++      ...llmMessages,
++      {
++        role: 'user',
++        content:
++          `You already said that. Do not repeat your earlier line. ` +
++          `Answer their latest message with something new, or say a short goodbye.`,
++      },
++      { role: 'user', content: lastPrompt },
++    ];
++    const retry = await chatCompletion({
++      messages: retryMessages,
++      max_tokens: 120,
++      stop: stopWords(otherPlayer.name, player.name),
++    });
++    response = clampTownReply(trimContentPrefx(retry.content, lastPrompt));
++    if (!response.trim() || isSelfRepeat(response, ownLines) || isSelfRepeat(response, [firstAttempt])) {
++      return SELF_REPEAT_LEAVE_SENTINEL;
++    }
++  }
++  return response;
+ }
+ 
+ export async function leaveConversationMessage(
+diff --git a/convex/aiTown/agentOperations.ts b/convex/aiTown/agentOperations.ts
+index 3333333..4444444 100644
+--- a/convex/aiTown/agentOperations.ts
++++ b/convex/aiTown/agentOperations.ts
+@@ -6,6 +6,7 @@
+ import {
+   continueConversationMessage,
+   leaveConversationMessage,
++  SELF_REPEAT_LEAVE_SENTINEL,
+   startConversationMessage,
+ } from '../agent/conversation';
+ import { assertNever } from '../util/assertNever';
+@@ -69,13 +70,28 @@
+       default:
+         assertNever(args.type);
+     }
+-    const text = await completionFn(
++    let text = await completionFn(
+       ctx,
+       args.worldId,
+       args.conversationId as GameId<'conversations'>,
+       args.playerId as GameId<'players'>,
+       args.otherPlayerId as GameId<'players'>,
+     );
++    let leaveConversation = args.type === 'leave';
++    // Exact self-repeat exhausted in continueConversationMessage.
++    if (args.type === 'continue' && text.trim() === SELF_REPEAT_LEAVE_SENTINEL) {
++      text = await leaveConversationMessage(
++        ctx,
++        args.worldId,
++        args.conversationId as GameId<'conversations'>,
++        args.playerId as GameId<'players'>,
++        args.otherPlayerId as GameId<'players'>,
++      );
++      leaveConversation = true;
++      if (!text.trim()) {
++        text = 'Take care.';
++      }
++    }
+ 
+     await ctx.runMutation(internal.aiTown.agent.agentSendMessage, {
+       worldId: args.worldId,
+@@ -84,7 +100,7 @@
+       playerId: args.playerId,
+       text,
+       messageUuid: args.messageUuid,
+-      leaveConversation: args.type === 'leave',
++      leaveConversation,
+       operationId: args.operationId,
+     });
+   },

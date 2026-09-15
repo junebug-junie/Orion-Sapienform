@@ -3,6 +3,7 @@ from __future__ import annotations
 from orion.embodiment.speech import (
     build_speech_prompt,
     is_injectable,
+    is_self_repeat,
     latest_partner_line,
     should_speak,
 )
@@ -104,3 +105,11 @@ def test_is_injectable_rejects_empty_and_whitespace():
     assert is_injectable("") is False
     assert is_injectable("   \n  ") is False
     assert is_injectable(None) is False  # type: ignore[arg-type]
+
+
+def test_is_self_repeat_detects_exact_orion_line():
+    p = _perception_in_convo()
+    assert is_self_repeat("hi there", p, "orion") is True
+    assert is_self_repeat("Hi there!", p, "orion") is True
+    assert is_self_repeat("something new entirely", p, "orion") is False
+    assert is_self_repeat("how are you?", p, "orion") is False  # partner line, not own

@@ -26,6 +26,7 @@ def _worker(**kwargs) -> EmbodimentWorker:
     w._faced_conversations = set()
     w._opened_conversations = set()
     w._speaking_conversations = set()
+    w._speech_exhausted_partner_lines = set()
     w._last_social_attempt_at = None
     return w
 

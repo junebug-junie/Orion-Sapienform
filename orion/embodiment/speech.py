@@ -6,6 +6,7 @@ decide *whether* Orion should speak, *what* to prompt the cortex with, and
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from orion.schemas.embodiment import WorldPerceptionV1
@@ -136,3 +137,42 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
 def is_injectable(reply_text: Optional[str]) -> bool:
     """Anti empty-shell guard: only non-empty, non-whitespace replies are injectable."""
     return bool(reply_text and str(reply_text).strip())
+
+
+def _normalize_spoken_line(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", str(text).lower())).strip()
+
+
+def own_recent_lines(perception: WorldPerceptionV1, own_player_id: str) -> list[str]:
+    """Orion's own spoken lines in the active conversation (most recent last).
+
+    Capped to ``_MAX_RECENT_LINES`` so short early tokens (ok/thanks) do not
+    permanently block legitimate reuse later in a long chat.
+    """
+    own = str(own_player_id or "").strip()
+    convo = perception.active_conversation or {}
+    messages = convo.get("messages") if isinstance(convo, dict) else None
+    if not isinstance(messages, list):
+        return []
+    out: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        author_id = str(msg.get("author_id") or msg.get("author") or "").strip()
+        author_name = str(msg.get("author_name") or msg.get("author") or "").strip().lower()
+        if author_id != own and author_name not in {"orion", "oríon"}:
+            continue
+        line = str(msg.get("text") or "").strip()
+        if line:
+            out.append(line)
+    return out[-_MAX_RECENT_LINES:]
+
+
+def is_self_repeat(reply_text: Optional[str], perception: WorldPerceptionV1, own_player_id: str) -> bool:
+    """True when the candidate reply matches one of Orion's own prior lines exactly (normalized)."""
+    if not is_injectable(reply_text):
+        return False
+    norm = _normalize_spoken_line(str(reply_text))
+    if not norm:
+        return False
+    return any(_normalize_spoken_line(line) == norm for line in own_recent_lines(perception, own_player_id))

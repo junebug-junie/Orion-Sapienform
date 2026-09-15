@@ -18,6 +18,7 @@ PATCHES=(
   "orion-no-human-idle-kick.patch"
   "orion-npc-answer-first.patch"
   "orion-resync-agent-descriptions.patch"
+  "orion-npc-no-self-repeat.patch"
   "orion-mechanical-leave.patch"
 )
 

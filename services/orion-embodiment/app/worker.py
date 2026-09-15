@@ -28,6 +28,7 @@ from orion.embodiment.salience import SalienceState, evaluate_salience
 from orion.embodiment.speech import (
     build_speech_prompt,
     is_injectable,
+    is_self_repeat,
     should_speak,
 )
 from orion.embodiment.dead_chat import should_abandon_dead_chat
@@ -118,6 +119,9 @@ class EmbodimentWorker:
         # fetch (which looks like an empty transcript) can't re-trigger an opener
         # every tick and spam the conversation.
         self._opened_conversations: set[str] = set()
+        # Partner-line keys where self-repeat exhaust already fired this turn.
+        # Prevents a cortex retry storm every perception tick (live 2026-09-15).
+        self._speech_exhausted_partner_lines: set[str] = set()
         # Conversations for which Orion has already issued the one-shot stop that
         # clears its lingering path so the engine (Conversation.tick) orients it
         # toward the partner. Bounded per-convo so we don't fight the engine.
@@ -828,6 +832,11 @@ class EmbodimentWorker:
         self._abandon_own_utterances.pop(cid, None)
         self._faced_conversations.discard(cid)
         self._opened_conversations.discard(cid)
+        # Drop exhausted partner-line keys for this conversation.
+        prefix = f"{cid}:"
+        self._speech_exhausted_partner_lines = {
+            k for k in self._speech_exhausted_partner_lines if not k.startswith(prefix)
+        }
         # Keep cid in _speaking_conversations if a race started speaking; that
         # task's finally will discard. Do not discard here.
 
@@ -1016,6 +1025,13 @@ class EmbodimentWorker:
         elif convo_id in self._opened_conversations:
             return None
 
+        partner_prompt_text = ""
+        if messages and str(messages[-1].get("author_id") or "") != own:
+            partner_prompt_text = str(messages[-1].get("text") or "")
+        exhausted_key = f"{convo_id}:{partner_prompt_text.strip().lower()}"
+        if exhausted_key in self._speech_exhausted_partner_lines:
+            return None
+
         prompt = build_speech_prompt(perception, own)
         other = convo.get("other") or {}
         partner_name = str(other.get("name") or "").strip()
@@ -1044,6 +1060,30 @@ class EmbodimentWorker:
                 logger.info("embodiment_speech_empty_reply_skipped convo=%s", convo_id)
                 return None
 
+            if is_self_repeat(reply, perception, own):
+                # Live 2026-09-15: Orion reposted the same line three times with Juniper.
+                # One retry with an explicit no-repeat nudge; then skip inject.
+                retry_prompt = (
+                    prompt
+                    + "\n\nYou already said that earlier in this chat. "
+                    "Do not repeat it. Answer their latest line with something new, "
+                    "or acknowledge and close if they are leaving."
+                )
+                try:
+                    reply = await self._request_utterance(
+                        retry_prompt,
+                        correlation_id=str(uuid4()),
+                        convo_id=convo_id,
+                        participant_continuity=participant_continuity,
+                    )
+                except Exception:
+                    logger.exception("embodiment_speech_self_repeat_retry_failed convo=%s", convo_id)
+                    reply = ""
+                if not is_injectable(reply) or is_self_repeat(reply, perception, own):
+                    logger.info("embodiment_speech_self_repeat_skipped convo=%s", convo_id)
+                    self._speech_exhausted_partner_lines.add(exhausted_key)
+                    return None
+
             try:
                 await asyncio.to_thread(self._inject_utterance, own, convo_id, reply)
             except Exception:
@@ -1052,9 +1092,7 @@ class EmbodimentWorker:
             # The partner's line Orion is replying to is the prior last message
             # (turn-taking above already confirmed it isn't Orion's own); empty
             # when Orion is opening the conversation.
-            partner_prompt_text = ""
-            if messages and str(messages[-1].get("author_id") or "") != own:
-                partner_prompt_text = str(messages[-1].get("text") or "")
+            # partner_prompt_text already computed above for the exhausted-key gate.
             exchange_correlation_id = await self._publish_conversation_memory(
                 convo_id=convo_id, other=convo.get("other"),
                 prompt_text=partner_prompt_text, response_text=reply,

@@ -14,6 +14,9 @@ def _worker() -> EmbodimentWorker:
     w._world_id = "w1"
     w._speaking_conversations = set()
     w._opened_conversations = set()
+    w._speech_exhausted_partner_lines = set()
+    w._abandon_own_utterances = {}
+    w._active_conversation_id = None
     w._settings = SimpleNamespace(
         speech_enabled=True,
         speech_lane="quick",
@@ -77,6 +80,31 @@ def test_injectable_reply_is_injected():
         result = asyncio.run(w._speak_once(_perception_in_convo()))
     assert result == "Hi Juniper!"
     assert si.call_count >= 1
+
+
+def test_self_repeat_retries_then_skips_and_exhausts():
+    """Exact Orion self-repeat: one cortex retry, then no inject + partner line exhausted."""
+    w = _worker()
+    perc = _perception_in_convo()
+    perc.active_conversation["messages"] = [
+        {"author_id": "orion", "author": "Orion", "text": "I'm here. Let's see what we've got."},
+        {"author_id": "p9", "author": "Juniper", "text": "bruh, you be repeating"},
+    ]
+    req = AsyncMock(return_value="I'm here. Let's see what we've got.")
+    with patch.object(w, "_request_utterance", new=req), \
+         patch("app.worker.aitown_client.send_input") as si, \
+         patch.object(w, "_fetch_participant_continuity", return_value=None):
+        result = asyncio.run(w._speak_once(perc))
+    assert result is None
+    assert req.await_count == 2
+    si.assert_not_called()
+    assert any(k.startswith("conv1:") for k in w._speech_exhausted_partner_lines)
+    # Same partner line must not storm cortex again.
+    req_again = AsyncMock(return_value="fresh attempt")
+    with patch.object(w, "_request_utterance", new=req_again), \
+         patch.object(w, "_fetch_participant_continuity", return_value=None):
+        assert asyncio.run(w._speak_once(perc)) is None
+    req_again.assert_not_awaited()
 
 
 def test_worker_does_not_send_finish_sending_message_directly():

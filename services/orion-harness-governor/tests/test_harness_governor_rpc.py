@@ -163,6 +163,40 @@ async def test_reading_only_request_preserves_structured_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_chain_receives_fcc_model_label() -> None:
+    from app import bus_listener
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-owner-lane",
+        thought_event=thought,
+        user_message="night night",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="MODEL_SONNET",
+    )
+    motor = _motor_result(thought)
+    seen: dict[str, object] = {}
+
+    async def _fake_finalize_chain(**kwargs: object) -> HarnessFinalizeChainResult:
+        seen.update(kwargs)
+        raise RuntimeError("stop after argument capture")
+
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain):
+        await bus_listener.handle_harness_run_request(
+            AsyncMock(),
+            req,
+            reply_to="orion:harness:run:result:c-owner-lane",
+        )
+
+    assert seen["fcc_model_label"] == "MODEL_SONNET"
+
+
+@pytest.mark.asyncio
 async def test_harness_run_carries_fcc_served_model_from_motor() -> None:
     """HarnessRunV1.fcc_served_model must come from the motor's own discovery
     (HarnessMotorResult.fcc_served_model), not the requested route alias --

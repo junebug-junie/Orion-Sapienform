@@ -311,6 +311,7 @@ async def handle_harness_run_request(
             reading_receipts=motor.reading_receipts,
             preserve_structured_output=bool(request.reading_only),
             resource_lease=request.resource_lease,
+            fcc_model_label=request.fcc_model_label,
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,

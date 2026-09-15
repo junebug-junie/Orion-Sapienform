@@ -93,32 +93,37 @@ class SNMPUPSClient:
         if input_voltage_raw is not None:
             input_line_voltage = float(input_voltage_raw)
 
-        # Decide on-battery from input line voltage
+        # Prefer APC output-status when present; fall back to line-voltage floor.
+        # Previously status==3 set raw_status=ONBATT but left on_battery=False whenever
+        # line voltage stayed above the threshold -- Circe would never start the grace
+        # timer / shutdown on a real on-battery event that still reported residual V.
         on_battery = False
         raw_status = "UNKNOWN"
 
-        if input_line_voltage is None:
+        if output_status == 3:
+            raw_status = "ONBATT"
+            on_battery = True
+        elif output_status == 2:
+            raw_status = "ONLINE"
+            on_battery = False
+        elif output_status == 4:
+            raw_status = "BOOST"
+            on_battery = False
+        elif output_status == 5:
+            raw_status = "TRIM"
+            on_battery = False
+        elif input_line_voltage is None:
             raw_status = "ONBATT_NO_LINE"
             on_battery = True
+        elif input_line_voltage < self.line_voltage_onbatt_threshold:
+            raw_status = "ONBATT"
+            on_battery = True
+        elif output_status is None:
+            raw_status = "ONLINE"
+            on_battery = False
         else:
-            if input_line_voltage < self.line_voltage_onbatt_threshold:
-                # e.g. < 80V
-                raw_status = "ONBATT"
-                on_battery = True
-            else:
-                # Wall power present
-                if output_status is None:
-                    raw_status = "ONLINE"
-                elif output_status == 2:
-                    raw_status = "ONLINE"
-                elif output_status == 3:
-                    raw_status = "ONBATT"
-                elif output_status == 4:
-                    raw_status = "BOOST"
-                elif output_status == 5:
-                    raw_status = "TRIM"
-                else:
-                    raw_status = f"STATE_{output_status}"
+            raw_status = f"STATE_{output_status}"
+            on_battery = False
 
         battery_charge_pct = float(batt_capacity) if batt_capacity is not None else None
         time_left_min = None

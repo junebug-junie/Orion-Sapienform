@@ -56,6 +56,31 @@ community allowed for this host's source IP(s) in the NMC Access Control
 list. On a multi-homed host, the NMC must allow the source address the
 kernel actually uses toward that IP (check with `ip route get <nmc-ip>`).
 
+### Circe operator notes (AP9631 / SRT5K)
+
+Circe is multi-homed (`eno1` and `enp179s0`). Toward the NMC at
+`192.168.1.41`, the kernel currently sources **`192.168.1.24`** — so the
+NMC Access Control row that power-guard uses must allow that address (same
+community string the service sets in `.env`). A row for `.22` alone is not
+enough; SNMP will time out even though a bind-to-`.22` probe succeeds.
+
+Arming order:
+
+1. Confirm polls: `docker logs --tail 20 orion-circe-power-guard` shows
+   `raw=ONLINE` (or ONBATT) via `snmp`.
+2. Prove host SSH (does **not** shut down):
+   ```bash
+   docker exec orion-circe-power-guard sh -c \
+     "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+      -o BatchMode=yes -i /etc/powerguard/ssh_key root@host.docker.internal 'echo SSH_OK && hostname'"
+   ```
+3. Only then set `POWER_GUARD_ENABLE_SHUTDOWN=true` and recreate the
+   container. Keep `POWER_GUARD_ONBATTERY_GRACE_SEC=300` unless you have a
+   reason to diverge from Athena.
+
+`orion-power-guard` is on Circe's mesh allowlist
+(`mesh-utilities/common/include_services_circe.txt`).
+
 ## Shutdown wiring
 
 This is the part worth reading closely if you're touching it.

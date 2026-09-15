@@ -39,15 +39,28 @@ class Settings(BaseSettings):
     )
     POWER_GUARD_UPS_NAME: str = Field(default="apc_ups")
 
+    # How power-guard reaches the UPS:
+    # - nis: USB UPS via host apcupsd NIS (athena)
+    # - snmp: network management card (circe AP9631 / similar)
+    POWER_GUARD_UPS_BACKEND: str = Field(default="nis")
+
     # ─────────────────────────────────────────────
-    # UPS via AP9640 SNMP
+    # UPS reachability (NIS host or SNMP card IP)
     # ─────────────────────────────────────────────
     POWER_GUARD_UPS_HOST: str = Field(
-        default="192.168.0.50",
-        description="IP of the AP9640 card",
+        default="host.docker.internal",
+        description="apcupsd NIS host (nis) or NMC IP (snmp)",
     )
     POWER_GUARD_SNMP_PORT: int = Field(default=161)
     POWER_GUARD_SNMP_COMMUNITY: str = Field(default="public")
+
+    @field_validator("POWER_GUARD_UPS_BACKEND")
+    @classmethod
+    def _backend_must_be_known(cls, v: str) -> str:
+        normalized = (v or "").strip().lower()
+        if normalized not in {"nis", "snmp"}:
+            raise ValueError("POWER_GUARD_UPS_BACKEND must be 'nis' or 'snmp'")
+        return normalized
 
     # ─────────────────────────────────────────────
     # Polling + thresholds

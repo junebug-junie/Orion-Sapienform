@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("orion-hub.outreach_provenance")
 
+OUTREACH_PROVENANCE_SCHEMA = "outreach_provenance.v1"
+
 _BLOCK_HEADER = (
     "Your last message to Juniper was unsolicited endogenous outreach. "
     "Here is the exact generation prompt that produced it. If they ask where "
@@ -16,14 +18,25 @@ _BLOCK_HEADER = (
 )
 
 
-def format_outreach_provenance_block(capsule: Dict[str, Any] | None) -> str:
+def _valid_outreach_capsule(capsule: Any) -> Optional[Dict[str, Any]]:
+    """Return capsule only when schema + prompt_text are well-formed; else None."""
     if not isinstance(capsule, dict):
+        return None
+    if capsule.get("schema") != OUTREACH_PROVENANCE_SCHEMA:
+        return None
+    prompt = capsule.get("prompt_text")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    return capsule
+
+
+def format_outreach_provenance_block(capsule: Dict[str, Any] | None) -> str:
+    validated = _valid_outreach_capsule(capsule)
+    if validated is None:
         return ""
-    prompt = str(capsule.get("prompt_text") or "").strip()
-    if not prompt:
-        return ""
-    summary = str(capsule.get("summary_line") or "").strip()
-    corr = str(capsule.get("correlation_id") or "").strip()
+    prompt = validated["prompt_text"].strip()
+    summary = str(validated.get("summary_line") or "").strip()
+    corr = str(validated.get("correlation_id") or "").strip()
     lines = [_BLOCK_HEADER, ""]
     if summary:
         lines.append(f"Summary: {summary}")
@@ -112,4 +125,6 @@ def fetch_latest_outreach_provenance(
     if not isinstance(meta, dict):
         return None
     capsule = meta.get("outreach_provenance")
-    return dict(capsule) if isinstance(capsule, dict) else None
+    if not isinstance(capsule, dict):
+        return None
+    return _valid_outreach_capsule(dict(capsule))

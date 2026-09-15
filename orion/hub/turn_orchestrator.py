@@ -543,7 +543,7 @@ def fetch_latest_outreach_provenance(
     return _impl(session_id, max_age_hours=max_age_hours)
 
 
-def _situation_with_outreach_provenance(
+async def _situation_with_outreach_provenance(
     situation_prompt_fragment: str | None,
     session_id: str | None,
     *,
@@ -553,6 +553,8 @@ def _situation_with_outreach_provenance(
 
     Fail-open: never raise into the turn. Uses DB lookup (not continuity
     messages) because unsolicited rows are excluded from rehydrate.
+    Sync SQLAlchemy fetch runs via asyncio.to_thread so Hub's event loop
+    is not blocked.
     """
     try:
         from scripts.outreach_provenance import (
@@ -560,7 +562,9 @@ def _situation_with_outreach_provenance(
             merge_situation_with_outreach_provenance,
         )
 
-        capsule = fetch_latest_outreach_provenance(session_id)
+        capsule = await asyncio.to_thread(
+            fetch_latest_outreach_provenance, session_id
+        )
         block = format_outreach_provenance_block(capsule)
         return merge_situation_with_outreach_provenance(
             situation_prompt_fragment, block or None
@@ -1094,7 +1098,7 @@ async def execute_unified_turn(
     situation_prompt_fragment = situation_bundle.get("compact_text")
     if isinstance(situation_prompt_fragment, str) and not situation_prompt_fragment.strip():
         situation_prompt_fragment = None
-    situation_prompt_fragment = _situation_with_outreach_provenance(
+    situation_prompt_fragment = await _situation_with_outreach_provenance(
         situation_prompt_fragment,
         session_id,
         correlation_id=correlation_id,

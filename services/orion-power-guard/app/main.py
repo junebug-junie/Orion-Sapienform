@@ -12,11 +12,22 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
 
 from .models import PowerEvent
-from .settings import get_settings
-# [CHANGED] Use the NIS client (USB) instead of SNMP
+from .settings import Settings, get_settings
 from .ups_nis_client import NISUPSClient
+from .ups_snmp_client import SNMPUPSClient
 
 logger = logging.getLogger("orion-power-guard")
+
+
+def build_ups_client(settings: Settings):
+    """Pick NIS (USB/apcupsd) or SNMP (network card) from settings."""
+    if settings.POWER_GUARD_UPS_BACKEND == "snmp":
+        return SNMPUPSClient(
+            host=settings.POWER_GUARD_UPS_HOST,
+            community=settings.POWER_GUARD_SNMP_COMMUNITY,
+            port=settings.POWER_GUARD_SNMP_PORT,
+        )
+    return NISUPSClient(host=settings.POWER_GUARD_UPS_HOST, port=3551)
 
 
 # ─────────────────────────────────────────────
@@ -44,7 +55,8 @@ async def monitor_ups() -> None:
     settings = get_settings()
 
     logger.info(
-        "Starting Orion Power Guard (USB Mode) — service=%s version=%s node=%s ups=%s host=%s",
+        "Starting Orion Power Guard (%s) — service=%s version=%s node=%s ups=%s host=%s",
+        settings.POWER_GUARD_UPS_BACKEND,
         settings.SERVICE_NAME,
         settings.SERVICE_VERSION,
         settings.POWER_GUARD_NODE_NAME,
@@ -53,13 +65,7 @@ async def monitor_ups() -> None:
     )
 
     bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED, codec=OrionCodec())
-    
-    # [CHANGED] Initialize NIS Client
-    # We use port 3551 (apcupsd default)
-    ups = NISUPSClient(
-        host=settings.POWER_GUARD_UPS_HOST,
-        port=3551
-    )
+    ups = build_ups_client(settings)
 
     poll_interval = settings.POWER_GUARD_POLL_INTERVAL_SEC
     grace_sec = settings.POWER_GUARD_ONBATTERY_GRACE_SEC
@@ -76,7 +82,10 @@ async def monitor_ups() -> None:
         try:
             status = await ups.get_status()
         except Exception:
-            logger.exception("Failed to read UPS status via NIS; will retry.")
+            logger.exception(
+                "Failed to read UPS status via %s; will retry.",
+                settings.POWER_GUARD_UPS_BACKEND,
+            )
             await asyncio.sleep(poll_interval)
             continue
 

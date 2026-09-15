@@ -3,8 +3,13 @@
 Watches a UPS and, if utility power stays out too long, shuts the host down
 before the battery runs dry.
 
-Today this runs a single instance, on **athena**, watching the APC
-Smart-UPS 1500 plugged into it over USB.
+Two backends (pick per host via `POWER_GUARD_UPS_BACKEND`):
+
+- **`nis`** (athena): USB Smart-UPS → host `apcupsd` → NIS on TCP 3551
+- **`snmp`** (circe): network management card (e.g. AP9631) over SNMP
+
+Athena stays on USB/`nis`. Circe uses `snmp` against its own NMC — do not point
+Circe at Athena's UPS or rewrite Athena's config.
 
 ## What it does
 
@@ -25,12 +30,9 @@ Smart-UPS 1500 plugged into it over USB.
    (`orion:system:health`) so a dead power-guard container is itself
    visible, independent of the power events above.
 
-## How it talks to the UPS (USB, via apcupsd)
+## How it talks to the UPS
 
-The UPS is USB-attached to athena, not network-attached. power-guard doesn't
-speak to the UPS driver directly — it talks to
-[`apcupsd`](https://www.apcupsd.org/), which owns the USB device and already
-runs as a systemd service on athena:
+### USB / apcupsd NIS (`POWER_GUARD_UPS_BACKEND=nis`)
 
 ```text
 UPS (USB) -> apcupsd (host, systemd) -> NIS protocol, TCP 3551 -> power-guard (container)
@@ -42,25 +44,56 @@ via the `extra_hosts: host.docker.internal:host-gateway` entry in
 `docker-compose.yml`). Confirm it's up with `apcaccess status` on the host,
 or `sudo systemctl status apcupsd`.
 
-There's also an older SNMP client (`app/ups_snmp_client.py`,
-`POWER_GUARD_UPS_HOST=192.168.0.50` in the commented-out example) for a
-network-card-equipped UPS reached over the LAN instead of USB. `app/main.py`
-is wired to the NIS/USB client — the SNMP client is unused code kept for a
-different UPS setup, not a toggle.
+### Network card SNMP (`POWER_GUARD_UPS_BACKEND=snmp`)
+
+```text
+UPS NMC (ethernet) -> SNMPv1 community -> power-guard (container)
+```
+
+`app/ups_snmp_client.py` polls APC PowerNet OIDs. Set
+`POWER_GUARD_UPS_HOST` to the NMC IP and `POWER_GUARD_SNMP_COMMUNITY` to the
+community allowed for this host's source IP(s) in the NMC Access Control
+list. On a multi-homed host, the NMC must allow the source address the
+kernel actually uses toward that IP (check with `ip route get <nmc-ip>`).
+
+### Circe operator notes (AP9631 / SRT5K)
+
+Circe is multi-homed (`eno1` and `enp179s0`). Toward the NMC at
+`192.168.1.41`, the kernel currently sources **`192.168.1.24`** — so the
+NMC Access Control row that power-guard uses must allow that address (same
+community string the service sets in `.env`). A row for `.22` alone is not
+enough; SNMP will time out even though a bind-to-`.22` probe succeeds.
+
+Arming order:
+
+1. Confirm polls: `docker logs --tail 20 orion-circe-power-guard` shows
+   `raw=ONLINE` (or ONBATT) via `snmp`.
+2. Prove host SSH (does **not** shut down):
+   ```bash
+   docker exec orion-circe-power-guard sh -c \
+     "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+      -o BatchMode=yes -i /etc/powerguard/ssh_key root@host.docker.internal 'echo SSH_OK && hostname'"
+   ```
+3. Only then set `POWER_GUARD_ENABLE_SHUTDOWN=true` and recreate the
+   container. Keep `POWER_GUARD_ONBATTERY_GRACE_SEC=300` unless you have a
+   reason to diverge from Athena.
+
+`orion-power-guard` is on Circe's mesh allowlist
+(`mesh-utilities/common/include_services_circe.txt`).
 
 ## Shutdown wiring
 
 This is the part worth reading closely if you're touching it.
 
 **power-guard runs in a container. A local `shutdown` command inside that
-container does not shut down the host** — it has no effect on athena at
+container does not shut down the host** — it has no effect on the host at
 all. The container mounts a dedicated, purpose-built SSH key
 (`docker-compose.yml`: `/root/.ssh/powerguard_shutdown` ->
 `/etc/powerguard/ssh_key`, read-only) so it can reach out to the real host
 and shut *that* down:
 
 ```text
-power-guard (container) --ssh, root, key--> host.docker.internal (athena) --> shutdown -h now
+power-guard (container) --ssh, root, key--> host.docker.internal --> shutdown -h now
 ```
 
 `POWER_GUARD_SHUTDOWN_CMD` — the canonical default lives in `.env_example`
@@ -74,14 +107,12 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeou
 ```
 
 Requires on the host:
-- `sshd` listening and reachable from the docker bridge (already true on
-  athena — confirmed `0.0.0.0:22`).
-- `PermitRootLogin` allowing key auth for root (already true — athena's
-  `/etc/ssh/sshd_config` has `PermitRootLogin yes`).
+- `sshd` listening and reachable from the docker bridge
+- `PermitRootLogin` allowing key auth for root
 - The public half of `/root/.ssh/powerguard_shutdown` in root's
-  `authorized_keys`.
+  `authorized_keys`
 - The container running as root (`user: "0:0"` in `docker-compose.yml`) —
-  the key is root-owned, mode 600.
+  the key is root-owned, mode 600
 
 Tradeoffs baked into that default, on purpose:
 - `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`: this link
@@ -102,13 +133,13 @@ checked-in template should turn on for you. To arm it: set
 `POWER_GUARD_ENABLE_SHUTDOWN=true` in the service's `.env`, then restart the
 container (`scripts/safe_docker_build.sh orion-power-guard up -d`).
 
-### apcupsd's own failsafe (separate, already there, lower-level)
+### apcupsd's own failsafe (NIS / USB path only)
 
-Independent of all of the above, `apcupsd` itself will shut athena down
-directly (no container, no bus event, `/etc/apcupsd/apccontrol` ->
+Independent of all of the above, `apcupsd` itself will shut the USB-attached
+host down directly (no container, no bus event, `/etc/apcupsd/apccontrol` ->
 `shutdown -h now`) if battery charge drops below `BATTERYLEVEL` (5%) or
 remaining runtime drops below `MINUTES` (3 min) — see
-`/etc/apcupsd/apcupsd.conf` on athena. It also has a flat "on battery for N
+`/etc/apcupsd/apcupsd.conf` on that host. It also has a flat "on battery for N
 seconds regardless of charge" trigger (`TIMEOUT`), currently `0`
 (disabled) — the closest native equivalent of power-guard's grace timer, but
 silent: no bus event, nothing else in Orion sees it happen. power-guard's
@@ -122,7 +153,9 @@ most:
 
 | Key | Default | What it does |
 |---|---|---|
-| `POWER_GUARD_UPS_HOST` | `host.docker.internal` | Where `apcupsd`'s NIS server is (USB mode). |
+| `POWER_GUARD_UPS_BACKEND` | `nis` | `nis` (USB/apcupsd) or `snmp` (network card). |
+| `POWER_GUARD_UPS_HOST` | `host.docker.internal` | NIS host or NMC IP. |
+| `POWER_GUARD_SNMP_COMMUNITY` | `public` | SNMPv1 community (snmp backend). |
 | `POWER_GUARD_POLL_INTERVAL_SEC` | `5.0` | How often to poll the UPS. |
 | `POWER_GUARD_ONBATTERY_GRACE_SEC` | `300.0` | How long on battery before the grace-elapsed event (and shutdown, if enabled) fires. |
 | `POWER_GUARD_ENABLE_SHUTDOWN` | `false` | Arm/disarm the real host shutdown. |
@@ -136,14 +169,14 @@ Env parity: if you change `.env_example`, sync your local `.env`
 ## Verifying it's actually working (not just configured)
 
 ```bash
-# UPS status directly from apcupsd on the host
+# NIS / USB path: UPS status directly from apcupsd on the host
 apcaccess status
 
-# power-guard's own poll loop -- should show raw=ONLINE/ONBATT matching apcaccess
-docker logs --tail 20 orion-athena-power-guard
+# power-guard's own poll loop -- should show raw=ONLINE/ONBATT
+docker logs --tail 20 ${PROJECT}-power-guard
 
 # Prove the shutdown path can reach the host (harmless -- does NOT shut down)
-docker exec orion-athena-power-guard sh -c \
+docker exec ${PROJECT}-power-guard sh -c \
   "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
    -i /etc/powerguard/ssh_key root@host.docker.internal 'echo SSH_OK && hostname'"
 ```

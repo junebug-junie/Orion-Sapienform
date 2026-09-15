@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import aiohttp
 from orion.core.bus.async_service import OrionBusAsync
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 import requests
@@ -1594,6 +1594,43 @@ async def api_debug_endogenous_outreach_trigger() -> Dict[str, Any]:
         return {"ok": False, "reason": "not_initialized"}
     result = await endogenous_outreach.maybe_outreach(force=True)
     return {"ok": True, "result": result}
+
+
+@router.post("/api/debug/collapse-mirror/deliver")
+async def api_debug_collapse_mirror_deliver(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Operator rescue: push already-authored Orion text into live Hub chat.
+
+    Used when a Collapse Mirror turn's motor draft finished but Hub lost the
+    delivery path (restart / finalize failure with empty final_text). Requires
+    a live websocket connection — same rails as endogenous outreach `_deliver`.
+    """
+    from .main import endogenous_outreach
+
+    if endogenous_outreach is None:
+        return {"ok": False, "reason": "not_initialized"}
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "reason": "empty_text"}
+    session_id = str(payload.get("session_id") or "").strip() or endogenous_outreach.live_session_id()
+    if not session_id:
+        return {"ok": False, "reason": "no_live_session"}
+    correlation_id = str(payload.get("correlation_id") or "").strip() or str(uuid4())
+    await endogenous_outreach._deliver(
+        text=text,
+        session_id=session_id,
+        correlation_id=correlation_id,
+        tags=["collapse_mirror_reply", "rescued_draft"],
+        unsolicited=False,
+        notification_title="Collapse Mirror reply (rescued)",
+        notification_type="collapse_mirror_reply",
+    )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "correlation_id": correlation_id,
+        "text_len": len(text),
+        "connections": len(getattr(endogenous_outreach, "_connections", {}) or {}),
+    }
 
 
 @router.get("/api/debug/endogenous-outreach/decisions")

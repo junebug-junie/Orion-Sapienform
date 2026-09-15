@@ -438,26 +438,47 @@ class CollapseMirrorChatReplyHandler:
             (f for f in frames if isinstance(f, dict) and f.get("type") == "final"),
             None,
         )
-        if final is None:
-            other = frames[-1] if frames else {}
-            other_type = other.get("type") if isinstance(other, dict) else None
-            return "", {"error": "no_final_frame", "frame_type": other_type}
+        if final is not None:
+            text = str(final.get("llm_response") or "").strip()
+            if final.get("context_overflow"):
+                return "", {"error": "context_overflow"}
+            if looks_like_error_text(text):
+                logger.warning(
+                    "collapse_mirror_chat_reply_error_shaped_text corr=%s text=%r",
+                    correlation_id,
+                    text[:200],
+                )
+                return "", {"error": "error_shaped_text"}
+            return text, {"fcc_model_label": final.get("fcc_model_label")}
 
-        text = str(final.get("llm_response") or "").strip()
-        if final.get("context_overflow"):
-            return "", {"error": "context_overflow"}
-        if looks_like_error_text(text):
-            logger.warning(
-                "collapse_mirror_chat_reply_error_shaped_text corr=%s text=%r",
+        # Finalize/repair can fail after the motor already wrote a real draft
+        # (live 2026-09-15 corr=536de7ab: draft_len=1298, final_text empty,
+        # Hub restart mid-chain). Typed chat surfaces that as turn_error
+        # partial_draft; this path used to treat "no final" as empty and drop
+        # the reply. Prefer the motor draft when present.
+        for frame in frames:
+            if not isinstance(frame, dict):
+                continue
+            partial = str(frame.get("partial_draft") or "").strip()
+            if not partial:
+                continue
+            if looks_like_error_text(partial):
+                continue
+            logger.info(
+                "collapse_mirror_chat_reply_using_partial_draft corr=%s frame_type=%s len=%s",
                 correlation_id,
-                text[:200],
+                frame.get("type"),
+                len(partial),
             )
-            return "", {"error": "error_shaped_text"}
+            return partial, {
+                "fcc_model_label": frame.get("fcc_model_label"),
+                "from_partial_draft": True,
+                "frame_type": frame.get("type"),
+            }
 
-        debug = {
-            "fcc_model_label": final.get("fcc_model_label"),
-        }
-        return text, debug
+        other = frames[-1] if frames else {}
+        other_type = other.get("type") if isinstance(other, dict) else None
+        return "", {"error": "no_final_frame", "frame_type": other_type}
 
     async def _optional_held_back_notify(self, *, event_id: str, correlation_id: str) -> None:
         """Quiet note that a reply was held back — never the reply body itself."""

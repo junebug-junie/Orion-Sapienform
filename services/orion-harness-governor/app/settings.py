@@ -120,8 +120,13 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_stream_stall_timeout_sec: float = Field(
         420.0, alias="HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC"
     )
-    finalize_reflect_timeout_sec: float = Field(180.0, alias="FINALIZE_REFLECT_TIMEOUT_SEC")
-    response_repair_timeout_sec: float = Field(300.0, alias="RESPONSE_REPAIR_TIMEOUT_SEC")
+    # Raised 180 -> 480 / 300 -> 540 (2026-09-15): live curiosity self-inquiry
+    # finalize (corr 731f9aed / b106fbf1) needed 264-295s on the agent LLM for
+    # ~50k-char prompts before cortex-exec published a result, while harness
+    # abandoned at 180s (reflect) / 300s (repair). Verb YAML timeouts must stay
+    # in lockstep -- see harness_finalize_reflect.yaml / orion_response_repair.yaml.
+    finalize_reflect_timeout_sec: float = Field(480.0, alias="FINALIZE_REFLECT_TIMEOUT_SEC")
+    response_repair_timeout_sec: float = Field(540.0, alias="RESPONSE_REPAIR_TIMEOUT_SEC")
     substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
     finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
 

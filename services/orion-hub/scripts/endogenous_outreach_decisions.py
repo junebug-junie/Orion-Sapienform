@@ -136,7 +136,7 @@ def record_decision(
     try:
         if not decision_log_enabled():
             return
-        decision_id = str(uuid4())
+        decision_id = str(result.get("decision_id") or "").strip() or str(uuid4())
         target_id = getattr(tension_reason, "target_id", None)
         run_length = getattr(tension_reason, "run_length", None)
         peak_deviation_pressure = getattr(tension_reason, "peak_deviation_pressure", None)

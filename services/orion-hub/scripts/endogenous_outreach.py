@@ -1751,11 +1751,23 @@ class EndogenousOutreach:
                 grounding=grounding,
             )
 
+        # Mint decision_id + capsule only once delivery is certain (after
+        # abandoned agent-lane retries inside `_generate`, after PASS /
+        # empty / named-ungrounded / post-generation gate drops). Shared
+        # across WS payload, history client_meta, and decision-log PK.
+        decision_id = str(uuid4())
+        provenance = build_outreach_provenance(
+            prompt_text=prompt,
+            lanes=grounding,
+            correlation_id=correlation_id,
+            decision_id=decision_id,
+        )
         await self._deliver(
             text=text,
             session_id=session_id,
             correlation_id=correlation_id,
             model=gen_debug.get("fcc_model_label"),
+            provenance=provenance,
         )
 
         self._last_outreach_at = time.time()
@@ -1775,6 +1787,8 @@ class EndogenousOutreach:
                 "session_id": session_id,
                 "chars": len(text),
                 "generation": gen_debug,
+                "decision_id": decision_id,
+                "provenance": provenance,
             },
             forced=force,
             tension_reason=tension_reason,
@@ -2270,9 +2284,16 @@ class EndogenousOutreach:
         tags: Optional[List[str]] = None,
         notification_title: Optional[str] = None,
         notification_type: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         message_id = str(uuid4())
-        self._push_to_sockets(text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id)
+        self._push_to_sockets(
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            message_id=message_id,
+            provenance=provenance,
+        )
         await self._publish_history(
             text=text,
             session_id=session_id,
@@ -2282,6 +2303,7 @@ class EndogenousOutreach:
             source_tag=source_tag,
             unsolicited=unsolicited,
             tags=tags,
+            provenance=provenance,
         )
         await self._publish_notification(
             text=text,
@@ -2293,7 +2315,15 @@ class EndogenousOutreach:
             notification_type=notification_type,
         )
 
-    def _push_to_sockets(self, *, text: str, session_id: str, correlation_id: str, message_id: str) -> None:
+    def _push_to_sockets(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Fan out to live sockets. Deliberately omits ``state`` and the
         recall/routing debug keys so an outreach bubble cannot stomp the panels
         showing the last real turn."""
@@ -2305,6 +2335,8 @@ class EndogenousOutreach:
             "message_id": message_id,
             "session_id": session_id,
         }
+        if provenance:
+            payload["outreach_provenance"] = dict(provenance)
         for connection_id, entry in list(self._connections.items()):
             queue = entry.get("queue")
             if queue is None:
@@ -2327,6 +2359,7 @@ class EndogenousOutreach:
         source_tag: Optional[str] = None,
         unsolicited: bool = True,
         tags: Optional[List[str]] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
@@ -2346,7 +2379,9 @@ class EndogenousOutreach:
                 history_tags = [OUTREACH_TAG] if not source_tag else [OUTREACH_TAG, source_tag]
             else:
                 history_tags = list(tags)
-            client_meta = {"unsolicited": True} if unsolicited else {}
+            client_meta: Dict[str, Any] = {"unsolicited": True} if unsolicited else {}
+            if provenance:
+                client_meta["outreach_provenance"] = dict(provenance)
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",

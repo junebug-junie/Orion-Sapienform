@@ -812,12 +812,97 @@ def test_successful_outreach_pushes_to_every_live_socket(monkeypatch) -> None:
         assert payload["kind"] == "orion_outreach"
         assert payload["llm_response"] == "The execution node has been noisy all afternoon."
         assert payload["session_id"] == "sess-abc"
+        assert "outreach_provenance" in payload
+        assert payload["outreach_provenance"]["schema"] == "outreach_provenance.v1"
         # Must not carry keys that would stomp the UI's live turn panels.
         assert "state" not in payload
         assert "recall_debug" not in payload
         assert "memory_digest" not in payload
     assert [kind for kind, _ in published] == ["history", "notify"]
     assert outreach.status()["sent_today"] == 1
+
+
+def test_successful_outreach_threads_provenance_to_socket_and_history(monkeypatch) -> None:
+    outreach = _outreach()
+    q: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", q, {"correlation_id": None, "kind": None})
+    outreach.note_session("c1", "sess-prov")
+    _stub_context(monkeypatch)  # existing helper: priors/curiosity/turns
+    _stub_generation(monkeypatch, "I have been turning over the gate bias.")
+
+    published: list = []
+
+    async def fake_history(self, **kwargs):
+        published.append(kwargs)
+
+    async def fake_notify(self, **kwargs):
+        return None
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", fake_notify)
+
+    result = asyncio.run(outreach.maybe_outreach())
+    assert result["outreach"] is True
+    assert result.get("decision_id")
+    assert isinstance(result.get("provenance"), dict)
+    assert result["provenance"]["schema"] == "outreach_provenance.v1"
+    assert "I have been turning over" not in result["provenance"]["prompt_text"]
+    # prompt is the GENERATION prompt (build_outreach_prompt), not the spoken text
+    assert "Juniper has not asked you anything" in result["provenance"]["prompt_text"]
+
+    payload = q.get_nowait()
+    assert payload["kind"] == "orion_outreach"
+    assert payload["outreach_provenance"]["decision_id"] == result["decision_id"]
+    assert payload["outreach_provenance"]["prompt_text"] == result["provenance"]["prompt_text"]
+
+    hist = published[0]
+    assert hist["provenance"]["decision_id"] == result["decision_id"]
+
+
+def test_publish_history_client_meta_includes_provenance(monkeypatch) -> None:
+    """client_meta must carry the full capsule alongside unsolicited=True.
+
+    Mirrors ``test_a_curiosity_message_is_still_tagged_as_outreach``: stub
+    ``scripts.chat_history`` with a fake module so Hub Settings is never
+    imported at test time.
+    """
+    import sys
+    import types
+
+    outreach = _outreach()
+    captured: dict = {}
+
+    async def fake_publish(bus, envelopes):
+        captured["env"] = envelopes[0]
+
+    fake = types.ModuleType("scripts.chat_history")
+    fake.publish_chat_history = fake_publish
+    fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
+    monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
+    outreach._bus = object()
+
+    capsule = {
+        "schema": "outreach_provenance.v1",
+        "decision_id": "dec-9",
+        "correlation_id": "corr-9",
+        "generated_at": "2026-09-15T00:00:00+00:00",
+        "lanes": {"priors_count": 1},
+        "prompt_text": "PROMPT",
+        "summary_line": "Outreach from open priors (1)",
+    }
+    asyncio.run(
+        outreach._publish_history(
+            text="spoken",
+            session_id="orion_journal",
+            correlation_id="corr-9",
+            message_id="msg-9",
+            model="MODEL_X",
+            provenance=capsule,
+        )
+    )
+    meta = captured["env"].payload["client_meta"]
+    assert meta["unsolicited"] is True
+    assert meta["outreach_provenance"] == capsule
 
 
 def test_named_ungrounded_signal_blocks_send_and_records_offending_terms(monkeypatch) -> None:

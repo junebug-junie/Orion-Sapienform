@@ -159,3 +159,17 @@ def test_uncertain_admission_never_falls_back_to_pubsub(case):
     ))
     assert not result.ok and result.error["type"] == "AdmissionUnconfirmed"
     bus.publish.assert_not_awaited()
+
+
+def test_durable_kickoff_in_main_uses_get_settings_not_bare_settings() -> None:
+    """Regression: live 2026-09-15 orch NameError'd every curiosity durable
+    kickoff because main.py used bare ``settings.durable_admission_enabled``.
+    """
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "app" / "main.py"
+    text = src.read_text(encoding="utf-8")
+    assert "settings.durable_admission_enabled" not in text
+    assert "settings.durable_receipt_timeout_sec" not in text
+    assert "get_settings()" in text
+    assert "durable_admission_enabled" in text

@@ -378,6 +378,10 @@ Companion `orion-resync-agent-descriptions.patch` adds engine input `resyncAgent
 
 When an NPC–NPC chat hits duration or message cap, leave immediately via `conversation.leave` — do **not** ask the LLM to write a goodbye. Live 2026-09-14 Mara↔Orion: leave-via-`agentGenerateMessage` hung on empty stubs against a bloated transcript, so the chat never ended. Orion joins without a Convex `human` flag today, so this gate applies to Mara↔Orion as well as NPC↔NPC. Human (Juniper) partners still stay until they leave. Embodiment's `EMBODIMENT_CONVERSATION_ABANDON_SEC` is the independent backstop if a chat still sticks.
 
+### NPC no-self-repeat (`patches/orion-npc-no-self-repeat.patch`)
+
+Prompt anti-repetition was not enough: live 2026-09-15 Sofia↔Juniper posted the exact same line twice after a goodbye. Continue now rejects an exact (normalized) self-repeat against the last few own lines, retries once, then returns a sentinel; `agentGenerateMessage` turns that sentinel into a leave (ordinary empty continues are unchanged). Embodiment has the same class of gate for Orion (`is_self_repeat` + one retry, then mark that partner line exhausted so perception ticks do not storm cortex).
+
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 
 Upstream `player.tick()` deleted the human after `HUMAN_IDLE_TOO_LONG` (5 minutes). `lastInput` was only written at join, so that was a session fuse, not idle detection. The patch removes the kick. Juniper stays in the world until she actually leaves.

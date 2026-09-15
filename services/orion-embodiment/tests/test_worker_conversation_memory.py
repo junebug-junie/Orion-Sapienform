@@ -19,6 +19,7 @@ def _worker(*, conversation_memory_enabled: bool = True, memory_enabled: bool = 
     w._bus = SimpleNamespace()
     w._speaking_conversations = set()
     w._opened_conversations = set()
+    w._speech_exhausted_partner_lines = set()
     w._salience = SalienceState()
     w._active_conversation_id = None
     w._active_conversation_partner = None

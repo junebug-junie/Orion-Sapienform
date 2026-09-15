@@ -10,7 +10,9 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-timeout_ms: 300000
+# Raised 300000 -> 540000 with RESPONSE_REPAIR_TIMEOUT_SEC (2026-09-15).
+# Keep in lockstep with harness-governor's outer repair wait.
+timeout_ms: 540000
 
 services:
   - LLMGatewayService

@@ -9,7 +9,10 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-timeout_ms: 300000
+# Raised 300000 -> 480000 with FINALIZE_REFLECT_TIMEOUT_SEC (2026-09-15).
+# Cortex-exec uses this as the LLMGateway RPC wait; must not sit under the
+# harness outer wait or the governor times out while the model is still mid-gen.
+timeout_ms: 480000
 
 services:
   - LLMGatewayService

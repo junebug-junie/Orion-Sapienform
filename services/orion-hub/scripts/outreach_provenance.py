@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 logger = logging.getLogger("orion-hub.outreach_provenance")
 
@@ -28,6 +28,57 @@ def _valid_outreach_capsule(capsule: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(prompt, str) or not prompt.strip():
         return None
     return capsule
+
+
+def _meta_unsolicited(meta: Mapping[str, Any]) -> bool:
+    return str(meta.get("unsolicited") or "").strip() == "true"
+
+
+def select_active_outreach_provenance(
+    rows: Sequence[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Pure clearing contract over ordered session history rows.
+
+    ``rows`` must be oldest-first (``created_at`` ascending), matching the
+    thin SQL reader in ``fetch_latest_outreach_provenance``.
+
+    Returns the validated capsule from the latest unsolicited row that carries
+    ``outreach_provenance``, only when no later non-unsolicited assistant
+    response (non-empty ``response``) exists after it. A normal reply clears
+    injection — same semantics as the prior SQL ``NOT EXISTS`` gate.
+    """
+    latest_idx: Optional[int] = None
+    latest_capsule: Optional[Dict[str, Any]] = None
+
+    for i, row in enumerate(rows):
+        meta = row.get("client_meta") or {}
+        if not isinstance(meta, dict):
+            continue
+        if not _meta_unsolicited(meta):
+            continue
+        if "outreach_provenance" not in meta:
+            continue
+        capsule = meta.get("outreach_provenance")
+        latest_idx = i
+        if isinstance(capsule, dict):
+            latest_capsule = _valid_outreach_capsule(dict(capsule))
+        else:
+            latest_capsule = None
+
+    if latest_idx is None:
+        return None
+
+    for later in rows[latest_idx + 1 :]:
+        response = later.get("response")
+        if response is None or str(response) == "":
+            continue
+        meta = later.get("client_meta") or {}
+        if isinstance(meta, dict) and _meta_unsolicited(meta):
+            continue
+        # Later non-unsolicited assistant response clears injection.
+        return None
+
+    return latest_capsule
 
 
 def format_outreach_provenance_block(capsule: Dict[str, Any] | None) -> str:
@@ -68,10 +119,9 @@ def fetch_latest_outreach_provenance(
 ) -> Optional[Dict[str, Any]]:
     """Latest still-relevant outreach capsule for this session, or None.
 
-    Selects the newest chat_history_log row for the session that carries
-    client_meta.unsolicited + outreach_provenance, only if no later
-    non-unsolicited assistant response exists after it (so a normal reply
-    clears the injection).
+    Thin SQL reader: loads age-windowed chat_history_log rows for the session,
+    then applies ``select_active_outreach_provenance`` (unsolicited+provenance
+    only if no later non-unsolicited assistant response clears it).
     """
     sid = str(session_id or "").strip()
     uri = os.getenv("POSTGRES_URI", "").strip()
@@ -85,46 +135,24 @@ def fetch_latest_outreach_provenance(
     engine = create_engine(uri, pool_pre_ping=True)
     try:
         with engine.connect() as conn:
-            row = conn.execute(
+            result = conn.execute(
                 text(
                     """
-                    WITH latest AS (
-                      SELECT created_at,
-                             client_meta,
-                             response
-                      FROM chat_history_log
-                      WHERE session_id = :sid
-                        AND created_at >= now() - make_interval(secs => :max_age_secs)
-                        AND coalesce(client_meta->>'unsolicited', '') = 'true'
-                        AND client_meta ? 'outreach_provenance'
-                      ORDER BY created_at DESC
-                      LIMIT 1
-                    )
-                    SELECT l.client_meta
-                    FROM latest l
-                    WHERE NOT EXISTS (
-                      SELECT 1
-                      FROM chat_history_log later
-                      WHERE later.session_id = :sid
-                        AND later.created_at > l.created_at
-                        AND coalesce(later.response, '') <> ''
-                        AND coalesce(later.client_meta->>'unsolicited', '') <> 'true'
-                    )
+                    SELECT created_at,
+                           client_meta,
+                           response
+                    FROM chat_history_log
+                    WHERE session_id = :sid
+                      AND created_at >= now() - make_interval(secs => :max_age_secs)
+                    ORDER BY created_at ASC
                     """
                 ),
                 {"sid": sid, "max_age_secs": float(max_age_hours) * 3600.0},
-            ).mappings().first()
+            )
+            rows = [dict(r) for r in result.mappings().all()]
     except Exception as exc:  # noqa: BLE001
         logger.warning("outreach_provenance_fetch_failed sid=%s err=%s", sid, exc)
         return None
     finally:
         engine.dispose()
-    if not row:
-        return None
-    meta = row.get("client_meta") or {}
-    if not isinstance(meta, dict):
-        return None
-    capsule = meta.get("outreach_provenance")
-    if not isinstance(capsule, dict):
-        return None
-    return _valid_outreach_capsule(dict(capsule))
+    return select_active_outreach_provenance(rows)

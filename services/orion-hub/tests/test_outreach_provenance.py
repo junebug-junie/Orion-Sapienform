@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
 import pytest
 
 from scripts.outreach_provenance import (
+    fetch_latest_outreach_provenance,
     format_outreach_provenance_block,
     merge_situation_with_outreach_provenance,
+    select_active_outreach_provenance,
     _valid_outreach_capsule,
 )
 
@@ -144,3 +149,201 @@ async def test_situation_with_outreach_provenance_no_session_passthrough() -> No
         == "local afternoon"
     )
     assert await orch._situation_with_outreach_provenance(None, None) is None
+
+
+def _ts(minute: int) -> datetime:
+    return datetime(2026, 9, 15, 12, minute, tzinfo=timezone.utc)
+
+
+def _outreach_row(*, minute: int = 0, capsule=None, response: str = "hey"):
+    return {
+        "created_at": _ts(minute),
+        "client_meta": {
+            "unsolicited": "true",
+            "outreach_provenance": capsule if capsule is not None else _capsule(),
+        },
+        "response": response,
+    }
+
+
+def _solicited_row(*, minute: int, response: str = "normal reply"):
+    return {
+        "created_at": _ts(minute),
+        "client_meta": {"unsolicited": "false"},
+        "response": response,
+    }
+
+
+def test_select_active_returns_capsule_when_no_later_solicited() -> None:
+    """(a) Latest unsolicited+provenance with no later solicited response."""
+    rows = [
+        {"created_at": _ts(0), "client_meta": {}, "response": "earlier chat"},
+        _outreach_row(minute=1),
+    ]
+    got = select_active_outreach_provenance(rows)
+    assert got is not None
+    assert got["prompt_text"].startswith("You are Orion")
+    assert got["correlation_id"] == "corr-1"
+
+
+def test_select_active_cleared_by_later_non_unsolicited_response() -> None:
+    """(b) Later non-unsolicited assistant response clears injection."""
+    rows = [
+        _outreach_row(minute=1),
+        _solicited_row(minute=2, response="thanks for asking"),
+    ]
+    assert select_active_outreach_provenance(rows) is None
+
+
+def test_select_active_later_empty_response_does_not_clear() -> None:
+    rows = [
+        _outreach_row(minute=1),
+        _solicited_row(minute=2, response=""),
+        {
+            "created_at": _ts(3),
+            "client_meta": {},
+            "response": None,
+        },
+    ]
+    got = select_active_outreach_provenance(rows)
+    assert got is not None
+    assert got["schema"] == "outreach_provenance.v1"
+
+
+def test_select_active_later_unsolicited_does_not_clear_prior() -> None:
+    """A second outreach does not clear; newest outreach capsule wins."""
+    first = _capsule(correlation_id="corr-old", prompt_text="OLD PROMPT text")
+    second = _capsule(correlation_id="corr-new", prompt_text="NEW PROMPT text")
+    rows = [
+        _outreach_row(minute=1, capsule=first),
+        _outreach_row(minute=2, capsule=second),
+    ]
+    got = select_active_outreach_provenance(rows)
+    assert got is not None
+    assert got["correlation_id"] == "corr-new"
+    assert "NEW PROMPT" in got["prompt_text"]
+
+
+def test_select_active_malformed_client_meta_returns_none() -> None:
+    """(c) Empty / malformed provenance → None (even when unsolicited)."""
+    assert select_active_outreach_provenance([]) is None
+    assert (
+        select_active_outreach_provenance(
+            [
+                {
+                    "created_at": _ts(0),
+                    "client_meta": {"unsolicited": "true"},
+                    "response": "x",
+                }
+            ]
+        )
+        is None
+    )
+    assert (
+        select_active_outreach_provenance(
+            [
+                {
+                    "created_at": _ts(0),
+                    "client_meta": {
+                        "unsolicited": "true",
+                        "outreach_provenance": "not-a-dict",
+                    },
+                    "response": "x",
+                }
+            ]
+        )
+        is None
+    )
+    assert (
+        select_active_outreach_provenance(
+            [
+                {
+                    "created_at": _ts(0),
+                    "client_meta": {
+                        "unsolicited": "true",
+                        "outreach_provenance": _capsule(schema="wrong.v1"),
+                    },
+                    "response": "x",
+                }
+            ]
+        )
+        is None
+    )
+    assert (
+        select_active_outreach_provenance(
+            [{"created_at": _ts(0), "client_meta": "bad", "response": "x"}]
+        )
+        is None
+    )
+
+
+def _install_fake_engine(monkeypatch, rows: list[dict]):
+    """Hub-style create_engine monkeypatch returning controlled mappings rows."""
+    import sqlalchemy
+
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    class _Mappings:
+        def all(self):
+            return rows
+
+    class _Result:
+        def mappings(self):
+            return _Mappings()
+
+    conn.execute.return_value = _Result()
+
+    def _fake_create_engine(uri, **kwargs):
+        return fake_engine
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test/db")
+    # fetch imports create_engine inside the function body.
+    monkeypatch.setattr(sqlalchemy, "create_engine", _fake_create_engine)
+    return fake_engine
+
+
+def test_fetch_latest_returns_capsule_via_mocked_engine(monkeypatch) -> None:
+    """(a) through thin SQL reader + select_active."""
+    rows = [_outreach_row(minute=1)]
+    engine = _install_fake_engine(monkeypatch, rows)
+    got = fetch_latest_outreach_provenance("sess-a")
+    assert got is not None
+    assert got["correlation_id"] == "corr-1"
+    engine.dispose.assert_called_once()
+
+
+def test_fetch_latest_cleared_via_mocked_engine(monkeypatch) -> None:
+    """(b) through thin SQL reader when later solicited response exists."""
+    rows = [
+        _outreach_row(minute=1),
+        _solicited_row(minute=2),
+    ]
+    _install_fake_engine(monkeypatch, rows)
+    assert fetch_latest_outreach_provenance("sess-b") is None
+
+
+def test_fetch_latest_malformed_meta_via_mocked_engine(monkeypatch) -> None:
+    """(c) through thin SQL reader with malformed outreach_provenance."""
+    rows = [
+        {
+            "created_at": _ts(0),
+            "client_meta": {
+                "unsolicited": "true",
+                "outreach_provenance": {"schema": "nope"},
+            },
+            "response": "x",
+        }
+    ]
+    _install_fake_engine(monkeypatch, rows)
+    assert fetch_latest_outreach_provenance("sess-c") is None
+
+
+def test_fetch_latest_missing_env_or_session_returns_none(monkeypatch) -> None:
+    monkeypatch.delenv("POSTGRES_URI", raising=False)
+    assert fetch_latest_outreach_provenance("sess") is None
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test/db")
+    assert fetch_latest_outreach_provenance(None) is None
+    assert fetch_latest_outreach_provenance("  ") is None

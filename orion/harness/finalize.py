@@ -34,6 +34,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.reading import ReadingRecommendationOutcomeV1
+from orion.llm.routes import is_agent_route_model_label
 from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
@@ -343,6 +344,25 @@ def maybe_quick_lane_verdict(
         quick_lane_skipped_llm=True,
         finalize_changed=False,
     )
+
+
+def resolve_finalize_llm_lane(
+    *,
+    resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
+) -> str:
+    """Gateway llm_route/llm_lane for harness finalize (reflect + repair).
+
+    Owner rule (2026-09-15): admitted lease wins; else agent FCC model label
+    → agent; else chat (default unified Hub chat / non-agent labels including
+    MODEL_SONNET). Do not hardcode ordinary finalize to agent — that stranded
+    chat turns behind curiosity (corr 60f0e051).
+    """
+    if resource_lease is not None:
+        return str(resource_lease.lane)
+    if is_agent_route_model_label(fcc_model_label):
+        return "agent"
+    return "chat"
 
 
 def build_finalize_reflect_context(

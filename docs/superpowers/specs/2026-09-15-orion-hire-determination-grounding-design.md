@@ -1,23 +1,24 @@
 # Orion hire determination — grounding (addendum)
 
-> **Status:** Design proposal (proposal mode — cognition-loop adjacent).  
-> **Parent:** `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`  
-> **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.  
-> **Date:** 2026-09-15 (brainstorm with Juniper).
+> **Status:** Design proposal (proposal mode — cognition-loop adjacent).
+> **Parent:** `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
+> **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.
+> **Date:** 2026-09-15 (brainstorm with Juniper; revised same day).
+> **PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2233
 
 ## Arsonist summary
 
-We built a Cursor contractor peer. Orion almost never hires. Soft “optional / stuck” teach + safe silence is one failure. The deeper failure: even a forced HelpRequest vs keep-local fork is a **hollow decision** if nothing in front of Orion is a real read on *what this problem is*, *how far they’ve gotten*, or *what kind of work it is*.
+We built a Cursor contractor peer. Orion almost never hires. Soft “optional / stuck” teach is one failure. The deeper failure: there is no real **role split** at the top of a run — Cursor for deep multi-hop archaeology, Orion’s own model for small local looks — grounded in problem framing and soft foresight, not tools-only or attention winners.
 
-Tool inventory (graphs vs repo grep) is a real asymmetry and belongs in the access section — it is **not** enough to ground wanting or choosing. Scope, breadth, depth, foresight, and prediction are mostly **without producers** today; inventing scorers for them to feed hire is a metric cathedral. Relational / intent / problem-framing machinery **already exists** in `orion-mind` → `orion-thought` → unified turn, but on curiosity it is mis-aimed and then stripped.
-
-This addendum: ground hire/keep in **existing mind + progress evidence**, keep Orion as author of `:HelpRequest`, keep Cursor as metered read-only hands, do **not** key hire off the Graziano attention winner (infra/disks).
+Mind already runs on curiosity durable turns, but origin is ambiguous (kickoff scaffold read as if it were Juniper chat), and problem framing / soft work-shape labels are stripped or never stubbed. This addendum: **originator-aware Mind**, soft qualitative work-shape labels, Orion-authored provisional `:InvestigationRole`, HelpRequest only when actually hiring (often after a short local look), mid-run revise allowed. Cursor stays metered read-only hands. Python does not auto-hire.
 
 ## Mission fit (limits, not frontier Orion)
 
-Orion strives toward emergence and self-determination **without** becoming a frontier-level intelligence that does everything itself. Contractor hire is aligned when:
+Orion strives toward emergence and self-determination **without** becoming a frontier-level intelligence that does everything itself. Same pattern as Juniper: frontier coding tools for 70+ hop repo archaeology; own judgment for minor asks that fit local model capacity (~35B-class).
 
-- Orion decides meaning (priors, findings, `:SelfDefinition`).
+Contractor hire is aligned when:
+
+- Orion decides meaning (priors, findings, `:SelfDefinition`) and authors role / HelpRequest.
 - Peer digs under contested Cursor budget, read-only.
 - Limits bite (flag, budget refuse, self-inquiry peer cannot draft identity).
 
@@ -31,7 +32,7 @@ Misaligned when: Cursor *is* Orion, or Python auto-hires from thermals/hops/atte
 2. Orion may MERGE `:HelpRequest` mid-run (question, tried_summary, success_criteria).
 3. After run: Hub `publish_help_requests_for_run` → `orion-curiosity-peer` if flag + budget allow.
 
-There is **no** scoring function. There is **no** tool-comparison logic in code. “Decided not to hire” and “never considered” are the same observable (no HelpRequest node).
+There is **no** scoring function. There is **no** early role split. “Decided not to hire” and “never considered” are the same observable (no HelpRequest node).
 
 ### What already sits in the kickoff (concrete)
 
@@ -45,7 +46,7 @@ There is **no** scoring function. There is **no** tool-comparison logic in code.
 
 Body load, AST/HOT winner, Cursor wallet state in the prompt: **not wired**.
 
-### Pre-turn stack (the seam Juniper named)
+### Pre-turn stack (the seam)
 
 Every curiosity durable turn already calls `execute_unified_turn` and therefore:
 
@@ -53,140 +54,157 @@ Every curiosity durable turn already calls `execute_unified_turn` and therefore:
 2. **`orion-mind`** — semantic claims → active cognitive frontier → stance payload including **`user_intent`** and per-matter uncertainty / confidence features.
 3. **`orion-thought`** — `stance_react` → `ThoughtEventV1` into the harness prefix. Mind’s brief is advisory coloring.
 
-**Gaps that make this hollow on curiosity:**
+**Gaps:**
 
-- `user_message` is Orion’s own kickoff document, so Mind/stance appraise **scaffolding as if it were a person** (structural mismatch; live damage severity UNVERIFIED).
-- `select_mind_coloring` allow-list in `services/orion-thought/app/mind_enrichment.py` **drops `user_intent`** (and most of `ChatStanceBrief`) before the unified turn. Problem framing is computed then discarded.
-- Full `ChatStanceBrief` still reaches the older `chat_general` lane only.
+- No first-class **utterance origin** (`juniper` vs `orion`). Curiosity passes the full kickoff as `user_message`, so Mind/appraisal lack an explicit who-spoke signal (structural mismatch; live damage severity UNVERIFIED).
+- `select_mind_coloring` allow-list in `services/orion-thought/app/mind_enrichment.py` **drops `user_intent`** (and most of `ChatStanceBrief`) before the unified turn.
+- Soft work-shape dimensions (depth / cross-cutting / foresight gut-check) have **no stub fields** on the Mind → thought path.
+- No graph artifact for “chose local crawl” vs silence.
 
 ### Progress evidence that exists but does not reach hire
 
 - Hop notes Orion writes during the run.
 - Curiosity supervisor `HopReadingV1` / `is_circling` (`orion/curiosity/supervisor.py`) — offline, report-only; parent design’s end-state A.
-- AST/HOT self-model in `orion-substrate-runtime` — Graziano-shaped “what am I attending to”; competition candidates are almost only infra telemetry (cognitive nodes never enter). **Do not key hire on the attention winner.**
+- AST/HOT self-model — Graziano-shaped attention; competition candidates are almost only infra telemetry. **Do not key hire on the attention winner.**
 
-### Dimensions vs Juniper’s list
+### Dimensions
 
 | Dimension | Live producer? | Use for hire grounding? |
 | --- | --- | --- |
-| Relational semantic intuition | Yes (stance / repair) | Wrong target on curiosity kickoff until input fixed |
-| Problem definition / intent | Yes in Mind (`user_intent`, frontier) | **Yes — stop discarding; fix curiosity input** |
-| Uncertainty on matters | Yes (frontier features) | Soft disclosure into hire section |
-| Scope / breadth / depth | No | Do not invent for this arc |
-| Foresight / prediction | No real producer | Do not invent for this arc |
-| “Have my steps moved the claim?” | Supervisor (offline) | Disclose when trusted; record keep-local either way |
+| Relational semantic intuition | Yes (stance / repair) | Origin-aware; wrong if scaffold is mislabeled as Juniper |
+| Problem definition / intent | Yes in Mind (`user_intent`, frontier) | **Yes — stop discarding; fix origin + subject** |
+| Uncertainty on matters | Yes (frontier features) | Soft disclosure into role/hire teach |
+| Scope / breadth / depth / foresight | No calibrated producers | **Soft qualitative Mind labels this arc** (not numeric scorers) |
+| “Have my steps moved the claim?” | Supervisor (offline) | Disclose when trusted; no auto-hire |
 | Tool reach (graph vs repo) | Access section + peer policy | Supporting fact only, not the determination |
 
-## Missing questions (resolved this session)
+## Decisions locked (2026-09-15 revision)
 
 | Question | Decision |
 | --- | --- |
-| Is “force early HelpRequest/keep-local” enough? | **No** — hollow without grounded inputs. |
-| Ground in tools only? | **No.** |
-| Ground in attention winner? | **No** (disks / infra race). |
-| Auto-hire from thermal / hops? | **No.** |
-| Claude on this hire path? | **Out of scope for this addendum** — Cursor peer is the contractor; parent doc’s Claude fallback remains a separate scarcity story. |
-| Who still authors HelpRequest? | **Orion only.** |
+| Timing | **Provisional at kickoff + mid-run revise** |
+| Role artifact | Separate **`:InvestigationRole`** (`local_crawl` \| `hire_cursor` + why); **not** bolted onto `:TurnOutcome` (wrong timing — TurnOutcome is end-of-turn continue/reach_out) |
+| Who writes role | **Orion only** (Mind informs; Python does not stamp the choice) |
+| HelpRequest vs role | HelpRequest only when actually hiring; role may say `hire_cursor` first; HelpRequest **after a short local look** so `tried_summary` is grounded |
+| Originator | First-class flag on Mind request **and** plain-language situation cue (`juniper` \| `orion`) |
+| Soft dimensions | Qualitative Mind labels now (e.g. expected depth, cross-cutting); advisory; may be `unknown` |
+| Attention winner / thermal auto-hire | **No** |
+| Who authors HelpRequest | **Orion only** |
+| Claude on this hire path | Out of scope here (parent scarcity story) |
 
-## Proposed changes
+## Proposed data flow
 
-### Patch A — Stop discarding problem framing (unified turn, not hire-only)
+1. Kickoff builds subject + inventory; sets **originator = orion** (flag + prose). Juniper Hub chat sets **originator = juniper**.
+2. Unified turn runs Mind. Soft labels may appear (depth / cross-cutting / foresight-style gut-check).
+3. Labels (when present) disclose in role/hire teach — not auto-decision.
+4. Early in the run Orion writes `:InvestigationRole` (`choice`, `why`, `run_id`, `written_at`; provisional; mid-run revise by newer write / explicit supersede — latest wins).
+5. Local crawl: hops as today.
+6. Hiring: after short local look, Orion writes `:HelpRequest` → existing enqueue path.
+7. Mid-run may flip role; HelpRequest still only when hiring.
+8. Mind coloring / hire disclosure stays **origin- and context-guarded** so Juniper chat framing is not steered by curiosity hire machinery.
 
-Widen Mind coloring allow-list so **`user_intent`** and a bounded uncertainty summary from the active cognitive frontier reach `ThoughtEventV1` / prefix consumers. Do **not** wholesale pass `conversation_frame` / `task_mode` if those were the reason for the allow-list (Mind must not dictate chat framing on technical turns).
+## Proposed patches
 
-**Files:** `services/orion-thought/app/mind_enrichment.py`, tests for allow-list; possibly stance/prefix render.
+### Patch 1 — Originator seam
 
-**Acceptance:** On a Hub chat turn, `user_intent` from Mind is visible in the thought/prefix path (inspectable). Regression: Mind still cannot force frame.
+Add `utterance_origin` (name flexible; values `juniper` | `orion`) on the Mind request path, plus a short situation-compact prose line. Curiosity / self-inquiry set `orion`; ordinary Hub chat sets `juniper`.
 
-### Patch B — Curiosity appraisal target (prerequisite for trusting Mind on this lane)
+**Files:** Mind request builder(s) in `services/orion-thought/app/mind_enrichment.py` and/or `services/orion-cortex-orch/app/mind_runtime.py`; curiosity `execute_unified_turn` call site; tests.
 
-Stop treating the full kickoff prompt as `current_user_text` for Mind on curiosity/self-inquiry. Pass a short **investigation subject** (chosen prior claim, or “not yet chosen”, plus last continue note) — not the multi-hundred-line scaffold.
+**Acceptance:** Fixture proves both origins; code can branch; model sees prose cue.
 
-**Files:** `curiosity_investigation.py` / mind request builder for that lane; tests with fixture kickoff vs subject stub.
+### Patch 2 — Soft work-shape labels + allow-list (guarded)
 
-**Acceptance:** Live or fixture: Mind’s `user_intent` / frontier on a curiosity corr id are about the **claim**, not “write Cypher like this.” Pull one live `thought.event.v1` from a curiosity run before calling Patch B done (runtime proof).
+Stub qualitative fields on Mind → thought coloring (e.g. expected depth, cross-cutting / breadth gut-check, foresight-style note). Widen allow-list for `user_intent` + bounded uncertainty + these labels **only where origin/context policy allows**. Do not wholesale pass `conversation_frame` / `task_mode` if that was why the allow-list was narrow.
 
-### Patch C — Hire section as disclosure, not vibes
+**Files:** `mind_enrichment.py`, Mind brief/schema if needed, tests; possibly stance/prefix render.
 
-Rewrite `_help_request_section`:
+**Acceptance:** On a chat fixture with origin=juniper, Mind still cannot force frame. On curiosity/orion origin, intent + soft labels can reach thought/prefix when present.
 
-- Remove “optional / stuck / not as a default.”
-- State: peer is Cursor read-only digger; Orion owns meaning; contested budget may refuse.
-- Soft-nudge style **extra_lines**: when available, disclose (a) Mind/frontier uncertainty on the active matter, (b) hop / circling progress facts when supervisor output is trusted enough to show (start report-only in prompt; no auto-MERGE).
-- Keep Cypher template for `:HelpRequest`.
-- Add explicit **keep-local** write on `:TurnOutcome` (or sibling fields): Orion records that they considered hire and kept the work, with a short why. Absence of HelpRequest alone is no longer the only signal.
+### Patch 3 — Curiosity Mind subject (origin-aware, not “not a person”)
 
-**Files:** `kickoff_prompt.py`, `self_inquiry_prompt.py`, worldview TurnOutcome read/write + Hub post-run accounting; tests that teach no longer contains the stuck-only language; test keep-local is readable.
+For Orion-origin curiosity/self-inquiry, pass a short **investigation subject** (chosen prior claim or “not yet chosen”, plus last continue note) as the appraised text — not the multi-hundred-line scaffold alone. Scaffold remains available elsewhere in the turn; Mind’s who-spoke context is Orion.
 
-**Acceptance:** Fixture kickoff contains disclosure hooks; keep-local and HelpRequest are distinguishable in graph reads after a run.
+**Files:** `curiosity_investigation.py` / mind request builder for that lane; tests (kickoff vs subject stub).
 
-### Patch D — Optional gate on empty theater (thin)
+**Acceptance:** Fixture + one live curiosity `thought.event.v1`: intent/frontier about the **claim**, not “write Cypher like this.”
 
-Reject enqueue (or log + skip) HelpRequest whose `tried_summary` is empty/whitespace when hops exist for the run — encourages grounded `tried_summary`, does not invent a difficulty scorer.
+### Patch 4 — Role teach + `:InvestigationRole`
 
-**Non-goals for D:** keyword classifiers on question text; hop-count auto-hire.
+Rewrite hire/role section in kickoff / self-inquiry:
 
-### Explicitly out of scope (this addendum)
+- Remove “optional / stuck / not as a default” as the primary frame.
+- Teach early Orion-authored `:InvestigationRole` (`local_crawl` | `hire_cursor` + why).
+- Soft-nudge disclosure of Mind labels / progress when available.
+- Keep Cypher template for `:HelpRequest`; clarify role ≠ enqueue; HelpRequest after short look when hiring.
+- Mid-run revise of role allowed.
 
-- New attention organ; keying hire on AST/HOT winner.
-- New scope/breadth/depth/foresight metrics.
-- Supervisor auto-hire (parent end-state A) until circling is trusted.
-- Operator-seeded fake HelpRequests.
-- Pressure producers for concept nodes (separate substrate arc).
-- Recent-attention SQL process filter (standalone bugfix; recommended separate PR).
+**Files:** `kickoff_prompt.py`, `self_inquiry_prompt.py`, worldview (or thin reader) for role nodes; Hub post-run accounting if needed; tests.
+
+**Acceptance:** Fixture teach contains role write; after a run, `local_crawl` is distinguishable from “no decision” and from HelpRequest.
+
+### Patch 5 — Optional empty-theater gate
+
+Reject enqueue (or log + skip) HelpRequest whose `tried_summary` is empty/whitespace when hops exist for the run.
+
+**Non-goals for this patch:** keyword classifiers on question text; hop-count auto-hire.
 
 ## Files likely to touch
 
 | Path | Why |
 | --- | --- |
-| `services/orion-thought/app/mind_enrichment.py` | Allow-list: pass intent / uncertainty |
-| `services/orion-hub/scripts/curiosity_investigation.py` | Curiosity Mind input; keep-local accounting |
-| `orion/curiosity/kickoff_prompt.py` / `self_inquiry_prompt.py` | Teach + disclosure |
-| `orion/curiosity/worldview.py` | Keep-local fields if on TurnOutcome |
+| `services/orion-thought/app/mind_enrichment.py` | Origin, allow-list, soft labels |
+| `services/orion-cortex-orch/app/mind_runtime.py` | Origin / facets if chat path builds Mind here |
+| `services/orion-hub/scripts/curiosity_investigation.py` | Origin=orion; subject-sized Mind input; role accounting |
+| `orion/curiosity/kickoff_prompt.py` / `self_inquiry_prompt.py` | Role + hire teach |
+| `orion/curiosity/worldview.py` (or sibling) | Read/write `:InvestigationRole` |
 | `orion/curiosity/peer_briefs.py` | Optional empty tried_summary gate |
+| Mind brief / schema if soft labels need a typed home | Stub fields |
 | Tests under hub / thought / curiosity | Regression + fixtures |
-| This doc + short note in parent contractor design | Point to addendum |
+| Parent contractor design | Pointer stays; blurb matches role split |
 
 ## Non-goals
 
 - Making Orion a frontier agent.
 - Guaranteeing hire every run.
-- Calibrated “want” as a number.
+- Calibrated numeric “want” / depth scores this arc.
+- Python auto-writing `:InvestigationRole` or HelpRequest.
+- Keying hire on AST/HOT winner.
 - Fixing disk-dominated attention competition in this arc.
+- Claude-as-peer fallback (parent doc).
 
 ## Acceptance checks
 
-1. Design review: Juniper agrees determination = Mind problem framing + progress disclosure + Orion-authored HelpRequest/keep-local — not tools-only, not attention winner.
-2. Patch A: `user_intent` (or agreed equivalent) survives thought → unified turn on a normal chat fixture.
-3. Patch B: curiosity Mind input is subject-sized; one live curiosity thought event inspected and not scaffolding-dominated.
-4. Patch C: kickoff hire section no longer says stuck-only optional; keep-local is graph-visible.
+1. Design review: determination = origin-aware Mind problem framing + soft work-shape labels + Orion-authored role/HelpRequest — not tools-only, not attention winner, not Python hire.
+2. Originator flag + prose on both juniper and orion paths; juniper chat framing not broken by hire allow-list widening.
+3. Curiosity Mind input subject-sized; one live curiosity thought event inspected and not scaffolding-dominated.
+4. `:InvestigationRole` graph-visible; `local_crawl` ≠ missing decision ≠ HelpRequest.
 5. Existing peer acceptance preserved: flag off / no HelpRequest → no Cursor job; budget refuse → non-success brief/nudge.
 
 ## Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| Mind coloring widens too far and steers chat | Allow-list only intent + uncertainty summary |
-| Curiosity still hollow if B skipped | A without B helps chat; hire grounding requires B |
-| Circling disclosed too early misleads | Prompt-only until supervisor trusted; no auto-hire |
-| Forced output without A/B | Do not ship forced fork alone — hollow |
+| Mind coloring widens too far and steers chat | Origin/context guard; allow-list only intent + uncertainty + soft labels |
+| Soft labels treated as calibrated truth | Teach + docs: advisory; may be unknown; Orion still authors |
+| Role written, HelpRequest never follows when hire intended | Teach + optional accounting/metrics; empty tried_summary gate |
+| Forced fork without origin/subject fixes | Do not ship role teach alone as “done” |
 
 ## Recommended next patch order
 
-1. **A** (intent through allow-list) — high value even without hire.  
-2. **B** (curiosity Mind target) — required before trusting hire disclosure from Mind.  
-3. **C** (teach + keep-local + disclosure hooks).  
-4. **D** if theater HelpRequests appear.  
+1. Originator seam
+2. Soft labels + guarded allow-list
+3. Curiosity Mind subject
+4. Role teach + `:InvestigationRole`
+5. Empty-theater gate if needed
 
-Then implementation plan via writing-plans; no code in this proposal.
+Then implementation plan via writing-plans; no code until Juniper approves this written spec.
 
 ## Rollback
 
-- Revert allow-list / curiosity mind input / kickoff teach independently.
-- `HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED=false` still kills live hire.
-
----
+- Revert origin / allow-list / subject / role teach independently.
+- `HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED=false` still kills live hire enqueue.
 
 ## Relationship to parent design
 
-Parent remains the contract for HelpRequest / PeerBrief / peer service / scarcity. This addendum **overrides** any reading that “soft teach + Orion somehow knows” is sufficient determination, and **rejects** tool-asymmetry or attention-winner as the primary ground. Claude-as-peer fallback in the parent is unchanged here; this hire-grounding arc assumes Cursor as the contractor in front of Orion.
+Parent remains the contract for HelpRequest / PeerBrief / peer service / scarcity. This addendum **overrides** any reading that “soft stuck-only teach + Orion somehow knows” is sufficient determination, **rejects** tool-asymmetry or attention-winner as the primary ground, and **adds** kickoff provisional role split with mid-run revise. Claude-as-peer fallback in the parent is unchanged; this arc assumes Cursor as the contractor in front of Orion.

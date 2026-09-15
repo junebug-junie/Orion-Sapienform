@@ -2100,12 +2100,11 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     without spinning up the full executor.
 
     Default lane mapping:
-    - harness_finalize_reflect / orion_response_repair: AGENT lane. These are
-      automated continuation calls, not Juniper chat. Their fat prompts exceed
-      quick/fast context, and live gateway evidence on 2026-09-12 showed 27
-      autonomous finalize completions consuming the reserved chat worker in
-      24h while lane routing was disabled. The context builders also stamp
-      route/lane=agent so old and new gateway configurations agree.
+    - harness_finalize_reflect / orion_response_repair: fallback AGENT only when
+      the caller did not stamp `llm_route`. Live harness finalize always stamps
+      owner lane via `orion.harness.finalize.resolve_finalize_llm_lane` (chat for
+      chat-owned Hub turns, agent for agent FCC label, lease lane when admitted).
+      `_resolve_llm_route_override` wins over this default.
     - stance_react (orion-thought's ThoughtClient.react, the real
       stance-evaluation step of every unified turn): DEEP lane ("chat" /
       Circe). Confirmed missing from this chain entirely until 2026-08-20 --

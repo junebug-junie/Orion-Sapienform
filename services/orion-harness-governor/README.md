@@ -228,4 +228,7 @@ Gateway. The broker fence is the protected request's admission authority.
 Admitted harness turns carry the same resource lease through the FCC motor,
 reflection, optional re-reflection, and conditional response repair. These LLM calls use
 the lease's assigned lane and generation, so a continuation does not wait behind
-its own reservation. Ordinary finalization keeps the existing agent route.
+its own reservation. Unleashed finalization uses the turn owner lane: chat for non-agent FCC
+labels (default Hub chat / `MODEL_SONNET`), agent for the agent FCC model
+label. Admitted leases still force their assigned lane for every finalize
+LLM hop.

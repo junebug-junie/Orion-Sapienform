@@ -919,6 +919,58 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
     }
 
 
+OUTREACH_PROVENANCE_SCHEMA = "outreach_provenance.v1"
+
+
+def summarize_outreach_lanes(lanes: Dict[str, Any]) -> str:
+    """One short human line for the collapsed Hub control. Deterministic."""
+    parts: List[str] = []
+    priors = int(lanes.get("priors_count") or 0)
+    curiosity = int(lanes.get("curiosity_summaries") or 0)
+    turns = int(lanes.get("recent_turns") or 0)
+    if priors:
+        parts.append(f"open priors ({priors})")
+    if curiosity:
+        parts.append(f"curiosity signals ({curiosity})")
+    if lanes.get("tension"):
+        parts.append("tension trigger")
+    if lanes.get("daydream"):
+        age = lanes.get("daydream_age_sec")
+        if age is not None:
+            parts.append(f"daydream (~{int(age)}s old)")
+        else:
+            parts.append("daydream")
+    if turns:
+        parts.append(f"recent turns ({turns})")
+    if lanes.get("embodied_presence"):
+        parts.append("camera presence")
+    if not parts:
+        return "Outreach grounding (no named lanes)"
+    return "Outreach from " + ", ".join(parts)
+
+
+def build_outreach_provenance(
+    *,
+    prompt_text: str,
+    lanes: Dict[str, Any],
+    correlation_id: str,
+    decision_id: str,
+    generated_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Full prompt capsule written to chat client_meta + decision result_json."""
+    when = generated_at or datetime.now(timezone.utc).isoformat()
+    lane_map = dict(lanes or {})
+    return {
+        "schema": OUTREACH_PROVENANCE_SCHEMA,
+        "decision_id": str(decision_id),
+        "correlation_id": str(correlation_id),
+        "generated_at": when,
+        "lanes": lane_map,
+        "prompt_text": str(prompt_text or ""),
+        "summary_line": summarize_outreach_lanes(lane_map),
+    }
+
+
 def build_outreach_prompt(ctx: OutreachContext) -> str:
     """Render the generation prompt from real context.
 

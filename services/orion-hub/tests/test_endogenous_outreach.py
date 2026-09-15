@@ -27,8 +27,10 @@ from scripts.endogenous_outreach import (
     _fetch_embodied_presence,
     _strip_appended_list,
     _looks_like_daydream_prose,
+    build_outreach_provenance,
     build_outreach_prompt,
     grounding_summary,
+    summarize_outreach_lanes,
     in_quiet_hours,
     is_pass_response,
     looks_like_error_text,
@@ -2870,6 +2872,51 @@ def test_grounding_summary_records_no_caption_text() -> None:
     assert "celestial" not in serialized
     assert "curiosity evidence" not in serialized
     assert "chat turn" not in serialized
+
+
+def test_summarize_outreach_lanes_names_what_fired() -> None:
+    line = summarize_outreach_lanes(
+        {
+            "daydream": False,
+            "daydream_age_sec": None,
+            "curiosity_summaries": 2,
+            "recent_turns": 3,
+            "tension": False,
+            "chat_presence": False,
+            "embodied_presence": False,
+            "priors_count": 3,
+        }
+    )
+    assert "priors" in line.lower()
+    assert "3" in line
+    assert "curiosity" in line.lower()
+    assert "tension" not in line.lower() or "no tension" in line.lower()
+
+
+def test_build_outreach_provenance_embeds_full_prompt_and_lanes() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["signal A"],
+        recent_turns=[("user", "hi")],
+        presence=None,
+        open_prior_previews=["Prior: soft-edged content is easy to set aside."],
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert prompt  # non-empty
+    lanes = grounding_summary(ctx)
+    capsule = build_outreach_provenance(
+        prompt_text=prompt,
+        lanes=lanes,
+        correlation_id="corr-1",
+        decision_id="dec-1",
+        generated_at="2026-09-15T19:27:05+00:00",
+    )
+    assert capsule["schema"] == "outreach_provenance.v1"
+    assert capsule["prompt_text"] == prompt
+    assert capsule["lanes"] == lanes
+    assert capsule["correlation_id"] == "corr-1"
+    assert capsule["decision_id"] == "dec-1"
+    assert capsule["generated_at"] == "2026-09-15T19:27:05+00:00"
+    assert isinstance(capsule["summary_line"], str) and capsule["summary_line"].strip()
 
 
 def test_a_gate_that_fires_before_context_records_no_grounding(monkeypatch) -> None:

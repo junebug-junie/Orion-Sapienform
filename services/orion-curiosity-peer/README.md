@@ -15,8 +15,19 @@ Design: `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 
 **Status:** Patch 1 worker armed (Tasks 12–13). Kill switches may be
 armed in local `.env_example` on this host; leave `CURIOSITY_PEER_ENABLED`
-false until you intend processing. Cursor meter remains fail-closed
-until a live reading exists.
+false until you intend processing.
+
+## Contested Cursor budget
+
+Hires fail closed until a meter reading exists (`budget_unobserved`).
+Until a first-party Cursor usage API lands, set one of:
+
+- `CURIOSITY_PEER_CURSOR_BUDGET_STATE=clear` — operator asserts pool headroom
+- `CURIOSITY_PEER_CURSOR_BUDGET_FILE=/path` — JSON
+  `{"state":"clear","observed_at":"<iso>"}` or plain text `clear`
+
+File wins over STATE. `limited` / `unknown` / garbage / missing all refuse.
+`decide_cursor_budget` still requires observed `clear` with a staleness value.
 
 ## Why this is a separate service
 

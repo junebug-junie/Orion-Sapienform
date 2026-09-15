@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     CURIOSITY_PEER_REPO_ROOT: str = Field(default="/repo")
     CURIOSITY_PEER_MODEL: str = Field(default="composer-2.5")
 
+    # ── Contested Cursor budget meter (fail-closed) ───────────────────
+    # observe_cursor_limit() refuses hire until a real reading exists.
+    # File wins over STATE. Empty both → unobserved (no hire).
+    # STATE values: clear | limited | unknown
+    # FILE: JSON {"state":"clear","observed_at":"<iso>"} or plain "clear".
+    CURIOSITY_PEER_CURSOR_BUDGET_STATE: str = Field(default="")
+    CURIOSITY_PEER_CURSOR_BUDGET_FILE: str = Field(default="")
+
     # ── Worldview graph (PeerBrief dual-write target) ─────────────────
     ORION_CURIOSITY_GRAPH_HOST: str = Field(default="")
     ORION_CURIOSITY_GRAPH_PORT: str = Field(default="")

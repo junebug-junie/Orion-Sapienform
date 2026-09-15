@@ -453,7 +453,13 @@ def handle_help_request(
         else:
             _default_persist(brief, settings=settings, bus=bus, loop=loop)
 
-    observe = observe_limit or observe_cursor_limit
+    def _observe_default() -> CursorLimitObservation:
+        return observe_cursor_limit(
+            state=(settings.CURIOSITY_PEER_CURSOR_BUDGET_STATE or None),
+            file_path=(settings.CURIOSITY_PEER_CURSOR_BUDGET_FILE or None),
+        )
+
+    observe = observe_limit or _observe_default
     observation = observe()
     refusal = decide_cursor_budget(observation)
     if refusal is not None:

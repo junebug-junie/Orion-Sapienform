@@ -363,7 +363,16 @@ Fixes NPC-human chats where agents talk over the human, narrate scene prose inst
 
 ### NPC answer-first (`patches/orion-npc-answer-first.patch`)
 
-Human chats never call `startConversationMessage` — Juniper's first NPC line is `continue`. The old continue contract (`Name a person, object, or task`) plus Nico's tease-plan produced a secret-hook on "hi" and a lockbox on "spill the tea" before any topic had repeated. The patch puts the no-quest / answer-first / do-not-withhold contract on continue, drops empty-shell social-memory topic bags (`Recent room themes:`, `recent shared topics include`), and rewrites Nico's plan to tell a specific piece of gossip.
+Human chats never call `startConversationMessage` — Juniper's first NPC line is `continue`. The old continue contract (`Name a person, object, or task`) plus Nico's tease-plan produced a secret-hook on "hi" and a lockbox on "spill the tea" before any topic had repeated.
+
+This patch (rewritten 2026-09-15 so it actually applies after pair-turn continuity) does four things for **every** NPC, not just Juniper chats:
+
+1. Continue: answer the last line, no quest hooks, break abstract circling or leave.
+2. Start: talk like a person who ran into them, not a quest giver.
+3. Relabel `plan` as role background (`Your role today (background only, not the topic of this chat)`), not `Your goals for the conversation`.
+4. Drop the forced “mention a previous conversation” greeting callback.
+
+Companion `orion-resync-agent-descriptions.patch` adds engine input `resyncAgentDescriptions` so live baked `agentDescriptions` pick up card/plan rewrites after deploy (`scripts/resync_agent_descriptions.py`). Without that one-shot, Circe keeps serving the old coffee/quest plans forever.
 
 ### Mechanical leave (`patches/orion-mechanical-leave.patch`)
 

@@ -1,0 +1,40 @@
+diff --git a/convex/aiTown/agentInputs.ts b/convex/aiTown/agentInputs.ts
+index 205eb0d..110b56a 100644
+--- a/convex/aiTown/agentInputs.ts
++++ b/convex/aiTown/agentInputs.ts
+@@ -152,4 +152,35 @@ export const agentInputs = {
+       return { agentId };
+     },
+   }),
++  // Refresh every NPC's baked identity/plan from Descriptions[] (by player name).
++  // Needed after character-card / plan rewrites: agentDescriptions are set at
++  // createAgent and otherwise keep the old coffee/quest bait forever.
++  resyncAgentDescriptions: inputHandler({
++    args: {},
++    handler: (game, _now, _args) => {
++      let updated = 0;
++      for (const agent of game.world.agents.values()) {
++        const playerDesc = game.playerDescriptions.get(agent.playerId);
++        if (!playerDesc) {
++          continue;
++        }
++        const match = Descriptions.find((d) => d.name === playerDesc.name);
++        if (!match) {
++          continue;
++        }
++        game.agentDescriptions.set(
++          agent.id,
++          new AgentDescription({
++            agentId: agent.id,
++            identity: match.identity,
++            plan: match.plan,
++          }),
++        );
++        // Required for Game.takeDiff() to persist agentDescriptions to Convex.
++        game.descriptionsModified = true;
++        updated += 1;
++      }
++      return { updated };
++    },
++  }),
+ };

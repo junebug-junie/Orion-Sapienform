@@ -17,6 +17,7 @@ PATCHES=(
   "orion-input-counter-contention.patch"
   "orion-no-human-idle-kick.patch"
   "orion-npc-answer-first.patch"
+  "orion-resync-agent-descriptions.patch"
   "orion-mechanical-leave.patch"
 )
 

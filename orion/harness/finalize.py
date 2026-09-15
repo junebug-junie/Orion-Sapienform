@@ -476,6 +476,7 @@ async def run_finalize_reflection(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -503,6 +504,7 @@ async def run_finalize_reflection(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
     )
     try:
         exec_result = await cortex_client(plan_request)
@@ -602,6 +604,7 @@ async def maybe_run_finalize_tool_retry(
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
@@ -768,6 +771,7 @@ async def maybe_run_finalize_tool_retry(
             grammar_receipts=receipts,
             cortex_client=cortex_client,
             resource_lease=resource_lease,
+            fcc_model_label=fcc_model_label,
         )
     except Exception as exc:
         logger.warning(
@@ -923,6 +927,7 @@ async def run_orion_response_repair(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Orion capability: minimal post-reflection response repair.
 
@@ -940,6 +945,7 @@ async def run_orion_response_repair(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_response_repair_text(exec_result)
@@ -1287,6 +1293,7 @@ async def run_harness_finalize_chain(
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
 
@@ -1303,9 +1310,9 @@ async def run_harness_finalize_chain(
     JSON in place of prose-oriented 5c. The default remains false, preserving
     conditional response repair for ordinary turns.
 
-    ``resource_lease`` carries the same admission owner through reflection,
-    any re-reflection, and conditional response repair. Each LLM call uses the
-    reserved lane instead of waiting as an unrelated caller on its own reservation.
+    Owner identity comes from ``resource_lease`` when admitted, otherwise from
+    ``fcc_model_label``. The same owner lane flows through reflection, any
+    re-reflection, and conditional response repair.
 
     Runtime evidence: substrate appraisal, verdict and outcome molecules
     (outcome carries finalize_loop_retried/finalize_loop_tool when 5b-prime
@@ -1328,6 +1335,7 @@ async def run_harness_finalize_chain(
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
         resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
@@ -1353,6 +1361,7 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
+                fcc_model_label=fcc_model_label,
                 bus=bus,
                 grammar_channel=grammar_channel,
                 grammar_publish_fn=grammar_publish_fn,
@@ -1411,6 +1420,7 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
+                fcc_model_label=fcc_model_label,
             )
             voice_meta = {
                 **voice_meta,

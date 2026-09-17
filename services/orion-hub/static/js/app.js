@@ -7853,6 +7853,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const attachmentStrip = buildMessageAttachmentStrip(meta);
     if (attachmentStrip) div.appendChild(attachmentStrip);
     if (!workflowOnlyTurn) div.appendChild(body);
+    const prov = meta.outreachProvenance || meta.outreach_provenance || null;
+    if (prov && typeof prov === 'object' && (prov.prompt_text || prov.promptText)) {
+      const details = document.createElement('details');
+      details.className = 'om-outreach-why mt-1 text-sm text-gray-400';
+      const summary = document.createElement('summary');
+      summary.className = 'cursor-pointer select-none';
+      const summaryLine = String(prov.summary_line || prov.summaryLine || 'why I spoke').trim();
+      summary.textContent = summaryLine ? `why I spoke — ${summaryLine}` : 'why I spoke';
+      const pre = document.createElement('pre');
+      pre.className = 'mt-1 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-gray-300';
+      pre.textContent = String(prov.prompt_text || prov.promptText || '');
+      details.appendChild(summary);
+      details.appendChild(pre);
+      div.appendChild(details);
+    }
     if (displayText) {
       // Hover-revealed per-message actions (see .om-msg-copy in style.css).
       const msgActions = document.createElement('div');
@@ -11496,6 +11511,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 turnId: d.correlation_id,
                 mode: d.mode || 'orion',
                 unsolicited: true,
+                outreachProvenance: d.outreach_provenance || null,
               });
             }
             return;

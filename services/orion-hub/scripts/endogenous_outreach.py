@@ -919,6 +919,58 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
     }
 
 
+OUTREACH_PROVENANCE_SCHEMA = "outreach_provenance.v1"
+
+
+def summarize_outreach_lanes(lanes: Dict[str, Any]) -> str:
+    """One short human line for the collapsed Hub control. Deterministic."""
+    parts: List[str] = []
+    priors = int(lanes.get("priors_count") or 0)
+    curiosity = int(lanes.get("curiosity_summaries") or 0)
+    turns = int(lanes.get("recent_turns") or 0)
+    if priors:
+        parts.append(f"open priors ({priors})")
+    if curiosity:
+        parts.append(f"curiosity signals ({curiosity})")
+    if lanes.get("tension"):
+        parts.append("tension trigger")
+    if lanes.get("daydream"):
+        age = lanes.get("daydream_age_sec")
+        if age is not None:
+            parts.append(f"daydream (~{int(age)}s old)")
+        else:
+            parts.append("daydream")
+    if turns:
+        parts.append(f"recent turns ({turns})")
+    if lanes.get("embodied_presence"):
+        parts.append("camera presence")
+    if not parts:
+        return "Outreach grounding (no named lanes)"
+    return "Outreach from " + ", ".join(parts)
+
+
+def build_outreach_provenance(
+    *,
+    prompt_text: str,
+    lanes: Dict[str, Any],
+    correlation_id: str,
+    decision_id: str,
+    generated_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Full prompt capsule written to chat client_meta + decision result_json."""
+    when = generated_at or datetime.now(timezone.utc).isoformat()
+    lane_map = dict(lanes or {})
+    return {
+        "schema": OUTREACH_PROVENANCE_SCHEMA,
+        "decision_id": str(decision_id),
+        "correlation_id": str(correlation_id),
+        "generated_at": when,
+        "lanes": lane_map,
+        "prompt_text": str(prompt_text or ""),
+        "summary_line": summarize_outreach_lanes(lane_map),
+    }
+
+
 def build_outreach_prompt(ctx: OutreachContext) -> str:
     """Render the generation prompt from real context.
 
@@ -1699,11 +1751,23 @@ class EndogenousOutreach:
                 grounding=grounding,
             )
 
+        # Mint decision_id + capsule only once delivery is certain (after
+        # abandoned agent-lane retries inside `_generate`, after PASS /
+        # empty / named-ungrounded / post-generation gate drops). Shared
+        # across WS payload, history client_meta, and decision-log PK.
+        decision_id = str(uuid4())
+        provenance = build_outreach_provenance(
+            prompt_text=prompt,
+            lanes=grounding,
+            correlation_id=correlation_id,
+            decision_id=decision_id,
+        )
         await self._deliver(
             text=text,
             session_id=session_id,
             correlation_id=correlation_id,
             model=gen_debug.get("fcc_model_label"),
+            provenance=provenance,
         )
 
         self._last_outreach_at = time.time()
@@ -1723,6 +1787,8 @@ class EndogenousOutreach:
                 "session_id": session_id,
                 "chars": len(text),
                 "generation": gen_debug,
+                "decision_id": decision_id,
+                "provenance": provenance,
             },
             forced=force,
             tension_reason=tension_reason,
@@ -2218,9 +2284,16 @@ class EndogenousOutreach:
         tags: Optional[List[str]] = None,
         notification_title: Optional[str] = None,
         notification_type: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         message_id = str(uuid4())
-        self._push_to_sockets(text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id)
+        self._push_to_sockets(
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            message_id=message_id,
+            provenance=provenance,
+        )
         await self._publish_history(
             text=text,
             session_id=session_id,
@@ -2230,6 +2303,7 @@ class EndogenousOutreach:
             source_tag=source_tag,
             unsolicited=unsolicited,
             tags=tags,
+            provenance=provenance,
         )
         await self._publish_notification(
             text=text,
@@ -2241,7 +2315,15 @@ class EndogenousOutreach:
             notification_type=notification_type,
         )
 
-    def _push_to_sockets(self, *, text: str, session_id: str, correlation_id: str, message_id: str) -> None:
+    def _push_to_sockets(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Fan out to live sockets. Deliberately omits ``state`` and the
         recall/routing debug keys so an outreach bubble cannot stomp the panels
         showing the last real turn."""
@@ -2253,6 +2335,8 @@ class EndogenousOutreach:
             "message_id": message_id,
             "session_id": session_id,
         }
+        if provenance:
+            payload["outreach_provenance"] = dict(provenance)
         for connection_id, entry in list(self._connections.items()):
             queue = entry.get("queue")
             if queue is None:
@@ -2275,6 +2359,7 @@ class EndogenousOutreach:
         source_tag: Optional[str] = None,
         unsolicited: bool = True,
         tags: Optional[List[str]] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
@@ -2294,7 +2379,9 @@ class EndogenousOutreach:
                 history_tags = [OUTREACH_TAG] if not source_tag else [OUTREACH_TAG, source_tag]
             else:
                 history_tags = list(tags)
-            client_meta = {"unsolicited": True} if unsolicited else {}
+            client_meta: Dict[str, Any] = {"unsolicited": True} if unsolicited else {}
+            if provenance:
+                client_meta["outreach_provenance"] = dict(provenance)
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",

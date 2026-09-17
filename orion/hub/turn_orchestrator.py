@@ -530,6 +530,54 @@ async def _run_pre_turn_appraisal(
     return bundle, texture
 
 
+def fetch_latest_outreach_provenance(
+    session_id: str | None,
+    *,
+    max_age_hours: float = 12.0,
+) -> dict[str, Any] | None:
+    """Module-level re-export so tests can monkeypatch the DB lookup."""
+    from scripts.outreach_provenance import (
+        fetch_latest_outreach_provenance as _impl,
+    )
+
+    return _impl(session_id, max_age_hours=max_age_hours)
+
+
+async def _situation_with_outreach_provenance(
+    situation_prompt_fragment: str | None,
+    session_id: str | None,
+    *,
+    correlation_id: str | None = None,
+) -> str | None:
+    """Append still-relevant outreach provenance to the situation fragment.
+
+    Fail-open: never raise into the turn. Uses DB lookup (not continuity
+    messages) because unsolicited rows are excluded from rehydrate.
+    Sync SQLAlchemy fetch runs via asyncio.to_thread so Hub's event loop
+    is not blocked.
+    """
+    try:
+        from scripts.outreach_provenance import (
+            format_outreach_provenance_block,
+            merge_situation_with_outreach_provenance,
+        )
+
+        capsule = await asyncio.to_thread(
+            fetch_latest_outreach_provenance, session_id
+        )
+        block = format_outreach_provenance_block(capsule)
+        return merge_situation_with_outreach_provenance(
+            situation_prompt_fragment, block or None
+        )
+    except Exception:
+        logger.warning(
+            "outreach_provenance_inject_failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
+        return situation_prompt_fragment
+
+
 async def _build_situation_prompt_fragment(
     *,
     session_id: str | None,
@@ -1050,6 +1098,11 @@ async def execute_unified_turn(
     situation_prompt_fragment = situation_bundle.get("compact_text")
     if isinstance(situation_prompt_fragment, str) and not situation_prompt_fragment.strip():
         situation_prompt_fragment = None
+    situation_prompt_fragment = await _situation_with_outreach_provenance(
+        situation_prompt_fragment,
+        session_id,
+        correlation_id=correlation_id,
+    )
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
     situation_hop_status = str(situation_bundle.get("status") or "ok")
     if situation_hop_status == "empty":

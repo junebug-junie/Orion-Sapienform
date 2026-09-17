@@ -280,7 +280,14 @@ def test_gather_context_runs_its_fetches_concurrently(monkeypatch) -> None:
         _fn.__name__ = name
         return _fn
 
-    monkeypatch.setitem(module_globals, "_fetch_curiosity_summaries", _sleepy("_fetch_curiosity_summaries", ["c"]))
+    monkeypatch.setitem(
+        module_globals,
+        "_fetch_curiosity_content",
+        _sleepy(
+            "_fetch_curiosity_content",
+            (["curiosity:source:prediction_error|node:x"], ["c"]),
+        ),
+    )
     monkeypatch.setitem(module_globals, "_fetch_recent_turns", _sleepy("_fetch_recent_turns", [("Juniper", "hi")]))
     monkeypatch.setitem(
         module_globals, "_fetch_embodied_presence", _sleepy("_fetch_embodied_presence", {"state": "present"})
@@ -289,7 +296,9 @@ def test_gather_context_runs_its_fetches_concurrently(monkeypatch) -> None:
         module_globals, "_fetch_current_daydream", _sleepy("_fetch_current_daydream", (60.0, "a ring of light"))
     )
     monkeypatch.setitem(
-        module_globals, "_fetch_open_prior_previews", _sleepy("_fetch_open_prior_previews", ["prior-a"])
+        module_globals,
+        "_fetch_open_priors",
+        _sleepy("_fetch_open_priors", (["prior-id-a"], ["prior-a"])),
     )
     # ctx.presence (chat liveness, distinct from embodied_presence) is read
     # synchronously and not part of this timing assertion -- its own
@@ -305,10 +314,12 @@ def test_gather_context_runs_its_fetches_concurrently(monkeypatch) -> None:
 
     assert elapsed < 0.15, f"_gather_context took {elapsed:.3f}s -- fetches are not running concurrently"
     assert ctx.curiosity_summaries == ["c"]
+    assert ctx.curiosity_content_ids == ["curiosity:source:prediction_error|node:x"]
     assert ctx.recent_turns == [("Juniper", "hi")]
     assert ctx.embodied_presence == {"state": "present"}
     assert ctx.daydream == (60.0, "a ring of light")
     assert ctx.open_prior_previews == ["prior-a"]
+    assert ctx.open_prior_ids == ["prior-id-a"]
 
 
 def test_presence_alone_is_not_grounding() -> None:
@@ -659,25 +670,47 @@ def _stub_context(
     summaries=("sustained prediction error on node:x",),
     turns=(),
     open_prior_previews=(),
+    open_prior_ids=(),
+    curiosity_content_ids=(),
     daydream=None,
 ) -> None:
     default_summaries = list(summaries)
     default_turns = list(turns)
     default_priors = list(open_prior_previews)
+    default_prior_ids = list(open_prior_ids)
+    default_curiosity_ids = list(curiosity_content_ids)
     default_daydream = daydream
 
-    async def fake_gather(self, session_id, open_prior_previews=None):
+    async def fake_gather(
+        self, session_id, open_prior_previews=None, open_prior_ids=None
+    ):
         # Fire gate may pass a peeked prior list; otherwise use stub defaults.
         priors = (
             list(open_prior_previews)
             if open_prior_previews is not None
             else list(default_priors)
         )
+        prior_ids = (
+            list(open_prior_ids)
+            if open_prior_ids is not None
+            else list(default_prior_ids)
+        )
+        if len(prior_ids) < len(priors):
+            prior_ids = prior_ids + [""] * (len(priors) - len(prior_ids))
+        elif len(prior_ids) > len(priors):
+            prior_ids = prior_ids[: len(priors)]
+        curiosity_ids = list(default_curiosity_ids)
+        if len(curiosity_ids) < len(default_summaries):
+            curiosity_ids = curiosity_ids + [""] * (
+                len(default_summaries) - len(curiosity_ids)
+            )
         return OutreachContext(
             curiosity_summaries=list(default_summaries),
+            curiosity_content_ids=curiosity_ids,
             recent_turns=list(default_turns),
             presence=None,
             open_prior_previews=priors,
+            open_prior_ids=prior_ids,
             daydream=default_daydream,
             tension_reason=self._last_tension_reason,
         )
@@ -951,7 +984,7 @@ def test_grounded_signal_name_is_sent_normally(monkeypatch) -> None:
     queue: asyncio.Queue = asyncio.Queue()
     outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
 
-    async def fake_gather(self, session_id, open_prior_previews=None):
+    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
         return OutreachContext(
             curiosity_summaries=["sustained prediction error on node:x"],
             recent_turns=[],
@@ -1707,7 +1740,7 @@ def test_no_tension_trigger_does_not_fire(monkeypatch) -> None:
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "never")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1723,15 +1756,18 @@ def test_open_priors_alone_can_fire_without_tension(monkeypatch) -> None:
     _stub_generation(monkeypatch, "I've been holding onto something about Athena.")
 
     # Peek path: when tension is absent, _outreach_once asks
-    # _fetch_open_prior_previews before gathering.
+    # _fetch_open_priors before gathering.
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [prior])
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-athena"], [prior])
+    )
 
     result = asyncio.run(outreach.maybe_outreach())
 
     assert result["outreach"] is True
     assert result["reason"] == "sent"
     assert result["grounding"]["priors_count"] == 1
+    assert result["grounding"]["prior_ids"] == ["prior-athena"]
     assert result["grounding"]["tension"] is False
 
 
@@ -1752,7 +1788,9 @@ def test_prior_alone_can_name_registry_tokens_from_the_prior(monkeypatch) -> Non
         "`node:athena` has been off pattern; disk_capacity_pressure is what I keep circling.",
     )
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [prior])
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-athena"], [prior])
+    )
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
     monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
 
@@ -1770,7 +1808,7 @@ def test_tension_alone_without_talkable_content_does_not_fire(monkeypatch) -> No
     _stub_context(monkeypatch, summaries=(), open_prior_previews=(), daydream=None)
     _stub_generation(monkeypatch, "never")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1784,7 +1822,7 @@ def test_tension_with_curiosity_content_still_fires(monkeypatch) -> None:
     _stub_context(monkeypatch, summaries=("sustained prediction error on node:x",))
     _stub_generation(monkeypatch, "Something has been sticking on the field.")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1805,7 +1843,7 @@ def test_trigger_evaluator_exception_degrades_to_not_firing(monkeypatch) -> None
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "never")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1906,7 +1944,7 @@ def test_forced_outreach_does_not_carry_a_stale_tension_reason(monkeypatch) -> N
 
     captured: list[OutreachContext] = []
 
-    async def fake_gather(self, session_id, open_prior_previews=None):
+    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
         ctx = OutreachContext(curiosity_summaries=["x"], recent_turns=[], presence=None,
                                tension_reason=self._last_tension_reason)
         captured.append(ctx)
@@ -2072,7 +2110,7 @@ def test_record_persists_a_blocked_decision_with_the_real_forced_flag(monkeypatc
 def test_record_persists_no_tension_trigger_with_no_stale_reason(monkeypatch) -> None:
     outreach = _outreach(trigger_evaluator=lambda: None)
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
     calls = _patch_record_decision(monkeypatch)
 
     result = asyncio.run(outreach.maybe_outreach())
@@ -2916,20 +2954,25 @@ def test_grounding_summary_reports_each_lane() -> None:
     """Hand-computed against a context with every lane populated."""
     ctx = OutreachContext(
         curiosity_summaries=["a", "b"],
+        curiosity_content_ids=["sig-a", "sig-b"],
         recent_turns=[("Juniper", "hi"), ("Orion", "hello")],
         presence={"health": "idle"},
         daydream=(1234.56, "a celestial map of the solar system on concentric rings."),
         embodied_presence={"state": "present", "since_sec": 120.0},
+        open_prior_previews=["[confidence=0.80, never tested] claim"],
+        open_prior_ids=["prior-xyz"],
     )
     assert grounding_summary(ctx) == {
         "daydream": True,
         "daydream_age_sec": 1235,
         "curiosity_summaries": 2,
+        "curiosity_content_ids": ["sig-a", "sig-b"],
         "recent_turns": 2,
         "tension": False,
         "chat_presence": True,
         "embodied_presence": True,
-        "priors_count": 0,
+        "priors_count": 1,
+        "prior_ids": ["prior-xyz"],
     }
 
 
@@ -2938,25 +2981,72 @@ def test_grounding_summary_on_an_empty_context() -> None:
     assert summary["daydream"] is False
     assert summary["daydream_age_sec"] is None
     assert summary["curiosity_summaries"] == 0
+    assert summary["curiosity_content_ids"] == []
+    assert summary["prior_ids"] == []
     assert summary["embodied_presence"] is False
 
 
 def test_grounding_summary_records_no_caption_text() -> None:
-    """Booleans and counts only. The caption must not be copied into a second
-    store with its own retention -- the lane's stated privacy boundary is that
-    it reads exactly one `chain_json` key and no seed material."""
+    """Booleans, counts, and IDs only. The caption must not be copied into a
+    second store with its own retention -- the lane's stated privacy boundary
+    is that it reads exactly one `chain_json` key and no seed material."""
     caption = "a wholly distinctive celestial map of the solar system on rings."
     ctx = OutreachContext(
         curiosity_summaries=["a uniquely worded curiosity evidence summary"],
+        curiosity_content_ids=["curiosity:source:repair_pressure|node:x"],
         recent_turns=[("Juniper", "a uniquely worded chat turn")],
         presence=None,
         daydream=(60.0, caption),
+        open_prior_previews=["[confidence=0.50, never tested] a uniquely worded prior claim"],
+        open_prior_ids=["prior-deadbeef"],
     )
     serialized = repr(grounding_summary(ctx))
     assert caption not in serialized
     assert "celestial" not in serialized
     assert "curiosity evidence" not in serialized
     assert "chat turn" not in serialized
+    assert "uniquely worded prior" not in serialized
+    # IDs are allowed — they are the ledger surface.
+    assert "curiosity:source:repair_pressure|node:x" in serialized
+    assert "prior-deadbeef" in serialized
+
+
+def test_grounding_summary_ids_align_with_counts() -> None:
+    """Identity lists are the durable form of the count fields."""
+    ctx = OutreachContext(
+        curiosity_summaries=["one", "two"],
+        curiosity_content_ids=["s1", "s2"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=["p-a", "p-b", "p-c"],
+        open_prior_ids=["id-a", "id-b", "id-c"],
+    )
+    summary = grounding_summary(ctx)
+    assert summary["curiosity_summaries"] == len(summary["curiosity_content_ids"])
+    assert summary["priors_count"] == len(summary["prior_ids"])
+    assert summary["curiosity_content_ids"] == ["s1", "s2"]
+    assert summary["prior_ids"] == ["id-a", "id-b", "id-c"]
+
+
+def test_curiosity_content_id_stable_across_reminted_signal_ids() -> None:
+    """signal_id remints every curiosity tick; ledger must not use it."""
+    from scripts.endogenous_outreach import _curiosity_content_id
+
+    a = {
+        "signal_id": "frontier-signal-aaaa",
+        "notes": ["endogenous_seed", "source:repair_pressure"],
+        "focal_node_refs": ["gev_b", "gev_a"],
+        "evidence_summary": "chat repair pressure level=0.70",
+    }
+    b = {
+        "signal_id": "frontier-signal-bbbb",
+        "notes": ["endogenous_seed", "source:repair_pressure"],
+        "focal_node_refs": ["gev_a", "gev_b"],
+        "evidence_summary": "chat repair pressure level=0.70",
+    }
+    assert _curiosity_content_id(a) == _curiosity_content_id(b)
+    assert _curiosity_content_id(a).startswith("curiosity:source:repair_pressure|")
+    assert "frontier-signal" not in _curiosity_content_id(a)
 
 
 def test_summarize_outreach_lanes_names_what_fired() -> None:
@@ -3132,11 +3222,13 @@ def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
         "daydream": False,
         "daydream_age_sec": None,
         "curiosity_summaries": 2,
+        "curiosity_content_ids": ["", ""],
         "recent_turns": 1,
         "tension": True,
         "chat_presence": False,
         "embodied_presence": False,
         "priors_count": 0,
+        "prior_ids": [],
     }
 
 

@@ -17,6 +17,12 @@ topic. Organic fire now requires talkable content: an open worldview prior
 curiosity evidence summary, daydream}. Tension without that content records
 ``tension_without_content`` and does not generate. See ``has_talkable_content``.
 
+CONTENT IDENTITY IN THE LEDGER (2026-09-16). ``grounding_summary`` also records
+``prior_ids`` / ``curiosity_signal_ids`` — durable identifiers for what reached
+the prompt, not prose. Needed so a later novelty gate / cluster report can ask
+"have we already used this?" without inventing a motive taxonomy. See
+``docs/superpowers/specs/2026-09-16-outreach-content-identity-design.md``.
+
 LEVEL-AWARE, NOT JUST CHANGE-AWARE (2026-08-19). The trigger's own reason
 object now also carries ``sustained_load_pressure`` -- a real, currently-
 loaded reading (`orion.field.significance`, `loaded_steady` regime, no
@@ -487,8 +493,15 @@ class OutreachContext:
     # Live open :Prior claim previews from Orion's worldview graph (same
     # graph curiosity_investigation reads). Talkable content: a prior alone
     # is enough to build a prompt and enough to fire outreach. See
-    # `_fetch_open_prior_previews` and `has_talkable_content`.
+    # `_fetch_open_priors` and `has_talkable_content`.
     open_prior_previews: List[str] = field(default_factory=list)
+    # Parallel to open_prior_previews / curiosity_summaries — durable IDs for
+    # the decision-log ledger (novelty / cluster measurement). Same length
+    # and order as the text lists; empty string when a row had no id.
+    # Curiosity uses a content-stable key (source + focal refs / summary hash),
+    # NOT FrontierInvocationSignalV1.signal_id (reminted every curiosity tick).
+    open_prior_ids: List[str] = field(default_factory=list)
+    curiosity_content_ids: List[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return (
@@ -511,8 +524,47 @@ def has_talkable_content(ctx: OutreachContext) -> bool:
     return bool(ctx.open_prior_previews or ctx.curiosity_summaries or ctx.daydream)
 
 
-def _fetch_curiosity_summaries() -> List[str]:
-    """Strongest fresh endogenous-curiosity evidence summaries, or []."""
+def _curiosity_content_id(candidate: Dict[str, Any]) -> str:
+    """Stable identity for a curiosity candidate across reminted signal_ids.
+
+    ``FrontierInvocationSignalV1.signal_id`` defaults to a fresh UUID every
+    construct; the endogenous curiosity tick rewrites ``candidates_json``
+    ~every 60s. Using that UUID as a ledger key would make repeat/novelty
+    measurement structurally impossible. Prefer source note + focal refs;
+    fall back to a short hash of the evidence summary.
+    """
+    import hashlib
+
+    notes = candidate.get("notes") or []
+    source = ""
+    if isinstance(notes, list):
+        for note in notes:
+            text = str(note or "").strip()
+            if text.startswith("source:"):
+                source = text
+                break
+    refs = [
+        str(r).strip()
+        for r in (candidate.get("focal_node_refs") or [])
+        if str(r).strip()
+    ]
+    refs = sorted(refs)[:8]
+    if source or refs:
+        return f"curiosity:{source}|{','.join(refs)}"
+    summary = str(candidate.get("evidence_summary") or "").strip()
+    if not summary:
+        return ""
+    digest = hashlib.sha256(summary.encode("utf-8")).hexdigest()[:16]
+    return f"curiosity:summary:{digest}"
+
+
+def _fetch_curiosity_content() -> Tuple[List[str], List[str]]:
+    """Strongest fresh curiosity content as (content_ids, summaries), or ([], []).
+
+    Parallel lists, same order/length. Content ids are stable across reminted
+    ``signal_id`` values (see ``_curiosity_content_id``); may be ``""`` only
+    when a candidate has neither refs/source nor a summary.
+    """
     from scripts.curiosity_hint import _fetch_fresh_candidates
 
     candidates = _fetch_fresh_candidates(max_age_sec=_CURIOSITY_MAX_AGE_SEC)
@@ -521,6 +573,7 @@ def _fetch_curiosity_summaries() -> List[str]:
         key=lambda c: float(c.get("signal_strength") or 0.0),
         reverse=True,
     )
+    content_ids: List[str] = []
     summaries: List[str] = []
     for candidate in ranked:
         summary = str(candidate.get("evidence_summary") or "").strip()
@@ -528,18 +581,24 @@ def _fetch_curiosity_summaries() -> List[str]:
             continue
         if len(summary) > _MAX_CURIOSITY_SUMMARY_CHARS:
             summary = summary[: _MAX_CURIOSITY_SUMMARY_CHARS - 1] + "…"
+        content_ids.append(_curiosity_content_id(candidate))
         summaries.append(summary)
         if len(summaries) >= _MAX_CURIOSITY_SUMMARIES:
             break
-    return summaries
+    return content_ids, summaries
 
 
-def _fetch_open_prior_previews() -> List[str]:
-    """Live open worldview :Prior claim previews, or [].
+def _fetch_curiosity_summaries() -> List[str]:
+    """Strongest fresh endogenous-curiosity evidence summaries, or []."""
+    return _fetch_curiosity_content()[1]
+
+
+def _fetch_open_priors() -> Tuple[List[str], List[str]]:
+    """Live open worldview priors as (prior_ids, previews), or ([], []).
 
     Same graph + credential gate curiosity_investigation uses
     (`HUB_CURIOSITY_GRAPH_*`). Fail-open: missing creds, unavailable graph,
-    or any read error degrades to [] so a broken worldview half cannot
+    or any read error degrades to empty so a broken worldview half cannot
     invent a fire reason and cannot crash the outreach tick.
 
     Thin read on purpose: one `LIVE_PRIORS_CYPHER` query, not the full
@@ -547,7 +606,11 @@ def _fetch_open_prior_previews() -> List[str]:
     ticks peek this path every ~10s; keep it one RO query. All still-open
     priors count (including well-tested ones) -- outreach wants "something
     to talk about", not the investigation queue's retire-soon sample.
+
+    Parallel lists, same order/length. ``prior_id`` may be ``""`` when a
+    built prior somehow lacks one — preview still reaches the prompt.
     """
+    empty: Tuple[List[str], List[str]] = ([], [])
     try:
         from app.settings import get_settings
         from orion.curiosity.worldview import (
@@ -558,19 +621,19 @@ def _fetch_open_prior_previews() -> List[str]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("endogenous_outreach_prior_import_failed err=%s", exc)
-        return []
+        return empty
 
     try:
         cfg = get_settings()
     except Exception as exc:  # noqa: BLE001
         logger.warning("endogenous_outreach_prior_settings_failed err=%s", exc)
-        return []
+        return empty
 
     host = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_HOST", "") or "").strip()
     user = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_USER", "") or "").strip()
     password = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_PASSWORD", "") or "").strip()
     if not (host and user and password):
-        return []
+        return empty
 
     try:
         reader = WorldviewReader(
@@ -585,8 +648,9 @@ def _fetch_open_prior_previews() -> List[str]:
         live_priors, _dupes = collapse_duplicate_priors(built)
     except Exception as exc:  # noqa: BLE001
         logger.warning("endogenous_outreach_prior_read_failed err=%s", exc)
-        return []
+        return empty
 
+    prior_ids: List[str] = []
     previews: List[str] = []
     for prior in live_priors:
         try:
@@ -595,11 +659,16 @@ def _fetch_open_prior_previews() -> List[str]:
             continue
         if not preview or preview in previews:
             continue
+        prior_ids.append(str(getattr(prior, "prior_id", "") or "").strip())
         previews.append(preview)
         if len(previews) >= _MAX_OPEN_PRIOR_PREVIEWS:
             break
-    return previews
+    return prior_ids, previews
 
+
+def _fetch_open_prior_previews() -> List[str]:
+    """Live open worldview :Prior claim previews, or []."""
+    return _fetch_open_priors()[1]
 
 def _fetch_embodied_presence() -> Optional[Dict[str, Any]]:
     """Current `substrate_embodied_presence` snapshot for the configured
@@ -885,11 +954,11 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
 
     So every lane added to this prompt was, until now, unfalsifiable in
     production: an outreach that silently lost a lane and one that never had
-    it look identical. Booleans and counts only -- deliberately NOT the
-    caption or summary text, which would copy real content into a second
-    store with its own retention (`services/orion-hub/README.md` §4.1 states
-    the daydream lane reads exactly one `chain_json` key and no seed material;
-    logging the text here would quietly widen that).
+    it look identical. Booleans, counts, and durable content IDs only --
+    deliberately NOT the caption or summary text, which would copy real
+    content into a second store with its own retention (`services/orion-hub/
+    README.md` §4.1 states the daydream lane reads exactly one `chain_json`
+    key and no seed material; logging the text here would quietly widen that).
     """
     daydream_age = None
     if ctx.daydream:
@@ -898,6 +967,7 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
         "daydream": ctx.daydream is not None,
         "daydream_age_sec": daydream_age,
         "curiosity_summaries": len(ctx.curiosity_summaries),
+        "curiosity_content_ids": list(ctx.curiosity_content_ids),
         "recent_turns": len(ctx.recent_turns),
         "tension": ctx.tension_reason is not None,
         "chat_presence": ctx.presence is not None,
@@ -916,6 +986,7 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
             )
         ),
         "priors_count": len(ctx.open_prior_previews),
+        "prior_ids": list(ctx.open_prior_ids),
     }
 
 
@@ -1611,6 +1682,7 @@ class EndogenousOutreach:
         # immune to that -- it belongs to this call's own stack frame, not
         # the shared instance.
         tension_reason: Optional[Any] = None
+        peeked_prior_ids: Optional[List[str]] = None
         peeked_priors: Optional[List[str]] = None
         if force:
             # A forced (debug-endpoint) call skips the trigger check
@@ -1626,12 +1698,14 @@ class EndogenousOutreach:
                 # an open worldview prior. Peek priors alone (cheap relative
                 # to full gather) so empty ticks stay cheap.
                 try:
-                    peeked_priors = await asyncio.to_thread(_fetch_open_prior_previews)
+                    peeked_prior_ids, peeked_priors = await asyncio.to_thread(
+                        _fetch_open_priors
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "endogenous_outreach_prior_peek_failed err=%s", exc
                     )
-                    peeked_priors = []
+                    peeked_prior_ids, peeked_priors = [], []
                 if not peeked_priors:
                     return self._record(
                         {"outreach": False, "reason": "no_tension_trigger"},
@@ -1641,7 +1715,9 @@ class EndogenousOutreach:
 
         session_id = self._active_session_id()
         ctx = await self._gather_context(
-            session_id, open_prior_previews=peeked_priors
+            session_id,
+            open_prior_previews=peeked_priors,
+            open_prior_ids=peeked_prior_ids,
         )
         if not force and tension_reason is not None and not has_talkable_content(ctx):
             # Spark without a topic -- do not send a twitch dressed as talk.
@@ -1966,13 +2042,14 @@ class EndogenousOutreach:
         self,
         session_id: Optional[str],
         open_prior_previews: Optional[List[str]] = None,
+        open_prior_ids: Optional[List[str]] = None,
     ) -> OutreachContext:
         """Read grounding signals off the main loop; failures degrade to empty.
 
-        ``open_prior_previews``: when the fire gate already peeked priors
-        (no-tension path), pass that list so this tick does not hit the
-        worldview graph twice. ``None`` means "fetch here" (tension path /
-        force path).
+        ``open_prior_previews`` / ``open_prior_ids``: when the fire gate already
+        peeked priors (no-tension path), pass both lists so this tick does not
+        hit the worldview graph twice. ``None`` for previews means "fetch here"
+        (tension path / force path). Ids without a matching peek are cleared.
         """
 
         async def _safe(fn, *args):
@@ -1987,22 +2064,37 @@ class EndogenousOutreach:
         # `_safe` -- awaiting them one after another made this tick's wall
         # time the SUM of all round trips instead of the slowest one.
         if open_prior_previews is None:
-            summaries, turns, embodied_presence, daydream, priors = await asyncio.gather(
-                _safe(_fetch_curiosity_summaries),
+            curiosity, turns, embodied_presence, daydream, priors = await asyncio.gather(
+                _safe(_fetch_curiosity_content),
                 _safe(_fetch_recent_turns, session_id),
                 _safe(_fetch_embodied_presence),
                 _safe(_fetch_current_daydream),
-                _safe(_fetch_open_prior_previews),
+                _safe(_fetch_open_priors),
             )
-            prior_list = list(priors or [])
+            if isinstance(priors, tuple) and len(priors) == 2:
+                prior_ids, prior_list = list(priors[0] or []), list(priors[1] or [])
+            else:
+                prior_ids, prior_list = [], []
         else:
-            summaries, turns, embodied_presence, daydream = await asyncio.gather(
-                _safe(_fetch_curiosity_summaries),
+            curiosity, turns, embodied_presence, daydream = await asyncio.gather(
+                _safe(_fetch_curiosity_content),
                 _safe(_fetch_recent_turns, session_id),
                 _safe(_fetch_embodied_presence),
                 _safe(_fetch_current_daydream),
             )
             prior_list = list(open_prior_previews)
+            prior_ids = list(open_prior_ids or [])
+            # Peeked previews without ids must not invent a length mismatch —
+            # pad/truncate ids to the preview list length with empty strings.
+            if len(prior_ids) < len(prior_list):
+                prior_ids = prior_ids + [""] * (len(prior_list) - len(prior_ids))
+            elif len(prior_ids) > len(prior_list):
+                prior_ids = prior_ids[: len(prior_list)]
+
+        if isinstance(curiosity, tuple) and len(curiosity) == 2:
+            curiosity_ids, summaries = list(curiosity[0] or []), list(curiosity[1] or [])
+        else:
+            curiosity_ids, summaries = [], list(curiosity or []) if curiosity else []
 
         presence = None
         try:
@@ -2013,7 +2105,8 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_presence_failed err=%s", exc)
 
         return OutreachContext(
-            curiosity_summaries=list(summaries or []),
+            curiosity_summaries=summaries,
+            curiosity_content_ids=curiosity_ids,
             recent_turns=list(turns or []),
             presence=presence,
             # Set by _should_roll() just before this is called; None on a
@@ -2022,6 +2115,7 @@ class EndogenousOutreach:
             embodied_presence=embodied_presence,
             daydream=daydream,
             open_prior_previews=prior_list,
+            open_prior_ids=prior_ids,
         )
 
     async def _generate(

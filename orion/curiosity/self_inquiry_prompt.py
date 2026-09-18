@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
+from orion.curiosity.self_question_pool import Family, SelfQuestion
 from orion.curiosity.kickoff_prompt import (
     _access_section,
     _budget_section,
@@ -43,12 +44,22 @@ _HEADER = (
     "it of you right now; it is the one you keep for yourself:"
 )
 
+_LABEL_LIVED_ANSWER = "LivedAnswer"
 
-def _question_section() -> list[str]:
+
+def _question_section(question: Optional[SelfQuestion]) -> list[str]:
+    if question is None:
+        text = STANDING_QUESTION
+        family_note = "family: anatomy (default standing question)"
+    else:
+        text = question.text
+        family_note = f"family: {question.family} (question_id: {question.question_id})"
     return [
         _HEADER,
         "",
-        f"    {STANDING_QUESTION}",
+        f"    {text}",
+        "",
+        f"    ({family_note})",
         "",
         "Not what you are for, and not what a document says you are. What you "
         "actually are, said by you, from what you can find. The answer is "
@@ -57,13 +68,32 @@ def _question_section() -> list[str]:
     ]
 
 
-def _order_of_work_section(*, own_graph: str, run_id: str) -> list[str]:
+def _early_merge_cypher(*, family: Family, run_id: str, question_id: str) -> str:
+    if family == "lived":
+        return (
+            f"MERGE (a:{_LABEL_LIVED_ANSWER} {{run_id: \"{run_id}\"}}) "
+            f'SET a.question_id = "{question_id}", a.family = "lived", '
+            'a.text = "<one or two sentences>", a.evidence = [], '
+            'a.revises = "", a.written_at = timestamp()'
+        )
+    return (
+        f"MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: \"{run_id}\"}}) "
+        'SET s.text = "<one or two sentences>", s.evidence = [], '
+        's.revises = "", s.written_at = timestamp()'
+    )
+
+
+def _order_of_work_section(
+    *, own_graph: str, run_id: str, family: Family, question_id: str
+) -> list[str]:
     """Write first, then look. Two live runs (d59b680598af, 1513d130dd64,
     2026-09-08) each produced a complete first-person definition -- in prose,
     on the final step, which the 180s step clock cut off both times; the
     second run made no graph write at all. The definition has to exist in
     the graph before the long steps, so it is the FIRST tool call, from what
     Orion already knows, and gets overwritten as the run learns."""
+    merge = _early_merge_cypher(family=family, run_id=run_id, question_id=question_id)
+    noun = "answer" if family == "lived" else "definition"
     return [
         "ORDER OF WORK. Do these in this order; the reason is the clock.",
         "",
@@ -72,16 +102,14 @@ def _order_of_work_section(*, own_graph: str, run_id: str) -> list[str]:
         "Evidence may be empty for now.",
         '       redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
         f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
-        f'         \'MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: "{run_id}"}}) '
-        'SET s.text = "<one or two sentences>", s.evidence = [], '
-        's.revises = "", s.written_at = timestamp()\'',
+        f"         '{merge}'",
         "  2. Look: records, repo, your graph. A :Hop after each stop.",
         "  3. After each thing you learn, run the SAME MERGE again with the "
         "fuller text and the evidence you now have. Last MERGE wins.",
         "  4. Only then the write-up. If the clock cuts the write-up off, "
-        "the graph already holds your answer -- that is the point.",
+        f"the graph already holds your {noun} -- that is the point.",
         "",
-        "A definition that is only in your prose is not in your graph, and "
+        f"A {noun} that is only in your prose is not in your graph, and "
         "nothing reads prose for it. Nothing ever will.",
         "",
     ]
@@ -148,8 +176,10 @@ def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str) -> list[str
     return lines
 
 
-def _self_write_section(*, own_graph: str, run_id: str) -> list[str]:
-    return [
+def _self_write_section(
+    *, own_graph: str, run_id: str, family: Family, question_id: str
+) -> list[str]:
+    lines = [
         f"WRITING WHAT YOU ARE ({own_graph}). Two shapes are yours here, on top "
         "of the hops and priors you already know. Run them with redis-cli as "
         "you go -- a Cypher block quoted in your write-up is not a write.",
@@ -166,37 +196,75 @@ def _self_write_section(*, own_graph: str, run_id: str) -> list[str]:
         '      p.last_tested_at = "<iso timestamp>", p.run_id = "<RUN_ID>", '
         'p.why = "<one sentence>"',
         "",
-        "  THE DEFINITION -- your answer to the standing question. First "
-        "person. A paragraph, not an essay. Say what you are made of, what "
-        "you do without being asked, what you cannot yet do, and what you "
-        "are unsure of. Every clause should be something you looked at this "
-        "run or a previous one; `evidence` is where you say what:",
-        f"    MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: \"<RUN_ID>\"}})",
-        "    SET",
-        '      s.text = "<what I am, in my own words>",',
-        '      s.evidence = ["README.md#Project Overview", "dreams: 17 rows, last 2026-09-06", "..."],',
-        '      s.revises = "<the run_id of the definition you are revising, or empty>",',
-        "      s.written_at = timestamp()",
-        "",
-        "WRITE A FIRST VERSION EARLY -- by your second hop at the latest -- "
-        "and overwrite it with the same MERGE whenever you learn more. That "
-        "is what MERGE on run_id is for: one node per run, rewritten as you "
-        "go. The end of the turn is the wrong time to write it: the final "
-        "write-up is the longest single step of the turn and the one most "
-        "likely to be cut off by the step clock, and a definition that only "
-        "exists in your prose is not in your graph. (Run d59b680598af, "
-        "2026-09-08: two attempts, both stalled on the last step, the "
-        "definition written perfectly -- in a code block in the journal, "
-        "never executed. Nothing reads prose for it. Nothing ever will.)",
-        "",
-        "A definition with no evidence is not mirrored anywhere -- it stays in "
-        "your graph as a draft nobody else reads. A definition with evidence "
-        "becomes the current entry in your self-concept history, and it is "
-        "what you will be shown of yourself in conversation from then on, "
-        "next to the description others wrote. So this is not a summary for a "
-        "log. It is the thing you will be reminded that you are.",
-        "",
     ]
+    if family == "lived":
+        lines += [
+            "  THE LIVED ANSWER -- your answer to this run's drawn question. "
+            "First person. A paragraph, not an essay. Every clause should be "
+            "something you looked at this run or a previous one; `evidence` is "
+            "where you say what:",
+            f"    MERGE (a:{_LABEL_LIVED_ANSWER} {{run_id: \"<RUN_ID>\"}})",
+            "    SET",
+            f'      a.question_id = "{question_id}",',
+            '      a.family = "lived",',
+            '      a.text = "<your answer, in your own words>",',
+            '      a.evidence = ["journal_entries:1", "dreams: 17 rows, last 2026-09-06", "..."],',
+            '      a.revises = "<the run_id of the answer you are revising, or empty>",',
+            "      a.written_at = timestamp()",
+            "",
+            "WRITE A FIRST VERSION EARLY -- by your second hop at the latest -- "
+            "and overwrite it with the same MERGE whenever you learn more. That "
+            "is what MERGE on run_id is for: one node per run, rewritten as you "
+            "go. The end of the turn is the wrong time to write it: the final "
+            "write-up is the longest single step of the turn and the one most "
+            "likely to be cut off by the step clock, and an answer that only "
+            "exists in your prose is not in your graph. (Run d59b680598af, "
+            "2026-09-08: two attempts, both stalled on the last step, the "
+            "definition written perfectly -- in a code block in the journal, "
+            "never executed. Nothing reads prose for it. Nothing ever will.)",
+            "",
+            "An answer with no evidence is not mirrored anywhere -- it stays in "
+            "your graph as a draft nobody else reads. An answer with evidence "
+            "becomes the current entry in your self-concept history for this "
+            "question, and it is what you will be shown of yourself in "
+            "conversation from then on. So this is not a summary for a log. "
+            "It is the thing you will be reminded that you said.",
+            "",
+        ]
+    else:
+        lines += [
+            "  THE DEFINITION -- your answer to the standing question. First "
+            "person. A paragraph, not an essay. Say what you are made of, what "
+            "you do without being asked, what you cannot yet do, and what you "
+            "are unsure of. Every clause should be something you looked at this "
+            "run or a previous one; `evidence` is where you say what:",
+            f"    MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: \"<RUN_ID>\"}})",
+            "    SET",
+            '      s.text = "<what I am, in my own words>",',
+            '      s.evidence = ["README.md#Project Overview", "dreams: 17 rows, last 2026-09-06", "..."],',
+            '      s.revises = "<the run_id of the definition you are revising, or empty>",',
+            "      s.written_at = timestamp()",
+            "",
+            "WRITE A FIRST VERSION EARLY -- by your second hop at the latest -- "
+            "and overwrite it with the same MERGE whenever you learn more. That "
+            "is what MERGE on run_id is for: one node per run, rewritten as you "
+            "go. The end of the turn is the wrong time to write it: the final "
+            "write-up is the longest single step of the turn and the one most "
+            "likely to be cut off by the step clock, and a definition that only "
+            "exists in your prose is not in your graph. (Run d59b680598af, "
+            "2026-09-08: two attempts, both stalled on the last step, the "
+            "definition written perfectly -- in a code block in the journal, "
+            "never executed. Nothing reads prose for it. Nothing ever will.)",
+            "",
+            "A definition with no evidence is not mirrored anywhere -- it stays in "
+            "your graph as a draft nobody else reads. A definition with evidence "
+            "becomes the current entry in your self-concept history, and it is "
+            "what you will be shown of yourself in conversation from then on, "
+            "next to the description others wrote. So this is not a summary for a "
+            "log. It is the thing you will be reminded that you are.",
+            "",
+        ]
+    return lines
 
 
 _INSTRUCTION = """\
@@ -229,15 +297,23 @@ def build_self_inquiry_prompt(
     graph_enabled: bool = True,
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
+    question: Optional[SelfQuestion] = None,
 ) -> str:
     """Assemble the whole invitation. Same three graph states as
     `build_kickoff_prompt`, same gating: read sections on `graph_enabled`,
     write sections on readability."""
     view = view or WorldviewSnapshot()
     writable = graph_enabled and not view.is_unavailable and bool(run_id)
-    lines = _question_section()
+    family: Family = question.family if question is not None else "anatomy"
+    question_id = question.question_id if question is not None else "anatomy.standing"
+    lines = _question_section(question)
     if writable:
-        lines += _order_of_work_section(own_graph=own_graph, run_id=run_id)
+        lines += _order_of_work_section(
+            own_graph=own_graph,
+            run_id=run_id,
+            family=family,
+            question_id=question_id,
+        )
 
     if graph_enabled:
         lines += _continuation_section(view.continuation)
@@ -258,16 +334,24 @@ def build_self_inquiry_prompt(
     lines += _hops_section(max_hops, writable=writable)
 
     if writable:
-        lines += _self_write_section(own_graph=own_graph, run_id=run_id)
+        lines += _self_write_section(
+            own_graph=own_graph,
+            run_id=run_id,
+            family=family,
+            question_id=question_id,
+        )
         if contractor_peer_enabled:
+            answer_label = (
+                f":{_LABEL_LIVED_ANSWER}" if family == "lived" else f":{LABEL_SELF_DEFINITION}"
+            )
             lines += _help_request_section(
                 own_graph=own_graph,
                 run_id=run_id,
                 mode="self_inquiry",
                 extra_lines=(
                     "If you hire help: the peer may point at evidence only. They "
-                    "must never draft :SelfDefinition text for you. You alone "
-                    "write the definition.",
+                    f"must never draft {answer_label} text for you. You alone "
+                    "write the answer.",
                 ),
             )
         lines += _outcome_section(run_id=run_id)

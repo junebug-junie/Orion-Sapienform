@@ -1838,6 +1838,7 @@ class CuriosityInvestigation:
             graph_enabled=self.graph_enabled,
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
+            question=picked,
         )
         if peer_briefs:
             await publish_peer_briefs_consumed(

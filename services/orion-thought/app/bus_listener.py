@@ -276,7 +276,11 @@ async def _maybe_build_mind_coloring(
         )
         if result is None:
             return None
-        coloring = select_mind_coloring(result, max_items=settings.mind_coloring_max_items)
+        coloring = select_mind_coloring(
+            result,
+            max_items=settings.mind_coloring_max_items,
+            utterance_origin=mind_req.utterance_origin,
+        )
         if settings.mind_artifact_publish_enabled and bus is not None:
             await publish_mind_run_artifact_for_thought(
                 bus,

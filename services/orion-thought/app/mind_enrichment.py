@@ -38,7 +38,7 @@ def _envelope_correlation_id(raw: str | None) -> UUID:
 
 # Strict allow-list of coloring keys. Any un-listed ChatStanceBrief / decision
 # field is absent by construction (no deny-list, no leakage of future fields).
-MIND_COLORING_ALLOWED_KEYS: frozenset[str] = frozenset(
+MIND_COLORING_BASE_KEYS: frozenset[str] = frozenset(
     {
         "attention_frontier",
         "reflective_themes",
@@ -49,8 +49,22 @@ MIND_COLORING_ALLOWED_KEYS: frozenset[str] = frozenset(
         "mind_quality",
         "mind_run_id",
         "snapshot_hash",
+        "user_intent",
+        "uncertainty_summary",
     }
 )
+MIND_COLORING_ORION_WORK_SHAPE_KEYS: frozenset[str] = frozenset(
+    {
+        "expected_depth",
+        "cross_cutting",
+        "foresight_note",
+    }
+)
+MIND_COLORING_ALLOWED_KEYS: frozenset[str] = (
+    MIND_COLORING_BASE_KEYS | MIND_COLORING_ORION_WORK_SHAPE_KEYS
+)
+_VALID_EXPECTED_DEPTH = frozenset({"shallow", "deep", "unknown"})
+_VALID_CROSS_CUTTING = frozenset({"yes", "no", "unknown"})
 
 _MAX_STR_CHARS = 240
 _MAX_USER_TEXT_CHARS = 20_000
@@ -90,7 +104,31 @@ def _str_list(value: Any, *, max_items: int) -> list[str]:
     return out
 
 
-def select_mind_coloring(result: MindRunResultV1, *, max_items: int = 3) -> dict[str, Any] | None:
+def _uncertainty_summary(selected: list[Any]) -> str | None:
+    parts: list[str] = []
+    for matter in selected:
+        label = str(getattr(matter, "label", "") or "").strip()
+        if not label:
+            continue
+        confidence = 0.0
+        features = getattr(matter, "features", None)
+        if features is not None:
+            try:
+                confidence = float(getattr(features, "confidence", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+        parts.append(f"{label}:{confidence:.2f}")
+    if not parts:
+        return None
+    return _clip_str_or_none(",".join(parts))
+
+
+def select_mind_coloring(
+    result: MindRunResultV1,
+    *,
+    max_items: int = 3,
+    utterance_origin: str | None = None,
+) -> dict[str, Any] | None:
     """Project the mode-agnostic self/attention subset of a Mind run.
 
     Returns None (skip enrichment) unless the run is ok AND produced
@@ -121,16 +159,18 @@ def select_mind_coloring(result: MindRunResultV1, *, max_items: int = 3) -> dict
     self_relevance = _clip_str_or_none(stance_payload.get("self_relevance"))
     identity_salience = _clip_str_or_none(stance_payload.get("identity_salience"))
     juniper_relevance = _clip_str_or_none(stance_payload.get("juniper_relevance"))
+    user_intent = _clip_str_or_none(stance_payload.get("user_intent"))
+    uncertainty_summary = _uncertainty_summary(selected)
 
     # No empty-shell cognition: require at least one substantive signal.
     has_substance = bool(
         attention_frontier or reflective_themes or curiosity_threads
-        or self_relevance or juniper_relevance
+        or self_relevance or juniper_relevance or user_intent
     )
     if not has_substance:
         return None
 
-    return {
+    coloring: dict[str, Any] = {
         "attention_frontier": attention_frontier,
         "reflective_themes": reflective_themes,
         "curiosity_threads": curiosity_threads,
@@ -141,6 +181,21 @@ def select_mind_coloring(result: MindRunResultV1, *, max_items: int = 3) -> dict
         "mind_run_id": str(result.mind_run_id),
         "snapshot_hash": result.snapshot_hash,
     }
+    if user_intent:
+        coloring["user_intent"] = user_intent
+    if uncertainty_summary:
+        coloring["uncertainty_summary"] = uncertainty_summary
+    if utterance_origin == "orion":
+        depth = stance_payload.get("expected_depth")
+        if isinstance(depth, str) and depth.strip() in _VALID_EXPECTED_DEPTH:
+            coloring["expected_depth"] = depth.strip()
+        cross = stance_payload.get("cross_cutting")
+        if isinstance(cross, str) and cross.strip() in _VALID_CROSS_CUTTING:
+            coloring["cross_cutting"] = cross.strip()
+        note = _clip_str_or_none(stance_payload.get("foresight_note"))
+        if note:
+            coloring["foresight_note"] = note
+    return coloring
 
 
 def _situation_compact_from_broadcast(request: StanceReactRequestV1) -> dict[str, Any] | None:

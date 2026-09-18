@@ -41,6 +41,7 @@ def test_merge_seed_over_db_rows_prefers_db_ask_counts() -> None:
 def test_sql_constants_target_curiosity_self_questions_table() -> None:
     for sql in (SELECT_ALL_SQL, UPSERT_ASK_SQL, UPSERT_MINT_SQL, UPSERT_SEED_SQL):
         assert "curiosity_self_questions" in sql
+    assert "ON CONFLICT (question_id)" in UPSERT_ASK_SQL
 
 
 def test_create_table_sql_matches_pool_contract() -> None:
@@ -68,6 +69,24 @@ class _SelfQuestionConn(_GrantConn):
 
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
+        if "INSERT INTO curiosity_self_questions" in sql and "last_asked_at = EXCLUDED.last_asked_at" in sql:
+            qid, text, family, pinned, minted_by, status, asked_at = args[:7]
+            if qid in self.questions:
+                row = self.questions[qid]
+                row["ask_count"] = int(row.get("ask_count") or 0) + 1
+                row["last_asked_at"] = asked_at
+            else:
+                self.questions[qid] = {
+                    "question_id": qid,
+                    "text": text,
+                    "family": family,
+                    "pinned": pinned,
+                    "minted_by": minted_by,
+                    "status": status,
+                    "ask_count": 1,
+                    "last_asked_at": asked_at,
+                }
+            return "INSERT 0 1"
         if UPSERT_SEED_SQL.split()[0] in sql and "ON CONFLICT" in sql:
             qid, text, family, pinned, minted_by = args[:5]
             self.questions.setdefault(
@@ -84,24 +103,6 @@ class _SelfQuestionConn(_GrantConn):
                 },
             )
             return "INSERT 0 1"
-        if "ask_count = ask_count + 1" in sql:
-            qid, asked_at = args[:2]
-            row = self.questions.setdefault(
-                qid,
-                {
-                    "question_id": qid,
-                    "text": "",
-                    "family": "lived",
-                    "pinned": False,
-                    "minted_by": "juniper",
-                    "status": "open",
-                    "ask_count": 0,
-                    "last_asked_at": None,
-                },
-            )
-            row["ask_count"] = int(row.get("ask_count") or 0) + 1
-            row["last_asked_at"] = asked_at
-            return "UPDATE 1"
         return "OK"
 
 
@@ -119,11 +120,33 @@ def test_self_inquiry_tick_records_ask_and_recent_family() -> None:
         self_inquiry_min_cooldown_sec=0.0,
     )
     assert asyncio.run(loop.tick_self_inquiry()) is None
-    assert any("ask_count = ask_count + 1" in sql for sql, _ in conn.executed)
+    assert any("ON CONFLICT (question_id)" in sql for sql, _ in conn.executed)
     assert _SELF_RECENT_FAMILIES_KEY in bus.redis.lists
     assert len(bus.redis.lists[_SELF_RECENT_FAMILIES_KEY]) == 1
     assert loop._last_self_question is not None
     assert loop._last_self_question.family in {"lived", "anatomy"}
+
+
+def test_record_ask_upserts_missing_row() -> None:
+    """First ask creates the row when seed ensure did not run."""
+    bus = _FakeBus()
+    conn = _SelfQuestionConn()
+    loop = _graph_loop(
+        bus,
+        reader=_DefinitionReader(),
+        conn=conn,
+        kickoff_via_cortex=False,
+        self_inquiry_enabled=True,
+    )
+    picked = load_seed_questions()[0]
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    assert picked.question_id not in conn.questions
+    asyncio.run(loop._record_self_question_ask(picked, now=now))
+    row = conn.questions[picked.question_id]
+    assert row["ask_count"] == 1
+    assert row["last_asked_at"] == now
+    assert row["text"] == picked.text
+    assert row["family"] == picked.family
 
 
 def test_merge_includes_orion_minted_rows_not_in_seed() -> None:

@@ -1678,7 +1678,16 @@ class CuriosityInvestigation:
             return
         try:
             async with pool.acquire() as conn:
-                await conn.execute(UPSERT_ASK_SQL, picked.question_id, now)
+                await conn.execute(
+                    UPSERT_ASK_SQL,
+                    picked.question_id,
+                    picked.text,
+                    picked.family,
+                    picked.pinned,
+                    picked.minted_by,
+                    picked.status,
+                    now,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "curiosity_self_question_ask_failed question_id=%s err=%s",

@@ -26,9 +26,12 @@ SELECT_ALL_SQL = (
 )
 
 UPSERT_ASK_SQL = (
-    "UPDATE curiosity_self_questions "
-    "SET ask_count = ask_count + 1, last_asked_at = $2 "
-    "WHERE question_id = $1"
+    "INSERT INTO curiosity_self_questions "
+    "(question_id, text, family, pinned, minted_by, status, ask_count, last_asked_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, 1, $7) "
+    "ON CONFLICT (question_id) DO UPDATE SET "
+    "ask_count = curiosity_self_questions.ask_count + 1, "
+    "last_asked_at = EXCLUDED.last_asked_at"
 )
 
 UPSERT_MINT_SQL = (

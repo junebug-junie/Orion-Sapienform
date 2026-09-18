@@ -1,10 +1,11 @@
 # Orion hire determination — grounding (addendum)
 
-> **Status:** Design proposal (proposal mode — cognition-loop adjacent).
+> **Status:** Implementing on `feat/hire-determination-impl` (Patches 1–5 in code). Live Hub-chat / curiosity thought-event / `:InvestigationRole` graph proof: **UNVERIFIED**.
 > **Parent:** `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 > **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.
-> **Date:** 2026-09-15 (brainstorm with Juniper; revised same day).
-> **PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2233
+> **Date:** 2026-09-15 (brainstorm with Juniper; revised same day). Impl notes 2026-09-18.
+> **Design PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2233
+> **Impl PR report:** `docs/superpowers/pr-reports/2026-09-18-hire-determination-grounding-pr.md`
 
 ## Arsonist summary
 
@@ -199,6 +200,19 @@ Reject enqueue (or log + skip) HelpRequest whose `tried_summary` is empty/whites
 5. Empty-theater gate if needed
 
 Then implementation plan via writing-plans; no code until Juniper approves this written spec.
+
+## Implementation status (2026-09-18)
+
+Code for Patches 1–5 is on `feat/hire-determination-impl`. Unit/eval gates are green. This is **not** live proof:
+
+| Acceptance | Code | Live |
+| --- | --- | --- |
+| Originator flag + prose; Juniper chat not steered by hire labels | yes | **UNVERIFIED** |
+| Curiosity Mind input subject-sized | yes | **UNVERIFIED** (no inspected `thought.event.v1`) |
+| `:InvestigationRole` graph-visible vs missing vs HelpRequest | teach + RO reader | **UNVERIFIED** |
+| Flag-off / no HelpRequest → no Cursor job | yes (fixtures) | unchanged contract |
+
+Known follow-up: persist `mind_appraisal_text` on `CuriosityTurnRequestV1` so durable turns after a Hub restart do not fall back to the full kickoff.
 
 ## Rollback
 

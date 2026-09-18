@@ -22,6 +22,11 @@ from orion.schemas.thought import StanceReactRequestV1
 
 logger = logging.getLogger("orion-thought.mind_enrichment")
 
+ORIGIN_NOTES = {
+    "juniper": "This utterance is from Juniper (human collaborator).",
+    "orion": "This utterance is from Orion (self-authored investigation subject).",
+}
+
 
 def _envelope_correlation_id(raw: str | None) -> UUID:
     if raw:
@@ -205,7 +210,12 @@ def build_light_mind_request(
     recall_bundle = stance_inputs.get("recall_bundle")
     if isinstance(recall_bundle, dict) and recall_bundle:
         facets["recall_bundle"] = recall_bundle
+    raw_origin = stance_inputs.get("utterance_origin")
+    utterance_origin = raw_origin if raw_origin in ("juniper", "orion") else None
     situation = _situation_compact_from_broadcast(request)
+    if utterance_origin is not None:
+        situation = dict(situation or {})
+        situation["utterance_origin_note"] = ORIGIN_NOTES[utterance_origin]
     if situation:
         facets["situation_compact"] = situation
     if facets:
@@ -221,6 +231,7 @@ def build_light_mind_request(
             wall_time_ms_max=max(1, int(wall_time_ms)),
             router_profile_id=router_profile or "default",
         ),
+        utterance_origin=utterance_origin,
     )
 
 

@@ -1949,6 +1949,7 @@ class CuriosityInvestigation:
                     correlation_id=correlation_id,
                     session_id=self.session_id,
                     user_message=prompt,
+                    utterance_origin="orion",
                     # no_write: the journal entry below is the sole persistence
                     # path, so this does not also land as an untagged chat row.
                     # `fcc_model_label` is branch 1 of

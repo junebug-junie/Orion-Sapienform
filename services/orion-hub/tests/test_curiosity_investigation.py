@@ -2103,6 +2103,7 @@ def test_the_lane_actually_reaches_the_unified_turn() -> None:
     # downstream (chat_history_log tags, HarnessRunRequestV1.mode) shifts.
     assert "mode" not in seen["payload"]
     assert seen["payload"]["no_write"] is True
+    assert seen.get("utterance_origin") == "orion"
 
 
 # --- attention schema surface ------------------------------------------------

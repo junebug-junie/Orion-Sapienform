@@ -44,6 +44,7 @@ class MindRunRequestV1(BaseModel):
     snapshot_inputs: dict[str, Any] = Field(default_factory=dict)
     policy: MindRunPolicyV1 = Field(default_factory=MindRunPolicyV1)
     upstream_artifacts: dict[str, Any] | None = None
+    utterance_origin: Literal["juniper", "orion"] | None = None
 
 
 class MindSnapshotFacetV1(BaseModel):

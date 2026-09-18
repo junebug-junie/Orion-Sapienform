@@ -124,8 +124,8 @@ def test_the_producer_is_registered_and_the_adapter_maps_ctx() -> None:
 def test_identity_injection_prepends_the_definition_on_the_quick_path(monkeypatch) -> None:
     """chat_quick runs only `_inject_identity_context`, never stance inputs;
     review of #2155's two-stance-paths finding showed this path had the
-    authored card alone. Only the self-definition lane is pulled, and not at
-    all when the key is already on ctx."""
+    authored card alone. Only the self-definition and lived-answer lanes are
+    pulled, and not at all when both keys are already on ctx."""
     from app import executor
     import app.substrate_felt_state_reader as reader
 
@@ -140,12 +140,16 @@ def test_identity_injection_prepends_the_definition_on_the_quick_path(monkeypatc
     executor._inject_identity_context(ctx)
     assert ctx["orion_identity_summary"][0].startswith(SELF_DEFINITION_MARKER)
     assert ctx["orion_identity_summary"][1:] == _AUTHORED[:10]
-    assert calls == [], "key already on ctx: no felt-state pull at all"
+    assert calls == [("orion_lived_answers",)], "self-definition already on ctx; lived lane only"
     executor._inject_identity_context(ctx)
     assert sum(1 for l in ctx["orion_identity_summary"] if l.startswith(SELF_DEFINITION_MARKER)) == 1
+    calls.clear()
+    ctx["orion_lived_answers"] = []
+    executor._inject_identity_context(ctx)
+    assert calls == [], "both keys on ctx: no felt-state pull at all"
     bare = {"orion_identity_summary": list(_AUTHORED[:3]), "juniper_relationship_summary": ["j"], "response_policy_summary": ["p"]}
     executor._inject_identity_context(bare)
-    assert calls == [("orion_self_definition",)], "only the self-definition lane, never all eight"
+    assert calls == [("orion_self_definition",), ("orion_lived_answers",)], "only the two identity lanes"
     assert bare["orion_identity_summary"] == _AUTHORED[:3]
 
 

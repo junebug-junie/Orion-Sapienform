@@ -97,6 +97,7 @@ from .chat_stance import (
     parse_chat_stance_brief_with_debug,
     publish_chat_stance_classification,
     suppress_chat_general_speech_identity_priming,
+    apply_lived_self_to_ctx,
     apply_self_definition_to_ctx,
     strip_self_definition_lines,
 )
@@ -1108,6 +1109,7 @@ def _inject_identity_context(ctx: Dict[str, Any]) -> None:
     if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
         logger.debug("identity_injection skipped: identity context already present")
         apply_self_definition_to_ctx(ctx)
+        apply_lived_self_to_ctx(ctx)
         return
 
     personality_file_loaded = False
@@ -1162,6 +1164,7 @@ def _inject_identity_context(ctx: Dict[str, Any]) -> None:
     # Orion's own definition rides on the same key, for every path that gets
     # here -- including chat_quick, which never builds stance inputs.
     apply_self_definition_to_ctx(ctx)
+    apply_lived_self_to_ctx(ctx)
     try:
         logger.info(
             "identity_context_ready identity_kernel_source=%s personality_file=%s personality_declared_in_metadata=%s personality_file_loaded=%s orion_count=%s juniper_count=%s policy_count=%s",

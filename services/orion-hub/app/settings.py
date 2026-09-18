@@ -925,6 +925,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC: float = Field(
         default=7200.0, alias="HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC"
     )
+    HUB_CURIOSITY_SELF_LIVED_WEIGHT: float = Field(
+        default=0.75, alias="HUB_CURIOSITY_SELF_LIVED_WEIGHT"
+    )
+    HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS: float = Field(
+        default=7.0, alias="HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS"
+    )
     # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
     # harness governor's compose mounts it read-only at /repo). Rendered into
     # the self-inquiry prompt only; Hub never reads it.

@@ -120,6 +120,7 @@ def test_the_first_ever_tick_is_not_blocked_by_cooldown() -> None:
 class _FakeRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.lists: dict[str, list] = {}
 
     async def get(self, key):
         return self.values.get(key)
@@ -143,6 +144,30 @@ class _FakeRedis:
 
     async def expire(self, key, ttl):
         return True
+
+    async def rpush(self, key, *values):
+        lst = self.lists.setdefault(key, [])
+        lst.extend(values)
+        return len(lst)
+
+    async def ltrim(self, key, start, stop):
+        lst = self.lists.get(key, [])
+        n = len(lst)
+        if start < 0:
+            start = max(0, n + start)
+        if stop < 0:
+            stop = n + stop
+        self.lists[key] = lst[start : stop + 1]
+        return True
+
+    async def lrange(self, key, start, stop):
+        lst = self.lists.get(key, [])
+        n = len(lst)
+        if start < 0:
+            start = max(0, n + start)
+        if stop < 0:
+            stop = n + stop
+        return lst[start : stop + 1]
 
 
 class _FakeBus:

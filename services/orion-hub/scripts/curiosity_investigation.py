@@ -113,6 +113,14 @@ from orion.curiosity.self_inquiry import (
     self_definition_from_detail,
 )
 from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
+from orion.curiosity.self_question_pool import (
+    SELECT_ALL_SQL,
+    UPSERT_ASK_SQL,
+    UPSERT_SEED_SQL,
+    load_seed_questions,
+    merge_seed_with_rows,
+    pick_question,
+)
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.study_material import (
     APPROVED_COUNT_SQL,
@@ -206,6 +214,8 @@ _STATE_TTL_SEC = 172800
 _SELF_COOLDOWN_KEY = "orion:curiosity:self:last_inquiry_at"
 _SELF_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:self:count:"
 _SELF_LAST_RUN_KEY = "orion:curiosity:self:last_run_id"
+_SELF_RECENT_FAMILIES_KEY = "orion:curiosity:self:recent_families"
+_SELF_RECENT_FAMILIES_MAX = 12
 
 # The channel Hub mirrors a run's `:SelfDefinition` into. Registered in
 # orion/bus/channels.yaml; orion-sql-writer subscribes.
@@ -504,6 +514,8 @@ class CuriosityInvestigation:
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
         self_inquiry_min_cooldown_sec: float = 7200.0,
+        self_lived_weight: float = 0.75,
+        self_pinned_floor_days: float = 7.0,
         sandbox_repo_root: str = "/repo",
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
@@ -653,10 +665,14 @@ class CuriosityInvestigation:
         self.self_inquiry_enabled = bool(self_inquiry_enabled)
         self.self_inquiry_daily_cap = int(self_inquiry_daily_cap)
         self.self_inquiry_min_cooldown_sec = float(self_inquiry_min_cooldown_sec)
+        self.self_lived_weight = float(self_lived_weight)
+        self.self_pinned_floor_days = float(self_pinned_floor_days)
         self.sandbox_repo_root = str(sandbox_repo_root or "/repo")
         self._self_last_monotonic: Optional[float] = None
         self._self_done_today = 0
         self._self_done_today_date: Optional[str] = None
+        self._last_self_question = None
+        self._self_questions_seed_ensured = False
 
     @property
     def graph_enabled(self) -> bool:
@@ -1622,6 +1638,83 @@ class CuriosityInvestigation:
             return "failed", []
         return "ok", sorted(str(r["table_name"]) for r in rows)
 
+    async def _ensure_self_question_seed(self) -> None:
+        if self._self_questions_seed_ensured:
+            return
+        pool = self._pool_provider()
+        if pool is None:
+            return
+        try:
+            async with pool.acquire() as conn:
+                for q in load_seed_questions():
+                    await conn.execute(
+                        UPSERT_SEED_SQL,
+                        q.question_id,
+                        q.text,
+                        q.family,
+                        q.pinned,
+                        q.minted_by,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_questions_seed_failed err=%s", exc)
+            return
+        self._self_questions_seed_ensured = True
+
+    async def _fetch_self_questions(self) -> list[dict]:
+        pool = self._pool_provider()
+        if pool is None:
+            return []
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(SELECT_ALL_SQL)
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_questions_read_failed err=%s", exc)
+            return []
+
+    async def _record_self_question_ask(self, picked, *, now: datetime) -> None:
+        pool = self._pool_provider()
+        if pool is None:
+            return
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(UPSERT_ASK_SQL, picked.question_id, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_question_ask_failed question_id=%s err=%s",
+                picked.question_id,
+                exc,
+            )
+
+    async def _read_recent_self_families(self) -> list[str]:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return []
+        try:
+            raw = await redis.lrange(_SELF_RECENT_FAMILIES_KEY, 0, -1)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_recent_families_read_failed", exc_info=True)
+            return []
+        out: list[str] = []
+        for item in raw or []:
+            if isinstance(item, bytes):
+                item = item.decode("utf-8", errors="replace")
+            value = str(item).strip()
+            if value in {"lived", "anatomy"}:
+                out.append(value)
+        return out
+
+    async def _push_recent_self_family(self, family: str) -> None:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.rpush(_SELF_RECENT_FAMILIES_KEY, family)
+            await redis.ltrim(_SELF_RECENT_FAMILIES_KEY, -_SELF_RECENT_FAMILIES_MAX, -1)
+            await redis.expire(_SELF_RECENT_FAMILIES_KEY, _STATE_TTL_SEC)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_recent_families_write_failed", exc_info=True)
+
     async def _read_self_ledger(self) -> list[LedgerRow]:
         """Row count and latest timestamp per outcome table. Orientation for the
         prompt, never a subject. A table that fails to answer is left out."""
@@ -1684,6 +1777,20 @@ class CuriosityInvestigation:
             )
         latest, definition_count = await self._read_self_context()
         ledger = await self._read_self_ledger()
+
+        await self._ensure_self_question_seed()
+        pool = merge_seed_with_rows(load_seed_questions(), await self._fetch_self_questions())
+        recent = await self._read_recent_self_families()
+        picked = pick_question(
+            pool=pool,
+            recent_families=recent,
+            lived_weight=self.self_lived_weight,
+            pinned_floor_days=self.self_pinned_floor_days,
+            now=now,
+        )
+        await self._record_self_question_ask(picked, now=now)
+        await self._push_recent_self_family(picked.family)
+        self._last_self_question = picked
 
         # Counted BEFORE the turn, same rule as the investigation line.
         self._self_last_monotonic = time.monotonic()

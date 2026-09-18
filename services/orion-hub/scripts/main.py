@@ -590,6 +590,8 @@ async def startup_event():
                 self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_ENABLED,
                 self_inquiry_daily_cap=settings.HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP,
                 self_inquiry_min_cooldown_sec=settings.HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC,
+                self_lived_weight=settings.HUB_CURIOSITY_SELF_LIVED_WEIGHT,
+                self_pinned_floor_days=settings.HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS,
                 sandbox_repo_root=settings.HUB_CURIOSITY_SANDBOX_REPO_ROOT,
                 cortex_request_channel=settings.CORTEX_ORCH_REQUEST_CHANNEL,
                 cortex_result_prefix=settings.CORTEX_ORCH_RESULT_PREFIX,

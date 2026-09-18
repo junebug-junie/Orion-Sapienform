@@ -9,7 +9,7 @@ import random
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional, Sequence
+from typing import Any, Literal, Mapping, Optional, Sequence
 
 import yaml
 
@@ -19,6 +19,32 @@ QuestionStatus = Literal["open", "answered", "parked"]
 
 _DEFAULT_SEED_PATH = Path(__file__).with_name("self_question_seed.yaml")
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+SELECT_ALL_SQL = (
+    "SELECT question_id, text, family, pinned, minted_by, status, ask_count, last_asked_at "
+    "FROM curiosity_self_questions"
+)
+
+UPSERT_ASK_SQL = (
+    "UPDATE curiosity_self_questions "
+    "SET ask_count = ask_count + 1, last_asked_at = $2 "
+    "WHERE question_id = $1"
+)
+
+UPSERT_MINT_SQL = (
+    "INSERT INTO curiosity_self_questions "
+    "(question_id, text, family, pinned, minted_by, status) "
+    "VALUES ($1, $2, $3, $4, 'orion', 'open') "
+    "ON CONFLICT (question_id) DO UPDATE SET "
+    "text = EXCLUDED.text, family = EXCLUDED.family, status = 'open'"
+)
+
+UPSERT_SEED_SQL = (
+    "INSERT INTO curiosity_self_questions "
+    "(question_id, text, family, pinned, minted_by, status) "
+    "VALUES ($1, $2, $3, $4, $5, 'open') "
+    "ON CONFLICT (question_id) DO NOTHING"
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +89,45 @@ def load_seed_questions(path: Path | None = None) -> list[SelfQuestion]:
 def with_ask_recorded(q: SelfQuestion, *, now: datetime) -> SelfQuestion:
     """Return a copy with ask_count incremented and last_asked_at set."""
     return replace(q, ask_count=q.ask_count + 1, last_asked_at=now)
+
+
+def _parse_last_asked_at(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    ref = datetime.fromisoformat(str(raw))
+    return ref if ref.tzinfo else ref.replace(tzinfo=timezone.utc)
+
+
+def _row_to_question(row: Mapping[str, Any], *, fallback: SelfQuestion | None = None) -> SelfQuestion:
+    base = fallback
+    return SelfQuestion(
+        question_id=str(row["question_id"]),
+        text=str(row.get("text") or (base.text if base else "")),
+        family=row.get("family") or (base.family if base else "lived"),
+        pinned=bool(row.get("pinned") if "pinned" in row else (base.pinned if base else False)),
+        minted_by=row.get("minted_by") or (base.minted_by if base else "juniper"),
+        status=row.get("status") or (base.status if base else "open"),
+        ask_count=int(row.get("ask_count") or 0),
+        last_asked_at=_parse_last_asked_at(row.get("last_asked_at")),
+    )
+
+
+def merge_seed_with_rows(
+    seed: Sequence[SelfQuestion], rows: Sequence[Mapping[str, Any]]
+) -> list[SelfQuestion]:
+    """Merge YAML seed with Postgres rows; DB ask stats win on id collision."""
+    by_id = {q.question_id: q for q in seed}
+    extras: list[SelfQuestion] = []
+    for row in rows:
+        qid = str(row["question_id"])
+        if qid in by_id:
+            base = by_id[qid]
+            by_id[qid] = _row_to_question(row, fallback=base)
+        else:
+            extras.append(_row_to_question(row))
+    return list(by_id.values()) + extras
 
 
 def _eligible(pool: Sequence[SelfQuestion]) -> list[SelfQuestion]:

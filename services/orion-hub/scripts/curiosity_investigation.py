@@ -541,7 +541,8 @@ class CuriosityInvestigation:
         self._turn_results: dict[str, tuple[CuriosityTurnResultV1, float]] = {}
         # Short Mind subject keyed by run_id so durable runner callbacks and
         # in-process `_generate` share the same appraisal text without putting
-        # the full kickoff on StanceReactRequestV1.user_message.
+        # the full kickoff on StanceReactRequestV1.user_message. World-curiosity
+        # and self-inquiry both stash here; lookup is by those source tags.
         self._mind_appraisal_by_run_id: dict[str, str] = {}
         self.enabled = enabled
         self.tick_interval_sec = tick_interval_sec
@@ -1746,6 +1747,10 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
         )
+        # Claim is unset at kickoff (Orion has not chosen). Continuation note
+        # rides on Mind; the SelfDefinition / HelpRequest teach stays on the
+        # harness prompt. Same subject builder as world-curiosity.
+        self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
         if peer_briefs:
             await publish_peer_briefs_consumed(
                 bus=self._bus,
@@ -1959,7 +1964,7 @@ class CuriosityInvestigation:
             payload["resource_lease"] = resource_lease.model_dump(mode="json")
             payload["inference_timeout_sec"] = turn_timeout
         appraisal = None
-        if source == INVESTIGATION_TAG and parent_run_id:
+        if parent_run_id and source in (INVESTIGATION_TAG, SELF_INQUIRY_TAG):
             appraisal = self._mind_appraisal_by_run_id.get(parent_run_id)
         try:
             frames = await asyncio.wait_for(

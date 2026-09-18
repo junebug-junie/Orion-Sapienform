@@ -64,6 +64,7 @@ from typing import Any, Optional
 
 from orion.curiosity.worldview import (
     LABEL_PRIOR,
+    SELF_PRIOR_LINE,
     WorldviewReader,
     WorldviewUnavailable,
     _clip,
@@ -81,8 +82,6 @@ LINE_SELF_INQUIRY = "self_inquiry"
 
 SELF_INQUIRY_TAG = "curiosity_self_inquiry"
 LABEL_SELF_DEFINITION = "SelfDefinition"
-# The `line` property Orion puts on a prior formed during self-inquiry.
-SELF_PRIOR_LINE = "self"
 # One lineage in self_concept_history. Every self-inquiry run that writes a
 # definition appends a new version under this id; "current" is the latest
 # created_at, exactly as that table's own docstring says.

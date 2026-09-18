@@ -542,16 +542,17 @@ def _fetch_open_prior_previews() -> List[str]:
     or any read error degrades to [] so a broken worldview half cannot
     invent a fire reason and cannot crash the outreach tick.
 
-    Thin read on purpose: one `LIVE_PRIORS_CYPHER` query, not the full
+    Thin read on purpose: one `LIVE_NON_SELF_PRIORS_CYPHER` query, not the full
     `read_snapshot` (which also pulls concepts/settled/recent runs). Quiet
     ticks peek this path every ~10s; keep it one RO query. All still-open
-    priors count (including well-tested ones) -- outreach wants "something
-    to talk about", not the investigation queue's retire-soon sample.
+    non-self priors count (including well-tested ones) -- outreach wants
+    "something to talk about", not the investigation queue's retire-soon
+    sample, and not self-inquiry claims (line=self).
     """
     try:
         from app.settings import get_settings
         from orion.curiosity.worldview import (
-            LIVE_PRIORS_CYPHER,
+            LIVE_NON_SELF_PRIORS_CYPHER,
             WorldviewReader,
             build_prior,
             collapse_duplicate_priors,
@@ -580,7 +581,7 @@ def _fetch_open_prior_previews() -> List[str]:
                 getattr(cfg, "HUB_CURIOSITY_GRAPH_OWN", "orion_worldview") or "orion_worldview"
             ),
         )
-        rows = reader.query(LIVE_PRIORS_CYPHER)
+        rows = reader.query(LIVE_NON_SELF_PRIORS_CYPHER)
         built = [p for p in (build_prior(r) for r in rows) if p is not None]
         live_priors, _dupes = collapse_duplicate_priors(built)
     except Exception as exc:  # noqa: BLE001

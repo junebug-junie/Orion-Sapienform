@@ -77,11 +77,17 @@ def _stance(user_message: str, *, origin: str | None) -> StanceReactRequestV1:
     inputs: dict = {"user_message": user_message}
     if origin is not None:
         inputs["utterance_origin"] = origin
+    # Mirror services/orion-thought/tests/test_mind_light_snapshot.py::_request
     return StanceReactRequestV1(
         correlation_id="corr-origin-1",
         session_id="sess-1",
         user_message=user_message,
-        association=HubAssociationBundleV1(),
+        association=HubAssociationBundleV1(
+            correlation_id="corr-origin-1",
+            broadcast=None,
+            broadcast_stale=False,
+            read_source="felt_state_reader",
+        ),
         repair_bundle=None,
         stance_inputs=inputs,
     )
@@ -120,8 +126,6 @@ def test_missing_origin_stays_none_and_omits_origin_note() -> None:
     situation = facets.get("situation_compact") or {}
     assert "utterance_origin_note" not in situation
 ```
-
-If `HubAssociationBundleV1()` needs fields, copy the minimal construction from `test_mind_light_snapshot.py` instead of inventing — do not leave a broken fixture.
 
 - [ ] **Step 2: Run tests to verify they fail**
 

@@ -437,27 +437,11 @@ def test_no_pool_yet_reads_as_stores_not_ready_for_the_self_line() -> None:
 
 # --- the mirror -----------------------------------------------------------
 
-_ANATOMY_QUESTION = SelfQuestion(
-    question_id="anatomy.made_of",
-    text="What am I made of?",
-    family="anatomy",
-    pinned=True,
-    minted_by="seed",
-    status="open",
-    ask_count=0,
-    last_asked_at=None,
-)
-
-
 def test_a_definition_with_evidence_is_mirrored_with_the_next_version() -> None:
     bus = _FakeBus()
     conn = _GrantConn()
     loop = _self_loop(bus, reader=_DefinitionReader(), conn=conn, kickoff_via_cortex=False)
-    with patch(
-        "scripts.curiosity_investigation.pick_question",
-        return_value=_ANATOMY_QUESTION,
-    ):
-        assert asyncio.run(loop.tick_self_inquiry()) is None
+    assert asyncio.run(loop.tick_self_inquiry()) is None
     mirrored = _mirrors(bus)
     assert len(mirrored) == 1
     payload = mirrored[0][1].payload
@@ -481,12 +465,8 @@ def test_a_definition_without_evidence_is_refused_by_cause(caplog) -> None:
         conn=_GrantConn(),
         kickoff_via_cortex=False,
     )
-    with patch(
-        "scripts.curiosity_investigation.pick_question",
-        return_value=_ANATOMY_QUESTION,
-    ):
-        with caplog.at_level("INFO"):
-            assert asyncio.run(loop.tick_self_inquiry()) is None
+    with caplog.at_level("INFO"):
+        assert asyncio.run(loop.tick_self_inquiry()) is None
     assert _mirrors(bus) == []
     assert "reason=no_evidence" in caplog.text
     assert len(_journal(bus)) == 1, "the journal still records what Orion wrote"

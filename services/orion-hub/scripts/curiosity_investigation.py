@@ -1485,7 +1485,12 @@ class CuriosityInvestigation:
         )
 
         if outcome is not None and outcome.reach_out:
-            await self._maybe_reach_out(outcome=outcome, finding_text=text, run_id=run_id)
+            await self._maybe_reach_out(
+                outcome=outcome,
+                finding_text=text,
+                run_id=run_id,
+                hop_notes=hops,
+            )
         return None
 
     # --- the self-inquiry line ------------------------------------------------
@@ -1811,7 +1816,12 @@ class CuriosityInvestigation:
             correlation_id,
         )
         if outcome is not None and outcome.reach_out:
-            await self._maybe_reach_out(outcome=outcome, finding_text=text, run_id=run_id)
+            await self._maybe_reach_out(
+                outcome=outcome,
+                finding_text=text,
+                run_id=run_id,
+                hop_notes=hops,
+            )
         return None
 
     async def _read_run_self_definition(self, run_id: str) -> Optional[SelfDefinition]:
@@ -2050,7 +2060,12 @@ class CuriosityInvestigation:
     # --- the second turn ---------------------------------------------------
 
     async def _maybe_reach_out(
-        self, *, outcome: TurnOutcome, finding_text: str, run_id: str
+        self,
+        *,
+        outcome: TurnOutcome,
+        finding_text: str,
+        run_id: str,
+        hop_notes: Optional[list[tuple[int, str]]] = None,
     ) -> Optional[str]:
         """Orion decided a finding is worth telling Juniper about. Compose it.
 
@@ -2089,9 +2104,27 @@ class CuriosityInvestigation:
             )
             return blocked
 
+        notes: list[tuple[int, str]]
+        if hop_notes is not None:
+            notes = list(hop_notes)
+        elif self._reader is not None:
+            try:
+                notes = await asyncio.to_thread(read_hop_notes, self._reader, run_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_outreach_hop_notes_failed run=%s err=%s",
+                    run_id,
+                    exc,
+                )
+                notes = []
+        else:
+            notes = []
+
         correlation_id = str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{run_id}"))
         prompt = build_outreach_composition_prompt(
-            finding_text=finding_text, reach_out_why=outcome.reach_out_why
+            finding_text=finding_text,
+            reach_out_why=outcome.reach_out_why,
+            hop_notes=notes,
         )
         text, debug = await self._generate(
             prompt, correlation_id, source=OUTREACH_TAG, require_lookup=False

@@ -5,6 +5,7 @@
 > **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.
 > **Date:** 2026-09-15 (brainstorm with Juniper; revised same day). Impl notes 2026-09-18.
 > **Design PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2233
+> **Impl PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2238
 > **Impl PR report:** `docs/superpowers/pr-reports/2026-09-18-hire-determination-grounding-pr.md`
 
 ## Arsonist summary

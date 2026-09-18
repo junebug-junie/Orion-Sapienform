@@ -1,5 +1,7 @@
 # Hire determination grounding — PR report
 
+https://github.com/junebug-junie/Orion-Sapienform/pull/2238
+
 Branch: `feat/hire-determination-impl`
 
 ## Summary
@@ -184,4 +186,4 @@ Acceptance smoke after restart (still UNVERIFIED until run):
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2238

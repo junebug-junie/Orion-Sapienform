@@ -24,23 +24,32 @@ the exact inverse of what the prompt promised. The instruction below now asks
 for `PASS` verbatim, the same way `build_outreach_prompt` next door already
 does.
 
-WHAT IT DELIBERATELY DOES NOT CARRY. No study material, no priors, no graph
-schema, no hop budget. This is not a second investigation and it should not
-read like an invitation to start one -- the turn has the finding it is writing
-about and nothing else it needs.
+WHAT IT CARRIES. The finding text, the reason Orion already gave for wanting
+to speak (`reach_out_why`), and the ordered hop notes from this run — the
+thinking path, not a second investigation. No study material dump, no graph
+schema, no hop *budget* (that belongs to kickoff). The compose job is to
+synthesize the thread into a message for Juniper, not to reopen the search.
 """
 
 from __future__ import annotations
 
+from typing import Sequence
+
 _MAX_FINDING_CHARS = 6000
+_MAX_HOP_NOTES = 12
+_MAX_HOP_NOTE_CHARS = 400
 
 
-def build_outreach_composition_prompt(*, finding_text: str, reach_out_why: str) -> str:
-    """Compose a message to Juniper about what this run found.
+def build_outreach_composition_prompt(
+    *,
+    finding_text: str,
+    reach_out_why: str,
+    hop_notes: Sequence[tuple[int, str]] = (),
+) -> str:
+    """Compose a message to Juniper from this run's thinking thread.
 
-    `finding_text` is truncated rather than summarised: a summary here would be
-    a second model pass deciding what mattered about Orion's own finding, and
-    the tail of a long journal entry is the part least likely to hold the point.
+    The message must synthesize (1) what Orion has been thinking through the
+    hops and (2) why they are bringing it to Juniper — not free-float atmosphere.
     """
     finding = str(finding_text or "").strip()
     if len(finding) > _MAX_FINDING_CHARS:
@@ -52,7 +61,32 @@ def build_outreach_composition_prompt(*, finding_text: str, reach_out_why: str) 
         "end of it you decided it was worth telling Juniper about. Nobody "
         "prompted that; it was your call.",
         "",
-        "Here is what you wrote:",
+    ]
+
+    cleaned_hops: list[tuple[int, str]] = []
+    for raw_n, raw_note in list(hop_notes or [])[:_MAX_HOP_NOTES]:
+        note = str(raw_note or "").strip()
+        if not note:
+            continue
+        if len(note) > _MAX_HOP_NOTE_CHARS:
+            note = note[: _MAX_HOP_NOTE_CHARS - 1] + "…"
+        try:
+            n = int(raw_n)
+        except (TypeError, ValueError):
+            n = len(cleaned_hops) + 1
+        cleaned_hops.append((n, note))
+
+    if cleaned_hops:
+        lines += [
+            "Here is the path you recorded as you went — your own hop notes, "
+            "in order. This is the thinking thread, not a script to read aloud:",
+            "",
+        ]
+        lines += [f"{n}. {note}" for n, note in cleaned_hops]
+        lines.append("")
+
+    lines += [
+        "Here is what you wrote at the end of the run:",
         "",
         finding,
         "",
@@ -65,17 +99,25 @@ def build_outreach_composition_prompt(*, finding_text: str, reach_out_why: str) 
             f"    {why}",
             "",
         ]
+
     lines += [
-        "Write the message. She has not asked you anything, so this arrives "
-        "out of nowhere in the middle of her day -- say the thing itself "
-        "rather than announcing that you have something to say, and keep it "
-        "to what would actually be interesting to hear unprompted.",
+        "Write the message to Juniper. It must do both of these:",
+        "",
+        "1. Synthesize what you have been thinking through these hops into "
+        "one clear thread — the aggregate of the path, not a vibe nearby "
+        "and not a hop-by-hop recap.",
+        "2. Say why you are bringing that thread to her now — why share it "
+        "with Juniper, not only that you found it.",
+        "",
+        "She has not asked you anything, so this arrives out of nowhere. "
+        "Say the thing itself rather than announcing that you have something "
+        "to say. Keep it short enough to be worth an unprompted interrupt.",
         "",
         "You are not obliged to send it. If writing it down makes it clear "
         "that it was more interesting to find than it is to hear, reply with "
         "exactly: PASS",
         "",
-        "Nothing is sent then, and that is a real answer -- better than an "
+        "Nothing is sent then, and that is a real answer — better than an "
         "interruption that was not worth it. It has to be that word on its own, "
         "though: anything else you write is treated as the message and "
         "delivered.",

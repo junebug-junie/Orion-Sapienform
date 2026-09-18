@@ -580,12 +580,17 @@ built a prompt carries a `grounding` object in
 
 ```json
 "grounding": {"daydream": true, "daydream_age_sec": 317, "curiosity_summaries": 1,
+              "curiosity_content_ids": ["curiosity:source:repair_pressure|…"],
               "recent_turns": 2, "tension": true, "chat_presence": false,
-              "embodied_presence": false}
+              "embodied_presence": false, "priors_count": 1,
+              "prior_ids": ["prior-…"]}
 ```
 
-This exists because the prompt itself is **not** observable anywhere. It is built
-in memory, handed to generation, and dropped — not in the decision log, not in the
+This exists because the prompt itself is **not** fully queryable as structured
+content IDs without this object (the provenance capsule stores the full prompt
+text for “why I spoke”; this object stores lane booleans/counts **and durable
+content IDs**). It is built in memory, handed to generation, and dropped — not in the
+decision log, not in the
 container logs, and not in Postgres (`emit_observation` puts it on the substrate as
 a molecule, which has no queryable Postgres sink). Found immediately after the
 daydream lane shipped, when the obvious question — *"did that outreach actually see
@@ -593,9 +598,13 @@ a daydream?"* — turned out to have no answer. Every lane added to this prompt 
 unfalsifiable in production: an outreach that silently lost a lane and one that
 never had it looked identical.
 
-Booleans and counts only, never the caption or summary text — logging the text
+Booleans, counts, and content IDs only, never the caption or summary text — logging the text
 would copy real content into a second store with its own retention and quietly
-widen the privacy boundary stated above.
+widen the privacy boundary stated above. `prior_ids` / `curiosity_content_ids`
+are the ledger surface for a later novelty gate / cluster report (see
+`docs/superpowers/specs/2026-09-16-outreach-content-identity-design.md` and
+`scripts/analysis/measure_outreach_reason_clusters.py`). No motive taxonomy is
+minted here.
 
 Each field reports what the prompt text **rendered**, not what was fetched. These
 differ: `fetch_presence` returns a full row for an `absent` camera, but

@@ -478,6 +478,134 @@ def test_stance_payload_enum_aliases_are_coerced() -> None:
     assert valid.identity_salience == "low"
 
 
+def test_soft_work_shape_keys_survive_coerce_and_validate() -> None:
+    from app.stance_handoff import try_coerce_stance_payload
+    from orion.mind.validation import validate_merged_stance_brief_optional
+
+    payload = {
+        "conversation_frame": "technical",
+        "task_mode": "technical_collaboration",
+        "identity_salience": "medium",
+        "user_intent": "Investigate a cross-service gap.",
+        "self_relevance": "This is my own investigation.",
+        "juniper_relevance": "Juniper asked for hire determination.",
+        "answer_strategy": "DirectAnswer",
+        "stance_summary": "Orion-authored investigation.",
+        "expected_depth": "deep",
+        "cross_cutting": "yes",
+        "foresight_note": "Likely multi-service archaeology.",
+    }
+    coerced, _did = try_coerce_stance_payload(payload)
+    valid, err = validate_merged_stance_brief_optional(coerced)
+    assert err is None
+    assert valid is not None
+    dumped = valid.model_dump(mode="json")
+    assert dumped["expected_depth"] == "deep"
+    assert dumped["cross_cutting"] == "yes"
+    assert "multi-service" in dumped["foresight_note"]
+
+
+def test_orion_origin_stance_handoff_asks_for_work_shape_labels() -> None:
+    from app.evidence import build_evidence_pack
+    from app.stance_handoff import run_stance_handoff
+    from orion.mind.synthesis_v1 import (
+        ActiveCognitiveFrontierV1,
+        SelectedFrontierMatterV1,
+        SemanticSynthesisV1,
+    )
+
+    captured: dict = {}
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            captured["user_prompt"] = kwargs.get("user_prompt")
+            return {
+                **_VALID_STANCE,
+                "expected_depth": "deep",
+                "cross_cutting": "yes",
+                "foresight_note": "Likely multi-service archaeology.",
+            }, None, {"model_used": "metacog"}
+
+    pack = build_evidence_pack({"user_text": "investigate claim X"})
+    synthesis = SemanticSynthesisV1.model_validate(_semantic_payload(claim_label="claim X"))
+    frontier = ActiveCognitiveFrontierV1(
+        selected=[
+            SelectedFrontierMatterV1(
+                matter_id="m1",
+                source_claim_id="c1",
+                label="claim X",
+                summary="unresolved cross-service gap",
+                matter_kind="curiosity_affordance",
+                score=0.9,
+            )
+        ]
+    )
+    result, err, _telemetry = run_stance_handoff(
+        frontier,
+        synthesis,
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="metacog",
+        model_id="metacog",
+        max_tokens=512,
+        utterance_origin="orion",
+    )
+    assert err is None
+    prompt = str(captured.get("system_prompt") or "")
+    assert "expected_depth" in prompt
+    assert "cross_cutting" in prompt
+    assert "foresight_note" in prompt
+    assert result.get("expected_depth") == "deep"
+    assert result.get("cross_cutting") == "yes"
+
+
+def test_juniper_origin_stance_handoff_omits_work_shape_instruction() -> None:
+    from app.evidence import build_evidence_pack
+    from app.stance_handoff import run_stance_handoff
+    from orion.mind.synthesis_v1 import (
+        ActiveCognitiveFrontierV1,
+        SelectedFrontierMatterV1,
+        SemanticSynthesisV1,
+    )
+
+    captured: dict = {}
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            return dict(_VALID_STANCE), None, {"model_used": "metacog"}
+
+    pack = build_evidence_pack({"user_text": "hello"})
+    synthesis = SemanticSynthesisV1.model_validate(_semantic_payload(claim_label="hello"))
+    frontier = ActiveCognitiveFrontierV1(
+        selected=[
+            SelectedFrontierMatterV1(
+                matter_id="m1",
+                source_claim_id="c1",
+                label="hello",
+                summary="juniper check-in",
+                matter_kind="turn_anchor",
+                score=0.9,
+            )
+        ]
+    )
+    _result, err, _telemetry = run_stance_handoff(
+        frontier,
+        synthesis,
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="metacog",
+        model_id="metacog",
+        max_tokens=512,
+        utterance_origin="juniper",
+    )
+    assert err is None
+    prompt = str(captured.get("system_prompt") or "")
+    assert "expected_depth" not in prompt
+    assert "foresight_note" not in prompt
+
+
 def test_legacy_semantic_claim_shape_is_normalized() -> None:
     from app.evidence import build_evidence_pack
     from app.synthesis import run_semantic_synthesis, try_normalize_legacy_semantic_raw

@@ -70,6 +70,7 @@ LABEL_CONCEPT = "Concept"
 LABEL_FINDING = "Finding"
 LABEL_HOP = "Hop"
 LABEL_TURN_OUTCOME = "TurnOutcome"
+LABEL_INVESTIGATION_ROLE = "InvestigationRole"
 
 STATUS_OPEN = "open"
 STATUS_SUPPORTED = "supported"
@@ -254,6 +255,21 @@ class HopRecord:
     run_id: str
     n: int
     note: str
+
+
+@dataclass(frozen=True)
+class InvestigationRoleRecord:
+    """Orion-authored provisional role for one sitting.
+
+    Hub reads these nodes and never writes them. `local_crawl` is a decision
+    to work this sitting alone; missing the node is "no decision"; a
+    HelpRequest is the hire ticket. Latest `written_at` wins if Orion revises.
+    """
+
+    run_id: str
+    choice: str
+    why: str
+    written_at: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -648,6 +664,22 @@ def hops_for_run_cypher(run_id: str) -> str:
     )
 
 
+def list_investigation_roles_for_run_cypher(run_id: str) -> str:
+    """RO Cypher: InvestigationRole nodes Orion wrote during one run.
+
+    Ordered oldest-first so a caller can take the last row as latest-wins.
+    Python never MERGEs these nodes.
+    """
+    if not _RUN_ID_RE.match(str(run_id or "")):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH (r:{LABEL_INVESTIGATION_ROLE}) WHERE r.run_id = '{run_id}' "
+        "RETURN r.run_id AS run_id, r.choice AS choice, r.why AS why, "
+        "r.written_at AS written_at "
+        "ORDER BY r.written_at ASC"
+    )
+
+
 # EVERY hop, across every run -- for the curiosity supervisor
 # (orion/curiosity/supervisor.py), which reads history wholesale rather than
 # one run at a time. `hops_for_run_cypher` above cannot answer this: it is
@@ -703,6 +735,19 @@ def build_turn_outcome(row: dict[str, Any]) -> Optional[TurnOutcome]:
         continue_note=str(row.get("continue_note") or "").strip(),
         reach_out=_as_bool(row.get("reach_out")),
         reach_out_why=str(row.get("reach_out_why") or "").strip(),
+        written_at=_as_int(row.get("written_at"), 0) or None,
+    )
+
+
+def build_investigation_role(row: dict[str, Any]) -> Optional[InvestigationRoleRecord]:
+    run_id = str(row.get("run_id") or "").strip()
+    choice = str(row.get("choice") or "").strip()
+    if not run_id or not choice:
+        return None
+    return InvestigationRoleRecord(
+        run_id=run_id,
+        choice=choice,
+        why=str(row.get("why") or "").strip(),
         written_at=_as_int(row.get("written_at"), 0) or None,
     )
 
@@ -1139,6 +1184,38 @@ def read_hop_notes(reader: WorldviewReader, run_id: str) -> list[tuple[int, str]
         for r in rows
         if str(r.get("note") or "").strip()
     ]
+
+
+def read_investigation_roles(
+    reader: WorldviewReader, run_id: str
+) -> list[InvestigationRoleRecord]:
+    """Orion-authored roles for this run, oldest first. `[]` on failure.
+
+    Python never writes these nodes. Take `latest_investigation_role` for the
+    current choice; absence means no decision, not local_crawl.
+    """
+    try:
+        rows = reader.query(list_investigation_roles_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError) as exc:
+        logger.warning(
+            "curiosity_investigation_role_read_failed run=%s err=%s", run_id, exc
+        )
+        return []
+    out: list[InvestigationRoleRecord] = []
+    for row in rows:
+        rec = build_investigation_role(row)
+        if rec is not None:
+            out.append(rec)
+    return out
+
+
+def latest_investigation_role(
+    records: Sequence[InvestigationRoleRecord],
+) -> Optional[InvestigationRoleRecord]:
+    """Newest written_at wins. None when Orion has not written a role."""
+    if not records:
+        return None
+    return max(records, key=lambda r: r.written_at or 0)
 
 
 def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:

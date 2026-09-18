@@ -85,6 +85,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .endogenous_outreach import in_quiet_hours
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
+from orion.curiosity.investigation_subject import build_investigation_subject
 from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
@@ -244,6 +245,16 @@ def _line_keys(line: str) -> tuple[str, str, str]:
     if line == LINE_SELF_INQUIRY:
         return _SELF_COOLDOWN_KEY, _SELF_DAILY_COUNT_KEY_PREFIX, _SELF_LAST_RUN_KEY
     return _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX, _LAST_RUN_KEY
+
+
+def _investigation_subject_from_view(view) -> str:
+    """Claim is unset at kickoff: Orion has not chosen yet. Continuation note
+    is only the note the last run asked itself to keep pulling on."""
+    continue_note = None
+    outcome = getattr(view, "continuation", None)
+    if outcome is not None and getattr(outcome, "continue_line", False):
+        continue_note = str(getattr(outcome, "continue_note", "") or "").strip() or None
+    return build_investigation_subject(claim=None, continue_note=continue_note)
 
 # The turn has to show evidence it actually went and looked. `harness_step_count`
 # is already on the final frame (orion/hub/turn_orchestrator.py) and costs
@@ -553,6 +564,11 @@ class CuriosityInvestigation:
         # within TURN_RESULT_CACHE_SEC: the cached result is replied as-is.
         self._turn_inflight: dict[str, asyncio.Future] = {}
         self._turn_results: dict[str, tuple[CuriosityTurnResultV1, float]] = {}
+        # Short Mind subject keyed by run_id so durable runner callbacks and
+        # in-process `_generate` share the same appraisal text without putting
+        # the full kickoff on StanceReactRequestV1.user_message. World-curiosity
+        # and self-inquiry both stash here; lookup is by those source tags.
+        self._mind_appraisal_by_run_id: dict[str, str] = {}
         self.enabled = enabled
         self.tick_interval_sec = tick_interval_sec
         self.min_cooldown_sec = min_cooldown_sec
@@ -1411,6 +1427,9 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
         )
+        # Claim is unset at kickoff (Orion has not chosen). Continuation note
+        # rides on Mind; the HelpRequest teach block stays on the harness prompt.
+        self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
         if peer_briefs:
             # Hub is RO on worldview; peer service MERGEs consumed=true.
             await publish_peer_briefs_consumed(
@@ -1514,7 +1533,12 @@ class CuriosityInvestigation:
         )
 
         if outcome is not None and outcome.reach_out:
-            await self._maybe_reach_out(outcome=outcome, finding_text=text, run_id=run_id)
+            await self._maybe_reach_out(
+                outcome=outcome,
+                finding_text=text,
+                run_id=run_id,
+                hop_notes=hops,
+            )
         return None
 
     # --- the self-inquiry line ------------------------------------------------
@@ -1937,6 +1961,10 @@ class CuriosityInvestigation:
             question=picked,
             previous_lived=previous_lived,
         )
+        # Claim is unset at kickoff (Orion has not chosen). Continuation note
+        # rides on Mind; the SelfDefinition / HelpRequest teach stays on the
+        # harness prompt. Same subject builder as world-curiosity.
+        self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
         if peer_briefs:
             await publish_peer_briefs_consumed(
                 bus=self._bus,
@@ -2040,7 +2068,12 @@ class CuriosityInvestigation:
             correlation_id,
         )
         if outcome is not None and outcome.reach_out:
-            await self._maybe_reach_out(outcome=outcome, finding_text=text, run_id=run_id)
+            await self._maybe_reach_out(
+                outcome=outcome,
+                finding_text=text,
+                run_id=run_id,
+                hop_notes=hops,
+            )
         return None
 
     async def _read_run_self_definition(self, run_id: str) -> Optional[SelfDefinition]:
@@ -2242,6 +2275,9 @@ class CuriosityInvestigation:
         if resource_lease is not None:
             payload["resource_lease"] = resource_lease.model_dump(mode="json")
             payload["inference_timeout_sec"] = turn_timeout
+        appraisal = None
+        if parent_run_id and source in (INVESTIGATION_TAG, SELF_INQUIRY_TAG):
+            appraisal = self._mind_appraisal_by_run_id.get(parent_run_id)
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
@@ -2251,6 +2287,8 @@ class CuriosityInvestigation:
                     correlation_id=correlation_id,
                     session_id=self.session_id,
                     user_message=prompt,
+                    utterance_origin="orion",
+                    mind_appraisal_text=appraisal,
                     # no_write: the journal entry below is the sole persistence
                     # path, so this does not also land as an untagged chat row.
                     # `fcc_model_label` is branch 1 of
@@ -2362,7 +2400,12 @@ class CuriosityInvestigation:
     # --- the second turn ---------------------------------------------------
 
     async def _maybe_reach_out(
-        self, *, outcome: TurnOutcome, finding_text: str, run_id: str
+        self,
+        *,
+        outcome: TurnOutcome,
+        finding_text: str,
+        run_id: str,
+        hop_notes: Optional[list[tuple[int, str]]] = None,
     ) -> Optional[str]:
         """Orion decided a finding is worth telling Juniper about. Compose it.
 
@@ -2401,9 +2444,27 @@ class CuriosityInvestigation:
             )
             return blocked
 
+        notes: list[tuple[int, str]]
+        if hop_notes is not None:
+            notes = list(hop_notes)
+        elif self._reader is not None:
+            try:
+                notes = await asyncio.to_thread(read_hop_notes, self._reader, run_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_outreach_hop_notes_failed run=%s err=%s",
+                    run_id,
+                    exc,
+                )
+                notes = []
+        else:
+            notes = []
+
         correlation_id = str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{run_id}"))
         prompt = build_outreach_composition_prompt(
-            finding_text=finding_text, reach_out_why=outcome.reach_out_why
+            finding_text=finding_text,
+            reach_out_why=outcome.reach_out_why,
+            hop_notes=notes,
         )
         text, debug = await self._generate(
             prompt, correlation_id, source=OUTREACH_TAG, require_lookup=False

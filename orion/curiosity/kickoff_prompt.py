@@ -711,24 +711,45 @@ def _peer_briefs_section(peer_briefs: Sequence = ()) -> list[str]:
     return format_soft_nudge(peer_briefs or ())
 
 
-def _help_request_section(
+def _role_and_help_section(
     *,
     own_graph: str,
     run_id: str,
     mode: str = "world_curiosity",
     extra_lines: Sequence[str] = (),
 ) -> list[str]:
+    """Teach Orion-authored role split + HelpRequest as the hire ticket.
+
+    Role is not enqueue. Python never writes :InvestigationRole; Orion MERGEs.
+    extra_lines is the soft-disclosure hook (Mind labels later; empty is fine).
+    """
     lines = [
-        f"ASKING FOR CONTRACTOR HELP ({own_graph}). Optional. Only when you are "
-        "genuinely stuck after looking yourself — not as a default. The peer is "
-        "a read-only investigator. They return notes; YOU still write priors and "
-        "findings. Do not write :PeerBrief yourself.",
+        f"YOUR ROLE FOR THIS SITTING ({own_graph}). Write this early. It is a "
+        "provisional choice: local_crawl (you work this sitting yourself) or "
+        "hire_cursor (you intend to hire a read-only contractor). You may revise "
+        "mid-run by writing again; the newest written_at is the one that counts.",
+        "",
+        "Writing the role does not enqueue Cursor and does not wake a peer. "
+        "A role is not a hire ticket.",
+        "",
+        "    MERGE (r:InvestigationRole {",
+        '      run_id: "<RUN_ID>",',
+        '      choice: "local_crawl",   // or "hire_cursor"',
+        '      why: "<one sentence: why this role now>",',
+        "      written_at: timestamp()",
+        "    })",
+        "",
+        "ASKING FOR CONTRACTOR HELP. Write a HelpRequest only when you are "
+        "actually hiring, after a short local look so tried_summary is something "
+        "you actually did. The peer is a read-only investigator. They return "
+        "notes; YOU still write priors and findings. Do not write :PeerBrief "
+        "yourself.",
         "",
         '  MERGE (h:HelpRequest {help_id: "<unique help id>"})',
         "  ON CREATE SET",
         '    h.run_id = "<RUN_ID>",',
         f'    h.mode = "{mode}",',
-        '    h.question = "<what you need unstuck>",',
+        '    h.question = "<what you need looked at>",',
         '    h.tried_summary = "<what you already looked at>",',
         '    h.success_criteria = "<what would count as useful>",',
         "    h.written_at = timestamp()",
@@ -743,6 +764,9 @@ def _help_request_section(
         if lines[-1] != "":
             lines.append("")
     return lines
+
+
+_help_request_section = _role_and_help_section
 
 
 _INSTRUCTION = """\
@@ -831,7 +855,7 @@ def build_kickoff_prompt(
     if writable:
         lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
         if contractor_peer_enabled:
-            lines += _help_request_section(own_graph=own_graph, run_id=run_id)
+            lines += _role_and_help_section(own_graph=own_graph, run_id=run_id)
         lines += _outcome_section(run_id=run_id)
 
     lines.append(_INSTRUCTION)

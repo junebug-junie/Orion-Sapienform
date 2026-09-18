@@ -72,6 +72,7 @@ def test_handle_chat_request_orion_mode_builds_continuity_messages(monkeypatch) 
         {"role": "assistant", "content": "I don't have live weather access."},
         {"role": "user", "content": "ok what about tomorrow?"},
     ]
+    assert captured_kwargs.get("utterance_origin") == "juniper"
 
 
 def test_handle_chat_request_orion_mode_rehydrates_thin_history(monkeypatch) -> None:

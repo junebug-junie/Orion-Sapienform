@@ -137,3 +137,39 @@ async def test_enrichment_selector_raises_fails_open(monkeypatch):
     thought = await bl.run_stance_react(_request(), bus=None, cortex_client=client)
     assert thought.imperative == "Stay present with Juniper."
     assert "mind_coloring" not in client.captured_context
+
+
+@pytest.mark.asyncio
+async def test_enrichment_passes_utterance_origin_to_selector(monkeypatch):
+    monkeypatch.setenv("ORION_THOUGHT_MIND_ENRICHMENT_ENABLED", "true")
+    import app.settings as s
+    importlib.reload(s)
+    import app.mind_enrichment as me
+    importlib.reload(me)
+    import app.bus_listener as bl
+    importlib.reload(bl)
+
+    captured: dict = {}
+
+    async def _mind(*_a, **_k):
+        return MindRunResultV1(
+            mind_run_id=uuid4(),
+            ok=True,
+            snapshot_hash="hash-1",
+            brief=MindHandoffBriefV1(mind_quality="meaningful_synthesis"),
+            mind_quality="meaningful_synthesis",
+        )
+
+    def _selector(*_a, **kwargs):
+        captured.update(kwargs)
+        return {"reflective_themes": ["continuity"]}
+
+    monkeypatch.setattr(bl, "run_mind_for_thought", _mind)
+    monkeypatch.setattr(bl, "select_mind_coloring", _selector)
+
+    request = _request()
+    request.stance_inputs["utterance_origin"] = "orion"
+    client = _FakeCortexClient({"final_text": _stance_json(), "metadata": {}})
+    thought = await bl.run_stance_react(request, bus=None, cortex_client=client)
+    assert captured.get("utterance_origin") == "orion"
+    assert thought.imperative == "Stay present with Juniper."

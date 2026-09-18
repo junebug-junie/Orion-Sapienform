@@ -1014,6 +1014,60 @@ def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> No
     )
 
 
+def test_maybe_reach_out_passes_hop_notes_into_composition_prompt(monkeypatch) -> None:
+    """Hops already in hand must reach the compose builder — not only finding+why."""
+    from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
+    from orion.curiosity.worldview import TurnOutcome
+
+    captured: dict = {}
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return build_outreach_composition_prompt(**kwargs)
+
+    # Patch the exact globals the method closes over (hub scripts path).
+    monkeypatch.setitem(
+        CuriosityInvestigation._maybe_reach_out.__globals__,
+        "build_outreach_composition_prompt",
+        fake_build,
+    )
+
+    bus = _FakeBus()
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        bus,
+        reader=_reach_out_reader(None),
+        outreach_enabled=True,
+        outreach_provider=lambda: outreach,
+    )
+
+    async def fake_generate(prompt, correlation_id, **kwargs):
+        return "PASS", {}
+
+    loop._generate = fake_generate  # type: ignore[method-assign]
+
+    outcome = TurnOutcome(
+        run_id="run-hops",
+        continue_line=False,
+        continue_note="",
+        reach_out=True,
+        reach_out_why="she should hear this",
+    )
+    hops = [(1, "first stop"), (2, "second stop")]
+
+    asyncio.run(
+        loop._maybe_reach_out(
+            outcome=outcome,
+            finding_text="end finding",
+            run_id="run-hops",
+            hop_notes=hops,
+        )
+    )
+    assert captured.get("hop_notes") == hops
+    assert captured.get("reach_out_why") == "she should hear this"
+    assert "end finding" in str(captured.get("finding_text") or "")
+
+
 # --- the startup race, found on the first real deploy -----------------------
 
 

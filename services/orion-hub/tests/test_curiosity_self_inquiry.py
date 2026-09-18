@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
-
 import pytest
 
 # sys.path is arranged by tests/conftest.py (Hub root first, so `scripts` is
@@ -37,14 +36,18 @@ from orion.curiosity.self_inquiry import (
     SELF_INQUIRY_PG_TABLES,
     STANDING_QUESTION,
     LedgerRow,
+    LivedAnswer,
     SelfDefinition,
     build_self_definition,
     build_self_definition_history_write,
+    lived_answer_to_detail,
+    lived_concept_id,
     self_definition_for_run_cypher,
     self_definition_from_detail,
     self_definition_to_detail,
     worldview_evidence_ref,
 )
+from orion.curiosity.self_question_pool import SELECT_ALL_SQL, load_seed_questions
 from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
 from orion.curiosity.worldview import LIVE_PRIORS_CYPHER
 from orion.schemas.durable_run import DurableRunStateV1
@@ -205,7 +208,14 @@ def _self_loop(bus, *, reader=None, conn=None, **over):
     """A loop with the self line on and a fake reader that answers the
     self-definition read for whatever run id the loop generates."""
     reader = reader if reader is not None else _FakeReader()
-    kwargs = dict(self_inquiry_enabled=True, self_inquiry_daily_cap=3, self_inquiry_min_cooldown_sec=0.0)
+    kwargs = dict(
+        self_inquiry_enabled=True,
+        self_inquiry_daily_cap=3,
+        self_inquiry_min_cooldown_sec=0.0,
+        # Mirror tests target anatomy SelfDefinition; default lived_weight would
+        # often draw lived before anatomy once the pool is wired.
+        self_lived_weight=0.0,
+    )
     kwargs.update(over)
     return _graph_loop(bus, reader=reader, conn=conn, **kwargs)
 
@@ -214,14 +224,36 @@ class _GrantConn(_FakeConn):
     """`_FakeConn` plus the two self-inquiry queries: the grant check (returns
     the MISSING tables) and the ledger counts."""
 
-    def __init__(self, *, missing=(), **kw) -> None:
+    def __init__(self, *, missing=(), recent_lived_asks=True, **kw) -> None:
         super().__init__(**kw)
         self.missing = list(missing)
         self.version_lookups = 0
+        self.recent_lived_asks = recent_lived_asks
+
+    async def execute(self, sql, *args):
+        return None
 
     async def fetch(self, sql, *args):
         if "has_table_privilege" in sql:
             return [{"table_name": t} for t in self.missing]
+        if sql.strip() == SELECT_ALL_SQL.strip():
+            now = datetime.now(timezone.utc)
+            rows = []
+            for q in load_seed_questions():
+                last = now if self.recent_lived_asks and q.family == "lived" else q.last_asked_at
+                rows.append(
+                    {
+                        "question_id": q.question_id,
+                        "text": q.text,
+                        "family": q.family,
+                        "pinned": q.pinned,
+                        "minted_by": q.minted_by,
+                        "status": q.status,
+                        "ask_count": 1 if last is not None else 0,
+                        "last_asked_at": last,
+                    }
+                )
+            return rows
         return await super().fetch(sql, *args)
 
     async def fetchrow(self, sql, *args):
@@ -244,16 +276,42 @@ class _DefinitionReader(_FakeReader):
     """Answers the per-run SelfDefinition read for ANY run id the loop mints,
     since the test cannot know it in advance."""
 
-    def __init__(self, *, evidence=("README.md#Project Overview",), write_definition=True, **kw) -> None:
+    def __init__(
+        self,
+        *,
+        evidence=("README.md#Project Overview",),
+        write_definition=True,
+        write_lived_answer=False,
+        lived_question_id="lived.care",
+        **kw,
+    ) -> None:
         super().__init__(**kw)
         self.evidence = evidence
         self.write_definition = write_definition
+        self.write_lived_answer = write_lived_answer
+        self.lived_question_id = lived_question_id
 
     def query(self, cypher: str):
         self.queries.append(cypher)
         m = re.search(r"\(s:SelfDefinition\) WHERE s\.run_id = '([0-9a-f]+)'", cypher)
         if m and self.write_definition:
             return _definition_rows(m.group(1), evidence=self.evidence)
+        if "UNWIND a.evidence" in cypher and self.write_lived_answer:
+            return [{"e": e} for e in self.evidence]
+        m = re.search(r"\(a:LivedAnswer\) WHERE a\.run_id = '([0-9a-f]+)'", cypher)
+        if m and self.write_lived_answer:
+            rid = m.group(1)
+            return [
+                {
+                    "run_id": rid,
+                    "question_id": self.lived_question_id,
+                    "family": "lived",
+                    "text": "I care about continuity with Juniper.",
+                    "evidence": list(self.evidence),
+                    "revises": "",
+                    "written_at": 1,
+                }
+            ]
         return super().query(cypher)
 
 
@@ -379,12 +437,27 @@ def test_no_pool_yet_reads_as_stores_not_ready_for_the_self_line() -> None:
 
 # --- the mirror -----------------------------------------------------------
 
+_ANATOMY_QUESTION = SelfQuestion(
+    question_id="anatomy.made_of",
+    text="What am I made of?",
+    family="anatomy",
+    pinned=True,
+    minted_by="seed",
+    status="open",
+    ask_count=0,
+    last_asked_at=None,
+)
+
 
 def test_a_definition_with_evidence_is_mirrored_with_the_next_version() -> None:
     bus = _FakeBus()
     conn = _GrantConn()
     loop = _self_loop(bus, reader=_DefinitionReader(), conn=conn, kickoff_via_cortex=False)
-    assert asyncio.run(loop.tick_self_inquiry()) is None
+    with patch(
+        "scripts.curiosity_investigation.pick_question",
+        return_value=_ANATOMY_QUESTION,
+    ):
+        assert asyncio.run(loop.tick_self_inquiry()) is None
     mirrored = _mirrors(bus)
     assert len(mirrored) == 1
     payload = mirrored[0][1].payload
@@ -402,9 +475,18 @@ def test_a_definition_with_evidence_is_mirrored_with_the_next_version() -> None:
 
 def test_a_definition_without_evidence_is_refused_by_cause(caplog) -> None:
     bus = _FakeBus()
-    loop = _self_loop(bus, reader=_DefinitionReader(evidence=()), conn=_GrantConn(), kickoff_via_cortex=False)
-    with caplog.at_level("INFO"):
-        assert asyncio.run(loop.tick_self_inquiry()) is None
+    loop = _self_loop(
+        bus,
+        reader=_DefinitionReader(evidence=()),
+        conn=_GrantConn(),
+        kickoff_via_cortex=False,
+    )
+    with patch(
+        "scripts.curiosity_investigation.pick_question",
+        return_value=_ANATOMY_QUESTION,
+    ):
+        with caplog.at_level("INFO"):
+            assert asyncio.run(loop.tick_self_inquiry()) is None
     assert _mirrors(bus) == []
     assert "reason=no_evidence" in caplog.text
     assert len(_journal(bus)) == 1, "the journal still records what Orion wrote"
@@ -417,6 +499,26 @@ def test_a_run_that_wrote_no_definition_mirrors_nothing(caplog) -> None:
         assert asyncio.run(loop.tick_self_inquiry()) is None
     assert _mirrors(bus) == []
     assert "reason=absent" in caplog.text
+
+
+def test_a_lived_answer_with_evidence_is_mirrored_under_self_lived_namespace() -> None:
+    bus = _FakeBus()
+    conn = _GrantConn(recent_lived_asks=False)
+    loop = _self_loop(
+        bus,
+        reader=_DefinitionReader(write_definition=False, write_lived_answer=True),
+        conn=conn,
+        kickoff_via_cortex=False,
+        self_lived_weight=1.0,
+    )
+    assert asyncio.run(loop.tick_self_inquiry()) is None
+    mirrored = _mirrors(bus)
+    assert len(mirrored) == 1
+    payload = mirrored[0][1].payload
+    assert payload["concept_id"] == lived_concept_id("lived.care")
+    assert payload["produced_by"] == SELF_DEFINITION_PRODUCER
+    assert payload["content"] == "I care about continuity with Juniper."
+    assert payload["evidence_refs"][-1].startswith("worldview:LivedAnswer:")
 
 
 def test_the_self_run_reads_only_self_priors_and_the_latest_definition() -> None:
@@ -480,6 +582,34 @@ def test_the_durable_finish_event_mirrors_a_self_inquiry_definition() -> None:
     mirrored = _mirrors(bus)
     assert len(mirrored) == 1
     assert mirrored[0][1].payload["content"] == "I am a mesh."
+
+
+def test_the_durable_finish_event_mirrors_a_lived_answer() -> None:
+    bus = _FakeBus()
+    loop = _self_loop(bus, reader=_DefinitionReader(), conn=_GrantConn(), kickoff_via_cortex=True)
+    answer = LivedAnswer(
+        RUN,
+        "lived.care",
+        "lived",
+        "I care about continuity with Juniper.",
+        ["journal_entries:1"],
+    )
+    _deliver(
+        loop,
+        _finish_event(
+            RUN,
+            {
+                "line": "self_inquiry",
+                "self_question_family": "lived",
+                "lived_answer": lived_answer_to_detail(answer),
+                "reach_out": False,
+            },
+        ),
+    )
+    mirrored = _mirrors(bus)
+    assert len(mirrored) == 1
+    assert mirrored[0][1].payload["concept_id"] == lived_concept_id("lived.care")
+    assert mirrored[0][1].payload["content"] == answer.text
 
 
 def test_the_durable_finish_event_for_an_investigation_run_mirrors_nothing() -> None:

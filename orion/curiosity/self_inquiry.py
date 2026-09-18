@@ -82,6 +82,7 @@ LINE_SELF_INQUIRY = "self_inquiry"
 
 SELF_INQUIRY_TAG = "curiosity_self_inquiry"
 LABEL_SELF_DEFINITION = "SelfDefinition"
+LABEL_LIVED_ANSWER = "LivedAnswer"
 # One lineage in self_concept_history. Every self-inquiry run that writes a
 # definition appends a new version under this id; "current" is the latest
 # created_at, exactly as that table's own docstring says.
@@ -191,6 +192,22 @@ LATEST_SELF_DEFINITION_CYPHER = (
 
 SELF_DEFINITION_COUNT_CYPHER = f"MATCH (s:{LABEL_SELF_DEFINITION}) RETURN count(s) AS n"
 
+_LIVED_ANSWER_FIELDS = (
+    "a.run_id AS run_id, a.question_id AS question_id, a.family AS family, "
+    "a.text AS text, a.evidence AS evidence, "
+    "a.revises AS revises, a.written_at AS written_at"
+)
+
+
+def lived_answer_for_run_cypher(run_id: str) -> str:
+    """THIS run's lived answer, keyed on run_id -- never "the newest"."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.run_id = '{rid}' "
+        f"RETURN {_LIVED_ANSWER_FIELDS} ORDER BY a.written_at DESC LIMIT 1"
+    )
+
+
 # Live priors on the self line only. Same fields, same liveness rule, same
 # limit as the investigation line's LIVE_PRIORS_CYPHER -- one extra WHERE.
 LIVE_SELF_PRIORS_CYPHER = (
@@ -215,6 +232,24 @@ class SelfDefinition:
     """One `:SelfDefinition` node, as Orion wrote it."""
 
     run_id: str
+    text: str
+    evidence: list[str] = field(default_factory=list)
+    revises: str = ""
+    written_at: Optional[int] = None
+
+    @property
+    def is_substantive(self) -> bool:
+        """Text and at least one evidence ref. Both, or it is not mirrored."""
+        return bool(self.text.strip()) and bool(self.evidence)
+
+
+@dataclass(frozen=True)
+class LivedAnswer:
+    """One `:LivedAnswer` node, as Orion wrote it."""
+
+    run_id: str
+    question_id: str
+    family: str
     text: str
     evidence: list[str] = field(default_factory=list)
     revises: str = ""
@@ -334,6 +369,70 @@ def read_latest_self_definition(reader: WorldviewReader) -> Optional[SelfDefinit
     return build_self_definition(rows[0]) if rows else None
 
 
+def build_lived_answer(row: dict[str, Any]) -> Optional[LivedAnswer]:
+    """None for a row with no run_id, question_id, or text."""
+    run_id = str(row.get("run_id") or "").strip()
+    question_id = str(row.get("question_id") or "").strip()
+    text = str(row.get("text") or "").strip()
+    if not run_id or not question_id or not text:
+        return None
+    return LivedAnswer(
+        run_id=run_id,
+        question_id=question_id,
+        family=str(row.get("family") or "lived").strip() or "lived",
+        text=text[:SELF_DEFINITION_TEXT_CAP],
+        evidence=_evidence_list(row.get("evidence")),
+        revises=str(row.get("revises") or "").strip(),
+        written_at=_as_int(row.get("written_at")),
+    )
+
+
+def lived_answer_evidence_cypher(run_id: str) -> str:
+    """One row per evidence entry. Same FalkorDB list-string issue as SelfDefinition."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.run_id = '{rid}' "
+        "WITH a ORDER BY a.written_at DESC LIMIT 1 "
+        "UNWIND a.evidence AS e RETURN e"
+    )
+
+
+def _read_lived_evidence_rows(reader: WorldviewReader, run_id: str) -> Optional[list[str]]:
+    try:
+        rows = reader.query(lived_answer_evidence_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return None
+    out: list[str] = []
+    for r in rows:
+        text = str(r.get("e") or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out[:SELF_DEFINITION_EVIDENCE_CAP]
+
+
+def read_lived_answer(reader: WorldviewReader, run_id: str) -> Optional[LivedAnswer]:
+    """This run's lived answer, or None. Never raises."""
+    try:
+        rows = reader.query(lived_answer_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return None
+    answer = build_lived_answer(rows[0]) if rows else None
+    if answer is None:
+        return None
+    unwound = _read_lived_evidence_rows(reader, run_id)
+    if unwound:
+        return LivedAnswer(
+            run_id=answer.run_id,
+            question_id=answer.question_id,
+            family=answer.family,
+            text=answer.text,
+            evidence=unwound,
+            revises=answer.revises,
+            written_at=answer.written_at,
+        )
+    return answer
+
+
 def read_self_definition_count(reader: WorldviewReader) -> Optional[int]:
     """How many definitions exist, or None if the graph did not answer."""
     try:
@@ -349,6 +448,16 @@ def read_self_definition_count(reader: WorldviewReader) -> Optional[int]:
 def worldview_evidence_ref(run_id: str) -> str:
     """The evidence ref that points back at the node itself."""
     return f"worldview:{LABEL_SELF_DEFINITION}:{run_id}"
+
+
+def lived_worldview_evidence_ref(run_id: str) -> str:
+    """The evidence ref that points back at the lived-answer node itself."""
+    return f"worldview:{LABEL_LIVED_ANSWER}:{run_id}"
+
+
+def lived_concept_id(question_id: str) -> str:
+    """The self_concept_history namespace for one drawn lived question."""
+    return f"self:lived:{question_id}"
 
 
 def build_self_definition_history_write(
@@ -394,6 +503,47 @@ def self_definition_to_detail(definition: Optional[SelfDefinition]) -> Optional[
         "evidence": list(definition.evidence),
         "revises": definition.revises,
         "written_at": definition.written_at,
+    }
+
+
+def build_lived_answer_history_write(
+    answer: Optional[LivedAnswer], *, version: int = 1
+) -> Optional[SelfConceptHistoryV1]:
+    """The append-only row, or None when there is nothing substantive to append."""
+    if answer is None or not answer.is_substantive:
+        return None
+    evidence = list(answer.evidence)
+    own_ref = lived_worldview_evidence_ref(answer.run_id)
+    if own_ref not in evidence:
+        evidence.append(own_ref)
+    return SelfConceptHistoryV1(
+        entry_id=f"self-lived:{answer.run_id}",
+        concept_id=lived_concept_id(answer.question_id),
+        version=max(1, int(version)),
+        content=answer.text[:SELF_DEFINITION_TEXT_CAP],
+        evidence_refs=evidence[: SELF_DEFINITION_EVIDENCE_CAP + 1],
+        produced_by=SELF_DEFINITION_PRODUCER,
+    )
+
+
+def lived_answer_from_detail(detail: dict[str, Any] | None) -> Optional[LivedAnswer]:
+    raw = (detail or {}).get("lived_answer")
+    if not isinstance(raw, dict):
+        return None
+    return build_lived_answer(raw)
+
+
+def lived_answer_to_detail(answer: Optional[LivedAnswer]) -> Optional[dict[str, Any]]:
+    if answer is None:
+        return None
+    return {
+        "run_id": answer.run_id,
+        "question_id": answer.question_id,
+        "family": answer.family,
+        "text": answer.text[:SELF_DEFINITION_TEXT_CAP],
+        "evidence": list(answer.evidence),
+        "revises": answer.revises,
+        "written_at": answer.written_at,
     }
 
 

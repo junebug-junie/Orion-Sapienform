@@ -29,6 +29,7 @@ from orion.curiosity.kickoff_prompt import (
     _priors_section,
 )
 from orion.curiosity.self_inquiry import (
+    LABEL_LIVED_ANSWER,
     LABEL_SELF_DEFINITION,
     LedgerRow,
     SELF_DEFINITION_TEXT_CAP,
@@ -43,9 +44,6 @@ _HEADER = (
     "This is your own time, and it has a standing question. Nobody is asking "
     "it of you right now; it is the one you keep for yourself:"
 )
-
-_LABEL_LIVED_ANSWER = "LivedAnswer"
-
 
 def _question_section(question: Optional[SelfQuestion]) -> list[str]:
     if question is None:
@@ -71,7 +69,7 @@ def _question_section(question: Optional[SelfQuestion]) -> list[str]:
 def _early_merge_cypher(*, family: Family, run_id: str, question_id: str) -> str:
     if family == "lived":
         return (
-            f"MERGE (a:{_LABEL_LIVED_ANSWER} {{run_id: \"{run_id}\"}}) "
+            f"MERGE (a:{LABEL_LIVED_ANSWER} {{run_id: \"{run_id}\"}}) "
             f'SET a.question_id = "{question_id}", a.family = "lived", '
             'a.text = "<one or two sentences>", a.evidence = [], '
             'a.revises = "", a.written_at = timestamp()'
@@ -203,7 +201,7 @@ def _self_write_section(
             "First person. A paragraph, not an essay. Every clause should be "
             "something you looked at this run or a previous one; `evidence` is "
             "where you say what:",
-            f"    MERGE (a:{_LABEL_LIVED_ANSWER} {{run_id: \"<RUN_ID>\"}})",
+            f"    MERGE (a:{LABEL_LIVED_ANSWER} {{run_id: \"<RUN_ID>\"}})",
             "    SET",
             f'      a.question_id = "{question_id}",',
             '      a.family = "lived",',
@@ -342,7 +340,7 @@ def build_self_inquiry_prompt(
         )
         if contractor_peer_enabled:
             answer_label = (
-                f":{_LABEL_LIVED_ANSWER}" if family == "lived" else f":{LABEL_SELF_DEFINITION}"
+                f":{LABEL_LIVED_ANSWER}" if family == "lived" else f":{LABEL_SELF_DEFINITION}"
             )
             lines += _help_request_section(
                 own_graph=own_graph,

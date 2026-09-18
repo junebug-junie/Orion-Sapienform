@@ -105,9 +105,14 @@ from orion.curiosity.self_inquiry import (
     SELF_INQUIRY_PG_TABLES,
     SELF_INQUIRY_TAG,
     LedgerRow,
+    LivedAnswer,
     SelfDefinition,
+    build_lived_answer_history_write,
     build_self_definition_history_write,
+    lived_answer_from_detail,
+    lived_concept_id,
     read_latest_self_definition,
+    read_lived_answer,
     read_self_definition,
     read_self_definition_count,
     self_definition_from_detail,
@@ -1895,7 +1900,12 @@ class CuriosityInvestigation:
             return "empty_generation"
 
         outcome, footprint, hops, evidence = await self._read_turn_result(run_id)
-        definition = await self._read_run_self_definition(run_id)
+        if picked.family == "lived":
+            lived_answer = await self._read_run_lived_answer(run_id)
+            definition = None
+        else:
+            lived_answer = None
+            definition = await self._read_run_self_definition(run_id)
         await self._publish_attention_schema(
             run_id=run_id, outcome=outcome, correlation_id=correlation_id, now=now
         )
@@ -1913,16 +1923,25 @@ class CuriosityInvestigation:
             line=LINE_SELF_INQUIRY,
         )
         await self._enqueue_help_requests_after_run(run_id)
-        await self._mirror_self_definition(definition, run_id=run_id, correlation_id=correlation_id)
+        await self._mirror_self_inquiry_write(
+            run_id=run_id,
+            correlation_id=correlation_id,
+            family=picked.family,
+            definition=definition,
+            lived_answer=lived_answer,
+        )
+        write_label = "lived_answer" if picked.family == "lived" else "definition"
+        wrote = lived_answer if picked.family == "lived" else definition
         logger.info(
             "curiosity_self_inquiry_journaled run=%s chars=%s wrote=%s evidence=%s hops=%s "
-            "definition=%s continue=%s reach_out=%s corr=%s",
+            "%s=%s continue=%s reach_out=%s corr=%s",
             run_id,
             len(text),
             "unreadable" if footprint is None else (format_footprint(footprint) or "nothing"),
             format_evidence(evidence, graph_configured=self._reader is not None),
             len(hops),
-            "written" if definition is not None else "absent",
+            write_label,
+            "written" if wrote is not None else "absent",
             bool(outcome and outcome.continue_line),
             bool(outcome and outcome.reach_out),
             correlation_id,
@@ -1941,16 +1960,30 @@ class CuriosityInvestigation:
             logger.warning("curiosity_self_definition_read_failed run=%s err=%s", run_id, exc)
             return None
 
-    async def _next_self_concept_version(self) -> int:
+    async def _read_run_lived_answer(self, run_id: str) -> Optional[LivedAnswer]:
+        reader = self._reader
+        if reader is None:
+            return None
+        try:
+            return await asyncio.to_thread(read_lived_answer, reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_lived_answer_read_failed run=%s err=%s", run_id, exc)
+            return None
+
+    async def _next_self_concept_version(self, concept_id: str) -> int:
         pool = self._pool_provider()
         if pool is None:
             return 1
         try:
             async with pool.acquire() as conn:
-                value = await conn.fetchval(SELF_CONCEPT_VERSION_SQL, "self:definition")
+                value = await conn.fetchval(SELF_CONCEPT_VERSION_SQL, concept_id)
             return int(value or 1)
         except Exception as exc:  # noqa: BLE001
-            logger.info("curiosity_self_definition_version_lookup_failed err=%s", exc)
+            logger.info(
+                "curiosity_self_concept_version_lookup_failed concept_id=%s err=%s",
+                concept_id,
+                exc,
+            )
             return 1
 
     async def _mirror_self_definition(
@@ -1972,7 +2005,7 @@ class CuriosityInvestigation:
         if definition is None:
             logger.info("curiosity_self_definition_not_mirrored run=%s reason=absent", run_id)
             return False
-        version = await self._next_self_concept_version()
+        version = await self._next_self_concept_version("self:definition")
         row = build_self_definition_history_write(definition, version=version)
         if row is None:
             logger.warning(
@@ -2007,6 +2040,75 @@ class CuriosityInvestigation:
             correlation_id,
         )
         return True
+
+    async def _mirror_lived_answer(
+        self,
+        answer: Optional[LivedAnswer],
+        *,
+        run_id: str,
+        correlation_id: str,
+    ) -> bool:
+        """Append the run's `:LivedAnswer` to self_concept_history, or say why not."""
+        if self._bus is None:
+            return False
+        if answer is None:
+            logger.info("curiosity_lived_answer_not_mirrored run=%s reason=absent", run_id)
+            return False
+        version = await self._next_self_concept_version(lived_concept_id(answer.question_id))
+        row = build_lived_answer_history_write(answer, version=version)
+        if row is None:
+            logger.warning(
+                "curiosity_lived_answer_not_mirrored run=%s reason=no_evidence "
+                "question_id=%s chars=%s",
+                run_id,
+                answer.question_id,
+                len(answer.text),
+            )
+            return False
+        try:
+            await self._bus.publish(
+                SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+                BaseEnvelope(
+                    kind=SELF_CONCEPT_HISTORY_WRITE_KIND,
+                    source=self._source_ref,
+                    correlation_id=uuid5(NAMESPACE_URL, f"{SELF_INQUIRY_TAG}:lived:{run_id}"),
+                    payload=row.model_dump(mode="json"),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "curiosity_lived_answer_publish_failed run=%s", run_id, exc_info=True
+            )
+            return False
+        logger.info(
+            "curiosity_lived_answer_mirrored run=%s question_id=%s version=%s chars=%s "
+            "evidence=%s revises=%s corr=%s",
+            run_id,
+            answer.question_id,
+            row.version,
+            len(row.content),
+            len(row.evidence_refs),
+            answer.revises or "-",
+            correlation_id,
+        )
+        return True
+
+    async def _mirror_self_inquiry_write(
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        family: str,
+        definition: Optional[SelfDefinition] = None,
+        lived_answer: Optional[LivedAnswer] = None,
+    ) -> bool:
+        if family == "lived":
+            return await self._mirror_lived_answer(
+                lived_answer, run_id=run_id, correlation_id=correlation_id
+            )
+        return await self._mirror_self_definition(
+            definition, run_id=run_id, correlation_id=correlation_id
+        )
 
     # --- the turn ----------------------------------------------------------
 
@@ -2514,14 +2616,30 @@ class CuriosityInvestigation:
         # never reaches the in-process journal enqueue.
         await self._enqueue_help_requests_after_run(state.run_id)
         if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
-            # The runner read the run's `:SelfDefinition` and carried it here;
-            # Hub owns the mirror because Hub has the memory pool for the
-            # version lookup. Absent means absent -- nothing is inferred.
-            await self._mirror_self_definition(
-                self_definition_from_detail(detail),
-                run_id=state.run_id,
-                correlation_id=state.correlation_id,
-            )
+            # Hub owns the mirror because Hub has the memory pool for the version
+            # lookup. Prefer detail when the runner carried it; otherwise read
+            # the run's graph node directly (same as the in-process path).
+            family = str(detail.get("self_question_family") or "").strip()
+            lived_answer = lived_answer_from_detail(detail)
+            definition = self_definition_from_detail(detail)
+            if family == "lived" or lived_answer is not None:
+                if lived_answer is None:
+                    lived_answer = await self._read_run_lived_answer(state.run_id)
+                await self._mirror_self_inquiry_write(
+                    run_id=state.run_id,
+                    correlation_id=state.correlation_id,
+                    family="lived",
+                    lived_answer=lived_answer,
+                )
+            else:
+                if definition is None:
+                    definition = await self._read_run_self_definition(state.run_id)
+                await self._mirror_self_inquiry_write(
+                    run_id=state.run_id,
+                    correlation_id=state.correlation_id,
+                    family="anatomy",
+                    definition=definition,
+                )
         if not detail.get("reach_out"):
             return
         outcome = TurnOutcome(

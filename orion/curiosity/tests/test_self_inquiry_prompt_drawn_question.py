@@ -1,5 +1,5 @@
-from orion.curiosity.self_inquiry import STANDING_QUESTION
-from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
+from orion.curiosity.self_inquiry import STANDING_QUESTION, SelfDefinition
+from orion.curiosity.self_inquiry_prompt import PreviousLivedAnswer, build_self_inquiry_prompt
 from orion.curiosity.self_question_pool import SelfQuestion
 
 RUN = "abcd12"
@@ -57,3 +57,35 @@ def test_anatomy_prompt_keeps_self_definition_merge() -> None:
     text = build_self_inquiry_prompt(question=q, run_id=RUN, graph_enabled=True)
     assert f'MERGE (s:SelfDefinition {{run_id: "{RUN}"}})' in text
     assert "LivedAnswer" not in text
+
+
+def test_lived_prompt_skips_anatomy_previous_definition() -> None:
+    latest = SelfDefinition("000000aaaaaa", "I am a distributed thing.", ["README.md"])
+    q = _lived_question()
+    text = build_self_inquiry_prompt(
+        question=q,
+        latest=latest,
+        definition_count=2,
+        run_id=RUN,
+        graph_enabled=True,
+    )
+    assert "WHAT YOU LAST WROTE ABOUT YOURSELF" not in text
+    assert "I am a distributed thing." not in text
+
+
+def test_lived_prompt_shows_previous_lived_answer() -> None:
+    q = _lived_question()
+    prev = PreviousLivedAnswer(
+        content="Juniper matters most.",
+        evidence=["journal_entries:1"],
+        run_id="oldrun1",
+    )
+    text = build_self_inquiry_prompt(
+        question=q,
+        previous_lived=prev,
+        run_id=RUN,
+        graph_enabled=True,
+    )
+    assert "You last wrote about this question:" in text
+    assert "Juniper matters most." in text
+    assert "journal_entries:1" in text

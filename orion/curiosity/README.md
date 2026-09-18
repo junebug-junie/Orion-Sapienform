@@ -552,10 +552,10 @@ for the same self-inquiry budget — not one hardcoded standing string.
 
 | | investigation line | self-inquiry line |
 |---|---|---|
-| the invitation | a menu: live priors + random crystallization cards | one **drawn** question from the pool (`lived` or `anatomy`) + self priors + last ledger answer for that question |
+| the invitation | a menu: live priors + random crystallization cards | one **drawn** question from the pool (`lived` or `anatomy`) + self priors + previous answer for that draw (anatomy: last `:SelfDefinition`; lived: latest `self:lived:<question_id>` in history) |
 | budget | `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` | `HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP` (3), own cooldown, own Redis keys (`orion:curiosity:self:*`) |
 | priors shown | every live prior **except** `line = "self"` | only priors with `line = "self"` |
-| extra material | -- | Orion's own repo at `/repo` (read-only mount), the outcome tables below, the previous definition or lived answer |
+| extra material | -- | Orion's own repo at `/repo` (read-only mount), the outcome tables below, the previous anatomy definition or previous lived answer for this draw |
 | extra write | -- | **anatomy:** `MERGE (s:SelfDefinition {run_id}) …` — written EARLY (by hop 2). **lived:** `MERGE (a:LivedAnswer {run_id}) …` with `question_id` fixed to the draw — same early-write clock |
 | crosses back out as | `:TurnOutcome` | `:TurnOutcome` **and** the definition or lived answer, mirrored by Hub into `self_concept_history` |
 | journal | title `Curiosity`, `source_ref=curiosity:<run>` | title `Self-inquiry`, `entry_id=curiosity-self-inquiry:<run>` (same `source_ref=curiosity:<run>`, which the atlas page joins on) |

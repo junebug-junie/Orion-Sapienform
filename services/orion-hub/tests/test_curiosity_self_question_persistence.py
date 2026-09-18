@@ -100,7 +100,8 @@ class _SelfQuestionConn(_GrantConn):
                 row = self.questions[qid]
                 row["text"] = text
                 row["family"] = family
-                row["status"] = "open"
+                if row.get("status") != "parked":
+                    row["status"] = "open"
             else:
                 self.questions[qid] = {
                     "question_id": qid,
@@ -291,6 +292,60 @@ def test_parked_row_is_excluded_from_pick_after_operator_park() -> None:
     assert asyncio.run(_park_question(conn, "lived.who_matters"))
     pool = merge_seed_with_rows([], list(conn.questions.values()))
     picked = pick_question(pool=pool, recent_families=[], now=datetime(2026, 9, 18, tzinfo=timezone.utc))
+    assert picked.question_id == "anatomy.made_of"
+
+
+def test_remint_upsert_preserves_parked_status_and_pick_excludes() -> None:
+    bus = _FakeBus()
+    conn = _SelfQuestionConn(
+        questions=[
+            {
+                "question_id": "lived.orion.continuity",
+                "text": "Old text",
+                "family": "lived",
+                "pinned": False,
+                "minted_by": "orion",
+                "status": "open",
+                "ask_count": 1,
+                "last_asked_at": datetime(2026, 9, 10, tzinfo=timezone.utc),
+            },
+            {
+                "question_id": "anatomy.made_of",
+                "text": "What am I made of?",
+                "family": "anatomy",
+                "pinned": True,
+                "minted_by": "juniper",
+                "status": "open",
+                "ask_count": 0,
+                "last_asked_at": None,
+            },
+        ]
+    )
+    assert asyncio.run(_park_question(conn, "lived.orion.continuity"))
+    mint = SelfQuestionMint(
+        run_id="abc123",
+        question_id="lived.orion.continuity",
+        text="What do I notice about continuity?",
+        family="lived",
+    )
+    loop = _graph_loop(
+        bus,
+        reader=_MintReader([mint]),
+        conn=conn,
+        kickoff_via_cortex=False,
+        self_inquiry_enabled=True,
+    )
+    assert asyncio.run(loop._upsert_orion_minted_questions("abc123")) == 1
+    row = conn.questions["lived.orion.continuity"]
+    assert row["status"] == "parked"
+    assert row["text"] == mint.text
+    assert row["ask_count"] == 1
+    pool = merge_seed_with_rows([], list(conn.questions.values()))
+    picked = pick_question(
+        pool=pool,
+        recent_families=[],
+        now=datetime(2026, 9, 18, tzinfo=timezone.utc),
+    )
     assert picked.question_id == "anatomy.made_of"
 
 

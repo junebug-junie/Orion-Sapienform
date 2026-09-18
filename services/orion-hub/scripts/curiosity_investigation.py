@@ -71,6 +71,7 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -118,7 +119,7 @@ from orion.curiosity.self_inquiry import (
     read_self_question_mints,
     self_definition_from_detail,
 )
-from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
+from orion.curiosity.self_inquiry_prompt import PreviousLivedAnswer, build_self_inquiry_prompt
 from orion.curiosity.self_question_pool import (
     SELECT_ALL_SQL,
     UPSERT_ASK_SQL,
@@ -230,6 +231,11 @@ SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
 SELF_CONCEPT_HISTORY_WRITE_KIND = "self_concept.history.write.v1"
 SELF_CONCEPT_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) + 1 FROM self_concept_history WHERE concept_id = $1"
+)
+PREVIOUS_LIVED_SQL = (
+    "SELECT version, created_at, content, evidence_refs "
+    "FROM self_concept_history WHERE concept_id = $1 "
+    "ORDER BY created_at DESC LIMIT 1"
 )
 
 
@@ -1816,6 +1822,46 @@ class CuriosityInvestigation:
             logger.warning("curiosity_self_context_read_failed err=%s", exc)
             return None, None
 
+    async def _read_previous_lived(self, question_id: str) -> Optional[PreviousLivedAnswer]:
+        """Latest mirrored answer for one lived draw from self_concept_history."""
+        pool = self._pool_provider()
+        if pool is None:
+            return None
+        concept_id = lived_concept_id(question_id)
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(PREVIOUS_LIVED_SQL, concept_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_previous_lived_read_failed question_id=%s err=%s",
+                question_id,
+                exc,
+            )
+            return None
+        if row is None:
+            return None
+        raw_evidence = row.get("evidence_refs")
+        if isinstance(raw_evidence, list):
+            evidence = [str(v) for v in raw_evidence]
+        elif isinstance(raw_evidence, str):
+            try:
+                parsed = json.loads(raw_evidence)
+            except (ValueError, TypeError):
+                evidence = []
+            else:
+                evidence = [str(v) for v in parsed] if isinstance(parsed, list) else []
+        else:
+            evidence = []
+        content = str(row.get("content") or "").strip()
+        if not content:
+            return None
+        run_id = ""
+        for ref in evidence:
+            if ref.startswith("worldview:LivedAnswer:"):
+                run_id = ref.removeprefix("worldview:LivedAnswer:")
+                break
+        return PreviousLivedAnswer(content=content, evidence=evidence, run_id=run_id)
+
     async def _self_inquire(
         self, *, now: datetime, run_id: str, correlation_id: str, done_today: int
     ) -> Optional[str]:
@@ -1869,6 +1915,9 @@ class CuriosityInvestigation:
         peer_briefs = ()
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
+        previous_lived = None
+        if picked.family == "lived":
+            previous_lived = await self._read_previous_lived(picked.question_id)
         prompt = build_self_inquiry_prompt(
             view=view,
             latest=latest,
@@ -1886,6 +1935,7 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
             question=picked,
+            previous_lived=previous_lived,
         )
         if peer_briefs:
             await publish_peer_briefs_consumed(

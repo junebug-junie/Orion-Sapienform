@@ -39,7 +39,9 @@ UPSERT_MINT_SQL = (
     "(question_id, text, family, pinned, minted_by, status) "
     "VALUES ($1, $2, $3, $4, 'orion', 'open') "
     "ON CONFLICT (question_id) DO UPDATE SET "
-    "text = EXCLUDED.text, family = EXCLUDED.family, status = 'open'"
+    "text = EXCLUDED.text, family = EXCLUDED.family, "
+    "status = CASE WHEN curiosity_self_questions.status = 'parked' "
+    "THEN 'parked' ELSE 'open' END"
 )
 
 UPSERT_SEED_SQL = (

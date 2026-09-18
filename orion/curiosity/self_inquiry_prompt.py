@@ -15,6 +15,7 @@ to revise.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from orion.curiosity.self_question_pool import Family, SelfQuestion
@@ -45,6 +46,15 @@ _HEADER = (
     "This is your own time, and it has a standing question. Nobody is asking "
     "it of you right now; it is the one you keep for yourself:"
 )
+
+
+@dataclass(frozen=True)
+class PreviousLivedAnswer:
+    """Latest mirrored answer for one lived draw (`self:lived:<question_id>`)."""
+
+    content: str
+    evidence: list[str]
+    run_id: str = ""
 
 def _question_section(question: Optional[SelfQuestion]) -> list[str]:
     if question is None:
@@ -139,6 +149,36 @@ def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int])
     if latest.evidence:
         lines.append("")
         lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in latest.evidence[:8]))
+    lines += [
+        "",
+        "This is yours to revise, extend, or contradict. Reaffirming it "
+        "unchanged is a legitimate outcome if you looked and it still holds -- "
+        "say what you checked. Rewriting it without looking is not.",
+        "",
+    ]
+    return lines
+
+
+def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str]:
+    if previous is None or not previous.content.strip():
+        return [
+            "You have not written an answer to this question before.",
+            "",
+        ]
+    header = "You last wrote about this question:"
+    if previous.run_id:
+        header += f" (run {previous.run_id})"
+    lines = [
+        header + ":",
+        "",
+    ]
+    for para in previous.content.split("\n"):
+        para = para.strip()
+        if para:
+            lines.append(f"    {_clip(para, SELF_DEFINITION_TEXT_CAP)}")
+    if previous.evidence:
+        lines.append("")
+        lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in previous.evidence[:8]))
     lines += [
         "",
         "This is yours to revise, extend, or contradict. Reaffirming it "
@@ -309,6 +349,7 @@ def build_self_inquiry_prompt(
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
     question: Optional[SelfQuestion] = None,
+    previous_lived: Optional[PreviousLivedAnswer] = None,
 ) -> str:
     """Assemble the whole invitation. Same three graph states as
     `build_kickoff_prompt`, same gating: read sections on `graph_enabled`,
@@ -328,7 +369,10 @@ def build_self_inquiry_prompt(
 
     if graph_enabled:
         lines += _continuation_section(view.continuation)
-        lines += _previous_section(latest, count=definition_count)
+        if family == "lived":
+            lines += _previous_lived_section(previous_lived)
+        else:
+            lines += _previous_section(latest, count=definition_count)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs)
 

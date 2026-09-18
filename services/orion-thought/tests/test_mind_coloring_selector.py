@@ -3,8 +3,13 @@ from __future__ import annotations
 from uuid import uuid4
 
 from app.mind_enrichment import MIND_COLORING_ALLOWED_KEYS, select_mind_coloring
-from orion.mind.synthesis_v1 import ActiveCognitiveFrontierV1, SelectedFrontierMatterV1
+from orion.mind.synthesis_v1 import (
+    ActiveCognitiveFrontierV1,
+    AppraisalFeatureVectorV1,
+    SelectedFrontierMatterV1,
+)
 from orion.mind.v1 import MindControlDecisionV1, MindHandoffBriefV1, MindRunResultV1
+from orion.schemas.chat_stance import ChatStanceBrief
 
 
 def _selected(label: str, summary: str, score: float) -> SelectedFrontierMatterV1:
@@ -15,6 +20,7 @@ def _selected(label: str, summary: str, score: float) -> SelectedFrontierMatterV
         summary=summary,
         matter_kind="curiosity_affordance",
         score=score,
+        features=AppraisalFeatureVectorV1(confidence=score),
     )
 
 
@@ -63,9 +69,27 @@ def _result(*, ok: bool, quality: str, with_frontier: bool = True) -> MindRunRes
 
 
 def test_meaningful_synthesis_key_set_equals_allow_list() -> None:
+    from app.mind_enrichment import MIND_COLORING_BASE_KEYS, MIND_COLORING_ORION_WORK_SHAPE_KEYS
+
     coloring = select_mind_coloring(_result(ok=True, quality="meaningful_synthesis"), max_items=3)
     assert coloring is not None
-    assert set(coloring.keys()) == MIND_COLORING_ALLOWED_KEYS
+    assert MIND_COLORING_ALLOWED_KEYS == (
+        MIND_COLORING_BASE_KEYS | MIND_COLORING_ORION_WORK_SHAPE_KEYS
+    )
+    assert set(coloring.keys()) <= MIND_COLORING_ALLOWED_KEYS
+    # Original self/attention keys still appear; work-shape keys stay origin-gated.
+    assert {
+        "attention_frontier",
+        "reflective_themes",
+        "curiosity_threads",
+        "self_relevance",
+        "identity_salience",
+        "juniper_relevance",
+        "mind_quality",
+        "mind_run_id",
+        "snapshot_hash",
+    } <= set(coloring.keys())
+    assert MIND_COLORING_ORION_WORK_SHAPE_KEYS.isdisjoint(coloring.keys())
 
 
 def test_task_control_fields_never_cross() -> None:
@@ -175,3 +199,92 @@ def test_whitespace_only_scalar_normalizes_to_none() -> None:
     coloring = select_mind_coloring(_result_with_payload(payload), max_items=3)
     assert coloring is not None
     assert coloring["self_relevance"] is None
+
+
+def test_user_intent_passes_for_juniper_origin() -> None:
+    coloring = select_mind_coloring(
+        _result(ok=True, quality="meaningful_synthesis"),
+        max_items=3,
+        utterance_origin="juniper",
+    )
+    assert coloring is not None
+    assert coloring.get("user_intent") == "connect"
+    assert "conversation_frame" not in coloring
+    assert "task_mode" not in coloring
+    assert "expected_depth" not in coloring  # orion-only soft label
+
+
+def test_orion_origin_passes_soft_work_shape_labels() -> None:
+    payload = _stance_payload()
+    payload["expected_depth"] = "deep"
+    payload["cross_cutting"] = "yes"
+    payload["foresight_note"] = "Likely multi-service archaeology."
+    coloring = select_mind_coloring(
+        _result_with_payload(payload),
+        max_items=3,
+        utterance_origin="orion",
+    )
+    assert coloring is not None
+    assert coloring["expected_depth"] == "deep"
+    assert coloring["cross_cutting"] == "yes"
+    assert "multi-service" in coloring["foresight_note"]
+
+
+def test_soft_labels_blocked_for_juniper_even_if_payload_has_them() -> None:
+    payload = _stance_payload()
+    payload["expected_depth"] = "deep"
+    coloring = select_mind_coloring(
+        _result_with_payload(payload),
+        max_items=3,
+        utterance_origin="juniper",
+    )
+    assert coloring is not None
+    assert "expected_depth" not in coloring
+
+
+def test_uncertainty_summary_from_frontier_features() -> None:
+    coloring = select_mind_coloring(
+        _result(ok=True, quality="meaningful_synthesis"),
+        max_items=3,
+        utterance_origin="juniper",
+    )
+    assert coloring is not None
+    summary = coloring.get("uncertainty_summary")
+    assert summary is not None
+    assert "continuity:0.91" in summary
+    assert "trust:0.77" in summary
+    assert "overflow" not in summary
+    assert len(summary) <= 240
+
+
+def test_invalid_soft_labels_dropped_even_for_orion() -> None:
+    payload = _stance_payload()
+    payload["expected_depth"] = "enormous"
+    payload["cross_cutting"] = "maybe"
+    coloring = select_mind_coloring(
+        _result_with_payload(payload),
+        max_items=3,
+        utterance_origin="orion",
+    )
+    assert coloring is not None
+    assert "expected_depth" not in coloring
+    assert "cross_cutting" not in coloring
+
+
+def test_chat_stance_brief_soft_work_shape_fields_roundtrip() -> None:
+    brief = ChatStanceBrief(
+        conversation_frame="technical",
+        user_intent="Investigate a cross-service gap.",
+        self_relevance="This is my own investigation.",
+        juniper_relevance="Juniper asked for hire determination.",
+        answer_strategy="DirectAnswer",
+        stance_summary="Orion-authored investigation.",
+        expected_depth="deep",
+        cross_cutting="yes",
+        foresight_note="Likely multi-service archaeology.",
+    )
+    dumped = brief.model_dump(mode="json")
+    reparsed = ChatStanceBrief.model_validate(dumped)
+    assert reparsed.expected_depth == "deep"
+    assert reparsed.cross_cutting == "yes"
+    assert "multi-service" in (reparsed.foresight_note or "")

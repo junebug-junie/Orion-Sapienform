@@ -53,3 +53,6 @@ class ChatStanceBrief(BaseModel):
     stance_summary: str = Field(...)
     interaction_regime: Literal["instrumental", "relational", "minimal"] | None = Field(default=None)
     companion_closing_move: str | None = Field(default=None)
+    expected_depth: Literal["shallow", "deep", "unknown"] | None = None
+    cross_cutting: Literal["yes", "no", "unknown"] | None = None
+    foresight_note: str | None = Field(default=None, max_length=240)

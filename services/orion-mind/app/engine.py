@@ -947,6 +947,7 @@ def run_mind_llm_synthesis(
             max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_STANCE", 1536)),
             context=_phase_context("stance_handoff"),
             timeout_sec=budget.phase_timeout_sec(configured_timeout),
+            utterance_origin=req.utterance_origin,
         )
         phase_records.append(st_telemetry)
         phases["stance_handoff_ms"] = (time.perf_counter() - t_st) * 1000

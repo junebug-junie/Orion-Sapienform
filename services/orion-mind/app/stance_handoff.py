@@ -6,8 +6,6 @@ import json
 import time
 from typing import Any
 
-from pydantic import ValidationError
-
 from orion.mind.synthesis_v1 import ActiveCognitiveFrontierV1, SemanticSynthesisV1
 from orion.mind.validation import validate_merged_stance_brief_optional
 
@@ -65,6 +63,22 @@ Also include: user_intent, self_relevance, juniper_relevance, response_prioritie
 Example for a simple operational turn:
 {"conversation_frame":"mixed","task_mode":"direct_response","identity_salience":"low","user_intent":"User is running a smoketest.","self_relevance":"Confirm receipt without over-interpreting.","juniper_relevance":"Stay concise and operational.","response_priorities":["confirm receipt"],"response_hazards":["do not invent context"],"answer_strategy":"DirectAnswer","stance_summary":"Operational smoketest turn."}"""
 
+_ORION_WORK_SHAPE_INSTRUCTION = """
+When the utterance origin is Orion (self-authored investigation subject), also fill these optional work-shape fields (use unknown if unsure):
+- expected_depth: shallow | deep | unknown
+- cross_cutting: yes | no | unknown
+- foresight_note: short note, max 240 chars
+"""
+
+_VALID_EXPECTED_DEPTH: frozenset[str] = frozenset({"shallow", "deep", "unknown"})
+_VALID_CROSS_CUTTING: frozenset[str] = frozenset({"yes", "no", "unknown"})
+
+
+def _stance_system_prompt(utterance_origin: str | None) -> str:
+    if utterance_origin == "orion":
+        return _STANCE_SYSTEM + _ORION_WORK_SHAPE_INSTRUCTION
+    return _STANCE_SYSTEM
+
 
 def try_coerce_stance_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Coerce common invalid LLM enum strings before ChatStanceBrief validation."""
@@ -88,6 +102,28 @@ def try_coerce_stance_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], 
         coerced = _IDENTITY_SALIENCE_ALIASES.get(salience, "low")
         out["identity_salience"] = coerced
         changed = True
+
+    if "expected_depth" in out and out["expected_depth"] is not None:
+        depth = str(out.get("expected_depth") or "").strip().lower()
+        if depth not in _VALID_EXPECTED_DEPTH:
+            out["expected_depth"] = "unknown"
+            changed = True
+        else:
+            out["expected_depth"] = depth
+
+    if "cross_cutting" in out and out["cross_cutting"] is not None:
+        cross = str(out.get("cross_cutting") or "").strip().lower()
+        if cross not in _VALID_CROSS_CUTTING:
+            out["cross_cutting"] = "unknown"
+            changed = True
+        else:
+            out["cross_cutting"] = cross
+
+    if "foresight_note" in out and out["foresight_note"] is not None:
+        note = str(out.get("foresight_note") or "").strip()[:240]
+        if note != out["foresight_note"]:
+            changed = True
+        out["foresight_note"] = note or None
 
     return out, changed
 
@@ -119,17 +155,19 @@ def run_stance_handoff(
     max_tokens: int,
     context: MindLLMRequestContext | None = None,
     timeout_sec: float | None = None,
+    utterance_origin: str | None = None,
 ) -> tuple[dict[str, Any], str | None, MindPhaseTelemetry]:
-    user_prompt = json.dumps(
-        {
-            "current_user_text": pack.current_user_text,
-            "selected_frontier": [m.model_dump(mode="json") for m in frontier.selected],
-            "hazards": frontier.hazards,
-            "response_directives": frontier.response_directives,
-            "claims": [c.model_dump(mode="json") for c in synthesis.claims[:12]],
-        },
-        ensure_ascii=False,
-    )
+    origin = utterance_origin if utterance_origin in ("juniper", "orion") else None
+    user_pack: dict[str, Any] = {
+        "current_user_text": pack.current_user_text,
+        "selected_frontier": [m.model_dump(mode="json") for m in frontier.selected],
+        "hazards": frontier.hazards,
+        "response_directives": frontier.response_directives,
+        "claims": [c.model_dump(mode="json") for c in synthesis.claims[:12]],
+    }
+    if origin is not None:
+        user_pack["utterance_origin"] = origin
+    user_prompt = json.dumps(user_pack, ensure_ascii=False)
     started = utc_now_iso()
     t0 = time.perf_counter()
     # thinking left at request_json's default (False = actively disable
@@ -137,7 +175,7 @@ def run_stance_handoff(
     # smaller token budget (MIND_LLM_MAX_TOKENS_STANCE) made it especially exposed
     # to unsuppressed reasoning eating the whole budget before any JSON appeared.
     raw, err, meta = client.request_json(
-        system_prompt=_STANCE_SYSTEM,
+        system_prompt=_stance_system_prompt(origin),
         user_prompt=user_prompt,
         route=route,
         max_tokens=max_tokens,

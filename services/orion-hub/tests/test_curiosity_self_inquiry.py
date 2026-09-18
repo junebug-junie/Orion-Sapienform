@@ -35,6 +35,7 @@ from orion.curiosity.self_inquiry import (
     SELF_CONCEPT_ID,
     SELF_DEFINITION_PRODUCER,
     SELF_INQUIRY_PG_TABLES,
+    SELF_INQUIRY_TAG,
     STANDING_QUESTION,
     LedgerRow,
     SelfDefinition,
@@ -63,8 +64,10 @@ from scripts.curiosity_investigation import (
     _DAILY_COUNT_KEY_PREFIX,
     _SELF_COOLDOWN_KEY,
     _SELF_DAILY_COUNT_KEY_PREFIX,
+    _SELF_LAST_RUN_KEY,
     JOURNAL_WRITE_CHANNEL,
     SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+    CuriosityInvestigation,
 )
 
 SOURCE = ServiceRef(name="orion-hub", version="test", node="athena")
@@ -550,6 +553,86 @@ def test_evidence_falls_back_to_the_stringified_list_when_unwind_fails() -> None
 
     d = read_self_definition(_R(), RUN)
     assert d is not None and d.evidence == ["[a, b]"], "still substantive: the citations are all there, in one string"
+
+
+def test_generate_uses_stashed_appraisal_for_self_inquiry_source() -> None:
+    """Mind lookup must honor SELF_INQUIRY_TAG, not only INVESTIGATION_TAG."""
+    import orion.hub.turn_orchestrator as orch
+
+    seen: dict = {}
+
+    async def _fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "ok", "harness_step_count": 14}]
+
+    original = orch.execute_unified_turn
+    orch.execute_unified_turn = _fake_turn
+    try:
+        loop = _self_loop(_FakeBus(), reader=_DefinitionReader(), conn=_GrantConn(), text=None)
+        loop._generate = CuriosityInvestigation._generate.__get__(loop)
+        loop._mind_appraisal_by_run_id["run1"] = "Investigation claim: not yet chosen.\nContinue note: keep pulling on ACL"
+        asyncio.run(
+            loop._generate(
+                "full scaffold MERGE (s:SelfDefinition {run_id: \"run1\"})",
+                "c1",
+                source=SELF_INQUIRY_TAG,
+                parent_run_id="run1",
+            )
+        )
+    finally:
+        orch.execute_unified_turn = original
+
+    assert seen.get("utterance_origin") == "orion"
+    assert "keep pulling on ACL" in str(seen.get("mind_appraisal_text") or "")
+    assert "MERGE (s:SelfDefinition" in str(seen.get("user_message") or "")
+    assert "MERGE (s:SelfDefinition" not in str(seen.get("mind_appraisal_text") or "")
+
+
+def test_self_inquiry_kickoff_passes_subject_not_full_scaffold_to_mind() -> None:
+    """Spec Patch 3 covers curiosity AND self-inquiry.
+
+    The SelfDefinition / HelpRequest teach block is harness instruction.
+    Mind should appraise claim-unset + continue note, not the operator manual.
+    """
+    import orion.hub.turn_orchestrator as orch
+
+    seen: dict = {}
+
+    async def _fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "ok", "harness_step_count": 14}]
+
+    original = orch.execute_unified_turn
+    orch.execute_unified_turn = _fake_turn
+    try:
+        bus = _FakeBus()
+        bus.redis.values[_SELF_LAST_RUN_KEY] = "aaaaaaaaaaaa"
+        reader = _DefinitionReader(answers={"t.run_id = 'aaaaaaaaaaaa'": _outcome_rows(
+            run_id="aaaaaaaaaaaa",
+            continue_line=True,
+            continue_note="still do not know what I am made of",
+        )})
+        loop = _self_loop(
+            bus, reader=reader, conn=_GrantConn(), text=None, contractor_peer_enabled=True,
+        )
+        loop._generate = CuriosityInvestigation._generate.__get__(loop)
+        asyncio.run(loop.tick_self_inquiry())
+    finally:
+        orch.execute_unified_turn = original
+
+    user_message = str(seen.get("user_message") or "")
+    appraisal = str(seen.get("mind_appraisal_text") or "")
+    assert "ASKING FOR CONTRACTOR" in user_message
+    assert "MERGE (h:HelpRequest" in user_message
+    assert "MERGE (s:SelfDefinition" in user_message
+    assert "still do not know what I am made of" in user_message
+    assert appraisal
+    assert appraisal != user_message
+    assert "MERGE (h:HelpRequest" not in appraisal
+    assert "ASKING FOR CONTRACTOR" not in appraisal
+    assert "MERGE (s:SelfDefinition" not in appraisal
+    assert "still do not know what I am made of" in appraisal
+    assert "not yet chosen" in appraisal.lower() or "no claim" in appraisal.lower()
 
 
 def test_the_grant_script_grants_exactly_the_tables_the_gate_requires() -> None:

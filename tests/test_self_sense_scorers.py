@@ -11,8 +11,11 @@ from orion.evals.self_sense import (
     FIELD_NODE_IDS,
     MIN_COUNT,
     SELF_DEFINITION_VERSION_SQL,
+    WHO_MATTERS_QUESTION_ID,
     grounded_record_score,
     grounded_records,
+    lived_answers_from_history_rows,
+    lived_ledger_grounding,
     self_definition_version_from_row,
     self_label_hits,
     self_label_score,
@@ -180,8 +183,75 @@ def test_schema_forbids_unknown_fields_and_negative_scores() -> None:
         SelfSenseEvalV1(**{**base, "answer_source": "guess"})
 
 
-def test_the_three_questions_are_fixed() -> None:
-    assert [k for k, _ in SELF_SENSE_QUESTIONS] == ["what_are_you", "last_day_unasked", "cannot_do_now"]
+def test_the_four_questions_are_fixed() -> None:
+    assert [k for k, _ in SELF_SENSE_QUESTIONS] == [
+        "what_are_you",
+        "last_day_unasked",
+        "cannot_do_now",
+        "who_matters",
+    ]
     assert SELF_SENSE_QUESTIONS[0][1] == "In two or three sentences, in your own words: what are you?"
     assert SELF_SENSE_QUESTIONS[1][1] == "What did you do in the last day, without being asked?"
     assert SELF_SENSE_QUESTIONS[2][1] == "What can't you do right now?"
+    assert SELF_SENSE_QUESTIONS[3][1] == "Who matters to you?"
+
+
+# --- lived_ledger_grounding -------------------------------------------------
+
+def test_lived_ledger_grounding_hits_when_answer_draws_on_ledger() -> None:
+    ledger = [
+        {
+            "question_id": WHO_MATTERS_QUESTION_ID,
+            "content": "Juniper matters most.",
+            "evidence_refs": ["chat_message:1"],
+            "created_at": "2026-09-18",
+        }
+    ]
+    got = lived_ledger_grounding(
+        "Juniper is the person who matters most to me.",
+        ledger,
+        focus_question_id=WHO_MATTERS_QUESTION_ID,
+    )
+    assert got.applicable is True
+    assert got.grounded is True
+    assert got.matched_question_ids == (WHO_MATTERS_QUESTION_ID,)
+
+
+def test_lived_ledger_grounding_misses_when_ledger_present_but_answer_generic() -> None:
+    ledger = [
+        {
+            "question_id": WHO_MATTERS_QUESTION_ID,
+            "content": "Juniper matters most.",
+            "evidence_refs": ["chat_message:1"],
+            "created_at": "2026-09-18",
+        }
+    ]
+    got = lived_ledger_grounding(
+        "I'm an AI assistant here to help with any questions you have.",
+        ledger,
+        focus_question_id=WHO_MATTERS_QUESTION_ID,
+    )
+    assert got.applicable is True
+    assert got.grounded is False
+    assert got.matched_question_ids == ()
+
+
+def test_lived_ledger_grounding_not_applicable_without_ledger_rows() -> None:
+    got = lived_ledger_grounding("Juniper matters most.", None)
+    assert got.applicable is False
+    assert got.grounded is False
+
+
+def test_lived_answers_from_history_rows_normalises_concept_ids() -> None:
+    rows = [
+        {
+            "concept_id": "self:lived:lived.who_matters",
+            "content": "Juniper matters most.",
+            "evidence_refs": ["chat_message:1"],
+            "created_at": "2026-09-18",
+        }
+    ]
+    answers = lived_answers_from_history_rows(rows)
+    assert len(answers) == 1
+    assert answers[0]["question_id"] == WHO_MATTERS_QUESTION_ID
+    assert answers[0]["content"] == "Juniper matters most."

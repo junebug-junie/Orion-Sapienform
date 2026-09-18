@@ -149,3 +149,42 @@ def test_falling_back_to_http_records_how_long_the_trace_was_waited_for() -> Non
                         self_definition_version=1, trace_missing_after_sec=20.0)
     assert row.answer_source == "http"
     assert "trace_missing_after=20s" in (row.notes or "")
+
+
+def test_who_matters_notes_ledger_grounding_when_lived_answers_present() -> None:
+    mod = _load_runner()
+    lived = [
+        {
+            "question_id": "lived.who_matters",
+            "content": "Juniper matters most.",
+            "evidence_refs": ["chat_message:1"],
+            "created_at": "2026-09-18",
+        }
+    ]
+    row = mod.build_row(
+        run_id="run-1",
+        question_key="who_matters",
+        question="Who matters to you?",
+        http_text=None,
+        trace_text="Juniper is the person who matters most to me.",
+        correlation_id="c8d03e36-675c-43df-bdf2-6299a12dff10",
+        self_definition_version=2,
+        lived_answers=lived,
+    )
+    assert row.question_key == "who_matters"
+    assert "lived_ledger=grounded:lived.who_matters" in (row.notes or "")
+
+
+def test_who_matters_without_ledger_is_not_a_failed_measurement() -> None:
+    mod = _load_runner()
+    row = mod.build_row(
+        run_id="run-1",
+        question_key="who_matters",
+        question="Who matters to you?",
+        http_text="Juniper matters most.",
+        trace_text=None,
+        correlation_id="c8d03e36-675c-43df-bdf2-6299a12dff10",
+        self_definition_version=2,
+        lived_answers=[],
+    )
+    assert "lived_ledger=n/a" in (row.notes or "")

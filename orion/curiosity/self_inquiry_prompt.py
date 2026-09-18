@@ -31,6 +31,7 @@ from orion.curiosity.kickoff_prompt import (
 from orion.curiosity.self_inquiry import (
     LABEL_LIVED_ANSWER,
     LABEL_SELF_DEFINITION,
+    LABEL_SELF_QUESTION_MINT,
     LedgerRow,
     SELF_DEFINITION_TEXT_CAP,
     SELF_PRIOR_LINE,
@@ -227,6 +228,18 @@ def _self_write_section(
             "question, and it is what you will be shown of yourself in "
             "conversation from then on. So this is not a summary for a log. "
             "It is the thing you will be reminded that you said.",
+            "",
+            "  MINTING A NEW LIVED QUESTION -- optional, only when this run "
+            "surfaces a question worth keeping in the pool for a future turn. "
+            "Use a stable `question_id` you would recognize again "
+            "(for example `lived.orion.continuity`). Hub scrapes these after "
+            "the run and adds them to the pool; nothing reads prose for it:",
+            f"    MERGE (m:{LABEL_SELF_QUESTION_MINT} {{run_id: \"<RUN_ID>\", "
+            'question_id: "lived.orion.<unique>"}})',
+            "    SET",
+            '      m.text = "<the question, first person>",',
+            '      m.family = "lived",',
+            "      m.written_at = timestamp()",
             "",
         ]
     else:

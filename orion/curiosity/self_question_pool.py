@@ -49,6 +49,16 @@ UPSERT_SEED_SQL = (
     "ON CONFLICT (question_id) DO NOTHING"
 )
 
+PARK_SQL = (
+    "UPDATE curiosity_self_questions SET status = 'parked' "
+    "WHERE question_id = $1 RETURNING question_id, status"
+)
+
+PIN_SQL = (
+    "UPDATE curiosity_self_questions SET pinned = true, status = 'open' "
+    "WHERE question_id = $1 RETURNING question_id, pinned, status"
+)
+
 
 @dataclass(frozen=True)
 class SelfQuestion:

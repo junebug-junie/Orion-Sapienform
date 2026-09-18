@@ -115,12 +115,14 @@ from orion.curiosity.self_inquiry import (
     read_lived_answer,
     read_self_definition,
     read_self_definition_count,
+    read_self_question_mints,
     self_definition_from_detail,
 )
 from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
 from orion.curiosity.self_question_pool import (
     SELECT_ALL_SQL,
     UPSERT_ASK_SQL,
+    UPSERT_MINT_SQL,
     UPSERT_SEED_SQL,
     load_seed_questions,
     merge_seed_with_rows,
@@ -1700,6 +1702,46 @@ class CuriosityInvestigation:
                 exc,
             )
 
+    async def _upsert_orion_minted_questions(self, run_id: str) -> int:
+        """Scrape `:SelfQuestionMint` nodes for this run into Postgres."""
+        reader = self._reader
+        if reader is None:
+            return 0
+        pool = self._pool_provider()
+        if pool is None:
+            return 0
+        try:
+            mints = await asyncio.to_thread(read_self_question_mints, reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_question_mint_read_failed run=%s err=%s", run_id, exc
+            )
+            return 0
+        if not mints:
+            return 0
+        upserted = 0
+        try:
+            async with pool.acquire() as conn:
+                for mint in mints:
+                    await conn.execute(
+                        UPSERT_MINT_SQL,
+                        mint.question_id,
+                        mint.text,
+                        mint.family,
+                        False,
+                    )
+                    upserted += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_question_mint_upsert_failed run=%s err=%s", run_id, exc
+            )
+            return upserted
+        if upserted:
+            logger.info(
+                "curiosity_self_question_mints_upserted run=%s count=%s", run_id, upserted
+            )
+        return upserted
+
     async def _read_recent_self_families(self) -> list[str]:
         redis = getattr(self._bus, "redis", None)
         if redis is None:
@@ -1930,6 +1972,7 @@ class CuriosityInvestigation:
             definition=definition,
             lived_answer=lived_answer,
         )
+        await self._upsert_orion_minted_questions(run_id)
         write_label = "lived_answer" if picked.family == "lived" else "definition"
         wrote = lived_answer if picked.family == "lived" else definition
         logger.info(
@@ -2640,6 +2683,7 @@ class CuriosityInvestigation:
                     family="anatomy",
                     definition=definition,
                 )
+            await self._upsert_orion_minted_questions(state.run_id)
         if not detail.get("reach_out"):
             return
         outcome = TurnOutcome(

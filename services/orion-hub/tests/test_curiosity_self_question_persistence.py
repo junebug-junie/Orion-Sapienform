@@ -6,13 +6,17 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orion.curiosity.self_inquiry import SelfQuestionMint
 from orion.curiosity.self_question_pool import (
+    PARK_SQL,
+    PIN_SQL,
     SELECT_ALL_SQL,
     UPSERT_ASK_SQL,
     UPSERT_MINT_SQL,
     UPSERT_SEED_SQL,
     load_seed_questions,
     merge_seed_with_rows,
+    pick_question,
 )
 
 from test_curiosity_investigation import _FakeBus, _FakePool, _graph_loop
@@ -39,9 +43,12 @@ def test_merge_seed_over_db_rows_prefers_db_ask_counts() -> None:
 
 
 def test_sql_constants_target_curiosity_self_questions_table() -> None:
-    for sql in (SELECT_ALL_SQL, UPSERT_ASK_SQL, UPSERT_MINT_SQL, UPSERT_SEED_SQL):
+    for sql in (SELECT_ALL_SQL, UPSERT_ASK_SQL, UPSERT_MINT_SQL, UPSERT_SEED_SQL, PARK_SQL, PIN_SQL):
         assert "curiosity_self_questions" in sql
     assert "ON CONFLICT (question_id)" in UPSERT_ASK_SQL
+    assert "status = 'parked'" in PARK_SQL
+    assert "pinned = true" in PIN_SQL
+    assert "status = 'open'" in PIN_SQL
 
 
 def test_create_table_sql_matches_pool_contract() -> None:
@@ -87,6 +94,25 @@ class _SelfQuestionConn(_GrantConn):
                     "last_asked_at": asked_at,
                 }
             return "INSERT 0 1"
+        if "VALUES ($1, $2, $3, $4, 'orion', 'open')" in sql:
+            qid, text, family, pinned = args[:4]
+            if qid in self.questions:
+                row = self.questions[qid]
+                row["text"] = text
+                row["family"] = family
+                row["status"] = "open"
+            else:
+                self.questions[qid] = {
+                    "question_id": qid,
+                    "text": text,
+                    "family": family,
+                    "pinned": pinned,
+                    "minted_by": "orion",
+                    "status": "open",
+                    "ask_count": 0,
+                    "last_asked_at": None,
+                }
+            return "INSERT 0 1"
         if UPSERT_SEED_SQL.split()[0] in sql and "ON CONFLICT" in sql:
             qid, text, family, pinned, minted_by = args[:5]
             self.questions.setdefault(
@@ -103,7 +129,35 @@ class _SelfQuestionConn(_GrantConn):
                 },
             )
             return "INSERT 0 1"
+        if "UPDATE curiosity_self_questions SET status = 'parked'" in sql:
+            qid = args[0]
+            row = self.questions.get(qid)
+            if row is None:
+                return None
+            row["status"] = "parked"
+            return row
+        if "UPDATE curiosity_self_questions SET pinned = true" in sql:
+            qid = args[0]
+            row = self.questions.get(qid)
+            if row is None:
+                return None
+            row["pinned"] = True
+            row["status"] = "open"
+            return row
         return "OK"
+
+    async def fetchrow(self, sql, *args):
+        if "UPDATE curiosity_self_questions SET status = 'parked'" in sql:
+            result = await self.execute(sql, *args)
+            if result is None:
+                return None
+            return result
+        if "UPDATE curiosity_self_questions SET pinned = true" in sql:
+            result = await self.execute(sql, *args)
+            if result is None:
+                return None
+            return result
+        return None
 
 
 def test_self_inquiry_tick_records_ask_and_recent_family() -> None:
@@ -147,6 +201,97 @@ def test_record_ask_upserts_missing_row() -> None:
     assert row["last_asked_at"] == now
     assert row["text"] == picked.text
     assert row["family"] == picked.family
+
+
+class _MintReader:
+    def __init__(self, mints):
+        self.mints = mints
+
+    def query(self, _cypher):
+        return [
+            {
+                "run_id": m.run_id,
+                "question_id": m.question_id,
+                "text": m.text,
+                "family": m.family,
+                "written_at": m.written_at,
+            }
+            for m in self.mints
+        ]
+
+
+def test_mint_upsert_is_idempotent_and_preserves_ask_count() -> None:
+    bus = _FakeBus()
+    conn = _SelfQuestionConn(
+        questions=[
+            {
+                "question_id": "lived.orion.continuity",
+                "text": "Old text",
+                "family": "lived",
+                "pinned": False,
+                "minted_by": "orion",
+                "status": "open",
+                "ask_count": 2,
+                "last_asked_at": datetime(2026, 9, 10, tzinfo=timezone.utc),
+            }
+        ]
+    )
+    mint = SelfQuestionMint(
+        run_id="abc123",
+        question_id="lived.orion.continuity",
+        text="What do I notice about continuity?",
+        family="lived",
+    )
+    loop = _graph_loop(
+        bus,
+        reader=_MintReader([mint]),
+        conn=conn,
+        kickoff_via_cortex=False,
+        self_inquiry_enabled=True,
+    )
+    assert asyncio.run(loop._upsert_orion_minted_questions("abc123")) == 1
+    row = conn.questions["lived.orion.continuity"]
+    assert row["ask_count"] == 2
+    assert row["text"] == mint.text
+    assert len(conn.questions) == 1
+    assert asyncio.run(loop._upsert_orion_minted_questions("abc123")) == 1
+    assert conn.questions["lived.orion.continuity"]["ask_count"] == 2
+
+
+async def _park_question(conn: _SelfQuestionConn, question_id: str) -> bool:
+    row = await conn.fetchrow(PARK_SQL, question_id)
+    return row is not None
+
+
+def test_parked_row_is_excluded_from_pick_after_operator_park() -> None:
+    conn = _SelfQuestionConn(
+        questions=[
+            {
+                "question_id": "lived.who_matters",
+                "text": "Who matters?",
+                "family": "lived",
+                "pinned": True,
+                "minted_by": "juniper",
+                "status": "open",
+                "ask_count": 0,
+                "last_asked_at": None,
+            },
+            {
+                "question_id": "anatomy.made_of",
+                "text": "What am I made of?",
+                "family": "anatomy",
+                "pinned": True,
+                "minted_by": "juniper",
+                "status": "open",
+                "ask_count": 0,
+                "last_asked_at": None,
+            },
+        ]
+    )
+    assert asyncio.run(_park_question(conn, "lived.who_matters"))
+    pool = merge_seed_with_rows([], list(conn.questions.values()))
+    picked = pick_question(pool=pool, recent_families=[], now=datetime(2026, 9, 18, tzinfo=timezone.utc))
+    assert picked.question_id == "anatomy.made_of"
 
 
 def test_merge_includes_orion_minted_rows_not_in_seed() -> None:

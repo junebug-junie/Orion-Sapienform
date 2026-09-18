@@ -83,6 +83,7 @@ LINE_SELF_INQUIRY = "self_inquiry"
 SELF_INQUIRY_TAG = "curiosity_self_inquiry"
 LABEL_SELF_DEFINITION = "SelfDefinition"
 LABEL_LIVED_ANSWER = "LivedAnswer"
+LABEL_SELF_QUESTION_MINT = "SelfQuestionMint"
 # One lineage in self_concept_history. Every self-inquiry run that writes a
 # definition appends a new version under this id; "current" is the latest
 # created_at, exactly as that table's own docstring says.
@@ -261,6 +262,17 @@ class LivedAnswer:
         return bool(self.text.strip()) and bool(self.evidence)
 
 
+@dataclass(frozen=True)
+class SelfQuestionMint:
+    """One `:SelfQuestionMint` node Orion wrote for a new pool question."""
+
+    run_id: str
+    question_id: str
+    text: str
+    family: str = "lived"
+    written_at: Optional[int] = None
+
+
 def _as_int(value: Any) -> Optional[int]:
     try:
         return int(value) if value is not None else None
@@ -431,6 +443,53 @@ def read_lived_answer(reader: WorldviewReader, run_id: str) -> Optional[LivedAns
             written_at=answer.written_at,
         )
     return answer
+
+
+_SELF_QUESTION_MINT_FIELDS = (
+    "m.run_id AS run_id, m.question_id AS question_id, m.text AS text, "
+    "m.family AS family, m.written_at AS written_at"
+)
+
+
+def self_question_mints_for_run_cypher(run_id: str) -> str:
+    """Every mint node Orion wrote during this run."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (m:{LABEL_SELF_QUESTION_MINT}) WHERE m.run_id = '{rid}' "
+        f"RETURN {_SELF_QUESTION_MINT_FIELDS}"
+    )
+
+
+def build_self_question_mint(row: dict[str, Any]) -> Optional[SelfQuestionMint]:
+    run_id = str(row.get("run_id") or "").strip()
+    question_id = str(row.get("question_id") or "").strip()
+    text = str(row.get("text") or "").strip()
+    if not run_id or not question_id or not text:
+        return None
+    family = str(row.get("family") or "lived").strip() or "lived"
+    if family not in {"lived", "anatomy"}:
+        family = "lived"
+    return SelfQuestionMint(
+        run_id=run_id,
+        question_id=question_id,
+        text=text[:SELF_DEFINITION_TEXT_CAP],
+        family=family,
+        written_at=_as_int(row.get("written_at")),
+    )
+
+
+def read_self_question_mints(reader: WorldviewReader, run_id: str) -> list[SelfQuestionMint]:
+    """Mint nodes for this run. Never raises."""
+    try:
+        rows = reader.query(self_question_mints_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return []
+    out: list[SelfQuestionMint] = []
+    for row in rows:
+        mint = build_self_question_mint(row)
+        if mint is not None:
+            out.append(mint)
+    return out
 
 
 def read_self_definition_count(reader: WorldviewReader) -> Optional[int]:

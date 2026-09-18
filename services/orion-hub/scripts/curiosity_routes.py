@@ -38,6 +38,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from orion.curiosity.atlas import read_atlas, to_payload
 from orion.curiosity.self_panel import read_self_panel
 from orion.curiosity.self_panel import to_payload as self_panel_to_payload
+from orion.curiosity.self_question_pool import PARK_SQL, PIN_SQL
 from orion.curiosity.worldview import WorldviewReader
 
 logger = logging.getLogger("orion-hub.curiosity_routes")
@@ -344,6 +345,79 @@ async def curiosity_run_now() -> JSONResponse:
             "ok": True,
             "detail": "Turn requested. It takes ~20 minutes; the page will "
                       "show it once the run writes its first node.",
+        },
+        headers=_NO_CACHE,
+    )
+
+
+@router.post("/api/self-questions/{question_id}/park")
+async def park_self_question(question_id: str) -> JSONResponse:
+    """Park a self-inquiry question so it is excluded from future draws."""
+    pool = _get_memory_pg_pool()
+    if pool is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "pg_unavailable"},
+            status_code=503,
+            headers=_NO_CACHE,
+        )
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(PARK_SQL, question_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_self_question_park_failed id=%s err=%s", question_id, exc)
+        return JSONResponse(
+            content={"ok": False, "reason": str(exc)[:200]},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    if row is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "not_found", "question_id": question_id},
+            status_code=404,
+            headers=_NO_CACHE,
+        )
+    return JSONResponse(
+        content={
+            "ok": True,
+            "question_id": str(row["question_id"]),
+            "status": str(row["status"]),
+        },
+        headers=_NO_CACHE,
+    )
+
+
+@router.post("/api/self-questions/{question_id}/pin")
+async def pin_self_question(question_id: str) -> JSONResponse:
+    """Pin a self-inquiry question and reopen it if it was parked."""
+    pool = _get_memory_pg_pool()
+    if pool is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "pg_unavailable"},
+            status_code=503,
+            headers=_NO_CACHE,
+        )
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(PIN_SQL, question_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_self_question_pin_failed id=%s err=%s", question_id, exc)
+        return JSONResponse(
+            content={"ok": False, "reason": str(exc)[:200]},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    if row is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "not_found", "question_id": question_id},
+            status_code=404,
+            headers=_NO_CACHE,
+        )
+    return JSONResponse(
+        content={
+            "ok": True,
+            "question_id": str(row["question_id"]),
+            "pinned": bool(row["pinned"]),
+            "status": str(row["status"]),
         },
         headers=_NO_CACHE,
     )

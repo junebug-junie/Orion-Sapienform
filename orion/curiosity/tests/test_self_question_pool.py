@@ -67,3 +67,16 @@ def test_draw_prefers_anatomy_when_lived_over_weight_and_no_floor() -> None:
         for i in range(40)
     ]
     assert "anatomy" in picks
+
+
+def test_pick_question_excludes_parked() -> None:
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    open_q = _q(question_id="lived.open", status="open")
+    parked = _q(question_id="lived.parked", status="parked")
+    picked = pick_question(
+        pool=[open_q, parked],
+        recent_families=[],
+        now=now,
+        rng=Random(0),
+    )
+    assert picked.question_id == "lived.open"

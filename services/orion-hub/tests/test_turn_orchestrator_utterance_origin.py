@@ -208,3 +208,41 @@ async def test_run_unified_turn_passes_juniper_utterance_origin() -> None:
 
     assert captured.get("utterance_origin") == "juniper"
     assert captured.get("reading_context") == "unified_chat"
+
+
+@pytest.mark.asyncio
+async def test_execute_unified_turn_uses_mind_appraisal_text_for_stance_not_harness() -> None:
+    """Stance/Mind see the short subject; the motor still gets the full prompt."""
+    kickoff = (
+        "ASKING FOR CONTRACTOR HELP (orion_worldview).\n"
+        '  MERGE (h:HelpRequest {help_id: "<unique help id>"})\n'
+        "Pick something. Nobody asked you."
+    )
+    subject = (
+        "Orion investigation subject (self-authored).\n"
+        "Investigation claim: not yet chosen.\n"
+        "Continue note: still do not know why substrate.route has no edges."
+    )
+    harness_client_run = AsyncMock(return_value=_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message=kickoff,
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+            utterance_origin="orion",
+            mind_appraisal_text=subject,
+        )
+
+    react_mock.assert_awaited_once()
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.user_message == subject
+    assert stance_req.stance_inputs.get("user_message") == subject
+    assert "MERGE (h:HelpRequest" not in stance_req.user_message
+    harness_client_run.assert_awaited_once()
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.user_message == kickoff
+    assert "MERGE (h:HelpRequest" in harness_req.user_message

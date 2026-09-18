@@ -917,14 +917,19 @@ async def execute_unified_turn(
         if payload.get("resource_lease") is not None
         else None
     )
-    stance_inputs: dict[str, Any] = {"user_message": user_message}
+    appraisal = (mind_appraisal_text or "").strip()
+    stance_user_message = appraisal or user_message
+    stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
     if utterance_origin in ("juniper", "orion"):
         stance_inputs["utterance_origin"] = utterance_origin
-    _ = mind_appraisal_text  # Reserved; later tasks thread appraisal onto Mind.
+    if appraisal:
+        # Motor/harness still sees the full prompt; stance_inputs["user_message"]
+        # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
+        stance_inputs["harness_user_message"] = user_message
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
-        user_message=user_message,
+        user_message=stance_user_message,
         association=association,
         repair_bundle=repair_bundle,
         stance_inputs=stance_inputs,

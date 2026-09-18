@@ -2106,6 +2106,51 @@ def test_the_lane_actually_reaches_the_unified_turn() -> None:
     assert seen.get("utterance_origin") == "orion"
 
 
+def test_kickoff_passes_investigation_subject_not_full_prompt_to_mind() -> None:
+    """Mind appraises the short subject; harness still gets the kickoff prompt.
+
+    The HelpRequest Cypher teach block is operator/harness instruction. If it
+    rides on StanceReactRequestV1.user_message, Mind treats a self-authored
+    investigation as a hire request. Kickoff must keep that block on
+    user_message and omit it from mind_appraisal_text.
+    """
+    import orion.hub.turn_orchestrator as orch
+
+    seen: dict = {}
+
+    async def _fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "ok", "harness_step_count": 14}]
+
+    original = orch.execute_unified_turn
+    orch.execute_unified_turn = _fake_turn
+    try:
+        bus = _FakeBus()
+        bus.redis.values["orion:curiosity:last_run_id"] = "aaaaaaaaaaaa"
+        reader = _FakeReader(answers={"t.run_id = 'aaaaaaaaaaaa'": _outcome_rows(
+            run_id="aaaaaaaaaaaa",
+            continue_line=True,
+            continue_note="still do not know why substrate.route has no edges",
+        )})
+        loop = _graph_loop(bus, reader=reader, text=None, contractor_peer_enabled=True)
+        loop._generate = CuriosityInvestigation._generate.__get__(loop)
+        asyncio.run(loop.tick())
+    finally:
+        orch.execute_unified_turn = original
+
+    user_message = str(seen.get("user_message") or "")
+    appraisal = str(seen.get("mind_appraisal_text") or "")
+    assert "ASKING FOR CONTRACTOR" in user_message
+    assert "MERGE (h:HelpRequest" in user_message
+    assert "substrate.route has no edges" in user_message
+    assert appraisal
+    assert appraisal != user_message
+    assert "MERGE (h:HelpRequest" not in appraisal
+    assert "ASKING FOR CONTRACTOR" not in appraisal
+    assert "substrate.route has no edges" in appraisal
+    assert "not yet chosen" in appraisal.lower() or "no claim" in appraisal.lower()
+
+
 # --- attention schema surface ------------------------------------------------
 # One AttentionSchemaV1 row per run on orion:attention:schema
 # (orion/curiosity/attention_schema.py). Names are prefixed `attention_surface_`

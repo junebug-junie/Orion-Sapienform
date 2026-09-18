@@ -12,6 +12,7 @@ import re
 from typing import Any, Sequence
 
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.curiosity.worldview import read_hop_notes
 from orion.schemas.curiosity_peer import (
     HELP_REQUEST_CHANNEL,
     HELP_REQUEST_KIND,
@@ -172,8 +173,25 @@ async def publish_help_requests_for_run(
         )
         return 0
 
+    try:
+        hops = await asyncio.to_thread(read_hop_notes, reader, run_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "curiosity_hop_notes_read_failed run=%s err=%s", run_id, exc
+        )
+        hops = []
+    hop_count = len(hops)
+
     published = 0
     for help_req in helps:
+        if not (help_req.tried_summary or "").strip() and hop_count > 0:
+            logger.warning(
+                "curiosity_help_request_skipped_empty_tried_summary help_id=%s run=%s hops=%s",
+                help_req.help_id,
+                run_id,
+                hop_count,
+            )
+            continue
         try:
             await bus.publish(
                 HELP_REQUEST_CHANNEL,

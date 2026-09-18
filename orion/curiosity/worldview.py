@@ -471,6 +471,20 @@ LIVE_PRIORS_CYPHER = (
     f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
 )
 
+# The `line` property on a :Prior tags which curiosity line formed it.
+# Self-inquiry priors use line="self"; see `SELF_PRIOR_LINE` in
+# `orion.curiosity.self_inquiry` (canonical consumer of this constant).
+SELF_PRIOR_LINE = "self"
+
+# Situation (#1994) and outreach (#2224) must not treat self-inquiry priors
+# as "world" talkable content. Null line stays eligible (world-pulse /
+# investigate often omit line). See design 2026-09-16 lived-self lanes.
+LIVE_NON_SELF_PRIORS_CYPHER = (
+    f"MATCH (p:{LABEL_PRIOR}) WHERE {_LIVE_WHERE} "
+    f"AND (p.line IS NULL OR p.line <> '{SELF_PRIOR_LINE}') "
+    f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
+)
+
 # EVERY prior regardless of status -- live AND closed, no WHERE at all.
 #
 # For the curiosity supervisor (orion/curiosity/supervisor.py), NOT for the

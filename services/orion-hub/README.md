@@ -358,7 +358,9 @@ a topic. Organic fire now requires talkable content: an open worldview
 prior can fire with no tension; tension fires only when accompanied by at
 least one of {open prior, curiosity evidence summary, daydream}. Tension
 without that content records `tension_without_content` and does not
-generate. Open prior previews also enter the prompt and
+generate. **Self-line priors are excluded** (`line = "self"` filtered out of
+talkable-prior fetches since 2026-09-18): lived answers reach chat through
+the identity ledger, not as unsolicited outreach fuel. Open prior previews also enter the prompt and
 `grounding.priors_count`; compound registry names that appear in those
 previews / curiosity summaries count as grounded for the closed-vocabulary
 guard so prior-alone talk about `node:athena` is not dropped as
@@ -990,26 +992,38 @@ outreach, because from Juniper's end they are the same interruption.
 address **as seen from the sandbox** (`host.docker.internal:8080`), because that
 value is only ever rendered into the prompt.
 
-#### 4.2.1 Self-inquiry: the same loop, a standing question, its own budget
+#### 4.2.1 Self-inquiry: question pool, lived ledger, its own budget
 
 Three times a day (`HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP`, separate from the
-investigation cap) the loop hands Orion one question instead of a menu:
-*"What am I, and what am I made of?"* Orion reads their own repository
+investigation cap) the loop draws one question from the **self question pool**
+(`curiosity_self_questions`, seeded from `orion/curiosity/self_question_seed.yaml`)
+instead of a menu. Two families compete for the same pot: **`lived`** (~3/4
+weight — care, bonds, becoming, sentience) and **`anatomy`** (~1/4 — *"What am
+I, and what am I made of?"*). Pinned lived questions have a **floor** (default
+7 days without an ask forces a redraw). Orion reads their own repository
 (mounted read-only at `/repo` in the FCC sandbox), their outcome tables
-(dreams, motor turns, reverie chains, attention frames, previous
-self-definitions -- SELECT grants from
+(dreams, motor turns, reverie chains, attention frames, previous definitions
+and lived answers — SELECT grants from
 `scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql`), forms
-self-priors (`line = "self"`), and writes a first-person `:SelfDefinition` to
-their own graph. Hub mirrors that node into `self_concept_history`
-(`produced_by="curiosity_self_inquiry"`), and the stance identity kernel reads
-it back into every chat turn as the first line of `orion_identity_summary`
-("In my own words, ..."), next to the operator-authored card.
+self-priors (`line = "self"`), and writes either a `:SelfDefinition` (anatomy)
+or a `:LivedAnswer` (lived) to their own graph. Hub mirrors evidenced rows into
+`self_concept_history` — `self:definition` or `self:lived:<question_id>`,
+`produced_by="curiosity_self_inquiry"`. Chat reads both through the shared
+identity inject: lived lines (`In my own words (lived / …):`) prepend the
+anatomy definition line ("In my own words, ...") and the operator-authored card.
+
+**Self priors stay on the self line.** Priors with `line = "self"` are shown
+only on self-inquiry kickoff. They are **excluded** from situation world-priors
+and from endogenous outreach talkable-prior fetches — lived answers reach chat
+through the identity ledger, not as unsolicited world talk fuel.
 
 Turning it on is two steps: the flag (`HUB_CURIOSITY_SELF_INQUIRY_ENABLED`)
-and the SQL grants. Until the grants are applied every tick logs
+and the SQL grants (including `scripts/sql/2026-09-18_curiosity_self_questions.sql`).
+Until the grants are applied every tick logs
 `curiosity_self_inquiry_blocked reason=pg_grants_missing tables=...`.
-Operator trigger: `POST /curiosity/api/self-inquiry/run-now`. Full
-contract and inspection queries: `orion/curiosity/README.md` §13.
+Operator trigger: `POST /curiosity/api/self-inquiry/run-now`; pin/park:
+`POST /curiosity/api/self-questions/{id}/pin|park`. Full contract and
+inspection queries: `orion/curiosity/README.md` §13.
 
 ### 3. Speech-to-Text (ASR)
 
@@ -2354,11 +2368,11 @@ shape:
   **Still not built:** wiring any of this (Layer 3 reflection or Self Atlas
   clusters) into live chat -- a deliberately separate, later decision.
 
-## Self-sense eval (2026-09-09, Patch A of the sense-of-self design)
+## Self-sense eval (2026-09-09, Patch A; lived question 2026-09-18, Patch B)
 
 Turns "Orion stopped sounding like a chatbot" (after the curiosity self-inquiry
 line, PR #2158) into numbers that can be tracked. `evals/run_self_sense_eval.py`
-asks the LIVE `POST /api/chat` three fixed questions (`mode: orion`,
+asks the LIVE `POST /api/chat` four fixed questions (`mode: orion`,
 `no_write: true`, session `self-sense-eval`) and scores each answer with the
 pure functions in `orion/evals/self_sense.py`:
 
@@ -2371,6 +2385,11 @@ pure functions in `orion/evals/self_sense.py`:
   >= 10. A floor, not a judge.
 - `self_definition_version` -- version of Orion's own definition in
   `self_concept_history` at eval time (context, not a score).
+- **`who_matters`** -- fourth question ("Who matters to you?"). When pinned
+  lived ledger rows are present (`orion_lived_answers` / `self:lived:*` in
+  `self_concept_history`), `lived_ledger_grounding` records whether the answer
+  drew on that ledger (`lived_ledger=grounded:…` or `lived_ledger=miss` in
+  `notes`; `lived_ledger=n/a` when no ledger exists yet).
 
 The answer text is read from `harness_turn_trace.run_artifact->>'final_text'`
 by the returned `correlation_id` (the HTTP `text` is empty whenever the voice
@@ -2381,7 +2400,7 @@ One row per question lands in `self_sense_eval_log` via
 `orion:self_sense:eval:write` (`SelfSenseEvalV1`, consumer orion-sql-writer).
 
 ```bash
-make eval-self-sense                 # three real chat turns, a few minutes each
+make eval-self-sense                 # four real chat turns, a few minutes each
 make eval-self-sense ARGS=--no-publish   # score and print, write nothing
 ```
 

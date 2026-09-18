@@ -68,6 +68,16 @@ class SelfDefinitionVersion:
 
 
 @dataclass(frozen=True)
+class LivedAnswerVersion:
+    question_id: str
+    version: int
+    created_at: Optional[str]
+    content: str
+    evidence_refs: list[str] = field(default_factory=list)
+    produced_by: str = ""
+
+
+@dataclass(frozen=True)
 class SelfInquiryJournalEntry:
     created_at: Optional[str]
     body: str
@@ -88,6 +98,7 @@ class SelfPanelView:
     and the history list cannot disagree about which version is current."""
 
     history: list[SelfDefinitionVersion] = field(default_factory=list)
+    lived_answers: list[LivedAnswerVersion] = field(default_factory=list)
     journal_entries: list[SelfInquiryJournalEntry] = field(default_factory=list)
     latest_eval_run_id: Optional[str] = None
     latest_eval: list[SelfSenseEvalRow] = field(default_factory=list)
@@ -116,6 +127,33 @@ _HISTORY_SQL = (
     "FROM self_concept_history WHERE concept_id = $1 "
     "ORDER BY created_at DESC LIMIT $2"
 )
+_LIVED_ANSWERS_SQL = (
+    "SELECT concept_id, version, created_at, content, evidence_refs, produced_by "
+    "FROM self_concept_history WHERE concept_id LIKE 'self:lived:%' "
+    "AND produced_by = 'curiosity_self_inquiry' "
+    "ORDER BY created_at DESC"
+)
+
+
+def _collapse_latest_lived(rows: list[Any]) -> list[LivedAnswerVersion]:
+    seen: set[str] = set()
+    out: list[LivedAnswerVersion] = []
+    for row in rows:
+        concept_id = str(row.get("concept_id") or "")
+        if not concept_id or concept_id in seen:
+            continue
+        seen.add(concept_id)
+        out.append(
+            LivedAnswerVersion(
+                question_id=concept_id.removeprefix("self:lived:"),
+                version=int(row.get("version") or 1),
+                created_at=_iso(row.get("created_at")),
+                content=str(row.get("content") or ""),
+                evidence_refs=_coerce_evidence_refs(row.get("evidence_refs")),
+                produced_by=str(row.get("produced_by") or ""),
+            )
+        )
+    return out
 _JOURNAL_SQL = (
     "SELECT created_at, body FROM journal_entries "
     "WHERE title = $1 ORDER BY created_at DESC LIMIT $2"
@@ -139,6 +177,7 @@ async def read_self_panel(pool: Any) -> SelfPanelView:
     try:
         async with pool.acquire() as conn:
             history_rows = await conn.fetch(_HISTORY_SQL, SELF_DEFINITION_CONCEPT_ID, _HISTORY_LIMIT)
+            lived_rows = await conn.fetch(_LIVED_ANSWERS_SQL)
             journal_rows = await conn.fetch(_JOURNAL_SQL, SELF_INQUIRY_JOURNAL_TITLE, _JOURNAL_LIMIT)
             latest_run_row = await conn.fetchrow(_LATEST_EVAL_RUN_SQL)
             eval_run_id = str(latest_run_row["run_id"]) if latest_run_row else None
@@ -178,6 +217,7 @@ async def read_self_panel(pool: Any) -> SelfPanelView:
     ]
     return SelfPanelView(
         history=history,
+        lived_answers=_collapse_latest_lived(lived_rows),
         journal_entries=journal_entries,
         latest_eval_run_id=eval_run_id,
         latest_eval=latest_eval,
@@ -212,6 +252,17 @@ def to_payload(view: SelfPanelView) -> dict[str, Any]:
                 "produced_by": h.produced_by,
             }
             for h in view.history
+        ],
+        "lived_answers": [
+            {
+                "question_id": la.question_id,
+                "version": la.version,
+                "created_at": la.created_at,
+                "content": la.content,
+                "evidence_refs": la.evidence_refs,
+                "produced_by": la.produced_by,
+            }
+            for la in view.lived_answers
         ],
         "journal_entries": [
             {"created_at": j.created_at, "body": j.body} for j in view.journal_entries

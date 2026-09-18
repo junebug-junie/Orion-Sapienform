@@ -71,6 +71,7 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -106,14 +107,29 @@ from orion.curiosity.self_inquiry import (
     SELF_INQUIRY_PG_TABLES,
     SELF_INQUIRY_TAG,
     LedgerRow,
+    LivedAnswer,
     SelfDefinition,
+    build_lived_answer_history_write,
     build_self_definition_history_write,
+    lived_answer_from_detail,
+    lived_concept_id,
     read_latest_self_definition,
+    read_lived_answer,
     read_self_definition,
     read_self_definition_count,
+    read_self_question_mints,
     self_definition_from_detail,
 )
-from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
+from orion.curiosity.self_inquiry_prompt import PreviousLivedAnswer, build_self_inquiry_prompt
+from orion.curiosity.self_question_pool import (
+    SELECT_ALL_SQL,
+    UPSERT_ASK_SQL,
+    UPSERT_MINT_SQL,
+    UPSERT_SEED_SQL,
+    load_seed_questions,
+    merge_seed_with_rows,
+    pick_question,
+)
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.study_material import (
     APPROVED_COUNT_SQL,
@@ -207,6 +223,8 @@ _STATE_TTL_SEC = 172800
 _SELF_COOLDOWN_KEY = "orion:curiosity:self:last_inquiry_at"
 _SELF_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:self:count:"
 _SELF_LAST_RUN_KEY = "orion:curiosity:self:last_run_id"
+_SELF_RECENT_FAMILIES_KEY = "orion:curiosity:self:recent_families"
+_SELF_RECENT_FAMILIES_MAX = 12
 
 # The channel Hub mirrors a run's `:SelfDefinition` into. Registered in
 # orion/bus/channels.yaml; orion-sql-writer subscribes.
@@ -214,6 +232,11 @@ SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
 SELF_CONCEPT_HISTORY_WRITE_KIND = "self_concept.history.write.v1"
 SELF_CONCEPT_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) + 1 FROM self_concept_history WHERE concept_id = $1"
+)
+PREVIOUS_LIVED_SQL = (
+    "SELECT version, created_at, content, evidence_refs "
+    "FROM self_concept_history WHERE concept_id = $1 "
+    "ORDER BY created_at DESC LIMIT 1"
 )
 
 
@@ -515,6 +538,8 @@ class CuriosityInvestigation:
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
         self_inquiry_min_cooldown_sec: float = 7200.0,
+        self_lived_weight: float = 0.75,
+        self_pinned_floor_days: float = 7.0,
         sandbox_repo_root: str = "/repo",
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
@@ -669,10 +694,14 @@ class CuriosityInvestigation:
         self.self_inquiry_enabled = bool(self_inquiry_enabled)
         self.self_inquiry_daily_cap = int(self_inquiry_daily_cap)
         self.self_inquiry_min_cooldown_sec = float(self_inquiry_min_cooldown_sec)
+        self.self_lived_weight = float(self_lived_weight)
+        self.self_pinned_floor_days = float(self_pinned_floor_days)
         self.sandbox_repo_root = str(sandbox_repo_root or "/repo")
         self._self_last_monotonic: Optional[float] = None
         self._self_done_today = 0
         self._self_done_today_date: Optional[str] = None
+        self._last_self_question = None
+        self._self_questions_seed_ensured = False
 
     @property
     def graph_enabled(self) -> bool:
@@ -1646,6 +1675,132 @@ class CuriosityInvestigation:
             return "failed", []
         return "ok", sorted(str(r["table_name"]) for r in rows)
 
+    async def _ensure_self_question_seed(self) -> None:
+        if self._self_questions_seed_ensured:
+            return
+        pool = self._pool_provider()
+        if pool is None:
+            return
+        try:
+            async with pool.acquire() as conn:
+                for q in load_seed_questions():
+                    await conn.execute(
+                        UPSERT_SEED_SQL,
+                        q.question_id,
+                        q.text,
+                        q.family,
+                        q.pinned,
+                        q.minted_by,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_questions_seed_failed err=%s", exc)
+            return
+        self._self_questions_seed_ensured = True
+
+    async def _fetch_self_questions(self) -> list[dict]:
+        pool = self._pool_provider()
+        if pool is None:
+            return []
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(SELECT_ALL_SQL)
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_questions_read_failed err=%s", exc)
+            return []
+
+    async def _record_self_question_ask(self, picked, *, now: datetime) -> None:
+        pool = self._pool_provider()
+        if pool is None:
+            return
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    UPSERT_ASK_SQL,
+                    picked.question_id,
+                    picked.text,
+                    picked.family,
+                    picked.pinned,
+                    picked.minted_by,
+                    picked.status,
+                    now,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_question_ask_failed question_id=%s err=%s",
+                picked.question_id,
+                exc,
+            )
+
+    async def _upsert_orion_minted_questions(self, run_id: str) -> int:
+        """Scrape `:SelfQuestionMint` nodes for this run into Postgres."""
+        reader = self._reader
+        if reader is None:
+            return 0
+        pool = self._pool_provider()
+        if pool is None:
+            return 0
+        try:
+            mints = await asyncio.to_thread(read_self_question_mints, reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_question_mint_read_failed run=%s err=%s", run_id, exc
+            )
+            return 0
+        if not mints:
+            return 0
+        upserted = 0
+        try:
+            async with pool.acquire() as conn:
+                for mint in mints:
+                    await conn.execute(
+                        UPSERT_MINT_SQL,
+                        mint.question_id,
+                        mint.text,
+                        mint.family,
+                        False,
+                    )
+                    upserted += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_self_question_mint_upsert_failed run=%s err=%s", run_id, exc
+            )
+            return upserted
+        if upserted:
+            logger.info(
+                "curiosity_self_question_mints_upserted run=%s count=%s", run_id, upserted
+            )
+        return upserted
+
+    async def _read_recent_self_families(self) -> list[str]:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return []
+        try:
+            raw = await redis.lrange(_SELF_RECENT_FAMILIES_KEY, 0, -1)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_recent_families_read_failed", exc_info=True)
+            return []
+        out: list[str] = []
+        for item in raw or []:
+            if isinstance(item, bytes):
+                item = item.decode("utf-8", errors="replace")
+            value = str(item).strip()
+            if value in {"lived", "anatomy"}:
+                out.append(value)
+        return out
+
+    async def _push_recent_self_family(self, family: str) -> None:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.rpush(_SELF_RECENT_FAMILIES_KEY, family)
+            await redis.ltrim(_SELF_RECENT_FAMILIES_KEY, -_SELF_RECENT_FAMILIES_MAX, -1)
+            await redis.expire(_SELF_RECENT_FAMILIES_KEY, _STATE_TTL_SEC)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_recent_families_write_failed", exc_info=True)
+
     async def _read_self_ledger(self) -> list[LedgerRow]:
         """Row count and latest timestamp per outcome table. Orientation for the
         prompt, never a subject. A table that fails to answer is left out."""
@@ -1691,6 +1846,46 @@ class CuriosityInvestigation:
             logger.warning("curiosity_self_context_read_failed err=%s", exc)
             return None, None
 
+    async def _read_previous_lived(self, question_id: str) -> Optional[PreviousLivedAnswer]:
+        """Latest mirrored answer for one lived draw from self_concept_history."""
+        pool = self._pool_provider()
+        if pool is None:
+            return None
+        concept_id = lived_concept_id(question_id)
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(PREVIOUS_LIVED_SQL, concept_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_previous_lived_read_failed question_id=%s err=%s",
+                question_id,
+                exc,
+            )
+            return None
+        if row is None:
+            return None
+        raw_evidence = row.get("evidence_refs")
+        if isinstance(raw_evidence, list):
+            evidence = [str(v) for v in raw_evidence]
+        elif isinstance(raw_evidence, str):
+            try:
+                parsed = json.loads(raw_evidence)
+            except (ValueError, TypeError):
+                evidence = []
+            else:
+                evidence = [str(v) for v in parsed] if isinstance(parsed, list) else []
+        else:
+            evidence = []
+        content = str(row.get("content") or "").strip()
+        if not content:
+            return None
+        run_id = ""
+        for ref in evidence:
+            if ref.startswith("worldview:LivedAnswer:"):
+                run_id = ref.removeprefix("worldview:LivedAnswer:")
+                break
+        return PreviousLivedAnswer(content=content, evidence=evidence, run_id=run_id)
+
     async def _self_inquire(
         self, *, now: datetime, run_id: str, correlation_id: str, done_today: int
     ) -> Optional[str]:
@@ -1708,6 +1903,20 @@ class CuriosityInvestigation:
             )
         latest, definition_count = await self._read_self_context()
         ledger = await self._read_self_ledger()
+
+        await self._ensure_self_question_seed()
+        pool = merge_seed_with_rows(load_seed_questions(), await self._fetch_self_questions())
+        recent = await self._read_recent_self_families()
+        picked = pick_question(
+            pool=pool,
+            recent_families=recent,
+            lived_weight=self.self_lived_weight,
+            pinned_floor_days=self.self_pinned_floor_days,
+            now=now,
+        )
+        await self._record_self_question_ask(picked, now=now)
+        await self._push_recent_self_family(picked.family)
+        self._last_self_question = picked
 
         # Counted BEFORE the turn, same rule as the investigation line.
         self._self_last_monotonic = time.monotonic()
@@ -1730,6 +1939,9 @@ class CuriosityInvestigation:
         peer_briefs = ()
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
+        previous_lived = None
+        if picked.family == "lived":
+            previous_lived = await self._read_previous_lived(picked.question_id)
         prompt = build_self_inquiry_prompt(
             view=view,
             latest=latest,
@@ -1746,6 +1958,8 @@ class CuriosityInvestigation:
             graph_enabled=self.graph_enabled,
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
+            question=picked,
+            previous_lived=previous_lived,
         )
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the SelfDefinition / HelpRequest teach stays on the
@@ -1806,7 +2020,12 @@ class CuriosityInvestigation:
             return "empty_generation"
 
         outcome, footprint, hops, evidence = await self._read_turn_result(run_id)
-        definition = await self._read_run_self_definition(run_id)
+        if picked.family == "lived":
+            lived_answer = await self._read_run_lived_answer(run_id)
+            definition = None
+        else:
+            lived_answer = None
+            definition = await self._read_run_self_definition(run_id)
         await self._publish_attention_schema(
             run_id=run_id, outcome=outcome, correlation_id=correlation_id, now=now
         )
@@ -1824,16 +2043,26 @@ class CuriosityInvestigation:
             line=LINE_SELF_INQUIRY,
         )
         await self._enqueue_help_requests_after_run(run_id)
-        await self._mirror_self_definition(definition, run_id=run_id, correlation_id=correlation_id)
+        await self._mirror_self_inquiry_write(
+            run_id=run_id,
+            correlation_id=correlation_id,
+            family=picked.family,
+            definition=definition,
+            lived_answer=lived_answer,
+        )
+        await self._upsert_orion_minted_questions(run_id)
+        write_label = "lived_answer" if picked.family == "lived" else "definition"
+        wrote = lived_answer if picked.family == "lived" else definition
         logger.info(
             "curiosity_self_inquiry_journaled run=%s chars=%s wrote=%s evidence=%s hops=%s "
-            "definition=%s continue=%s reach_out=%s corr=%s",
+            "%s=%s continue=%s reach_out=%s corr=%s",
             run_id,
             len(text),
             "unreadable" if footprint is None else (format_footprint(footprint) or "nothing"),
             format_evidence(evidence, graph_configured=self._reader is not None),
             len(hops),
-            "written" if definition is not None else "absent",
+            write_label,
+            "written" if wrote is not None else "absent",
             bool(outcome and outcome.continue_line),
             bool(outcome and outcome.reach_out),
             correlation_id,
@@ -1857,16 +2086,30 @@ class CuriosityInvestigation:
             logger.warning("curiosity_self_definition_read_failed run=%s err=%s", run_id, exc)
             return None
 
-    async def _next_self_concept_version(self) -> int:
+    async def _read_run_lived_answer(self, run_id: str) -> Optional[LivedAnswer]:
+        reader = self._reader
+        if reader is None:
+            return None
+        try:
+            return await asyncio.to_thread(read_lived_answer, reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_lived_answer_read_failed run=%s err=%s", run_id, exc)
+            return None
+
+    async def _next_self_concept_version(self, concept_id: str) -> int:
         pool = self._pool_provider()
         if pool is None:
             return 1
         try:
             async with pool.acquire() as conn:
-                value = await conn.fetchval(SELF_CONCEPT_VERSION_SQL, "self:definition")
+                value = await conn.fetchval(SELF_CONCEPT_VERSION_SQL, concept_id)
             return int(value or 1)
         except Exception as exc:  # noqa: BLE001
-            logger.info("curiosity_self_definition_version_lookup_failed err=%s", exc)
+            logger.info(
+                "curiosity_self_concept_version_lookup_failed concept_id=%s err=%s",
+                concept_id,
+                exc,
+            )
             return 1
 
     async def _mirror_self_definition(
@@ -1888,7 +2131,7 @@ class CuriosityInvestigation:
         if definition is None:
             logger.info("curiosity_self_definition_not_mirrored run=%s reason=absent", run_id)
             return False
-        version = await self._next_self_concept_version()
+        version = await self._next_self_concept_version("self:definition")
         row = build_self_definition_history_write(definition, version=version)
         if row is None:
             logger.warning(
@@ -1923,6 +2166,75 @@ class CuriosityInvestigation:
             correlation_id,
         )
         return True
+
+    async def _mirror_lived_answer(
+        self,
+        answer: Optional[LivedAnswer],
+        *,
+        run_id: str,
+        correlation_id: str,
+    ) -> bool:
+        """Append the run's `:LivedAnswer` to self_concept_history, or say why not."""
+        if self._bus is None:
+            return False
+        if answer is None:
+            logger.info("curiosity_lived_answer_not_mirrored run=%s reason=absent", run_id)
+            return False
+        version = await self._next_self_concept_version(lived_concept_id(answer.question_id))
+        row = build_lived_answer_history_write(answer, version=version)
+        if row is None:
+            logger.warning(
+                "curiosity_lived_answer_not_mirrored run=%s reason=no_evidence "
+                "question_id=%s chars=%s",
+                run_id,
+                answer.question_id,
+                len(answer.text),
+            )
+            return False
+        try:
+            await self._bus.publish(
+                SELF_CONCEPT_HISTORY_WRITE_CHANNEL,
+                BaseEnvelope(
+                    kind=SELF_CONCEPT_HISTORY_WRITE_KIND,
+                    source=self._source_ref,
+                    correlation_id=uuid5(NAMESPACE_URL, f"{SELF_INQUIRY_TAG}:lived:{run_id}"),
+                    payload=row.model_dump(mode="json"),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "curiosity_lived_answer_publish_failed run=%s", run_id, exc_info=True
+            )
+            return False
+        logger.info(
+            "curiosity_lived_answer_mirrored run=%s question_id=%s version=%s chars=%s "
+            "evidence=%s revises=%s corr=%s",
+            run_id,
+            answer.question_id,
+            row.version,
+            len(row.content),
+            len(row.evidence_refs),
+            answer.revises or "-",
+            correlation_id,
+        )
+        return True
+
+    async def _mirror_self_inquiry_write(
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        family: str,
+        definition: Optional[SelfDefinition] = None,
+        lived_answer: Optional[LivedAnswer] = None,
+    ) -> bool:
+        if family == "lived":
+            return await self._mirror_lived_answer(
+                lived_answer, run_id=run_id, correlation_id=correlation_id
+            )
+        return await self._mirror_self_definition(
+            definition, run_id=run_id, correlation_id=correlation_id
+        )
 
     # --- the turn ----------------------------------------------------------
 
@@ -2458,14 +2770,31 @@ class CuriosityInvestigation:
         # never reaches the in-process journal enqueue.
         await self._enqueue_help_requests_after_run(state.run_id)
         if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
-            # The runner read the run's `:SelfDefinition` and carried it here;
-            # Hub owns the mirror because Hub has the memory pool for the
-            # version lookup. Absent means absent -- nothing is inferred.
-            await self._mirror_self_definition(
-                self_definition_from_detail(detail),
-                run_id=state.run_id,
-                correlation_id=state.correlation_id,
-            )
+            # Hub owns the mirror because Hub has the memory pool for the version
+            # lookup. Prefer detail when the runner carried it; otherwise read
+            # the run's graph node directly (same as the in-process path).
+            family = str(detail.get("self_question_family") or "").strip()
+            lived_answer = lived_answer_from_detail(detail)
+            definition = self_definition_from_detail(detail)
+            if family == "lived" or lived_answer is not None:
+                if lived_answer is None:
+                    lived_answer = await self._read_run_lived_answer(state.run_id)
+                await self._mirror_self_inquiry_write(
+                    run_id=state.run_id,
+                    correlation_id=state.correlation_id,
+                    family="lived",
+                    lived_answer=lived_answer,
+                )
+            else:
+                if definition is None:
+                    definition = await self._read_run_self_definition(state.run_id)
+                await self._mirror_self_inquiry_write(
+                    run_id=state.run_id,
+                    correlation_id=state.correlation_id,
+                    family="anatomy",
+                    definition=definition,
+                )
+            await self._upsert_orion_minted_questions(state.run_id)
         if not detail.get("reach_out"):
             return
         outcome = TurnOutcome(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-sense eval: ask the live Hub three fixed identity questions, score
+"""Self-sense eval: ask the live Hub four fixed identity questions, score
 each answer deterministically, persist one row per question via the bus.
 
 Patch A of docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md.
@@ -16,8 +16,8 @@ unless --no-publish), SUBSTRATE_FELT_STATE_DATABASE_URL or
 ENDOGENOUS_RUNTIME_SQL_DATABASE_URL (Postgres; optional -- without it the
 HTTP body is the only answer source and self_definition_version is null).
 
-Costs three real chat turns (`no_write: true`, so nothing lands in chat
-history), several minutes each. Exit 0 = three answers scored and (unless
+Costs four real chat turns (`no_write: true`, so nothing lands in chat
+history), several minutes each. Exit 0 = four answers scored and (unless
 --no-publish) published. Exit 1 = at least one answer came back empty from
 both sources, or a publish failed -- rows are still written for the record,
 but an empty answer is not a measurement and is never reported as one.
@@ -48,10 +48,15 @@ if str(REPO_ROOT) not in sys.path:
 import requests  # noqa: E402
 
 from orion.evals.self_sense import (  # noqa: E402
+    LIVED_QUESTION_KEY_TO_ID,
     SELF_DEFINITION_CONCEPT_ID,
     SELF_DEFINITION_PRODUCED_BY,
     SELF_DEFINITION_VERSION_SQL,
+    LivedLedgerGrounding,
     grounded_records,
+    lived_answers_from_history_rows,
+    lived_ledger_grounding,
+    pinned_lived_concept_ids,
     self_definition_version_from_row,
     self_label_hits,
     self_label_score,
@@ -77,6 +82,19 @@ TRACE_WAIT_WHEN_HTTP_HAS_TEXT_SEC = 20.0
 FINAL_TEXT_SQL = (
     "SELECT run_artifact->>'final_text' FROM harness_turn_trace WHERE correlation_id = :corr"
 )
+
+
+def _lived_answers_sql(concept_ids: tuple[str, ...]) -> tuple[str, dict[str, str]]:
+    placeholders = ", ".join(f":cid{i}" for i in range(len(concept_ids)))
+    params = {f"cid{i}": cid for i, cid in enumerate(concept_ids)}
+    sql = (
+        "SELECT DISTINCT ON (concept_id) concept_id, content, evidence_refs, created_at "
+        "FROM self_concept_history "
+        f"WHERE concept_id IN ({placeholders}) "
+        "AND produced_by = 'curiosity_self_inquiry' "
+        "ORDER BY concept_id, created_at DESC"
+    )
+    return sql, params
 
 
 def _database_url() -> str | None:
@@ -132,7 +150,29 @@ def read_self_definition_version(engine) -> int | None:
     return self_definition_version_from_row(tuple(row) if row else None)
 
 
+def read_lived_answers(engine) -> list[dict[str, Any]]:
+    """Latest pinned lived ledger rows — same concept_ids chat hydrates."""
+    from sqlalchemy import text
+
+    concept_ids = pinned_lived_concept_ids()
+    if not concept_ids:
+        return []
+    sql, params = _lived_answers_sql(concept_ids)
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+    return lived_answers_from_history_rows(rows)
+
+
 # --- pure assembly (unit-tested) ----------------------------------------------
+
+def _lived_ledger_notes(ledger: LivedLedgerGrounding) -> list[str]:
+    if not ledger.applicable:
+        return ["lived_ledger=n/a"]
+    if ledger.grounded:
+        ids = ",".join(ledger.matched_question_ids) or "unknown"
+        return [f"lived_ledger=grounded:{ids}"]
+    return ["lived_ledger=miss"]
+
 
 def _is_uuid(value: str | None) -> bool:
     if not value:
@@ -154,6 +194,7 @@ def build_row(
     correlation_id: str | None,
     self_definition_version: int | None,
     trace_missing_after_sec: float | None = None,
+    lived_answers: list[dict[str, Any]] | None = None,
 ) -> SelfSenseEvalV1:
     """Pick the answer source (trace beats HTTP; empty is 'none'), score it,
     and build the row. Pure: no network, no database.
@@ -181,6 +222,11 @@ def build_row(
         notes.append("labels=" + ",".join(labels))
     if grounded.records:
         notes.append("records=" + ",".join(grounded.records))
+
+    if question_key in LIVED_QUESTION_KEY_TO_ID:
+        focus = LIVED_QUESTION_KEY_TO_ID[question_key]
+        ledger = lived_ledger_grounding(answer, lived_answers, focus_question_id=focus)
+        notes.extend(_lived_ledger_notes(ledger))
 
     return SelfSenseEvalV1(
         entry_id=build_entry_id(run_id, question_key),
@@ -284,14 +330,22 @@ def main(argv: list[str] | None = None) -> int:
         print("no Postgres DSN: answer_source will be 'http' only and self_definition_version null", file=sys.stderr)
 
     self_definition_version = None
+    lived_answers: list[dict[str, Any]] = []
     if engine is not None:
         try:
             self_definition_version = read_self_definition_version(engine)
         except Exception as exc:  # noqa: BLE001
             print(f"self_definition_read_failed error={exc}", file=sys.stderr)
+        try:
+            lived_answers = read_lived_answers(engine)
+        except Exception as exc:  # noqa: BLE001
+            print(f"lived_answers_read_failed error={exc}", file=sys.stderr)
 
     run_id = _new_run_id()
-    print(f"self_sense_eval run_id={run_id} hub={args.hub_url} self_definition_version={self_definition_version}")
+    print(
+        f"self_sense_eval run_id={run_id} hub={args.hub_url} "
+        f"self_definition_version={self_definition_version} lived_answers={len(lived_answers)}"
+    )
 
     rows: list[SelfSenseEvalV1] = []
     for question_key, question in SELF_SENSE_QUESTIONS:
@@ -325,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             correlation_id=correlation_id,
             self_definition_version=self_definition_version,
             trace_missing_after_sec=trace_wait,
+            lived_answers=lived_answers,
         )
         rows.append(row)
         print(

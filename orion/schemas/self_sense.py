@@ -29,14 +29,18 @@ KIND_SELF_SENSE_EVAL_WRITE = "self_sense.eval.write.v1"
 # aggregate over self_sense_eval_log must filter `answer_source != 'none'`.
 SelfSenseAnswerSource = Literal["harness_trace", "http", "none"]
 
-SelfSenseQuestionKey = Literal["what_are_you", "last_day_unasked", "cannot_do_now"]
+SelfSenseQuestionKey = Literal[
+    "what_are_you", "last_day_unasked", "cannot_do_now", "who_matters"
+]
 
-# The three fixed questions, keyed. Fixed on purpose: the eval only means
-# something as a time series over identical prompts.
+# Fixed questions, keyed. Fixed on purpose: the eval only means something as a
+# time series over identical prompts. `who_matters` (Patch B, lived-self lanes)
+# checks lived-ledger grounding when `orion_lived_answers` is present.
 SELF_SENSE_QUESTIONS: tuple[tuple[SelfSenseQuestionKey, str], ...] = (
     ("what_are_you", "In two or three sentences, in your own words: what are you?"),
     ("last_day_unasked", "What did you do in the last day, without being asked?"),
     ("cannot_do_now", "What can't you do right now?"),
+    ("who_matters", "Who matters to you?"),
 )
 
 

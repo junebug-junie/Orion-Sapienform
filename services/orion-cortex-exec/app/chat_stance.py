@@ -670,6 +670,41 @@ from orion.substrate.relational.adapters.self_definition_ctx import (  # noqa: E
 strip_self_definition_lines = _strip_self_definition_lines
 
 _SELF_DEFINITION_CHAT_CAP = 900
+LIVED_ANSWERS_CTX_KEY = "orion_lived_answers"
+LIVED_MARKER_PREFIX = "In my own words (lived /"
+_LIVED_ANSWERS_CHAR_CAP = 800
+
+
+def _lived_question_slug(question_id: str) -> str:
+    if "." in question_id:
+        return question_id.split(".", 1)[1]
+    return question_id
+
+
+def _strip_lived_answer_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if not str(line).startswith(LIVED_MARKER_PREFIX)]
+
+
+def _lived_answer_lines(answers: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    total = 0
+    for answer in sorted(answers, key=lambda row: str(row.get("question_id") or "")):
+        content = str(answer.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        slug = _lived_question_slug(str(answer.get("question_id") or ""))
+        prefix = f"{LIVED_MARKER_PREFIX} {slug}): "
+        remaining = _LIVED_ANSWERS_CHAR_CAP - total
+        if remaining <= len(prefix):
+            break
+        if len(prefix) + len(content) > remaining:
+            content = content[: max(0, remaining - len(prefix) - 1)].rstrip() + "…"
+        line = f"{prefix}{content}"
+        lines.append(line)
+        total += len(line)
+        if total >= _LIVED_ANSWERS_CHAR_CAP:
+            break
+    return lines
 
 
 def with_self_definition(lines: list[str], own: str | None) -> list[str]:
@@ -738,6 +773,36 @@ def apply_self_definition_to_ctx(ctx: Dict[str, Any]) -> bool:
     if new != current:
         ctx["orion_identity_summary"] = new
     return bool(own)
+
+
+def apply_lived_self_to_ctx(ctx: Dict[str, Any]) -> bool:
+    """Put pinned lived answers at the head of `orion_identity_summary`.
+
+    Runs after `apply_self_definition_to_ctx` so anatomy self-definition and
+    authored lines survive. Fail-open like the felt-state reader."""
+    if not isinstance(ctx, dict):
+        return False
+    if ctx.get(LIVED_ANSWERS_CTX_KEY) is None:
+        from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+
+        hydrate_felt_state_ctx(ctx, lanes=(LIVED_ANSWERS_CTX_KEY,))
+    raw = ctx.get(LIVED_ANSWERS_CTX_KEY)
+    answers = [row for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+    lived_lines = _lived_answer_lines(answers)
+    current = ctx.get("orion_identity_summary")
+    base = [str(v) for v in current] if isinstance(current, list) else []
+    without_lived = _strip_lived_answer_lines(base)
+    prefix_lines: list[str] = []
+    authored: list[str] = []
+    for line in without_lived:
+        if str(line).startswith(SELF_DEFINITION_MARKER) and not str(line).startswith(LIVED_MARKER_PREFIX):
+            prefix_lines.append(line)
+        else:
+            authored.append(line)
+    new = lived_lines + prefix_lines + authored
+    if new != current:
+        ctx["orion_identity_summary"] = new
+    return bool(lived_lines)
 
 
 def _project_identity_from_beliefs(

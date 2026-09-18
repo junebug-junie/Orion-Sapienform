@@ -21,11 +21,11 @@ from orion.curiosity.kickoff_prompt import (
     _access_section,
     _budget_section,
     _continuation_section,
-    _help_request_section,
     _hops_section,
     _outcome_section,
     _peer_briefs_section,
     _priors_section,
+    _role_and_help_section,
 )
 from orion.curiosity.self_inquiry import (
     LABEL_SELF_DEFINITION,
@@ -260,7 +260,7 @@ def build_self_inquiry_prompt(
     if writable:
         lines += _self_write_section(own_graph=own_graph, run_id=run_id)
         if contractor_peer_enabled:
-            lines += _help_request_section(
+            lines += _role_and_help_section(
                 own_graph=own_graph,
                 run_id=run_id,
                 mode="self_inquiry",

@@ -104,6 +104,11 @@ class ThoughtEventV1(BaseModel):
     stance_harness_slice: StanceHarnessSliceV1
     grounding_capsule: GroundingCapsuleV1 | None = None
     autonomy_slice: AutonomySliceV1 | None = None
+    # Optional Mind work-shape soft labels copied from stance coloring when
+    # present as non-empty strings. Allow-listed keys only: expected_depth,
+    # cross_cutting, foresight_note, and optionally user_intent. Scalar str
+    # values only — consumers must not treat this as an open bag.
+    mind_work_shape: dict[str, str] | None = None
 
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"

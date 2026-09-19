@@ -30,6 +30,7 @@ from .mind_enrichment import (
     publish_mind_run_artifact_for_thought,
     run_mind_for_thought,
     select_mind_coloring,
+    work_shape_from_coloring,
 )
 from .settings import settings
 
@@ -599,6 +600,9 @@ async def run_stance_react(
     slice_ = _extract_autonomy_slice(exec_result)
     if slice_ is not None:
         enriched = enriched.model_copy(update={"autonomy_slice": slice_})
+    enriched = enriched.model_copy(
+        update={"mind_work_shape": work_shape_from_coloring(mind_coloring)}
+    )
     return enriched
 
 

@@ -48,7 +48,7 @@ The Lexar is not a 990 Pro. Sequential copy Hitachi→Lexar held ~170 MB/s (HDD-
 | Why a fork | Circe’s stock image `ghcr.io/ggml-org/llama.cpp:server-cuda-b10398` has no V4.1 graph and no `--moe-stream`. It cannot load this checkpoint. |
 | Build | CUDA **12.8.1** devel container, `CMAKE_CUDA_ARCHITECTURES=70`. Host toolkit is 13.2, which **dropped Volta** — do not compile sm_70 with 13.x |
 | Linux patch | Fork is marked Linux-untested. Compile died at ~47% in `llama-moe-stream.cpp`: `std::isfinite` without `#include <cmath>`. One-line include fix, then it linked. |
-| Runtime | `nvidia/cuda:12.8.1-devel-ubuntu24.04`, binary + `libllama-server-impl.so` bind-mounted, `--gpus device=0,1,2,3`, host port **8099** |
+| Runtime | First soak bind-mounted the Circe-built binary. Repro image is `services/orion-llamacpp-host/Dockerfile.dsv41-porte` → `llamacpp-dsv41-porte:server-local-volta`, compose `docker-compose.dsv41.yml`, port **8099** |
 
 Community Q2_K (`vcruz305`, ~246 GiB) was **not** run. Its Engram layout is not interchangeable with this converter. Do not mix packs.
 

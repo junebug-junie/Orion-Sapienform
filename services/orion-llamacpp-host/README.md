@@ -505,6 +505,25 @@ docker run --rm <image> /app/llama-server --version
 
 Replace `<image>` with the tag you built (for example `orion-llamacpp-host:0.1.0`). Paste the printed version into your runbook; do not copy a version string from this README unless you have just run the command and captured real output.
 
+### DeepSeek-V4.1-Flash / Volta fork image (Circe soak only)
+
+Stock `server-cuda-b10398` cannot load V4.1-Flash. The soak image is a
+separate tag, not a bump of `LLAMACPP_IMAGE_TAG`:
+
+- Dockerfile: `services/orion-llamacpp-host/Dockerfile.dsv41-porte`
+- Linux compile fix: `patches/dsv41-porte-cmath.patch` (`#include <cmath>`)
+- Pin: JigSawPT `dsv41-porte` @ `3b6fcfe`, `CMAKE_CUDA_ARCHITECTURES=70`, CUDA 12.8
+- Compose: `docker-compose.dsv41.yml` (port `8099`, GPUs `0,1,2,3`)
+
+```bash
+services/orion-llamacpp-host/scripts/build-dsv41-volta.sh
+# then, from a worktree:
+scripts/safe_docker_build.sh orion-llamacpp-host \
+  -f services/orion-llamacpp-host/docker-compose.dsv41.yml \
+  --env-file services/orion-llamacpp-host/.env \
+  up -d
+```
+
 ### Build with the pinned target
 
 ```bash

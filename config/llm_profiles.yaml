@@ -2063,7 +2063,9 @@ profiles:
       - Official HF weights + Circe's current llama-server (server-cuda-b10398)
         cannot run this architecture. Needs JigSawPT/llama.cpp branch
         `dsv41-porte` (flags: --moe-stream / --moe-stream-cache /
-        --moe-stream-l2). See progress.md for build/restore steps.
+        --moe-stream-l2). Image: Dockerfile.dsv41-porte /
+        scripts/build-dsv41-volta.sh (tag llamacpp-dsv41-porte:server-local-volta).
+        Compose: docker-compose.dsv41.yml. Do not set this as LLAMACPP_IMAGE_TAG.
 
       Weights:
       - Primary: JigSawPT MXFP4+Engram ~502 GB (11 shards) — only GGUF with a
@@ -2072,10 +2074,9 @@ profiles:
         volatile math better on paper, but Engram encoding differs from the
         fork converter; treat as a later experiment.
 
-      Host paths on Circe (telemetry is too small):
-      - GGUF: /mnt/storage-warm/llm-cache/gguf/
+      Host paths on Circe (Lexar, via /mnt/telemetry/llm-cache symlink):
+      - GGUF: /mnt/storage-fast/llm-cache/gguf/DeepSeek-V4.1-Flash-MXFP4-engram/
       - Experiment scratch: /mnt/storage-warm/deepseek-v41-flash-circe/
-      - Mount that cache into the worker (or symlink into LLM_CACHE_DIR).
 
       Eviction for this test (restore via progress.md):
       - stopped: atlas-chat (0,3), atlas-agent (1), diffusion-host (2),

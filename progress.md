@@ -18,7 +18,7 @@ Goal: stand up a `config/llm_profiles.yaml` card for DeepSeek-V4.1-Flash on nvid
 | Weights downloaded | **DONE** — 11/11 shards, 468G on Lexar at `/mnt/storage-fast/llm-cache/gguf/DeepSeek-V4.1-Flash-MXFP4-engram/` (Hitachi copy deleted) |
 | Lexar NVMe | **DONE** — `nvme1` Lexar NM610 PRO 2TB, ext4 `storage-fast`, mounted `/mnt/storage-fast` (UUID `d951cece-4221-4870-8a53-0abc6cffe4f2`) |
 | Fork source | **DONE** — `dsv41-porte` @ `3b6fcfe` |
-| Volta binary | **DONE** — `llama-server` + `--moe-stream*` on Circe (`build/bin`, sm_70 / CUDA 12.8) |
+| Volta binary | **DONE** — `llama-server` + `--moe-stream*` on Circe (`build/bin`, sm_70 / CUDA 12.8). Repo recipe: `Dockerfile.dsv41-porte` + `scripts/build-dsv41-volta.sh` |
 | Smoke load | **DONE / torn down** — cache-64 last pin; `dsv41-smoke` stopped 2026-09-19 ~00:48 UTC |
 | Restore | **agent only** — `orion-circe-atlas-llamacpp-agent` up on `:8015` GPU1 (Qwen3.8 27B). Chat/diffusion/vision still stopped. |
 | Community report | **DONE** — `docs/2026-09-18-deepseek-v41-flash-4xv100-circe.md` (also Circe `community-report.md`) |

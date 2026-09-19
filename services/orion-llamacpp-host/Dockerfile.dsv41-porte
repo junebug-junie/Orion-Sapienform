@@ -1,0 +1,54 @@
+# Volta (sm_70) llama.cpp for DeepSeek-V4.1-Flash.
+#
+# Stock ghcr.io/ggml-org/llama.cpp:server-cuda-b10398 cannot load this
+# checkpoint and has no --moe-stream*. This image compiles JigSawPT
+# dsv41-porte @ 3b6fcfe with CUDA 12.8 (Circe's host nvcc is 13.2 and
+# dropped Volta), then drops the binaries onto orion-llamacpp-host so
+# the existing profile wrapper still runs.
+#
+# Do not use this as LLAMACPP_IMAGE_TAG for chat/agent/fast/metacog.
+#
+# Build from repo root:
+#   services/orion-llamacpp-host/scripts/build-dsv41-volta.sh
+
+ARG CUDA_DEVEL_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04
+FROM ${CUDA_DEVEL_IMAGE} AS build
+
+ARG DSV41_REPO=https://github.com/JigSawPT/llama.cpp.git
+ARG DSV41_REF=3b6fcfe
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake build-essential git ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git init . \
+    && git remote add origin "${DSV41_REPO}" \
+    && git fetch --depth 1 origin "${DSV41_REF}" \
+    && git checkout FETCH_HEAD
+
+COPY services/orion-llamacpp-host/patches/dsv41-porte-cmath.patch /tmp/dsv41-porte-cmath.patch
+RUN git apply /tmp/dsv41-porte-cmath.patch
+
+# Stubs are enough for the link when the daemon has no GPU in the build.
+ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+
+RUN cmake -B build \
+        -DGGML_CUDA=ON \
+        -DGGML_NATIVE=OFF \
+        -DCMAKE_CUDA_ARCHITECTURES=70 \
+        -DLLAMA_CURL=OFF \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=ON \
+        -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --config Release --target llama-server llama-cli -j"$(nproc)" \
+    && ./build/bin/llama-server --help | grep -E -- "--moe-stream"
+
+ARG HOST_IMAGE=orion-llamacpp-host:0.1.0
+FROM ${HOST_IMAGE}
+
+# Stock wrapper looks for /app/llama-server and sibling .so files.
+COPY --from=build /src/build/bin/ /app/
+ENV LD_LIBRARY_PATH=/app

@@ -1,0 +1,54 @@
+# Circe DeepSeek-V4.1-Flash soak only.
+# Separate from docker-compose.atlas-workers.yml so chat/agent keep
+# ghcr.io/ggml-org/llama.cpp:server-cuda-b10398.
+#
+#   scripts/safe_docker_build.sh orion-llamacpp-host \
+#     -f services/orion-llamacpp-host/docker-compose.dsv41.yml \
+#     --env-file services/orion-llamacpp-host/.env \
+#     up -d --build
+
+services:
+  dsv41-flash:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile.dsv41-porte
+      args:
+        - HOST_IMAGE=orion-llamacpp-host:0.1.0
+    image: ${DSV41_LLAMACPP_IMAGE:-llamacpp-dsv41-porte:server-local-volta}
+    container_name: ${PROJECT:-orion}-dsv41-flash
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=dsv41-flash
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.1}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${DSV41_PROFILE_NAME:-deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${DSV41_CUDA_VISIBLE_DEVICES:-0,1,2,3}
+      - ENSURE_MODEL_DOWNLOAD=false
+      - WAIT_FOR_MODEL_SECONDS=0
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${DSV41_HOST_PORT:-8099}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

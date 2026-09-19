@@ -71,15 +71,16 @@ class HarnessMotorResult:
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
     # Wall time for the FCC leg ALONE -- the motor loop, not the turn. This is
-    # the quantity `HARNESS_FCC_TIMEOUT_SEC` (2400s) actually compares against,
+    # the quantity `HARNESS_FCC_TIMEOUT_SEC` (7200s) actually compares against,
     # and the one that decides `grounding_status == "fcc_timeout"`.
     #
     # Nothing measured it before. Hub could only time the WHOLE unified turn
-    # (stance <=400s + governor queue + this + finalize <=485s), so up to ~885s
-    # of what it recorded was not the motor -- and for a timed-out run this leg
-    # is pinned at 2400s by construction, meaning every bit of variance Hub
-    # could see was overhead. With this, a grounded run's distance from 2400s
-    # is real headroom and "the budget is too small" stops being a guess.
+    # (stance <=400s + governor queue + this + finalize <=1025s), so up to
+    # ~1425s of what it recorded was not the motor -- and for a timed-out run
+    # this leg is pinned at 7200s by construction, meaning every bit of
+    # variance Hub could see was overhead. With this, a grounded run's
+    # distance from 7200s is real headroom and "the budget is too small"
+    # stops being a guess.
     fcc_elapsed_sec: float | None = None
     # Verbosity/stuck-loop signals (see runner.py's step loop for how these accumulate).
     # Carried on the result object -- not just recorded into grammar_collector -- because

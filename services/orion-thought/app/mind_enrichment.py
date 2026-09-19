@@ -63,6 +63,14 @@ MIND_COLORING_ORION_WORK_SHAPE_KEYS: frozenset[str] = frozenset(
 MIND_COLORING_ALLOWED_KEYS: frozenset[str] = (
     MIND_COLORING_BASE_KEYS | MIND_COLORING_ORION_WORK_SHAPE_KEYS
 )
+# Keys copied onto ThoughtEventV1.mind_work_shape (scalar non-empty strings).
+# Work-shape soft labels plus optional user_intent when present on coloring.
+_THOUGHT_WORK_SHAPE_KEYS: tuple[str, ...] = (
+    "expected_depth",
+    "cross_cutting",
+    "foresight_note",
+    "user_intent",
+)
 _VALID_EXPECTED_DEPTH = frozenset({"shallow", "deep", "unknown"})
 _VALID_CROSS_CUTTING = frozenset({"yes", "no", "unknown"})
 
@@ -121,6 +129,28 @@ def _uncertainty_summary(selected: list[Any]) -> str | None:
     if not parts:
         return None
     return _clip_str_or_none(",".join(parts))
+
+
+def work_shape_from_coloring(
+    coloring: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    """Project allow-listed work-shape strings from Mind coloring for ThoughtEvent.
+
+    Returns None when coloring is absent or none of the allow-listed keys are
+    present as non-empty strings. Does not copy nested structures or other
+    coloring fields.
+    """
+    if not coloring:
+        return None
+    out: dict[str, str] = {}
+    for key in _THOUGHT_WORK_SHAPE_KEYS:
+        value = coloring.get(key)
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text:
+            out[key] = text
+    return out or None
 
 
 def select_mind_coloring(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
@@ -119,6 +119,32 @@ def _attachment_meta_for_cockpit(raw_attachments: Any) -> list[dict[str, Any]]:
         if meta:
             out.append(meta)
     return out
+
+
+def _maybe_splice_role_teach_disclosure(
+    user_message: str,
+    *,
+    utterance_origin: str | None,
+    mind_work_shape: Mapping[str, Any] | None,
+    enabled: bool,
+) -> str:
+    """Advisory Mind work-shape into the motor kickoff when Orion-origin.
+
+    Only for ``utterance_origin == "orion"`` with a truthy work-shape and the
+    Hub flag on. Fail-open otherwise. Stance appraisal is untouched — callers
+    must apply this to the motor ``user_message`` only.
+    """
+    if not enabled or utterance_origin != "orion" or not mind_work_shape:
+        return user_message
+    from orion.curiosity.role_teach_disclosure import (
+        format_role_teach_disclosure,
+        splice_role_teach_disclosure,
+    )
+
+    lines = format_role_teach_disclosure(mind_work_shape)
+    if not lines:
+        return user_message
+    return splice_role_teach_disclosure(user_message, lines)
 
 
 def _cockpit_ingress_payload(
@@ -1233,6 +1259,15 @@ async def execute_unified_turn(
         ReadingToolBindingV1(invocation_context=reading_context,
                              parent_run_id=reading_parent_run_id or correlation_id, parent_trace_id=correlation_id)
         if reading_context is not None else None
+    )
+    # Curiosity hire role teach: soft Mind work-shape into motor kickoff only
+    # (stance already used appraisal/subject). Resume preamble stays in
+    # curiosity_investigation._prompt_for_attempt — do not duplicate here.
+    user_message = _maybe_splice_role_teach_disclosure(
+        user_message,
+        utterance_origin=utterance_origin,
+        mind_work_shape=thought.mind_work_shape,
+        enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
     )
     harness_req = HarnessRunRequestV1(
         resource_lease=payload.get("resource_lease"),

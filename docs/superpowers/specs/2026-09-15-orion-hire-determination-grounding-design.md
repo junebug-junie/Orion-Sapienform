@@ -213,7 +213,10 @@ Code for Patches 1–5 is on `feat/hire-determination-impl`. Unit/eval gates are
 | `:InvestigationRole` graph-visible vs missing vs HelpRequest | teach + RO reader | **UNVERIFIED** |
 | Flag-off / no HelpRequest → no Cursor job | yes (fixtures) | unchanged contract |
 
-Known follow-up: persist `mind_appraisal_text` on `CuriosityTurnRequestV1` so durable turns after a Hub restart do not fall back to the full kickoff.
+Known follow-ups:
+
+- Persist `mind_appraisal_text` on `CuriosityTurnRequestV1` so durable turns after a Hub restart do not fall back to the full kickoff.
+- **Mind / progress → role teach disclosure** (Patch 4 remainder): see `docs/superpowers/specs/2026-09-19-hire-mind-role-disclosure-design.md`. Live 2026-09-19: soft labels exist on Orion-origin Mind; role teach `extra_lines` still empty; roles stay `local_crawl`.
 
 ## Rollback
 

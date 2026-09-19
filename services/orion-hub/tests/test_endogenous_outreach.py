@@ -30,6 +30,7 @@ from scripts.endogenous_outreach import (
     build_outreach_provenance,
     build_outreach_prompt,
     grounding_summary,
+    has_talkable_content,
     summarize_outreach_lanes,
     in_quiet_hours,
     is_pass_response,
@@ -1830,6 +1831,200 @@ def test_tension_with_curiosity_content_still_fires(monkeypatch) -> None:
     assert result["reason"] == "sent"
     assert result["grounding"]["tension"] is True
     assert result["grounding"]["curiosity_summaries"] == 1
+
+
+# --------------------------------------------------------------------------
+# Content novelty (unused IDs vs decision log)
+# --------------------------------------------------------------------------
+
+
+def test_filter_novel_pairs_drops_used_ids_keeps_empty() -> None:
+    from scripts.endogenous_outreach import filter_novel_pairs
+
+    ids, texts = filter_novel_pairs(
+        ["used-a", "", "fresh-b"],
+        ["preview-a", "preview-empty-id", "preview-b"],
+        used={"used-a"},
+    )
+    assert ids == ["", "fresh-b"]
+    assert texts == ["preview-empty-id", "preview-b"]
+
+
+def test_filter_novel_pairs_pads_missing_ids() -> None:
+    """A summary without a parallel id must not be zip-truncated away."""
+    from scripts.endogenous_outreach import filter_novel_pairs
+
+    ids, texts = filter_novel_pairs(
+        [],
+        ["orphan summary"],
+        used={"anything"},
+    )
+    assert texts == ["orphan summary"]
+    assert ids == [""]
+
+
+def test_apply_content_novelty_strips_used_priors_and_curiosity() -> None:
+    from scripts.endogenous_outreach import apply_content_novelty
+
+    ctx = OutreachContext(
+        curiosity_summaries=["old summary", "new summary"],
+        curiosity_content_ids=["curiosity:old", "curiosity:new"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=["p-old", "p-new"],
+        open_prior_ids=["prior-old", "prior-new"],
+        daydream=None,
+    )
+    novel = apply_content_novelty(
+        ctx,
+        used_prior_ids={"prior-old"},
+        used_curiosity_ids={"curiosity:old"},
+    )
+    assert novel.open_prior_ids == ["prior-new"]
+    assert novel.open_prior_previews == ["p-new"]
+    assert novel.curiosity_content_ids == ["curiosity:new"]
+    assert novel.curiosity_summaries == ["new summary"]
+    assert has_talkable_content(novel) is True
+
+
+def test_apply_content_novelty_leaves_daydream_as_talkable() -> None:
+    from scripts.endogenous_outreach import apply_content_novelty
+
+    ctx = OutreachContext(
+        curiosity_summaries=["old"],
+        curiosity_content_ids=["curiosity:old"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=["p-old"],
+        open_prior_ids=["prior-old"],
+        daydream=(30.0, "a quiet courtyard with one lit window."),
+    )
+    novel = apply_content_novelty(
+        ctx,
+        used_prior_ids={"prior-old"},
+        used_curiosity_ids={"curiosity:old"},
+    )
+    assert novel.open_prior_ids == []
+    assert novel.curiosity_content_ids == []
+    assert novel.daydream is not None
+    assert has_talkable_content(novel) is True
+
+
+def test_used_priors_alone_do_not_fire_without_tension(monkeypatch) -> None:
+    """Sticky open priors that were already said are not a fresh topic."""
+    from scripts import endogenous_outreach_decisions as decisions
+
+    prior = "[confidence=0.5, tested=2] same sticky gate prior again"
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    _stub_context(
+        monkeypatch,
+        summaries=(),
+        open_prior_previews=(prior,),
+        open_prior_ids=("prior-sticky",),
+    )
+    _stub_generation(monkeypatch, "should not send")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-sticky"], [prior])
+    )
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: ({"prior-sticky"}, set()),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "content_already_used"
+
+
+def test_used_priors_do_not_strand_novel_curiosity(monkeypatch) -> None:
+    """Sticky used priors must still let unused curiosity open the door."""
+    from scripts import endogenous_outreach_decisions as decisions
+
+    prior = "[confidence=0.5, tested=2] sticky used prior"
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    _stub_context(
+        monkeypatch,
+        summaries=("fresh curiosity about repair pressure",),
+        curiosity_content_ids=("curiosity:source:repair_pressure|gev_new",),
+        open_prior_previews=(prior,),
+        open_prior_ids=("prior-sticky",),
+    )
+    _stub_generation(monkeypatch, "Something new on repair pressure.")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-sticky"], [prior])
+    )
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: ({"prior-sticky"}, set()),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert result["reason"] == "sent"
+    assert result["grounding"]["prior_ids"] == []
+    assert result["grounding"]["curiosity_content_ids"] == [
+        "curiosity:source:repair_pressure|gev_new"
+    ]
+
+
+def test_novel_prior_still_fires_when_siblings_were_used(monkeypatch) -> None:
+    from scripts import endogenous_outreach_decisions as decisions
+
+    old = "[confidence=0.5, tested=2] already said"
+    fresh = "[confidence=0.5, tested=1] never said this one"
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    _stub_context(monkeypatch, summaries=())
+    _stub_generation(monkeypatch, "Something new about a fresh prior.")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(
+        module_globals,
+        "_fetch_open_priors",
+        lambda: (["prior-old", "prior-fresh"], [old, fresh]),
+    )
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: ({"prior-old"}, set()),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert result["reason"] == "sent"
+    assert result["grounding"]["prior_ids"] == ["prior-fresh"]
+    assert result["grounding"]["priors_count"] == 1
+
+
+def test_tension_with_only_used_content_is_tension_without_content(monkeypatch) -> None:
+    from scripts import endogenous_outreach_decisions as decisions
+
+    outreach = _outreach()
+    _stub_context(
+        monkeypatch,
+        summaries=("old curiosity",),
+        curiosity_content_ids=("curiosity:old",),
+        open_prior_previews=(),
+        daydream=None,
+    )
+    _stub_generation(monkeypatch, "never")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: (set(), {"curiosity:old"}),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "tension_without_content"
 
 
 def test_trigger_evaluator_exception_degrades_to_not_firing(monkeypatch) -> None:

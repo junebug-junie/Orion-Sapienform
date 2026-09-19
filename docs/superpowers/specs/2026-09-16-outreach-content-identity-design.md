@@ -56,6 +56,10 @@ Owned by `scripts/analysis/measure_outreach_reason_clusters.py` (read-only):
 
 ## Recommended next patch (after this)
 
-Novelty gate: talkable content means content Orion has not already used,
-using these IDs. Then re-run the measure script; only then consider deriving
-kinds from clusters.
+~~Novelty gate: talkable content means content Orion has not already used,
+using these IDs.~~ Shipped as `feat/outreach-novelty-gate` (organic path:
+`has_talkable_content` + prior peek; reason `content_already_used`).
+
+Then: re-run the measure script after deploy; only then consider deriving
+kinds from clusters. Cap overshoot and curiosity `offer_message` ID coverage
+remain separate follow-ups.

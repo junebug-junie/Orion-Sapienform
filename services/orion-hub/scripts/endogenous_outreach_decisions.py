@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
 logger = logging.getLogger("orion-hub.endogenous_outreach_decisions")
@@ -229,3 +229,91 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("endogenous_outreach_count_sent_failed date=%s: %s", local_date, exc)
         return None
+
+
+def collect_used_content_ids(
+    grounding_rows: Iterable[Dict[str, Any]],
+) -> Tuple[Set[str], Set[str]]:
+    """Fold grounding objects from successful sends into used-ID sets.
+
+    Pure: no DB. Empty / non-list / blank entries are ignored so a malformed
+    historical row cannot poison the novelty gate.
+    """
+    priors: Set[str] = set()
+    curiosity: Set[str] = set()
+    for row in grounding_rows:
+        if not isinstance(row, dict):
+            continue
+        for raw in row.get("prior_ids") or []:
+            pid = str(raw or "").strip()
+            if pid:
+                priors.add(pid)
+        for raw in row.get("curiosity_content_ids") or []:
+            cid = str(raw or "").strip()
+            if cid:
+                curiosity.add(cid)
+    return priors, curiosity
+
+
+def fetch_recently_used_outreach_content_ids(
+    *, lookback_days: int = 7
+) -> Tuple[Set[str], Set[str]]:
+    """Prior / curiosity content IDs used in successful outreach recently.
+
+    Fail-open to ``(set(), set())`` when the decision log is disabled, the
+    engine is unavailable, or the query errors -- a broken ledger must not
+    invent silence (same direction as other Hub outreach reads).
+
+    Only ``reason='sent'`` rows count: blocked ticks and force-debug noise
+    are not "already said." Curiosity ``offer_message`` rows that never
+    wrote grounding IDs contribute nothing here (organic-only novelty).
+    """
+    empty: Tuple[Set[str], Set[str]] = (set(), set())
+    if not decision_log_enabled():
+        return empty
+    days = max(1, int(lookback_days))
+    try:
+        from scripts.pg_engine import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        if engine is None:
+            return empty
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT result_json->'grounding' AS grounding
+                        FROM endogenous_outreach_decisions
+                        WHERE outreach
+                          AND reason = 'sent'
+                          AND decided_at >= now() - make_interval(days => :days)
+                          AND result_json ? 'grounding'
+                        """
+                    ),
+                    {"days": days},
+                )
+                .mappings()
+                .all()
+            )
+        groundings: List[Dict[str, Any]] = []
+        for row in rows:
+            g = row.get("grounding")
+            if isinstance(g, dict):
+                groundings.append(g)
+            elif isinstance(g, str):
+                import json
+
+                try:
+                    parsed = json.loads(g)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    groundings.append(parsed)
+        return collect_used_content_ids(groundings)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "endogenous_outreach_used_content_ids_failed days=%s err=%s", days, exc
+        )
+        return empty

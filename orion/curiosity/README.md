@@ -455,7 +455,8 @@ Orion wrote nothing to.
 | `worldview.py` | Hub's **read-only** view of `orion_worldview` — priors, `:TurnOutcome`, run footprint, hop notes, recently-settled |
 | `acl.py` | the FalkorDB grant, and the idempotent graph bootstrap |
 | `sandbox_env.py` | the seven-key allowlist into the `claude -p` subprocess |
-| `kickoff_prompt.py` | the invitation — priors, continuation, access, overlay, hops, schema |
+| `kickoff_prompt.py` | the invitation — priors, continuation, access, overlay, hops, schema; includes the `:InvestigationRole` / HelpRequest teach |
+| `role_teach_disclosure.py` | pure formatter + splice for Mind work-shape lines into that role teach (Hub wires it on Orion-origin turns) |
 | `outreach_prompt.py` | the composition turn |
 | `services/orion-hub/scripts/curiosity_investigation.py` | the tick loop, the gates, the turn |
 
@@ -544,6 +545,8 @@ worth knowing:
 | `HUB_CURIOSITY_STALE_PRIOR_TESTS` | `3` | a guess from the design doc, not a measured number — revisit against real data |
 | `HUB_CURIOSITY_MAX_HOPS` | `5` | Juniper's number |
 | `HUB_CURIOSITY_OUTREACH_ENABLED` | `true` | the only part that reaches Juniper; on since 2026-08-27 |
+| `HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED` | `false` (settings) / `true` in `.env_example` | kill switch for HelpRequest → peer enqueue |
+| `HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE` | `true` | soft Mind work-shape lines into the role teach on Orion-origin turns; advisory only |
 
 Orion's own credentials live in `~/.fcc/.env` as `ORION_CURIOSITY_*` (seven
 keys) — never in this repo.

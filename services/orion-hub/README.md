@@ -998,6 +998,13 @@ goes through `EndogenousOutreach.offer_message`, which applies that module's own
 gates: quiet hours, daily cap and cooldown are **shared** with tension-triggered
 outreach, because from Juniper's end they are the same interruption.
 
+**Role teach / `:InvestigationRole`.** On Orion-origin curiosity turns, when
+Mind returns a work-shape and `HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE` is on
+(default), Hub splices short advisory lines into the motor kickoff before the
+harness runs (`orion.curiosity.role_teach_disclosure`). Orion still authors
+`:InvestigationRole` and HelpRequest; Python never MERGEs hire choice. See
+`docs/superpowers/specs/2026-09-19-hire-mind-role-disclosure-design.md`.
+
 **Note on addresses.** Hub runs `network_mode: host`, so it reaches FalkorDB at
 `127.0.0.1:6380`; Orion's sandbox is on `app-net` and reaches the same server at
 `orion-athena-falkordb:6379`. Likewise `HUB_CURIOSITY_SANDBOX_HUB_URL` is Hub's

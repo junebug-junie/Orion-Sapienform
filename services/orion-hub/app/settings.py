@@ -895,6 +895,13 @@ class Settings(BaseSettings):
         default=False,
         alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
     )
+    # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
+    # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
+    # Default on; set false to leave motor kickoff prompts unchanged.
+    HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE: bool = Field(
+        default=True,
+        alias="HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE",
+    )
     # Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-
     # cognition-runs-from-cortex-design.md). True (default) = the curiosity tick
     # still owns scheduling, material, worldview and the prompt, but hands the

@@ -46,6 +46,7 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_STAGE2_SESSION_ID": ("str", '"orion_world_pulse_read_stage2"'),
     "HUB_WORLD_PULSE_READ_STAGE2_LLM_ROUTE": ("str", '"agent"'),
     "HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS": ("int", "5"),
+    "HUB_WORLD_PULSE_READ_MAX_ATTEMPTS": ("int", "3"),
 }
 
 
@@ -118,6 +119,7 @@ def test_main_wires_pipeline_from_settings_opt_in() -> None:
     )[0]
     assert "store_provider=" in ctor
     assert "_get_substrate_store" in ctor
+    assert "max_attempts=settings.HUB_WORLD_PULSE_READ_MAX_ATTEMPTS" in ctor
     assert "harness_rpc_bus=rpc_bus" in src
     assert "world_pulse_read_router" in src or "world_pulse_read_routes" in src
     # Module-global must be declared in startup/shutdown global lists (UnboundLocalError otherwise).
@@ -133,6 +135,10 @@ def test_main_wires_pipeline_from_settings_opt_in() -> None:
     assert "enabled=settings.HUB_WORLD_PULSE_READ_STAGE2_ENABLED" in src
     assert "daily_cap=settings.HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP" in src
     assert "max_round_trips=settings.HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS" in src
+    stage2_ctor = src.split("world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(", 1)[1].split(
+        "await world_pulse_read_stage2.start", 1
+    )[0]
+    assert "max_attempts=settings.HUB_WORLD_PULSE_READ_MAX_ATTEMPTS" in stage2_ctor
     assert "world_pulse_read_stage2" in startup_global.group(1)
     assert "world_pulse_read_stage2" in shutdown_global.group(1)
     assert "store_provider=concept_atlas_routes_runtime._get_substrate_store" in src
@@ -254,6 +260,7 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
         HUB_WORLD_PULSE_READ_STAGE2_ENABLED=True,
         HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP=6,
         HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS=5,
+        HUB_WORLD_PULSE_READ_MAX_ATTEMPTS=3,
         HUB_ENDOGENOUS_OUTREACH_TZ="UTC",
     )
     today = "2026-09-06"
@@ -276,6 +283,15 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
             "last_stage2_at": datetime(2026, 9, 6, 16, tzinfo=timezone.utc),
         }
 
+    async def _retries(_conn, *, max_attempts):
+        return {
+            "max_attempts": max_attempts,
+            "stage1_pending_retry": 2,
+            "stage2_pending_retry": 1,
+            "stage1_exhausted": 3,
+            "stage2_exhausted": 0,
+        }
+
     monkeypatch.setattr(routes, "_settings", lambda: cfg)
     monkeypatch.setattr(routes, "_redis", lambda: _FakeRedis(store))
     monkeypatch.setattr(routes, "_local_date", lambda _tz: today)
@@ -283,6 +299,7 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
     monkeypatch.setattr(routes, "count_seeds_by_status", _q)
     monkeypatch.setattr(routes, "count_stage2_by_status", _s2)
     monkeypatch.setattr(routes, "last_stage_timestamps", _ts)
+    monkeypatch.setattr(routes, "count_retry_state", _retries)
 
     response = client.get("/world-pulse-read/api/status")
     assert response.status_code == 200
@@ -305,6 +322,11 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
     assert payload["last_stage1_at"]
     assert payload["last_stage2_at"]
     assert payload["stage2_max_round_trips"] == 5
+    assert payload["retries"]["max_attempts"] == 3
+    assert payload["retries"]["stage1_pending_retry"] == 2
+    assert payload["retries"]["stage2_pending_retry"] == 1
+    assert payload["retries"]["stage1_exhausted"] == 3
+    assert payload["retries"]["stage2_exhausted"] == 0
 
 
 def test_schedule_still_works_alongside_status(

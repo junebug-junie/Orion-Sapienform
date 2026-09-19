@@ -130,6 +130,55 @@ def _coerce_thread_list(value: Any) -> list[str]:
     return out
 
 
+PriorTestVerdict = Literal["supported", "revised", "refuted", "untested"]
+_PRIOR_TEST_VERDICTS: tuple[str, ...] = ("supported", "revised", "refuted", "untested")
+
+
+class WorldPulseReadPriorTestV1(_Base):
+    """Stage 2's verdict on one Stage 1 prior. ``claim_ref`` is the prior's
+    claim text (or a short handle for it); ``verdict`` is what the second
+    pass concluded after testing it against the handoff and any hops."""
+
+    claim_ref: str = Field(min_length=1)
+    verdict: PriorTestVerdict = "untested"
+    why: str = ""
+
+
+def _coerce_prior_test_item(item: Any) -> Any:
+    if isinstance(item, WorldPulseReadPriorTestV1):
+        return item
+    if isinstance(item, str):
+        ref = item.strip()
+        return {"claim_ref": ref} if ref else None
+    if not isinstance(item, dict):
+        return None
+    ref = item.get("claim_ref") or item.get("claim") or item.get("prior") or item.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        return None
+    verdict_raw = item.get("verdict") or item.get("status") or item.get("result") or "untested"
+    verdict = str(verdict_raw).strip().lower()
+    if verdict not in _PRIOR_TEST_VERDICTS:
+        verdict = "untested"
+    why = item.get("why") or item.get("reason") or item.get("evidence") or item.get("note") or ""
+    return {"claim_ref": ref.strip(), "verdict": verdict, "why": str(why).strip()}
+
+
+def _coerce_prior_test_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (str, dict)):
+        item = _coerce_prior_test_item(value)
+        return [item] if item is not None else []
+    if not isinstance(value, list):
+        return []
+    out: list[Any] = []
+    for item in value:
+        coerced = _coerce_prior_test_item(item)
+        if coerced is not None:
+            out.append(coerced)
+    return out
+
+
 class WorldPulseReadHandoffV1(_Base):
     """Stage 1 → Stage 2 (and Concept Atlas) artifact."""
 
@@ -166,10 +215,23 @@ class WorldPulseReadHandoffV1(_Base):
 
 
 class WorldPulseReadStage2ResultV1(_Base):
-    """Stage 2 FCC result. ``need_stage1_urls`` may trigger Stage 1 re-entry."""
+    """Stage 2 FCC result. ``need_stage1_urls`` may trigger Stage 1 re-entry.
+
+    The prompt asks the second pass to form/test priors and note hops, so the
+    schema carries exactly that work (every field defaulted -- an older
+    ``stage2_result_json`` row with only ``summary`` still validates). Any
+    other top-level key the model invents is dropped with a logged warning by
+    the Stage 2 loop before validation; ``extra="forbid"`` stays on so an
+    unlogged drift cannot slip through the model itself.
+    """
 
     summary: str = Field(min_length=1)
     need_stage1_urls: list[str] = Field(default_factory=list)
+    candidate_priors: list[WorldPulseReadPriorCandidateV1] = Field(default_factory=list)
+    priors_tested: list[WorldPulseReadPriorTestV1] = Field(default_factory=list)
+    concept_candidates: list[WorldPulseReadConceptCandidateV1] = Field(default_factory=list)
+    open_threads: list[str] = Field(default_factory=list)
+    hops: list[str] = Field(default_factory=list)
     round_trips: int = Field(default=0, ge=0)
     trace_id: str = Field(min_length=1)
     created_at: datetime
@@ -177,10 +239,29 @@ class WorldPulseReadStage2ResultV1(_Base):
     request: ReadingRequestedV1 | None = None
     producer_hint: Literal["world_pulse_read_stage2"] = "world_pulse_read_stage2"
 
-
     @field_validator("summary")
     @classmethod
     def nonempty_summary(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("empty_summary")
         return value.strip()
+
+    @field_validator("candidate_priors", mode="before")
+    @classmethod
+    def _priors_before(cls, value: Any) -> list[Any]:
+        return _coerce_prior_list(value)
+
+    @field_validator("priors_tested", mode="before")
+    @classmethod
+    def _priors_tested_before(cls, value: Any) -> list[Any]:
+        return _coerce_prior_test_list(value)
+
+    @field_validator("concept_candidates", mode="before")
+    @classmethod
+    def _concepts_before(cls, value: Any) -> list[Any]:
+        return _coerce_concept_list(value)
+
+    @field_validator("open_threads", "hops", mode="before")
+    @classmethod
+    def _string_lists_before(cls, value: Any) -> list[str]:
+        return _coerce_thread_list(value)

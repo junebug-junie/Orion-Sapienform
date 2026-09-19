@@ -767,6 +767,11 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_LLM_ROUTE: str = Field(
         default="agent", alias="HUB_WORLD_PULSE_READ_LLM_ROUTE"
     )
+    # Bounded retry for transient turn failures, shared by Stage 1 and Stage 2.
+    # 1 == terminal on first failure (pre-2026-09-19 behaviour).
+    HUB_WORLD_PULSE_READ_MAX_ATTEMPTS: int = Field(
+        default=3, ge=1, le=10, alias="HUB_WORLD_PULSE_READ_MAX_ATTEMPTS"
+    )
     # --- World-pulse Stage 2 (Wallet B) -----------------------------------
     # Sibling of Stage 1. Isolated Redis prefix orion:wp_read:wallet_b:*.
     # Default True alongside Stage 1; operator can set false to pause.

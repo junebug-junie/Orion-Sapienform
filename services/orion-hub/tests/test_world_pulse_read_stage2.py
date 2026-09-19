@@ -739,6 +739,187 @@ def test_stage2_pass_raises_with_specific_reason_not_generic_label(
     assert conn.rows["finding:r1:x"]["stage2_error"] != "empty_generation"
 
 
+# --- Schema/prompt agreement: real rejected live payloads must now validate
+# (2026-09-19 bug: prompt asked for these fields, schema forbade them; 3 of
+# the last 8 live Stage 2 completions were thrown away) ---
+
+
+def test_as_stage2_result_accepts_live_rejected_payload_2026_09_15() -> None:
+    """2026-09-15 00:51 stage2_error: candidate_priors, concept_candidates,
+    open_threads, verification_path, hops, stages_completable all rejected."""
+    from scripts.world_pulse_read_stage2 import _as_stage2_result
+
+    raw = {
+        "summary": "Checked the XOC platform expansion claim.",
+        "candidate_priors": [{"claim": "A Gamers Nexus source is credible.", "confidence": 0.5}],
+        "concept_candidates": [{"label": "xoc-gpu-platform", "definition": "A GPU platform.", "link_hints": []}],
+        "open_threads": ["XOC expansion unresolved."],
+        "verification_path": ["Fetch a YouTube transcript."],
+        "hops": ["web.fetch https://www.youtube.com/... -> 0 results"],
+        "stages_completable": False,
+    }
+    result = _as_stage2_result(raw, fallback_trace="tr-fallback", seed_id="finding:x")
+    assert result.summary == raw["summary"]
+    assert result.candidate_priors[0].claim == "A Gamers Nexus source is credible."
+    assert result.concept_candidates[0].label == "xoc-gpu-platform"
+    assert result.open_threads == ["XOC expansion unresolved."]
+    # verification_path and stages_completable are not modeled fields --
+    # dropped, not rejected.
+    assert not hasattr(result, "verification_path")
+    assert not hasattr(result, "stages_completable")
+
+
+def test_as_stage2_result_accepts_live_rejected_payload_2026_09_14_priors_tested() -> None:
+    """2026-09-14 19:06 stage2_error: priors_tested rejected."""
+    from scripts.world_pulse_read_stage2 import _as_stage2_result
+
+    raw = {
+        "summary": "Re-verified the six-component claim.",
+        "priors_tested": [
+            {"claim_ref": "six-component claim", "verdict": "supported", "why": "corroboration in source"}
+        ],
+    }
+    result = _as_stage2_result(raw, fallback_trace="tr-fallback", seed_id="finding:x")
+    assert result.priors_tested[0].claim_ref == "six-component claim"
+    assert result.priors_tested[0].verdict == "supported"
+    assert result.priors_tested[0].why == "corroboration in source"
+
+
+def test_as_stage2_result_accepts_live_rejected_payload_2026_09_14_stance() -> None:
+    """2026-09-14 16:55 stage2_error: stage2_stance (an unmodeled dict) rejected."""
+    from scripts.world_pulse_read_stage2 import _as_stage2_result
+
+    raw = {
+        "summary": "Stance check complete.",
+        "stage2_stance": {"verified_this_turn_via_": "web search", "unresolved": ["thing"]},
+    }
+    result = _as_stage2_result(raw, fallback_trace="tr-fallback", seed_id="finding:x")
+    assert result.summary == "Stance check complete."
+    assert not hasattr(result, "stage2_stance")
+
+
+def test_as_stage2_result_logs_and_counts_dropped_unknown_keys(caplog: pytest.LogCaptureFixture) -> None:
+    from scripts.world_pulse_read_stage2 import _as_stage2_result
+
+    dropped: list[list[str]] = []
+    with caplog.at_level("WARNING", logger="orion-hub.world_pulse_read_stage2"):
+        _as_stage2_result(
+            {"summary": "ok", "stages_completable": True, "verification_path": ["x"]},
+            fallback_trace="tr",
+            seed_id="finding:x",
+            on_dropped=dropped.append,
+        )
+    assert dropped == [["stages_completable", "verification_path"]]
+    assert any("world_pulse_read_stage2_unknown_keys_dropped" in r.message for r in caplog.records)
+
+
+def test_prompt_lists_exactly_the_fields_the_schema_accepts() -> None:
+    """The regression this whole bug was: prompt promised fields the schema
+    forbade. Assert the skeleton names the real fields, not stale ones."""
+    handoff = _handoff()
+    prompt = _build_stage2_prompt(handoff, "tr-s2")
+    for field in ("priors_tested", "candidate_priors", "concept_candidates", "open_threads", "hops", "need_stage1_urls"):
+        assert f'"{field}"' in prompt
+
+
+# --- Bounded retry: a transient failure returns to pending; a non-transient
+# one stays terminal on the first try; exhausted attempts stay terminal too
+# (2026-09-19 bug: mark_stage2_failed had no path back to pending, so Stage 2
+# starved on live turn_deferred/timeout noise) ---
+
+
+def test_transient_stage2_failure_is_retried_until_exhausted() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_attempts=3)
+
+    async def _boom(handoff):
+        raise ValueError("turn_deferred:stance_react_failed: exec result missing thought payload")
+
+    pipe._stage2_pass = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        results = []
+        for _ in range(3):
+            results.append(await pipe.tick(force=True))
+        return results
+
+    results = asyncio.run(_run())
+    row = conn.rows["finding:r1:x"]
+    # Attempt 1 and 2 retry (attempts < 3); attempt 3 exhausts and goes terminal.
+    assert results == ["parse_failed", "parse_failed", "parse_failed"]
+    assert row["stage2_attempts"] == 3
+    assert row["stage2_status"] == "failed"
+    assert row["stage2_error"].startswith("turn_deferred:")
+
+
+def test_transient_stage2_failure_reclaimable_between_retries() -> None:
+    """A retried seed goes back to `pending`, not `claimed` -- the next tick
+    can claim it again exactly like a fresh seed."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_attempts=3)
+
+    async def _boom(handoff):
+        raise ValueError("stage2_turn_timeout")
+
+    pipe._stage2_pass = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        await pipe.tick(force=True)
+        row = conn.rows["finding:r1:x"]
+        return row["stage2_status"], row["stage2_attempts"], row["stage2_claimed_at"]
+
+    status, attempts, claimed_at = asyncio.run(_run())
+    assert status == "pending"
+    assert attempts == 1
+    assert claimed_at is None
+
+
+def test_non_transient_stage2_failure_is_terminal_on_first_try() -> None:
+    """A schema/parse failure is the seed's fault, not the turn's -- must not
+    burn two more wallet slots retrying it."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_attempts=3)
+
+    async def _boom(handoff):
+        raise ValueError("1 validation error for WorldPulseReadStage2ResultV1")
+
+    pipe._stage2_pass = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    asyncio.run(_run())
+    row = conn.rows["finding:r1:x"]
+    assert row["stage2_status"] == "failed"
+    assert row["stage2_attempts"] == 1
+
+
+def test_max_attempts_one_is_legacy_terminal_on_first_failure() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_attempts=1)
+
+    async def _boom(handoff):
+        raise ValueError("turn_deferred:stance_react_failed: x")
+
+    pipe._stage2_pass = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    asyncio.run(_run())
+    row = conn.rows["finding:r1:x"]
+    assert row["stage2_status"] == "failed"
+    assert row["stage2_attempts"] == 1
+
+
 from reading_queue_fakes import ReadingQueueFakeMixin
 
 

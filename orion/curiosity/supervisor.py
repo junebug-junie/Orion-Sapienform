@@ -34,6 +34,7 @@ from orion.memory_graph.json_extract import extract_first_json_object_text
 from orion.curiosity.worldview import (
     HopRecord,
     Prior,
+    hop_order_key,
     RECENT_RUNS_CYPHER,
     RECENT_RUNS_LIMIT,
     WorldviewReader,
@@ -88,7 +89,9 @@ def group_hops_by_run(
     for hop in hops:
         by_run.setdefault(hop.run_id, []).append(hop)
     for run_hops in by_run.values():
-        run_hops.sort(key=lambda h: h.n)
+        # Not `h.n`: a retried attempt's 1,2,3 sits on top of the first
+        # attempt's 1,2,3 under one run_id, and `n` alone interleaves them.
+        run_hops.sort(key=hop_order_key)
     ordered_run_ids = sorted(
         by_run.keys(), key=lambda rid: (run_order.get(rid) is None, run_order.get(rid) or 0)
     )
@@ -228,9 +231,17 @@ def _extract_cortex_result_text(payload: Any) -> str:
 
 
 def parse_reading_batch(
-    payload: Any, *, run_id: str, hop_ns: Sequence[int]
+    payload: Any,
+    *,
+    run_id: str,
+    hop_ns: Sequence[int],
+    written_at_by_n: Optional[dict[int, Optional[int]]] = None,
 ) -> list[HopReadingV1]:
     """Validate the LLM's response into `HopReadingV1` rows.
+
+    `hop_written_at` is stamped from `written_at_by_n` (the caller's own
+    hops), never trusted from the model -- same rule as `hop_run_id` below.
+    Absent map, or an `n` not in it, stamps None (a legacy hop).
 
     Tolerant like the rest of this arc's readers: a row that fails to
     validate is dropped and logged rather than raised, so one malformed
@@ -276,6 +287,11 @@ def parse_reading_batch(
             continue
         raw = dict(raw)
         raw["hop_run_id"] = run_id  # always ours, never the model's -- see docstring
+        try:
+            raw_n: Optional[int] = int(raw.get("hop_n"))
+        except (TypeError, ValueError):
+            raw_n = None  # validation below rejects the row for the same reason
+        raw["hop_written_at"] = (written_at_by_n or {}).get(raw_n)
         try:
             reading = HopReadingV1.model_validate(raw)
         except Exception as exc:  # noqa: BLE001 -- a schema-drifted row must not raise
@@ -354,6 +370,10 @@ async def generate_readings_for_run(
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
     hop_ns = [h.n for h in hops]
+    # Last-wins on a duplicated `n` (legacy collision): the later-sorted hop
+    # is the later one per `hop_order_key`, and a reading for a legacy pair
+    # is ambiguous either way -- the stamp is None for both, honestly.
+    written_at_by_n = {h.n: h.written_at for h in hops}
     prompt = build_reading_prompt(priors, hops)
     last_err: Optional[str] = None
     for attempt in range(1, max_attempts + 1):
@@ -426,7 +446,9 @@ async def generate_readings_for_run(
         # extract_suggest_text_from_cortex_payload` uses for the same shape.
         text = _extract_cortex_result_text(payload)
         json_blob = extract_first_json_object_text(text) or text
-        return parse_reading_batch(json_blob, run_id=run_id, hop_ns=hop_ns)
+        return parse_reading_batch(
+            json_blob, run_id=run_id, hop_ns=hop_ns, written_at_by_n=written_at_by_n
+        )
     # Unreachable given the `max_attempts < 1` guard above -- every loop
     # iteration either returns on success or re-raises on the last attempt.
     # Kept as a defensive fallback rather than trusting that invariant to

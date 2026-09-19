@@ -489,7 +489,12 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "graph before you take the next one:",
         "",
         '    CREATE (:Hop {run_id: "<RUN_ID>", n: 1, note: "what I just learned '
-        'and what I want to look at next"})',
+        'and what I want to look at next", written_at: timestamp()})',
+        "",
+        "`n` counts up from 1 within this sitting. Leave `written_at` as "
+        "`timestamp()` -- it is the graph's own clock, and it is what lets "
+        "the path be read back in the order it was walked even if this "
+        "sitting gets cut off and picked up again.",
         "",
     ] if writable else [
         # No graph to write to this run. The stops are still worth making and
@@ -523,6 +528,52 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         ),
         "",
     ]
+
+
+def build_resume_preamble(
+    prior_hops: Sequence[tuple[int, str]], *, run_id: str
+) -> str:
+    """What Hub prepends to the frozen kickoff prompt when a turn is retried.
+
+    A curiosity run's turn is retried under the SAME run_id when it fails --
+    `services/orion-durable-runs` re-sends `CuriosityRunBriefV1.prompt`
+    verbatim with `attempt` bumped -- and the prompt it re-sends says
+    "n: 1". Every retried attempt therefore restarted its hop numbering at
+    1 on top of the earlier attempt's hops, and did the earlier attempt's
+    work again without knowing it had been done: live 2026-09-19, run
+    `58b638778228` held 6 hops numbered 1,1,2,2,3,3; the design doc's own
+    example `4255a432f394` held 1,1,2,2,3,3,4. This is the whole fix -- tell
+    the resumed sitting what it already wrote and where the count stands.
+    Empty string when there is nothing to resume from, so the caller can
+    prepend unconditionally.
+    """
+    hops = [(n, note) for n, note in prior_hops if str(note or "").strip()]
+    if not hops:
+        return ""
+    next_n = max(n for n, _ in hops) + 1
+    lines = [
+        f"RESUMED SITTING. This run (run_id \"{run_id}\") was already started "
+        "once and cut off before it could write up. What that attempt "
+        "recorded is still in your graph -- these hops, and any priors, "
+        "findings or edges it wrote alongside them:",
+        "",
+    ]
+    for n, note in hops:
+        lines.append(f"  n={n}: {note}")
+    lines += [
+        "",
+        f"Pick up from there, not from scratch. Number your next hop n={next_n} "
+        "and count up -- do not start at 1 again, that leaves two hops with "
+        "the same number and no way to tell which came first. Do not redo a "
+        "query whose answer is already written above; do use it. If the "
+        "earlier attempt was mid-thread, that thread is yours to continue or "
+        "to drop on purpose -- either is fine, silently repeating it is not.",
+        "",
+        "----",
+        "",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:

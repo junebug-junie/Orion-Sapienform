@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 
 from orion.curiosity.kickoff_prompt import build_kickoff_prompt, build_resume_preamble
 from orion.curiosity.study_material import StudyMaterial
-from orion.curiosity.supervisor import group_hops_by_run, parse_reading_batch
+from orion.curiosity.supervisor import (
+    _reading_schema_for_model,
+    group_hops_by_run,
+    parse_reading_batch,
+)
 from orion.curiosity.worldview import (
     ALL_HOPS_CYPHER,
     HopRecord,
@@ -166,6 +170,34 @@ def test_parse_reading_batch_without_map_stamps_none():
     assert out[0].hop_written_at is None
 
 
+def test_generate_readings_for_run_stamps_none_for_a_genuinely_ambiguous_n():
+    # Two DIFFERENT real hops sharing n=1 -- possible even post-fix, since the
+    # resume preamble is advisory text, not a write-time guard. Picking either
+    # timestamp would be a confidently-wrong stamp; both must read None.
+    hops = [
+        HopRecord(run_id="r1", n=1, note="first, real clock", written_at=100),
+        HopRecord(run_id="r1", n=1, note="second, real clock", written_at=200),
+    ]
+    prompt_ns = {h.n for h in hops}
+    assert prompt_ns == {1}  # both hops share the one n this test is about
+    out = parse_reading_batch(
+        {"readings": [_reading(1), _reading(1)]},
+        run_id="r1",
+        hop_ns=[h.n for h in hops],
+        written_at_by_n={1: None},  # what generate_readings_for_run would build
+    )
+    assert all(r.hop_written_at is None for r in out)
+
+
+def test_reading_schema_sent_to_the_model_omits_hop_written_at():
+    # hop_written_at is always caller-stamped (never the model's to fill);
+    # unlike hop_run_id it costs nothing to leave out of the wire schema.
+    schema = _reading_schema_for_model()
+    props = schema["$defs"]["HopReadingV1"]["properties"]
+    assert "hop_written_at" not in props
+    assert "hop_run_id" in props  # unrelated field, still required as before
+
+
 # --- the write side (what Orion is told) -------------------------------------
 
 
@@ -178,6 +210,9 @@ def test_kickoff_template_stamps_written_at_with_the_graph_clock():
     assert 'CREATE (:Hop {run_id: "abc123", n: 1, note:' in text
     assert "written_at: timestamp()})" in text
     assert "`n` counts up from 1 within this sitting" in text
+    # the worked example always shows n: 1 -- this defers to a resume
+    # preamble when one is present, so the two don't silently contradict
+    assert "UNLESS you were told above that this is a resumed sitting" in text
 
 
 def test_kickoff_without_a_writable_graph_says_nothing_about_written_at():

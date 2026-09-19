@@ -684,11 +684,15 @@ def hops_for_run_cypher(run_id: str) -> str:
     # Ordered in Python by `hop_order_key`, not here: `ORDER BY h.n` alone
     # interleaves a retried attempt's 1,2,3 with the first attempt's 1,2,3,
     # and Cypher NULL ordering for legacy `written_at` is not something to
-    # lean on. The LIMIT is a safety cap, not a page size -- a run holds at
-    # most `max_hops` per attempt.
+    # lean on. The LIMIT is a safety cap, not a page size, sized for the worst
+    # case this reader must stay correct under, not the shipped default: up
+    # to `DURABLE_RUNS_RETRY_MAX_ATTEMPTS` (le=20) attempts of up to
+    # `DEFAULT_MAX_HOPS` (5) hops each -- 100 -- with headroom, because an
+    # unordered truncation here would drop whichever rows FalkorDB felt like,
+    # possibly the highest-`n` ones `next_hop_n` needs to continue correctly.
     return (
         f"MATCH (h:{LABEL_HOP}) WHERE h.run_id = '{run_id}' "
-        "RETURN h.n AS n, h.note AS note, h.written_at AS written_at LIMIT 40"
+        "RETURN h.n AS n, h.note AS note, h.written_at AS written_at LIMIT 200"
     )
 
 
@@ -1219,7 +1223,13 @@ def read_hop_notes(reader: WorldviewReader, run_id: str) -> list[tuple[int, str]
         (
             _as_int(r.get("n"), 0),
             str(r.get("note") or "").strip(),
-            _as_optional_int(r.get("written_at")),
+            # `_stamp_ms`, not a bare int(): the same "Orion hand-writes this
+            # by hand and the prompt asks for timestamp()" mistake `_stamp_ms`
+            # exists for on `TurnOutcome.written_at` (run 32b42392f495 wrote
+            # ISO) is exactly as reachable on `Hop.written_at` -- same prompt
+            # pattern, same author. A bare int() would silently read that ISO
+            # hop as legacy and sort it first, ahead of real-clock hops.
+            _stamp_ms(r.get("written_at")),
         )
         for r in rows
         if str(r.get("note") or "").strip()
@@ -1232,15 +1242,6 @@ def next_hop_n(hops: Sequence[tuple[int, str]]) -> int:
     """The `n` a resumed attempt should continue at: one past the highest
     already written, never 1 again. 1 when the run holds nothing."""
     return max((n for n, _ in hops), default=0) + 1
-
-
-def _as_optional_int(value: Any) -> Optional[int]:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def read_investigation_roles(
@@ -1312,7 +1313,7 @@ def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:
                 run_id=run_id,
                 n=_as_int(row.get("n"), 0),
                 note=note,
-                written_at=_as_optional_int(row.get("written_at")),
+                written_at=_stamp_ms(row.get("written_at")),
             )
         )
     return out

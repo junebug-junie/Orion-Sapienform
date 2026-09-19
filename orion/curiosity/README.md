@@ -266,10 +266,15 @@ hops (run `58b638778228`: six hops numbered 1,1,2,2,3,3) and redid its work
 without knowing it had been done. Hub now prepends what the earlier attempt
 wrote when it re-runs the prompt (`build_resume_preamble`, applied in
 `curiosity_investigation._prompt_for_attempt` on `attempt > 1`), naming the
-next `n` to use. Hops written before the clock shipped stay untimestamped and
-sort first — they predate every timestamped one in the same run — and a
-legacy pair sharing an `n` stays ambiguous; the fix stops the collision
-recurring, it cannot undo it.
+next `n` to use. **UNVERIFIED on a live retry** — confirmed against the real
+`58b638778228` collision by calling `read_hop_notes`/`build_resume_preamble`
+directly (see git history), and covered by unit tests against a stubbed
+`self`, but no organic durable-runs retry has been observed hitting this
+code path yet; that is a live catch still to make, not a claim already
+proven the way the paragraph above it is. Hops written before the clock
+shipped stay untimestamped and sort first — they predate every timestamped
+one in the same run — and a legacy pair sharing an `n` stays ambiguous; the
+fix stops the collision recurring, it cannot undo it.
 
 Five is Juniper's number; it is disclosed rather than derived. The real ceiling
 is time (`HARNESS_FCC_TIMEOUT_SEC`, observed turns reach 31–40 steps), not steps.

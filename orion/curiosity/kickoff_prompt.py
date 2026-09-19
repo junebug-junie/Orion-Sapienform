@@ -52,7 +52,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 from orion.curiosity.study_material import StudyMaterial
-from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip
+from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, next_hop_n
 
 DEFAULT_MAX_HOPS = 5
 
@@ -491,10 +491,12 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         '    CREATE (:Hop {run_id: "<RUN_ID>", n: 1, note: "what I just learned '
         'and what I want to look at next", written_at: timestamp()})',
         "",
-        "`n` counts up from 1 within this sitting. Leave `written_at` as "
-        "`timestamp()` -- it is the graph's own clock, and it is what lets "
-        "the path be read back in the order it was walked even if this "
-        "sitting gets cut off and picked up again.",
+        "`n` counts up from 1 within this sitting -- UNLESS you were told "
+        "above that this is a resumed sitting, in which case start at the n "
+        "given there instead; this example assumes a fresh start. Leave "
+        "`written_at` as `timestamp()` -- it is the graph's own clock, and "
+        "it is what lets the path be read back in the order it was walked "
+        "even if this sitting gets cut off and picked up again.",
         "",
     ] if writable else [
         # No graph to write to this run. The stops are still worth making and
@@ -550,7 +552,7 @@ def build_resume_preamble(
     hops = [(n, note) for n, note in prior_hops if str(note or "").strip()]
     if not hops:
         return ""
-    next_n = max(n for n, _ in hops) + 1
+    next_n = next_hop_n(hops)
     lines = [
         f"RESUMED SITTING. This run (run_id \"{run_id}\") was already started "
         "once and cut off before it could write up. What that attempt "

@@ -32,6 +32,12 @@ class HopReadingV1(BaseModel):
 
     hop_run_id: str
     hop_n: int
+    # The hop's own graph clock (ms), copied from the `Hop` node -- never
+    # the model's to fill; `parse_reading_batch` overwrites it. None for a
+    # hop written before 2026-09-19, when `Hop` carried no timestamp and `n`
+    # restarted at 1 on every retried turn (so two readings can share an
+    # `hop_n` under one run and only this field, when present, orders them).
+    hop_written_at: Optional[int] = None
     # Derived from the note's prose. Recorded so a human can check fifty of
     # these and see whether it is reading them right -- the supervisor must
     # not be the only witness to its own accuracy. `None` is a real answer:

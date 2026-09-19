@@ -86,7 +86,11 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .endogenous_outreach import in_quiet_hours
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.investigation_subject import build_investigation_subject
-from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
+from orion.curiosity.kickoff_prompt import (
+    DEFAULT_MAX_HOPS,
+    build_kickoff_prompt,
+    build_resume_preamble,
+)
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
@@ -151,6 +155,7 @@ from orion.curiosity.worldview import (
     TurnOutcome,
     WorldviewReader,
     WorldviewSnapshot,
+    next_hop_n,
     read_finding_connectivity,
     read_hop_notes,
     read_run_footprint,
@@ -2638,6 +2643,33 @@ class CuriosityInvestigation:
                 ),
             )
 
+    async def _prompt_for_attempt(self, request: CuriosityTurnRequestV1) -> str:
+        """The frozen brief prompt, with a resume preamble on a retry.
+
+        durable-runs re-sends `CuriosityRunBriefV1.prompt` byte-for-byte on
+        every attempt of the same run_id, and that prompt says "n: 1" -- so
+        before this, a retried sitting renumbered its hops from 1 on top of
+        the first attempt's and redid its work blind (`Hop.n` collision,
+        design doc "Two data defects"). One RO graph read on `attempt > 1`,
+        nothing on the first attempt: a fresh run_id holds nothing to resume.
+        """
+        if request.attempt <= 1 or self._reader is None:
+            return request.prompt
+        reader = self._reader
+        hops = await asyncio.to_thread(read_hop_notes, reader, request.run_id)
+        preamble = build_resume_preamble(hops, run_id=request.run_id)
+        if not preamble:
+            logger.info(
+                "curiosity_resume_no_prior_hops run=%s attempt=%s",
+                request.run_id, request.attempt,
+            )
+            return request.prompt
+        logger.info(
+            "curiosity_resume_preamble run=%s attempt=%s prior_hops=%s next_n=%s",
+            request.run_id, request.attempt, len(hops), next_hop_n(hops),
+        )
+        return preamble + request.prompt
+
     async def _turn_result_for(
         self, request: CuriosityTurnRequestV1, *, hold_lock: bool
     ) -> CuriosityTurnResultV1:
@@ -2670,8 +2702,9 @@ class CuriosityInvestigation:
 
         async def _run_turn() -> CuriosityTurnResultV1:
             try:
+                prompt = await self._prompt_for_attempt(request)
                 text, debug = await self._generate(
-                    request.prompt, request.correlation_id, source=request.source_tag,
+                    prompt, request.correlation_id, source=request.source_tag,
                     parent_run_id=request.run_id,
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{request.lease.lane}", "timeout_sec": request.timeout_sec,
                         "resource_lease": request.lease} if request.lease is not None else {}),

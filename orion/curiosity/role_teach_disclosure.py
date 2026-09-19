@@ -14,6 +14,7 @@ _USER_INTENT_KEY = "user_intent"
 _MAX_FORESIGHT_CHARS = 240
 _DISCLOSURE_HEADER = "Mind work-shape for this sitting (advisory):"
 _CONTRACTOR_HELP_MARKER = "ASKING FOR CONTRACTOR HELP"
+_ROLE_SITTING_MARKER = "YOUR ROLE FOR THIS SITTING"
 
 _LABELS = {
     "expected_depth": "expected depth",
@@ -96,7 +97,8 @@ def splice_role_teach_disclosure(prompt: str, extra_lines: Sequence[str]) -> str
     """Insert disclosure lines into a role-teach / harness prompt.
 
     Prefer insert immediately before the ``ASKING FOR CONTRACTOR HELP`` line.
-    If that marker is absent, prepend a short advisory block at the top.
+    If neither that marker nor ``YOUR ROLE FOR THIS SITTING`` is present,
+    return ``prompt`` unchanged (never prepend into non-role-teach text).
     Idempotent: if already spliced, return ``prompt`` unchanged.
     """
     cleaned = [str(line) for line in extra_lines if str(line).strip()]
@@ -108,6 +110,13 @@ def splice_role_teach_disclosure(prompt: str, extra_lines: Sequence[str]) -> str
     if _DISCLOSURE_HEADER in prompt or block in prompt:
         return prompt
 
+    # Only splice into real role-teach prompts — never prepend elsewhere.
+    if (
+        _CONTRACTOR_HELP_MARKER not in prompt
+        and _ROLE_SITTING_MARKER not in prompt
+    ):
+        return prompt
+
     lines = prompt.splitlines(keepends=True)
     insert_at: int | None = None
     for idx, line in enumerate(lines):
@@ -115,10 +124,12 @@ def splice_role_teach_disclosure(prompt: str, extra_lines: Sequence[str]) -> str
             insert_at = idx
             break
 
-    block_with_gap = block + "\n\n"
     if insert_at is None:
-        return block_with_gap + prompt
+        # Role marker present but no contractor-help line: leave prompt alone
+        # rather than inventing a prepend site.
+        return prompt
 
+    block_with_gap = block + "\n\n"
     before = "".join(lines[:insert_at])
     after = "".join(lines[insert_at:])
     if before and not before.endswith("\n"):

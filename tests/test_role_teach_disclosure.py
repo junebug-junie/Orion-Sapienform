@@ -150,13 +150,11 @@ def test_splice_inserts_before_contractor_help_marker() -> None:
     assert "expected depth: deep" in out
 
 
-def test_splice_prepends_when_marker_missing() -> None:
+def test_splice_is_identity_when_role_teach_markers_missing() -> None:
+    """No contractor-help / sitting-role markers → leave prompt unchanged."""
     prompt = "just a frozen kickoff without role section\n"
     extra = ["Mind work-shape for this sitting (advisory):", "- foresight: ACL"]
-    out = splice_role_teach_disclosure(prompt, extra)
-    assert out.startswith("Mind work-shape for this sitting (advisory):")
-    assert "just a frozen kickoff" in out
-    assert out.index("Mind work-shape") < out.index("just a frozen kickoff")
+    assert splice_role_teach_disclosure(prompt, extra) == prompt
 
 
 def test_splice_is_idempotent() -> None:

@@ -1,3 +1,9 @@
+"""Mind work_shape attachment on ThoughtEvent.
+
+``app.*`` imports are done inside tests / fixtures (not module scope) so a
+combined pytest run after Hub tests cannot poison collection via a stale
+``app`` package on ``sys.path``.
+"""
 from __future__ import annotations
 
 import importlib
@@ -7,7 +13,13 @@ import pytest
 
 from orion.mind.v1 import MindHandoffBriefV1, MindRunResultV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
-from app.mind_enrichment import work_shape_from_coloring
+
+
+@pytest.fixture
+def work_shape_from_coloring():
+    from app.mind_enrichment import work_shape_from_coloring as _fn
+
+    return _fn
 
 
 class _FakeCortexClient:
@@ -49,7 +61,9 @@ def _stance_json() -> str:
     )
 
 
-def test_work_shape_from_coloring_extracts_allowlisted_strings() -> None:
+def test_work_shape_from_coloring_extracts_allowlisted_strings(
+    work_shape_from_coloring,
+) -> None:
     coloring = {
         "reflective_themes": ["continuity"],
         "expected_depth": "deep",
@@ -67,7 +81,7 @@ def test_work_shape_from_coloring_extracts_allowlisted_strings() -> None:
     }
 
 
-def test_work_shape_from_coloring_none_and_empty() -> None:
+def test_work_shape_from_coloring_none_and_empty(work_shape_from_coloring) -> None:
     assert work_shape_from_coloring(None) is None
     assert work_shape_from_coloring({"reflective_themes": ["continuity"]}) is None
     assert work_shape_from_coloring({"expected_depth": "  "}) is None

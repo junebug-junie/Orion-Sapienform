@@ -593,6 +593,12 @@ async def startup_event():
                 self_lived_weight=settings.HUB_CURIOSITY_SELF_LIVED_WEIGHT,
                 self_pinned_floor_days=settings.HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS,
                 sandbox_repo_root=settings.HUB_CURIOSITY_SANDBOX_REPO_ROOT,
+                # The self-sense eval line: own budget, same loop. See
+                # scripts/curiosity_investigation.py's own comment on
+                # `tick_self_sense_eval`.
+                self_sense_eval_enabled=settings.HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED,
+                self_sense_eval_daily_cap=settings.HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP,
+                self_sense_eval_min_cooldown_sec=settings.HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC,
                 cortex_request_channel=settings.CORTEX_ORCH_REQUEST_CHANNEL,
                 cortex_result_prefix=settings.CORTEX_ORCH_RESULT_PREFIX,
                 outreach_provider=lambda: endogenous_outreach,
@@ -1132,9 +1138,11 @@ async def startup_event():
 
                 # Self Atlas (self-model rebuild arc, Patch 3, 2026-09-05) --
                 # same three-step shape as Orion/AI Town above, riding on the
-                # same tick interval. Own ENABLE, default off (see settings.py's
-                # own comment): a brand-new, unverified pipeline over a table
-                # that only just started accumulating real rows. Writes into a
+                # same tick interval. Own ENABLE (default on since 2026-09-05,
+                # see settings.py's own comment). The training step refuses to
+                # re-cluster an unchanged self_knowledge_items table -- its
+                # rows arrive from cortex-exec's daily self_repo_inspect
+                # refresh, not from this tick. Writes into a
                 # different FalkorDB graph (FALKORDB_SELF_SUBSTRATE_GRAPH) and a
                 # different topic-foundry dataset/model
                 # (source_table=self_knowledge_items) -- never feeds Orion's

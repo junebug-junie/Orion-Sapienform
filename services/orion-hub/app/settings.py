@@ -942,6 +942,25 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SANDBOX_REPO_ROOT: str = Field(
         default="/repo", alias="HUB_CURIOSITY_SANDBOX_REPO_ROOT"
     )
+    # A THIRD line of the same loop: the daily 4-question self-sense eval
+    # (orion/evals/self_sense_runner.py), previously only run by hand
+    # (`make eval-self-sense`) and dark for 9+ days. No graph, no new grants --
+    # just a scheduled version of the same chat turns the host script sends,
+    # scored and published the same way. Off by default; see
+    # services/orion-hub/README.md 4.2.1 for what turning it on costs.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED: bool = Field(
+        default=False, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED"
+    )
+    # 1/day: the eval only means something as a daily time series, not a
+    # thing to run more often than that.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP: int = Field(
+        default=1, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP"
+    )
+    # 12h floor -- slack around the 1/day cap, not a real pacing knob at
+    # cap=1.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC: float = Field(
+        default=43200.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
+    )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"

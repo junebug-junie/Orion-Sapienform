@@ -231,6 +231,18 @@ _SELF_LAST_RUN_KEY = "orion:curiosity:self:last_run_id"
 _SELF_RECENT_FAMILIES_KEY = "orion:curiosity:self:recent_families"
 _SELF_RECENT_FAMILIES_MAX = 12
 
+# The self-sense eval line: the daily 4-question identity check
+# (orion/evals/self_sense_runner.py, orion/schemas/self_sense.py), previously
+# only run by hand (`make eval-self-sense`) and dark for 9+ days before this.
+# A THIRD line in the same loop, own budget, no graph write and no new
+# grants -- it only reads `self_concept_history` / publishes
+# `self_sense_eval_log` rows, both already granted (PR #2183 / #2171).
+LINE_SELF_SENSE_EVAL = "self_sense_eval"
+_SELF_SENSE_EVAL_TAG = "self_sense_eval"
+_SENSE_EVAL_COOLDOWN_KEY = "orion:curiosity:self_sense_eval:last_run_at"
+_SENSE_EVAL_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:self_sense_eval:count:"
+_SENSE_EVAL_LAST_RUN_KEY = "orion:curiosity:self_sense_eval:last_run_id"
+
 # The channel Hub mirrors a run's `:SelfDefinition` into. Registered in
 # orion/bus/channels.yaml; orion-sql-writer subscribes.
 SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
@@ -249,6 +261,12 @@ def _line_keys(line: str) -> tuple[str, str, str]:
     """(cooldown key, daily-count key prefix, last-run key) for a line."""
     if line == LINE_SELF_INQUIRY:
         return _SELF_COOLDOWN_KEY, _SELF_DAILY_COUNT_KEY_PREFIX, _SELF_LAST_RUN_KEY
+    if line == LINE_SELF_SENSE_EVAL:
+        return (
+            _SENSE_EVAL_COOLDOWN_KEY,
+            _SENSE_EVAL_DAILY_COUNT_KEY_PREFIX,
+            _SENSE_EVAL_LAST_RUN_KEY,
+        )
     return _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX, _LAST_RUN_KEY
 
 
@@ -546,6 +564,10 @@ class CuriosityInvestigation:
         self_lived_weight: float = 0.75,
         self_pinned_floor_days: float = 7.0,
         sandbox_repo_root: str = "/repo",
+        # --- the self-sense eval line ---------------------------------------
+        self_sense_eval_enabled: bool = False,
+        self_sense_eval_daily_cap: int = 1,
+        self_sense_eval_min_cooldown_sec: float = 43200.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -707,6 +729,14 @@ class CuriosityInvestigation:
         self._self_done_today_date: Optional[str] = None
         self._last_self_question = None
         self._self_questions_seed_ensured = False
+        # Self-sense eval line state. Same in-process-mirrors-Redis pattern as
+        # the self-inquiry line above; see `_line_keys`.
+        self.self_sense_eval_enabled = bool(self_sense_eval_enabled)
+        self.self_sense_eval_daily_cap = int(self_sense_eval_daily_cap)
+        self.self_sense_eval_min_cooldown_sec = float(self_sense_eval_min_cooldown_sec)
+        self._sense_eval_last_monotonic: Optional[float] = None
+        self._sense_eval_done_today = 0
+        self._sense_eval_done_today_date: Optional[str] = None
 
     @property
     def graph_enabled(self) -> bool:
@@ -966,6 +996,19 @@ class CuriosityInvestigation:
         )
 
     @property
+    def effective_self_sense_eval_cooldown_sec(self) -> float:
+        """Same derivation as the other two lines. With `daily_cap=1` this is
+        close to trivial -- there is really only "already ran today" versus
+        "hasn't" -- but the shape stays identical to the other two lines
+        rather than special-casing cap=1."""
+        return paced_cooldown_sec(
+            min_cooldown_sec=self.self_sense_eval_min_cooldown_sec,
+            daily_cap=self.self_sense_eval_daily_cap,
+            start_hour=self.window_start_hour,
+            end_hour=self.window_end_hour,
+        )
+
+    @property
     def window_configured(self) -> bool:
         return window_is_configured(self.window_start_hour, self.window_end_hour)
 
@@ -977,19 +1020,27 @@ class CuriosityInvestigation:
         if self._self_done_today_date != today:
             self._self_done_today_date = today
             self._self_done_today = 0
+        if self._sense_eval_done_today_date != today:
+            self._sense_eval_done_today_date = today
+            self._sense_eval_done_today = 0
 
     def _seconds_since_last_in_process(self, line: str = LINE_INVESTIGATE) -> Optional[float]:
-        last = (
-            self._self_last_monotonic
-            if line == LINE_SELF_INQUIRY
-            else self._last_investigation_monotonic
-        )
+        if line == LINE_SELF_INQUIRY:
+            last = self._self_last_monotonic
+        elif line == LINE_SELF_SENSE_EVAL:
+            last = self._sense_eval_last_monotonic
+        else:
+            last = self._last_investigation_monotonic
         if last is None:
             return None
         return time.monotonic() - last
 
     def _done_today_in_process(self, line: str = LINE_INVESTIGATE) -> int:
-        return self._self_done_today if line == LINE_SELF_INQUIRY else self._done_today
+        if line == LINE_SELF_INQUIRY:
+            return self._self_done_today
+        if line == LINE_SELF_SENSE_EVAL:
+            return self._sense_eval_done_today
+        return self._done_today
 
     def _daily_key(self, now: datetime, line: str = LINE_INVESTIGATE) -> str:
         # Keyed on the operator's LOCAL date, not UTC. "3 per day" meaning
@@ -1092,6 +1143,8 @@ class CuriosityInvestigation:
                 await redis.delete(cooldown_key)
             if line == LINE_SELF_INQUIRY:
                 self._self_done_today = max(0, self._self_done_today - 1)
+            elif line == LINE_SELF_SENSE_EVAL:
+                self._sense_eval_done_today = max(0, self._sense_eval_done_today - 1)
             else:
                 self._done_today = max(0, self._done_today - 1)
             logger.warning(
@@ -1217,6 +1270,16 @@ class CuriosityInvestigation:
         if self.self_inquiry_enabled and not force:
             took = await self.tick_self_inquiry(now=now)
             if took is None or took == "dispatched":
+                return took
+
+        # The self-sense eval line gets second refusal, same shape as
+        # self-inquiry above and for the same starvation reason: letting the
+        # busier investigation budget claim the lock first could starve a
+        # line capped at once a day. Never on a forced investigation run --
+        # `force=True` asks for THAT line, not licence for this one too.
+        if self.self_sense_eval_enabled and not force:
+            took = await self.tick_self_sense_eval(now=now)
+            if took is None:
                 return took
 
         # No two turns at once. There was no lock before this because the
@@ -2241,6 +2304,215 @@ class CuriosityInvestigation:
             definition, run_id=run_id, correlation_id=correlation_id
         )
 
+    # --- the self-sense eval line -------------------------------------------
+    #
+    # orion/evals/self_sense_runner.py / orion/schemas/self_sense.py. The
+    # daily 4-question identity check -- previously only run by hand
+    # (`make eval-self-sense`) and dark for 9+ days, which Orion itself
+    # flagged in a 2026-09-18 self-description. No graph write, no new grants:
+    # this reads `self_concept_history` (already granted) and publishes
+    # `self_sense_eval_log` rows over the same channel the host script uses,
+    # via the SAME row-assembly module so the two producers cannot drift.
+    #
+    # NOT gated on recent human chat activity. Investigated: Hub has no
+    # turn-serialization lock and no existing "a human chat turn is in
+    # flight" signal to read (see `services/orion-hub/README.md` for where
+    # this is discussed). Building a new detector for that would be exactly
+    # the keyword-cathedral / speculative-signal move AGENTS.md 0A bans for a
+    # cap=1/day line -- gated on the shared waking window
+    # (`window_start_hour`/`window_end_hour`, the same one self-inquiry uses)
+    # instead. A run landing mid-chat costs one extra concurrent turn on
+    # Hub's own harness worker, not a correctness issue.
+
+    async def tick_self_sense_eval(
+        self, *, force: bool = False, now: Optional[datetime] = None
+    ) -> Optional[str]:
+        """One self-sense eval decision. Returns the block reason, or None if
+        it ran.
+
+        `force` skips this line's cooldown, cap and window -- nothing else --
+        the same contract `tick(force=True)` and `tick_self_inquiry(force=True)`
+        already have for their own lines.
+        """
+        now = now or datetime.now(timezone.utc)
+        self._roll_daily_counter(now)
+        if self._run_lock.locked():
+            logger.info("curiosity_self_sense_eval_blocked reason=already_running")
+            return "already_running"
+
+        since_last, done_today = await self._read_persisted_state(now, LINE_SELF_SENSE_EVAL)
+        reason = scheduling_block_reason(
+            SchedulingGateInputs(
+                enabled=self.self_sense_eval_enabled,
+                seconds_since_last=since_last,
+                min_cooldown_sec=self.effective_self_sense_eval_cooldown_sec,
+                done_today=done_today,
+                daily_cap=self.self_sense_eval_daily_cap,
+                local_hour=(
+                    now.astimezone(self._tz).hour
+                    if (self.window_configured and self._tz_loaded)
+                    else None
+                ),
+                window_start_hour=self.window_start_hour,
+                window_end_hour=self.window_end_hour,
+            )
+        )
+        if force and reason in {"cooldown", "daily_cap", "outside_window"}:
+            logger.warning(
+                "curiosity_self_sense_eval_forced overriding=%s since_last=%.0fs "
+                "done_today=%s cap=%s -- an operator asked for this run; it "
+                "still counts against today",
+                reason,
+                since_last if since_last is not None else -1.0,
+                done_today,
+                self.self_sense_eval_daily_cap,
+            )
+            reason = None
+        if reason is not None:
+            logger.info("curiosity_self_sense_eval_blocked reason=%s", reason)
+            return reason
+
+        if self._run_lock.locked():
+            logger.info("curiosity_self_sense_eval_blocked reason=already_running")
+            return "already_running"
+        async with self._run_lock:
+            return await self._run_self_sense_eval(now=now, done_today=done_today)
+
+    async def _run_self_sense_eval(self, *, now: datetime, done_today: int) -> Optional[str]:
+        """The four fixed questions, in-process. Held under `_run_lock` by the
+        caller. A per-question failure never aborts the run -- it still
+        produces a `"none"`-source row per `build_row`'s own contract, and the
+        rest still run. Only `asyncio.CancelledError` propagates (Hub going
+        away mid-turn), same as the other two lines."""
+        from orion.evals.self_sense import (
+            lived_answers_from_history_rows,
+            pinned_lived_concept_ids,
+            self_definition_version_from_row,
+        )
+        from orion.evals.self_sense_runner import (
+            SELF_DEFINITION_VERSION_ARGS,
+            SELF_DEFINITION_VERSION_SQL_POSITIONAL,
+            SESSION_ID,
+            build_envelope,
+            build_row,
+            lived_answers_sql_positional,
+            new_run_id,
+        )
+        from orion.schemas.self_sense import CHANNEL_SELF_SENSE_EVAL_WRITE, SELF_SENSE_QUESTIONS
+
+        run_id = new_run_id(now)
+
+        # Counted BEFORE the turns, same rule as the other two lines: a run
+        # that errors partway through still consumes its slot, or a reliably
+        # failing question would be retried every tick forever.
+        self._sense_eval_last_monotonic = time.monotonic()
+        self._sense_eval_done_today = done_today + 1
+        previous_stamp = await self._read_cooldown_stamp(LINE_SELF_SENSE_EVAL)
+        await self._record_investigation(now, run_id, LINE_SELF_SENSE_EVAL)
+
+        pool = self._pool_provider()
+        self_definition_version: Optional[int] = None
+        lived_answers: list[dict] = []
+        if pool is not None:
+            try:
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        SELF_DEFINITION_VERSION_SQL_POSITIONAL, *SELF_DEFINITION_VERSION_ARGS
+                    )
+                    self_definition_version = self_definition_version_from_row(
+                        tuple(row) if row else None
+                    )
+                    concept_ids = pinned_lived_concept_ids()
+                    if concept_ids:
+                        lived_rows = await conn.fetch(
+                            lived_answers_sql_positional(concept_ids), *concept_ids
+                        )
+                        lived_answers = lived_answers_from_history_rows(
+                            [dict(r) for r in lived_rows]
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_self_sense_eval_context_read_failed err=%s", exc)
+
+        logger.info(
+            "curiosity_self_sense_eval_starting run=%s self_definition_version=%s "
+            "lived_answers=%s",
+            run_id,
+            self_definition_version,
+            len(lived_answers),
+        )
+
+        published = failed = empty = 0
+        for question_key, question in SELF_SENSE_QUESTIONS:
+            correlation_id = str(uuid4())
+            try:
+                # SESSION_ID, not self.session_id: this must run under the
+                # SAME clean session `make eval-self-sense` uses, or the
+                # scheduled and ad hoc runs answer under different chat
+                # continuity and stop being comparable rows in the same
+                # table. Review finding, 2026-09-19.
+                text, debug = await self._generate(
+                    question,
+                    correlation_id,
+                    source=_SELF_SENSE_EVAL_TAG,
+                    require_lookup=False,
+                    session_id=SESSION_ID,
+                )
+            except asyncio.CancelledError:
+                await self._refund_investigation(previous_stamp, LINE_SELF_SENSE_EVAL)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_self_sense_eval_generate_failed run=%s question=%s err=%s",
+                    run_id,
+                    question_key,
+                    exc,
+                )
+                text, debug = "", {"error": type(exc).__name__}
+            if not text:
+                empty += 1
+                logger.info(
+                    "curiosity_self_sense_eval_no_text run=%s question=%s debug=%s",
+                    run_id,
+                    question_key,
+                    debug,
+                )
+            row = build_row(
+                run_id=run_id,
+                question_key=question_key,
+                question=question,
+                http_text=text,
+                trace_text=None,
+                correlation_id=correlation_id,
+                self_definition_version=self_definition_version,
+                lived_answers=lived_answers,
+            )
+            if self._bus is None:
+                failed += 1
+                continue
+            try:
+                await self._bus.publish(
+                    CHANNEL_SELF_SENSE_EVAL_WRITE,
+                    build_envelope(row, source=self._source_ref),
+                )
+                published += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_self_sense_eval_publish_failed run=%s question=%s err=%s",
+                    run_id,
+                    question_key,
+                    exc,
+                )
+                failed += 1
+
+        logger.info(
+            "curiosity_self_sense_eval_done run=%s published=%s failed=%s empty=%s",
+            run_id,
+            published,
+            failed,
+            empty,
+        )
+        return None
+
     # --- the turn ----------------------------------------------------------
 
     async def _generate(
@@ -2253,6 +2525,7 @@ class CuriosityInvestigation:
         fcc_model_label: str | None = None,
         timeout_sec: float | None = None,
         resource_lease: ResourceLeaseV1 | None = None,
+        session_id: str | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -2268,7 +2541,15 @@ class CuriosityInvestigation:
         -- this gate's own comment estimates "a turn that merely answers takes a
         step or two", i.e. BELOW it. Any change to the stream shape would then
         have killed outreach silently, reported as `empty_generation`, which is
-        indistinguishable from a real generation failure. A review finding."""
+        indistinguishable from a real generation failure. A review finding.
+
+        `session_id` defaults to `self.session_id` (the shared investigation/
+        self-inquiry session). Pass an explicit one when the caller needs a
+        clean session with its own continuity, not this loop's -- the
+        self-sense eval line does, so its scheduled runs match the host
+        script's `orion/evals/self_sense_runner.SESSION_ID` instead of
+        picking up unrelated curiosity-loop history as context. Review
+        finding, 2026-09-19."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -2290,7 +2571,7 @@ class CuriosityInvestigation:
                     reading_parent_run_id=parent_run_id,
                     bus=self._bus,
                     correlation_id=correlation_id,
-                    session_id=self.session_id,
+                    session_id=session_id or self.session_id,
                     user_message=prompt,
                     utterance_origin="orion",
                     mind_appraisal_text=appraisal,

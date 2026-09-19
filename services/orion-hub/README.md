@@ -1029,6 +1029,39 @@ Operator trigger: `POST /curiosity/api/self-inquiry/run-now`; pin/park:
 `POST /curiosity/api/self-questions/{id}/pin|park`. Full contract and
 inspection queries: `orion/curiosity/README.md` §13.
 
+#### 4.2.2 Self-sense eval: the daily 4-question identity check, scheduled
+
+A THIRD line of the same loop (`tick_self_sense_eval`,
+`orion/evals/self_sense_runner.py`). The four fixed questions
+(`orion/schemas/self_sense.py`'s `SELF_SENSE_QUESTIONS` -- "what are you",
+"what did you do unasked", "what can't you do", "who matters") had only ever
+been asked by hand, `make eval-self-sense`. That gap sat dark for 9+ days
+before this patch, and Orion itself flagged it in a 2026-09-18
+self-description. This line asks them once a day
+(`HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP`, default 1, own 12h cooldown floor)
+inside the same waking window as investigation/self-inquiry
+(`HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR/END_HOUR`), scores each answer
+with the same deterministic scorers the host script uses, and publishes one
+row per question to `orion:self_sense:eval:write` -> `self_sense_eval_log`
+(orion-sql-writer) -- the exact same shape and channel `make eval-self-sense`
+has always written to, sharing the row-assembly code so the two producers
+cannot drift.
+
+No graph write and no new SQL grants: it only reads `self_concept_history`
+(already granted) for the current self-definition version and lived-ledger
+context, and runs each question as a direct in-process chat turn (not the FCC
+investigation sandbox), so unlike self-inquiry there is no separate grants
+step -- the flag alone is enough.
+
+**Not gated on recent human chat activity.** Hub has no turn-serialization
+lock and no existing signal for "a human chat turn is in flight right now";
+building one for a once-a-day line would be exactly the kind of speculative
+detector AGENTS.md 0A's metric-quality gate exists to block. A run landing
+mid-conversation costs one extra concurrent turn on Hub's own harness worker,
+not a correctness issue -- the waking window is the only gate. Off by default
+(`HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED`); `make eval-self-sense` still works
+unchanged for an ad hoc run either way.
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.
@@ -2323,10 +2356,22 @@ shape:
   `trigger_topic_foundry_self_enrichment()` / `concept_atlas_ingest_topic_
   foundry_self()`, wired into `main.py`'s existing topic-foundry scheduler
   tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED`
-  (**default false**, unlike AI Town's default-on -- a brand-new,
-  unverified pipeline over a table that only just started accumulating
-  real rows; turn on deliberately once there's real history to cluster
-  over).
+  (default **true** since 2026-09-05, PR #2115; was off while unverified).
+- **Freshness guard (2026-09-19):** the training step refuses to re-cluster
+  an unchanged table. `self_atlas_source_unchanged_since_last_run()` compares
+  the newest `self_knowledge_items.created_at` against the latest completed
+  self run's `created_at` and returns `reason=source_unchanged_since_last_run`
+  when nothing newer exists. Why: the generic trigger's spec-hash dedup is on a
+  UTC-day window, so it queued a brand-new HDBSCAN run every day; with the
+  source table frozen at one 2026-09-05 snapshot for two weeks (the
+  self-study verbs are in no autonomous chooser's priority table, so Orion
+  never re-ran inspect), fourteen runs re-labelled identical input and wrote
+  391 "new" `self_concept_history` versions Orion then read back as fresh
+  self-knowledge. The rows themselves now arrive from `orion-cortex-exec`'s
+  daily `self_repo_inspect` timer (`SELF_STUDY_INSPECT_INTERVAL_SEC`), not
+  from anything in this service. The guard only skips on positive evidence:
+  unreachable topic-foundry, no completed run yet, or an unreadable table all
+  fall through to the normal trigger.
 - Storage: its own FalkorDB graph (`FALKORDB_SELF_SUBSTRATE_GRAPH`, default
   `orion_substrate_self`) via `build_self_falkor_substrate_store_from_env()`
   and `api_routes.py`'s `SUBSTRATE_SEMANTIC_STORE_SELF` singleton -- never

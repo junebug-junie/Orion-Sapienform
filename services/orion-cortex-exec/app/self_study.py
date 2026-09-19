@@ -3177,7 +3177,9 @@ async def publish_self_knowledge_items(
 
 async def run_self_repo_inspect(*, bus: Any | None, source: ServiceRef, correlation_id: str) -> SelfRepoInspectResultV1:
     start = time.monotonic()
-    snapshot = build_self_snapshot()
+    # Synchronous repo walk + one Postgres SELECT; off the event loop so a
+    # scheduled refresh can't stall an in-flight chat turn on the same lane.
+    snapshot = await asyncio.to_thread(build_self_snapshot)
     graph_status, journal_status, journal_entry = await publish_self_study_artifacts(
         bus=bus,
         source=source,

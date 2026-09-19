@@ -55,6 +55,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "attention.schema.v1": "AttentionSchemaSQL",
     "curiosity.peer.brief.v1": "CuriosityPeerBriefSQL",
+    "curiosity.supervisor.reading.v1": "CuriosityHopReadingSQL",
     "durable.run.state.v1": "DurableRunStateSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
@@ -169,6 +170,7 @@ class Settings(BaseSettings):
             "orion:self_study:items:write",
             "orion:attention:schema",
             "orion:curiosity:peer:brief",
+            "orion:curiosity:supervisor:reading",
             "orion:durable:run:state",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
@@ -396,6 +398,12 @@ class Settings(BaseSettings):
     curiosity_peer_brief_retention_days: int = Field(
         90, alias="CURIOSITY_PEER_BRIEF_RETENTION_DAYS"
     )
+    # curiosity_hop_reading: one row per Hop the supervisor has read (a run
+    # holds 2-7 hops, up to ~100 on a run retried to the configured max). 90
+    # days like its curiosity siblings. 0 disables retention.
+    curiosity_hop_reading_retention_days: int = Field(
+        90, alias="CURIOSITY_HOP_READING_RETENTION_DAYS"
+    )
     # substrate_durable_run_state: a handful of rows per curiosity run (5 nodes,
     # plus resumes/failures), a few runs a day. 90 days like its sibling.
     substrate_durable_run_state_retention_days: int = Field(
@@ -498,8 +506,15 @@ class Settings(BaseSettings):
     # raise the cycle budget with it: at ~1.11s/batch, 10 batches needs ~11.1s, above the
     # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
     # on /grammar/truth is what tells you which cap actually bound.
+    #
+    # Raised 45.0 -> 66.0 (2026-09-19, curiosity_hop_reading): GRAMMAR_RETENTION_TABLES
+    # had already grown past six with no matching raise here -- test_grammar_retention_
+    # periodic.py's own invariant test (fair_share >= 5.0s) was failing on main before this
+    # table was added (11 tables, 45/11 = 4.09s). Adding a 12th without also raising this
+    # would have pushed it further (3.75s) instead of fixing what the gate was already
+    # flagging. 66/12 = 5.5s, a little headroom over the 5.0s floor for the next table.
     grammar_retention_periodic_max_cycle_sec: float = Field(
-        45.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
+        66.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,
@@ -604,6 +619,10 @@ class Settings(BaseSettings):
         # nowhere.
         if "orion:curiosity:peer:brief" not in channels:
             channels.append("orion:curiosity:peer:brief")
+        # Same guarantee again, same reason. curiosity.supervisor.reading.v1
+        # is a code-default route with no feature toggle.
+        if "orion:curiosity:supervisor:reading" not in channels:
+            channels.append("orion:curiosity:supervisor:reading")
         # Same guarantee again, same reason. cockpit.hop.v1 is a
         # code-default route with no feature toggle; SQL_WRITER_SUBSCRIBE_
         # CHANNELS replaces rather than merges -- a stale already-deployed

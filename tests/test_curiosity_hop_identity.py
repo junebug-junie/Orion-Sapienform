@@ -198,6 +198,43 @@ def test_reading_schema_sent_to_the_model_omits_hop_written_at():
     assert "hop_run_id" in props  # unrelated field, still required as before
 
 
+def test_parse_reading_batch_discards_model_supplied_reading_id_and_metadata():
+    # A model that echoes these (or a future prompt/schema drift that stops
+    # excluding them) must not get to set the row's own identity or clock.
+    payload = {"readings": [_reading(
+        1,
+        reading_id="attacker-controlled-or-hallucinated",
+        generated_at="1970-01-01T00:00:00Z",
+        schema_version="curiosity.supervisor.reading.v1",
+    )]}
+    out = parse_reading_batch(payload, run_id="r1", hop_ns=[1], written_at_by_n={1: 555})
+    assert len(out) == 1
+    assert out[0].reading_id != "attacker-controlled-or-hallucinated"
+    # deterministic path taken (hop_written_at present) -- not the discarded value
+
+
+def test_parse_reading_batch_reading_id_is_deterministic_for_a_timestamped_hop():
+    # Re-running the report script's --publish must re-derive the SAME
+    # reading_id for the same hop, so orion-sql-writer's existing PK-collision
+    # skip (INSERT_ONLY_MODELS) makes a re-read idempotent instead of
+    # silently doubling every row on every re-run.
+    payload = {"readings": [_reading(1)]}
+    first = parse_reading_batch(payload, run_id="r1", hop_ns=[1], written_at_by_n={1: 999})
+    second = parse_reading_batch(payload, run_id="r1", hop_ns=[1], written_at_by_n={1: 999})
+    assert first[0].reading_id == second[0].reading_id
+
+
+def test_parse_reading_batch_reading_id_is_random_for_a_legacy_hop():
+    # No real clock to key on (hop_written_at None) -- (run_id, n) alone is
+    # exactly the ambiguous pair the hop-identity patch found colliding on
+    # real data, so hashing on it would silently drop one of two genuinely
+    # different legacy readings behind the sql-writer's duplicate-skip.
+    payload = {"readings": [_reading(1)]}
+    first = parse_reading_batch(payload, run_id="r1", hop_ns=[1], written_at_by_n={1: None})
+    second = parse_reading_batch(payload, run_id="r1", hop_ns=[1], written_at_by_n={1: None})
+    assert first[0].reading_id != second[0].reading_id
+
+
 # --- the write side (what Orion is told) -------------------------------------
 
 

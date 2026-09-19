@@ -348,3 +348,77 @@ Full run output: `/tmp/curiosity-supervisor-hop-readings/readings.jsonl` +
 answer missing question 2 before building the mid-turn poller path, and
 should treat the truncation issue as a prerequisite to trust before any
 intervention reads a `HopReadingV1` as ground truth for something that acts.
+
+## Missing question 2 and the `Hop.n` collision: separate patches (2026-09-19)
+
+Two follow-ups shipped separately from this file's edit history (their own
+branches, own PRs — see `docs/curiosity-supervisor-hop-timing` and
+`fix/curiosity-hop-identity`, both against `main`):
+
+- **Missing question 2, answered.** Watched a live curiosity run's own tool-
+  call stream (`orion:harness:run:step`) and its finished hop notes. Hops
+  land as the turn goes, not in one end-of-turn burst — caught a `CREATE
+  (:Hop ...)` write mid-run, and one hop's own text names its remaining
+  step-budget clock ("Clock: 3500s budget, ~3207s left ... reserve last
+  quarter for writing"), only possible if it was written with real time
+  still on the clock. The mid-turn poller is a real option now, not
+  foreclosed.
+- **`Hop.n` collision, fixed.** Re-caught live on the same run
+  (`58b638778228`: six real hops, three `n` values, each used twice) —
+  unchanged since this doc first named it. Root cause: `orion-durable-runs`
+  retries a failed turn under the same `run_id`, re-sending the frozen
+  kickoff prompt verbatim, and that prompt always said `n: 1`. Fixed with a
+  real graph-clock timestamp on every `Hop` write, chronological-not-`n`
+  ordering everywhere hops are read, and a resume preamble Hub prepends on
+  `attempt > 1` naming what the earlier attempt already wrote and which `n`
+  to continue at.
+
+## The reading channel, armed (2026-09-19)
+
+Patch 1's `HopReadingV1` could only ever land in a local `/tmp` file — no bus
+channel, no persistence, per that patch's own explicit scope. This patch
+arms it, and only that: registers `HopReadingV1` in
+`orion/bus/channels.yaml` / `orion/schemas/registry.py` on a new channel
+(`orion:curiosity:supervisor:reading`), gives `orion-sql-writer` a
+persistence path (`curiosity_hop_reading` table, bounded 90-day retention
+like its curiosity siblings), and adds an opt-in `--publish` flag to
+`scripts/report_curiosity_supervisor_readings.py` (off by default — the
+script's documented local-files-only behavior is unchanged unless asked).
+
+**No intervention ships here.** `end_run_early`, `hand_off_to_claude`,
+`reorder_next_offer` all still change what Orion does next, and this doc's
+own Danger section plus CLAUDE.md's proposal-mode rule for invasive
+cognition changes both say that stays its own, separately-approved patch.
+This one only makes a reading, once generated, durable and queryable — it
+does not decide when a reading gets generated (still on-demand, via the
+report script) or make anything happen because of one.
+
+Live-verified end to end: published one real `HopReadingV1` on the new
+channel against the live bus, confirmed orion-sql-writer picked it up and
+wrote the row into `curiosity_hop_reading` in Postgres with every field
+intact, then deleted the smoke-test row.
+
+**Caught by review, fixed, and re-verified live before merge:** the first
+version minted a fresh random `reading_id` on every read, so re-running the
+report script — the design's own acceptance check 1/7 ask for exactly this,
+sampling readings by hand more than once — would have silently duplicated
+every historical row on each rerun. Fixed by deriving `reading_id`
+deterministically from `(run_id, hop_n, hop_written_at)` whenever a hop
+carries a real graph clock, so a re-read of the same hop reproduces the same
+id and orion-sql-writer's existing insert-only duplicate-skip (a primary-key
+collision is caught and logged, not inserted again) makes a rerun a no-op
+instead of a duplicate. Legacy hops (no `written_at`) keep a random id —
+`(run_id, n)` alone is exactly the ambiguous pair the hop-identity patch
+found colliding on real data, so hashing on it would silently drop one of
+two genuinely different legacy readings. Live-verified: published the same
+deterministic reading twice against the real bus, confirmed exactly one row
+landed and the sql-writer log read `Duplicate entry for
+curiosity_hop_reading, skipping (append-only idempotent write)` for the
+second, then deleted the smoke-test row.
+
+**Still open, deliberately not built here:** nothing yet calls
+`generate_all_readings` on a live cadence — the report script is still
+triggered by hand. Turning that into an always-on recurring loop (mirroring
+`CuriosityInvestigation`'s shape: cadence, an incremental cursor so it
+doesn't re-read every hop in history each tick) is a distinct, separately-
+scoped next step, not folded into this patch.

@@ -40,6 +40,7 @@ from .journal_entry_index import JournalEntryIndexSQL
 from .self_knowledge_item import SelfKnowledgeItemLogSQL
 from .attention_schema import AttentionSchemaSQL
 from .curiosity_peer_brief import CuriosityPeerBriefSQL
+from .curiosity_hop_reading import CuriosityHopReadingSQL
 from .durable_run_state import DurableRunStateSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
@@ -127,6 +128,7 @@ __all__ = [
     "SelfKnowledgeItemLogSQL",
     "AttentionSchemaSQL",
     "CuriosityPeerBriefSQL",
+    "CuriosityHopReadingSQL",
     "DurableRunStateSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",

@@ -175,23 +175,30 @@ def build_reading_prompt(priors: Sequence[Prior], hops: Sequence[HopRecord]) -> 
     return "\n".join(lines)
 
 
-def _reading_schema_for_model() -> dict[str, Any]:
-    """`HopReadingBatchV1`'s JSON schema, minus `hop_written_at`.
+_MODEL_CANNOT_FILL_THESE = ("hop_written_at", "reading_id", "generated_at", "schema_version")
 
-    `parse_reading_batch` always overwrites this field from the caller's own
-    hops (it is the graph's internal write clock, never surfaced in the
-    prompt text) -- unlike `hop_run_id`, which the model IS asked to think
-    about (see that field's own docstring for why it stays in the schema
-    despite the same overwrite), `hop_written_at` costs generation tokens for
-    a value the model has no way to know and that is discarded either way.
+
+def _reading_schema_for_model() -> dict[str, Any]:
+    """`HopReadingBatchV1`'s JSON schema, minus the caller-stamped fields.
+
+    `parse_reading_batch` always overwrites every field in
+    `_MODEL_CANNOT_FILL_THESE` from the caller's own state -- the graph's
+    write clock, the row-identity uuid, the generation timestamp, the schema
+    tag -- none of which the model can know or needs to think about. Unlike
+    `hop_run_id`, which the model IS asked to think about (see that field's
+    own docstring for why it stays in the schema despite the same
+    overwrite), these cost generation tokens for a value that is discarded
+    either way.
     """
     schema = HopReadingBatchV1.model_json_schema()
     reading_ref = schema.get("$defs", {}).get("HopReadingV1")
     if isinstance(reading_ref, dict):
-        reading_ref.get("properties", {}).pop("hop_written_at", None)
+        properties = reading_ref.get("properties", {})
         required = reading_ref.get("required")
-        if isinstance(required, list) and "hop_written_at" in required:
-            required.remove("hop_written_at")
+        for field in _MODEL_CANNOT_FILL_THESE:
+            properties.pop(field, None)
+            if isinstance(required, list) and field in required:
+                required.remove(field)
     return schema
 
 
@@ -312,12 +319,42 @@ def parse_reading_batch(
             dropped += 1
             continue
         raw = dict(raw)
+        # Never the model's to fill: overwritten unconditionally, not just
+        # defaulted, in case a stray key made it into the model's JSON
+        # despite not being in the wire schema (_reading_schema_for_model
+        # strips reading_id/generated_at/schema_version the same way it
+        # strips hop_written_at).
+        raw.pop("reading_id", None)
+        raw.pop("generated_at", None)
+        raw.pop("schema_version", None)
         raw["hop_run_id"] = run_id  # always ours, never the model's -- see docstring
         try:
             raw_n: Optional[int] = int(raw.get("hop_n"))
         except (TypeError, ValueError):
             raw_n = None  # validation below rejects the row for the same reason
-        raw["hop_written_at"] = (written_at_by_n or {}).get(raw_n)
+        hop_written_at = (written_at_by_n or {}).get(raw_n)
+        raw["hop_written_at"] = hop_written_at
+        # Deterministic, not the model's random default, WHEN there is a real
+        # graph clock to key on: re-running the report script (its own
+        # "sample fifty of these" acceptance check invites exactly this) must
+        # re-derive the SAME reading_id for the same hop, so the sql-writer's
+        # existing insert-only duplicate-skip (a PK collision is caught and
+        # logged, not inserted again -- see INSERT_ONLY_MODELS in
+        # services/orion-sql-writer/app/worker.py) makes a re-read idempotent
+        # instead of silently doubling every row on every re-run. Caught in
+        # review: an earlier version left this on HopReadingV1's random
+        # uuid4() default, which duplicated every historical reading on a
+        # second `--publish` run.
+        #
+        # Legacy hops (hop_written_at is None) keep the random default --
+        # `(run_id, n)` alone is exactly the ambiguous pair this arc's own
+        # hop-identity patch found colliding on real data, so hashing on it
+        # would silently drop one of two genuinely different readings behind
+        # the sql-writer's PK-collision skip instead of storing both.
+        if hop_written_at is not None:
+            raw["reading_id"] = uuid.uuid5(
+                uuid.NAMESPACE_URL, f"curiosity_hop_reading:{run_id}:{raw_n}:{hop_written_at}"
+            ).hex
         try:
             reading = HopReadingV1.model_validate(raw)
         except Exception as exc:  # noqa: BLE001 -- a schema-drifted row must not raise

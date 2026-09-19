@@ -1792,6 +1792,48 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
     )
 
 
+def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
+    """Name the failure when the gateway answered with no text and an error flag.
+
+    orion-llm-gateway never publishes a system.error for a shed or refused chat
+    request. It publishes a normal ``llm.chat.result`` whose ``content`` is empty
+    and whose ``raw.error`` names why: ``_overloaded_result`` in
+    services/orion-llm-gateway/app/main.py (``raw.error="gateway_overloaded"``,
+    ``raw.details.stage`` = ``upstream_queue`` / ``budget_exhausted`` /
+    ``background_queue``) and ``_dispatch_chat``'s CapacityRejected /
+    ResourceLeaseRejected catch (``raw.error="gateway_capacity_rejected"`` or
+    ``"resource_lease_rejected"``, ``raw.details.reason`` = e.g.
+    ``capacity_wait_budget_exhausted``). Its own docstring records that this
+    service used to carry that empty answer forward as a *successful* step, so
+    every downstream consumer saw a hollow success -- live 2026-09-19, that read
+    as "stance_react exec result missing thought payload" on ~70% of autonomous
+    reading/curiosity turns while the real cause (a 235s wait for the single-slot
+    agent lane) was only visible in the gateway's log.
+
+    Returns ``"<raw.error>:<stage-or-reason>"`` (e.g.
+    ``gateway_capacity_rejected:capacity_wait_budget_exhausted``) when the reply
+    is a named failure, else None. A reply with any text at all is never treated
+    as a failure here, whatever ``raw`` says -- the model answered.
+    """
+    if not isinstance(result_payload, dict):
+        return None
+    raw = result_payload.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    error = raw.get("error")
+    if not isinstance(error, str) or not error.strip():
+        return None
+    for text_key in ("content", "text"):
+        value = result_payload.get(text_key)
+        if isinstance(value, str) and value.strip():
+            return None
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+    detail = details.get("stage") or details.get("reason")
+    if isinstance(detail, str) and detail.strip():
+        return f"{error.strip()}:{detail.strip()}"
+    return error.strip()
+
+
 def _extract_llm_text(res: Any) -> str:
     """Safely extract text content from various LLM result shapes."""
     if not res:
@@ -4431,6 +4473,36 @@ async def call_step_services(
                 raw_payload = result_payload.get("raw") if isinstance(result_payload, dict) else {}
                 if not isinstance(raw_payload, dict):
                     raw_payload = {}
+                gateway_failure = gateway_error_step_failure(result_payload)
+                if gateway_failure is not None:
+                    # See gateway_error_step_failure: a shed/refused request arrives as
+                    # a normal llm.chat.result with empty content and raw.error set.
+                    # Fail the step by name instead of carrying an empty answer forward.
+                    logger.warning(
+                        "llm_gateway_error_reply corr_id=%s mode=%s verb=%s step=%s route=%s reason=%s details=%s",
+                        correlation_id,
+                        ctx.get("mode"),
+                        step.verb_name,
+                        step.step_name,
+                        llm_route,
+                        gateway_failure,
+                        raw_payload.get("details"),
+                    )
+                    logs.append(f"fail <- {service}: {gateway_failure}")
+                    merged_result[service] = result_payload
+                    merged_result["error"] = {"message": gateway_failure, "service": service}
+                    _record_scoped_step("fail", gateway_failure, merged_result, logs)
+                    return StepExecutionResult(
+                        status="fail",
+                        verb_name=step.verb_name,
+                        step_name=step.step_name,
+                        order=step.order,
+                        result=merged_result,
+                        latency_ms=int((time.time() - t0) * 1000),
+                        node=settings.node_name,
+                        logs=logs,
+                        error=gateway_failure,
+                    )
                 usage = raw_payload.get("usage") if isinstance(raw_payload.get("usage"), dict) else {}
                 choices = raw_payload.get("choices") if isinstance(raw_payload.get("choices"), list) else []
                 first_choice = choices[0] if choices else {}

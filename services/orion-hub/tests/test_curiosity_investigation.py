@@ -276,7 +276,9 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._bus = bus
     loop._harness_rpc_bus = bus
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(
+        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None
+    ):
         loop.seen_prompt = prompt
         return (text or ""), {
             "elapsed_sec": 1.0,

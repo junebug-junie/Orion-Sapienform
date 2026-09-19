@@ -168,6 +168,7 @@ def test_trigger_topic_foundry_self_training_run_uses_self_constants(monkeypatch
         return {"triggered": True, "run_id": FAKE_RUN_ID}
 
     monkeypatch.setattr(car, "trigger_topic_foundry_training_run", fake_trigger)
+    monkeypatch.setattr(car, "self_atlas_source_unchanged_since_last_run", lambda base_url: None)
 
     result = car.trigger_topic_foundry_self_training_run()
 
@@ -245,3 +246,93 @@ def test_ingest_topic_foundry_self_route_uses_self_store_and_model(monkeypatch: 
     assert captured["log_prefix"] == "concept_atlas_self"
     assert "landmark_concept_ids" not in captured
     assert "speaker_concept_ids" not in captured
+
+
+# --- Freshness guard (2026-09-19): never re-cluster an unchanged table -----
+
+
+def _freshness_setup(monkeypatch: pytest.MonkeyPatch, *, run_created_at: str | None, newest_source):
+    from datetime import datetime
+
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL, raising=False)
+    if run_created_at is None:
+
+        def fake_latest(base_url, *, model_name=None, timeout=None):
+            raise car.TopicFoundryClientError("topic_foundry_no_completed_run")
+
+    else:
+
+        def fake_latest(base_url, *, model_name=None, timeout=None):
+            assert model_name == car._TOPIC_FOUNDRY_SELF_MODEL_NAME
+            return {"run_id": FAKE_RUN_ID, "status": "complete", "created_at": run_created_at}
+
+    monkeypatch.setattr(car, "fetch_latest_completed_run", fake_latest)
+    monkeypatch.setattr(
+        car,
+        "newest_self_knowledge_item_at",
+        lambda: datetime.fromisoformat(newest_source) if newest_source else None,
+    )
+    triggered: list[dict] = []
+    monkeypatch.setattr(
+        car,
+        "trigger_topic_foundry_training_run",
+        lambda **kwargs: triggered.append(kwargs) or {"triggered": True, "run_id": "new-run"},
+    )
+    return car, triggered
+
+
+def test_self_training_skips_when_no_source_row_is_newer_than_last_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live 2026-09-19 shape: table frozen at 2026-09-05, a run queued
+    every day since -- the next tick must NOT queue a fifteenth."""
+    car, triggered = _freshness_setup(
+        monkeypatch,
+        run_created_at="2026-09-18T02:00:00+00:00",
+        newest_source="2026-09-05T08:03:23+00:00",
+    )
+    result = car.trigger_topic_foundry_self_training_run()
+    assert result["triggered"] is False
+    assert result["reason"] == "source_unchanged_since_last_run"
+    assert result["run_id"] == FAKE_RUN_ID
+    assert triggered == []
+
+
+def test_self_training_proceeds_when_source_has_newer_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    car, triggered = _freshness_setup(
+        monkeypatch,
+        run_created_at="2026-09-18T02:00:00+00:00",
+        newest_source="2026-09-19T03:00:00+00:00",
+    )
+    result = car.trigger_topic_foundry_self_training_run()
+    assert result == {"triggered": True, "run_id": "new-run"}
+    assert len(triggered) == 1
+
+
+def test_self_training_proceeds_when_no_completed_run_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    car, triggered = _freshness_setup(monkeypatch, run_created_at=None, newest_source="2026-09-05T08:03:23+00:00")
+    assert car.trigger_topic_foundry_self_training_run()["triggered"] is True
+    assert len(triggered) == 1
+
+
+def test_self_training_proceeds_when_source_table_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard only skips on positive evidence; an unreadable table must
+    not silently freeze the whole pipeline."""
+    car, triggered = _freshness_setup(monkeypatch, run_created_at="2026-09-18T02:00:00+00:00", newest_source=None)
+    assert car.trigger_topic_foundry_self_training_run()["triggered"] is True
+    assert len(triggered) == 1
+
+
+def test_self_training_handles_zulu_suffix_and_naive_run_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    car, _ = _freshness_setup(
+        monkeypatch,
+        run_created_at="2026-09-18T02:00:00Z",
+        newest_source="2026-09-05T08:03:23+00:00",
+    )
+    assert car.trigger_topic_foundry_self_training_run()["reason"] == "source_unchanged_since_last_run"
+    car, _ = _freshness_setup(
+        monkeypatch,
+        run_created_at="2026-09-18T02:00:00",
+        newest_source="2026-09-05T08:03:23+00:00",
+    )
+    assert car.trigger_topic_foundry_self_training_run()["reason"] == "source_unchanged_since_last_run"

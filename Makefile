@@ -465,8 +465,11 @@ postgres-headroom-watch:
 # orion:self_sense:eval:write. Costs four real chat turns. Env comes from the
 # root .env (ORION_BUS_URL -- the tailscale
 # redis, never bus-core) and services/orion-hub/.env (HUB_BASE_URL, Postgres DSN);
-# root .env is sourced last so its ORION_BUS_URL wins. No scheduler yet -- run by
-# hand; `ARGS=--no-publish` scores without writing.
+# root .env is sourced last so its ORION_BUS_URL wins. A scheduler line now runs
+# this daily inside Hub (curiosity_investigation.tick_self_sense_eval,
+# HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED, off by default) -- this target is
+# unchanged and still the way to run one ad hoc; `ARGS=--no-publish` scores
+# without writing.
 # Linked worktrees carry no .env files, so the env is read from the primary
 # checkout (resolved the same way METRIC_PYTHON is) when the local copy is absent.
 eval-self-sense:

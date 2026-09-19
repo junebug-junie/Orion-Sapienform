@@ -29,6 +29,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from .self_atlas_cluster_history import newest_self_knowledge_item_at
 from .settings import settings
 from .topic_foundry_client import (
     TopicFoundryClientError,
@@ -676,12 +677,62 @@ def trigger_topic_foundry_aitown_training_run() -> dict[str, Any]:
     )
 
 
+def self_atlas_source_unchanged_since_last_run(base_url: str) -> Optional[dict[str, Any]]:
+    """Skip summary when ``self_knowledge_items`` holds no row newer than the
+    latest completed Self Atlas run; ``None`` when training should proceed.
+
+    Why (live, 2026-09-19): ``trigger_topic_foundry_training_run`` dedups on
+    a window floored to the UTC day, so a NEW run is queued every day even
+    when the source table has not changed. With ``self_knowledge_items``
+    frozen at one 2026-09-05 snapshot for two weeks, that meant fourteen
+    fresh HDBSCAN runs over identical input, each re-labelling clusters and
+    writing "new" ``self_concept_history`` versions (391 rows) that Orion then
+    read back as if they were new self-knowledge. Unreachable topic-foundry,
+    no completed run yet, or an unreadable table all return ``None`` -- the
+    guard only ever skips on positive evidence of an unchanged source."""
+    try:
+        last_run = fetch_latest_completed_run(base_url, model_name=_TOPIC_FOUNDRY_SELF_MODEL_NAME)
+    except TopicFoundryClientError as exc:
+        logger.debug("topic_foundry_self_freshness_no_completed_run error=%s", exc)
+        return None
+    raw_created = str(last_run.get("created_at") or "").strip()
+    try:
+        last_run_at = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if last_run_at.tzinfo is None:
+        last_run_at = last_run_at.replace(tzinfo=timezone.utc)
+    newest = newest_self_knowledge_item_at()
+    if newest is None or newest > last_run_at:
+        return None
+    return {
+        "triggered": False,
+        "reason": "source_unchanged_since_last_run",
+        "run_id": str(last_run.get("run_id")),
+        "newest_source_at": newest.isoformat(),
+        "last_run_at": last_run_at.isoformat(),
+    }
+
+
 def trigger_topic_foundry_self_training_run() -> dict[str, Any]:
     """Self Atlas -- zero-arg wrapper binding
     ``trigger_topic_foundry_training_run`` to the self-facts dataset/model
     constants above (self-model rebuild arc, Patch 3), same shape as
     ``trigger_topic_foundry_aitown_training_run`` so ``main.py``'s scheduler
-    can call this exactly like the other two steps."""
+    can call this exactly like the other two steps. Unlike the other two,
+    refuses to train when the source table has not changed since the last
+    completed run (see ``self_atlas_source_unchanged_since_last_run``)."""
+    base_url = str(getattr(settings, "TOPIC_FOUNDRY_BASE_URL", "") or "").strip()
+    if base_url:
+        skip = self_atlas_source_unchanged_since_last_run(base_url)
+        if skip is not None:
+            logger.info(
+                "topic_foundry_self_train_skipped reason=%s newest_source_at=%s last_run_at=%s",
+                skip["reason"],
+                skip["newest_source_at"],
+                skip["last_run_at"],
+            )
+            return skip
     return trigger_topic_foundry_training_run(
         dataset_name=_TOPIC_FOUNDRY_SELF_DATASET_NAME,
         model_name=_TOPIC_FOUNDRY_SELF_MODEL_NAME,

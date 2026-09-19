@@ -3087,10 +3087,28 @@ class CuriosityInvestigation:
             # Hub owns the mirror because Hub has the memory pool for the version
             # lookup. Prefer detail when the runner carried it; otherwise read
             # the run's graph node directly (same as the in-process path).
+            #
+            # Lived draws write `:LivedAnswer`, not `:SelfDefinition`. Older
+            # durable-runs finish events omit family/lived_answer and leave
+            # self_definition null -- without a graph fallback those sits never
+            # mirrored (live 2026-09-19: three LivedAnswers on graph, zero
+            # self:lived:* rows).
             family = str(detail.get("self_question_family") or "").strip()
             lived_answer = lived_answer_from_detail(detail)
             definition = self_definition_from_detail(detail)
-            if family == "lived" or lived_answer is not None:
+            if family not in {"lived", "anatomy"}:
+                if lived_answer is not None:
+                    family = "lived"
+                elif definition is not None:
+                    family = "anatomy"
+                else:
+                    lived_answer = await self._read_run_lived_answer(state.run_id)
+                    if lived_answer is not None:
+                        family = "lived"
+                    else:
+                        definition = await self._read_run_self_definition(state.run_id)
+                        family = "anatomy"
+            if family == "lived":
                 if lived_answer is None:
                     lived_answer = await self._read_run_lived_answer(state.run_id)
                 await self._mirror_self_inquiry_write(

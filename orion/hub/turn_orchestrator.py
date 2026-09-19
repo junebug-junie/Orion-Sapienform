@@ -940,6 +940,16 @@ async def execute_unified_turn(
             else "agent" if is_agent_route_model_label(resolved_fcc_model_label) else None
         ),
         resource_lease=stance_lease,
+        # endogenous_outreach.py (OUTREACH_TAG="endogenous_outreach") already runs
+        # its OWN agent-lane-then-chat-lane fallback around this whole call (PR
+        # #2163) -- it re-invokes execute_unified_turn a second time on a fresh
+        # correlation_id, which means a second stance_react from scratch. Letting
+        # orion-thought's own fallback (services/orion-thought/app/bus_listener.py's
+        # execute_stance_react_with_lane_fallback) ALSO retry here would let one
+        # outreach tick spend up to 4 stance attempts instead of 2. Every other
+        # agent-preferring caller (autonomous reading, curiosity) has no
+        # caller-side fallback and needs orion-thought's.
+        caller_handles_lane_fallback=payload.get("source") == "endogenous_outreach",
     )
     await _deliver_cockpit_frames(
         [

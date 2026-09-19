@@ -122,29 +122,29 @@ def build_investigation_journal_entry(
                 # slower `agent` lane -- see HARNESS_FCC_TIMEOUT_SEC's own
                 # comment in orion-harness-governor/.env_example):
                 #
-                #   HARNESS_FCC_TIMEOUT_SEC          2400s  governor process
-                #   HUB_HARNESS_GOVERNOR_RPC_TIMEOUT 2960s  hub
-                #   HUB_CURIOSITY_INVESTIGATION_...  3500s  hub, this clock
+                #   HARNESS_FCC_TIMEOUT_SEC          7200s  governor process
+                #   HUB_HARNESS_GOVERNOR_RPC_TIMEOUT 8300s  hub
+                #   HUB_CURIOSITY_INVESTIGATION_...  8840s  hub, this clock
                 #
-                # `fcc_timeout` is emitted by the GOVERNOR at 2400s
+                # `fcc_timeout` is emitted by the GOVERNOR at 7200s
                 # (`orion/harness/fcc_motor.py`), which then yields its partial
                 # draft as an ordinary final frame -- which is the only reason
-                # a timed-out run has a journal at all. The 3500s budget
+                # a timed-out run has a journal at all. The 8840s budget
                 # structurally cannot kill a journaled run: if it fires,
                 # `_generate` returns no text and `_investigate` bails at
                 # `empty_generation` before anything is written. So every entry
-                # carrying this number came from a turn where 3500s was slack.
+                # carrying this number came from a turn where 8840s was slack.
                 #
                 # It is therefore NOT the investigation's duration. It spans
                 # all four legs -- stance (<=400s), governor queue, the FCC
-                # turn, and the finalize chain (<=485s) -- so up to ~885s of it
-                # is provably not investigation, and the legs are not measured
-                # separately anywhere. Named in the text rather than left to
-                # position, because `in 3499s` sitting after "harness steps"
-                # reads as the harness leg and is not.
+                # turn, and the finalize chain (<=1025s) -- so up to ~1425s of
+                # it is provably not investigation, and the legs are not
+                # measured separately anywhere. Named in the text rather than
+                # left to position, because `in 8839s` sitting after "harness
+                # steps" reads as the harness leg and is not.
                 #
                 # What it is good for: a `grounded` run's distance from the
-                # 2400s FCC ceiling is real headroom, and until now the number
+                # 7200s FCC ceiling is real headroom, and until now the number
                 # survived only for runs that FAILED to journal (logged in the
                 # debug dict at `curiosity_investigation_no_text`) and was lost
                 # for every run that succeeded. Read it as an upper bound on
@@ -159,7 +159,7 @@ def build_investigation_journal_entry(
                 # bounds it; this is it. Reported second and only when known,
                 # so the difference between the two IS the stance+finalize
                 # overhead and nobody has to infer it. A `grounded` run's
-                # distance from HARNESS_FCC_TIMEOUT_SEC (2400s) is the real
+                # distance from HARNESS_FCC_TIMEOUT_SEC (7200s) is the real
                 # headroom figure -- the thing that decides whether the budget
                 # is genuinely too small or the turn simply never converged.
                 f", of which harness {harness_fcc_elapsed_sec:.0f}s"

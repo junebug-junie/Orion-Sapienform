@@ -2316,7 +2316,7 @@ class CuriosityInvestigation:
                     # `_liveness_alive` returns False for that. So Hub's
                     # DELIBERATELY SOFT governor RPC ceiling
                     # (HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC, extendable to a hard
-                    # HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=3600 while the turn is
+                    # HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC while the turn is
                     # visibly stepping) was effectively HARD for every curiosity
                     # run. The one mechanism built to stop a long, genuinely
                     # working turn being killed was unreachable by construction.
@@ -2884,7 +2884,7 @@ class CuriosityInvestigation:
     ) -> None:
         # BUILD INSIDE THE TRY. The journal is the only place this turn is
         # persisted -- the unified turn runs with `no_write`, so a raise here
-        # destroys an investigation that cost up to 2400s of FCC budget, with
+        # destroys an investigation that cost up to 7200s of FCC budget, with
         # nothing to recover from. It sat outside until 2026-09-01, which was
         # survivable only because every value rendered with a bare `{}` that
         # cannot raise; `harness_elapsed_sec` is the first that formats with

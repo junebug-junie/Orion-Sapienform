@@ -8,6 +8,7 @@ from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseRe
 from orion.world_pulse_read.queue import (
     RECLAIM_REASON_PROCESS_RESTART,
     RECLAIM_REASON_STALE_TIMEOUT,
+    WORLD_PULSE_READ_RETRY_SQL,
     claim_next_seed,
     claim_next_stage2_seed,
     count_seeds_by_status,
@@ -37,6 +38,20 @@ _STAGE2_MIGRATION = (
     / "orion-sql-db"
     / "manual_migration_world_pulse_read_stage2_v1.sql"
 )
+_RETRY_MIGRATION = (
+    _REPO_ROOT
+    / "services"
+    / "orion-sql-db"
+    / "manual_migration_world_pulse_read_retry_v1.sql"
+)
+
+
+def _sql_statements_only(text: str) -> str:
+    """Strip `--` comment lines and collapse whitespace, so the migration
+    file's header comment (path/apply instructions) doesn't count as a
+    difference from the inline SQL string, which has none."""
+    lines = [line for line in text.splitlines() if not line.strip().startswith("--")]
+    return " ".join(" ".join(lines).split())
 
 
 class _LegacyFakeConn:
@@ -451,6 +466,49 @@ def test_mark_seed_done_and_failed():
     assert conn.rows["digest_item:r1:i1:b"]["last_error"] == "boom"
 
 
+def test_mark_seed_failed_returns_failure_outcome_with_retry_default_off():
+    """`max_attempts` defaults to 1 -- the legacy terminal-on-first-failure
+    behavior -- even for a transient reason, so an un-migrated caller that
+    never passes `max_attempts` keeps working exactly as before."""
+    conn = _FakeConn()
+
+    async def _run():
+        await enqueue_seeds(conn, [_finding()])
+        return await mark_seed_failed(conn, "finding:r1:x", error="turn_deferred:x")
+
+    outcome = asyncio.run(_run())
+    assert outcome.status == "failed"
+    assert outcome.attempts == 1
+    assert outcome.retry_scheduled is False
+    assert conn.rows["finding:r1:x"]["status"] == "failed"
+
+
+def test_mark_seed_failed_on_vanished_row_reports_terminal_not_a_crash():
+    """RETURNING finds no row (e.g. the seed vanished between claim and fail)
+    -- must report a terminal outcome, not raise or claim a phantom retry."""
+    conn = _FakeConn()
+
+    async def _run():
+        return await mark_seed_failed(conn, "does-not-exist", error="turn_deferred:x", max_attempts=3)
+
+    outcome = asyncio.run(_run())
+    assert outcome.status == "failed"
+    assert outcome.attempts == 0
+    assert outcome.retry_scheduled is False
+
+
+def test_mark_stage2_failed_on_vanished_row_reports_terminal_not_a_crash():
+    conn = _FakeConn()
+
+    async def _run():
+        return await mark_stage2_failed(conn, "does-not-exist", error="stage2_turn_timeout", max_attempts=3)
+
+    outcome = asyncio.run(_run())
+    assert outcome.status == "failed"
+    assert outcome.attempts == 0
+    assert outcome.retry_scheduled is False
+
+
 def test_ensure_seed_queue_schema_emits_create():
     conn = _FakeConn()
 
@@ -502,6 +560,19 @@ def test_enqueue_from_recent_digests_loads_digest_and_article_rows():
     assert stored["priority"] == 10
     assert any("FROM world_pulse_digest" in sql for sql, _ in conn.executed)
     assert any("FROM world_pulse_article" in sql for sql, _ in conn.executed)
+
+
+def test_retry_migration_matches_inline_sql():
+    """`WORLD_PULSE_READ_RETRY_SQL` (run by `ensure_seed_queue_schema` for
+    fresh/test DBs) and the standalone migration file (run by hand against a
+    live DB) are maintained by hand in two places -- this is the actual sync
+    check the comment above `WORLD_PULSE_READ_RETRY_SQL` in queue.py claims
+    exists. A hand-edit to only one side must fail this test."""
+    file_sql = _sql_statements_only(_RETRY_MIGRATION.read_text())
+    inline_sql = _sql_statements_only(WORLD_PULSE_READ_RETRY_SQL)
+    assert file_sql == inline_sql
+    assert "attempts int not null default 0" in file_sql.lower()
+    assert "stage2_attempts int not null default 0" in file_sql.lower()
 
 
 def test_stage2_migration_adds_handoff_and_stage2_columns():

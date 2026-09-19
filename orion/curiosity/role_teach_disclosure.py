@@ -47,7 +47,8 @@ def format_role_teach_disclosure(
     Allow-list: ``expected_depth``, ``cross_cutting``, ``foresight_note``, and
     optionally ``user_intent`` when present as a short string. Returns ``[]``
     when there is nothing useful to disclose (None/empty shape, or all present
-    work-shape values missing/``unknown`` with empty foresight and no progress).
+    work-shape values missing/``unknown`` with empty foresight/intent and no
+    progress). Literal ``unknown`` foresight is treated as empty.
     """
     cleaned_progress = [str(line).strip() for line in progress_lines if str(line).strip()]
 
@@ -61,6 +62,8 @@ def format_role_teach_disclosure(
     foresight = _as_short_str(
         mind_work_shape.get(_FORESIGHT_KEY), limit=_MAX_FORESIGHT_CHARS
     )
+    if foresight and foresight.lower() == "unknown":
+        foresight = None
     user_intent = _as_short_str(
         mind_work_shape.get(_USER_INTENT_KEY), limit=_MAX_FORESIGHT_CHARS
     )
@@ -68,7 +71,12 @@ def format_role_teach_disclosure(
     work_values_empty = all(
         _is_missing_or_unknown(mind_work_shape.get(key)) for key in _WORK_SHAPE_KEYS
     )
-    if work_values_empty and not foresight and not cleaned_progress:
+    if (
+        work_values_empty
+        and not foresight
+        and not user_intent
+        and not cleaned_progress
+    ):
         return []
 
     lines: list[str] = [_DISCLOSURE_HEADER]

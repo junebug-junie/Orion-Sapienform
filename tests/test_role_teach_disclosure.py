@@ -65,6 +65,44 @@ def test_format_foresight_alone_with_unknown_labels_still_discloses() -> None:
     assert any("ACL grants" in line for line in lines)
 
 
+def test_format_user_intent_alone_with_unknown_labels_still_discloses() -> None:
+    """Non-empty user_intent must keep disclosure when depth/cross/foresight empty."""
+    lines = format_role_teach_disclosure(
+        {
+            "expected_depth": "unknown",
+            "cross_cutting": "unknown",
+            "foresight_note": "",
+            "user_intent": "Trace substrate.route edges",
+        }
+    )
+    assert lines
+    assert any("Trace substrate.route edges" in line for line in lines)
+    assert any(line.startswith("- intent:") for line in lines)
+
+
+def test_format_foresight_unknown_literal_omitted_like_empty() -> None:
+    assert (
+        format_role_teach_disclosure(
+            {
+                "expected_depth": "unknown",
+                "cross_cutting": "unknown",
+                "foresight_note": "unknown",
+            }
+        )
+        == []
+    )
+    lines = format_role_teach_disclosure(
+        {
+            "expected_depth": "deep",
+            "cross_cutting": "unknown",
+            "foresight_note": "unknown",
+        }
+    )
+    assert lines
+    assert "deep" in "\n".join(lines)
+    assert not any("foresight:" in line for line in lines)
+
+
 def test_format_appends_progress_lines_and_strips_blanks() -> None:
     lines = format_role_teach_disclosure(
         {"expected_depth": "shallow"},

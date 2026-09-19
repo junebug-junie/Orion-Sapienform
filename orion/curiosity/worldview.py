@@ -255,6 +255,29 @@ class HopRecord:
     run_id: str
     n: int
     note: str
+    # Graph clock (ms), `timestamp()` at write time -- see `kickoff_prompt.
+    # _hops_section`. None on every hop written before 2026-09-19: `n` was
+    # the ONLY ordering those carried, and `n` restarts at 1 when a run's
+    # turn is retried under the same run_id (the "Hop.n collision" in the
+    # supervisor design doc), so it cannot order a resumed run on its own.
+    written_at: Optional[int] = None
+
+
+def hop_order_key(hop: "HopRecord | tuple[int, Optional[int]]") -> tuple[int, int, int]:
+    """Chronological-as-far-as-the-graph-knows sort key for one run's hops.
+
+    Untimestamped (legacy) hops first, then by `written_at`, then `n`. "First"
+    for legacy is the honest choice, not a guess: every untimestamped hop was
+    written before the timestamp shipped, so it predates every timestamped
+    one in the same run. Within the legacy group `n` is all there is -- two
+    attempts' worth of 1,1,2,2,3,3 stay interleaved, which is the collision
+    this key exists to stop recurring, not something it can undo.
+    """
+    if isinstance(hop, HopRecord):
+        n, written_at = hop.n, hop.written_at
+    else:
+        n, written_at = hop
+    return (0 if written_at is None else 1, written_at or 0, n)
 
 
 @dataclass(frozen=True)
@@ -658,9 +681,18 @@ def outcome_for_run_cypher(run_id: str) -> str:
 def hops_for_run_cypher(run_id: str) -> str:
     if not _RUN_ID_RE.match(str(run_id or "")):
         raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    # Ordered in Python by `hop_order_key`, not here: `ORDER BY h.n` alone
+    # interleaves a retried attempt's 1,2,3 with the first attempt's 1,2,3,
+    # and Cypher NULL ordering for legacy `written_at` is not something to
+    # lean on. The LIMIT is a safety cap, not a page size, sized for the worst
+    # case this reader must stay correct under, not the shipped default: up
+    # to `DURABLE_RUNS_RETRY_MAX_ATTEMPTS` (le=20) attempts of up to
+    # `DEFAULT_MAX_HOPS` (5) hops each -- 100 -- with headroom, because an
+    # unordered truncation here would drop whichever rows FalkorDB felt like,
+    # possibly the highest-`n` ones `next_hop_n` needs to continue correctly.
     return (
         f"MATCH (h:{LABEL_HOP}) WHERE h.run_id = '{run_id}' "
-        "RETURN h.n AS n, h.note AS note ORDER BY h.n ASC LIMIT 20"
+        "RETURN h.n AS n, h.note AS note, h.written_at AS written_at LIMIT 200"
     )
 
 
@@ -695,7 +727,8 @@ HOPS_LIMIT = 2000
 
 ALL_HOPS_CYPHER = (
     f"MATCH (h:{LABEL_HOP}) "
-    f"RETURN h.run_id AS run_id, h.n AS n, h.note AS note LIMIT {HOPS_LIMIT}"
+    "RETURN h.run_id AS run_id, h.n AS n, h.note AS note, "
+    f"h.written_at AS written_at LIMIT {HOPS_LIMIT}"
 )
 
 
@@ -1173,17 +1206,42 @@ def read_finding_connectivity(
 
 
 def read_hop_notes(reader: WorldviewReader, run_id: str) -> list[tuple[int, str]]:
-    """The reflections Orion recorded as it went, in order. `[]` on failure."""
+    """The reflections Orion recorded as it went, in order. `[]` on failure.
+
+    `(n, note)` pairs -- the shape both Hub's journal read and
+    `services/orion-durable-runs`' turn-result read consume, unchanged.
+    Order is `hop_order_key` (legacy first, then by `written_at`, then `n`),
+    so a run resumed after a cut-off turn reads first-attempt then
+    second-attempt, whatever numbers each attempt used.
+    """
     try:
         rows = reader.query(hops_for_run_cypher(run_id))
     except (WorldviewUnavailable, ValueError) as exc:
         logger.warning("curiosity_hop_notes_read_failed run=%s err=%s", run_id, exc)
         return []
-    return [
-        (_as_int(r.get("n"), 0), str(r.get("note") or "").strip())
+    kept = [
+        (
+            _as_int(r.get("n"), 0),
+            str(r.get("note") or "").strip(),
+            # `_stamp_ms`, not a bare int(): the same "Orion hand-writes this
+            # by hand and the prompt asks for timestamp()" mistake `_stamp_ms`
+            # exists for on `TurnOutcome.written_at` (run 32b42392f495 wrote
+            # ISO) is exactly as reachable on `Hop.written_at` -- same prompt
+            # pattern, same author. A bare int() would silently read that ISO
+            # hop as legacy and sort it first, ahead of real-clock hops.
+            _stamp_ms(r.get("written_at")),
+        )
         for r in rows
         if str(r.get("note") or "").strip()
     ]
+    kept.sort(key=lambda t: hop_order_key((t[0], t[2])))
+    return [(n, note) for n, note, _ in kept]
+
+
+def next_hop_n(hops: Sequence[tuple[int, str]]) -> int:
+    """The `n` a resumed attempt should continue at: one past the highest
+    already written, never 1 again. 1 when the run holds nothing."""
+    return max((n for n, _ in hops), default=0) + 1
 
 
 def read_investigation_roles(
@@ -1250,7 +1308,14 @@ def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:
         note = str(row.get("note") or "").strip()
         if not run_id or not note:
             continue
-        out.append(HopRecord(run_id=run_id, n=_as_int(row.get("n"), 0), note=note))
+        out.append(
+            HopRecord(
+                run_id=run_id,
+                n=_as_int(row.get("n"), 0),
+                note=note,
+                written_at=_stamp_ms(row.get("written_at")),
+            )
+        )
     return out
 
 

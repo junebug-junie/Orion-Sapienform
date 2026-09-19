@@ -14,12 +14,17 @@ call -- and its result is handed back to the caller, not persisted by this
 module. Per the spec's own "Recommended next patch": no interventions, no
 live subscription, no `Hop -> Prior` write-side link.
 
-`Hop` carries no timestamp (spec's own Missing Question 2), so "chronological"
-below means the best the graph can give: each run ordered by its
-`TurnOutcome.written_at` where one exists, hops within a run ordered by their
-own `n`. A run with no `TurnOutcome` (died before writing one, or the read
-failed) sorts last, same "unknown is not oldest" rule `worldview.build_recent_
-runs` already applies -- not a claim that it actually happened last.
+Missing Question 2 (does `Hop` land as the turn goes, or in one end-of-turn
+burst) was answered live 2026-09-19: as the turn goes. `Hop` itself has
+carried `written_at` (the graph's own clock) since that date; hops written
+before then carry none. "Chronological" below means the best the graph can
+give: each run ordered by its `TurnOutcome.written_at` where one exists, hops
+within a run ordered by `worldview.hop_order_key` (untimestamped/legacy hops
+first, then by `written_at`, then `n` -- NOT plain `n`, which a retried turn
+under the same run_id restarts from 1 on top of the earlier attempt's hops).
+A run with no `TurnOutcome` (died before writing one, or the read failed)
+sorts last, same "unknown is not oldest" rule `worldview.build_recent_runs`
+already applies -- not a claim that it actually happened last.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from orion.memory_graph.json_extract import extract_first_json_object_text
 from orion.curiosity.worldview import (
     HopRecord,
     Prior,
+    hop_order_key,
     RECENT_RUNS_CYPHER,
     RECENT_RUNS_LIMIT,
     WorldviewReader,
@@ -82,13 +88,16 @@ def group_hops_by_run(
     output without needing its own sort.
 
     `run_order` is a `run_id -> written_at` map (missing/`None` sorts as
-    oldest -- see this module's docstring); hops within a run sort by `n`.
+    oldest -- see this module's docstring); hops within a run sort by
+    `worldview.hop_order_key`, not plain `n` -- see that function.
     """
     by_run: dict[str, list[HopRecord]] = {}
     for hop in hops:
         by_run.setdefault(hop.run_id, []).append(hop)
     for run_hops in by_run.values():
-        run_hops.sort(key=lambda h: h.n)
+        # Not `h.n`: a retried attempt's 1,2,3 sits on top of the first
+        # attempt's 1,2,3 under one run_id, and `n` alone interleaves them.
+        run_hops.sort(key=hop_order_key)
     ordered_run_ids = sorted(
         by_run.keys(), key=lambda rid: (run_order.get(rid) is None, run_order.get(rid) or 0)
     )
@@ -166,6 +175,26 @@ def build_reading_prompt(priors: Sequence[Prior], hops: Sequence[HopRecord]) -> 
     return "\n".join(lines)
 
 
+def _reading_schema_for_model() -> dict[str, Any]:
+    """`HopReadingBatchV1`'s JSON schema, minus `hop_written_at`.
+
+    `parse_reading_batch` always overwrites this field from the caller's own
+    hops (it is the graph's internal write clock, never surfaced in the
+    prompt text) -- unlike `hop_run_id`, which the model IS asked to think
+    about (see that field's own docstring for why it stays in the schema
+    despite the same overwrite), `hop_written_at` costs generation tokens for
+    a value the model has no way to know and that is discarded either way.
+    """
+    schema = HopReadingBatchV1.model_json_schema()
+    reading_ref = schema.get("$defs", {}).get("HopReadingV1")
+    if isinstance(reading_ref, dict):
+        reading_ref.get("properties", {}).pop("hop_written_at", None)
+        required = reading_ref.get("required")
+        if isinstance(required, list) and "hop_written_at" in required:
+            required.remove("hop_written_at")
+    return schema
+
+
 def build_reading_options(
     *,
     llm_route: str = DEFAULT_LLM_ROUTE,
@@ -182,7 +211,7 @@ def build_reading_options(
         "skip_autonomy_context": True,
         "skip_chat_stance_inputs": True,
         "structured_output_schema_name": "HopReadingBatchV1",
-        "structured_output_schema": HopReadingBatchV1.model_json_schema(),
+        "structured_output_schema": _reading_schema_for_model(),
         "structured_output_method": "json_object_schema",
         "structured_output_thinking_policy": "disabled_for_artifact",
         "chat_template_kwargs": {"enable_thinking": False},
@@ -228,9 +257,17 @@ def _extract_cortex_result_text(payload: Any) -> str:
 
 
 def parse_reading_batch(
-    payload: Any, *, run_id: str, hop_ns: Sequence[int]
+    payload: Any,
+    *,
+    run_id: str,
+    hop_ns: Sequence[int],
+    written_at_by_n: Optional[dict[int, Optional[int]]] = None,
 ) -> list[HopReadingV1]:
     """Validate the LLM's response into `HopReadingV1` rows.
+
+    `hop_written_at` is stamped from `written_at_by_n` (the caller's own
+    hops), never trusted from the model -- same rule as `hop_run_id` below.
+    Absent map, or an `n` not in it, stamps None (a legacy hop).
 
     Tolerant like the rest of this arc's readers: a row that fails to
     validate is dropped and logged rather than raised, so one malformed
@@ -276,6 +313,11 @@ def parse_reading_batch(
             continue
         raw = dict(raw)
         raw["hop_run_id"] = run_id  # always ours, never the model's -- see docstring
+        try:
+            raw_n: Optional[int] = int(raw.get("hop_n"))
+        except (TypeError, ValueError):
+            raw_n = None  # validation below rejects the row for the same reason
+        raw["hop_written_at"] = (written_at_by_n or {}).get(raw_n)
         try:
             reading = HopReadingV1.model_validate(raw)
         except Exception as exc:  # noqa: BLE001 -- a schema-drifted row must not raise
@@ -354,6 +396,18 @@ async def generate_readings_for_run(
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
     hop_ns = [h.n for h in hops]
+    # None, not last-wins, when an `n` is shared by more than one hop --
+    # legacy collision (both None, ambiguous either way) or, in principle, a
+    # fresh one (the resume preamble is advisory prose, not a write-time
+    # guard, so a model that ignores it can still collide with two real
+    # timestamps). Silently picking one via a plain dict comprehension would
+    # stamp a reading about the EARLIER hop with the LATER hop's clock.
+    _n_written_ats: dict[int, list[Optional[int]]] = {}
+    for h in hops:
+        _n_written_ats.setdefault(h.n, []).append(h.written_at)
+    written_at_by_n = {
+        n: (vals[0] if len(vals) == 1 else None) for n, vals in _n_written_ats.items()
+    }
     prompt = build_reading_prompt(priors, hops)
     last_err: Optional[str] = None
     for attempt in range(1, max_attempts + 1):
@@ -426,7 +480,9 @@ async def generate_readings_for_run(
         # extract_suggest_text_from_cortex_payload` uses for the same shape.
         text = _extract_cortex_result_text(payload)
         json_blob = extract_first_json_object_text(text) or text
-        return parse_reading_batch(json_blob, run_id=run_id, hop_ns=hop_ns)
+        return parse_reading_batch(
+            json_blob, run_id=run_id, hop_ns=hop_ns, written_at_by_n=written_at_by_n
+        )
     # Unreachable given the `max_attempts < 1` guard above -- every loop
     # iteration either returns on success or re-raises on the last attempt.
     # Kept as a defensive fallback rather than trusting that invariant to

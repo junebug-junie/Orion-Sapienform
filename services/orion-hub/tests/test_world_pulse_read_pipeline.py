@@ -785,6 +785,80 @@ def test_stage1_read_raises_with_specific_reason_not_generic_label(
     assert conn.rows["finding:r1:x"]["last_error"] != "empty_generation"
 
 
+# --- Bounded retry: Stage 1 sibling of the Stage 2 retry tests
+# (services/orion-hub/tests/test_world_pulse_read_stage2.py). Same predicate
+# (orion/world_pulse_read/retry.py), same SQL shape. ---
+
+
+def test_transient_stage1_failure_is_retried_until_exhausted() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
+
+    async def _boom(seed):
+        raise ValueError("turn_deferred:stance_react_failed: exec result missing thought payload")
+
+    pipe._stage1_read = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _seed_queue(conn)
+        results = []
+        for _ in range(3):
+            results.append(await pipe.tick(force=True))
+        return results
+
+    results = asyncio.run(_run())
+    row = conn.rows["finding:r1:x"]
+    assert results == ["parse_failed", "parse_failed", "parse_failed"]
+    assert row["attempts"] == 3
+    assert row["status"] == "failed"
+
+
+def test_transient_stage1_failure_reclaimable_between_retries() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
+
+    async def _boom(seed):
+        raise ValueError("stage1_turn_timeout")
+
+    pipe._stage1_read = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _seed_queue(conn)
+        await pipe.tick(force=True)
+        row = conn.rows["finding:r1:x"]
+        return row["status"], row["attempts"], row["claimed_at"]
+
+    status, attempts, claimed_at = asyncio.run(_run())
+    assert status == "pending"
+    assert attempts == 1
+    assert claimed_at is None
+
+
+def test_non_transient_stage1_failure_is_terminal_on_first_try() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
+
+    async def _boom(seed):
+        raise ValueError("empty_learning")
+
+    pipe._stage1_read = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _seed_queue(conn)
+        return await pipe.tick(force=True)
+
+    asyncio.run(_run())
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "failed"
+    assert row["attempts"] == 1
+
+
 from reading_queue_fakes import ReadingQueueFakeMixin
 
 

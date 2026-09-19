@@ -19,6 +19,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from orion.world_pulse_read.queue import (
+    count_retry_state,
     count_seeds_by_status,
     count_stage2_by_status,
     last_stage_timestamps,
@@ -48,6 +49,14 @@ _EMPTY_QUEUE = {
     "done": 0,
     "failed": 0,
     "skipped": 0,
+}
+
+_EMPTY_RETRIES = {
+    "max_attempts": 3,
+    "stage1_pending_retry": 0,
+    "stage2_pending_retry": 0,
+    "stage1_exhausted": 0,
+    "stage2_exhausted": 0,
 }
 
 
@@ -181,6 +190,7 @@ async def world_pulse_read_status() -> JSONResponse:
         ),
         "queue": dict(_EMPTY_QUEUE),
         "stage2_queue": dict(_EMPTY_QUEUE),
+        "retries": dict(_EMPTY_RETRIES),
         "last_stage1_at": None,
         "last_stage2_at": None,
         "stage2_max_round_trips": 5,
@@ -206,6 +216,8 @@ async def world_pulse_read_status() -> JSONResponse:
         payload["stage2_max_round_trips"] = int(
             getattr(cfg, "HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS", 5) or 0
         )
+        max_attempts = int(getattr(cfg, "HUB_WORLD_PULSE_READ_MAX_ATTEMPTS", 3) or 1)
+        payload["retries"]["max_attempts"] = max_attempts
 
         redis = _redis()
         if redis is not None:
@@ -222,6 +234,7 @@ async def world_pulse_read_status() -> JSONResponse:
             async with pool.acquire() as conn:
                 payload["queue"] = await count_seeds_by_status(conn)
                 payload["stage2_queue"] = await count_stage2_by_status(conn)
+                payload["retries"] = await count_retry_state(conn, max_attempts=max_attempts)
                 ts = await last_stage_timestamps(conn)
                 payload["last_stage1_at"] = _iso(ts.get("last_stage1_at"))
                 payload["last_stage2_at"] = _iso(ts.get("last_stage2_at"))

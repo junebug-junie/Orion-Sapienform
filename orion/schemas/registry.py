@@ -720,6 +720,7 @@ from orion.schemas.world_pulse_read import (
     WorldPulseReadConceptCandidateV1,
     WorldPulseReadHandoffV1,
     WorldPulseReadPriorCandidateV1,
+    WorldPulseReadPriorTestV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
 )
@@ -1345,6 +1346,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorldPulseReadStage2ResultV1": WorldPulseReadStage2ResultV1,
     "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
     "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,
+    "WorldPulseReadPriorTestV1": WorldPulseReadPriorTestV1,
     "WorldContextCapsuleV1": WorldContextCapsuleV1,
     "WorldPulseRunV1": WorldPulseRunV1,
     "WorldPulseRunResultV1": WorldPulseRunResultV1,

@@ -157,6 +157,7 @@ class WorldPulseReadPipeline:
         session_id: str,
         llm_route: str = "",
         timezone_name: str = "UTC",
+        max_attempts: int = 1,
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
         step_relay_provider: Optional[Callable[[], Any]] = None,
@@ -173,6 +174,9 @@ class WorldPulseReadPipeline:
         self.llm_route = str(llm_route or "").strip()
         self._fcc_model_label = fcc_model_for_route(self.llm_route) if self.llm_route else None
         self.timezone_name = timezone_name
+        # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
+        # 1 == legacy terminal-on-first-failure.
+        self.max_attempts = max(1, int(max_attempts))
         try:
             self._tz = ZoneInfo(timezone_name)
             self._tz_loaded = True
@@ -214,10 +218,11 @@ class WorldPulseReadPipeline:
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "world_pulse_read_pipeline started tick=%ss cooldown=%ss cap=%s",
+            "world_pulse_read_pipeline started tick=%ss cooldown=%ss cap=%s max_attempts=%s",
             self.tick_interval_sec,
             round(self.effective_cooldown_sec),
             self.daily_cap,
+            self.max_attempts,
         )
 
     async def stop(self) -> None:
@@ -392,7 +397,19 @@ class WorldPulseReadPipeline:
             logger.warning("world_pulse_read_enqueue_failed", exc_info=True)
 
     async def _fail_seed(self, seed_id: str, error: str) -> None:
-        await self._with_conn(lambda conn: mark_seed_failed(conn, seed_id, error=error))
+        outcome = await self._with_conn(
+            lambda conn: mark_seed_failed(
+                conn, seed_id, error=error, max_attempts=self.max_attempts
+            )
+        )
+        if outcome is not None and outcome.retry_scheduled:
+            logger.warning(
+                "world_pulse_read_retry_scheduled seed=%s attempts=%s max=%s reason=%s",
+                seed_id,
+                outcome.attempts,
+                self.max_attempts,
+                error[:_FAIL_REASON_DETAIL_MAX_LEN],
+            )
 
     async def _journal(self, handoff: WorldPulseReadHandoffV1) -> None:
         await publish_journal(self._bus, self._source_ref, handoff)

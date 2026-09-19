@@ -1984,3 +1984,104 @@ profiles:
       DEPLOY TIMING: Juniper was mid-chat-turn when this was requested --
       do not redeploy the agent worker (which interrupts whatever is
       currently using it) until she confirms the current turn is done.
+
+  deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test:
+    # NEW 2026-09-18, Juniper go-ahead: Circe 4x V100-32GB soak of DeepSeek-V4.1-Flash
+    # with host/NVMe expert streaming. Not a production Orion lane.
+    display_name: "DeepSeek-V4.1-Flash – MXFP4+Engram (llama.cpp dsv41-porte, 4x V100 32GB, Circe LIVE TEST)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "deepseek-v41-flash-mxfp4-engram"
+
+    supports_tools: true
+    supports_embeddings: false
+    # Native vision exists upstream; not wired for first boot (text-only soak).
+    supports_vision: false
+
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 1
+      device_ids: [0, 1, 2, 3]
+      # Start tiny on purpose: first goal is load + a few tokens, not 1M ctx.
+      # Escalate after warm-cache tok/s is measured.
+      max_model_len: 8192
+      max_batch_tokens: 512
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf/DeepSeek-V4.1-Flash-MXFP4-engram"
+      # Proven runnable GGUF for the dsv41-porte fork (Engram tables included).
+      # Community Q2_K (~246 GiB, vcruz305) is a smaller download but is NOT
+      # interchangeable with this Engram layout and may not load on the fork.
+      # HF files are at repo root; Circe stores them under this model_root dir.
+      hf_repo_id: "JigSawPT/DeepSeek-V4.1-Flash-GGUF"
+      # Wrapper expands 00001-of-00011 -> all 11 parts automatically.
+      hf_filename: "DeepSeek-V4.1-Flash-MXFP4-engram-00001-of-00011.gguf"
+
+      host: "0.0.0.0"
+      port: 8080
+
+      # With --moe-stream, ngl mostly parks dense/hot tensors; experts stream.
+      # 99 is the fork author's working default on a single 5090; keep it and
+      # escalate DOWN only if Volta OOMs on dense+KV.
+      n_gpu_layers: 99
+      threads: 24
+      n_parallel: 1
+      batch_size: 512
+      ctx_size: 8192
+
+      # Fork-only streaming knobs (orion-llamacpp-host forwards when advertised).
+      # Circe has more host RAM than the 5090 reference (~220 GiB available after
+      # GPU0-3 eviction), so L2 is raised above their 72 GiB default.
+      # cache 18 left ~20 GiB/V100 unused (59% hit, 2.24 t/s); 48 was 79% / 3.18.
+      # 64 is the next VRAM-fill step (2026-09-18).
+      moe_stream: true
+      moe_stream_cache: 64
+      moe_stream_l2: 96
+      moe_stream_io_threads: 4
+
+      reasoning: "off"
+      reasoning_format: "deepseek"
+      no_context_shift: true
+      split_mode: "layer"
+      tensor_split: "1,1,1,1"
+      # Volta: flash-attn collapses TG elsewhere on Circe; keep off.
+      flash_attn: "off"
+
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+      n_predict: 2048
+
+    notes: |
+      LIVE TEST 2026-09-18 (Juniper): DeepSeek-V4.1-Flash on Circe GPUs 0,1,2,3.
+
+      Runtime blocker (not optional):
+      - Official HF weights + Circe's current llama-server (server-cuda-b10398)
+        cannot run this architecture. Needs JigSawPT/llama.cpp branch
+        `dsv41-porte` (flags: --moe-stream / --moe-stream-cache /
+        --moe-stream-l2). See progress.md for build/restore steps.
+
+      Weights:
+      - Primary: JigSawPT MXFP4+Engram ~502 GB (11 shards) — only GGUF with a
+        published working stream recipe.
+      - Alternate (NOT wired here): vcruz305 Q2_K ~246.3 GiB — fits Circe's
+        volatile math better on paper, but Engram encoding differs from the
+        fork converter; treat as a later experiment.
+
+      Host paths on Circe (telemetry is too small):
+      - GGUF: /mnt/storage-warm/llm-cache/gguf/
+      - Experiment scratch: /mnt/storage-warm/deepseek-v41-flash-circe/
+      - Mount that cache into the worker (or symlink into LLM_CACHE_DIR).
+
+      Eviction for this test (restore via progress.md):
+      - stopped: atlas-chat (0,3), atlas-agent (1), diffusion-host (2),
+        circe-vision-host-qwen (2)
+      - left up: atlas-fast (4), atlas-metacog (5)
+
+      Escalation after first boot: raise ctx_size, then moe_stream_cache if
+      HBM headroom exists, then try reasoning on. Do not chase Q3/Q4 until
+      Q/MXFP4 load + tok/s are measured on Volta.

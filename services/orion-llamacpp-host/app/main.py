@@ -520,6 +520,34 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                         cfg.draft_filename,
                     )
 
+    # DeepSeek-V4.1-Flash expert streaming (JigSawPT dsv41-porte fork only today).
+    # Upstream Circe pin (server-cuda-b10398) does not advertise --moe-stream*; append_flag
+    # skips gracefully so the same profile can ship before the custom image exists.
+    if cfg.moe_stream:
+        if not _flag_confirmed_supported(supported_flags, "--moe-stream"):
+            logger.error(
+                "Profile requested moe_stream=true but this llama-server does not advertise "
+                "--moe-stream in --help; DeepSeek-V4.1 Engram GGUFs will not stream experts. "
+                "Build/run the dsv41-porte fork (JigSawPT/llama.cpp) or unset moe_stream.",
+            )
+        else:
+            append_flag("--moe-stream")
+            if cfg.moe_stream_cache is not None:
+                append_flag("--moe-stream-cache", str(int(cfg.moe_stream_cache)))
+            if cfg.moe_stream_l2 is not None:
+                append_flag("--moe-stream-l2", str(int(cfg.moe_stream_l2)))
+            if cfg.moe_stream_io_threads is not None:
+                append_flag("--moe-stream-io-threads", str(int(cfg.moe_stream_io_threads)))
+    if cfg.override_tensor:
+        if not _flag_confirmed_supported(supported_flags, "--override-tensor"):
+            logger.error(
+                "Profile requested override_tensor=%s but this llama-server does not advertise "
+                "--override-tensor; omitting -ot.",
+                cfg.override_tensor,
+            )
+        else:
+            append_flag("--override-tensor", cfg.override_tensor)
+
     # Qwen3.8-Flash-Next / "qwen4exp" PLE/n-gram table (--model-ngram, ggml-org/llama.cpp#27742).
     # Independent of the draft-model block above -- this is a second required file for one
     # architecture, not a drafter, and the flag is not gated by any spec_type value.

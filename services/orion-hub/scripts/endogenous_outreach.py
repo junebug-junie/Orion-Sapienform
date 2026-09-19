@@ -18,10 +18,18 @@ curiosity evidence summary, daydream}. Tension without that content records
 ``tension_without_content`` and does not generate. See ``has_talkable_content``.
 
 CONTENT IDENTITY IN THE LEDGER (2026-09-16). ``grounding_summary`` also records
-``prior_ids`` / ``curiosity_signal_ids`` — durable identifiers for what reached
-the prompt, not prose. Needed so a later novelty gate / cluster report can ask
+``prior_ids`` / ``curiosity_content_ids`` — durable identifiers for what reached
+the prompt, not prose. Needed so a novelty gate / cluster report can ask
 "have we already used this?" without inventing a motive taxonomy. See
 ``docs/superpowers/specs/2026-09-16-outreach-content-identity-design.md``.
+
+CONTENT NOVELTY (2026-09-19). Talkable content means **unused** content IDs
+against successful sends in the decision log (default 7-day lookback). Sticky
+open priors that were already said are not a fresh topic: prior-solo fire
+records ``content_already_used``; tension with only used IDs still records
+``tension_without_content``. Daydream has no durable ID yet and still counts.
+Curiosity ``offer_message`` is a separate door (shared cap only) — not covered
+here. Deterministic Hub gate; not an LLM novelty scorer.
 
 LEVEL-AWARE, NOT JUST CHANGE-AWARE (2026-08-19). The trigger's own reason
 object now also carries ``sustained_load_pressure`` -- a real, currently-
@@ -520,8 +528,73 @@ def has_talkable_content(ctx: OutreachContext) -> bool:
     without an open prior, curiosity evidence, or daydream is a twitch, not
     a topic. Recent chat turns are continuity, not content, so they do not
     count here.
+
+    Callers that enforce novelty must pass a context already filtered by
+    ``apply_content_novelty`` so these lists only contain unused IDs.
     """
     return bool(ctx.open_prior_previews or ctx.curiosity_summaries or ctx.daydream)
+
+
+# Lookback for "already said" membership. Matches the measure script's 7d
+# repeat-content window. Not env-keyed yet -- dial after live evidence.
+CONTENT_NOVELTY_LOOKBACK_DAYS = 7
+
+
+def filter_novel_pairs(
+    ids: List[str],
+    texts: List[str],
+    *,
+    used: set,
+) -> Tuple[List[str], List[str]]:
+    """Keep parallel (id, text) pairs that are still novel.
+
+    Empty ids are kept (cannot prove prior use -- fail-open on missing
+    identity, same direction as a broken ledger read). Non-empty ids in
+    ``used`` are dropped.
+
+    If ``ids`` is shorter than ``texts`` (legacy stubs / gather gaps), missing
+    ids pad as ``""`` so a summary without an id is not silently discarded.
+    """
+    keep_ids: List[str] = []
+    keep_texts: List[str] = []
+    for i, text in enumerate(texts):
+        raw = ids[i] if i < len(ids) else ""
+        key = str(raw or "").strip()
+        if key and key in used:
+            continue
+        keep_ids.append(str(raw or ""))
+        keep_texts.append(text)
+    return keep_ids, keep_texts
+
+
+def apply_content_novelty(
+    ctx: OutreachContext,
+    *,
+    used_prior_ids: set,
+    used_curiosity_ids: set,
+) -> OutreachContext:
+    """Return a copy of ``ctx`` with already-said prior/curiosity rows removed."""
+    prior_ids, prior_previews = filter_novel_pairs(
+        list(ctx.open_prior_ids),
+        list(ctx.open_prior_previews),
+        used=used_prior_ids,
+    )
+    curiosity_ids, curiosity_summaries = filter_novel_pairs(
+        list(ctx.curiosity_content_ids),
+        list(ctx.curiosity_summaries),
+        used=used_curiosity_ids,
+    )
+    return OutreachContext(
+        curiosity_summaries=curiosity_summaries,
+        curiosity_content_ids=curiosity_ids,
+        recent_turns=list(ctx.recent_turns),
+        presence=ctx.presence,
+        tension_reason=ctx.tension_reason,
+        embodied_presence=ctx.embodied_presence,
+        daydream=ctx.daydream,
+        open_prior_previews=prior_previews,
+        open_prior_ids=prior_ids,
+    )
 
 
 def _curiosity_content_id(candidate: Dict[str, Any]) -> str:
@@ -1685,6 +1758,8 @@ class EndogenousOutreach:
         tension_reason: Optional[Any] = None
         peeked_prior_ids: Optional[List[str]] = None
         peeked_priors: Optional[List[str]] = None
+        used_prior_ids: set = set()
+        used_curiosity_ids: set = set()
         if force:
             # A forced (debug-endpoint) call skips the trigger check
             # entirely -- it must not carry over whatever reason the LAST
@@ -1692,12 +1767,26 @@ class EndogenousOutreach:
             # itself to a stale (possibly minutes-old) tension episode.
             self._last_tension_reason = None
         else:
+            from scripts.endogenous_outreach_decisions import (
+                fetch_recently_used_outreach_content_ids,
+            )
+
+            try:
+                used_prior_ids, used_curiosity_ids = await asyncio.to_thread(
+                    fetch_recently_used_outreach_content_ids,
+                    lookback_days=CONTENT_NOVELTY_LOOKBACK_DAYS,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "endogenous_outreach_used_ids_failed err=%s", exc
+                )
+                used_prior_ids, used_curiosity_ids = set(), set()
+
             fired = await self._should_roll()
             tension_reason = self._last_tension_reason
             if not fired:
-                # No body-spark. Still fire if Orion has talkable content:
-                # an open worldview prior. Peek priors alone (cheap relative
-                # to full gather) so empty ticks stay cheap.
+                # No body-spark. Still fire if Orion has *novel* talkable
+                # content: an open worldview prior not already used recently.
                 try:
                     peeked_prior_ids, peeked_priors = await asyncio.to_thread(
                         _fetch_open_priors
@@ -1707,12 +1796,25 @@ class EndogenousOutreach:
                         "endogenous_outreach_prior_peek_failed err=%s", exc
                     )
                     peeked_prior_ids, peeked_priors = [], []
-                if not peeked_priors:
+                raw_prior_count = len(peeked_priors or [])
+                peeked_prior_ids, peeked_priors = filter_novel_pairs(
+                    list(peeked_prior_ids or []),
+                    list(peeked_priors or []),
+                    used=used_prior_ids,
+                )
+                if raw_prior_count == 0:
+                    # Nothing open at all -- stay on the cheap exit.
                     return self._record(
                         {"outreach": False, "reason": "no_tension_trigger"},
                         forced=force,
                         tension_reason=tension_reason,
                     )
+                # Used sticky priors alone must not strand novel curiosity:
+                # fall through with empty prior lists (not None -- None would
+                # re-fetch the used priors in gather) and let gather +
+                # apply_content_novelty decide.
+                if not peeked_priors:
+                    peeked_prior_ids, peeked_priors = [], []
 
         session_id = self._active_session_id()
         ctx = await self._gather_context(
@@ -1720,10 +1822,22 @@ class EndogenousOutreach:
             open_prior_previews=peeked_priors,
             open_prior_ids=peeked_prior_ids,
         )
-        if not force and tension_reason is not None and not has_talkable_content(ctx):
-            # Spark without a topic -- do not send a twitch dressed as talk.
+        if not force:
+            ctx = apply_content_novelty(
+                ctx,
+                used_prior_ids=used_prior_ids,
+                used_curiosity_ids=used_curiosity_ids,
+            )
+        if not force and not has_talkable_content(ctx):
+            # No novel topic. Distinguish spark-without-topic from
+            # prior-solo with only already-said content.
+            reason = (
+                "tension_without_content"
+                if tension_reason is not None
+                else "content_already_used"
+            )
             return self._record(
-                {"outreach": False, "reason": "tension_without_content"},
+                {"outreach": False, "reason": reason},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding_summary(ctx),

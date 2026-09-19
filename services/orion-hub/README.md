@@ -360,7 +360,14 @@ least one of {open prior, curiosity evidence summary, daydream}. Tension
 without that content records `tension_without_content` and does not
 generate. **Self-line priors are excluded** (`line = "self"` filtered out of
 talkable-prior fetches since 2026-09-18): lived answers reach chat through
-the identity ledger, not as unsolicited outreach fuel. Open prior previews also enter the prompt and
+the identity ledger, not as unsolicited outreach fuel. **Novelty**
+(2026-09-19): talkable prior/curiosity rows must also be **unused** in
+successful sends over the last 7 days (`prior_ids` /
+`curiosity_content_ids` in the decision log). Sticky open priors that were
+already said record `content_already_used` on the prior-solo path; daydream
+still counts (no durable ID yet). Curiosity `offer_message` shares the
+daily cap but is a separate door — not novelty-gated here. Open prior
+previews also enter the prompt and
 `grounding.priors_count`; compound registry names that appear in those
 previews / curiosity summaries count as grounded for the closed-vocabulary
 guard so prior-alone talk about `node:athena` is not dropped as
@@ -620,7 +627,8 @@ The trace is written only for cycles that actually built a prompt. Rows WITHOUT 
 |---|---|
 | gated (`quiet_hours`, `cooldown`, `daily_cap`, `turn_in_flight`, `already_sending`) | returned before context was gathered |
 | `no_grounding_context` | context was gathered but `is_empty()` skipped the tick, so no prompt exists for lanes to reach |
-| `tension_without_content` | tension spark fired but no talkable content (no open prior, curiosity summary, or daydream) |
+| `tension_without_content` | tension spark fired but no *novel* talkable content (no unused open prior, curiosity summary, or daydream) |
+| `content_already_used` | no tension spark; open priors peeked but all were already used in a recent successful send |
 | `no_tension_trigger` | no tension spark and no open prior peeked this tick |
 | `source`-tagged rows from `offer_message` | the curiosity loop composes its text elsewhere and never builds an `OutreachContext` |
 

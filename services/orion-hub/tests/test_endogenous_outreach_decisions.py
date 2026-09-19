@@ -108,3 +108,28 @@ class _FakeReason:
     sustained_load_pressure = 0.0
     sustained_load_pressure_channel = "disk_capacity_pressure"
     sustained_load_pressure_node_id = "node:athena"
+
+
+def test_collect_used_ids_from_grounding_rows() -> None:
+    """Pure parse of decision-log grounding → used prior / curiosity sets."""
+    rows = [
+        {
+            "prior_ids": ["a", "b"],
+            "curiosity_content_ids": ["curiosity:source:x|n1"],
+        },
+        {
+            "prior_ids": ["b", "c"],
+            "curiosity_content_ids": ["curiosity:source:x|n1", ""],
+        },
+        {"prior_ids": None, "curiosity_content_ids": None},
+    ]
+    priors, curiosity = decisions.collect_used_content_ids(rows)
+    assert priors == {"a", "b", "c"}
+    assert curiosity == {"curiosity:source:x|n1"}
+
+
+def test_fetch_recently_used_fails_open_to_empty_when_log_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED", "false")
+    priors, curiosity = decisions.fetch_recently_used_outreach_content_ids(lookback_days=7)
+    assert priors == set()
+    assert curiosity == set()

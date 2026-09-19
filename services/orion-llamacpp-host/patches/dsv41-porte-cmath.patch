@@ -1,0 +1,10 @@
+--- a/src/llama-moe-stream.cpp
++++ b/src/llama-moe-stream.cpp
+@@ -9,6 +9,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <cmath>
+ #include <stdexcept>
+ #include <fstream>
+ #include <sstream>

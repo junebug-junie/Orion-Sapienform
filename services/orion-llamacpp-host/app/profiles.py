@@ -76,6 +76,30 @@ class LlamaCppConfig(BaseModel):
         description="llama-server --ngram-load-mode: 'resident' keeps the table in RAM, "
         "'read' reads rows on demand (e.g. via mmap from SSD)",
     )
+    # DeepSeek-V4.1-Flash (JigSawPT dsv41-porte fork): expert streaming + Engram mmap.
+    # Upstream llama.cpp (including Circe's server-cuda-b10398) does NOT advertise these.
+    moe_stream: Optional[bool] = Field(
+        default=None,
+        description="Enable MoE expert streaming (--moe-stream). Required for V4.1 Engram GGUFs "
+        "on the dsv41-porte fork; ignored when the binary lacks the flag.",
+    )
+    moe_stream_cache: Optional[int] = Field(
+        default=None,
+        description="VRAM expert-stream cache size in GiB (--moe-stream-cache). Fork minimum 18.",
+    )
+    moe_stream_l2: Optional[int] = Field(
+        default=None,
+        description="Pinned host RAM tier for experts in GiB (--moe-stream-l2).",
+    )
+    moe_stream_io_threads: Optional[int] = Field(
+        default=None,
+        description="Expert-stream I/O threads (--moe-stream-io-threads).",
+    )
+    override_tensor: Optional[str] = Field(
+        default=None,
+        description="llama-server --override-tensor / -ot value (comma-separated "
+        "tensor-name-pattern=buffer-type entries).",
+    )
     n_gpu_layers_draft: Optional[int] = Field(
         default=None,
         description="Draft model GPU offload layers (--n-gpu-layers-draft)",

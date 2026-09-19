@@ -1103,3 +1103,72 @@ def test_circe_agent_flex_forwards_both_chat_template_kwargs(monkeypatch):
     assert _find_flag_value(cmd, "--top-k") == "20"
     assert _find_flag_value(cmd, "--min-p") == "0.0"
     assert _find_flag_value(cmd, "--presence-penalty") == "0.0"
+
+
+def test_moe_stream_flags_forwarded_when_binary_supports_them(monkeypatch):
+    """DeepSeek-V4.1 dsv41-porte fork: --moe-stream* must reach argv when advertised."""
+    monkeypatch.setenv("LLM_PROFILE_NAME", "deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test")
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    profile = profiles_mod.LLMProfile(
+        name="deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test",
+        backend="llamacpp",
+        model_id="deepseek-v41-flash-mxfp4-engram",
+        gpu=profiles_mod.GPUConfig(num_gpus=4, device_ids=[0, 1, 2, 3]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            moe_stream=True,
+            moe_stream_cache=18,
+            moe_stream_l2=96,
+            moe_stream_io_threads=4,
+            override_tensor="blk\\.[0-9]+\\.ffn_.*_exps\\.weight=CPU",
+            flash_attn="off",
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _bin: {
+            "--moe-stream",
+            "--moe-stream-cache",
+            "--moe-stream-l2",
+            "--moe-stream-io-threads",
+            "--override-tensor",
+            "--flash-attn",
+            "--jinja",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _bin: 99999)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/DeepSeek-V4.1-Flash-MXFP4-engram-00001-of-00011.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+    assert "--moe-stream" in cmd
+    assert _find_flag_value(cmd, "--moe-stream-cache") == "18"
+    assert _find_flag_value(cmd, "--moe-stream-l2") == "96"
+    assert _find_flag_value(cmd, "--moe-stream-io-threads") == "4"
+    assert _find_flag_value(cmd, "--override-tensor") == "blk\\.[0-9]+\\.ffn_.*_exps\\.weight=CPU"
+
+
+def test_deepseek_v41_circe_profile_loads_from_yaml():
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    key = "deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test"
+    assert key in raw["profiles"]
+    profiles_mod = importlib.import_module("app.profiles")
+    profile = profiles_mod.LLMProfile(name=key, **raw["profiles"][key])
+    assert profile.gpu.device_ids == [0, 1, 2, 3]
+    assert profile.llamacpp.moe_stream is True
+    assert profile.llamacpp.moe_stream_cache == 64
+    assert profile.llamacpp.repo_id == "JigSawPT/DeepSeek-V4.1-Flash-GGUF"
+    assert profile.llamacpp.filename == (
+        "DeepSeek-V4.1-Flash-MXFP4-engram-00001-of-00011.gguf"
+    )
+    assert profile.llamacpp.model_root.endswith("DeepSeek-V4.1-Flash-MXFP4-engram")

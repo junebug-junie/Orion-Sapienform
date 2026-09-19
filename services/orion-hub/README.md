@@ -966,8 +966,12 @@ Orion puts there needs approval.
 → `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /
 `no_approved_material` → `empty_generation` / `no_lookup`. `stores_not_ready`
 (the pool has not finished starting) is deliberately separate from
-`stores_unavailable` (it could not be read): the first is a sub-second race at
-Hub startup and logs at INFO, escalating to WARNING if it outlives one tick. The last one is load-bearing: a turn with
+`stores_unavailable` (it could not be read): the first is a Hub-startup race
+against Postgres and logs at INFO, escalating to WARNING if it outlives one
+tick. Hub now wait/retries ``asyncpg.create_pool`` (~60s window) so a brief
+co-restart lag does not leave ``memory_pg_pool`` permanently ``None`` (live
+2026-09-18: one-shot create lost by ~5s → curiosity stuck on
+``stores_not_ready``). The last gate is load-bearing: a turn with
 fewer than `MIN_HARNESS_STEPS` harness steps did not look anything up, and its
 fluent prose is refused rather than journalled.
 

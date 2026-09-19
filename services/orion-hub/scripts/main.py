@@ -1274,9 +1274,22 @@ async def startup_event():
         except Exception:
             asyncpg = None
         if asyncpg is not None:
+            # Wait/retry: Hub + sql-db co-restart often loses a one-shot
+            # create_pool by a few seconds (live 2026-09-18: pool None forever
+            # after Postgres recovered ~5s later → curiosity stores_not_ready).
+            # Outer try preserves the historical contract: pool failure must
+            # not abort the rest of Hub boot.
             try:
-                app.state.memory_pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=6)
-                logger.info("memory_pg_pool_ready dsn_configured=true")
+                from scripts.memory_pg_pool import create_memory_pg_pool_with_retry
+
+                app.state.memory_pg_pool = await create_memory_pg_pool_with_retry(
+                    dsn=dsn,
+                    create_pool=asyncpg.create_pool,
+                )
+            except Exception as exc:
+                logger.error("memory_pg_pool_failed error=%s", exc)
+                app.state.memory_pg_pool = None
+            if app.state.memory_pg_pool is not None:
                 try:
                     apply_memory_cards_schema(dsn)
                     logger.info("memory_cards_schema_applied ok=true")
@@ -1287,9 +1300,6 @@ async def startup_event():
                         logger.error("memory_crystallizations_schema_apply_failed error=%s", crys_exc, exc_info=True)
                 except Exception as schema_exc:
                     logger.error("memory_cards_schema_apply_failed error=%s", schema_exc, exc_info=True)
-            except Exception as exc:
-                logger.error("memory_pg_pool_failed error=%s", exc)
-                app.state.memory_pg_pool = None
         else:
             app.state.memory_pg_pool = None
             logger.warning("memory_pg_pool_skipped reason=asyncpg_import_failed")

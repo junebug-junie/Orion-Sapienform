@@ -595,6 +595,33 @@ def test_the_durable_finish_event_mirrors_a_lived_answer() -> None:
     assert mirrored[0][1].payload["content"] == answer.text
 
 
+def test_self_inquiry_finish_without_family_still_mirrors_graph_lived_answer() -> None:
+    """Live 2026-09-19: durable finish had line=self_inquiry, self_definition=null,
+    and no lived_answer/family keys -- Hub wrongly took the anatomy path."""
+    bus = _FakeBus()
+    loop = _self_loop(
+        bus,
+        reader=_DefinitionReader(write_definition=False, write_lived_answer=True),
+        conn=_GrantConn(),
+        kickoff_via_cortex=True,
+    )
+    _deliver(
+        loop,
+        _finish_event(
+            RUN,
+            {
+                "line": "self_inquiry",
+                "self_definition": None,
+                "reach_out": False,
+            },
+        ),
+    )
+    mirrored = _mirrors(bus)
+    assert len(mirrored) == 1
+    assert mirrored[0][1].payload["concept_id"] == lived_concept_id("lived.care")
+    assert "continuity" in mirrored[0][1].payload["content"]
+
+
 def test_the_durable_finish_event_for_an_investigation_run_mirrors_nothing() -> None:
     bus = _FakeBus()
     loop = _self_loop(bus, reader=_DefinitionReader(), conn=_GrantConn(), kickoff_via_cortex=True)

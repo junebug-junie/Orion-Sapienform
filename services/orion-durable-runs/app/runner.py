@@ -27,7 +27,12 @@ from orion.curiosity.attention_schema import (
     read_attended_priors,
     to_attention_schema as curiosity_to_attention_schema,
 )
-from orion.curiosity.self_inquiry import read_self_definition, self_definition_to_detail
+from orion.curiosity.self_inquiry import (
+    lived_answer_to_detail,
+    read_lived_answer,
+    read_self_definition,
+    self_definition_to_detail,
+)
 from orion.curiosity.worldview import (
     TurnOutcome,
     WorldviewReader,
@@ -152,8 +157,17 @@ class DurableRunner:
 
     async def _read_turn_result(self, run_id: str) -> dict[str, Any]:
         reader = self._reader
+        empty = {
+            "outcome": None,
+            "footprint": None,
+            "hops": [],
+            "evidence_summary": None,
+            "graph_readable": False,
+            "self_definition": None,
+            "lived_answer": None,
+        }
         if reader is None:
-            return {"outcome": None, "footprint": None, "hops": [], "evidence_summary": None, "graph_readable": False, "self_definition": None}
+            return empty
 
         def _read() -> dict[str, Any]:
             outcome = read_turn_outcome(reader, run_id)
@@ -163,7 +177,9 @@ class DurableRunner:
             # Read for every run, not only self_inquiry: an investigation run
             # that also wrote a definition is still a definition Orion wrote.
             # Hub decides whether to mirror it, keyed on the run's line.
+            # Lived self-inquiry writes `:LivedAnswer` instead of `:SelfDefinition`.
             self_definition = read_self_definition(reader, run_id)
+            lived_answer = read_lived_answer(reader, run_id)
             return {
                 "outcome": (
                     {
@@ -181,13 +197,14 @@ class DurableRunner:
                 "evidence_summary": evidence.summary() if evidence is not None else None,
                 "graph_readable": footprint is not None,
                 "self_definition": self_definition_to_detail(self_definition),
+                "lived_answer": lived_answer_to_detail(lived_answer),
             }
 
         try:
             return await asyncio.wait_for(asyncio.to_thread(_read), timeout=30.0)
         except Exception as exc:  # noqa: BLE001 -- unreadable graph is a state, not a crash
             logger.warning("durable_run_graph_read_failed run=%s err=%s", run_id, exc)
-            return {"outcome": None, "footprint": None, "hops": [], "evidence_summary": None, "graph_readable": False, "self_definition": None}
+            return empty
 
     async def _publish_attention_row(self, facts: dict[str, Any]) -> bool:
         """The same curiosity-lane row Hub used to publish, from the same

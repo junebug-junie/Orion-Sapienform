@@ -88,10 +88,54 @@ def test_self_inquiry_run_carries_the_definition_to_finish_detail() -> None:
     detail = finish_detail(values)
     assert detail["line"] == "self_inquiry"
     assert detail["self_definition"] == DEFINITION
+    assert detail["lived_answer"] is None
+    assert detail["self_question_family"] == "anatomy"
     assert world.turn_tags == ["curiosity_self_inquiry"]
     assert world.journal_entries[0].title == "Self-inquiry"
     assert world.journal_entries[0].source_ref == "curiosity:abc123def456"
     assert world.journal_entries[0].entry_id == "curiosity-self-inquiry:abc123def456"
+
+
+def test_self_inquiry_run_carries_a_lived_answer_to_finish_detail() -> None:
+    lived = {
+        "run_id": "abc123def456",
+        "question_id": "lived.alive",
+        "family": "lived",
+        "text": "My substrate keeps ticking without being asked.",
+        "evidence": ["substrate_attention_schema:1"],
+        "revises": "",
+        "written_at": 1,
+    }
+
+    class _LivedWorld(_World):
+        def deps(self) -> Deps:
+            base = super().deps()
+
+            async def read_turn_result(run_id: str) -> dict:
+                return {
+                    "outcome": None,
+                    "footprint": {"LivedAnswer": 1},
+                    "hops": [],
+                    "evidence_summary": None,
+                    "graph_readable": True,
+                    "self_definition": None,
+                    "lived_answer": lived,
+                }
+
+            return Deps(
+                run_turn=base.run_turn,
+                read_turn_result=read_turn_result,
+                publish_attention_row=base.publish_attention_row,
+                publish_journal=base.publish_journal,
+            )
+
+    values = _run(_LivedWorld(definition=None), "self_inquiry")
+    assert values.get("lived_answer") == lived
+    detail = finish_detail(values)
+    assert detail["line"] == "self_inquiry"
+    assert detail["lived_answer"] == lived
+    assert detail["self_question_family"] == "lived"
+    assert detail["self_definition"] is None
 
 
 def test_investigation_run_still_reports_its_line_and_journal() -> None:
@@ -100,6 +144,8 @@ def test_investigation_run_still_reports_its_line_and_journal() -> None:
     detail = finish_detail(values)
     assert detail["line"] == "investigate"
     assert detail["self_definition"] is None
+    assert detail.get("lived_answer") is None
+    assert detail.get("self_question_family") == ""
     assert world.journal_entries[0].title == "Curiosity"
 
 

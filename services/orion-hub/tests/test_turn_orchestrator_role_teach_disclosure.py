@@ -89,6 +89,19 @@ def test_maybe_splice_missing_shape_unchanged() -> None:
     assert out == _KICKOFF
 
 
+def test_splice_progress_only_without_mind_work_shape() -> None:
+    prompt = "intro\nASKING FOR CONTRACTOR HELP. rest"
+    out = _maybe_splice_role_teach_disclosure(
+        prompt,
+        utterance_origin="orion",
+        mind_work_shape=None,
+        enabled=True,
+        progress_lines=["Access refused at least twice this sitting. Hand off to Cursor now."],
+    )
+    assert "Hand off to Cursor" in out
+    assert out.index("Hand off") < out.index("ASKING FOR CONTRACTOR HELP")
+
+
 def test_maybe_splice_all_unknown_shape_unchanged() -> None:
     out = _maybe_splice_role_teach_disclosure(
         _KICKOFF,

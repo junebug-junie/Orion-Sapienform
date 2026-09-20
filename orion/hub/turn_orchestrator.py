@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Awaitable, Callable, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
@@ -127,21 +127,24 @@ def _maybe_splice_role_teach_disclosure(
     utterance_origin: str | None,
     mind_work_shape: Mapping[str, Any] | None,
     enabled: bool,
+    progress_lines: Sequence[str] = (),
 ) -> str:
     """Advisory Mind work-shape into the motor kickoff when Orion-origin.
 
-    Only for ``utterance_origin == "orion"`` with a truthy work-shape and the
-    Hub flag on. Fail-open otherwise. Stance appraisal is untouched — callers
-    must apply this to the motor ``user_message`` only.
+    Only for ``utterance_origin == "orion"`` with a truthy work-shape or
+    progress lines and the Hub flag on. Fail-open otherwise. Stance appraisal
+    is untouched — callers must apply this to the motor ``user_message`` only.
     """
-    if not enabled or utterance_origin != "orion" or not mind_work_shape:
+    if not enabled or utterance_origin != "orion":
+        return user_message
+    if not mind_work_shape and not progress_lines:
         return user_message
     from orion.curiosity.role_teach_disclosure import (
         format_role_teach_disclosure,
         splice_role_teach_disclosure,
     )
 
-    lines = format_role_teach_disclosure(mind_work_shape)
+    lines = format_role_teach_disclosure(mind_work_shape, progress_lines=progress_lines)
     if not lines:
         return user_message
     return splice_role_teach_disclosure(user_message, lines)
@@ -1268,6 +1271,7 @@ async def execute_unified_turn(
         utterance_origin=utterance_origin,
         mind_work_shape=thought.mind_work_shape,
         enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
+        progress_lines=(),
     )
     harness_req = HarnessRunRequestV1(
         resource_lease=payload.get("resource_lease"),

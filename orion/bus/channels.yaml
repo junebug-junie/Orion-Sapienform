@@ -3107,6 +3107,16 @@ channels:
     consumer_services: ["orion-curiosity-peer"]
     description: "Hub (RO worldview) signals that soft-nudge injected these PeerBrief ids; curiosity-peer MERGEs consumed=true so UNUSED_* queries skip them."
 
+  - name: "orion:curiosity:supervisor:reading"
+    kind: "event"
+    schema_id: "HopReadingV1"
+    message_kind: "curiosity.supervisor.reading.v1"
+    producer_services: []
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-19"
+    description: "One per Hop, from the curiosity supervisor's read-only pass over orion_worldview (docs/superpowers/specs/2026-09-09-curiosity-supervisor-design.md, Patch 1 + this arming patch). A READING of what a hop was doing, not a write to Orion's own graph -- the supervisor never touches orion_worldview, only orion-sql-writer's own tables. No live producer yet -- publishing is opt-in and manual, via `scripts/report_curiosity_supervisor_readings.py --publish`; producer_services is empty until a real service runs this on a cadence, deliberately not claimed early. No interventions ship on this channel; end_run_early/hand_off_to_claude/reorder_next_offer are explicitly future, gated work per the design doc's own Danger section."
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

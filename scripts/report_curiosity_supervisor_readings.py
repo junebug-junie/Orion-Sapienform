@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Patch 1 of docs/superpowers/specs/2026-09-09-curiosity-supervisor-design.md.
+"""Patch 1 + the arming patch of
+docs/superpowers/specs/2026-09-09-curiosity-supervisor-design.md.
 
 Reads every `Hop` Orion has ever written to `orion_worldview`, asks the
 cortex brain lane to produce a `HopReadingV1` per hop, and writes them out for
-a human to sample. Nothing here writes to FalkorDB or Postgres, and nothing
-publishes an intervention -- the sole write is two local files under
-`--out-dir`.
+a human to sample. Nothing here writes to FalkorDB, and nothing publishes an
+intervention -- the sole writes are two local files under `--out-dir` and,
+with `--publish` (opt-in, default off -- this script's documented no-publish
+behavior stays the default for anyone already running it), one bus event per
+reading on `orion:curiosity:supervisor:reading` for orion-sql-writer to
+persist. Still no `Hop -> Prior` write-side link and no intervention.
 
     python3 scripts/report_curiosity_supervisor_readings.py
     python3 scripts/report_curiosity_supervisor_readings.py --json
+    python3 scripts/report_curiosity_supervisor_readings.py --publish
 
 Needs FalkorDB (HUB_CURIOSITY_GRAPH_HOST/PORT/OWN, localhost by default) and
 ORION_BUS_URL (no default here -- this repo's standing rule is that value is
@@ -29,7 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from orion.core.bus.async_service import OrionBusAsync  # noqa: E402
-from orion.core.bus.bus_schemas import ServiceRef  # noqa: E402
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
 from orion.curiosity.supervisor import (  # noqa: E402
     DEFAULT_LLM_ROUTE,
     DEFAULT_MAX_TOKENS,
@@ -39,6 +44,35 @@ from orion.curiosity.supervisor import (  # noqa: E402
     is_circling,
 )
 from orion.curiosity.worldview import WorldviewReader, read_all_hops, read_all_priors  # noqa: E402
+from orion.schemas.curiosity_supervisor import READING_CHANNEL, READING_KIND  # noqa: E402
+
+
+async def _publish_readings(bus, readings, *, source: ServiceRef) -> int:
+    """One event per reading on READING_CHANNEL, for orion-sql-writer to
+    persist into `curiosity_hop_reading`. Best-effort per reading -- one
+    publish failure is logged and skipped, not fatal to the rest of the
+    batch (same "one bad item can't blank the others" rule
+    generate_all_readings already applies per run)."""
+    published = 0
+    for reading in readings:
+        try:
+            await bus.publish(
+                READING_CHANNEL,
+                BaseEnvelope(
+                    kind=READING_KIND,
+                    source=source,
+                    correlation_id=reading.reading_id,
+                    payload=reading.model_dump(mode="json"),
+                ),
+            )
+            published += 1
+        except Exception as exc:  # noqa: BLE001 -- best-effort, reported not raised
+            print(
+                f"  publish failed for reading {reading.reading_id} "
+                f"(hop {reading.hop_run_id}#{reading.hop_n}): {exc}",
+                file=sys.stderr,
+            )
+    return published
 
 
 def _write_outputs(
@@ -114,6 +148,13 @@ async def _run(args: argparse.Namespace) -> int:
             max_tokens=args.max_tokens,
             on_run_done=_progress,
         )
+        published = 0
+        if args.publish:
+            published = await _publish_readings(bus, readings, source=source)
+            print(
+                f"  published {published}/{len(readings)} reading(s) to {READING_CHANNEL}",
+                file=sys.stderr,
+            )
     finally:
         await bus.close()
 
@@ -131,6 +172,8 @@ async def _run(args: argparse.Namespace) -> int:
         f"{len(_group_by_run(readings))} runs ==="
     )
     print(f"  written: {out_dir}/readings.jsonl, {out_dir}/report.md")
+    if args.publish:
+        print(f"  published: {published}/{len(readings)} to {READING_CHANNEL}")
     print()
     print("=== Per-prior circling verdicts ===")
     if not by_prior:
@@ -159,6 +202,12 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     ap.add_argument("--out-dir", default="/tmp/curiosity-supervisor-hop-readings")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--publish", action="store_true",
+        help=f"Also publish each reading on {READING_CHANNEL} for orion-sql-writer to "
+             "persist. Off by default -- this script's documented behavior (local "
+             "files only) is unchanged unless this is passed.",
+    )
     args = ap.parse_args()
 
     if not args.bus_url:

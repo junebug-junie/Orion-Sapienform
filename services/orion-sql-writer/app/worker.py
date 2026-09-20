@@ -58,6 +58,7 @@ from app.models import (
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
+    CuriosityHopReadingSQL,
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
@@ -107,6 +108,7 @@ from orion.evidence_index import build_evidence_units
 from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import PeerBriefV1
+from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
@@ -226,6 +228,7 @@ INSERT_ONLY_MODELS = {
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
+    CuriosityHopReadingSQL,
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
@@ -479,6 +482,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "AttentionSchemaSQL": (AttentionSchemaSQL, AttentionSchemaV1),
     "CuriosityPeerBriefSQL": (CuriosityPeerBriefSQL, PeerBriefV1),
+    "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),

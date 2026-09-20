@@ -27,6 +27,15 @@ _DEEP_HIRE_NUDGE = (
 )
 
 
+def format_access_refusal_progress(count: int) -> list[str]:
+    if count < 2:
+        return []
+    return [
+        "Access refused at least twice this sitting. Hand off to Cursor now "
+        "(write hire_cursor + HelpRequest with what you already tried)."
+    ]
+
+
 def _as_short_str(value: Any, *, limit: int | None = None) -> str | None:
     if not isinstance(value, (str, int, float, bool)):
         return None

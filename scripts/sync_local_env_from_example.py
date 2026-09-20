@@ -302,6 +302,11 @@ SYNC_PREFIXES = (
     # invisible to `should_sync_key()`, missing-key or not, despite this
     # module's own docstring claiming missing keys are "always" auto-added).
     "FIELD_DIGESTER_",
+    # Queue contention EWMA (hire weather, 2026-09-20). Same blind spot:
+    # FIELD_QUEUE_CONTENTION_* is outside FIELD_DIGESTER_ / FIELD_CHANNEL_,
+    # so without this prefix default sync reports "no changes" and the
+    # half-life/floor never land in the live .env.
+    "FIELD_QUEUE_CONTENTION_",
     # "Recent attention" ambient cue for chat_stance_brief.j2 (orion-cortex-exec),
     # 2026-09-07. Same known blind spot as HUB_CURIOSITY_/HUB_WORLD_PULSE_READ_
     # above: without an explicit prefix here, RECENT_ATTENTION_CUE_* keys added

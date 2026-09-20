@@ -24,6 +24,46 @@ RECOMMEND_DESCRIPTION = (
 STATUS_DESCRIPTION = "Read durable reading status and source-attributed result by request_id from a previous receipt."
 
 
+def reading_brief_lines() -> list[str]:
+    return [
+        (
+            "Reading MCP is available: recommend_reading queues a public HTTP(S) source for "
+            "durable async processing, and reading_status looks up a previously queued source "
+            "by its request_id. If asked about the status of something already queued for "
+            "reading, ToolSearch and call reading_status with that request_id directly -- do "
+            "not guess Postgres table names, grep the repo for the id, or invent a status."
+        ),
+    ]
+
+
+def append_reading_mcp_harness_brief(
+    parts: list[str],
+    *,
+    reading_binding: ReadingToolBindingV1 | None = None,
+    reading_only: bool = False,
+) -> None:
+    """Append reading-tool usage lines only when the reading MCP server is
+    actually attached this turn.
+
+    Mirrors append_self_index_harness_brief's master-flag gate, but the
+    reading server has two more conditions of its own
+    (orion/fcc/mcp_config.py: `render_mcp_config`): `reading_only=True` turns
+    get an intentionally empty MCP config (built-in WebFetch/WebSearch only,
+    unrelated to the async reading-recommendation pipeline despite the name),
+    and even with the master flag on, the "orion-reading" server is only
+    rendered when a caller actually passed `reading_binding`
+    (orion/hub/turn_orchestrator.py's Unified Chat path always does; a future
+    caller might not). Checking `reading_binding is not None` directly here,
+    rather than assuming every caller of this prefix is Unified Chat, is what
+    keeps this brief from lying if that assumption ever stops holding.
+    """
+    from orion.fcc.github_repo_context import harness_mcp_enabled
+
+    if reading_only or reading_binding is None or not harness_mcp_enabled():
+        return
+    parts.extend(reading_brief_lines())
+
+
 class ReadingTools:
     def __init__(self, bus, binding: ReadingToolBindingV1):
         self.bus = bus

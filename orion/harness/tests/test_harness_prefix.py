@@ -322,6 +322,29 @@ def test_compile_harness_prefix_includes_reading_status_brief_when_attached(
     assert "reading_status" in prompt
     assert "ToolSearch and call reading_status" in prompt
     assert "do not guess Postgres table names" in prompt
+    assert "queue_position/queue_depth" in prompt
+    assert "13th of 121" in prompt
+
+
+def test_compile_harness_prefix_requires_verifying_infra_before_declaring_it_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repro of a second live incident (2026-09-20): asked about a queued
+    read's status, Orion claimed Hub had no listener on any port while it was
+    in fact up and answering -- confirmed live and never checked. Unlike the
+    reading-specific briefs above, this line lives in the always-on
+    HARNESS_UNIFIED_OPERATOR_BRIEF (not gated on MCP/reading at all): the
+    failure it targets -- asserting infra state without checking -- has
+    nothing to do with reading being enabled, and a narrower, gated copy
+    would have been silent on every non-reading turn."""
+    monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "docker ps for the container, curl its health endpoint" in prompt
+    assert "an assumption is not evidence" in prompt
 
 
 def test_compile_harness_prefix_omits_reading_status_brief_without_master_flag(

@@ -379,6 +379,10 @@ async def reading_status(conn: Any, request_id: UUID) -> dict[str, Any]:
         status = "started"
     handoff = _json_object(row.get("handoff_json"))
     result = _json_object(row.get("stage2_result_json"))
+    queue_position: int | None = None
+    queue_depth: int | None = None
+    if status == "queued":
+        queue_position, queue_depth = await _stage1_queue_position(conn, row)
     return {
         "request_id": str(request_id), "status": status,
         "request": _json_object(own["request_json"]),
@@ -391,7 +395,35 @@ async def reading_status(conn: Any, request_id: UUID) -> dict[str, Any]:
         "error": row["stage2_error"] or row["last_error"],
         "evidence_url": row["url"],
         "landing_at": row["landing_at"].isoformat() if row["landing_at"] else None,
+        # Only meaningful while status == "queued" (stage 1 not yet claimed);
+        # null otherwise rather than a stale/misleading number.
+        "queue_position": queue_position,
+        "queue_depth": queue_depth,
     }
+
+
+# Same ordering as CLAIM_SQL's claim candidate: priority ASC, attempts ASC,
+# created_at ASC, seed_id ASC. Counting rows strictly ahead of this one in
+# that order (+1) gives the row's real 1-indexed place in line -- not just
+# "queued", which says nothing about whether that means seconds or days
+# (see the wallet-cap comment above REQUEST_ROW_SQL: a retry's wait time is
+# bounded only by max_attempts, never by time, and a continuously-refilled
+# stream of same-priority fresh seeds can queue-jump it indefinitely).
+STAGE1_QUEUE_POSITION_SQL = """
+SELECT
+    (SELECT count(*) FROM world_pulse_read_seed
+     WHERE status = 'pending'
+       AND (priority, attempts, created_at, seed_id) < ($1, $2, $3, $4)) + 1 AS position,
+    (SELECT count(*) FROM world_pulse_read_seed WHERE status = 'pending') AS depth
+"""
+
+
+async def _stage1_queue_position(conn: Any, row: Any) -> tuple[int, int]:
+    pos_row = await conn.fetchrow(
+        STAGE1_QUEUE_POSITION_SQL,
+        row["priority"], row["attempts"], row["created_at"], row["seed_id"],
+    )
+    return int(pos_row["position"]), int(pos_row["depth"])
 
 
 def _json_object(raw: Any) -> dict[str, Any]:

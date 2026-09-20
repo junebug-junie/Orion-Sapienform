@@ -63,6 +63,18 @@ class ReadingQueueFakeMixin:
         return {s_key: row[s_key], a_key: attempts}
 
     async def fetchrow(self, sql, *args):
+        if "AS position," in sql and "AS depth" in sql:
+            # Interprets STAGE1_QUEUE_POSITION_SQL (queue.py): same ordering
+            # as _claim_pending -- (priority, attempts, created_at, seed_id).
+            self.executed.append((sql, args))
+            priority, attempts, created_at, seed_id = args
+            key = (priority, attempts, created_at, seed_id)
+            pending = [r for r in self.rows.values() if r["status"] == "pending"]
+            position = sum(
+                1 for r in pending
+                if (r["priority"], r.get("attempts", 0), r.get("created_at", 0), r["seed_id"]) < key
+            ) + 1
+            return {"position": position, "depth": len(pending)}
         if "stage2_attempts = stage2_attempts + 1" in sql:
             self.executed.append((sql, args))
             row = self.rows.get(args[0])

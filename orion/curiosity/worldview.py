@@ -71,6 +71,7 @@ LABEL_FINDING = "Finding"
 LABEL_HOP = "Hop"
 LABEL_TURN_OUTCOME = "TurnOutcome"
 LABEL_INVESTIGATION_ROLE = "InvestigationRole"
+LABEL_REVIEW_ROLE = "ReviewRole"
 
 STATUS_OPEN = "open"
 STATUS_SUPPORTED = "supported"
@@ -287,6 +288,25 @@ class InvestigationRoleRecord:
     Hub reads these nodes and never writes them. `local_crawl` is a decision
     to work this sitting alone; missing the node is "no decision"; a
     HelpRequest is the hire ticket. Latest `written_at` wins if Orion revises.
+    """
+
+    run_id: str
+    choice: str
+    why: str
+    written_at: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ReviewRoleRecord:
+    """Orion-authored, optional choice for how this sitting's hops get graded.
+
+    Same shape and same authorship rule as `InvestigationRoleRecord`: Python
+    never MERGEs this node. Missing the node is "no decision" and the
+    curiosity supervisor (orion/curiosity/supervisor.py) treats that as
+    `self_review` -- so every run written before this patch shipped, which
+    has no `:ReviewRole` at all, keeps grading exactly the way it always did.
+    `choice` is `"self_review"` or `"hire_cursor_review"`; latest
+    `written_at` wins if Orion revises mid-sitting.
     """
 
     run_id: str
@@ -712,6 +732,34 @@ def list_investigation_roles_for_run_cypher(run_id: str) -> str:
     )
 
 
+def list_review_roles_for_run_cypher(run_id: str) -> str:
+    """RO Cypher: ReviewRole nodes Orion wrote during one run.
+
+    Ordered oldest-first so a caller can take the last row as latest-wins,
+    same convention as `list_investigation_roles_for_run_cypher`.
+    """
+    if not _RUN_ID_RE.match(str(run_id or "")):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH (r:{LABEL_REVIEW_ROLE}) WHERE r.run_id = '{run_id}' "
+        "RETURN r.run_id AS run_id, r.choice AS choice, r.why AS why, "
+        "r.written_at AS written_at "
+        "ORDER BY r.written_at ASC"
+    )
+
+
+# EVERY ReviewRole, across every run -- the curiosity supervisor's
+# `generate_all_readings` needs to know each run's grading choice up front,
+# not one run at a time, same reason `ALL_HOPS_CYPHER` exists alongside
+# `hops_for_run_cypher`. No `run_id` parameter -- takes none.
+ALL_REVIEW_ROLES_CYPHER = (
+    f"MATCH (r:{LABEL_REVIEW_ROLE}) "
+    "RETURN r.run_id AS run_id, r.choice AS choice, r.why AS why, "
+    "r.written_at AS written_at "
+    "ORDER BY r.written_at ASC"
+)
+
+
 # EVERY hop, across every run -- for the curiosity supervisor
 # (orion/curiosity/supervisor.py), which reads history wholesale rather than
 # one run at a time. `hops_for_run_cypher` above cannot answer this: it is
@@ -778,6 +826,19 @@ def build_investigation_role(row: dict[str, Any]) -> Optional[InvestigationRoleR
     if not run_id or not choice:
         return None
     return InvestigationRoleRecord(
+        run_id=run_id,
+        choice=choice,
+        why=str(row.get("why") or "").strip(),
+        written_at=_as_int(row.get("written_at"), 0) or None,
+    )
+
+
+def build_review_role(row: dict[str, Any]) -> Optional[ReviewRoleRecord]:
+    run_id = str(row.get("run_id") or "").strip()
+    choice = str(row.get("choice") or "").strip()
+    if not run_id or not choice:
+        return None
+    return ReviewRoleRecord(
         run_id=run_id,
         choice=choice,
         why=str(row.get("why") or "").strip(),
@@ -1317,6 +1378,41 @@ def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:
             )
         )
     return out
+
+
+def read_all_review_roles(reader: WorldviewReader) -> list[ReviewRoleRecord]:
+    """Every `ReviewRole` node, across every run. `[]` on failure.
+
+    Same shape as `read_all_hops`: the curiosity supervisor's
+    `generate_all_readings` (orion/curiosity/supervisor.py) needs every run's
+    grading choice at once, not one run at a time, so it needs the whole-graph
+    query rather than `list_review_roles_for_run_cypher`.
+    """
+    try:
+        rows = reader.query(ALL_REVIEW_ROLES_CYPHER)
+    except WorldviewUnavailable as exc:
+        logger.warning("curiosity_all_review_roles_read_failed err=%s", exc)
+        return []
+    out: list[ReviewRoleRecord] = []
+    for row in rows:
+        rec = build_review_role(row)
+        if rec is not None:
+            out.append(rec)
+    return out
+
+
+def latest_review_role_by_run(
+    records: Sequence[ReviewRoleRecord],
+) -> dict[str, ReviewRoleRecord]:
+    """Newest `written_at` per `run_id`. A run with no record is absent here
+    -- callers treat absence as `self_review`, the same "missing node is no
+    decision" rule `latest_investigation_role` applies to hire choice."""
+    latest: dict[str, ReviewRoleRecord] = {}
+    for rec in records:
+        current = latest.get(rec.run_id)
+        if current is None or (rec.written_at or 0) >= (current.written_at or 0):
+            latest[rec.run_id] = rec
+    return latest
 
 
 def read_all_priors(reader: WorldviewReader) -> list[Prior]:

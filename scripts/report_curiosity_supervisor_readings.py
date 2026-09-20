@@ -11,6 +11,11 @@ behavior stays the default for anyone already running it), one bus event per
 reading on `orion:curiosity:supervisor:reading` for orion-sql-writer to
 persist. Still no `Hop -> Prior` write-side link and no intervention.
 
+Per-run grading now follows Orion's own `:ReviewRole` choice (self_review or
+hire_cursor_review) when `--cursor-agent-bin` is set; unset (the default),
+every run grades via self_review exactly as before this existed -- see
+`orion.curiosity.supervisor.generate_readings_for_run_routed`.
+
     python3 scripts/report_curiosity_supervisor_readings.py
     python3 scripts/report_curiosity_supervisor_readings.py --json
     python3 scripts/report_curiosity_supervisor_readings.py --publish
@@ -36,6 +41,7 @@ if str(ROOT) not in sys.path:
 from orion.core.bus.async_service import OrionBusAsync  # noqa: E402
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
 from orion.curiosity.supervisor import (  # noqa: E402
+    DEFAULT_CURSOR_TIMEOUT_SEC,
     DEFAULT_LLM_ROUTE,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TIMEOUT_SEC,
@@ -147,6 +153,10 @@ async def _run(args: argparse.Namespace) -> int:
             timeout_sec=args.timeout_sec,
             max_tokens=args.max_tokens,
             on_run_done=_progress,
+            cursor_agent_bin=args.cursor_agent_bin,
+            cursor_cwd=args.cursor_cwd,
+            cursor_model=args.cursor_model,
+            cursor_timeout_sec=args.cursor_timeout_sec,
         )
         published = 0
         if args.publish:
@@ -208,6 +218,19 @@ def main() -> int:
              "persist. Off by default -- this script's documented behavior (local "
              "files only) is unchanged unless this is passed.",
     )
+    ap.add_argument(
+        "--cursor-agent-bin", default=os.environ.get("CURIOSITY_PEER_AGENT_BIN") or None,
+        help="Path to the Cursor Agent CLI binary. Unset (default) disables Cursor "
+             "grading entirely -- every run grades via self_review regardless of "
+             "what any :ReviewRole says, same as before this flag existed. Set this "
+             "to actually honor a run's hire_cursor_review choice.",
+    )
+    ap.add_argument(
+        "--cursor-cwd", default=os.environ.get("CURIOSITY_PEER_REPO_ROOT", "."),
+        help="Workspace Cursor reads from -- same env var orion-curiosity-peer uses.",
+    )
+    ap.add_argument("--cursor-model", default=os.environ.get("CURIOSITY_PEER_MODEL") or None)
+    ap.add_argument("--cursor-timeout-sec", type=float, default=DEFAULT_CURSOR_TIMEOUT_SEC)
     args = ap.parse_args()
 
     if not args.bus_url:

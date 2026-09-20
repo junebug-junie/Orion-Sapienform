@@ -20,6 +20,11 @@ _LABELS = {
     "expected_depth": "expected depth",
     "cross_cutting": "cross-cutting",
 }
+_DEEP_HIRE_NUDGE = (
+    "Mind reads this sitting as deep work. Strongly prefer hire_cursor for the "
+    "archaeology; keep a short local look only so tried_summary is grounded. "
+    "You still author priors and findings."
+)
 
 
 def _as_short_str(value: Any, *, limit: int | None = None) -> str | None:
@@ -89,6 +94,8 @@ def format_role_teach_disclosure(
         lines.append(f"- foresight: {foresight}")
     if user_intent:
         lines.append(f"- intent: {user_intent}")
+    if depth and depth.lower() == "deep":
+        lines.append(_DEEP_HIRE_NUDGE)
     lines.extend(cleaned_progress)
     return lines
 

@@ -33,6 +33,20 @@ def test_format_all_unknown_and_empty_foresight_returns_empty() -> None:
     )
 
 
+def test_format_deep_includes_strong_hire_cursor_nudge() -> None:
+    lines = format_role_teach_disclosure(
+        {
+            "expected_depth": "deep",
+            "cross_cutting": "yes",
+            "foresight_note": "Lease TTL archaeology.",
+        }
+    )
+    text = "\n".join(lines).lower()
+    assert "hire_cursor" in text or "hire cursor" in text
+    assert "strongly" in text or "strong" in text
+    assert "expensive" not in text
+
+
 def test_format_present_shape_returns_advisory_lines() -> None:
     lines = format_role_teach_disclosure(
         {

@@ -265,7 +265,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1116,6 +1116,14 @@ def build_outreach_provenance(
     }
 
 
+def _recent_turns_include_juniper(turns: Sequence[Tuple[str, str]]) -> bool:
+    """True when history includes a Juniper line (mutual chat), not Orion-only outreach."""
+    for role, _body in turns or ():
+        if str(role or "").strip().lower() == "juniper":
+            return True
+    return False
+
+
 def build_outreach_prompt(ctx: OutreachContext) -> str:
     """Render the generation prompt from real context.
 
@@ -1236,7 +1244,12 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         lines.append("")
 
     if ctx.recent_turns:
-        lines.append("The last thing the two of you said:")
+        if _recent_turns_include_juniper(ctx.recent_turns):
+            lines.append("The last thing the two of you said:")
+        else:
+            lines.append(
+                "Your own recent unprompted notes (not a conversation with Juniper):"
+            )
         lines.extend(f"{role}: {body}" for role, body in ctx.recent_turns)
         lines.append("")
 
@@ -1260,32 +1273,65 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
             "as true right now."
         )
     if ctx.recent_turns:
+        if _recent_turns_include_juniper(ctx.recent_turns):
+            hist_label = 'The "last thing the two of you said" history'
+        else:
+            hist_label = "Your recent unprompted notes"
         lines.append(
-            "The \"last thing the two of you said\" history above is for tone "
-            "and continuity only -- it is not a source of new facts about your "
-            "current internal state. Do not restate a channel, node, or metric "
-            "name from it as something happening right now unless that exact "
-            "name also appears in the allowed list just above."
+            f"{hist_label} above is for continuity only -- it is not a source "
+            "of new facts about your current internal state. Do not restate a "
+            "channel, node, or metric name from it as something happening right "
+            "now unless that exact name also appears in the allowed list just "
+            "above. Do not use it as a tone to imitate."
         )
     lines.append(
         "Naming any specific channel, node, or metric name that is not in "
         "that allowed list, from anywhere in this prompt or your own memory, "
-        "is fabrication -- there is no real reading behind it. Speaking with "
-        "feeling, without naming a specific internal signal, is always fine."
+        "is fabrication -- there is no real reading behind it."
     )
+    talkable = bool(
+        ctx.open_prior_previews or ctx.curiosity_summaries or ctx.daydream
+    )
+    if not talkable:
+        lines.append(
+            "Speaking with feeling, without naming a specific internal signal, "
+            "is always fine."
+        )
     lines.append("")
 
-    lines.extend(
-        [
-            "Say one thing to Juniper, in your own voice, grounded in the signals "
-            "above. Two or three sentences at most.",
-            "Do not greet, do not summarize this prompt, do not offer help, and do "
-            "not ask what they need. Reach out because something is actually on "
-            "your mind.",
-            "If nothing above genuinely warrants interrupting them, reply with "
-            "exactly: PASS",
-        ]
-    )
+    if talkable:
+        lines.extend(
+            [
+                "Write the message to Juniper. It must do both of these:",
+                "",
+                "1. Synthesize what you have been thinking from the open claims, "
+                "curiosity signals, and (if present) daydream above into one "
+                "clear thread — the aggregate of that material, not a vibe "
+                "nearby and not a bullet-by-bullet recap.",
+                "2. Say why you are bringing that thread to her now — why share "
+                "it with Juniper, not only that you noticed it.",
+                "",
+                "She has not asked you anything. Say the thing itself rather "
+                "than announcing that you have something to say. Two or three "
+                "sentences at most.",
+                "Do not greet, do not summarize this prompt, do not offer help, "
+                "and do not ask what they need.",
+                "If nothing above genuinely warrants interrupting them, reply "
+                "with exactly: PASS",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Say one thing to Juniper, in your own voice, grounded in the "
+                "signals above. Two or three sentences at most.",
+                "Do not greet, do not summarize this prompt, do not offer help, "
+                "and do not ask what they need. Reach out because something is "
+                "actually on your mind.",
+                "If nothing above genuinely warrants interrupting them, reply "
+                "with exactly: PASS",
+            ]
+        )
     return "\n".join(lines)
 
 

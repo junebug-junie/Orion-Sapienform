@@ -469,7 +469,10 @@ wrong shape). `scripts/outreach_vocabulary.py` builds two sets:
 `build_outreach_prompt` now states the tick's grounded names explicitly (or
 states plainly that nothing is grounded) and, only when recent-turns history
 is present, tells the model that history is for tone/continuity only, never
-a source of new facts. `_outreach_once` then enforces this after generation,
+a source of new facts. Since 2026-09-19, Door B also requires synthesizing
+talkable priors/curiosity/daydream into one thread and saying why to share
+with Juniper; Orion-only recent history is labeled as unprompted notes, not
+mutual chat or tone fuel. `_outreach_once` then enforces this after generation,
 before delivery: `find_ungrounded_signal_mentions` scans the generated text
 for exact, compound-token matches (never fuzzy — see the compound-only rule
 above, which also applies at scan time) against the closed registry; any

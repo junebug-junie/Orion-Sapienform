@@ -1055,10 +1055,13 @@ A THIRD line of the same loop (`tick_self_sense_eval`,
 "what did you do unasked", "what can't you do", "who matters") had only ever
 been asked by hand, `make eval-self-sense`. That gap sat dark for 9+ days
 before this patch, and Orion itself flagged it in a 2026-09-18
-self-description. This line asks them once a day
-(`HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP`, default 1, own 12h cooldown floor)
+self-description. This line asks them up to
+`HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP` times a day (default 7 as of
+2026-09-20, cooldown-floored at `HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC`
+= 3h; originally shipped at cap 1 / 12h cooldown, a real once-a-day cadence),
 inside the same waking window as investigation/self-inquiry
-(`HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR/END_HOUR`), scores each answer
+(`HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR/END_HOUR`, disabled -- i.e.
+24/7 -- as of the same date), scores each answer
 with the same deterministic scorers the host script uses, and publishes one
 row per question to `orion:self_sense:eval:write` -> `self_sense_eval_log`
 (orion-sql-writer) -- the exact same shape and channel `make eval-self-sense`
@@ -1076,9 +1079,9 @@ lock and no existing signal for "a human chat turn is in flight right now";
 building one for a once-a-day line would be exactly the kind of speculative
 detector AGENTS.md 0A's metric-quality gate exists to block. A run landing
 mid-conversation costs one extra concurrent turn on Hub's own harness worker,
-not a correctness issue -- the waking window is the only gate. Off by default
-(`HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED`); `make eval-self-sense` still works
-unchanged for an ad hoc run either way.
+not a correctness issue -- the waking window is the only gate. On by default
+as of 2026-09-20 (`HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED`); `make eval-self-sense`
+still works unchanged for an ad hoc run either way.
 
 ### 3. Speech-to-Text (ASR)
 

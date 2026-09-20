@@ -34,9 +34,16 @@ def _band_label(score: float) -> str:
     return "elevated"
 
 
+# Scores below this round to 0/10 while still landing in the "elevated" band.
+_DISCLOSE_FLOOR = 0.5
+
+
 def _display_score(score: float) -> str:
+    # Callers only pass scores at/above _DISCLOSE_FLOOR; clamp so the shown
+    # integer is never 0 while a band label claims elevation (banker's round
+    # of exactly 0.5 is 0 in Python 3).
     rounded = int(round(score))
-    return str(max(0, min(10, rounded)))
+    return str(max(1, min(10, rounded)))
 
 
 def format_queue_contention_progress(
@@ -44,7 +51,7 @@ def format_queue_contention_progress(
 ) -> list[str]:
     """One advisory line naming score/10 + driving source; omit if unusable.
 
-    Omits when ``score is None`` or ``score <= 0``. Never includes raw counts.
+    Omits when ``score is None`` or ``score < 0.5``. Never includes raw counts.
     """
     if score is None:
         return []
@@ -52,7 +59,7 @@ def format_queue_contention_progress(
         value = float(score)
     except (TypeError, ValueError):
         return []
-    if value <= 0.0:
+    if value < _DISCLOSE_FLOOR:
         return []
 
     band = _band_label(value)

@@ -290,6 +290,26 @@ Replay/measurement tooling: `scripts/analysis/measure_sustained_load_pressure.py
 `--postgres-uri`) — the same non-degenerate/independence-check evidence cited
 above came from this script, run against real Postgres.
 
+## Queue contention score (hire weather; 2026-09-20)
+
+`app/digestion/queue_contention.py::update_queue_contention_pressure()`, called
+from `run_digestion_tick()` **after** significance and **before** dimension
+precision baseline. Pure math lives in `orion/field/queue_contention.py`.
+
+Writes additive FieldState scalars (not a `field_pressures()` dimension):
+
+- `queue_contention_score` — 0.0–10.0 EWMA-relative `max()` over seed / durable /
+  gateway waiting sources (quiet tick can be real `0.0`)
+- `queue_contention_driver` — which source won the `max()`
+- `queue_contention_ewma` / `queue_contention_ewma_n` / `queue_contention_computed_at`
+
+Hub hire role-teach **reads** these from latest `substrate_field_state`; digester
+owns the meter. Spec + §0A gate:
+`docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`,
+`docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.
+Env: `FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC`, `FIELD_QUEUE_CONTENTION_FLOOR`,
+`FIELD_DIGESTER_LLM_GATEWAY_URL`.
+
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 
 `FIELD_CHANNEL_ANOMALY_ENABLED` (default `false`) turns on a periodic in-process rescoring loop (`app/anomaly_scorer.py`, `_anomaly_loop()` in `app/worker.py`) against a trained `orion/mood_arc/fit_encoder.py` encoder. Independent of `FIELD_CHANNEL_CORPUS_PATH` above: the scorer maintains its own small in-memory rolling buffer of the same per-tick `FieldChannelCorpusRowV1` rows (not the JSONL sink), so live rescoring works even with the JSONL corpus collector off.

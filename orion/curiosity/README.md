@@ -456,7 +456,10 @@ Orion wrote nothing to.
 | `acl.py` | the FalkorDB grant, and the idempotent graph bootstrap |
 | `sandbox_env.py` | the seven-key allowlist into the `claude -p` subprocess |
 | `kickoff_prompt.py` | the invitation — priors, continuation, access, overlay, hops, schema; includes the `:InvestigationRole` / HelpRequest teach |
-| `role_teach_disclosure.py` | pure formatter + splice for Mind work-shape lines into that role teach (Hub wires it on Orion-origin turns) |
+| `role_teach_disclosure.py` | pure formatter + splice for Mind work-shape lines into that role teach (Hub wires it on Orion-origin turns); deep strong hire nudge + progress formatters |
+| `access_refusals.py` | pure: count allow-listed access refusals in hop notes (≥2 ⇒ handoff progress line) |
+| `hire_progress.py` | compose refusal + budget-spent + queue-contention progress lines (per-source fail-open) |
+| `queue_contention_disclosure.py` | pure: FieldState `queue_contention_score` / `queue_contention_driver` → one disclosure line (no recompute, no raw counts) |
 | `outreach_prompt.py` | the composition turn |
 | `services/orion-hub/scripts/curiosity_investigation.py` | the tick loop, the gates, the turn |
 
@@ -466,6 +469,27 @@ container times out at 300s with `session_turn_phase_read_bus_unbound`, because
 the harness RPC worker and several module bus binds live in Hub's own event
 loop. It also reads `app.state.memory_pg_pool`. So: a sibling loop, not a
 service.
+
+### Hire handoff + queue contention disclosure
+
+On Orion-origin curiosity turns, Hub splices advisory hire weather into the
+role-teach block (`HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE`). Python never MERGEs
+`:InvestigationRole` or `:HelpRequest` — Orion authors those.
+
+What the disclosure can say:
+
+1. **Mind `deep`** → strong prefer `hire_cursor` (short local look still grounds
+   `tried_summary`; Cursor is normal deep hands, not last-resort).
+2. **≥2 access refusals** in hop notes → hand off to Cursor now.
+3. **Cursor budget spent** (`refused_budget`) → resume from hops; do not re-hire.
+4. **Queue contention** → one official digester score on FieldState
+   (`queue_contention_score` 0–10, `queue_contention_driver` names the source).
+   Hub **reads** latest `substrate_field_state`; it does **not** run its own
+   Redis EWMA. Raw backlog counts are never shown.
+
+Spec: `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`.
+Metric gate: `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.
+Producer: field-digester `update_queue_contention_pressure` (see digester README).
 
 ---
 
@@ -559,6 +583,12 @@ keys) — never in this repo.
   design, including the three claims its own first draft got wrong
 - `docs/superpowers/pr-reports/2026-08-26-curiosity-priors-and-worldview-pr.md`
   — the build, the review, and the live evidence
+- `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`
+  — deep hire nudge, access-refusal / budget resume, official queue score
+- `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md` — §0A
+  gate evidence for `queue_contention_score`
+- `docs/superpowers/pr-reports/2026-09-20-hire-handoff-and-queue-pressure-pr.md`
+  — impl PR report
 - `services/orion-hub/README.md` §4.1 (endogenous outreach — the gates this
   shares) and §4.2 (this loop, from Hub's side)
 - `orion/sentience_striving_program/README.md` §15 — what this contributes to

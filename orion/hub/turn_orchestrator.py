@@ -128,6 +128,10 @@ def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
     (tests / callers). Otherwise compose from hop notes + PeerBrief hint in
     the payload plus a fail-open FieldState score read. Each source is
     independent — never invent a Hub Redis EWMA fallback for the queue score.
+
+    Sync on purpose (SQLAlchemy + pure formatters). Async callers must run
+    this via ``asyncio.to_thread`` so Hub's event loop is not blocked — same
+    contract as ``fetch_latest_outreach_provenance``.
     """
     prebuilt = payload.get("role_teach_progress_lines")
     if isinstance(prebuilt, (list, tuple)):
@@ -1326,10 +1330,13 @@ async def execute_unified_turn(
     # curiosity_investigation._prompt_for_attempt — do not duplicate here.
     # Progress lines (denials / budget / official FieldState queue score) are
     # gathered only for Orion-origin turns; each source fails open alone.
+    # Sync FieldState SQL runs via to_thread (outreach_provenance pattern).
     progress_lines: Sequence[str] = ()
     if utterance_origin == "orion":
         try:
-            progress_lines = _gather_role_teach_progress_lines(payload)
+            progress_lines = await asyncio.to_thread(
+                _gather_role_teach_progress_lines, payload
+            )
         except Exception:  # noqa: BLE001
             logger.debug(
                 "role_teach_progress_lines_failed corr=%s",

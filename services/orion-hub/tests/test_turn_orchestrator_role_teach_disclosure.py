@@ -142,6 +142,11 @@ def test_execute_unified_turn_wires_maybe_splice() -> None:
     assert "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE" in window
     assert "progress_lines=progress_lines" in window
     assert "_gather_role_teach_progress_lines" in source
+    # Sync FieldState Postgres must not block Hub's event loop.
+    assert "await asyncio.to_thread(" in source
+    gather_idx = source.index("progress_lines = await asyncio.to_thread(")
+    gather_window = source[gather_idx : gather_idx + 120]
+    assert "_gather_role_teach_progress_lines" in gather_window
 
 
 def test_gather_composes_refusal_budget_and_fieldstate_queue() -> None:

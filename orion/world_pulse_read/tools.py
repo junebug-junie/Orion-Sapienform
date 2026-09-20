@@ -21,7 +21,12 @@ RECOMMEND_DESCRIPTION = (
     "not an article summary or a promise of future processing. Reading creates source-attributed "
     "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later."
 )
-STATUS_DESCRIPTION = "Read durable reading status and source-attributed result by request_id from a previous receipt."
+STATUS_DESCRIPTION = (
+    "Read durable reading status and source-attributed result by request_id from a previous "
+    "receipt. While status is 'queued', the response also carries queue_position (1-indexed "
+    "place in line) and queue_depth (total pending) -- report those instead of just 'queued' "
+    "when asked how long something might take; both are null once the row leaves the queue."
+)
 
 
 def reading_brief_lines() -> list[str]:
@@ -31,7 +36,9 @@ def reading_brief_lines() -> list[str]:
             "durable async processing, and reading_status looks up a previously queued source "
             "by its request_id. If asked about the status of something already queued for "
             "reading, ToolSearch and call reading_status with that request_id directly -- do "
-            "not guess Postgres table names, grep the repo for the id, or invent a status."
+            "not guess Postgres table names, grep the repo for the id, or invent a status. A "
+            "'queued' result includes queue_position/queue_depth (e.g. '13th of 121') -- use "
+            "them, don't just report 'queued' with no sense of scale."
         ),
     ]
 

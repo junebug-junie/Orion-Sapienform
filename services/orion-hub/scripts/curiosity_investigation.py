@@ -2513,6 +2513,46 @@ class CuriosityInvestigation:
         )
         return None
 
+    async def _attach_role_teach_progress_hints(
+        self, payload: dict[str, Any], run_id: str
+    ) -> None:
+        """Populate hop-note + PeerBrief hints for Hub role-teach progress.
+
+        Fail-open per source. Does not read FieldState here — Hub turn
+        orchestrator reads the official digester score (no Hub EWMA).
+        """
+        hops: list[tuple[int, str]] = []
+        if self._reader is not None:
+            try:
+                hops = await asyncio.to_thread(read_hop_notes, self._reader, run_id)
+                payload["role_teach_hop_notes"] = [note for _, note in hops]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_role_teach_hop_notes_failed run=%s err=%s",
+                    run_id,
+                    exc,
+                )
+
+        try:
+            briefs = await self._read_peer_briefs_for_nudge()
+            refused = [
+                b
+                for b in briefs
+                if getattr(b, "status", None) == "refused_budget"
+                and (not getattr(b, "run_id", None) or str(b.run_id) == str(run_id))
+            ]
+            if refused:
+                payload["role_teach_peer_brief"] = {
+                    "status": "refused_budget",
+                    "next_hop_n": next_hop_n(hops) if hops else None,
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_role_teach_peer_brief_failed run=%s err=%s",
+                run_id,
+                exc,
+            )
+
     # --- the turn ----------------------------------------------------------
 
     async def _generate(
@@ -2564,6 +2604,10 @@ class CuriosityInvestigation:
         appraisal = None
         if parent_run_id and source in (INVESTIGATION_TAG, SELF_INQUIRY_TAG):
             appraisal = self._mind_appraisal_by_run_id.get(parent_run_id)
+            # Hop notes + refused_budget PeerBrief for role-teach progress.
+            # Queue score is read inside turn_orchestrator from FieldState
+            # (official digester meter — no Hub EWMA). Each hint fails open.
+            await self._attach_role_teach_progress_hints(payload, parent_run_id)
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(

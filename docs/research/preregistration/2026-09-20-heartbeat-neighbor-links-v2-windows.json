@@ -1,0 +1,44 @@
+{
+  "pre_reg": "docs/research/preregistration/2026-09-20-heartbeat-neighbor-links-v2.md",
+  "generated_at": "2026-09-20T20:28:09.283775+00:00",
+  "window_hours": 2.0,
+  "window_sec": 5.0,
+  "split": "firing_v2",
+  "raw_rows": 17574,
+  "routed": 17377,
+  "n_windows": 1145,
+  "skipped_organ": 197,
+  "skipped_atom_type": 0,
+  "pairs": [
+    {
+      "organ_a": "orion-biometrics",
+      "organ_b": "orion-cortex-exec",
+      "n_cofire": 69,
+      "n_elsewhere": 410,
+      "mean_i_cofire": 0.8843860604689261,
+      "mean_i_elsewhere": 1.4215074405279549,
+      "delta": -0.5371213800590288,
+      "holds": false,
+      "unverified": false,
+      "reason": "thermometer-like: delta=-0.5371 (need \u22650.0500)"
+    },
+    {
+      "organ_a": "orion-cortex-exec",
+      "organ_b": "orion-bus",
+      "n_cofire": 170,
+      "n_elsewhere": 127,
+      "mean_i_cofire": 1.011522073652564,
+      "mean_i_elsewhere": 0.6874915543936562,
+      "delta": 0.3240305192589079,
+      "holds": true,
+      "unverified": false,
+      "reason": "holds: delta=0.3240 (need \u22650.0500)"
+    }
+  ],
+  "decision": {
+    "thermometer": false,
+    "relational": true,
+    "mixed": false,
+    "reason": "relational: execution/bus link rose when those two talked"
+  }
+}

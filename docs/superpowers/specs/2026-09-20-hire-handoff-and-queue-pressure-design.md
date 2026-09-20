@@ -15,7 +15,7 @@ This patch revises the hire ground so that:
 1. Mind `deep` **strongly encourages** early `hire_cursor` (a short local look still grounds `tried_summary`; it does **not** mean “prove you don’t need help first”).
 2. **≥2 permission-denied** (or equivalent access refusals) in a sitting ⇒ hard handoff nudge to Cursor.
 3. If Cursor **budget is spent**, resume from hops / PeerBrief — do not re-spam hire.
-4. Orion sees **live queue weather** from existing counters (world-pulse seed backlog, durable pending demands, gateway lane waiting) before we invent a new digester EWMA.
+4. Orion sees **one queue-pressure score (0–10, EWMA-normalized)**, not raw counts. Raw counts (`121` vs `2` vs `0`) mean nothing to Orion without a sense of what's normal — a single scored number Orion can act on (*"pressure is 8/10, elevated"*) does. **Revised 2026-09-20 (Juniper): go straight to the score. Do not ship raw-count disclosure first.**
 
 Python still does **not** auto-MERGE `:InvestigationRole` or `:HelpRequest` in this design. Orion authors; we stop teaching them to be timid.
 
@@ -60,7 +60,7 @@ Gaps:
 | Role teach | Mind `deep` ⇒ strong encourage `hire_cursor` early; Cursor is normal deep-work hands, not a last resort |
 | Mid-run revise | ≥2 access refusals (`permission denied` and tight equivalents) ⇒ disclosure line: hand off now |
 | Budget refuse | PeerBrief / teach: budget spent ⇒ resume hop clock; do not open another HelpRequest until clear |
-| Queue weather | Soft lines from existing live counts into role disclosure |
+| Queue pressure | A single 0–10 EWMA-normalized score (not raw counts) into role disclosure |
 | Authorship | Unchanged: Orion writes role + HelpRequest |
 | Auto-hire | Still **no** Python MERGE of hire/HelpRequest (this patch) |
 
@@ -74,7 +74,7 @@ turn / resume
         progress_lines = [
           permission_denied_nudge?,   # from hop notes / tool errors this run
           budget_resume_nudge?,       # from latest PeerBrief if refused_budget
-          queue_weather_lines...,     # existing counters
+          queue_pressure_line?,       # one EWMA-normalized score + cause, not raw counts
         ]
      )
   → splice into motor prompt before ASKING FOR CONTRACTOR HELP
@@ -115,9 +115,11 @@ Teach + disclosure when the latest brief for this run (or kickoff nudge) is budg
 
 Resume preamble (#2244) already renumbers hops — this patch **names the budget case** so Orion doesn’t treat refuse as “try hire again.”
 
-### 4) Queue weather (existing counters first)
+### 4) Queue pressure score (EWMA-normalized, not raw counts)
 
-Disclose a short, factual block when any source is available. Prefer **runtime-true** reads Hub can already reach:
+**Revised 2026-09-20.** The original plan for this patch was "disclose the raw counts, defer any scoring." Juniper's call: skip that step. A raw count means nothing to Orion without a sense of what's normal for it — `2` and `10000` both need Orion to already know the shape of that queue to react correctly, and Orion doesn't have that context. A single scored number does the normalizing for them: *"pressure is 8/10"* is actionable on its own; *"2 pending"* is not.
+
+**Sources (unchanged from the original plan — still the right three counters, still runtime-true reads Hub can already reach):**
 
 | Source | What it means | Live example (2026-09-20) |
 | --- | --- | --- |
@@ -125,34 +127,30 @@ Disclose a short, factual block when any source is available. Prefer **runtime-t
 | `durable_resource_demands` where `status='pending'` | Durable runs waiting on GPU/resource lease | 2 pending |
 | LLM gateway `/admission` upstreams | Per-upstream `inflight` / `waiting` / `max_inflight` | waiting=0 at snapshot |
 
-Framing for Orion (plain):
+**Why EWMA, not a fixed threshold:** each source has its own natural scale and its own normal range (the seed backlog runs in the hundreds; durable demand runs in the single digits) — one fixed cutoff can't mean the same thing for both. An EWMA baseline gives each source its own rolling "what's typical for you lately," so the score answers *"is this source worse than its own normal right now,"* not *"is this number big."*
 
-> Shared work waiting: N reading seeds pending; M durable GPU waits; gateway lane waiting=W. Deep Cursor digs compete with that backlog — prefer hire when Mind says deep so *you* are not also burning the agent lane on multi-hop archaeology.
+**Shape of the computation** (deliberately small — this is a Hub-side helper, not a new digester subsystem; see Reversibility below):
 
-Do **not** call Cursor “expensive.” Call the **shared queue** the scarce thing.
+1. For each of the 3 sources, maintain a decayed rolling baseline in Redis (`orion:hire:queue_pressure:ewma:<source>`), updated on a tick (proposed: every 5 min, half-life ~24h — long enough to smooth a day's rhythm, short enough to re-baseline after a real regime change; both tunable, neither picked from data yet — see gate item 4).
+2. At disclosure time: `ratio = current_count / max(ewma_baseline, floor)` (a small floor, e.g. `1`, avoids a divide-by-near-zero spike when a source is usually near 0).
+3. Per-source sub-score: `clip(10 * (ratio - 1) / 4, 0, 10)` — ratio 1.0x (at baseline) scores 0, ratio 5x scores 10, linear between. Simple and explainable on purpose: Orion (or a human reading a hop note) can ask "why is it 8?" and get "durable demand is running ~4.2x its normal level" back, not a black box.
+4. **Overall score = `max()` of the three sub-scores, not an average.** One badly-backed-up queue is reason enough to prefer hiring out; averaging it against two calm queues would hide exactly the spike that should change Orion's decision.
+5. Disclosure line names the driving source, not just the number: *"Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Deep Cursor digs compete with that. Prefer hire when Mind says deep."* Never call Cursor "expensive" — the **shared queue** is the scarce thing, not the contractor.
 
-### 5) Field-digester EWMA — deferred, gated
+**Metric quality gate (CLAUDE.md §0A) — run against this score before it ships, not deferred to a later patch:**
 
-**Not in the first implementation patch.**
-
-If patch 4’s raw counts are too noisy or Orion needs a single “contention pressure” felt-state channel, then propose an EWMA in `orion-field-digester` that aggregates **gateway waiting + durable pending + seed backlog** (or a documented subset).
-
-Metric quality gate (required before wire-in):
-
-1. **Provenance** — exact producers (gateway snapshot endpoint; SQL counts; tick cadence).
-2. **Independence** — must not be a monotonic transform of existing `gpu_pressure` from node biometrics strain hints alone.
-3. **Theory** — measures *queue contention for agent/curiosity capacity*, not GPU thermals.
-4. **Live sanity** — can return to genuine calm when queues drain; not a permanent floor.
-5. **Existing-mechanism check** — prefer cabinet / situation pressure reuse if already adequate.
-6. **Reversibility** — additive FieldState fields; easy to unplug from hire disclosure.
-
-Until that gate clears, **raw counts in disclosure are the product**.
+1. **Provenance** — same three producers as the table above; already traced to real queries/endpoints, already live-read once during this design (values above).
+2. **Independence** — open. All three sources may ultimately be bottlenecked on the same circe GPU pool, which would make them correlated rather than independent signals. `max()` over correlated sources is still defensible (any one queue backing up is real evidence regardless of correlation with the others) but the *claim* of independence needs a real correlation check against historical data, not an assumption — **TODO, first implementation step**.
+3. **Theory anchor** — measures contention for the shared agent/curiosity capacity pool that a Cursor-vs-local decision is actually trading off against. Named, not vibes.
+4. **Live-data sanity check — NOT YET DONE, blocking.** Only a single point-in-time read exists (the live-forensics table above). Before this ships: pull each source's history over several days, confirm (a) each one genuinely returns to a low/calm state sometime, not just a permanent floor or ceiling, and (b) none of the three is degenerate (e.g., if `durable_resource_demands` pending sits at 0 nearly always in practice, its sub-score is dead weight in the `max()` and should be dropped or reweighted, not just included because it was on the original list).
+5. **Existing-mechanism check** — must confirm this isn't a redundant view of `gpu_pressure` (node biometrics strain hints) before shipping; a quick `rg` through `orion-field-digester` for existing pressure/contention channels, not assumed absent.
+6. **Reversibility** — deliberately kept cheap to unwind: no new bus channel, no `FieldStateV1` field, no schema registry entry, no `metric_definitions.lock.json` entry. It's a Hub-local helper function reading 3 existing live sources plus a small Redis EWMA key per source. Killing it means deleting the helper and the tick loop — nothing else in the repo depends on it existing.
 
 ## Privacy / authorship boundary
 
 - Unchanged: Orion alone MERGEs `:InvestigationRole` and `:HelpRequest`.
 - Peer remains read-only; Orion still writes priors/findings.
-- Queue weather and denial counts are **operational facts**, not identity content.
+- Queue pressure score and denial counts are **operational facts**, not identity content.
 - No keyword detectors on Juniper chat text; counters are hop/tool/run scoped.
 
 ## Dangerous failure modes
@@ -162,39 +160,44 @@ Until that gate clears, **raw counts in disclosure are the product**.
 | Strong deep-nudge → Orion hires every shallow sitting | Only fire strong line when Mind `expected_depth=deep` (or denials≥2); keep flag to disable disclosure block |
 | Denial counter false positives | Allow-list refusal strings; unit fixtures from live hop notes; threshold ≥2 |
 | Budget refuse ignored → hire spam | Explicit resume teach + peer already refuse; eval on refused_budget brief path |
-| Queue weather stale/wrong | Prefer live SQL + gateway snapshot at turn time; omit line if read fails (fail-open) |
-| Digester EWMA baked in too early | Deferred; gate above |
+| Queue pressure stale/wrong | Prefer live SQL + gateway snapshot at turn time; omit line if read fails (fail-open) |
+| EWMA baseline uncalibrated at launch (half-life/floor picked, not fit to data) | Gate item 4 above must run on real history before this ships; treat the score as provisional until then |
+| Slow half-life understates a fast, real spike | Log both raw count and score in the hop-adjacent trace so a human can catch "score said calm, raw count said 400" during soak |
+| One always-near-baseline source permanently drags nothing (its sub-score never fires) | Gate item 4's degenerate-source check; drop or reweight a source that never varies rather than leave it inert in the `max()` |
 
 ## Disable / rollback
 
 - Existing `HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE` covers disclosure lines.
 - Teach text is code; revert PR.
-- Queue readers fail-open (no lines) if stores unavailable.
+- Queue pressure line fails open (omitted) if any source read fails, or if the Redis EWMA keys are unavailable — Orion never sees a wrong or stale score, only a missing line.
 - No schema migration required for patch 1–4.
 
 ## Proposed schema / API changes
 
 - **No new bus channel** for patch 1–4.
 - **No new graph label.**
-- Extend `format_role_teach_disclosure` / callers with progress inputs (denials, budget, queue counts) — still pure strings.
-- Optional thin Hub helpers: `count_access_refusals(run_id)`, `queue_weather_snapshot()` — producers with tests; no new taxonomy enums.
-- Digester / `FieldStateV1` only if patch 5 proceeds after the gate.
+- **No `FieldStateV1` field, no digester wiring, no `metric_definitions.lock.json` entry** — see Reversibility in §4. The score is computed by a Hub-local helper reading 3 existing live sources plus a small per-source Redis EWMA key (`orion:hire:queue_pressure:ewma:<source>`); it is not a registered metric.
+- Extend `format_role_teach_disclosure` / callers with progress inputs (denials, budget, queue pressure score) — still pure strings.
+- Thin Hub helpers: `count_access_refusals(run_id)`, `queue_pressure_score() -> QueuePressureReading` (score 0–10, driving source, raw counts kept for the trace even though not shown to Orion) — producers with tests; no new taxonomy enums.
+- A small periodic tick (proposed: piggyback on an existing Hub scheduler tick, not a new service) updates the 3 EWMA baselines every ~5 min.
 
 ## Files likely to touch (implementation follow-up)
 
 - `orion/curiosity/kickoff_prompt.py` — role teach wording
 - `orion/curiosity/role_teach_disclosure.py` — deep strong line; progress composition
-- `orion/hub/turn_orchestrator.py` and/or `services/orion-hub/scripts/curiosity_investigation.py` — denial count, budget brief, queue snapshot → splice
+- `orion/hub/turn_orchestrator.py` and/or `services/orion-hub/scripts/curiosity_investigation.py` — denial count, budget brief, queue pressure score → splice
+- New: `orion/curiosity/queue_pressure.py` (or similar) — the 3-source EWMA score helper + tick updater, unit-testable against fake Redis/Postgres/gateway reads
 - `orion/curiosity/tests/` + Hub tests
 - Parent READMEs / hire specs cross-link
-- **Not first:** `services/orion-field-digester/…`
+- **Not touched by this patch:** `services/orion-field-digester/…` (deliberately not where this lives — see §4 Reversibility)
 
 ## Non-goals
 
 - Python auto-MERGE of `hire_cursor` or HelpRequest
 - Auto-hire solely on attention winners or thermals
 - Keyword / feeling lists on user message text
-- Digester EWMA in the same PR as teach+disclosure
+- Raw-count disclosure as a first step before the score (superseded 2026-09-20 — go straight to the score)
+- Building this inside `orion-field-digester` / `FieldStateV1` (kept as a cheap-to-unwind Hub helper instead; revisit only if the digester genuinely needs this as a felt-state channel later)
 - Changing Cursor invoker / peer budget meter internals (reuse `decide_cursor_budget`)
 - Replacing self-study / self-model freshness pipes
 
@@ -203,23 +206,33 @@ Until that gate clears, **raw counts in disclosure are the product**.
 1. Motor boot with Mind `deep` contains an explicit **strong handoff** sentence (not only “expected depth: deep”).
 2. Fixture: two permission-denied hop notes ⇒ disclosure contains handoff-now line.
 3. Fixture: PeerBrief `refused_budget` ⇒ resume / don’t-rehire line; no encouragement to open another HelpRequest.
-4. Live or fixture: at least one queue weather number appears on an Orion-origin curiosity motor prompt when counts are readable.
+4. Live or fixture: the queue pressure **score** (not raw counts) appears on an Orion-origin curiosity motor prompt when all sources are readable, with the driving source named.
 5. Flag off ⇒ teach may still be revised, but soft disclosure block absent (existing contract).
 6. After soak: at least some sittings with Mind `deep` **or** denials≥2 show `hire_cursor` and/or HelpRequest — if still 0/0, escalate proposal (possible Python assist) rather than yelling louder in the prompt only.
-7. Digester EWMA: **not** required to close this design; separate gate doc if pursued.
+7. Metric quality gate item 4 (live-data sanity check, §4) is run against real multi-day history and its result recorded in this doc **before** the score ships to Orion — not assumed from the single point-in-time read above.
 
 ## Recommended patch order
 
 1. **Teach rewrite + deep strong nudge** in formatter (tests first).
 2. **Permission-denied ≥2** progress line from hop/tool evidence.
 3. **Budget-spent resume** line from PeerBrief.
-4. **Queue weather** from existing SQL + gateway admission snapshot.
-5. **Soak.** Only then consider digester EWMA.
+4. **Queue pressure score**: pull multi-day history for the 3 sources, run the metric quality gate for real (independence + live sanity, §4), calibrate half-life/floor against what the data actually looks like, then wire the score into disclosure.
+5. **Soak.**
 
 ## Open question (locked default for this design)
 
 **≥2 permission denied:** nudge + Orion-authored HelpRequest (**default**).
 Python auto-enqueue is a **follow-up proposal** if soak still shows 0 HelpRequests after patches 1–4.
+
+## Follow-up: the same score, a second consumer (2026-09-20)
+
+`docs/superpowers/specs/2026-09-09-curiosity-supervisor-design.md`'s "arming the reading channel" patch (PR #2253, merged) left two things unbuilt on purpose: nothing yet watches curiosity runs and grades them automatically, and nothing decides *who* does that grading. In conversation with Juniper the same day this doc was revised, a second use for `queue_pressure_score()` came up: Orion choosing whether to **grade its own hop notes itself, or hand that grading to Cursor** — the same self-vs-outsource decision this patch already builds for investigating, just applied to reviewing instead.
+
+This is **not** part of the patch order above and is **not** being implemented alongside patches 1–4. It's recorded here because it's the same primitive, so building the score with this second consumer in mind (rather than hard-coding it to only the hire-disclosure call site) avoids a near-term duplicate:
+
+- `queue_pressure_score()` should be a plain callable, not something wired only into `format_role_teach_disclosure`. A second call site (whatever eventually schedules or triggers self-review) reads the same score, same sources, same EWMA state — no second metric, no second gate to clear.
+- The decision it feeds is different in kind from patches 1–3: hiring Cursor for *investigation* is already-approved territory (parent specs #2259/#2252/#2015-09-14 peer design); Orion grading its own reasoning and *writing that grade back onto a `Prior`* is a belief-adjacent write, which is exactly the kind of change CLAUDE.md's "Proposal mode before invasive cognition changes" gates. That write-back deserves its own proposal doc, not a footnote here — this section only reserves the shared primitive, it does not authorize the write-back.
+- Open question for that future doc, not this one: is the goal of outsourcing grading to Cursor *cost/latency relief under load* (in which case the queue score is the right trigger) or *a genuinely independent second opinion on Orion's own judgment* (in which case load has nothing to do with it, and gating on queue pressure would be the wrong mechanism dressed up in the right one). Worth answering before that doc is written, not while writing it.
 
 ## Trace that proves it worked
 

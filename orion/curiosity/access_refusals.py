@@ -1,7 +1,11 @@
 """Count access-refusal hop notes for hire-handoff pressure.
 
 Allow-list substrings (case-insensitive match within each note):
-``permission denied``, ``permissiondenied``, ``acl``, ``insufficient_privilege``.
+``permission denied``, ``permissiondenied``, ``acl blocked``, ``acl:``,
+``insufficient_privilege``.
+
+Bare ``acl`` is intentionally omitted — it false-fires on words like
+``oracle`` / ``spectacle``.
 """
 
 from __future__ import annotations
@@ -12,7 +16,8 @@ ACCESS_REFUSAL_THRESHOLD = 2
 _NEEDLES = (
     "permission denied",
     "permissiondenied",
-    "acl",
+    "acl blocked",
+    "acl:",
     "insufficient_privilege",
 )
 

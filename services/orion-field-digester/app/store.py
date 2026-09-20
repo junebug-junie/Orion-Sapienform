@@ -448,3 +448,29 @@ class FieldDigesterStore:
                     "updated_at": now,
                 },
             )
+
+    def count_world_pulse_seed_pending(self) -> int:
+        """Pending reading-seed backlog (queue contention source)."""
+        with self._engine.connect() as conn:
+            value = conn.execute(
+                text(
+                    """
+                    SELECT count(*) FROM world_pulse_read_seed
+                    WHERE status = 'pending'
+                    """
+                )
+            ).scalar()
+        return int(value or 0)
+
+    def count_durable_demand_pending(self) -> int:
+        """Pending durable resource demands (queue contention source)."""
+        with self._engine.connect() as conn:
+            value = conn.execute(
+                text(
+                    """
+                    SELECT count(*) FROM durable_resource_demands
+                    WHERE status = 'pending'
+                    """
+                )
+            ).scalar()
+        return int(value or 0)

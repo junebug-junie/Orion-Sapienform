@@ -20,6 +20,30 @@ _LABELS = {
     "expected_depth": "expected depth",
     "cross_cutting": "cross-cutting",
 }
+_DEEP_HIRE_NUDGE = (
+    "Mind reads this sitting as deep work. Strongly prefer hire_cursor for the "
+    "archaeology; keep a short local look only so tried_summary is grounded. "
+    "You still author priors and findings."
+)
+
+
+def format_access_refusal_progress(count: int) -> list[str]:
+    if count < 2:
+        return []
+    return [
+        "Access refused at least twice this sitting. Hand off to Cursor now "
+        "(write hire_cursor + HelpRequest with what you already tried)."
+    ]
+
+
+def format_budget_spent_progress(*, status: str, next_hop_n: int | None = None) -> list[str]:
+    if status != "refused_budget":
+        return []
+    hop = f"hop {next_hop_n}" if next_hop_n is not None else "your last hop notes"
+    return [
+        f"Cursor budget is spent. Do not open another HelpRequest until budget is clear. "
+        f"Resume from {hop} / continue local crawl from what you already wrote."
+    ]
 
 
 def _as_short_str(value: Any, *, limit: int | None = None) -> str | None:
@@ -89,6 +113,8 @@ def format_role_teach_disclosure(
         lines.append(f"- foresight: {foresight}")
     if user_intent:
         lines.append(f"- intent: {user_intent}")
+    if depth and depth.lower() == "deep":
+        lines.append(_DEEP_HIRE_NUDGE)
     lines.extend(cleaned_progress)
     return lines
 

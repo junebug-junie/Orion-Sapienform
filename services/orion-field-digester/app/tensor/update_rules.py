@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+
 from orion.schemas.field_state import FieldStateV1
 
 from app.digestion.decay import apply_decay
 from app.digestion.diffusion import apply_diffusion
 from app.digestion.perturbation import apply_perturbations
 from app.digestion.precision import update_dimension_precision_baseline
+from app.digestion.queue_contention import (
+    read_queue_contention_counts,
+    update_queue_contention_pressure,
+)
 from app.digestion.significance import update_significance_pressure
 from app.digestion.suppression import apply_suppression
 from app.digestion.tension import update_tension_pressure
@@ -22,6 +28,10 @@ def run_digestion_tick(
     store,
     significance_window_seconds: float,
     significance_check_interval_sec: float,
+    queue_contention_alpha: float | None = None,
+    queue_contention_floor: float = 1.0,
+    queue_contention_counts: Mapping[str, float] | None = None,
+    queue_contention_readers: Mapping[str, Callable[[], float]] | None = None,
 ) -> FieldStateV1:
     apply_perturbations(state, perturbations)
     # now=state.generated_at, NOT datetime.now(): apply_perturbations() above
@@ -52,6 +62,21 @@ def run_digestion_tick(
         window_seconds=significance_window_seconds,
         check_interval_sec=significance_check_interval_sec,
     )
+    # After significance, before dimension precision baseline -- same ordering
+    # comment pattern: precision must see THIS tick's queue_contention_score
+    # once a consumer registers it (Task 7); producer still lands here so the
+    # FieldState row is coherent even before that registration.
+    if queue_contention_alpha is not None:
+        counts = queue_contention_counts
+        if counts is None and queue_contention_readers is not None:
+            counts = read_queue_contention_counts(readers=queue_contention_readers)
+        if counts is not None:
+            update_queue_contention_pressure(
+                state,
+                counts=counts,
+                alpha=queue_contention_alpha,
+                floor=queue_contention_floor,
+            )
     # Must run LAST: scores this tick's FINAL field_pressures() reading (see
     # update_dimension_precision_baseline()'s own docstring for why it can't
     # run before decay/diffusion/suppression -- and now tension/significance --

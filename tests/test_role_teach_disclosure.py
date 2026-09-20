@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 from orion.curiosity.role_teach_disclosure import (
+    format_budget_spent_progress,
     format_role_teach_disclosure,
     splice_role_teach_disclosure,
 )
+
+
+def test_budget_spent_progress_names_resume_not_rehire() -> None:
+    lines = format_budget_spent_progress(status="refused_budget", next_hop_n=3)
+    text = "\n".join(lines).lower()
+    assert "budget" in text
+    assert "helprequest" in text.replace(" ", "") or "help request" in text
+    assert "do not" in text or "don't" in text
+    assert "resume" in text or "hop" in text
+    assert format_budget_spent_progress(status="ok", next_hop_n=3) == []
 
 
 def test_format_none_or_empty_returns_empty() -> None:
@@ -31,6 +42,20 @@ def test_format_all_unknown_and_empty_foresight_returns_empty() -> None:
         )
         == []
     )
+
+
+def test_format_deep_includes_strong_hire_cursor_nudge() -> None:
+    lines = format_role_teach_disclosure(
+        {
+            "expected_depth": "deep",
+            "cross_cutting": "yes",
+            "foresight_note": "Lease TTL archaeology.",
+        }
+    )
+    text = "\n".join(lines).lower()
+    assert "hire_cursor" in text or "hire cursor" in text
+    assert "strongly" in text or "strong" in text
+    assert "expensive" not in text
 
 
 def test_format_present_shape_returns_advisory_lines() -> None:

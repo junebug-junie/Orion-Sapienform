@@ -77,6 +77,11 @@ class InnerStateSignal:
     cadence: Cadence
     composition_status: CompositionStatus
     cognition_consumers: tuple[str, ...] = ()
+    # Per-float-field consumer overrides. Keys are schema scalar names; values
+    # replace signal-level cognition_consumers for that scalar's metric node
+    # only (so FieldStateV1.queue_contention_score can name Hub hire disclosure
+    # without claiming every sibling FieldState float is read there too).
+    scalar_cognition_consumers: tuple[tuple[str, tuple[str, ...]], ...] = ()
     duplicate_of: Optional[str] = None
     shadow_reason: Optional[str] = None
     notes: str = ""
@@ -96,10 +101,24 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.COMPOSED,
         cognition_consumers=(),
+        scalar_cognition_consumers=(
+            (
+                "queue_contention_score",
+                (
+                    "orion.hub.turn_orchestrator:_maybe_splice_role_teach_disclosure "
+                    "(hire role-teach queue contention disclosure; Task 8 wires "
+                    "FieldState score into curiosity progress_lines)",
+                ),
+            ),
+        ),
         notes=(
             "The body. Per-node/per-capability raw channel vectors. Diffusion "
             "fixed 2026-07-12 (9d367d4f, 4dc965f2) after a permanent-saturation "
-            "bug; not read by cognition directly, composed into self_state.v1."
+            "bug; not read by cognition directly, composed into self_state.v1. "
+            "Additive scalar queue_contention_score (2026-09-20): 0-10 "
+            "EWMA-relative max of seed/durable/gateway queue subs, written each "
+            "digester tick by app/digestion/queue_contention.py; Hub hire "
+            "role-teach disclosure is the cognition consumer (Task 8)."
         ),
     ),
     InnerStateSignal(

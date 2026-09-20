@@ -103,6 +103,65 @@ def test_success_requires_explicit_ok_and_matching_durable_request_id():
     assert enforce_reading_receipt_grounding(final, [outcome]) == final
 
 
+def test_accepted_recommendation_without_a_read_source_flags_unread_content():
+    """An accepted queue write proves the save happened, not that the model
+    read the source. Repro of a live Orion turn: it fabricated a paper's
+    title/content, then successfully queued the URL, and the old grounding
+    code appended a receipt footer without ever checking source_read."""
+    tracker = ReadingReceiptTracker(BINDING)
+    tracker.observe(_tool_use("tool-1"))
+    tracker.observe(_tool_result("tool-1", _accepted_payload()))
+
+    [outcome] = tracker.outcomes()
+    assert outcome.acceptance == "accepted"
+    assert outcome.source_read is False
+
+    fabricated = "The Orca paper is about distilling reasoning into small models."
+    final = enforce_reading_receipt_grounding(fabricated, [outcome])
+    assert fabricated in final
+    assert "I did not read that source during this turn." in final
+    assert enforce_reading_receipt_grounding(final, [outcome]) == final
+
+
+def test_mixed_accepted_sources_name_only_the_unread_one():
+    read_url = "https://example.org/papers/read-source"
+    read_request_id = deterministic_reading_request_id(
+        BINDING, url=normalize_source_url(read_url), why_now=WHY
+    )
+    tracker = ReadingReceiptTracker(BINDING)
+    tracker.observe(_tool_use("fetch-1", name="WebFetch", url=read_url))
+    tracker.observe(_tool_result("fetch-1", "source contents"))
+    tracker.observe(_tool_use("tool-read", url=read_url))
+    tracker.observe(
+        _tool_result("tool-read", _accepted_payload(request_id=read_request_id))
+    )
+    tracker.observe(_tool_use("tool-unread"))
+    tracker.observe(_tool_result("tool-unread", _accepted_payload()))
+
+    outcomes = tracker.outcomes()
+    assert {o.source_read for o in outcomes} == {True, False}
+
+    final = enforce_reading_receipt_grounding("Two sources queued.", outcomes)
+    unread_outcome = next(o for o in outcomes if not o.source_read)
+    read_outcome = next(o for o in outcomes if o.source_read)
+    assert f"I did not read that source during this turn. (`{unread_outcome.url}`)" in final
+    assert f"I did not read that source during this turn. (`{read_outcome.url}`)" not in final
+
+
+def test_accepted_recommendation_with_a_read_source_has_no_unread_caveat():
+    tracker = ReadingReceiptTracker(BINDING)
+    tracker.observe(_tool_use("fetch-1", name="WebFetch"))
+    tracker.observe(_tool_result("fetch-1", "source contents"))
+    tracker.observe(_tool_use("tool-1"))
+    tracker.observe(_tool_result("tool-1", _accepted_payload()))
+
+    [outcome] = tracker.outcomes()
+    assert outcome.source_read is True
+
+    final = enforce_reading_receipt_grounding("Summarized the real source.", [outcome])
+    assert "I did not read that source during this turn." not in final
+
+
 @pytest.mark.parametrize("content", [None, 1, {"type": "tool_use"}, "not-blocks"])
 def test_malformed_step_content_is_ignored(content):
     tracker = ReadingReceiptTracker(BINDING)

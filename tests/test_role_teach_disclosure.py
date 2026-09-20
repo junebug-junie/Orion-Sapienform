@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 from orion.curiosity.role_teach_disclosure import (
+    format_budget_spent_progress,
     format_role_teach_disclosure,
     splice_role_teach_disclosure,
 )
+
+
+def test_budget_spent_progress_names_resume_not_rehire() -> None:
+    lines = format_budget_spent_progress(status="refused_budget", next_hop_n=3)
+    text = "\n".join(lines).lower()
+    assert "budget" in text
+    assert "helprequest" in text.replace(" ", "") or "help request" in text
+    assert "do not" in text or "don't" in text
+    assert "resume" in text or "hop" in text
+    assert format_budget_spent_progress(status="ok", next_hop_n=3) == []
 
 
 def test_format_none_or_empty_returns_empty() -> None:

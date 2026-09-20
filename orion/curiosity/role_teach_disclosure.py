@@ -36,6 +36,16 @@ def format_access_refusal_progress(count: int) -> list[str]:
     ]
 
 
+def format_budget_spent_progress(*, status: str, next_hop_n: int | None = None) -> list[str]:
+    if status != "refused_budget":
+        return []
+    hop = f"hop {next_hop_n}" if next_hop_n is not None else "your last hop notes"
+    return [
+        f"Cursor budget is spent. Do not open another HelpRequest until budget is clear. "
+        f"Resume from {hop} / continue local crawl from what you already wrote."
+    ]
+
+
 def _as_short_str(value: Any, *, limit: int | None = None) -> str | None:
     if not isinstance(value, (str, int, float, bool)):
         return None

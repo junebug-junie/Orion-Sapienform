@@ -47,6 +47,26 @@ with whether it links a reply back to the request:
 | Supervisor readings (#2253) | `HopReadingV1` | read-only appraisal | 0 rows | Not applicable. |
 | **Attention `ask` action** (`orion/substrate/attention/policy.py:72`) | `CuriosityCandidateActionV1{action_type="ask", open_loop_id, question_text}` when `askability ≥ 0.45` | **Discarded.** Tick passes `max_asks=0` (`attention_broadcast.py:11`); chat turn keeps it only in stance JSON; `question_text` has zero consumers | UNVERIFIED (never persisted) | The workspace already *decides to ask* and writes the question. Runner-up producer — see below. |
 
+### Why not the others, in plain terms
+
+- **Endogenous outreach** is the right *transport* and the wrong *object*: it
+  reads Juniper's reply as "the last few chat rows," with nothing linking a
+  reply to what prompted it. It is reused as-is for delivery.
+- **ask-Claude** never got a ledger (0 rows ever), but its trigger — a belief
+  tested three times and still unsettled — is the right gate for *when* an
+  ask is worth sending, and its own docstring says arming it means reusing
+  outreach's gate stack. Reused, not duplicated.
+- **The attention `ask` action** is the seam nobody mentioned: the workspace
+  already decides to ask and writes the question, then throws it away. It is
+  the most theory-faithful producer but has never been persisted and its
+  thresholds are self-described as uncalibrated, so it is the *second*
+  producer — and the one that supplies `loop_id` for `actor='orion'` closure.
+- **Self-inquiry** already teaches Orion to write a `:HelpRequest` after a
+  short local look (#2238's hire-determination grounding); it just never
+  offers Juniper as the peer. First producer.
+- **Collapse Mirror, supervisor readings, AI Town clarifying questions**: wrong
+  direction, no request shape, or wrong audience.
+
 ## What capability changes
 
 After this patch Orion can:

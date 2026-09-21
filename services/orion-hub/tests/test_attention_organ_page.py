@@ -129,6 +129,29 @@ def test_summarize_history_keeps_absent_signal_distinct_from_a_band_never_firing
     assert out["series"][0]["heartbeat_verdict"] is None
 
 
+def test_summarize_history_carries_proprioception_fields() -> None:
+    rows = [
+        _row(
+            0,
+            heartbeat_dark_seats=["orion-cortex-exec"],
+            heartbeat_organ_fire_counts={"orion-cortex-exec": 0, "orion-bus": 4},
+            heartbeat_smear=0.11,
+            heartbeat_smeared=False,
+            heartbeat_organ_distinctness=0.8,
+        )
+    ]
+    out = summarize_history(rows)
+    point = out["series"][0]
+    assert point["heartbeat_dark_seats"] == ["orion-cortex-exec"]
+    assert point["heartbeat_organ_fire_counts"] == {
+        "orion-cortex-exec": 0,
+        "orion-bus": 4,
+    }
+    assert point["heartbeat_smear"] == 0.11
+    assert point["heartbeat_smeared"] is False
+    assert point["heartbeat_organ_distinctness"] == 0.8
+
+
 def test_summarize_history_survives_json_strings_and_junk_rows() -> None:
     rows = [
         {"generated_at": datetime.now(timezone.utc), "self_model_json": '{"heartbeat_verdict": "mixed"}'},
@@ -465,6 +488,31 @@ def test_attention_organ_js_draws_std_and_bulk_classifier_thresholds() -> None:
     assert "thresholds.bulk_redundant_min" in gauge
     assert "domainMin: bulkMin" in gauge
     assert "renderBandGauge(host, h1, config)" in ensemble
+
+
+def test_attention_organ_js_leads_with_proprioception_not_mean_ratio() -> None:
+    """The organ headline is dark seats / smear / distinctness. Mean ratio
+    saturates and must not be the 3xl speedometer."""
+    ensemble = ORGAN_JS[
+        ORGAN_JS.index("function renderEnsemble") : ORGAN_JS.index(
+            "function renderDiscrimination"
+        )
+    ]
+    self_model = ORGAN_JS[
+        ORGAN_JS.index("function renderSelfModel") : ORGAN_JS.index(
+            "function renderLink"
+        )
+    ]
+    assert "h1.dark_seats" in ensemble
+    assert "h1.smear" in ensemble
+    assert "h1.organ_distinctness" in ensemble
+    headline = ensemble[ensemble.index("text-3xl") : ensemble.index("text-3xl") + 180]
+    assert "mean_ratio" not in headline
+    assert "darkSeatsHeadline" in ensemble or "dark seats" in ensemble.lower()
+    assert "heartbeat_dark_seats" in self_model
+    assert self_model.index("heartbeat_dark_seats") < self_model.index("heartbeat_mean_ratio")
+    assert "formatSeats(seats, counts)" in ORGAN_JS
+    assert "smearMax" in ORGAN_JS
 
 
 def test_attention_organ_js_fallback_why_names_failing_conjuncts() -> None:

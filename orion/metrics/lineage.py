@@ -209,6 +209,7 @@ def resolve_inner_state() -> list[MetricNode]:
         schema = sig.schema
         schema_id = schema.__name__ if schema is not None else None
         consumers = tuple(sig.cognition_consumers)
+        scalar_overrides = dict(sig.scalar_cognition_consumers)
 
         # The signal itself is addressable even when it has no enumerable
         # float fields (schema=None entries are real registry entries).
@@ -225,6 +226,7 @@ def resolve_inner_state() -> list[MetricNode]:
             )
         )
         for fname in _float_fields(schema):
+            field_consumers = scalar_overrides.get(fname, consumers)
             nodes.append(
                 MetricNode(
                     urn=_urn("inner_state", producer, sig.signal_id, fname),
@@ -234,7 +236,7 @@ def resolve_inner_state() -> list[MetricNode]:
                     metric_field=fname,
                     registry_source=source,
                     schema_id=schema_id,
-                    declared_consumers=consumers,
+                    declared_consumers=field_consumers,
                     upstream=(_urn("inner_state", producer, sig.signal_id),),
                     notes=f"scalar field on {schema_id}",
                 )

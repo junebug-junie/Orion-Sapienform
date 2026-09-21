@@ -65,9 +65,10 @@ class Settings(BaseSettings):
     applied_deltas_alert_row_count: int = Field(
         5_000_000, alias="FIELD_APPLIED_DELTAS_ALERT_ROW_COUNT"
     )
-    # Default set with real headroom above the observed conjourney baseline
-    # (~37.5GB as of 2026-07-12) -- not a round number picked in the abstract.
-    db_size_alert_gb: float = Field(60.0, alias="FIELD_DIGESTER_DB_SIZE_ALERT_GB")
+    # Raised 60.0 -> 120.0 on 2026-09-21: conjourney had grown to ~56-60GB
+    # (unbounded growth in a few substrate tables, tracked separately), so 60GB
+    # left no real headroom left. See services/orion-field-digester/README.md.
+    db_size_alert_gb: float = Field(120.0, alias="FIELD_DIGESTER_DB_SIZE_ALERT_GB")
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
@@ -171,6 +172,25 @@ class Settings(BaseSettings):
     )
     field_significance_check_interval_sec: float = Field(
         30.0, alias="FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC"
+    )
+
+    # Queue contention EWMA (docs/superpowers/specs/2026-09-20-hire-handoff-
+    # and-queue-pressure-design.md; gate 2026-09-20-queue-contention-metric-
+    # gate.md). Alpha is derived each tick as
+    #   1 - exp(-ln(2) * RECEIPT_POLL_INTERVAL_SEC / HALF_LIFE_SEC)
+    # so a ~24h half-life at the digester's ~2s tick is one documented
+    # constant, not a magic 1e-5. Floor=1.0 avoids divide-by-near-zero when
+    # a source (esp. gateway_waiting) is usually calm near 0.
+    field_queue_contention_half_life_sec: float = Field(
+        86400.0, alias="FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC"
+    )
+    field_queue_contention_floor: float = Field(
+        1.0, alias="FIELD_QUEUE_CONTENTION_FLOOR"
+    )
+    # LLM gateway admission snapshot for gateway_waiting sum. Empty string
+    # disables that source (fail-open omit) without breaking SQL sources.
+    field_digester_llm_gateway_url: str = Field(
+        "http://llm-gateway:8210", alias="FIELD_DIGESTER_LLM_GATEWAY_URL"
     )
 
 

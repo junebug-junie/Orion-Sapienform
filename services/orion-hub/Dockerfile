@@ -67,6 +67,13 @@ RUN if [ "${INSTALL_DEV_DEPS}" = "true" ]; then pip3 install --no-cache-dir -r /
 # copy schemas into the container
 COPY orion /app/orion
 
+# Self-sense loads this at import (orion/evals/self_sense.py: FIELD_TOPOLOGY_PATH
+# is parents[2]/config/field/..., which is /app inside this image). Curiosity's
+# tick calls that import before a normal investigation. Without the file the
+# tick dies and the loop retries the same miss. Same COPY the field digester
+# already uses; do not rely on the /repo mount.
+COPY config/field /app/config/field
+
 # Vendor autonomy-gate pure helpers for Hub Drives Analytics (avoids relying solely
 # on the repo volume mount for ORION_REPO_ROOT=/repo).
 COPY scripts/analysis/measure_autonomy_gate.py /app/vendor/measure_autonomy_gate.py

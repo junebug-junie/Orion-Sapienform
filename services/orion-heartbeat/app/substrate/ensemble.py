@@ -93,6 +93,15 @@ class EnsembleH1ResultV1:
     # differ in how deeply entanglement has penetrated the bulk block.
     bulk_penetration_depth: float = 0.0
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Tick-level proprioception. Occupancy (dark seats / distinctness) is
+    # who talked in the recent absorb window. Smear is far/near of the
+    # current mean entropy profile. Mean_ratio stays on the payload for
+    # compatibility but is not the headline.
+    dark_seats: list[str] = field(default_factory=list)
+    organ_fire_counts: dict[str, int] = field(default_factory=dict)
+    organ_distinctness: float | None = None
+    smear: float | None = None
+    smeared: bool | None = None
 
 
 class EnsembleSubstrate:

@@ -48,6 +48,9 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         "curiosity_peer_brief": int(
             getattr(settings, "curiosity_peer_brief_retention_days", 0) or 0
         ),
+        "curiosity_hop_reading": int(
+            getattr(settings, "curiosity_hop_reading_retention_days", 0) or 0
+        ),
         "substrate_durable_run_state": int(
             getattr(settings, "substrate_durable_run_state_retention_days", 0) or 0
         ),

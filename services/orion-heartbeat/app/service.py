@@ -13,8 +13,10 @@ from .settings import settings
 from .substrate.bus_synaptic import BUS_SYNAPTIC_ZSCORE_SATURATION, query_real_bus_synaptic_raw_mean_abs_z
 from .substrate.ensemble import EnsembleConfig, EnsembleH1ResultV1, EnsembleSubstrate
 from .substrate.reconstruction import compute_h1_ensemble, verdict_thresholds
+from .substrate.proprioception import OrganFireWindow
 from .substrate.routing import (
     ORGAN_SITE_MAP,
+    SITE_ORGAN_MAP,
     SiteAssignment,
     UnroutableAtomTypeError,
     UnroutableOrganError,
@@ -94,6 +96,7 @@ class HeartbeatService(BaseChassis):
             base_seed=settings.substrate_seed,
         )
         self.latest_h1: Optional[EnsembleH1ResultV1] = None
+        self.organ_fires = OrganFireWindow()
         self._absorb_queue: asyncio.Queue[SiteAssignment] = asyncio.Queue(
             maxsize=settings.absorb_queue_maxsize
         )
@@ -296,6 +299,9 @@ class HeartbeatService(BaseChassis):
             try:
                 async with self._ensemble_lock:
                     await asyncio.to_thread(self.ensemble.absorb, assignment)
+                organ = SITE_ORGAN_MAP.get(assignment.site_index)
+                if organ:
+                    self.organ_fires.record(organ)
                 self.events_absorbed += 1
             except Exception as exc:  # noqa: BLE001 - one bad absorb must not kill the worker
                 logger.warning("heartbeat_absorb_failed err=%s", exc)
@@ -314,6 +320,9 @@ class HeartbeatService(BaseChassis):
             assignment = self._absorb_queue.get_nowait()
             async with self._ensemble_lock:
                 self.ensemble.absorb(assignment)
+            organ = SITE_ORGAN_MAP.get(assignment.site_index)
+            if organ:
+                self.organ_fires.record(organ)
             self.events_absorbed += 1
             self._absorb_queue.task_done()
             processed += 1
@@ -353,7 +362,9 @@ class HeartbeatService(BaseChassis):
             await asyncio.sleep(settings.h1_interval_sec)
             try:
                 async with self._ensemble_lock:
-                    self.latest_h1 = compute_h1_ensemble(self.ensemble)
+                    self.latest_h1 = compute_h1_ensemble(
+                        self.ensemble, fire_counts=self.organ_fires.counts()
+                    )
                 logger.info(
                     "heartbeat_h1_computed tick_count=%d mean_ratio=%.4f std_ratio=%.4f "
                     "verdict=%s seeds=%s",

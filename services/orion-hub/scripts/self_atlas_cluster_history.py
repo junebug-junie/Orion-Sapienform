@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Any, Optional
 
 logger = logging.getLogger("orion-hub.self_atlas_cluster_history")
@@ -198,6 +199,29 @@ def _get_engine() -> Any:
             logger.debug("self_atlas_cluster_history_engine_unavailable error=%s", exc)
             return None
     return _ENGINE
+
+
+def newest_self_knowledge_item_at() -> Optional[datetime]:
+    """Newest ``self_knowledge_items.created_at`` (tz-aware UTC), or ``None``
+    when the table is empty or unreadable. Read by the Self Atlas training
+    trigger to refuse re-clustering an unchanged table. Never raises."""
+    engine = _get_engine()
+    if engine is None:
+        return None
+    try:
+        from sqlalchemy import text
+
+        from orion.self_knowledge_freshness import (
+            NEWEST_SELF_KNOWLEDGE_ITEM_SQL,
+            normalize_newest,
+        )
+
+        with engine.connect() as conn:
+            row = conn.execute(text(NEWEST_SELF_KNOWLEDGE_ITEM_SQL)).mappings().first()
+    except Exception as exc:
+        logger.debug("self_atlas_newest_item_unavailable error=%s", exc)
+        return None
+    return normalize_newest(row["newest"] if row else None)
 
 
 def _coerce_evidence_refs(raw: Any) -> list[str]:

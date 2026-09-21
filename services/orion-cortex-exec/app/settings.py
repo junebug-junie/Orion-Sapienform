@@ -536,6 +536,18 @@ class Settings(BaseSettings):
     )
     embodiment_orion_player_id: str = Field("", alias="AITOWN_ORION_PLAYER_ID")
 
+    # --- Self-study Layer 1 periodic refresh (2026-09-19, chat lane only) ---
+    # 0 disables. See app/self_study_refresh.py for why a timer and not
+    # action-selection.
+    self_study_inspect_interval_sec: float = Field(86400.0, alias="SELF_STUDY_INSPECT_INTERVAL_SEC")
+
+    # --- Self-study Layer 3 periodic refresh (2026-09-20, chat lane only) ---
+    # Same fix as the Layer 1 timer above, applied to reflect_self_concepts()
+    # (self_study_reflect_refresh_loop). 0 disables.
+    self_study_reflect_refresh_interval_sec: float = Field(
+        86400.0, alias="SELF_STUDY_REFLECT_REFRESH_INTERVAL_SEC"
+    )
+
     @field_validator("orion_situation_weather_lat", "orion_situation_weather_lon", mode="before")
     @classmethod
     def _blank_env_float_to_none(cls, value: object) -> object:

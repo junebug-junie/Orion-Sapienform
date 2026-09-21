@@ -276,7 +276,9 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._bus = bus
     loop._harness_rpc_bus = bus
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(
+        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None
+    ):
         loop.seen_prompt = prompt
         return (text or ""), {
             "elapsed_sec": 1.0,
@@ -2410,7 +2412,7 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2439,6 +2441,44 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
         assert reply.ok and reply.text == "the finding"
 
 
+def test_distinct_correlation_ids_under_one_run_id_are_two_real_turns_not_a_cache_collision() -> None:
+    """Review finding, 2026-09-21: self_sense_eval sends FOUR turn requests
+    under ONE run_id (one per question), each with its own correlation_id --
+    breaking the "one turn per run_id" shape the cache/inflight key used to
+    assume. Keying on bare run_id made question 2 silently receive
+    question 1's cached answer, published=4/failed=0, no error anywhere.
+    The fix keys on (run_id, correlation_id); this proves two DIFFERENT
+    correlation_ids under the SAME run_id are two real, independent turns."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.durable_run import CuriosityTurnResultV1
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True)
+    calls: list[tuple[str, str]] = []
+
+    async def recording_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
+        calls.append((prompt, correlation_id))
+        return f"answer for {prompt}", {"harness_step_count": 1, "elapsed_sec": 1.0}
+
+    loop._generate = recording_generate  # type: ignore[assignment]
+
+    def _env(reply_to: str, correlation_id: str, prompt: str) -> dict:
+        env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to=reply_to,
+                           payload={"run_id": "shared-run-id", "correlation_id": correlation_id, "prompt": prompt, "timeout_sec": 10.0, "attempt": 1})
+        return {"data": bus.codec.encode(env)}
+
+    asyncio.run(loop._handle_turn_request(_env("r1", "corr-q1", "question one")))
+    asyncio.run(loop._handle_turn_request(_env("r2", "corr-q2", "question two")))
+
+    # Two real turns ran, one per distinct correlation_id -- not one turn
+    # whose result got served twice.
+    assert calls == [("question one", "corr-q1"), ("question two", "corr-q2")]
+    reply1 = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "r1"][0].payload)
+    reply2 = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "r2"][0].payload)
+    assert reply1.text == "answer for question one"
+    assert reply2.text == "answer for question two"
+
+
 def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     """Cortex was unreachable at dispatch time but the runner got the run
     anyway (or Hub misread the reply): the tick's in-process fallback and the
@@ -2451,7 +2491,7 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2462,7 +2502,12 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
         tick = asyncio.create_task(loop.tick())
         await asyncio.sleep(0.05)  # tick is inside its in-process fallback turn
         assert len(calls) == 1 and len(loop._turn_inflight) == 1
-        run_id = next(iter(loop._turn_inflight))
+        # The inflight key is now "{run_id}:{correlation_id}" (review fix,
+        # 2026-09-21 -- see _turn_result_for's docstring), not bare run_id;
+        # strip the known correlation_id suffix to recover the real run_id.
+        key = next(iter(loop._turn_inflight))
+        assert key.endswith(f":{calls[0]}")
+        run_id = key[: -(len(calls[0]) + 1)]
         env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to="r-runner",
                            payload={"run_id": run_id, "correlation_id": calls[0], "prompt": "p", "timeout_sec": 10.0, "attempt": 1})
         rpc = asyncio.create_task(loop._handle_turn_request({"data": bus.codec.encode(env)}))

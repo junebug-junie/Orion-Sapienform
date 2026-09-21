@@ -142,7 +142,7 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `FIELD_DIGESTER_HEALTH_CHECK_INTERVAL_SEC` | `900.0` | Health-monitor check cadence |
 | `FIELD_STATE_STALL_MULTIPLIER` | `1.5` | Alert if `substrate_field_state`'s oldest row exceeds this × retention hours |
 | `FIELD_APPLIED_DELTAS_ALERT_ROW_COUNT` | `5000000` | Alert if `substrate_field_applied_deltas` row count exceeds this |
-| `FIELD_DIGESTER_DB_SIZE_ALERT_GB` | `60.0` | Alert if the `conjourney` database exceeds this size (observed baseline ~37.5GB as of 2026-07-12; default leaves real headroom, not a round guess) |
+| `FIELD_DIGESTER_DB_SIZE_ALERT_GB` | `120.0` | Alert if the `conjourney` database exceeds this size. Raised from `60.0` on 2026-09-21 after the DB grew from ~37.5GB (2026-07-12) to ~56-60GB, mostly from unbounded growth in `substrate_execution_dispatch_frames`, `cognition_traces`, `substrate_mutation_signal`, and `substrate_policy_decision_frames` (no retention job on any of those tables yet). This buys headroom; it does not add retention -- that is unaddressed follow-up work, not done here |
 | `NOTIFY_BASE_URL` | `http://orion-athena-notify:7140` | `orion-notify` base URL for health-monitor attention alerts |
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
 | `LOG_LEVEL` | `INFO` | Python log level |
@@ -290,9 +290,29 @@ Replay/measurement tooling: `scripts/analysis/measure_sustained_load_pressure.py
 `--postgres-uri`) — the same non-degenerate/independence-check evidence cited
 above came from this script, run against real Postgres.
 
+## Queue contention score (hire weather; 2026-09-20)
+
+`app/digestion/queue_contention.py::update_queue_contention_pressure()`, called
+from `run_digestion_tick()` **after** significance and **before** dimension
+precision baseline. Pure math lives in `orion/field/queue_contention.py`.
+
+Writes additive FieldState scalars (not a `field_pressures()` dimension):
+
+- `queue_contention_score` — 0.0–10.0 EWMA-relative `max()` over seed / durable /
+  gateway waiting sources (quiet tick can be real `0.0`)
+- `queue_contention_driver` — which source won the `max()`
+- `queue_contention_ewma` / `queue_contention_ewma_n` / `queue_contention_computed_at`
+
+Hub hire role-teach **reads** these from latest `substrate_field_state`; digester
+owns the meter. Spec + §0A gate:
+`docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`,
+`docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.
+Env: `FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC`, `FIELD_QUEUE_CONTENTION_FLOOR`,
+`FIELD_DIGESTER_LLM_GATEWAY_URL`.
+
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 
-`FIELD_CHANNEL_ANOMALY_ENABLED` (default `false`) turns on a periodic in-process rescoring loop (`app/anomaly_scorer.py`, `_anomaly_loop()` in `app/worker.py`) against a trained `orion/mood_arc/fit_encoder.py` encoder. Independent of `FIELD_CHANNEL_CORPUS_PATH` above: the scorer maintains its own small in-memory rolling buffer of the same per-tick `FieldChannelCorpusRowV1` rows (not the JSONL sink), so live rescoring works even with the JSONL corpus collector off.
+`FIELD_CHANNEL_ANOMALY_ENABLED` (default `true` as of 2026-09-21; a real model is promoted and this ran live for ~1-2 weeks after the 2026-09-03 convergence below before something reset the flag to `false` with no record of when/why -- `.env` is gitignored and untracked, so that flip left no trace) turns on a periodic in-process rescoring loop (`app/anomaly_scorer.py`, `_anomaly_loop()` in `app/worker.py`) against a trained `orion/mood_arc/fit_encoder.py` encoder. Independent of `FIELD_CHANNEL_CORPUS_PATH` above: the scorer maintains its own small in-memory rolling buffer of the same per-tick `FieldChannelCorpusRowV1` rows (not the JSONL sink), so live rescoring works even with the JSONL corpus collector off.
 
 Requires a real trained artifact (`manifest.json` + `weights.npz`, written by `orion/mood_arc/fit_encoder.py train`), resolved from `FIELD_CHANNEL_ANOMALY_MODELS_ROOT/active.json` -- this service never trains or promotes one itself, and a missing/malformed `models_root` (no `active.json`, or a stale pointer) fails open (scoring silently disabled, logged once) rather than crashing the tick loop.
 
@@ -304,7 +324,7 @@ Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's o
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `FIELD_CHANNEL_ANOMALY_ENABLED` | `false` | Master gate |
+| `FIELD_CHANNEL_ANOMALY_ENABLED` | `true` | Master gate |
 | `FIELD_CHANNEL_ANOMALY_MODELS_ROOT` | `/mnt/telemetry/models/mood_arc` | mood_arc promotion root, resolved via its `active.json` |
 | `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` | `60` | Rescoring cadence |
 | `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Informational only -- see above |

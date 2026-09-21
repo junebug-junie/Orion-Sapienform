@@ -17,6 +17,15 @@ def journal_entry(handoff, result=None, *, round_trips=None):
     body += f"\n\n{seed.url}\ntrace_id={trace_id}\nreading_request={request.model_dump(mode='json')}"
     if result:
         body += f"\nstage1_trace_id={handoff.trace_id}\nstage2_trace_id={trace_id}\nround_trips={round_trips}"
+        # The second pass's actual work (what it tested, what stayed open) --
+        # not just its summary -- so the journal row is inspectable evidence.
+        for test in result.priors_tested:
+            line = f"\nprior[{test.verdict}]: {test.claim_ref}"
+            if test.why:
+                line += f" -- {test.why}"
+            body += line
+        for thread in result.open_threads:
+            body += f"\nopen_thread: {thread}"
     return JournalEntryWriteV1(
         entry_id=str(uuid5(NAMESPACE_URL, source_ref)),
         created_at=result.created_at if result else handoff.created_at,

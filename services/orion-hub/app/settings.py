@@ -767,6 +767,11 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_LLM_ROUTE: str = Field(
         default="agent", alias="HUB_WORLD_PULSE_READ_LLM_ROUTE"
     )
+    # Bounded retry for transient turn failures, shared by Stage 1 and Stage 2.
+    # 1 == terminal on first failure (pre-2026-09-19 behaviour).
+    HUB_WORLD_PULSE_READ_MAX_ATTEMPTS: int = Field(
+        default=3, ge=1, le=10, alias="HUB_WORLD_PULSE_READ_MAX_ATTEMPTS"
+    )
     # --- World-pulse Stage 2 (Wallet B) -----------------------------------
     # Sibling of Stage 1. Isolated Redis prefix orion:wp_read:wallet_b:*.
     # Default True alongside Stage 1; operator can set false to pause.
@@ -890,6 +895,13 @@ class Settings(BaseSettings):
         default=False,
         alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
     )
+    # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
+    # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
+    # Default on; set false to leave motor kickoff prompts unchanged.
+    HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE: bool = Field(
+        default=True,
+        alias="HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE",
+    )
     # Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-
     # cognition-runs-from-cortex-design.md). True (default) = the curiosity tick
     # still owns scheduling, material, worldview and the prompt, but hands the
@@ -936,6 +948,30 @@ class Settings(BaseSettings):
     # the self-inquiry prompt only; Hub never reads it.
     HUB_CURIOSITY_SANDBOX_REPO_ROOT: str = Field(
         default="/repo", alias="HUB_CURIOSITY_SANDBOX_REPO_ROOT"
+    )
+    # A THIRD line of the same loop: the daily 4-question self-sense eval
+    # (orion/evals/self_sense_runner.py), previously only run by hand
+    # (`make eval-self-sense`) and dark for 9+ days. No graph, no new grants --
+    # just a scheduled version of the same chat turns the host script sends,
+    # scored and published the same way. On by default as of 2026-09-20 --
+    # shipped off in PR #2247, turned on deliberately once that patch was
+    # confirmed live, then matched to the other two curiosity lines' cap of 7
+    # the same day (PR #2256); see services/orion-hub/README.md 4.2.2 for
+    # what it costs.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED"
+    )
+    # Raised 1 -> 7 (PR #2256, 2026-09-20), matching investigation/self-inquiry.
+    # MIN_COOLDOWN_SEC below is the real pacing floor at this cap, not this
+    # number.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP: int = Field(
+        default=7, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP"
+    )
+    # Cut 43200 -> 10800 (3h) the same day so cap 7 is actually reachable
+    # (up to 8 slots/24h) instead of being capped in practice at ~2 by the
+    # old 12h floor.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC: float = Field(
+        default=10800.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
     )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(

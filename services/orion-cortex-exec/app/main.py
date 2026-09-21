@@ -1085,6 +1085,45 @@ async def main() -> None:
                 settings.embodiment_background_interval_sec,
                 settings.embodiment_channel_intent,
             )
+        if verb_listener is not None and float(settings.self_study_inspect_interval_sec) > 0:
+            # Chat lane only (same gate as the verb listener) so the four
+            # replicas don't each append a full snapshot.
+            from .self_study import run_self_repo_inspect
+            from .self_study_refresh import self_study_refresh_loop
+
+            asyncio.create_task(
+                self_study_refresh_loop(
+                    bus_getter=_bus_for_rpc,
+                    source=_source(),
+                    interval_sec=float(settings.self_study_inspect_interval_sec),
+                    run_inspect=run_self_repo_inspect,
+                ),
+                name="self-study-refresh",
+            )
+            logger.info(
+                "self_study_refresh_loop_started interval_sec=%s lane=%s",
+                settings.self_study_inspect_interval_sec,
+                settings.exec_lane,
+            )
+        if verb_listener is not None and float(settings.self_study_reflect_refresh_interval_sec) > 0:
+            # Same chat-lane-only gate as the Layer 1 timer above.
+            from .self_study import run_self_concept_reflect
+            from .self_study_refresh import self_study_reflect_refresh_loop
+
+            asyncio.create_task(
+                self_study_reflect_refresh_loop(
+                    bus_getter=_bus_for_rpc,
+                    source=_source(),
+                    interval_sec=float(settings.self_study_reflect_refresh_interval_sec),
+                    run_reflect=run_self_concept_reflect,
+                ),
+                name="self-study-reflect-refresh",
+            )
+            logger.info(
+                "self_study_reflect_refresh_loop_started interval_sec=%s lane=%s",
+                settings.self_study_reflect_refresh_interval_sec,
+                settings.exec_lane,
+            )
         if settings.rpc_health_publish_enabled:
             global _rpc_health_task
             _rpc_health_task = asyncio.create_task(

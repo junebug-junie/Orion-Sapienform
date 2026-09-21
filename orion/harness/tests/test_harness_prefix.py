@@ -10,6 +10,7 @@ from orion.harness.tests.fixtures import make_grounding_capsule, make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HARNESS_RECENT_TURNS_MAX, HarnessRepairOverlayV1
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
+from orion.schemas.reading import ReadingToolBindingV1
 from orion.schemas.thought import AutonomySliceV1, StanceHarnessSliceV1
 
 
@@ -292,6 +293,110 @@ def test_compile_harness_prefix_self_index_briefs_gated_on_master_flag(
     )
     assert "GitNexus" not in prompt
     assert "Context Mode MCP" not in prompt
+
+
+_READING_BINDING = ReadingToolBindingV1(
+    invocation_context="unified_chat",
+    parent_run_id="turn-1",
+    parent_trace_id="trace-1",
+)
+
+
+def test_compile_harness_prefix_includes_reading_status_brief_when_attached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repro of a live incident: asked for the status of a queued reading
+    recommendation, Orion guessed Postgres table names and grepped the repo
+    for the request_id for 50 steps instead of calling reading_status. The
+    tool already exists (orion.world_pulse_read.mcp_server); this brief tells
+    the motor to reach for it directly."""
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("ORION_GITHUB_OWNER", raising=False)
+    monkeypatch.delenv("ORION_GITHUB_REPO", raising=False)
+    thought = make_thought(imperative="What's the status of the queued read run?")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        reading_binding=_READING_BINDING,
+    )
+    assert "reading_status" in prompt
+    assert "ToolSearch and call reading_status" in prompt
+    assert "do not guess Postgres table names" in prompt
+    assert "queue_position/queue_depth" in prompt
+    assert "13th of 121" in prompt
+
+
+def test_compile_harness_prefix_requires_verifying_infra_before_declaring_it_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repro of a second live incident (2026-09-20): asked about a queued
+    read's status, Orion claimed Hub had no listener on any port while it was
+    in fact up and answering -- confirmed live and never checked. Unlike the
+    reading-specific briefs above, this line lives in the always-on
+    HARNESS_UNIFIED_OPERATOR_BRIEF (not gated on MCP/reading at all): the
+    failure it targets -- asserting infra state without checking -- has
+    nothing to do with reading being enabled, and a narrower, gated copy
+    would have been silent on every non-reading turn."""
+    monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "docker ps for the container, curl its health endpoint" in prompt
+    assert "an assumption is not evidence" in prompt
+
+
+def test_compile_harness_prefix_omits_reading_status_brief_without_master_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without HARNESS_FCC_MCP_ENABLED no MCP config is rendered at all, so
+    the prompt must not advertise a reading_status server that doesn't exist
+    this turn."""
+    monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        reading_binding=_READING_BINDING,
+    )
+    assert "reading_status" not in prompt
+    assert "Reading MCP is available" not in prompt
+
+
+def test_compile_harness_prefix_omits_reading_status_brief_without_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The master MCP flag alone is not enough: a caller that never
+    constructs a reading_binding (e.g. a future non-Unified-Chat harness
+    entry point) gets no orion-reading server, so the brief must not claim
+    one exists either."""
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "reading_status" not in prompt
+    assert "Reading MCP is available" not in prompt
+
+
+def test_compile_harness_prefix_omits_reading_status_brief_when_reading_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reading_only=True turns get an intentionally empty MCP config (built-in
+    WebFetch/WebSearch only -- see orion/fcc/mcp_config.py's render_mcp_config)
+    even with a binding and the master flag on, so the brief must stay off."""
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    thought = make_thought()
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        reading_binding=_READING_BINDING,
+        reading_only=True,
+    )
+    assert "reading_status" not in prompt
+    assert "Reading MCP is available" not in prompt
 
 
 def test_compile_harness_prefix_includes_context_mode_brief_in_hook_mode(

@@ -41,6 +41,13 @@ FINDING_TEXT_CAP = 8000
 class CuriosityRunState(TypedDict, total=False):
     run_id: str
     correlation_id: str
+    # Read by the runner's workflow registry to route a checkpointed thread
+    # back to its own graph on resume, before any graph-specific state is
+    # known (runner.py's `_peek_workflow`). Absent on any checkpoint written
+    # before 2026-09-21 -- the runner treats a missing key as
+    # "curiosity.investigate", this graph's own workflow name, so old
+    # in-flight threads resume exactly as before.
+    workflow: str
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump()
     attempt: int
     # harness_turn
@@ -52,9 +59,11 @@ class CuriosityRunState(TypedDict, total=False):
     hops: list[list[Any]]
     evidence_summary: str | None
     graph_readable: bool
-    # self_inquiry line only: the run's `:SelfDefinition`, bounded, carried on
-    # the finish event for Hub to mirror into self_concept_history.
+    # self_inquiry line only: the run's `:SelfDefinition` or `:LivedAnswer`,
+    # bounded, carried on the finish event for Hub to mirror into
+    # self_concept_history. Lived draws write LivedAnswer (not SelfDefinition).
     self_definition: dict[str, Any] | None
+    lived_answer: dict[str, Any] | None
     # publish_attention_row / journal
     attention_row_published: bool
     journal_entry_id: str | None
@@ -133,6 +142,7 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             "evidence_summary": found.get("evidence_summary"),
             "graph_readable": bool(found.get("graph_readable", False)),
             "self_definition": found.get("self_definition"),
+            "lived_answer": found.get("lived_answer"),
         }
 
     async def publish_attention_row(state: CuriosityRunState) -> dict[str, Any]:
@@ -189,9 +199,18 @@ def finish_detail(state: CuriosityRunState) -> dict[str, Any]:
     outcome = state.get("outcome") or {}
     text = state.get("text") or ""
     brief = state.get("brief") or {}
+    lived = state.get("lived_answer")
+    family = ""
+    if isinstance(lived, dict) and lived:
+        family = str(lived.get("family") or "lived").strip() or "lived"
+    elif str(brief.get("line") or "") == "self_inquiry":
+        # Anatomy self-inquiry writes SelfDefinition; lived writes LivedAnswer.
+        family = "anatomy" if state.get("self_definition") else ""
     return {
         "line": str(brief.get("line") or "investigate"),
         "self_definition": state.get("self_definition"),
+        "lived_answer": lived,
+        "self_question_family": family,
         "reach_out": bool(outcome.get("reach_out")),
         "reach_out_why": str(outcome.get("reach_out_why") or "")[:1000],
         "continue_line": bool(outcome.get("continue_line")),

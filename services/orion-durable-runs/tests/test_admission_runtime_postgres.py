@@ -40,7 +40,7 @@ class Runner:
         self.block = block
         self._bus = None
 
-    def _deps(self):
+    def _curiosity_deps(self):
         async def turn(req):
             self.calls.append(req)
             if self.block:

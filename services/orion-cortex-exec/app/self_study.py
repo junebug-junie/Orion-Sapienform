@@ -247,21 +247,25 @@ SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH = os.getenv("SELF_STUDY_STRUCTURAL_MASS_
 # verb-based default) rather than guessing, same contract normalize_llm_route
 # already documents.
 SELF_STUDY_REFLECT_LLM_ROUTE = os.getenv("SELF_STUDY_REFLECT_LLM_ROUTE", "agent")
-# 480s, not the original 240s (2026-09-05): live-confirmed 240s wasn't
-# enough for a real reflect call against a real self_knowledge_items-sized
-# snapshot (hundreds of concepts, not the small fixture used when 240s was
-# first set) -- two manual end-to-end test calls both failed with
-# self_study_reflect_llm_call_failed (RPC timeout waiting on
-# orion:cortex:result:self-study-reflect:*), one at 240s and one with an
-# outer client budget of 300s (still bounded by this constant internally).
-# Doubling rather than guessing a small bump: SELF_STUDY_REFLECT_LLM_ROUTE
-# defaults to "agent" (see below), already flagged elsewhere in this repo
+# 1400s, not the original 240s (2026-09-05) or the 480s that followed it
+# the same day: live-confirmed 240s wasn't enough for a real reflect call
+# against a real self_knowledge_items-sized snapshot -- two manual
+# end-to-end test calls both failed with self_study_reflect_llm_call_failed
+# (RPC timeout waiting on orion:cortex:result:self-study-reflect:*).
+#
+# Raised 480 -> 1400 (2026-09-21, Juniper direct) after the FIRST genuine
+# autonomous attempt: PR #2261's daily scheduler tried reflect for the
+# first time ever and timed out at exactly 480007.5ms -- a real data point,
+# not a guess. SELF_STUDY_REFLECT_LLM_ROUTE defaults to "agent" (see
+# below), already flagged elsewhere in this repo
 # (reference_agent_lane_27b_vs_chat_lane_35b_speed) as ~2x slower than the
-# chat lane on both prompt processing and generation -- if 480s still isn't
-# enough, the real fix is moving this route off "agent", not raising the
-# timeout again. See self_study.reflect.yaml's own comment for why its
-# verb/step timeout stays larger than this.
-SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "480"))
+# chat lane on both prompt processing and generation. If 1400s still isn't
+# enough, that's the next real data point, and moving this route off
+# "agent" is still the more durable fix than a further bump -- this raise
+# buys one more live attempt's worth of signal, not a final answer. See
+# self_study.reflect.yaml's own comment for why its verb/step timeout
+# stays larger than this.
+SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "1400"))
 
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
@@ -3177,7 +3181,9 @@ async def publish_self_knowledge_items(
 
 async def run_self_repo_inspect(*, bus: Any | None, source: ServiceRef, correlation_id: str) -> SelfRepoInspectResultV1:
     start = time.monotonic()
-    snapshot = build_self_snapshot()
+    # Synchronous repo walk + one Postgres SELECT; off the event loop so a
+    # scheduled refresh can't stall an in-flight chat turn on the same lane.
+    snapshot = await asyncio.to_thread(build_self_snapshot)
     graph_status, journal_status, journal_entry = await publish_self_study_artifacts(
         bus=bus,
         source=source,

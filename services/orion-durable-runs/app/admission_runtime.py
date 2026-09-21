@@ -34,7 +34,7 @@ class AdmissionRuntime:
             widen_after_seconds=settings.widening_after_sec, hysteresis_seconds=settings.widening_hysteresis_sec,
             widening_enabled=settings.widening_enabled, shadow=settings.admission_shadow,
             capacity=PostgresCapacityStore(self.store, ttl_seconds=settings.lease_seconds) if settings.capacity_enabled else None)
-        self.graph = build_admitted_graph(runner._deps(), AdmissionDeps(
+        self.graph = build_admitted_graph(runner._curiosity_deps(), AdmissionDeps(
             self.register, self.store.get_lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,

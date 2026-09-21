@@ -8,11 +8,13 @@ from pathlib import Path
 from orion.field_coherence import check_field_coherence
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.field.pressure import collect_field_channel_pressures
+from orion.field.queue_contention import SOURCE_DURABLE, SOURCE_SEED, ewma_alpha
 from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 from app.anomaly_bus_publish import publish_anomaly_score
 from app.anomaly_scorer import FieldChannelAnomalyScorer
 from app.digestion.diffusion import get_learned_store
+from app.digestion.queue_contention import default_queue_contention_readers
 from app.graph.lattice import load_lattice
 from app.health_monitor import HealthMonitor
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
@@ -261,6 +263,22 @@ class FieldDigesterWorker:
 
         state.generated_at = now
         state.tick_id = new_tick_id()
+        qc_alpha = ewma_alpha(
+            dt_sec=self._settings.receipt_poll_interval_sec,
+            half_life_sec=self._settings.field_queue_contention_half_life_sec,
+        )
+        gateway_base = (self._settings.field_digester_llm_gateway_url or "").rstrip("/")
+        if gateway_base:
+            qc_readers = default_queue_contention_readers(
+                self._store,
+                gateway_admission_url=f"{gateway_base}/admission",
+            )
+        else:
+            # Gateway URL unset: still score SQL sources; omit gateway key.
+            qc_readers = {
+                SOURCE_SEED: lambda: float(self._store.count_world_pulse_seed_pending()),
+                SOURCE_DURABLE: lambda: float(self._store.count_durable_demand_pending()),
+            }
         run_digestion_tick(
             state,
             perturbations=perturbations,
@@ -270,6 +288,9 @@ class FieldDigesterWorker:
             store=self._store,
             significance_window_seconds=self._settings.field_significance_window_seconds,
             significance_check_interval_sec=self._settings.field_significance_check_interval_sec,
+            queue_contention_alpha=qc_alpha,
+            queue_contention_floor=self._settings.field_queue_contention_floor,
+            queue_contention_readers=qc_readers,
         )
 
         for node_id, suspicion in check_field_coherence(state).items():

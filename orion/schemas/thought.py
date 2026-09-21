@@ -104,6 +104,11 @@ class ThoughtEventV1(BaseModel):
     stance_harness_slice: StanceHarnessSliceV1
     grounding_capsule: GroundingCapsuleV1 | None = None
     autonomy_slice: AutonomySliceV1 | None = None
+    # Optional Mind work-shape soft labels copied from stance coloring when
+    # present as non-empty strings. Allow-listed keys only: expected_depth,
+    # cross_cutting, foresight_note, and optionally user_intent. Scalar str
+    # values only — consumers must not treat this as an open bag.
+    mind_work_shape: dict[str, str] | None = None
 
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"
@@ -168,6 +173,16 @@ class StanceReactRequestV1(BaseModel):
     # The turn's existing reservation owns stance inference too. Producers omit
     # this field when absent so ordinary requests keep their previous wire shape.
     resource_lease: ResourceLeaseV1 | None = None
+    # True when the CALLER already runs its own agent-lane-then-chat-lane retry
+    # around the whole turn (today: services/orion-hub/scripts/
+    # endogenous_outreach.py, PR #2163) and orion-thought must not layer a
+    # second fallback on top -- see
+    # orion.thought.bus_listener.execute_stance_react_with_lane_fallback and
+    # orion.hub.turn_orchestrator's stance_req construction, the one producer
+    # that sets this today. Default False: every other llm_route="agent" caller
+    # (autonomous reading, curiosity) has no fallback of its own and needs
+    # orion-thought's.
+    caller_handles_lane_fallback: bool = False
 
 
 def __getattr__(name: str) -> object:

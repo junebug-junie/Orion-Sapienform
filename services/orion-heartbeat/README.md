@@ -157,7 +157,9 @@ offline synthetic/replay calibration. Busy-state behavior (`redundant`,
   `events_dropped_queue_full`/`events_skipped_*`), ensemble size and seeds
   (`n_trajectories`/`seeds`, for forensic replay), and substrate health
   (`max_bond`/`norm`, aggregated across all trajectories).
-- `GET /h1` — latest ensemble H1 result: `mean_ratio`/`std_ratio` across all
-  N trajectories, `tick_count`, the seeds that produced this reading, and an
-  explicit verdict (`redundant` / `concentrated` / `mixed`) — see
-  Configuration above for threshold-validation status.
+- `GET /h1` — latest ensemble H1 result. Headline proprioception:
+  `dark_seats` (organs silent in the last 64 absorbs), `smear`/`smeared`
+  (far/near entropy on the current profile), `organ_distinctness` (occupancy
+  concentration). Also `verdict`, `mean_ratio`/`std_ratio` (mean saturates
+  under real traffic — secondary), `bulk_penetration_depth`, `tick_count`,
+  and the seeds that produced this reading.

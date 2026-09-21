@@ -9,6 +9,7 @@ from typing import Any, Sequence
 from orion.schemas.reading import ReadingRequestedV1
 from orion.world_pulse_read.urls import validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
+from orion.world_pulse_read.retry import FailureOutcome, is_transient_failure
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
@@ -39,7 +40,9 @@ create table if not exists world_pulse_read_seed (
     stage2_claimed_at timestamptz null,
     stage2_completed_at timestamptz null,
     stage2_error text null,
-    stage2_trace_id text null
+    stage2_trace_id text null,
+    attempts int not null default 0,
+    stage2_attempts int not null default 0
 )
 """
 
@@ -87,6 +90,16 @@ create index if not exists idx_world_pulse_read_seed_stage2_claim
     on world_pulse_read_seed (stage2_status, priority, handoff_at)
 """
 
+# Mirror of services/orion-sql-db/manual_migration_world_pulse_read_retry_v1.sql
+# (test_world_pulse_read_queue.py::test_retry_migration_matches_inline_sql
+# asserts the two ALTER TABLE bodies stay byte-for-byte identical). `attempts` /
+# `stage2_attempts` count failed turns; see orion/world_pulse_read/retry.py.
+WORLD_PULSE_READ_RETRY_SQL = """
+ALTER TABLE world_pulse_read_seed
+    ADD COLUMN IF NOT EXISTS attempts int NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS stage2_attempts int NOT NULL DEFAULT 0;
+"""
+
 GENERAL_READING_SQL = "-- Additive general reading ingress; retains the existing queue and workers.\n-- Apply after both world_pulse_read migrations, before deploying Hub.\nALTER TABLE world_pulse_read_seed\n    ADD COLUMN IF NOT EXISTS request_id uuid,\n    ADD COLUMN IF NOT EXISTS request_json jsonb,\n    ADD COLUMN IF NOT EXISTS root_request_id uuid,\n    ADD COLUMN IF NOT EXISTS duplicate_of text,\n    ADD COLUMN IF NOT EXISTS stage2_result_json jsonb,\n    ADD COLUMN IF NOT EXISTS landing_at timestamptz;\nALTER TABLE world_pulse_read_seed DROP CONSTRAINT IF EXISTS world_pulse_read_seed_kind_check;\nALTER TABLE world_pulse_read_seed ADD CONSTRAINT world_pulse_read_seed_kind_check\n    CHECK (kind IN ('finding', 'digest_item', 'reading'));\nCREATE UNIQUE INDEX IF NOT EXISTS idx_reading_request_id ON world_pulse_read_seed(request_id);\nCREATE INDEX IF NOT EXISTS idx_reading_active_url ON world_pulse_read_seed(url)\n    WHERE status IN ('pending', 'claimed', 'done');\nCREATE INDEX IF NOT EXISTS idx_reading_root ON world_pulse_read_seed(root_request_id);\n"
 
 INSERT_SQL = """
@@ -110,19 +123,30 @@ ORDER BY created_at, seed_id LIMIT 1
 
 REQUEST_ROW_SQL = "SELECT * FROM world_pulse_read_seed WHERE request_id = $1"
 
+# `attempts ASC` / `stage2_attempts ASC` come before the age tiebreak: at the
+# same priority, a never-tried seed is always claimed ahead of one that has
+# already failed and gone back to `pending`. Deliberate trade-off (favor
+# fresh work over a queue that might be persistently unlucky), but it means a
+# retried row's actual wait time is NOT bounded by anything in this query --
+# only `max_attempts` bounds how many times a given seed can fail, not how
+# long a scheduled retry sits behind a continuously-refilled stream of fresh
+# same-priority seeds. Watch `retries.stage1_pending_retry` /
+# `.stage2_pending_retry` on `/world-pulse-read/api/status` (orion/world_pulse_read/queue.py
+# count_retry_state) for a real starvation pattern before tightening this.
 CLAIM_SQL = """
 UPDATE world_pulse_read_seed
 SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
-    ORDER BY priority ASC, created_at ASC, seed_id ASC
+    ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
 RETURNING seed_id, kind, run_id, url, title, section, item_id, request_json
 """
 
+# Same fresh-before-retried trade-off as CLAIM_SQL above.
 CLAIM_STAGE2_SQL = """
 UPDATE world_pulse_read_seed
 SET stage2_status = 'claimed', stage2_claimed_at = now()
@@ -131,7 +155,7 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
-    ORDER BY priority ASC, handoff_at ASC NULLS LAST, seed_id ASC
+    ORDER BY priority ASC, stage2_attempts ASC, handoff_at ASC NULLS LAST, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -176,8 +200,56 @@ SET status = 'done',
 WHERE seed_id = $1
 """
 
+# Retry-aware failure marks. Every SET expression reads the OLD row, so
+# `attempts + 1` inside the CASE is the post-increment value. A transient
+# reason with attempts left goes straight back to `pending` (claimed_at /
+# completed_at cleared so the row is a normal claim candidate again); anything
+# else is terminal exactly as before. RETURNING lets the caller log which.
+MARK_FAILED_SQL = """
+UPDATE world_pulse_read_seed
+SET attempts = attempts + 1,
+    last_error = $2,
+    status = CASE WHEN $3::boolean AND attempts + 1 < $4::int THEN 'pending' ELSE 'failed' END,
+    claimed_at = CASE WHEN $3::boolean AND attempts + 1 < $4::int THEN NULL ELSE claimed_at END,
+    completed_at = CASE WHEN $3::boolean AND attempts + 1 < $4::int THEN NULL ELSE now() END
+WHERE seed_id = $1
+RETURNING status, attempts
+"""
+
+MARK_STAGE2_FAILED_SQL = """
+UPDATE world_pulse_read_seed
+SET stage2_attempts = stage2_attempts + 1,
+    stage2_error = $2,
+    stage2_trace_id = COALESCE($3, stage2_trace_id),
+    stage2_status = CASE WHEN $4::boolean AND stage2_attempts + 1 < $5::int THEN 'pending' ELSE 'failed' END,
+    stage2_claimed_at = CASE WHEN $4::boolean AND stage2_attempts + 1 < $5::int THEN NULL ELSE stage2_claimed_at END,
+    stage2_completed_at = CASE WHEN $4::boolean AND stage2_attempts + 1 < $5::int THEN NULL ELSE now() END
+WHERE seed_id = $1
+RETURNING stage2_status, stage2_attempts
+"""
+
 COUNT_BY_STATUS_SQL = """
 SELECT status, count(*)::int AS n FROM world_pulse_read_seed GROUP BY status
+"""
+
+# "exhausted" (`stage1_exhausted` / `stage2_exhausted`) is NOT every terminal
+# `failed` row -- it is specifically `attempts >= max_attempts`: a row that
+# burned through its whole retry budget on repeated transient failures. A
+# seed that failed non-transiently on its very first try (a bad seed --
+# schema rejection, bad URL, unparseable JSON) is `status='failed'` with
+# `attempts=1` and is deliberately NOT counted here, because that failure was
+# never eligible for a retry in the first place; counting it as "exhausted"
+# would make a healthy first-attempt reject look identical to a burned-out
+# GPU-outage backlog. Use COUNT_BY_STATUS_SQL / COUNT_BY_STAGE2_STATUS_SQL's
+# plain `failed` count for "how many rows are dead", and this for "how many
+# of those spent their whole retry budget getting there".
+COUNT_RETRIES_SQL = """
+SELECT count(*) FILTER (WHERE status = 'pending' AND attempts > 0)::int AS stage1_pending_retry,
+       count(*) FILTER (WHERE status = 'done' AND stage2_status = 'pending'
+                          AND stage2_attempts > 0)::int AS stage2_pending_retry,
+       count(*) FILTER (WHERE status = 'failed' AND attempts >= $1)::int AS stage1_exhausted,
+       count(*) FILTER (WHERE stage2_status = 'failed' AND stage2_attempts >= $1)::int AS stage2_exhausted
+FROM world_pulse_read_seed
 """
 
 COUNT_BY_STAGE2_STATUS_SQL = """
@@ -215,6 +287,7 @@ async def ensure_seed_queue_schema(conn: Any) -> None:
     await conn.execute(ENSURE_STAGE2_TRACE_SQL)
     await conn.execute(ENSURE_STAGE2_INDEX_SQL)
     await conn.execute(GENERAL_READING_SQL)
+    await conn.execute(WORLD_PULSE_READ_RETRY_SQL)
 
 
 def request_for_seed(seed: WorldPulseReadSeedV1) -> ReadingRequestedV1:
@@ -306,17 +379,51 @@ async def reading_status(conn: Any, request_id: UUID) -> dict[str, Any]:
         status = "started"
     handoff = _json_object(row.get("handoff_json"))
     result = _json_object(row.get("stage2_result_json"))
+    queue_position: int | None = None
+    queue_depth: int | None = None
+    if status == "queued":
+        queue_position, queue_depth = await _stage1_queue_position(conn, row)
     return {
         "request_id": str(request_id), "status": status,
         "request": _json_object(own["request_json"]),
         "seed_id": own["seed_id"], "duplicate_of": own["duplicate_of"],
         "stage1_status": s1, "stage2_status": s2,
         "stage1_trace_id": row["trace_id"], "stage2_trace_id": row["stage2_trace_id"],
+        "stage1_attempts": int(row.get("attempts") or 0),
+        "stage2_attempts": int(row.get("stage2_attempts") or 0),
         "summary": (result.get("summary") or handoff.get("what_i_learned") or "")[:6000],
         "error": row["stage2_error"] or row["last_error"],
         "evidence_url": row["url"],
         "landing_at": row["landing_at"].isoformat() if row["landing_at"] else None,
+        # Only meaningful while status == "queued" (stage 1 not yet claimed);
+        # null otherwise rather than a stale/misleading number.
+        "queue_position": queue_position,
+        "queue_depth": queue_depth,
     }
+
+
+# Same ordering as CLAIM_SQL's claim candidate: priority ASC, attempts ASC,
+# created_at ASC, seed_id ASC. Counting rows strictly ahead of this one in
+# that order (+1) gives the row's real 1-indexed place in line -- not just
+# "queued", which says nothing about whether that means seconds or days
+# (see the wallet-cap comment above REQUEST_ROW_SQL: a retry's wait time is
+# bounded only by max_attempts, never by time, and a continuously-refilled
+# stream of same-priority fresh seeds can queue-jump it indefinitely).
+STAGE1_QUEUE_POSITION_SQL = """
+SELECT
+    (SELECT count(*) FROM world_pulse_read_seed
+     WHERE status = 'pending'
+       AND (priority, attempts, created_at, seed_id) < ($1, $2, $3, $4)) + 1 AS position,
+    (SELECT count(*) FROM world_pulse_read_seed WHERE status = 'pending') AS depth
+"""
+
+
+async def _stage1_queue_position(conn: Any, row: Any) -> tuple[int, int]:
+    pos_row = await conn.fetchrow(
+        STAGE1_QUEUE_POSITION_SQL,
+        row["priority"], row["attempts"], row["created_at"], row["seed_id"],
+    )
+    return int(pos_row["position"]), int(pos_row["depth"])
 
 
 def _json_object(raw: Any) -> dict[str, Any]:
@@ -403,16 +510,30 @@ async def mark_seed_done(
     await conn.execute(MARK_DONE_SQL, seed_id, trace_id, _handoff_json_text(handoff))
 
 
-async def mark_seed_failed(conn: Any, seed_id: str, *, error: str) -> None:
-    await conn.execute(
-        """
-        UPDATE world_pulse_read_seed
-        SET status = 'failed', last_error = $2, completed_at = now()
-        WHERE seed_id = $1
-        """,
+def _failure_outcome(row: Any, *, status_key: str, attempts_key: str) -> FailureOutcome:
+    if not row:
+        # RETURNING found no row (seed vanished under us) -- report terminal so
+        # a caller never logs "retry scheduled" for an update that did nothing.
+        return FailureOutcome(status="failed", attempts=0)
+    return FailureOutcome(status=str(row[status_key]), attempts=int(row[attempts_key] or 0))
+
+
+async def mark_seed_failed(
+    conn: Any, seed_id: str, *, error: str, max_attempts: int = 1
+) -> FailureOutcome:
+    """Stage 1 failure. With ``max_attempts > 1`` and a transient ``error``
+    (see :func:`orion.world_pulse_read.retry.is_transient_failure`) the row
+    returns to ``pending`` with ``attempts`` bumped and ``last_error`` kept as
+    the last reason; otherwise it is terminal exactly as before. The default
+    ``max_attempts=1`` is the legacy no-retry behaviour."""
+    row = await conn.fetchrow(
+        MARK_FAILED_SQL,
         seed_id,
         error[:2000],
+        is_transient_failure(error),
+        max(1, int(max_attempts)),
     )
+    return _failure_outcome(row, status_key="status", attempts_key="attempts")
 
 
 async def mark_seed_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
@@ -469,20 +590,19 @@ async def mark_stage2_failed(
     *,
     error: str,
     stage2_trace_id: str | None = None,
-) -> None:
-    await conn.execute(
-        """
-        UPDATE world_pulse_read_seed
-        SET stage2_status = 'failed',
-            stage2_error = $2,
-            stage2_trace_id = COALESCE($3, stage2_trace_id),
-            stage2_completed_at = now()
-        WHERE seed_id = $1
-        """,
+    max_attempts: int = 1,
+) -> FailureOutcome:
+    """Stage 2 sibling of :func:`mark_seed_failed` -- same retry rule on
+    ``stage2_status`` / ``stage2_attempts`` / ``stage2_error``."""
+    row = await conn.fetchrow(
+        MARK_STAGE2_FAILED_SQL,
         seed_id,
         error[:2000],
         stage2_trace_id,
+        is_transient_failure(error),
+        max(1, int(max_attempts)),
     )
+    return _failure_outcome(row, status_key="stage2_status", attempts_key="stage2_attempts")
 
 
 def _zero_counts(keys: Sequence[str]) -> dict[str, int]:
@@ -506,6 +626,28 @@ async def count_stage2_by_status(conn: Any) -> dict[str, int]:
         key = str(row["stage2_status"] or "")
         if key in out:
             out[key] = int(row["n"])
+    return out
+
+
+async def count_retry_state(conn: Any, *, max_attempts: int) -> dict[str, int]:
+    """Rows currently waiting on a retry, and rows that ran out of attempts.
+
+    "Exhausted" means burned through the whole retry budget, not "any failed
+    row" -- see the comment on ``COUNT_RETRIES_SQL`` above for the exact
+    distinction this JSON's ``stage1_exhausted``/``stage2_exhausted`` keys
+    carry into the ``/world-pulse-read/api/status`` route.
+    """
+    out = {
+        "max_attempts": max(1, int(max_attempts)),
+        "stage1_pending_retry": 0,
+        "stage2_pending_retry": 0,
+        "stage1_exhausted": 0,
+        "stage2_exhausted": 0,
+    }
+    row = await conn.fetchrow(COUNT_RETRIES_SQL, out["max_attempts"])
+    if row:
+        for key in ("stage1_pending_retry", "stage2_pending_retry", "stage1_exhausted", "stage2_exhausted"):
+            out[key] = int(row[key] or 0)
     return out
 
 

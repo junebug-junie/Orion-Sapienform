@@ -141,6 +141,25 @@ def test_orion_origin_instructs_soft_work_shape_fields() -> None:
     assert "expected_depth" in system
     assert "cross_cutting" in system
     assert "foresight_note" in system
+    assert "REQUIRED" in system or "MUST fill" in system
+    # Fail-open: LLM omitted depth → deep (use Cursor path)
+    assert captured["result"].get("expected_depth") == "deep"
+
+
+def test_orion_origin_preserves_explicit_shallow() -> None:
+    payload = dict(_MINIMAL_STANCE)
+    payload["expected_depth"] = "shallow"
+    captured = _run_handoff(utterance_origin="orion", payload=payload)
+    assert captured["result"].get("expected_depth") == "shallow"
+
+
+def test_orion_origin_unknown_depth_becomes_deep() -> None:
+    from app.stance_handoff import ensure_orion_expected_depth
+
+    assert ensure_orion_expected_depth({})["expected_depth"] == "deep"
+    assert ensure_orion_expected_depth({"expected_depth": "unknown"})["expected_depth"] == "deep"
+    assert ensure_orion_expected_depth({"expected_depth": "deep"})["expected_depth"] == "deep"
+    assert ensure_orion_expected_depth({"expected_depth": "shallow"})["expected_depth"] == "shallow"
 
 
 def test_juniper_origin_omits_soft_work_shape_instruction() -> None:
@@ -149,3 +168,5 @@ def test_juniper_origin_omits_soft_work_shape_instruction() -> None:
     assert "expected_depth" not in system
     assert "cross_cutting" not in system
     assert "foresight_note" not in system
+    # Juniper path must not invent Orion hire depth
+    assert captured["result"].get("expected_depth") is None

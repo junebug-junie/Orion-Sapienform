@@ -127,6 +127,15 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
 
 
 def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
+    """Prompt and schema must agree, the way Stage 1's prompt already does.
+
+    Before this the prompt said "form/test priors, note hops" but listed only
+    summary/need_stage1_urls, so the model returned its priors, tests and
+    hops under keys the ``extra="forbid"`` schema then rejected -- 3 of the
+    last 8 live Stage 2 completions (2026-09-14/15) were thrown away for
+    obeying the instruction. The skeleton below lists exactly the fields
+    ``WorldPulseReadStage2ResultV1`` accepts.
+    """
     payload = handoff.model_dump(mode="json")
     return (
         "You are continuing a deliberate source reading. Start from this Stage 1 handoff "
@@ -134,20 +143,66 @@ def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str
         "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors, note hops, and return ONE "
         "JSON object — no prose outside a fenced JSON block.\n"
         f"handoff={payload}\n"
-        "Fields: summary (non-empty), need_stage1_urls (list of http(s) URLs "
-        "that still need a heavy Stage 1 read, or empty), "
-        f"trace_id={trace_id!r}, created_at (ISO-8601 UTC), "
-        f"seed_id={handoff.seed_ref.seed_id!r}, "
-        "producer_hint=world_pulse_read_stage2."
+        "Required JSON shape (use exactly these top-level keys; anything else is dropped):\n"
+        "{\n"
+        '  "summary": "non-empty prose",\n'
+        '  "priors_tested": [{"claim_ref": "a Stage 1 claim", '
+        '"verdict": "supported|revised|refuted|untested", "why": "string"}],\n'
+        '  "candidate_priors": [{"claim": "new or revised claim", "confidence": 0.5}],\n'
+        '  "concept_candidates": [{"label": "string", "definition": "optional", "link_hints": ["string"]}],\n'
+        '  "open_threads": ["string"],\n'
+        '  "hops": ["what you fetched/searched and what came back"],\n'
+        '  "need_stage1_urls": ["http(s) URLs that still need a heavy Stage 1 read, or empty"],\n'
+        f'  "trace_id": {trace_id!r},\n'
+        '  "created_at": "ISO-8601 UTC",\n'
+        f'  "seed_id": {handoff.seed_ref.seed_id!r}\n'
+        "}\n"
+        "candidate_priors MUST be objects with claim (not bare strings). "
+        "priors_tested MUST be objects with claim_ref. producer_hint is forced server-side."
     )
 
 
-def _as_stage2_result(raw: Any, *, fallback_trace: str, seed_id: str) -> WorldPulseReadStage2ResultV1:
+_STAGE2_RESULT_FIELDS = frozenset(WorldPulseReadStage2ResultV1.model_fields)
+
+
+def _split_unknown_top_level_keys(parsed: dict) -> tuple[dict, list[str]]:
+    """Separate the model's known fields from anything it invented at the top
+    level. Pure; the caller decides what to log. Nested shapes are left to
+    the schema's own coercers/validators."""
+    unknown = sorted(k for k in parsed if k not in _STAGE2_RESULT_FIELDS)
+    known = {k: v for k, v in parsed.items() if k in _STAGE2_RESULT_FIELDS}
+    return known, unknown
+
+
+def _as_stage2_result(
+    raw: Any,
+    *,
+    fallback_trace: str,
+    seed_id: str,
+    on_dropped: Optional[Callable[[list[str]], None]] = None,
+) -> WorldPulseReadStage2ResultV1:
+    """Validate the model's JSON into the Stage 2 result.
+
+    Unknown TOP-LEVEL keys are dropped with a single WARNING naming them (and
+    ``on_dropped`` is called so the loop can count) instead of failing the
+    turn. This is an explicit, logged drop -- not ``extra="ignore"`` -- so
+    prompt/schema drift stays visible in the logs rather than silently
+    vanishing (see the repo's history on silent ignores).
+    """
     if isinstance(raw, WorldPulseReadStage2ResultV1):
         return raw
     if not isinstance(raw, dict):
         raise ValueError("stage2_result_not_object")
-    parsed = dict(raw)
+    parsed, unknown = _split_unknown_top_level_keys(dict(raw))
+    if unknown:
+        logger.warning(
+            "world_pulse_read_stage2_unknown_keys_dropped seed=%s n=%s keys=%s",
+            seed_id,
+            len(unknown),
+            ",".join(unknown),
+        )
+        if on_dropped is not None:
+            on_dropped(unknown)
     parsed.setdefault("trace_id", fallback_trace)
     parsed.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     parsed.setdefault("seed_id", seed_id)
@@ -170,6 +225,7 @@ class WorldPulseReadStage2Pipeline:
         llm_route: str = "",
         timezone_name: str = "UTC",
         max_round_trips: int = 5,
+        max_attempts: int = 1,
         wallet_a_daily_cap: int = 6,
         wallet_a_min_cooldown_sec: float = 1800.0,
         wallet_a_window_start_hour: int = 0,
@@ -191,6 +247,9 @@ class WorldPulseReadStage2Pipeline:
         self._fcc_model_label = fcc_model_for_route(self.llm_route) if self.llm_route else None
         self.timezone_name = timezone_name
         self.max_round_trips = max(0, int(max_round_trips))
+        # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
+        # 1 == legacy terminal-on-first-failure.
+        self.max_attempts = max(1, int(max_attempts))
         self.wallet_a_daily_cap = int(wallet_a_daily_cap)
         self.wallet_a_min_cooldown_sec = float(wallet_a_min_cooldown_sec)
         self.wallet_a_window_start_hour = int(wallet_a_window_start_hour)
@@ -212,6 +271,9 @@ class WorldPulseReadStage2Pipeline:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self.last_round_trips: int = 0
+        # Running count of unknown top-level keys dropped from model output
+        # (each is also a WARNING log line naming the keys).
+        self.unknown_keys_dropped_total: int = 0
 
     @property
     def effective_cooldown_sec(self) -> float:
@@ -237,11 +299,12 @@ class WorldPulseReadStage2Pipeline:
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "world_pulse_read_stage2 started tick=%ss cooldown=%ss cap=%s round_trips=%s",
+            "world_pulse_read_stage2 started tick=%ss cooldown=%ss cap=%s round_trips=%s max_attempts=%s",
             self.tick_interval_sec,
             round(self.effective_cooldown_sec),
             self.daily_cap,
             self.max_round_trips,
+            self.max_attempts,
         )
 
     async def stop(self) -> None:
@@ -339,6 +402,7 @@ class WorldPulseReadStage2Pipeline:
                 await self._stage2_pass(handoff),
                 fallback_trace=str(uuid4()),
                 seed_id=claim.seed.seed_id,
+                on_dropped=self._note_dropped_keys,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -415,8 +479,23 @@ class WorldPulseReadStage2Pipeline:
                 older,
             )
 
+    def _note_dropped_keys(self, keys: list[str]) -> None:
+        self.unknown_keys_dropped_total += len(keys)
+
     async def _fail_stage2(self, seed_id: str, error: str) -> None:
-        await self._with_conn(lambda conn: mark_stage2_failed(conn, seed_id, error=error))
+        outcome = await self._with_conn(
+            lambda conn: mark_stage2_failed(
+                conn, seed_id, error=error, max_attempts=self.max_attempts
+            )
+        )
+        if outcome is not None and outcome.retry_scheduled:
+            logger.warning(
+                "world_pulse_read_stage2_retry_scheduled seed=%s attempts=%s max=%s reason=%s",
+                seed_id,
+                outcome.attempts,
+                self.max_attempts,
+                error[:_FAIL_REASON_DETAIL_MAX_LEN],
+            )
 
     async def _journal(self, handoff, result) -> None:
         await publish_journal(self._bus, self._source_ref, handoff, result, round_trips=self.last_round_trips)
@@ -504,9 +583,13 @@ class WorldPulseReadStage2Pipeline:
         parsed["trace_id"] = trace_id
         parsed.setdefault("created_at", created_at.isoformat())
         parsed["seed_id"] = handoff.seed_ref.seed_id
-        parsed["producer_hint"] = "world_pulse_read_stage2"
         parsed["request"] = request_for_seed(handoff.seed_ref).model_dump(mode="json")
-        return WorldPulseReadStage2ResultV1.model_validate(parsed)
+        return _as_stage2_result(
+            parsed,
+            fallback_trace=trace_id,
+            seed_id=handoff.seed_ref.seed_id,
+            on_dropped=self._note_dropped_keys,
+        )
 
     async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
         """Real unified-turn generation. Every failure path returns a distinct,

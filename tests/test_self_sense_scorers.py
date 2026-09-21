@@ -4,6 +4,7 @@ No network, no database."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -255,3 +256,15 @@ def test_lived_answers_from_history_rows_normalises_concept_ids() -> None:
     assert len(answers) == 1
     assert answers[0]["question_id"] == WHO_MATTERS_QUESTION_ID
     assert answers[0]["content"] == "Juniper matters most."
+
+
+def test_hub_image_ships_field_topology_self_sense_imports() -> None:
+    """Curiosity ticks import self_sense before an investigation. That import
+    reads config/field/orion_field_topology.v1.yaml from parents[2], which is
+    /app in the Hub image. The Dockerfile must copy that directory in."""
+    dockerfile = (
+        Path(__file__).resolve().parents[1] / "services" / "orion-hub" / "Dockerfile"
+    )
+    text = dockerfile.read_text(encoding="utf-8")
+    assert "COPY config/field /app/config/field" in text
+    assert "athena" in FIELD_NODE_IDS

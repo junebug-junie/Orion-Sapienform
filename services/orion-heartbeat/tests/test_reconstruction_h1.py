@@ -84,6 +84,49 @@ def test_compute_h1_ensemble_reports_every_trajectory_ratio() -> None:
     assert result.std_ratio == pytest.approx(statistics.pstdev(result.ratios))
 
 
+def test_compute_h1_ensemble_reports_proprioception_from_fire_counts() -> None:
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import compute_h1_ensemble
+    from app.substrate.routing import ORGAN_SITE_MAP
+
+    ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=2), base_seed=400)
+    fire_counts = {name: 0 for name in ORGAN_SITE_MAP}
+    fire_counts["orion-cortex-exec"] = 8
+    result = compute_h1_ensemble(ensemble, fire_counts=fire_counts)
+
+    assert result.dark_seats == [
+        "orion-biometrics",
+        "orion-bus",
+        "orion-cortex-orch",
+        "orion-hub",
+    ]
+    assert result.organ_fire_counts["orion-cortex-exec"] == 8
+    assert result.organ_distinctness == pytest.approx(1.0)
+    from app.substrate.proprioception import profile_smear
+
+    profiles = [traj.entropy_profile() for traj in ensemble.trajectories]
+    mean_profile = [
+        float(sum(p[i] for p in profiles) / len(profiles)) for i in range(len(profiles[0]))
+    ]
+    expected_smear, expected_smeared = profile_smear(mean_profile)
+    if expected_smear is None:
+        assert result.smear is None
+    else:
+        assert result.smear == pytest.approx(expected_smear)
+    assert result.smeared is expected_smeared
+
+
+def test_compute_h1_ensemble_untracked_fires_leave_occupancy_absent() -> None:
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import compute_h1_ensemble
+
+    ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=2), base_seed=401)
+    result = compute_h1_ensemble(ensemble)
+    assert result.dark_seats == []
+    assert result.organ_fire_counts == {}
+    assert result.organ_distinctness is None
+
+
 def test_compute_h1_ensemble_reports_bulk_penetration_depth() -> None:
     from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
     from app.substrate.reconstruction import bulk_penetration_depth, compute_h1_ensemble

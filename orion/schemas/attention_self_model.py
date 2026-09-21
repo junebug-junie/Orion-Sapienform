@@ -207,3 +207,11 @@ class AttentionSelfModelV1(BaseModel):
     heartbeat_bulk_penetration_depth: float | None = Field(default=None, ge=0.0, le=1.0)
     heartbeat_verdict: Literal["redundant", "concentrated", "mixed"] | None = None
     heartbeat_basis: str = ""
+    # Proprioception (2026-09-20): who is dark, whether coupling is smeared,
+    # whether seats still look distinct. Mean_ratio stays for compatibility
+    # but is not the headline — it saturates under real traffic.
+    heartbeat_dark_seats: list[str] = Field(default_factory=list)
+    heartbeat_organ_fire_counts: dict[str, int] = Field(default_factory=dict)
+    heartbeat_organ_distinctness: float | None = Field(default=None, ge=0.0, le=1.0)
+    heartbeat_smear: float | None = Field(default=None, ge=0.0)
+    heartbeat_smeared: bool | None = None

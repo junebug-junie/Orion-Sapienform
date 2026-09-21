@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from .routing import BOND_DIM, BOUNDARY_BULK_CUT, BOUNDARY_SITES, N_SITES
 from .mps_state import HeartbeatSubstrate
 from .ensemble import EnsembleH1ResultV1, EnsembleSubstrate
+from .proprioception import compute_proprioception
 
 # Confirmed via quimb 1.14.0's own source (MatrixProductState.entropy() ->
 # `-sum(S * log2(S))` over the Schmidt values at the cut): log base 2
@@ -172,15 +173,20 @@ def compute_h1(substrate: HeartbeatSubstrate) -> H1ResultV1:
     )
 
 
-def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
-    """Ensemble-level H1 reading: mean/std at the boundary/bulk cut, bulk
-    penetration depth, and a multi-signal verdict.
+def compute_h1_ensemble(
+    ensemble: EnsembleSubstrate,
+    fire_counts: dict[str, int] | None = None,
+) -> EnsembleH1ResultV1:
+    """Ensemble-level H1 reading plus tick-level proprioception.
 
     Verdict uses classify_ensemble_verdict() -- mean_ratio alone is
     capacity-saturated under real traffic; std_ratio (trajectory disagreement)
     and bulk_penetration_depth (profile shape) discriminate when cut-5 cannot.
-    Bands calibrated from 48h live AST/HOT (2026-09-01, n=5574); re-validate
-    via scripts/analysis/measure_heartbeat_ensemble_calibration.py before retuning.
+    Dark seats / distinctness come from ``fire_counts`` (who talked). Smear
+    is far/near of the current mean entropy profile. ``fire_counts=None``
+    leaves occupancy honestly absent. Bands calibrated from 48h live AST/HOT
+    (2026-09-01, n=5574); re-validate via
+    scripts/analysis/measure_heartbeat_ensemble_calibration.py before retuning.
     """
     # Single ratios() call, not ratios() + std_ratio() (std_ratio() would
     # recompute ratios() -- and hence every trajectory's entropy_profile() --
@@ -205,6 +211,8 @@ def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
         bulk_penetration_depth=bulk_depth,
     )
 
+    proprio = compute_proprioception(fire_counts=fire_counts, mean_profile=mean_profile)
+
     return EnsembleH1ResultV1(
         mean_ratio=mean_ratio,
         std_ratio=std_ratio,
@@ -213,6 +221,11 @@ def compute_h1_ensemble(ensemble: EnsembleSubstrate) -> EnsembleH1ResultV1:
         seeds=list(ensemble.seeds),
         ratios=[float(r) for r in ratios],
         bulk_penetration_depth=bulk_depth,
+        dark_seats=list(proprio.dark_seats),
+        organ_fire_counts=dict(proprio.organ_fire_counts),
+        organ_distinctness=proprio.organ_distinctness,
+        smear=proprio.smear,
+        smeared=proprio.smeared,
     )
 
 

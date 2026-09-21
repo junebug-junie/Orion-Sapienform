@@ -6,14 +6,14 @@ attention arc described in
 heartbeat-discrimination-design.md``:
 
 1. **The organ** -- ``orion-heartbeat``'s N-trajectory tensor-network
-   dissipation ensemble (``/h1`` + ``/health``): ensemble mean ratio, the
-   per-trajectory ratios behind it, cross-trajectory spread, the verdict
-   band edges it classifies with, intake/backpressure counters, and the real
-   ``bus_synaptic``-driven reheat inputs the dissipation loop last used.
+   dissipation ensemble (``/h1`` + ``/health``): dark seats, smear,
+   organ distinctness, verdict, plus the older mean/std/bulk numbers,
+   intake/backpressure counters, and the real ``bus_synaptic``-driven
+   reheat inputs the dissipation loop last used.
 2. **The consumer** -- AST/HOT's ``AttentionSelfModelV1``, read from the
    durable ``substrate_attention_self_model`` table that
    ``orion-substrate-runtime``'s ``_attention_self_model_tick()`` writes,
-   including the three ``heartbeat_*`` fields that carry (1) into it.
+   including the ``heartbeat_*`` fields that carry (1) into it.
 3. **The problem the arc is about** -- each Active-Inference domain's live
    ``prediction_error``, read straight off its ``node:substrate.<domain>``
    node in the substrate graph. This is the same value
@@ -165,6 +165,12 @@ def parse_predicted_shift_domain(predicted_shift: str | None) -> str | None:
     return candidate
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
 def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Roll a window of persisted AttentionSelfModelV1 payloads into the two
     distributions the design doc's acceptance checks are stated in terms of.
@@ -225,6 +231,19 @@ def summarize_history(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     "heartbeat_bulk_penetration_depth"
                 ),
                 "heartbeat_verdict": verdict if isinstance(verdict, str) else None,
+                "heartbeat_dark_seats": _string_list(payload.get("heartbeat_dark_seats")),
+                "heartbeat_organ_fire_counts": (
+                    payload.get("heartbeat_organ_fire_counts")
+                    if isinstance(payload.get("heartbeat_organ_fire_counts"), dict)
+                    else {}
+                ),
+                "heartbeat_smear": payload.get("heartbeat_smear"),
+                "heartbeat_smeared": payload.get("heartbeat_smeared")
+                if isinstance(payload.get("heartbeat_smeared"), bool)
+                else None,
+                "heartbeat_organ_distinctness": payload.get(
+                    "heartbeat_organ_distinctness"
+                ),
                 "prediction_error_confidence": payload.get("prediction_error_confidence"),
                 "predicted_shift_domain": domain,
             }
@@ -556,6 +575,22 @@ def snapshot() -> dict[str, Any]:
         "self_model_has_heartbeat": bool(self_model and self_model.get("heartbeat_verdict")),
         "self_model_mean_ratio": (self_model or {}).get("heartbeat_mean_ratio"),
         "live_mean_ratio": (live_h1 or {}).get("mean_ratio"),
+        "self_model_dark_seats": _string_list(
+            (self_model or {}).get("heartbeat_dark_seats")
+        ),
+        "self_model_organ_fire_counts": (
+            (self_model or {}).get("heartbeat_organ_fire_counts")
+            if isinstance((self_model or {}).get("heartbeat_organ_fire_counts"), dict)
+            else {}
+        ),
+        "live_dark_seats": _string_list((live_h1 or {}).get("dark_seats")),
+        "live_organ_fire_counts": (
+            (live_h1 or {}).get("organ_fire_counts")
+            if isinstance((live_h1 or {}).get("organ_fire_counts"), dict)
+            else {}
+        ),
+        "self_model_smear": (self_model or {}).get("heartbeat_smear"),
+        "live_smear": (live_h1 or {}).get("smear"),
         "self_model_basis": (self_model or {}).get("heartbeat_basis") or "",
         "live_tick_count": (live_h1 or {}).get("tick_count"),
     }

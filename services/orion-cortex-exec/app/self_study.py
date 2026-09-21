@@ -267,6 +267,20 @@ SELF_STUDY_REFLECT_LLM_ROUTE = os.getenv("SELF_STUDY_REFLECT_LLM_ROUTE", "agent"
 # stays larger than this.
 SELF_STUDY_REFLECT_TIMEOUT_SEC = float(os.getenv("SELF_STUDY_REFLECT_TIMEOUT_SEC", "1400"))
 
+# GPU2 elastic-burst arc (2026-09-21), step 3 of 3: when true,
+# _call_self_study_reflect_llm dispatches the LLM call as a durable run
+# (workflow="self_study.reflect") instead of a direct verb-dispatch RPC, so
+# it can request GPU2 elastic-burst capacity the same way
+# investigation/self-inquiry/self-sense-eval already do -- the actual root
+# cause the arc traced live 2026-09-20/21: reflect and self-sense-eval both
+# queuing behind investigation's long multi-tool turns on the agent lane's
+# single (--parallel 1) llama-server slot. Off by default: turn on
+# deliberately once orion-durable-runs' reflect workflow is confirmed live,
+# not via a blanket .env sync from this template. A failed/unconfirmed
+# dispatch falls back to the direct RPC unchanged -- same fallback
+# discipline investigation/self-sense-eval's own durable dispatch has.
+SELF_STUDY_REFLECT_DURABLE_ENABLED = os.getenv("SELF_STUDY_REFLECT_DURABLE_ENABLED", "false").strip().lower() == "true"
+
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "services/orion-cortex-exec/app/settings.py",
@@ -1393,10 +1407,168 @@ async def _call_self_study_reflect_llm(
     concepts: Sequence[SelfInducedConceptV1],
     correlation_id: str,
 ) -> list[dict[str, Any]] | None:
-    """The real Layer 3 LLM call: one CortexClientRequest round trip through
-    cortex-orch, same public contract journal.compose and every other
-    external CortexClientRequest caller (e.g. orion-actions's `_run_journal`)
-    already use -- not a reach into this service's own executor.py internals.
+    """Layer 3's LLM call. Tries durable dispatch first when
+    `SELF_STUDY_REFLECT_DURABLE_ENABLED` is on (GPU2 elastic-burst arc,
+    2026-09-21, step 3 of 3): submits `workflow="self_study.reflect"`
+    through cortex-orch's already-generic durable-run ingress (the exact
+    same `context.metadata.durable_run` mechanism investigation/self-inquiry/
+    self-sense-eval already use), then waits SYNCHRONOUSLY for that run's
+    completion event -- same external contract as always
+    (`list[dict] | None`), because everything downstream of this call
+    (`_finding_from_llm_item`'s evidence-chain construction, the journal and
+    `self_concept_history` writes) needs the real `snapshot`/`concepts`
+    objects this function already has in scope and stays unmoved, cortex-exec
+    side, synchronous, exactly as it always was.
+
+    A failed/unconfirmed dispatch falls back to `_call_self_study_reflect_llm_direct`
+    (the ORIGINAL implementation, unchanged) -- same fallback discipline
+    investigation/self-sense-eval's own durable dispatch has. Once a dispatch
+    IS accepted, this does NOT also fall back on a llm_call_failed durable
+    outcome -- that would double-spend the reflect timeout budget on two
+    separate attempts for one logical reflection."""
+    if SELF_STUDY_REFLECT_DURABLE_ENABLED and bus is not None:
+        dispatched, run_id = await _dispatch_reflect_durable_run(
+            bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id,
+        )
+        if dispatched:
+            return await _await_reflect_durable_completion(bus=bus, run_id=run_id)
+        logger.warning(
+            "self_study_reflect_durable_dispatch_fell_back corr=%s -- running the direct RPC", correlation_id
+        )
+    return await _call_self_study_reflect_llm_direct(
+        bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id,
+    )
+
+
+async def _dispatch_reflect_durable_run(
+    *,
+    bus: Any,
+    source: ServiceRef,
+    snapshot: SelfSnapshotV1,
+    concepts: Sequence[SelfInducedConceptV1],
+    correlation_id: str,
+) -> tuple[bool, str]:
+    """Hand the reflect LLM call to cortex as a durable run -- same
+    envelope-build/RPC/decode/accepted-check shape
+    `curiosity_investigation.py`'s `_dispatch_via_cortex` uses, a small local
+    copy rather than a cross-service import (this service has no reason to
+    depend on Hub's script module for one RPC shape). True only when cortex
+    replied `accepted`; the run_id is returned either way so the caller can
+    await it."""
+    from orion.schemas.durable_run import CuriosityRunBriefV1, DurableRunRequestV1
+    from orion.schemas.resource_admission import ResourceRequirementV1
+
+    run_id = f"self-study-reflect-{uuid4().hex[:16]}"
+    llm_route = normalize_llm_route(SELF_STUDY_REFLECT_LLM_ROUTE) or ""
+    request = DurableRunRequestV1(
+        run_id=run_id,
+        workflow="self_study.reflect",
+        correlation_id=correlation_id,
+        brief=CuriosityRunBriefV1(
+            # Unused by the reflect graph (it reads self_study_reflect_input)
+            # but required by the schema -- kept honest rather than a
+            # fabricated investigation-shaped value.
+            prompt=f"Reflect on self-study snapshot {snapshot.snapshot_id}.",
+            session_id="self-study-reflect",
+            timeout_sec=SELF_STUDY_REFLECT_TIMEOUT_SEC,
+            line="reflect",
+            self_study_reflect_input=_self_study_reflect_input(snapshot, concepts),
+            llm_route=llm_route,
+        ),
+        admission=ResourceRequirementV1(
+            allow_elastic_activation=True,
+            preferred_lane=llm_route or "agent",
+            resource=f"llm.route.{llm_route or 'agent'}",
+        ),
+    )
+    payload = {
+        "mode": "brain",
+        "context": {
+            "messages": [{"role": "user", "content": "self_study.reflect"}],
+            "user_message": "self_study.reflect",
+            "session_id": "self-study-reflect",
+            "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
+        },
+    }
+    reply_channel = f"orion:cortex:result:self-study-reflect-kickoff:{run_id}"
+    envelope = BaseEnvelope(
+        kind="cortex.orch.request",
+        source=source,
+        correlation_id=_as_envelope_correlation_id(f"self-study-reflect-kickoff:{run_id}"),
+        reply_to=reply_channel,
+        payload=payload,
+    )
+    try:
+        raw = await bus.rpc_request(CORTEX_ORCH_REQUEST_CHANNEL, envelope, reply_channel=reply_channel, timeout_sec=20.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("self_study_reflect_durable_dispatch_failed run=%s err=%s", run_id, exc)
+        return False, run_id
+    try:
+        decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        result = decoded.envelope.payload if decoded.ok else None
+    except Exception:  # noqa: BLE001
+        result = None
+    status = str((result or {}).get("status") or "")
+    accepted = status == "accepted"
+    logger.info("self_study_reflect_durable_dispatched run=%s corr=%s status=%s", run_id, correlation_id, status or "no_reply")
+    return accepted, run_id
+
+
+async def _await_reflect_durable_completion(*, bus: Any, run_id: str) -> list[dict[str, Any]] | None:
+    """Subscribe to the durable-run state channel and wait for THIS run's
+    completion, bounded by the SAME SELF_STUDY_REFLECT_TIMEOUT_SEC the
+    direct RPC path always used as its deadline. Returns the raw findings
+    list on a real success, or None on failure/timeout/unreadable event --
+    never raises, matching every other branch of this call's contract."""
+    from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DurableRunStateV1
+
+    async def _wait() -> list[dict[str, Any]] | None:
+        async with bus.subscribe(DURABLE_RUN_STATE_CHANNEL) as pubsub:
+            async for msg in bus.iter_messages(pubsub):
+                try:
+                    decoded = bus.codec.decode(msg.get("data"))
+                    if not decoded.ok or decoded.envelope is None:
+                        continue
+                    state = DurableRunStateV1.model_validate(decoded.envelope.payload or {})
+                except Exception:  # noqa: BLE001 -- an unreadable event is not this run's completion
+                    continue
+                if state.run_id != run_id or state.status not in ("completed", "failed"):
+                    continue
+                detail = state.detail or {}
+                if state.status != "completed" or not detail.get("llm_call_ok"):
+                    logger.warning(
+                        "self_study_reflect_durable_run_failed run=%s status=%s error=%s",
+                        run_id, state.status, detail.get("llm_call_error"),
+                    )
+                    return None
+                findings = detail.get("findings")
+                return [item for item in findings if isinstance(item, dict)] if isinstance(findings, list) else None
+        return None  # pubsub closed without a matching event -- treat as no reflection
+
+    try:
+        return await asyncio.wait_for(_wait(), timeout=SELF_STUDY_REFLECT_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        logger.warning("self_study_reflect_durable_run_timeout run=%s", run_id)
+        return None
+    except Exception as exc:  # noqa: BLE001 -- never crash the reflect pass over a listener failure
+        logger.warning("self_study_reflect_durable_wait_failed run=%s err=%s", run_id, exc)
+        return None
+
+
+async def _call_self_study_reflect_llm_direct(
+    *,
+    bus: Any,
+    source: ServiceRef,
+    snapshot: SelfSnapshotV1,
+    concepts: Sequence[SelfInducedConceptV1],
+    correlation_id: str,
+) -> list[dict[str, Any]] | None:
+    """The original Layer 3 LLM call: one CortexClientRequest round trip
+    through cortex-orch, same public contract journal.compose and every
+    other external CortexClientRequest caller (e.g. orion-actions's
+    `_run_journal`) already use -- not a reach into this service's own
+    executor.py internals. Still the fallback path when durable dispatch is
+    off or unconfirmed (see `_call_self_study_reflect_llm` above).
 
     This DOES loop back through cortex-orch into this same cortex-exec
     process (cortex-orch dispatches self_study.reflect's LLMGatewayService

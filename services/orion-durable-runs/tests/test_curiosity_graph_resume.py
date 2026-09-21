@@ -33,6 +33,19 @@ from orion.schemas.durable_run import (  # noqa: E402
 )
 
 from app.graph import Deps, HarnessTurnFailed, build_curiosity_graph, finish_detail  # noqa: E402
+from app.runner import DEFAULT_WORKFLOW, WorkflowSpec  # noqa: E402
+
+
+def _swap_fake_graph(runner, deps: Deps, saver) -> None:
+    """Replace the registered curiosity WorkflowSpec's graph with one built
+    from fake deps behind the same saver -- WorkflowSpec is frozen, so this
+    replaces the whole dict entry rather than mutating `.graph` in place."""
+    runner._workflows[DEFAULT_WORKFLOW] = WorkflowSpec(
+        workflow=DEFAULT_WORKFLOW,
+        graph=build_curiosity_graph(deps, saver),
+        nodes=list(CURIOSITY_NODES),
+        finish_detail=finish_detail,
+    )
 
 
 class _World:
@@ -136,7 +149,7 @@ def test_a_failed_turn_leaves_the_thread_resumable_at_harness_turn(monkeypatch) 
     saver = InMemorySaver()
     world = _World(turn_ok=False)
     runner = DurableRunner(settings_mod.get_settings(), bus=None, checkpointer=saver)
-    runner._graph = build_curiosity_graph(world.deps(), saver)
+    _swap_fake_graph(runner, world.deps(), saver)
     req = _request()
 
     async def first_attempt() -> None:
@@ -144,7 +157,7 @@ def test_a_failed_turn_leaves_the_thread_resumable_at_harness_turn(monkeypatch) 
         await asyncio.gather(*runner._active.values(), return_exceptions=True)
 
     asyncio.run(first_attempt())
-    snap = asyncio.run(runner._graph.aget_state(_cfg(req.run_id)))
+    snap = asyncio.run(runner._workflows[DEFAULT_WORKFLOW].graph.aget_state(_cfg(req.run_id)))
     assert snap.next == ("harness_turn",)
     assert "text" not in snap.values and snap.values["attempt"] == 1
 
@@ -157,7 +170,7 @@ def test_a_failed_turn_leaves_the_thread_resumable_at_harness_turn(monkeypatch) 
     counts = asyncio.run(hub_comes_back())
     assert counts["resumed"] == 1
     assert world.calls[:2] == ["turn:1", "turn:2"]
-    final = asyncio.run(runner._graph.aget_state(_cfg(req.run_id)))
+    final = asyncio.run(runner._workflows[DEFAULT_WORKFLOW].graph.aget_state(_cfg(req.run_id)))
     assert final.next == () and final.values["attempt"] == 2 and final.values["status"] == "completed"
 
 
@@ -177,7 +190,7 @@ def test_runner_sweep_finds_unfinished_threads_and_resumes_them(monkeypatch) -> 
     saver = InMemorySaver()
     world = _World(fail_journal_once=True)
     runner = DurableRunner(settings_mod.get_settings(), bus=None, checkpointer=saver)
-    runner._graph = build_curiosity_graph(world.deps(), saver)  # fakes behind the same saver
+    _swap_fake_graph(runner, world.deps(), saver)  # fakes behind the same saver
 
     async def scenario() -> tuple[list, dict, list]:
         req = _request()
@@ -190,7 +203,7 @@ def test_runner_sweep_finds_unfinished_threads_and_resumes_them(monkeypatch) -> 
         return unfinished_before, counts, unfinished_after
 
     before, counts, after = asyncio.run(scenario())
-    assert [(t, n) for t, n, _ in before] == [("abc123def456", "journal")]
+    assert [(t, n) for t, n, _ts, _wf in before] == [("abc123def456", "journal")]
     assert counts["resumed"] == 1 and counts["abandoned"] == 0
     assert after == []
     assert world.calls == ["turn:1", "read", "row", "journal", "journal"]

@@ -41,6 +41,13 @@ FINDING_TEXT_CAP = 8000
 class CuriosityRunState(TypedDict, total=False):
     run_id: str
     correlation_id: str
+    # Read by the runner's workflow registry to route a checkpointed thread
+    # back to its own graph on resume, before any graph-specific state is
+    # known (runner.py's `_peek_workflow`). Absent on any checkpoint written
+    # before 2026-09-21 -- the runner treats a missing key as
+    # "curiosity.investigate", this graph's own workflow name, so old
+    # in-flight threads resume exactly as before.
+    workflow: str
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump()
     attempt: int
     # harness_turn

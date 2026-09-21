@@ -207,7 +207,12 @@ async def unfinished() -> dict[str, Any]:
     if runner is None:
         return {"threads": []}
     threads = await runner.unfinished_threads()
-    return {"threads": [{"thread_id": t, "next_node": n, "checkpoint_ts": ts.isoformat() if ts else None} for t, n, ts in threads]}
+    return {
+        "threads": [
+            {"thread_id": t, "next_node": n, "checkpoint_ts": ts.isoformat() if ts else None, "workflow": w}
+            for t, n, ts, w in threads
+        ]
+    }
 
 
 def _admission():

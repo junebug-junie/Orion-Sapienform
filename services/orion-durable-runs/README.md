@@ -36,6 +36,35 @@ Hub tick (scheduling, material, worldview, prompt)
 - A thread older than `DURABLE_RUNS_MAX_AGE_HOURS` is abandoned (one `abandoned` state
   event), never resumed into a different day's material.
 
+## Workflow registry (2026-09-21)
+
+`DurableRunner` can drive more than one compiled graph. `DurableRunRequestV1.workflow`
+selects a `WorkflowSpec` (`app/runner.py`) from `runner._workflows`; a request naming an
+unregistered workflow is rejected at `start_run` and logged
+(`durable_run_unknown_workflow`), never silently run through curiosity's graph. Today
+only `"curiosity.investigate"` is registered -- this is plumbing for a second and third
+workflow (self-sense-eval's own graph, reflect's own graph) landing in follow-on PRs, not
+a behavior change on its own.
+
+All registered graphs share ONE checkpointer/Postgres pool: LangGraph's saver keys purely
+by `thread_id` (`run_id`), not by graph identity, so this is safe as long as run_ids stay
+unique across workflows (callers already generate them that way). The one place this
+needed real care: the resume sweep discovers unfinished threads *before* it knows which
+graph each belongs to. `_peek_workflow` reads the raw checkpoint's
+`channel_values["workflow"]` directly off the shared checkpointer (`aget_tuple`) *before*
+calling any compiled graph's `aget_state`, so a thread is never read through the wrong
+graph's node/edge schema. A missing `workflow` key -- any checkpoint written before this
+patch -- reads as `"curiosity.investigate"`, so every already-in-flight run resumes
+exactly as it would have before this change (verified live-shaped in
+`tests/test_workflow_registry.py`, alongside the full existing curiosity/admission/elastic
+suite passing unmodified).
+
+Adding a real second workflow needs, at minimum: a new `WorkflowSpec` (its own graph,
+node list, `finish_detail`), a new entry in `DurableWorkflowV1`
+(`orion/schemas/durable_run.py`, currently `Literal["curiosity.investigate"]` --
+deliberately not widened by this patch), and its own request/brief shape if it doesn't
+fit `CuriosityRunBriefV1`.
+
 ## Deploy order
 
 The operator templates select admitted Curiosity. Before restarting, apply both

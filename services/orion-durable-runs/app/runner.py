@@ -10,14 +10,35 @@ raised look the same to the sweep -- both are "re-invoke with `None` input on
 this thread", which continues from the next node with every earlier node's
 result intact. A thread older than `max_age_hours` is abandoned instead
 (one `abandoned` state event), never resumed into a different day's material.
+
+Workflow registry (2026-09-21): this runner drives more than one compiled
+graph. `DurableRunRequestV1.workflow` selects a `WorkflowSpec` from
+`self._workflows`; an unregistered workflow name is rejected at `start_run`
+rather than silently defaulting to curiosity's graph. All registered graphs
+share ONE checkpointer/Postgres pool -- LangGraph's saver keys purely by
+`thread_id` (run_id), not by graph identity, so this is safe as long as
+run_ids stay unique across workflows (they already are: callers generate
+them, same as today).
+
+The one place this needs care: the resume sweep discovers unfinished threads
+BEFORE it knows which graph each one belongs to (`unfinished_threads`).
+`_peek_workflow` reads the raw checkpoint's `channel_values["workflow"]`
+directly off the shared checkpointer (`aget_tuple`, langgraph's own stable
+Checkpoint TypedDict field -- verified against the installed langgraph
+version, not assumed) BEFORE calling any compiled graph's `aget_state`,
+so a thread is never read through the wrong graph's node/edge schema. A
+missing `workflow` key (any checkpoint written before this patch) reads as
+`"curiosity.investigate"`, this file's own original workflow name, so every
+already-in-flight run resumes exactly as it would have before this change.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -68,12 +89,26 @@ logger = logging.getLogger("orion-durable-runs.runner")
 
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 
+DEFAULT_WORKFLOW = "curiosity.investigate"
+
 
 def _corr_uuid(raw: str) -> UUID:
     try:
         return UUID(str(raw))
     except (ValueError, TypeError):
         return uuid4()
+
+
+@dataclass(frozen=True)
+class WorkflowSpec:
+    """One registered graph. `nodes` is that graph's own node order (used for
+    next-node bookkeeping in state events); `finish_detail` extracts the
+    workflow-specific payload Hub/cortex-exec read off a `completed` event."""
+
+    workflow: str
+    graph: Any
+    nodes: list[str]
+    finish_detail: Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class DurableRunner:
@@ -87,15 +122,49 @@ class DurableRunner:
             if settings.graph_host
             else None
         )
-        self._graph = build_curiosity_graph(self._deps(), checkpointer)
+        self._workflows: dict[str, WorkflowSpec] = {
+            DEFAULT_WORKFLOW: WorkflowSpec(
+                workflow=DEFAULT_WORKFLOW,
+                graph=build_curiosity_graph(self._curiosity_deps(), checkpointer),
+                nodes=list(CURIOSITY_NODES),
+                finish_detail=finish_detail,
+            ),
+        }
         self._active: dict[str, asyncio.Task[None]] = {}
         # thread_id -> node the resume picked up at; consumed by the first
         # state event after a resume so `resumed_from_node` is stamped once.
         self._resumed_from: dict[str, str] = {}
 
+    def register_workflow(self, spec: WorkflowSpec) -> None:
+        """Add a workflow after construction (used by graphs whose Deps need
+        a reference back to this runner, e.g. a turn-executor built from
+        `self._source()`). Must be called before any run for that workflow
+        is submitted -- there is no dynamic re-registration mid-run."""
+        self._workflows[spec.workflow] = spec
+
+    def _spec_for(self, workflow: str) -> WorkflowSpec | None:
+        return self._workflows.get(workflow)
+
+    async def _peek_workflow(self, thread_id: str) -> str:
+        """The `workflow` a checkpointed thread belongs to, read directly off
+        the shared checkpointer -- BEFORE calling any compiled graph's
+        `aget_state`, since calling the wrong graph reads that thread through
+        the wrong node/edge schema. Missing key (pre-registry checkpoint) or
+        an unreadable tuple both read as the original single workflow, so
+        every already-in-flight run keeps resuming exactly as before."""
+        try:
+            tup = await self._checkpointer.aget_tuple(self._config(thread_id))
+        except Exception:  # noqa: BLE001
+            return DEFAULT_WORKFLOW
+        if tup is None or not tup.checkpoint:
+            return DEFAULT_WORKFLOW
+        values = tup.checkpoint.get("channel_values") or {}
+        workflow = values.get("workflow")
+        return str(workflow) if isinstance(workflow, str) and workflow else DEFAULT_WORKFLOW
+
     # --- deps: the real world behind each node ------------------------------
 
-    def _deps(self) -> Deps:
+    def _curiosity_deps(self) -> Deps:
         return Deps(
             run_turn=self._run_turn,
             read_turn_result=self._read_turn_result,
@@ -256,19 +325,21 @@ class DurableRunner:
         self,
         state: CuriosityRunState,
         *,
+        spec: WorkflowSpec,
         node: str,
         status: str,
         detail: dict[str, Any] | None = None,
         resumed_from: str | None = None,
     ) -> None:
         run_id = state["run_id"]
-        idx = CURIOSITY_NODES.index(node) if node in CURIOSITY_NODES else -1
-        next_node = CURIOSITY_NODES[idx + 1] if 0 <= idx < len(CURIOSITY_NODES) - 1 else None
+        nodes = spec.nodes
+        idx = nodes.index(node) if node in nodes else -1
+        next_node = nodes[idx + 1] if 0 <= idx < len(nodes) - 1 else None
         if status in ("completed", "failed", "abandoned"):
             next_node = None if status != "failed" else node
         event = DurableRunStateV1(
             run_id=run_id,
-            workflow="curiosity.investigate",
+            workflow=spec.workflow,
             thread_id=run_id,
             node=node,
             next_node=next_node,
@@ -298,7 +369,7 @@ class DurableRunner:
                 process="durable_run",
                 correlation_id=event.correlation_id,
                 attended_id=run_id,
-                attended_label="curiosity.investigate",
+                attended_label=spec.workflow,
                 attention_reason=f"{node}:{status}",
                 reason_narrative=f"durable run {run_id} {status} at {node}" + (f", next {next_node}" if next_node else ""),
                 narrative_kind="computed",
@@ -322,53 +393,64 @@ class DurableRunner:
         if run_id in self._active:
             logger.info("durable_run_already_active run=%s", run_id)
             return
-        snapshot = await self._graph.aget_state(self._config(run_id))
+        spec = self._spec_for(request.workflow)
+        if spec is None:
+            logger.error("durable_run_unknown_workflow run=%s workflow=%s", run_id, request.workflow)
+            return
+        snapshot = await spec.graph.aget_state(self._config(run_id))
         if snapshot and snapshot.values:
             if not snapshot.next or snapshot.values.get("admission"):
                 return
             logger.info("durable_run_request_for_existing_thread run=%s -> resume", run_id)
-            self._spawn(run_id, None, resumed_from=snapshot.next[0] if snapshot.next else None)
+            self._spawn(spec, run_id, None, resumed_from=snapshot.next[0] if snapshot.next else None)
             return
         initial: CuriosityRunState = {
             "run_id": run_id,
             "correlation_id": request.correlation_id,
+            "workflow": spec.workflow,
             "brief": request.brief.model_dump(mode="json"),
             "attempt": 0,
         }
-        self._spawn(run_id, initial, resumed_from=None)
+        self._spawn(spec, run_id, initial, resumed_from=None)
 
-    def _spawn(self, run_id: str, initial: CuriosityRunState | None, *, resumed_from: str | None) -> None:
+    def _spawn(
+        self, spec: WorkflowSpec, run_id: str, initial: CuriosityRunState | None, *, resumed_from: str | None
+    ) -> None:
         if resumed_from:
             self._resumed_from[run_id] = resumed_from
-        task = asyncio.create_task(self._drive(run_id, initial), name=f"durable-run-{run_id}")
+        task = asyncio.create_task(self._drive(spec, run_id, initial), name=f"durable-run-{run_id}")
         self._active[run_id] = task
         task.add_done_callback(lambda _t: self._active.pop(run_id, None))
 
-    async def _drive(self, run_id: str, initial: CuriosityRunState | None) -> None:
+    async def _drive(self, spec: WorkflowSpec, run_id: str, initial: CuriosityRunState | None) -> None:
         config = self._config(run_id)
+        graph = spec.graph
+        nodes = spec.nodes
         last_state: CuriosityRunState = initial or {}
         try:
             # astream with stream_mode="updates" yields one item per completed
             # node: {node_name: {returned keys}}. The checkpoint for that node
             # is written by the compiled graph before the next node starts.
-            async for update in self._graph.astream(initial, config, stream_mode="updates"):
+            async for update in graph.astream(initial, config, stream_mode="updates"):
                 for node, delta in (update or {}).items():
-                    snap = await self._graph.aget_state(config)
+                    snap = await graph.aget_state(config)
                     last_state = dict(snap.values) if snap and snap.values else last_state
-                    if node == CURIOSITY_NODES[-1]:
-                        await self._emit_state(last_state, node=node, status="completed", detail=finish_detail(last_state))
+                    if node == nodes[-1]:
+                        await self._emit_state(
+                            last_state, spec=spec, node=node, status="completed", detail=spec.finish_detail(last_state)
+                        )
                     else:
                         status = "resumed" if run_id in self._resumed_from else "running"
-                        await self._emit_state(last_state, node=node, status=status)
+                        await self._emit_state(last_state, spec=spec, node=node, status=status)
         except Exception as exc:  # noqa: BLE001 -- the thread stays resumable at its next node
             snap = None
             try:
-                snap = await self._graph.aget_state(config)
+                snap = await graph.aget_state(config)
             except Exception:  # noqa: BLE001
                 pass
-            node = (snap.next[0] if snap and snap.next else CURIOSITY_NODES[0])
+            node = (snap.next[0] if snap and snap.next else nodes[0])
             state = dict(snap.values) if snap and snap.values else (initial or {"run_id": run_id, "correlation_id": ""})
-            if node == CURIOSITY_NODES[0]:
+            if node == nodes[0]:
                 # A failed harness turn cannot record its own attempt (the node
                 # raised before returning), so stamp it on the thread as if
                 # START had written it: `next` stays harness_turn, the sweep
@@ -377,19 +459,23 @@ class DurableRunner:
                     from langgraph.graph import START
 
                     attempt = int(state.get("attempt") or 0) + 1
-                    await self._graph.aupdate_state(config, {"attempt": attempt}, as_node=START)
+                    await graph.aupdate_state(config, {"attempt": attempt}, as_node=START)
                     state["attempt"] = attempt
                 except Exception:  # noqa: BLE001
                     logger.warning("durable_run_attempt_stamp_failed run=%s", run_id, exc_info=True)
             logger.warning("durable_run_node_failed run=%s node=%s err=%s -- resumable", run_id, node, exc)
-            await self._emit_state(state, node=node, status="failed", detail={"error": f"{type(exc).__name__}: {exc}"[:500]})
+            await self._emit_state(
+                state, spec=spec, node=node, status="failed", detail={"error": f"{type(exc).__name__}: {exc}"[:500]}
+            )
 
     # --- resume -------------------------------------------------------------
 
-    async def unfinished_threads(self) -> list[tuple[str, str, datetime | None]]:
-        """(thread_id, next_node, checkpoint_ts) for every thread whose latest
-        checkpoint still has a next node. Newest checkpoint per thread wins
-        (`alist` yields newest first)."""
+    async def unfinished_threads(self) -> list[tuple[str, str, datetime | None, str]]:
+        """(thread_id, next_node, checkpoint_ts, workflow) for every thread
+        whose latest checkpoint still has a next node. Newest checkpoint per
+        thread wins (`alist` yields newest first). `workflow` is resolved
+        with `_peek_workflow` BEFORE any graph-specific `aget_state` call --
+        see the module docstring for why that ordering matters."""
         # MATERIALISE the listing before asking for any state. The Postgres
         # saver serialises its cursor use behind one asyncio.Lock; `alist` is
         # an async generator that holds that lock while it yields, and
@@ -410,23 +496,31 @@ class DurableRunner:
                 except ValueError:
                     ts = None
             newest_ts[thread_id] = ts
-        out: list[tuple[str, str, datetime | None]] = []
+        out: list[tuple[str, str, datetime | None, str]] = []
         for thread_id, ts in newest_ts.items():
-            snap = await self._graph.aget_state(self._config(thread_id))
+            workflow = await self._peek_workflow(thread_id)
+            spec = self._spec_for(workflow)
+            if spec is None:
+                logger.warning("durable_run_resume_unknown_workflow thread=%s workflow=%s -- skipped", thread_id, workflow)
+                continue
+            snap = await spec.graph.aget_state(self._config(thread_id))
             if not snap or not snap.next:
                 continue
             if snap.values.get("admission"):
                 continue  # admission runtime owns these graph interrupts
-            out.append((thread_id, str(snap.next[0]), ts))
+            out.append((thread_id, str(snap.next[0]), ts, workflow))
         return out
 
     async def resume_unfinished(self) -> dict[str, int]:
         counts = {"resumed": 0, "abandoned": 0, "active": 0}
         now = datetime.now(timezone.utc)
-        for thread_id, next_node, ts in await self.unfinished_threads():
+        for thread_id, next_node, ts, workflow in await self.unfinished_threads():
             if thread_id in self._active:
                 counts["active"] += 1
                 continue
+            spec = self._spec_for(workflow)
+            if spec is None:
+                continue  # already logged in unfinished_threads
             # An unparseable/missing checkpoint timestamp is UNKNOWN age, not
             # zero age -- treating it as brand new disabled the one guard that
             # stops a stale checkpoint from resuming into a different day's
@@ -435,22 +529,24 @@ class DurableRunner:
             # immediate resume.
             age_h = ((now - ts).total_seconds() / 3600.0) if ts is not None else float("inf")
             if age_h > self._settings.max_age_hours:
-                snap = await self._graph.aget_state(self._config(thread_id))
+                snap = await spec.graph.aget_state(self._config(thread_id))
                 state = dict(snap.values) if snap and snap.values else {"run_id": thread_id, "correlation_id": ""}
-                await self._emit_state(state, node=next_node, status="abandoned", detail={"age_hours": round(age_h, 1)})
+                await self._emit_state(
+                    state, spec=spec, node=next_node, status="abandoned", detail={"age_hours": round(age_h, 1)}
+                )
                 # Mark terminal so the sweep stops seeing it: drive the thread
                 # to END by updating state to a terminal status and clearing next.
-                await self._graph.aupdate_state(self._config(thread_id), {"status": "abandoned"}, as_node=CURIOSITY_NODES[-1])
+                await spec.graph.aupdate_state(self._config(thread_id), {"status": "abandoned"}, as_node=spec.nodes[-1])
                 counts["abandoned"] += 1
                 continue
             logger.info("durable_run_resume run=%s from=%s age_h=%.1f", thread_id, next_node, age_h)
-            snap = await self._graph.aget_state(self._config(thread_id))
+            snap = await spec.graph.aget_state(self._config(thread_id))
             state = dict(snap.values) if snap and snap.values else {"run_id": thread_id, "correlation_id": ""}
             # Receipt at the moment of pickup -- a resumed harness_turn takes
             # 10-40 minutes to complete, and the table should say "resumed"
             # before then, not after.
-            await self._emit_state(state, node=next_node, status="resumed", resumed_from=next_node)
-            self._spawn(thread_id, None, resumed_from=next_node)
+            await self._emit_state(state, spec=spec, node=next_node, status="resumed", resumed_from=next_node)
+            self._spawn(spec, thread_id, None, resumed_from=next_node)
             counts["resumed"] += 1
         return counts
 

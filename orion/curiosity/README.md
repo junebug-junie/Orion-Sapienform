@@ -478,14 +478,15 @@ role-teach block (`HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE`). Python never MERGEs
 
 What the disclosure can say:
 
-1. **Mind `deep`** → strong prefer `hire_cursor` (short local look still grounds
-   `tried_summary`; Cursor is normal deep hands, not last-resort).
+1. **Mind `deep`** → write `hire_cursor` + HelpRequest now (do **not** take a
+   short local look first; peer digs; Orion still authors priors/findings).
 2. **≥2 access refusals** in hop notes → hand off to Cursor now.
 3. **Cursor budget spent** (`refused_budget`) → resume from hops; do not re-hire.
 4. **Queue contention** → one official digester score on FieldState
    (`queue_contention_score` 0–10, `queue_contention_driver` names the source).
    Hub **reads** latest `substrate_field_state`; it does **not** run its own
-   Redis EWMA. Raw backlog counts are never shown.
+   Redis EWMA. Raw backlog counts are never shown. Elevated queue means hire
+   now — not a short local look first.
 
 Spec: `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`.
 Metric gate: `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.

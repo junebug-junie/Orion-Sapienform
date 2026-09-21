@@ -21,9 +21,9 @@ _LABELS = {
     "cross_cutting": "cross-cutting",
 }
 _DEEP_HIRE_NUDGE = (
-    "Mind reads this sitting as deep work. Strongly prefer hire_cursor for the "
-    "archaeology; keep a short local look only so tried_summary is grounded. "
-    "You still author priors and findings."
+    "Mind reads this sitting as deep work. Write hire_cursor and HelpRequest "
+    "now — do not take a short local look first. You still author priors and "
+    "findings; the peer digs."
 )
 
 

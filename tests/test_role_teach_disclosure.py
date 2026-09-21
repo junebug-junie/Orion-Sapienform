@@ -55,8 +55,12 @@ def test_format_deep_includes_strong_hire_cursor_nudge() -> None:
     )
     text = "\n".join(lines).lower()
     assert "hire_cursor" in text or "hire cursor" in text
-    assert "strongly" in text or "strong" in text
+    assert "helprequest" in text.replace(" ", "") or "help request" in text
     assert "expensive" not in text
+    # Ban short-look theater; allow explicit "do not take a short local look".
+    assert "keep a short local look" not in text
+    assert "after a short local look" not in text
+    assert "do not take a short" in text or "not take a short" in text
 
 
 def test_ensure_orion_hire_depth_failopen_to_deep() -> None:
@@ -67,12 +71,15 @@ def test_ensure_orion_hire_depth_failopen_to_deep() -> None:
     assert filled["expected_depth"] == "deep"
     assert filled["foresight_note"] == "x"
     assert ensure_orion_hire_depth({"expected_depth": "shallow"})["expected_depth"] == "shallow"
-    # After fail-open, formatter emits strong hire nudge
+    # After fail-open, formatter emits hire-now nudge (no short-look theater)
     lines = format_role_teach_disclosure(ensure_orion_hire_depth({"foresight_note": "setup"}))
     text = "\n".join(lines).lower()
     assert "deep" in text
     assert "hire_cursor" in text or "hire cursor" in text
-    assert "strongly" in text or "strong" in text
+    assert "helprequest" in text.replace(" ", "") or "help request" in text
+    assert "keep a short local look" not in text
+    assert "after a short local look" not in text
+    assert "do not take a short" in text or "not take a short" in text
 
 
 def test_format_present_shape_returns_advisory_lines() -> None:

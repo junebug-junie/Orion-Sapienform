@@ -53,3 +53,10 @@ def test_queue_line_prefers_hire_not_compete_with_gpu() -> None:
     assert "not a reason to stay" in text or "not a reason to" in text
     assert "no hire" not in text
     assert "uneconom" not in text
+    # No short-look theater — hire now (ban positive "short look"; allow "do not take a short").
+    assert "short tried_summary" not in text
+    assert "keep only a short" not in text
+    assert "after a short" not in text
+    assert "do not take a short local look" in text
+    assert "quick look" not in text
+    assert "helprequest" in text.replace(" ", "") or "help request" in text

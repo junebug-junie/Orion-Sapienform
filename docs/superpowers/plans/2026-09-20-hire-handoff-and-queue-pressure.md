@@ -79,13 +79,13 @@ Expected: FAIL (strong nudge sentence missing)
 In `format_role_teach_disclosure`, after work-shape bullets when `depth == "deep"` (case-insensitive), append one fixed advisory sentence:
 
 ```text
-Mind reads this sitting as deep work. Strongly prefer hire_cursor for the archaeology; keep a short local look only so tried_summary is grounded. You still author priors and findings.
+Mind reads this sitting as deep work. Write hire_cursor and HelpRequest now — do not take a short local look first. You still author priors and findings; the peer digs.
 ```
 
 In `_role_and_help_section` (`kickoff_prompt.py`):
 
 - Change MERGE example to show both choices without crawl-first bias, e.g. `choice: "local_crawl|hire_cursor"`.
-- Keep: role ≠ enqueue; peer read-only; HelpRequest after short look for `tried_summary`.
+- Keep: role ≠ enqueue; peer read-only; HelpRequest when hiring (no short-look-first theater; tried_summary names claim / why / dig target).
 - Do not call Cursor expensive or last-resort.
 
 - [ ] **Step 4: Run tests**
@@ -503,7 +503,7 @@ def test_queue_line_names_score_and_driver_not_raw_count():
 Example line:
 
 ```text
-Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Elevated queue is a reason to hire_cursor (offload), not a reason to stay on local_crawl — the local agent GPU seat is the expensive one. Keep only a short tried_summary yourself, then write HelpRequest.
+Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Elevated queue is a reason to hire_cursor (offload), not a reason to stay on local_crawl — the local agent GPU seat is the expensive one. Write hire_cursor and HelpRequest now — do not take a short local look first.
 ```
 
 - [ ] **Step 3: Wire curiosity / orchestrator**

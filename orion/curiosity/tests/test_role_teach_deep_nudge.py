@@ -22,6 +22,11 @@ def test_role_teach_merge_shows_both_choices_without_crawl_first_bias() -> None:
     assert "never a reason to stay local" in lower
     assert "queue elevated so no hire" in lower  # named ban of the bad why
     assert "never local_crawl" not in lower  # do not hard-ban local for mild queue
+    # HelpRequest teach: no short-look theater before hiring.
+    assert "keep a short local look" not in lower
+    assert "after a short local look" not in lower
+    assert "after a short" not in lower
+    assert "do not take a short" in lower or "not take a short" in lower
 
 
 def test_review_role_queue_elevated_means_hire_not_self() -> None:

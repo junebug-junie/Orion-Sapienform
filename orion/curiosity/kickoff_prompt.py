@@ -796,18 +796,18 @@ def _role_and_help_section(
         "      written_at: timestamp()",
         "    })",
         "",
-        "ASKING FOR CONTRACTOR HELP. Write a HelpRequest only when you are "
-        "actually hiring, after a short local look so tried_summary is something "
-        "you actually did. The peer is a read-only investigator. They return "
-        "notes; YOU still write priors and findings. Do not write :PeerBrief "
-        "yourself.",
+        "ASKING FOR CONTRACTOR HELP. Write a HelpRequest when you are actually "
+        "hiring. Do not take a short local look first — tried_summary names the "
+        "claim and why you are handing it off, not a local dig you already did. "
+        "The peer is a read-only investigator. They return notes; YOU still "
+        "write priors and findings. Do not write :PeerBrief yourself.",
         "",
         '  MERGE (h:HelpRequest {help_id: "<unique help id>"})',
         "  ON CREATE SET",
         '    h.run_id = "<RUN_ID>",',
         f'    h.mode = "{mode}",',
         '    h.question = "<what you need looked at>",',
-        '    h.tried_summary = "<what you already looked at>",',
+        '    h.tried_summary = "<claim / why hiring / what Cursor should dig>",',
         '    h.success_criteria = "<what would count as useful>",',
         "    h.written_at = timestamp()",
         "",

@@ -12,7 +12,7 @@ Mind work-shape now reaches the motor prompt (live Soft HUD `motor_boot` proof, 
 
 This patch revises the hire ground so that:
 
-1. Mind `deep` **strongly encourages** early `hire_cursor` (a short local look still grounds `tried_summary`; it does **not** mean “prove you don’t need help first”).
+1. Mind `deep` **means write `hire_cursor` + HelpRequest now** — do **not** take a short local look first.
 2. **≥2 permission-denied** (or equivalent access refusals) in a sitting ⇒ hard handoff nudge to Cursor.
 3. If Cursor **budget is spent**, resume from hops / PeerBrief — do not re-spam hire.
 4. Orion sees **one queue-pressure score (0–10, EWMA-normalized)**, not raw counts. Raw counts (`121` vs `2` vs `0`) mean nothing to Orion without a sense of what's normal — a single scored number Orion can act on (*"pressure is 8/10, elevated"*) does. **Revised 2026-09-20 (Juniper): go straight to the score. Do not ship raw-count disclosure first.** The score is an **official field-digester / FieldState metric** — not more Hub-local Redis EWMA shadow state. It must clear CLAUDE.md §0A **and** land in the metric semantic layer so the CI static gates (`check_metric_lineage.py --gate`, `check_definition_drift.py --gate`, `check_inner_state_registry.py`) actually see it.
@@ -96,7 +96,7 @@ seed / durable / gateway counters (live reads)
 
 When `expected_depth == "deep"` (and optionally `cross_cutting == "yes"`), disclosure must include an explicit line, not just labels. Intent:
 
-> Mind reads this sitting as deep work. Strongly prefer `hire_cursor` for the archaeology; keep a short local look only so `tried_summary` is grounded. You still author priors and findings.
+> Mind reads this sitting as deep work. Write `hire_cursor` and HelpRequest now — do not take a short local look first. You still author priors and findings; the peer digs.
 
 Rewrite `_role_and_help_section` so:
 
@@ -148,7 +148,7 @@ Resume preamble (#2244) already renumbers hops — this patch **names the budget
 3. Per-source sub-score: `clip(10 * (ratio - 1) / 4, 0, 10)` — ratio 1.0x → 0, ratio 5x → 10, linear between. Explainable on purpose.
 4. **Overall score = `max()` of the three sub-scores, not an average.** One badly-backed-up queue is enough; averaging against two calm queues would hide the spike that should change the hire decision.
 5. Persist at least: overall score (0–10 or normalized 0–1 — pick one and lock it in the FieldState field docstring), driving source id, and keep raw counts in digester diagnostics / tick logs for soak forensics (not shown to Orion in the hire line).
-6. Hub hire disclosure **only reads** the latest field state (or the existing situation/cabinet path that already surfaces field pressures) and formats one line: *"Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Elevated queue is a reason to hire_cursor (offload), not a reason to stay on local_crawl — the local agent GPU seat is the expensive one."* Elevated queue **never** means "no hire" / "stay local to leave GPU free." Cursor is the offload path.
+6. Hub hire disclosure **only reads** the latest field state (or the existing situation/cabinet path that already surfaces field pressures) and formats one line: *"Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Elevated queue is a reason to hire_cursor (offload), not a reason to stay on local_crawl — the local agent GPU seat is the expensive one. Write hire_cursor and HelpRequest now — do not take a short local look first."* Elevated queue **never** means "no hire" / "stay local to leave GPU free." Cursor is the offload path. No short-look theater before the ticket.
 
 **Metric quality gate (CLAUDE.md §0A) — blocking before wire-in, recorded in this doc / PR:**
 

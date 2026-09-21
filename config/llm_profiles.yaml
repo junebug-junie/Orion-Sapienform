@@ -130,6 +130,15 @@ profiles:
 
   # Qwen3 8B dense — HF: https://huggingface.co/Qwen/Qwen3-8B
   # GGUF: bartowski/Qwen_Qwen3-8B-GGUF — non-thinking mode (enable_thinking: false)
+  #
+  # CORRECTION 2026-09-21: the two dedicated V100-16GB cards this profile
+  # (fast/atlas-fast) and its metacog sibling used to run on were physically
+  # pulled from circe. Both lanes now share one V100-32GB (host index 3,
+  # freed by the chat lane's move to a single GPU + 64k ctx -- see that
+  # profile's own note). The "v100-16gb" key name and display_name are kept
+  # as historical labels (ATLAS_FAST_PROFILE_NAME references this key by
+  # name); gpu.device_ids: [0] is still correct as-is since it is the
+  # container-local index, unaffected by which physical card is behind it.
   qwen3-8b-q4km-v100-16gb-balanced:
     display_name: "Qwen3 8B – Q4_K_M (llama.cpp, V100 16GB, 16k ctx, non-thinking)"
     task_type: chat
@@ -189,6 +198,10 @@ profiles:
       - For dedicated metacog lane: use qwen3-8b-q5km-v100-16gb-atlas-metacog-16k instead.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.
 
+  # CORRECTION 2026-09-21: see the "fast" profile's own note above -- this
+  # lane's dedicated V100-16GB was physically pulled from circe, now shares
+  # a V100-32GB (host index 3) with atlas-fast. Key name kept as a
+  # historical label (ATLAS_METACOG_PROFILE_NAME references it).
   qwen3-8b-q5km-v100-16gb-atlas-metacog-16k:
     display_name: "Qwen3 8B – Q5_K_M (llama.cpp, Atlas Metacog, V100 16GB, 16k single-lane, non-thinking)"
     task_type: chat

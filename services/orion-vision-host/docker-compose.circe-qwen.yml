@@ -154,11 +154,13 @@ services:
       # Deliberately LOWER than settings.py's own tuned defaults
       # (1200/1000/800) -- those were calibrated for athena's shared P4,
       # co-hosting 4+ warm profiles at once (see .env_example's 2026-08-21
-      # recalibration note there). This lane is one small model alone on a
-      # 16GB card (~5.4GB used, ~11GB free measured live) -- no co-hosted
-      # workload to reserve headroom against, so lower floors are correct
-      # for this deployment. CIRCE_QWEN_-prefixed -- see this file's own
-      # header comment for why every key here is, no exceptions.
+      # recalibration note there). This lane's own model is small (~4.8GB)
+      # on a 16GB card with real headroom even alongside whisper-tts, which
+      # also moved onto this same T10 the same day (2026-09-21, see
+      # README.md) -- two small models, not the athena P4's 4+ profile
+      # crowding, so lower floors are still correct here. CIRCE_QWEN_-
+      # prefixed -- see this file's own header comment for why every key
+      # here is, no exceptions.
       - VISION_VRAM_RESERVE_MB=${CIRCE_QWEN_VISION_VRAM_RESERVE_MB:-512}
       - VISION_VRAM_SOFT_FLOOR_MB=${CIRCE_QWEN_VISION_VRAM_SOFT_FLOOR_MB:-1024}
       - VISION_VRAM_HARD_FLOOR_MB=${CIRCE_QWEN_VISION_VRAM_HARD_FLOOR_MB:-512}

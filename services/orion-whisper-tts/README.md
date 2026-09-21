@@ -298,108 +298,34 @@ On startup you should see **TTS configured** logs (`backend`, `model`, `gpu`, de
 
 Mount reference voices on the host at `TTS_VOICE_PROFILE_HOST_DIR` (default `/mnt/telemetry/models/coqui/voices`) → `/models/voices`.
 
-### Running on circe (P100 lane)
+### Single instance, athena only (circe lane retired 2026-09-21)
 
 This service is a **single-instance** service. TTS intake dispatch is Redis
 **pub/sub** (`app/tts_worker.py`: `bus.subscribe(settings.channel_tts_intake)`),
 not a consumer group, so two running instances both receive every request,
 both synthesize, and both reply on the same reply channel — the caller keeps
 whichever answer lands first. That is the exact failure mode that already
-bit the vision-host lanes (PR #1859/#1860). **Moving this service means
-stopping the old instance, not adding a second one.**
+bit the vision-host lanes (PR #1859/#1860). **Never run more than one
+instance of this service at a time.**
 
-Because it is a move rather than a parallel lane, there is deliberately no
-`docker-compose.circe.yml`: the one compose file serves both hosts and the
-only host-specific value is the GPU pin, read from
-`WHISPER_TTS_GPU_DEVICE_ID`. A second compose file would duplicate ~100
-lines that then drift (this README and `.env_example` already did exactly
-that once).
-
-| host | GPUs | `WHISPER_TTS_GPU_DEVICE_ID` | card |
-| :--- | :--- | :--- | :--- |
-| athena | 1 | `0` (the default) | Tesla P4, 8GB, shared with vision-host/vision-edge |
-| circe | 7 | `4` | **Tesla P100-PCIE-16GB** |
-
-Verify the card before pinning — do not trust this table or any prior note.
-circe's inventory has changed more than once (it had six GPUs with the P100
-at index 3 as recently as 2026-08-25; as of 2026-08-29 it has seven and the
-P100 is index 4):
-
-```bash
-ssh circe@circe "nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv"
-```
-
-One-time host prep on circe (needs root; `/mnt/telemetry` is a 388G NVMe
-with real headroom, unlike `/mnt/storage-warm`, which is a directory on the
-root LV and was 91% full):
-
-```bash
-sudo mkdir -p /mnt/telemetry/models/coqui/tts /mnt/telemetry/models/coqui/voices
-sudo chown -R circe:circe /mnt/telemetry/models/coqui
-```
-
-Then stage the model cache and the reference voice from athena (~2GB; a
-copy rather than a re-download so circe gets byte-identical weights):
-
-```bash
-rsync -av --info=progress2 /mnt/telemetry/models/coqui/tts/   circe@circe:/mnt/telemetry/models/coqui/tts/
-rsync -av                  /mnt/telemetry/models/coqui/voices/ circe@circe:/mnt/telemetry/models/coqui/voices/
-```
-
-Build circe's own `services/orion-whisper-tts/.env` **from
-`.env_example`**, adding only what circe needs (`WHISPER_TTS_GPU_DEVICE_ID=4`).
-
-**Do not `cp` athena's service `.env` across.** It carries host-identity keys —
-notably `PROJECT=orion-athena` — and the service `.env` is the *last*
-`--env-file`, so it silently overrides the root `.env`. Doing exactly this on
-2026-08-29 brought the service up on circe as `orion-athena-whisper-tts`, with
-no error. Check before deploying:
-
-```bash
-grep -nEi 'PROJECT=|athena|circe|localhost|127\.0\.0\.1' services/orion-whisper-tts/.env
-docker compose --env-file .env --env-file services/orion-whisper-tts/.env \
-  -f services/orion-whisper-tts/docker-compose.yml config \
-  | grep -E 'container_name|device_ids'
-```
-
-The reverse also bites: circe's root `.env` lacks
-`ORION_BUS_VELOCITY_TRACKING_ENABLED`, which `.env_example` and athena both set
-to `true`, so it arrived blank (= false) with only a compose warning. A key
-*missing* on the new host is as real a divergence as one wrongly copied, and no
-env-parity gate catches it — both compare against `.env_example` on one host.
-
-Then bring it up **from the shared checkout on circe**, not a worktree:
-
-```bash
-cd /mnt/scripts/Orion-Sapienform
-docker compose --env-file .env --env-file services/orion-whisper-tts/.env \
-  -f services/orion-whisper-tts/docker-compose.yml up -d
-```
-
-This deliberately contradicts AGENTS.md §8's "worktrees only" instruction for
-`scripts/safe_docker_build.sh`. That guard exists to stop one dev agent
-clobbering another's *uncommitted* work; it is not a statement about where
-production should run. A long-running service whose compose project points into
-a branch worktree breaks the moment that worktree is pruned — and
-`make prune-merged-worktrees` exists and will happily remove it, taking the
-compose context and the gitignored `.env` with it. Deploy persistent services
-from the shared checkout on clean, merged `main`.
-
-Cut over in this order, so the window where nobody is serving TTS is a few
-seconds and rollback is one command:
-
-1. Build on circe first, with athena still serving.
-2. Stop athena: `docker stop orion-athena-whisper-tts`
-3. Start circe. Any successful synthesis is now unambiguously circe's —
-   with both up you cannot tell which instance answered.
-4. Verify (see below). To roll back, start athena's container again and
-   stop circe's.
+This service previously ran on circe (first the P100 at index 4, later
+"moonlighting" on a shared V100 after the P100 was pulled for a card
+upgrade). As of 2026-09-21 it runs only on athena, pinned to the Tesla T10
+16GB that upgrade added at nvidia-smi index 1 (`WHISPER_TTS_GPU_DEVICE_ID=1`,
+no fallback default — see `docker-compose.yml`'s own comment on why an
+unset var must fail loudly rather than silently grab GPU0, which is
+vision-host's Tesla P4). If this service ever needs to move to a different
+host again, the compose file is still host-agnostic (the only host-specific
+value is `WHISPER_TTS_GPU_DEVICE_ID`) — verify the target card live with
+`nvidia-smi` first, never trust a table in this README, and follow the same
+cutover discipline documented in git history for the circe move: bring the
+new instance up, confirm it, then stop the old one, never run both.
 
 Confirm the pin landed on the intended physical card, from the **host**:
 
 ```bash
-docker inspect orion-circe-whisper-tts --format '{{json .HostConfig.DeviceRequests}}'
-ssh circe@circe "nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv"
+docker inspect orion-athena-whisper-tts --format '{{json .HostConfig.DeviceRequests}}'
+nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv
 ```
 
 Do **not** confirm from a log line inside the container. Docker remaps the

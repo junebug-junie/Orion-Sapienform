@@ -2441,6 +2441,30 @@ class CuriosityInvestigation:
             len(lived_answers),
         )
 
+        if self.kickoff_via_cortex:
+            try:
+                dispatched = await self._dispatch_self_sense_eval_durable_run(
+                    run_id=run_id, correlation_id=str(uuid4()),
+                    self_definition_version=self_definition_version, lived_answers=lived_answers,
+                )
+            except asyncio.CancelledError:
+                if not self.durable_admission_enabled:
+                    await self._refund_investigation(previous_stamp, LINE_SELF_SENSE_EVAL)
+                raise
+            if dispatched:
+                logger.info("curiosity_self_sense_eval_dispatched run=%s", run_id)
+                return None
+            if self.durable_admission_enabled:
+                # Registration may have committed before the receipt was
+                # lost -- never bypass admission or refund a potentially
+                # queued run (same contract as investigation's own dispatch).
+                logger.warning("curiosity_self_sense_eval_admission_unconfirmed run=%s", run_id)
+                return None
+            logger.warning(
+                "curiosity_self_sense_eval_durable_dispatch_fell_back run=%s -- running in-process",
+                run_id,
+            )
+
         published = failed = empty = 0
         for question_key, question in SELF_SENSE_QUESTIONS:
             correlation_id = str(uuid4())
@@ -2906,6 +2930,85 @@ class CuriosityInvestigation:
             get_runtime_activity().run_dispatched(run_id=run_id, correlation_id=correlation_id, line=line)
         return accepted
 
+    async def _dispatch_self_sense_eval_durable_run(
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        self_definition_version: Optional[int],
+        lived_answers: list[dict],
+    ) -> bool:
+        """Hand a self-sense-eval run to cortex, same ingress every verb
+        already shares (`cortex-orch/app/durable_runs.py:
+        has_durable_run_request`/`dispatch_durable_run`), same
+        accepted/reply-decode contract as `_dispatch_durable_run` above --
+        different workflow name and brief shape only. True only when cortex
+        replied `accepted`."""
+        if self._bus is None:
+            return False
+        from orion.evals.self_sense_runner import SESSION_ID as SELF_SENSE_SESSION_ID
+        from orion.schemas.self_sense import SELF_SENSE_QUESTIONS
+
+        request = DurableRunRequestV1(
+            run_id=run_id,
+            workflow="self_sense_eval",
+            correlation_id=correlation_id,
+            brief=CuriosityRunBriefV1(
+                # Unused by the self_sense_eval graph (it asks `questions`,
+                # not one `prompt`) but required by the schema -- kept
+                # honest rather than a fabricated investigation-shaped value.
+                prompt="self-sense eval: four fixed questions",
+                session_id=SELF_SENSE_SESSION_ID,
+                timeout_sec=float(self.timeout_sec),
+                source_tag=_SELF_SENSE_EVAL_TAG,
+                line=LINE_SELF_SENSE_EVAL,
+                questions=list(SELF_SENSE_QUESTIONS),
+                self_definition_version=self_definition_version,
+                lived_answers=list(lived_answers),
+            ),
+            admission=(ResourceRequirementV1(
+                allow_elastic_activation=self.elastic_activation_enabled,
+                preferred_lane=self.llm_route or "agent",
+                resource=f"llm.route.{self.llm_route or 'agent'}",
+            ) if self.durable_admission_enabled else None),
+        )
+        payload = {
+            "mode": "brain",
+            "context": {
+                "messages": [{"role": "user", "content": "self_sense_eval"}],
+                "user_message": "self_sense_eval",
+                "session_id": self.session_id,
+                "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
+            },
+        }
+        reply_channel = f"{self.cortex_result_prefix}:{correlation_id}"
+        envelope = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=self._source_ref,
+            correlation_id=uuid5(NAMESPACE_URL, f"durable_kickoff:{run_id}"),
+            reply_to=reply_channel,
+            payload=payload,
+        )
+        try:
+            raw = await self._bus.rpc_request(
+                self.cortex_request_channel, envelope, reply_channel=reply_channel, timeout_sec=20.0
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_sense_eval_durable_dispatch_failed run=%s err=%s", run_id, exc)
+            return False
+        try:
+            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+            result = decoded.envelope.payload if decoded.ok else None
+        except Exception:  # noqa: BLE001
+            result = None
+        status = str((result or {}).get("status") or "")
+        accepted = status == "accepted"
+        logger.info(
+            "curiosity_self_sense_eval_durable_dispatched run=%s corr=%s status=%s",
+            run_id, correlation_id, status or "no_reply",
+        )
+        return accepted
+
     async def _turn_request_loop(self) -> None:
         """Keep intake available while admitted lanes execute independently.
 
@@ -3031,6 +3134,11 @@ class CuriosityInvestigation:
                 text, debug = await self._generate(
                     prompt, request.correlation_id, source=request.source_tag,
                     parent_run_id=request.run_id,
+                    # Durable-run turns can name an explicit session (e.g.
+                    # self_sense_eval's shared clean session) -- `_generate`
+                    # already falls back to `self.session_id` when this is
+                    # None, same as every other caller.
+                    session_id=request.session_id,
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{request.lease.lane}", "timeout_sec": request.timeout_sec,
                         "resource_lease": request.lease} if request.lease is not None else {}),
                 )

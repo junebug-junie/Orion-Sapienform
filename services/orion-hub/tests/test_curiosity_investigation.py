@@ -2412,7 +2412,7 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2453,7 +2453,7 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}

@@ -49,7 +49,7 @@ DURABLE_RUN_REPLY_PREFIX = "orion:durable:run:reply"
 CURIOSITY_TURN_REQUEST_KIND = "curiosity.turn.request.v1"
 CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
-DurableWorkflowV1 = Literal["curiosity.investigate"]
+DurableWorkflowV1 = Literal["curiosity.investigate", "self_sense_eval"]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
 # walks this list for a run; `DurableRunStateV1.node` is always one of them.
@@ -60,6 +60,11 @@ CURIOSITY_NODES: tuple[str, ...] = (
     "journal",
     "finish",
 )
+
+# self_sense_eval's own graph (services/orion-durable-runs/app/self_sense_graph.py):
+# no material/worldview read, no journal, no outreach -- ask the four fixed
+# questions, score and publish self_sense_eval_log rows, done.
+SELF_SENSE_EVAL_NODES: tuple[str, ...] = ("ask_questions", "publish", "finish")
 
 DurableRunStatusV1 = Literal[
     "accepted", "queued", "waiting_resource", "admitted", "running", "paused",
@@ -102,10 +107,25 @@ class CuriosityRunBriefV1(BaseModel):
     # Which curiosity line this run belongs to. `self_inquiry` runs are the
     # same graph with one extra read (`:SelfDefinition` or `:LivedAnswer`)
     # and a different journal title; Hub mirrors the write on the `finish`
-    # event. ADDITIVE FIELD ON A `forbid` MODEL: deploy orion-durable-runs
-    # before orion-hub, or an old runner rejects the brief and Hub falls back
-    # to running the turn in-process (logged as curiosity_durable_dispatch_fell_back).
-    line: Literal["investigate", "self_inquiry"] = "investigate"
+    # event. `self_sense_eval` runs a DIFFERENT graph entirely (see
+    # `DurableRunRequestV1.workflow`) -- this field still carries it for
+    # the same reason `CuriosityTurnRequestV1.source_tag` does: a uniform
+    # place a listener checks "which line is this" without branching on
+    # workflow name. ADDITIVE FIELD ON A `forbid` MODEL: deploy
+    # orion-durable-runs before orion-hub, or an old runner rejects the
+    # brief and Hub falls back to running the turn in-process (logged as
+    # curiosity_durable_dispatch_fell_back).
+    line: Literal["investigate", "self_inquiry", "self_sense_eval"] = "investigate"
+    # self_sense_eval only, additive: the fixed (question_key, question_text)
+    # pairs to ask, in order -- Hub owns `orion.schemas.self_sense.SELF_SENSE_QUESTIONS`
+    # as the source of truth and just carries a copy here so the runner
+    # doesn't need its own import of a Hub-side schema module.
+    questions: list[tuple[str, str]] | None = None
+    # self_sense_eval only, additive: read by Hub BEFORE dispatch (same
+    # "Hub does the DB reads, runner just executes" split as `material`
+    # above) so `build_row` can score each answer's self-report grounding.
+    self_definition_version: int | None = None
+    lived_answers: list[dict[str, Any]] | None = None
 
 
 class DurableRunRequestV1(BaseModel):
@@ -176,6 +196,17 @@ class CuriosityTurnRequestV1(BaseModel):
     attempt: int = Field(default=1, ge=1)
     lease: ResourceLeaseV1 | None = None
     assigned_lane: str | None = None
+    # Additive: an explicit session to run this turn under, distinct from
+    # curiosity's own shared investigation session. self_sense_eval needs
+    # this -- its answers must land in the SAME clean session
+    # `make eval-self-sense` and the in-process scheduler line both use
+    # (`orion.evals.self_sense_runner.SESSION_ID`), or scheduled and ad hoc
+    # runs stop being comparable rows in the same table (the exact review
+    # finding PR #2247 fixed for the in-process path; this closes the same
+    # gap for the durable path). `None` keeps every existing caller's
+    # behavior unchanged -- Hub's `_turn_result_for` falls back to its own
+    # shared session when this is absent.
+    session_id: str | None = None
 
 
 class CuriosityTurnResultV1(BaseModel):

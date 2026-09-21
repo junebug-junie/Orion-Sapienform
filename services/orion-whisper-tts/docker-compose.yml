@@ -99,14 +99,20 @@ services:
     # The value is the HOST's nvidia-smi index. Docker always remaps the
     # pinned physical device to container-local index 0, so TTS_USE_GPU and
     # every torch call inside still see cuda:0 regardless -- do not "fix"
-    # anything to cuda:4. Verify a pin with `docker inspect` DeviceIDs plus
-    # nvidia-smi on the host, never from a log line inside the container.
+    # anything to a bare index number here in the code path. Verify a pin
+    # with `docker inspect` DeviceIDs plus nvidia-smi on the host, never
+    # from a log line inside the container.
+    #
+    # No fallback default: WHISPER_TTS_GPU_DEVICE_ID must come from .env.
+    # A silent `:-0` default previously meant an unset var (missing .env,
+    # narrow --env-file, fresh checkout) pinned GPU0 -- vision-host's P4 on
+    # athena -- instead of failing the bring-up loudly.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${WHISPER_TTS_GPU_DEVICE_ID:-0}"]
+              device_ids: ["${WHISPER_TTS_GPU_DEVICE_ID:?WHISPER_TTS_GPU_DEVICE_ID must be set in services/orion-whisper-tts/.env}"]
               capabilities: [gpu]
 
     ports:

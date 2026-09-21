@@ -1,10 +1,22 @@
-# Second, independent orion-vision-host instance -- circe's dedicated P100
-# lane, running a real VLM (Qwen2-VL) instead of the shared athena
-# instance's BLIP-base. See README.md "Circe Qwen2-VL lane" for the full
-# story and orion/bus/channels.yaml's "orion:exec:request:VisionHostService:
-# circe-vl" entry for why this needs its own isolated channel (never the
-# shared bare one -- two consumers racing that channel already caused a
-# real incident, PR #1859/#1860).
+# Second, independent orion-vision-host instance -- a dedicated Qwen2-VL
+# lane, running a real VLM instead of the shared athena instance's
+# BLIP-base. See README.md "Circe Qwen2-VL lane" for the full story and
+# orion/bus/channels.yaml's "orion:exec:request:VisionHostService:circe-vl"
+# entry for why this needs its own isolated channel (never the shared bare
+# one -- two consumers racing that channel already caused a real incident,
+# PR #1859/#1860).
+#
+# CORRECTION 2026-09-21: this lane now runs on ATHENA, pinned to the new
+# Tesla T10 16GB at nvidia-smi index 1, not on circe. The "circe-qwen"
+# filename, the "circe-vl" bus channel suffix, the CIRCE_QWEN_ env prefix,
+# and the "-circe-" container-name fragment below are ALL historical labels
+# now, kept as-is on purpose: renaming a live bus channel or an env prefix
+# read by both this producer and its consumer (orion-thought) is a contract
+# change (AGENTS.md section 6), not a location move, and out of scope here.
+# Do not "fix" any of those names without doing that full contract-change
+# dance across both services' settings.py, .env_example, tests, and
+# channels.yaml. NODE_NAME and the percept-store URL below ARE corrected,
+# since those are real runtime values, not naming.
 #
 # Similar spirit to services/orion-llamacpp-host/docker-compose.atlas-workers.yml
 # (a second, differently-configured deployment of the same service image) --
@@ -39,7 +51,12 @@
 # of sync with each other (an earlier draft of this fix did that: a stale
 # key count in one comment vs. the actual list in another).
 #
-# Bring up from a worktree ON CIRCE (never the shared checkout):
+# Bring up from a worktree ON ATHENA (never the shared checkout). Not via
+# scripts/safe_docker_build.sh: that wrapper hardcodes -f services/$SERVICE/
+# docker-compose.yml and has no way to target this second compose file --
+# passing -f yourself would merge both files and risk recreating the main
+# vision-host service too. Run docker compose directly instead, from a
+# worktree, with the same dual --env-file convention:
 #   docker compose \
 #     --env-file .env \
 #     --env-file services/orion-vision-host/.env \
@@ -56,7 +73,11 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-vision-host/Dockerfile
-    container_name: ${PROJECT:-orion}-circe-vision-host-qwen
+    # "vision-host-qwen", not "-circe-vision-host-qwen": this lane runs on
+    # athena now (2026-09-21). Only the container name is corrected here --
+    # the CIRCE_QWEN_ env prefix, the "circe-vl" bus channel, and this
+    # file's own name stay as historical labels, see header comment.
+    container_name: ${PROJECT:-orion}-vision-host-qwen
     restart: unless-stopped
 
     environment:
@@ -65,8 +86,8 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
 
       - LOG_LEVEL=${CIRCE_QWEN_LOG_LEVEL:-INFO}
-      - NODE_NAME=circe
-      - SERVICE_NAME=orion-vision-host-circe-qwen
+      - NODE_NAME=athena
+      - SERVICE_NAME=orion-vision-host-qwen
 
       - ORION_BUS_ENABLED=${CIRCE_QWEN_ORION_BUS_ENABLED:-true}
       - ORION_BUS_ENFORCE_CATALOG=${CIRCE_QWEN_ORION_BUS_ENFORCE_CATALOG:-false}
@@ -113,7 +134,10 @@ services:
       # Physical index confirmed live via nvidia-smi immediately before
       # every deploy (README.md) -- do not trust a snapshot from earlier in
       # the session; GPU assignments on this host have moved before.
-      - CUDA_VISIBLE_DEVICES=${CIRCE_QWEN_CUDA_VISIBLE_DEVICES:-4}
+      # Default is athena's Tesla T10 (index 1) as of 2026-09-21 -- NOT the
+      # old circe P100 index 4, which no longer applies now this lane has
+      # moved hosts.
+      - CUDA_VISIBLE_DEVICES=${CIRCE_QWEN_CUDA_VISIBLE_DEVICES:-1}
       - VISION_DEVICE_STRATEGY=fixed
       - VISION_DEFAULT_DEVICE=cuda:0
       - VISION_DTYPE=fp16
@@ -130,11 +154,13 @@ services:
       # Deliberately LOWER than settings.py's own tuned defaults
       # (1200/1000/800) -- those were calibrated for athena's shared P4,
       # co-hosting 4+ warm profiles at once (see .env_example's 2026-08-21
-      # recalibration note there). This lane is one small model alone on a
-      # 16GB card (~5.4GB used, ~11GB free measured live) -- no co-hosted
-      # workload to reserve headroom against, so lower floors are correct
-      # for this deployment. CIRCE_QWEN_-prefixed -- see this file's own
-      # header comment for why every key here is, no exceptions.
+      # recalibration note there). This lane's own model is small (~4.8GB)
+      # on a 16GB card with real headroom even alongside whisper-tts, which
+      # also moved onto this same T10 the same day (2026-09-21, see
+      # README.md) -- two small models, not the athena P4's 4+ profile
+      # crowding, so lower floors are still correct here. CIRCE_QWEN_-
+      # prefixed -- see this file's own header comment for why every key
+      # here is, no exceptions.
       - VISION_VRAM_RESERVE_MB=${CIRCE_QWEN_VISION_VRAM_RESERVE_MB:-512}
       - VISION_VRAM_SOFT_FLOOR_MB=${CIRCE_QWEN_VISION_VRAM_SOFT_FLOOR_MB:-1024}
       - VISION_VRAM_HARD_FLOOR_MB=${CIRCE_QWEN_VISION_VRAM_HARD_FLOOR_MB:-512}
@@ -147,14 +173,14 @@ services:
       # runner.py::_load_image_from_percept_store is what actually
       # downloads those bytes back, server-side, to run inference on.
       #
-      # MUST BE THE REAL TAILSCALE IP, never a docker-internal hostname:
-      # this container runs on circe, percept-store on athena, and the
-      # docker-internal service name (orion-athena-percept-store) only
-      # resolves on athena's OWN docker network -- live-caught deploying
-      # this lane both the first time (bare hostname default) and again
-      # after a fix (bare-name collision silently restored the wrong
-      # hostname; see this file's header comment).
-      - VISION_PERCEPT_STORE_URL=${CIRCE_QWEN_VISION_PERCEPT_STORE_URL:-http://100.92.216.81:8021/percepts}
+      # CORRECTED 2026-09-21: this lane now runs ON athena, colocated with
+      # percept-store on the same `app-net` docker network, so the
+      # docker-internal service name resolves and is the right default.
+      # The old default here (100.92.216.81:8021, athena's tailscale IP)
+      # only made sense when this container ran on circe, a different host
+      # reaching athena over the tailnet -- keep that in mind if this lane
+      # ever moves to a third host again.
+      - VISION_PERCEPT_STORE_URL=${CIRCE_QWEN_VISION_PERCEPT_STORE_URL:-http://orion-athena-percept-store:8000/percepts}
       - VISION_PERCEPT_STORE_TOKEN=${CIRCE_QWEN_VISION_PERCEPT_STORE_TOKEN:-}
       - VISION_PERCEPT_TIMEOUT_SEC=${CIRCE_QWEN_VISION_PERCEPT_TIMEOUT_SEC:-10.0}
 

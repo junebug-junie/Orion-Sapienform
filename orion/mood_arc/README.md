@@ -33,9 +33,13 @@ live cognition consumer of this module's code and trained artifacts. Two
 caveats, both real, so this isn't overclaimed either:
 
 1. That whole path is gated by `FIELD_CHANNEL_ANOMALY_ENABLED`, which
-   defaults to `false` in both `.env_example` and `docker-compose.yml` —
-   whether it is actually running in any given live deployment is a
-   deployment-config fact this repo checkout cannot confirm on its own.
+   defaults to `true` as of 2026-09-21 (previously `false` since introduction
+   on 2026-07-21) in both `.env_example` and `docker-compose.yml` — whether
+   it is actually running in any given live deployment is still a
+   deployment-config fact this repo checkout cannot confirm on its own. It
+   ran live from ~2026-09-03 (right after the convergence in caveat 2 below)
+   until sometime 1-2 weeks before 2026-09-21, when the flag was silently
+   reset to `false` in a live `.env` with no record of when or why.
 2. **Converged 2026-09-03** (was a real gap until then): `anomaly_scorer.py`
    used to read from its own separately-tracked model directory,
    `/mnt/telemetry/models/field_channel_anomaly/`, disconnected from this

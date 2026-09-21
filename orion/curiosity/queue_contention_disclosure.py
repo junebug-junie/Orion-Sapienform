@@ -70,6 +70,7 @@ def format_queue_contention_progress(
 
     return [
         f"Queue pressure: {shown}/10 ({band}) — {blurb}. "
-        "Prefer hire_cursor for deep work — the local agent GPU seat is the "
-        "expensive one; keep only a short tried_summary yourself."
+        "Elevated queue is a reason to hire_cursor (offload), not a reason to "
+        "stay on local_crawl — the local agent GPU seat is the expensive one. "
+        "Keep only a short tried_summary yourself, then write HelpRequest."
     ]

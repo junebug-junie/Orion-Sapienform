@@ -785,6 +785,10 @@ def _role_and_help_section(
         "Writing the role does not enqueue Cursor and does not wake a peer. "
         "A role is not a hire ticket.",
         "",
+        "If a Queue pressure line appears in this prompt: elevated local queue "
+        "is more reason to hire_cursor (offload), never a reason to stay local. "
+        "Do not write 'queue elevated so no hire'.",
+        "",
         "    MERGE (r:InvestigationRole {",
         '      run_id: "<RUN_ID>",',
         '      choice: "local_crawl|hire_cursor",',
@@ -843,9 +847,9 @@ def _review_role_section(*, run_id: str) -> list[str]:
         "judges whether each one moved the claim it was about. You may say "
         "who should do that: self_review (the usual case) or "
         "hire_cursor_review (hand your own notes to a read-only Cursor "
-        "contractor instead). Same shared-queue tradeoff as hiring Cursor to "
-        "investigate applies here -- if it's backed up, that's a reason to "
-        "prefer self_review, not hire_cursor_review.",
+        "contractor instead). Elevated local queue pressure is a reason to "
+        "prefer hire_cursor_review (offload grading off the local agent GPU), "
+        "not a reason to insist on self_review.",
         "",
         "Writing nothing is fine and means self_review. You may revise "
         "mid-run; the newest written_at is the one that counts.",

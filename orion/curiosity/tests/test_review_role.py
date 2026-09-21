@@ -110,6 +110,11 @@ def test_review_role_section_teaches_the_merge_template():
     assert "self_review" in text and "hire_cursor_review" in text
     # writing nothing must be explicitly framed as fine, same as InvestigationRole
     assert "self_review" in text.split("Writing nothing is fine")[-1]
+    # Elevated local queue → offload grading; never "backed up ⇒ stay self_review".
+    lower = text.lower()
+    assert "prefer hire_cursor_review" in lower or "prefer hire_cursor_review (" in lower
+    assert "prefer self_review, not hire_cursor_review" not in lower
+    assert "reason to prefer self_review" not in lower
 
 
 def _material() -> StudyMaterial:

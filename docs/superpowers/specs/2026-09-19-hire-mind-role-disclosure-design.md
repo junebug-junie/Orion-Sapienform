@@ -1,10 +1,11 @@
 # Hire grounding — Mind / progress disclosure into role teach
 
-**Date:** 2026-09-19  
-**Status:** proposal (not implemented)  
-**Parent:** `docs/superpowers/specs/2026-09-15-orion-hire-determination-grounding-design.md`  
-**Impl parent:** PR #2238 (`feat/hire-determination-impl`)  
-**Live forensics:** 2026-09-19 (post #2244 / #2246 / #2247)
+**Date:** 2026-09-19
+**Status:** shipped (PR #2252); motor splice **VERIFIED** live 2026-09-20 via Soft HUD `motor_boot`
+**Parent:** `docs/superpowers/specs/2026-09-15-orion-hire-determination-grounding-design.md`
+**Impl parent:** PR #2238 (`feat/hire-determination-impl`)
+**Live forensics:** 2026-09-19 (post #2244 / #2246 / #2247); splice soak 2026-09-20
+**Follow-up:** `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md` — deep strong nudge, denial handoff, budget resume, queue weather
 
 ## Arsonist summary
 

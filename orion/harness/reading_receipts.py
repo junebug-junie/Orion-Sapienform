@@ -268,15 +268,21 @@ class ReadingReceiptTracker:
         return outcomes
 
 
+def _unread_caveat(url: str) -> str:
+    return f"I did not read that source during this turn. (`{url}`)"
+
+
 def enforce_reading_receipt_grounding(
     text: str, outcomes: list[ReadingRecommendationOutcomeV1]
 ) -> str:
-    """Return text whose persistence claims cannot exceed durable receipts.
+    """Return text whose persistence and content claims cannot exceed evidence.
 
     Any unresolved recommendation causes a deterministic receipt-only response.
     This makes semantically novel false-success wording harmless without trying
-    to maintain an ever-growing phrase blacklist. All-success turns retain the
-    model response but receive a canonical, inspectable receipt footer.
+    to maintain an ever-growing phrase blacklist. An accepted recommendation
+    proves only that the queue write happened -- it says nothing about whether
+    the model actually read the source this turn, so an accepted-but-unread
+    recommendation still gets the same "did not read" caveat a failed one does.
     """
 
     if not outcomes:
@@ -289,8 +295,14 @@ def enforce_reading_receipt_grounding(
         for item in receipts
     ]
     if not unknown:
-        missing_lines = [line for line in receipt_lines if line not in text]
-        footer = "\n".join(missing_lines)
+        footer_lines = [line for line in receipt_lines if line not in text]
+        for item in receipts:
+            if item.source_read:
+                continue
+            caveat = _unread_caveat(item.url)
+            if caveat not in text and caveat not in footer_lines:
+                footer_lines.append(caveat)
+        footer = "\n".join(footer_lines)
         return f"{text.strip()}\n\n{footer}".strip() if footer else text.strip()
 
     failure_lines: list[str] = []
@@ -301,5 +313,5 @@ def enforce_reading_receipt_grounding(
             f"durable receipt{attempts}; acceptance is unknown."
         )
         if not item.source_read:
-            failure_lines.append("I did not read that source during this turn.")
+            failure_lines.append(_unread_caveat(item.url))
     return "\n".join([*receipt_lines, *failure_lines])

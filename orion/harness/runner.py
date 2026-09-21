@@ -175,6 +175,8 @@ def build_harness_prompt(
     current_served_model: str | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
     situation_prompt_fragment: str | None = None,
+    reading_binding: Any = None,
+    reading_only: bool = False,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -186,6 +188,8 @@ def build_harness_prompt(
         current_served_model=current_served_model,
         recent_turns=recent_turns,
         situation_prompt_fragment=situation_prompt_fragment,
+        reading_binding=reading_binding,
+        reading_only=reading_only,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -345,6 +349,8 @@ class HarnessRunner:
             current_served_model=current_served_model,
             recent_turns=list(getattr(request, "recent_turns", None) or []),
             situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
+            reading_binding=getattr(request, "reading_binding", None),
+            reading_only=getattr(request, "reading_only", False),
         )
 
         try:

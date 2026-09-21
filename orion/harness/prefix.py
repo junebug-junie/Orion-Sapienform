@@ -12,12 +12,14 @@ from orion.harness.situation_brief import append_situation_block_harness_brief
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
+from orion.schemas.reading import ReadingToolBindingV1
 from orion.schemas.thought import (
     AutonomySliceV1,
     GroundingCapsuleV1,
     StanceHarnessSliceV1,
     ThoughtEventV1,
 )
+from orion.world_pulse_read.tools import append_reading_mcp_harness_brief
 
 
 def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
@@ -145,6 +147,8 @@ def compile_harness_prefix(
     current_served_model: str | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
     situation_prompt_fragment: str | None = None,
+    reading_binding: ReadingToolBindingV1 | None = None,
+    reading_only: bool = False,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
@@ -238,6 +242,9 @@ def compile_harness_prefix(
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
     append_self_index_harness_brief(parts)
+    append_reading_mcp_harness_brief(
+        parts, reading_binding=reading_binding, reading_only=reading_only
+    )
     append_situation_block_harness_brief(
         parts,
         situation_prompt_fragment=situation_prompt_fragment,

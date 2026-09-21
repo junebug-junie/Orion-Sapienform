@@ -787,7 +787,7 @@ def _role_and_help_section(
         "",
         "    MERGE (r:InvestigationRole {",
         '      run_id: "<RUN_ID>",',
-        '      choice: "local_crawl",   // or "hire_cursor"',
+        '      choice: "local_crawl|hire_cursor",',
         '      why: "<one sentence: why this role now>",',
         "      written_at: timestamp()",
         "    })",

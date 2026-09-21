@@ -953,20 +953,25 @@ class Settings(BaseSettings):
     # (orion/evals/self_sense_runner.py), previously only run by hand
     # (`make eval-self-sense`) and dark for 9+ days. No graph, no new grants --
     # just a scheduled version of the same chat turns the host script sends,
-    # scored and published the same way. Off by default; see
-    # services/orion-hub/README.md 4.2.1 for what turning it on costs.
+    # scored and published the same way. On by default as of 2026-09-20 --
+    # shipped off in PR #2247, turned on deliberately once that patch was
+    # confirmed live, then matched to the other two curiosity lines' cap of 7
+    # the same day (PR #2256); see services/orion-hub/README.md 4.2.2 for
+    # what it costs.
     HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED"
+        default=True, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED"
     )
-    # 1/day: the eval only means something as a daily time series, not a
-    # thing to run more often than that.
+    # Raised 1 -> 7 (PR #2256, 2026-09-20), matching investigation/self-inquiry.
+    # MIN_COOLDOWN_SEC below is the real pacing floor at this cap, not this
+    # number.
     HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP: int = Field(
-        default=1, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP"
+        default=7, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP"
     )
-    # 12h floor -- slack around the 1/day cap, not a real pacing knob at
-    # cap=1.
+    # Cut 43200 -> 10800 (3h) the same day so cap 7 is actually reachable
+    # (up to 8 slots/24h) instead of being capped in practice at ~2 by the
+    # old 12h floor.
     HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC: float = Field(
-        default=43200.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
+        default=10800.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
     )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(

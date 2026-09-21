@@ -1,12 +1,13 @@
 # Orion hire determination — grounding (addendum)
 
-> **Status:** Implementing on `feat/hire-determination-impl` (Patches 1–5 in code). Live Hub-chat / curiosity thought-event / `:InvestigationRole` graph proof: **UNVERIFIED**.
+> **Status:** Patches 1–5 shipped (PR #2238); Mind→role disclosure shipped (PR #2252). Live: roles still all `local_crawl`, HelpRequests still 0 — see follow-up.
 > **Parent:** `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 > **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.
 > **Date:** 2026-09-15 (brainstorm with Juniper; revised same day). Impl notes 2026-09-18.
 > **Design PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2233
 > **Impl PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2238
 > **Impl PR report:** `docs/superpowers/pr-reports/2026-09-18-hire-determination-grounding-pr.md`
+> **Follow-up (2026-09-20):** `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md` — Mind-deep strong handoff nudge, ≥2 permission-denied handoff, budget-spent resume, queue weather; digester EWMA deferred.
 
 ## Arsonist summary
 

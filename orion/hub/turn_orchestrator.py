@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Awaitable, Callable, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
@@ -121,27 +121,92 @@ def _attachment_meta_for_cockpit(raw_attachments: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
+    """Build refusal + budget + FieldState queue progress for Orion-origin turns.
+
+    Prefer prebuilt ``payload['role_teach_progress_lines']`` when present
+    (tests / callers). Otherwise compose from hop notes + PeerBrief hint in
+    the payload plus a fail-open FieldState score read. Each source is
+    independent — never invent a Hub Redis EWMA fallback for the queue score.
+
+    Sync on purpose (SQLAlchemy + pure formatters). Async callers must run
+    this via ``asyncio.to_thread`` so Hub's event loop is not blocked — same
+    contract as ``fetch_latest_outreach_provenance``.
+    """
+    prebuilt = payload.get("role_teach_progress_lines")
+    if isinstance(prebuilt, (list, tuple)):
+        cleaned = [str(x).strip() for x in prebuilt if str(x).strip()]
+        if cleaned:
+            return cleaned
+
+    hop_raw = payload.get("role_teach_hop_notes") or ()
+    hop_texts: list[str] = []
+    if isinstance(hop_raw, (list, tuple)):
+        for item in hop_raw:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                hop_texts.append(str(item[1]))
+            else:
+                hop_texts.append(str(item))
+
+    brief = payload.get("role_teach_peer_brief") or {}
+    if not isinstance(brief, Mapping):
+        brief = {}
+    peer_status = brief.get("status")
+    next_hop_n = brief.get("next_hop_n")
+    if next_hop_n is not None:
+        try:
+            next_hop_n = int(next_hop_n)
+        except (TypeError, ValueError):
+            next_hop_n = None
+
+    queue_score: float | None = None
+    queue_driver: str | None = None
+    try:
+        from orion.hub.queue_contention_field_read import read_latest_queue_contention
+
+        queue_score, queue_driver = read_latest_queue_contention()
+    except Exception:  # noqa: BLE001 — omit queue line only
+        logger.debug("role_teach_queue_contention_read_failed", exc_info=True)
+
+    try:
+        from orion.curiosity.hire_progress import build_role_teach_progress_lines
+
+        return build_role_teach_progress_lines(
+            hop_note_texts=hop_texts,
+            peer_brief_status=str(peer_status) if peer_status is not None else None,
+            peer_brief_next_hop_n=next_hop_n,
+            queue_score=queue_score,
+            queue_driver=queue_driver,
+        )
+    except Exception:  # noqa: BLE001 — fail-open entire gather
+        logger.debug("role_teach_progress_gather_failed", exc_info=True)
+        return []
+
+
 def _maybe_splice_role_teach_disclosure(
     user_message: str,
     *,
     utterance_origin: str | None,
     mind_work_shape: Mapping[str, Any] | None,
     enabled: bool,
+    progress_lines: Sequence[str] = (),
 ) -> str:
     """Advisory Mind work-shape into the motor kickoff when Orion-origin.
 
-    Only for ``utterance_origin == "orion"`` with a truthy work-shape and the
-    Hub flag on. Fail-open otherwise. Stance appraisal is untouched — callers
-    must apply this to the motor ``user_message`` only.
+    Only for ``utterance_origin == "orion"`` with a truthy work-shape or
+    progress lines and the Hub flag on. Fail-open otherwise. Stance appraisal
+    is untouched — callers must apply this to the motor ``user_message`` only.
     """
-    if not enabled or utterance_origin != "orion" or not mind_work_shape:
+    if not enabled or utterance_origin != "orion":
+        return user_message
+    if not mind_work_shape and not progress_lines:
         return user_message
     from orion.curiosity.role_teach_disclosure import (
         format_role_teach_disclosure,
         splice_role_teach_disclosure,
     )
 
-    lines = format_role_teach_disclosure(mind_work_shape)
+    lines = format_role_teach_disclosure(mind_work_shape, progress_lines=progress_lines)
     if not lines:
         return user_message
     return splice_role_teach_disclosure(user_message, lines)
@@ -1263,11 +1328,28 @@ async def execute_unified_turn(
     # Curiosity hire role teach: soft Mind work-shape into motor kickoff only
     # (stance already used appraisal/subject). Resume preamble stays in
     # curiosity_investigation._prompt_for_attempt — do not duplicate here.
+    # Progress lines (denials / budget / official FieldState queue score) are
+    # gathered only for Orion-origin turns; each source fails open alone.
+    # Sync FieldState SQL runs via to_thread (outreach_provenance pattern).
+    progress_lines: Sequence[str] = ()
+    if utterance_origin == "orion":
+        try:
+            progress_lines = await asyncio.to_thread(
+                _gather_role_teach_progress_lines, payload
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "role_teach_progress_lines_failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
+            progress_lines = ()
     user_message = _maybe_splice_role_teach_disclosure(
         user_message,
         utterance_origin=utterance_origin,
         mind_work_shape=thought.mind_work_shape,
         enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
+        progress_lines=progress_lines,
     )
     harness_req = HarnessRunRequestV1(
         resource_lease=payload.get("resource_lease"),

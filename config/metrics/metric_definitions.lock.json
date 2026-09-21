@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 659,
+  "metric_count": 660,
   "_last_change": {
-    "base": "merge base f70326fa7 (origin/main)",
+    "base": "merge base 695e73503 (origin/main)",
     "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/unknown/orion:curiosity:supervisor:reading"
+      "medium added metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score"
     ]
   },
   "definitions": {
@@ -3914,6 +3914,17 @@
     "metric://inner_state/orion-field-digester/field_state.v1": {
       "schema_id": "FieldStateV1",
       "notes": "cadence=per_tick composition=composed_into_self_state",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score": {
+      "schema_id": "FieldStateV1",
+      "declared_consumers": [
+        "orion.hub.turn_orchestrator:_maybe_splice_role_teach_disclosure (hire role-teach queue contention disclosure; Task 8 wires FieldState score into curiosity progress_lines)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_ewma": {

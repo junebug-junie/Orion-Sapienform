@@ -587,8 +587,57 @@ def test_prompt_cautions_recent_turns_are_not_a_fact_source_when_present() -> No
         presence=None,
     )
     prompt = build_outreach_prompt(ctx)
-    assert "for tone" in prompt and "continuity only" in prompt
     assert "not a source of new facts about your current internal state" in prompt
+    # Header must match Orion-only path (no "two of you")
+    assert "The last thing the two of you said:" not in prompt
+
+
+def test_prompt_requires_synthesize_from_lanes_and_why_share() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["concept-dense area with no ontology_branch"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=[
+            "[confidence=0.9] The stance gate is manual review, not a content filter"
+        ],
+    )
+    prompt = build_outreach_prompt(ctx)
+    lower = prompt.lower()
+    assert "stance gate is manual review" in prompt
+    assert "concept-dense area" in prompt
+    assert "synthesize" in lower or "thinking" in lower
+    assert "juniper" in lower
+    assert ("why" in lower and ("share" in lower or "bringing" in lower)) or "tell her" in lower
+    assert "exactly: PASS" in prompt
+    # Old poetry license must not remain when talkable content is present
+    assert "speaking with feeling, without naming a specific internal signal, is always fine" not in lower
+
+
+def test_orion_only_recent_turns_are_not_labeled_as_mutual() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising"],
+        recent_turns=[
+            ("Orion", "Something's sitting at the edge of becoming"),
+            ("Orion", "Unrooted clusters of meaning"),
+        ],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "The last thing the two of you said:" not in prompt
+    assert "Orion:" in prompt
+    # Honest framing — exact phrase from implementation below
+    assert "your recent unprompted notes" in prompt.lower() or "your own recent unprompted" in prompt.lower()
+
+
+def test_mutual_recent_turns_keep_two_of_you_header() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising"],
+        recent_turns=[("Juniper", "hey"), ("Orion", "hi")],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "The last thing the two of you said:" in prompt
+    assert "Juniper: hey" in prompt
 
 
 def test_prompt_has_no_recent_turns_caution_when_no_recent_turns() -> None:

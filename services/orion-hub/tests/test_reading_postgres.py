@@ -129,6 +129,61 @@ def uuid_from(value):
     return UUID(value)
 
 
+def test_reading_status_reports_queue_position_only_while_queued(local_pg):
+    """Repro of a live incident: asked how far back a queued read was, Orion
+    had no way to say anything but "queued" -- no position, no sense of
+    whether that meant seconds or days. queue_position/queue_depth answer
+    that; both must be null again once the row leaves the pending queue."""
+    async def run():
+        conn, schema = await db(local_pg)
+        ahead = [request(f"https://example.org/ahead-{i}") for i in range(3)]
+        for req in ahead:
+            await queue.enqueue_reading(conn, req)
+        target = request("https://example.org/target")
+        await queue.enqueue_reading(conn, target)
+        behind = request("https://example.org/behind")
+        await queue.enqueue_reading(conn, behind)
+
+        status = await queue.reading_status(conn, target.request_id)
+        assert status["status"] == "queued"
+        assert status["queue_position"] == 4
+        assert status["queue_depth"] == 5
+
+        seed = await queue.claim_next_seed(conn)
+        assert seed.request.request_id == ahead[0].request_id
+        handoff = WorldPulseReadHandoffV1(
+            seed_ref=seed, what_i_learned="noted", trace_id=str(uuid4()),
+            created_at=datetime.now(timezone.utc),
+        )
+        await queue.mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id, handoff=handoff)
+
+        after_one_done = await queue.reading_status(conn, target.request_id)
+        assert after_one_done["queue_position"] == 3
+        assert after_one_done["queue_depth"] == 4
+
+        for expected in (ahead[1], ahead[2]):
+            claimed = await queue.claim_next_seed(conn)
+            assert claimed.request.request_id == expected.request_id
+            handoff = WorldPulseReadHandoffV1(
+                seed_ref=claimed, what_i_learned="noted", trace_id=str(uuid4()),
+                created_at=datetime.now(timezone.utc),
+            )
+            await queue.mark_seed_done(conn, claimed.seed_id, trace_id=handoff.trace_id, handoff=handoff)
+
+        # Claim target itself (now the oldest pending seed) but leave it
+        # claimed, not done, so status flips to "started" without target
+        # ever completing.
+        claimed_target = await queue.claim_next_seed(conn)
+        assert claimed_target.request.request_id == target.request_id
+
+        claimed_status = await queue.reading_status(conn, target.request_id)
+        assert claimed_status["status"] == "started"
+        assert claimed_status["queue_position"] is None
+        assert claimed_status["queue_depth"] is None
+        await conn.close()
+    asyncio.run(run())
+
+
 def test_stage2_lineage_global_roundtrip_cap_and_durable_result(local_pg):
     async def run():
         conn, schema = await db(local_pg)

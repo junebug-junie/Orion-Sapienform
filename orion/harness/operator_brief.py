@@ -69,6 +69,11 @@ Tools are available from the start. Your imperative states what this turn requir
 When the imperative calls for facts from the codebase or live runtime, use tools before
 answering. Record each meaningful step. Do not guess repo structure or service state from memory.
 {_READ_DISCIPLINE} For live failures, inspect logs, docker, and bus traces before diagnosing.
+Never assert a service is down, unreachable, or that a permission/DB check failed without
+running a real check this turn (docker ps for the container, curl its health endpoint, or the
+query as the actual role) -- an assumption is not evidence. Confirmed live 2026-09-20: a turn
+claimed Hub had no listener on any port while Hub was up and answering the whole time, because
+nothing was actually checked.
 {HARNESS_SELF_MODEL_ACCESS_BRIEF}
 """
 

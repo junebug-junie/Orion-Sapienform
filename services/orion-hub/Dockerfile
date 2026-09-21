@@ -67,6 +67,16 @@ RUN if [ "${INSTALL_DEV_DEPS}" = "true" ]; then pip3 install --no-cache-dir -r /
 # copy schemas into the container
 COPY orion /app/orion
 
+# orion.evals.self_sense reads this at import time (FIELD_NODE_IDS, module
+# scope) to score "what can't you do" against the real node mesh. Never
+# copied before 2026-09-20 because nothing in this image imported that
+# module until the self-sense-eval scheduler line (PR #2247/#2262) started
+# calling it from inside the container -- cortex-exec never hit this because
+# it bind-mounts the full host repo (ORION_HOST_REPO_ROOT) instead of
+# COPYing individual config paths. Same fix orion-field-digester's Dockerfile
+# already uses for this exact file.
+COPY config/field /app/config/field
+
 # Vendor autonomy-gate pure helpers for Hub Drives Analytics (avoids relying solely
 # on the repo volume mount for ORION_REPO_ROOT=/repo).
 COPY scripts/analysis/measure_autonomy_gate.py /app/vendor/measure_autonomy_gate.py

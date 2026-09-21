@@ -836,3 +836,89 @@ class TestHeartbeatH1:
         assert model.heartbeat_verdict == "redundant"
         assert model.heartbeat_std_ratio is None
         assert model.heartbeat_bulk_penetration_depth is None
+
+    def test_proprioception_fields_copy_and_basis_names_dark_seats(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={
+                "mean_ratio": 0.9,
+                "verdict": "mixed",
+                "tick_count": 12,
+                "dark_seats": ["orion-cortex-exec", "orion-hub"],
+                "organ_fire_counts": {"orion-bus": 4, "orion-cortex-exec": 0},
+                "organ_distinctness": 0.4,
+                "smear": 0.12,
+                "smeared": False,
+            },
+        )
+        assert model.heartbeat_dark_seats == ["orion-cortex-exec", "orion-hub"]
+        assert model.heartbeat_organ_fire_counts == {
+            "orion-bus": 4,
+            "orion-cortex-exec": 0,
+        }
+        assert model.heartbeat_organ_distinctness == pytest.approx(0.4)
+        assert model.heartbeat_smear == pytest.approx(0.12)
+        assert model.heartbeat_smeared is False
+        assert "dark_seats=orion-cortex-exec,orion-hub" in model.heartbeat_basis
+        assert "mean_ratio" not in model.heartbeat_basis
+
+    def test_missing_proprioception_still_populates_verdict(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={"mean_ratio": 0.82, "verdict": "redundant", "tick_count": 1},
+        )
+        assert model.heartbeat_verdict == "redundant"
+        assert model.heartbeat_dark_seats == []
+        assert model.heartbeat_organ_fire_counts == {}
+        assert model.heartbeat_organ_distinctness is None
+        assert model.heartbeat_smear is None
+        assert model.heartbeat_smeared is None
+        assert "dark_seats=untracked" in model.heartbeat_basis
+
+    def test_all_lit_seats_basis_says_none_not_untracked(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={
+                "mean_ratio": 0.9,
+                "verdict": "mixed",
+                "tick_count": 8,
+                "dark_seats": [],
+                "organ_fire_counts": {
+                    "orion-hub": 2,
+                    "orion-biometrics": 1,
+                    "orion-cortex-exec": 3,
+                    "orion-bus": 1,
+                    "orion-cortex-orch": 1,
+                },
+            },
+        )
+        assert model.heartbeat_dark_seats == []
+        assert "dark_seats=none" in model.heartbeat_basis
+
+    def test_invalid_proprioception_does_not_block_verdict(self) -> None:
+        model = reduce_attention_self_model(
+            None,
+            _field_frame(),
+            now=NOW,
+            heartbeat_h1={
+                "mean_ratio": 0.7,
+                "verdict": "mixed",
+                "dark_seats": ["orion-hub", 12],
+                "organ_fire_counts": "nope",
+                "organ_distinctness": float("nan"),
+                "smear": True,
+                "smeared": "yes",
+            },
+        )
+        assert model.heartbeat_verdict == "mixed"
+        assert model.heartbeat_dark_seats == []
+        assert model.heartbeat_organ_fire_counts == {}
+        assert model.heartbeat_organ_distinctness is None
+        assert model.heartbeat_smear is None
+        assert model.heartbeat_smeared is None

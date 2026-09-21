@@ -119,6 +119,22 @@ def test_recent_perturbation_zscore_is_in_the_urn_space():
     assert "recent_perturbation_zscore" in names
 
 
+def test_queue_contention_score_names_hire_disclosure_consumer_only():
+    """FieldState scalar override: hire path on score, not sibling floats."""
+    nodes = {n.urn: n for n in resolve_inner_state()}
+    score = nodes[
+        "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score"
+    ]
+    sibling = nodes[
+        "metric://inner_state/orion-field-digester/field_state.v1#sustained_load_pressure"
+    ]
+    parent = nodes["metric://inner_state/orion-field-digester/field_state.v1"]
+    assert score.producer_service == "orion-field-digester"
+    assert any("turn_orchestrator" in c for c in score.declared_consumers)
+    assert sibling.declared_consumers == ()
+    assert parent.declared_consumers == ()
+
+
 def test_no_dangling_upstream_urns():
     """Every upstream URN must resolve to a real node.
 

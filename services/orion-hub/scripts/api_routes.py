@@ -3276,6 +3276,7 @@ async def handle_chat_request(
             continuity_messages=continuity_messages,
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
+            utterance_origin="juniper",
         )
         final_frame = frames[-1] if frames else {
             "type": "turn_error",

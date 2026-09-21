@@ -273,3 +273,21 @@ def test_the_actions_half_of_the_strip_wraps_independently() -> None:
     strip = _slice(html, 'for="recallToggle"', 'id="recallModeSelect"')
     assert strip.count("flex-wrap") >= 1
     assert 'id="presenceStatusChip"' in strip
+
+
+# --- Outreach provenance "why I spoke" -------------------------------------
+
+
+def test_outreach_handler_passes_provenance_into_append_message() -> None:
+    js = _js()
+    # The orion_outreach branch must forward the capsule.
+    assert "outreach_provenance: d.outreach_provenance" in js or "outreachProvenance: d.outreach_provenance" in js
+
+
+def test_append_message_builds_why_i_spoke_details_for_outreach_provenance() -> None:
+    js = _js()
+    body = _slice(js, "function appendMessage(", "function collectConversationTurnsUpTo")
+    assert "why I spoke" in body
+    assert "om-outreach-why" in body
+    assert "summary_line" in body or "summaryLine" in body
+    assert "prompt_text" in body or "promptText" in body

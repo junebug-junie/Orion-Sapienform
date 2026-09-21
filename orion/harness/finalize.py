@@ -34,6 +34,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.reading import ReadingRecommendationOutcomeV1
+from orion.llm.routes import is_agent_route_model_label
 from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
@@ -345,6 +346,25 @@ def maybe_quick_lane_verdict(
     )
 
 
+def resolve_finalize_llm_lane(
+    *,
+    resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
+) -> str:
+    """Gateway llm_route/llm_lane for harness finalize (reflect + repair).
+
+    Owner rule (2026-09-15): admitted lease wins; else agent FCC model label
+    → agent; else chat (default unified Hub chat / non-agent labels including
+    MODEL_SONNET). Do not hardcode ordinary finalize to agent — that stranded
+    chat turns behind curiosity (corr 60f0e051).
+    """
+    if resource_lease is not None:
+        return str(resource_lease.lane)
+    if is_agent_route_model_label(fcc_model_label):
+        return "agent"
+    return "chat"
+
+
 def build_finalize_reflect_context(
     *,
     correlation_id: str,
@@ -355,7 +375,12 @@ def build_finalize_reflect_context(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
+    lane = resolve_finalize_llm_lane(
+        resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
+    )
     return {
         "draft_text": draft_text,
         "thought_event": thought.model_dump(mode="json"),
@@ -365,25 +390,10 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": "",
         "user_message": user_message,
-        # An admitted continuation uses its owning lane and generation, so
-        # it cannot queue behind the reservation that this same turn holds.
-        # Ordinary finalization keeps its existing agent route. Set both
-        # routing axes for Gateway deployments with or without lane routing.
-        "llm_route": resource_lease.lane if resource_lease else "agent",
-        # Was `background` until confirmed wrong live 2026-08-16
-        # (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_response_repair
-        # call also runs on `background`/atlas-worker-2 and can occupy it for 90s+,
-        # starving this call's LLMGatewayService RPC entirely (no reply within
-        # cortex-exec's own 300s internal timeout). `chat` was considered and
-        # rejected: it maps to circe-worker-1, the same worker chat_general's own
-        # live draft generation uses, with no admission/concurrency throttling on
-        # that route -- would trade the 5b-vs-5c collision for 5b-vs-live-user-chat
-        # contention. `agent` (circe-worker-agent-1, verified live) is currently
-        # unused by any other verb, isolating this call from both. See
-        # test_finalize_reflect_lane.py and
-        # test_llm_lane_propagation.py::test_finalize_reflect_ctx_llm_lane_resolves_agent
-        # for the fuller incident writeup. Ordinary finalizers share agent.
-        "llm_lane": resource_lease.lane if resource_lease else "agent",
+        # Owner-lane finalize: lease lane when admitted; else agent FCC label
+        # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.
+        "llm_route": lane,
+        "llm_lane": lane,
         **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
@@ -403,6 +413,7 @@ def build_finalize_reflect_plan_request(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("harness_finalize_reflect", mode="brain")
     return PlanExecutionRequest(
@@ -421,6 +432,7 @@ def build_finalize_reflect_plan_request(
             user_message=user_message,
             grammar_receipts=grammar_receipts,
             resource_lease=resource_lease,
+            fcc_model_label=fcc_model_label,
         ),
     )
 
@@ -464,6 +476,7 @@ async def run_finalize_reflection(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -491,6 +504,7 @@ async def run_finalize_reflection(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
     )
     try:
         exec_result = await cortex_client(plan_request)
@@ -590,6 +604,7 @@ async def maybe_run_finalize_tool_retry(
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
@@ -756,6 +771,7 @@ async def maybe_run_finalize_tool_retry(
             grammar_receipts=receipts,
             cortex_client=cortex_client,
             resource_lease=resource_lease,
+            fcc_model_label=fcc_model_label,
         )
     except Exception as exc:
         logger.warning(
@@ -818,16 +834,21 @@ def build_response_repair_context(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
+    lane = resolve_finalize_llm_lane(
+        resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
+    )
     return {
         "draft_text": draft_text,
         "reflection": reflection.model_dump(mode="json"),
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "user_message": user_message,
-        # Same owner as 5b; ordinary response repair retains the agent lane.
-        "llm_route": resource_lease.lane if resource_lease else "agent",
-        "llm_lane": resource_lease.lane if resource_lease else "agent",
+        # Same owner as reflect (5b).
+        "llm_route": lane,
+        "llm_lane": lane,
         **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
@@ -845,6 +866,7 @@ def build_response_repair_plan_request(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_response_repair", mode="brain")
     return PlanExecutionRequest(
@@ -861,6 +883,7 @@ def build_response_repair_plan_request(
             user_message=user_message,
             grammar_receipts=grammar_receipts,
             resource_lease=resource_lease,
+            fcc_model_label=fcc_model_label,
         ),
     )
 
@@ -904,6 +927,7 @@ async def run_orion_response_repair(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Orion capability: minimal post-reflection response repair.
 
@@ -921,6 +945,7 @@ async def run_orion_response_repair(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_response_repair_text(exec_result)
@@ -1268,6 +1293,7 @@ async def run_harness_finalize_chain(
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    fcc_model_label: str | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
 
@@ -1284,9 +1310,9 @@ async def run_harness_finalize_chain(
     JSON in place of prose-oriented 5c. The default remains false, preserving
     conditional response repair for ordinary turns.
 
-    ``resource_lease`` carries the same admission owner through reflection,
-    any re-reflection, and conditional response repair. Each LLM call uses the
-    reserved lane instead of waiting as an unrelated caller on its own reservation.
+    Owner identity comes from ``resource_lease`` when admitted, otherwise from
+    ``fcc_model_label``. The same owner lane flows through reflection, any
+    re-reflection, and conditional response repair.
 
     Runtime evidence: substrate appraisal, verdict and outcome molecules
     (outcome carries finalize_loop_retried/finalize_loop_tool when 5b-prime
@@ -1309,6 +1335,7 @@ async def run_harness_finalize_chain(
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
         resource_lease=resource_lease,
+        fcc_model_label=fcc_model_label,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
@@ -1334,6 +1361,7 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
+                fcc_model_label=fcc_model_label,
                 bus=bus,
                 grammar_channel=grammar_channel,
                 grammar_publish_fn=grammar_publish_fn,
@@ -1392,6 +1420,7 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
+                fcc_model_label=fcc_model_label,
             )
             voice_meta = {
                 **voice_meta,

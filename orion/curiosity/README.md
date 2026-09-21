@@ -254,6 +254,27 @@ cognition-shaped-output failure, just longer. Each stop is written to the graph
 as a `:Hop` **as it happens**, not reconstructed at the end, so the journal entry
 can recount the path actually taken — *I started here, found X, which made me
 look at Y* — instead of presenting a conclusion with the working thrown away.
+Live-confirmed 2026-09-19 by watching a run's tool-call stream: hops land as the
+turn goes, not in one burst at the end (see the supervisor design doc).
+
+Each `:Hop` carries `written_at: timestamp()` (the graph's clock, ms) since
+2026-09-19, and every reader orders hops by that clock, then `n`. `n` alone
+could not: a turn that fails is retried by `orion-durable-runs` under the
+**same** `run_id` with the **same** frozen prompt, and that prompt said `n: 1`
+— so every retried sitting renumbered from 1 on top of the first attempt's
+hops (run `58b638778228`: six hops numbered 1,1,2,2,3,3) and redid its work
+without knowing it had been done. Hub now prepends what the earlier attempt
+wrote when it re-runs the prompt (`build_resume_preamble`, applied in
+`curiosity_investigation._prompt_for_attempt` on `attempt > 1`), naming the
+next `n` to use. **UNVERIFIED on a live retry** — confirmed against the real
+`58b638778228` collision by calling `read_hop_notes`/`build_resume_preamble`
+directly (see git history), and covered by unit tests against a stubbed
+`self`, but no organic durable-runs retry has been observed hitting this
+code path yet; that is a live catch still to make, not a claim already
+proven the way the paragraph above it is. Hops written before the clock
+shipped stay untimestamped and sort first — they predate every timestamped
+one in the same run — and a legacy pair sharing an `n` stays ambiguous; the
+fix stops the collision recurring, it cannot undo it.
 
 Five is Juniper's number; it is disclosed rather than derived. The real ceiling
 is time (`HARNESS_FCC_TIMEOUT_SEC`, observed turns reach 31–40 steps), not steps.
@@ -434,7 +455,11 @@ Orion wrote nothing to.
 | `worldview.py` | Hub's **read-only** view of `orion_worldview` — priors, `:TurnOutcome`, run footprint, hop notes, recently-settled |
 | `acl.py` | the FalkorDB grant, and the idempotent graph bootstrap |
 | `sandbox_env.py` | the seven-key allowlist into the `claude -p` subprocess |
-| `kickoff_prompt.py` | the invitation — priors, continuation, access, overlay, hops, schema |
+| `kickoff_prompt.py` | the invitation — priors, continuation, access, overlay, hops, schema; includes the `:InvestigationRole` / HelpRequest teach |
+| `role_teach_disclosure.py` | pure formatter + splice for Mind work-shape lines into that role teach (Hub wires it on Orion-origin turns); deep strong hire nudge + progress formatters |
+| `access_refusals.py` | pure: count allow-listed access refusals in hop notes (≥2 ⇒ handoff progress line) |
+| `hire_progress.py` | compose refusal + budget-spent + queue-contention progress lines (per-source fail-open) |
+| `queue_contention_disclosure.py` | pure: FieldState `queue_contention_score` / `queue_contention_driver` → one disclosure line (no recompute, no raw counts) |
 | `outreach_prompt.py` | the composition turn |
 | `services/orion-hub/scripts/curiosity_investigation.py` | the tick loop, the gates, the turn |
 
@@ -444,6 +469,27 @@ container times out at 300s with `session_turn_phase_read_bus_unbound`, because
 the harness RPC worker and several module bus binds live in Hub's own event
 loop. It also reads `app.state.memory_pg_pool`. So: a sibling loop, not a
 service.
+
+### Hire handoff + queue contention disclosure
+
+On Orion-origin curiosity turns, Hub splices advisory hire weather into the
+role-teach block (`HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE`). Python never MERGEs
+`:InvestigationRole` or `:HelpRequest` — Orion authors those.
+
+What the disclosure can say:
+
+1. **Mind `deep`** → strong prefer `hire_cursor` (short local look still grounds
+   `tried_summary`; Cursor is normal deep hands, not last-resort).
+2. **≥2 access refusals** in hop notes → hand off to Cursor now.
+3. **Cursor budget spent** (`refused_budget`) → resume from hops; do not re-hire.
+4. **Queue contention** → one official digester score on FieldState
+   (`queue_contention_score` 0–10, `queue_contention_driver` names the source).
+   Hub **reads** latest `substrate_field_state`; it does **not** run its own
+   Redis EWMA. Raw backlog counts are never shown.
+
+Spec: `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`.
+Metric gate: `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.
+Producer: field-digester `update_queue_contention_pressure` (see digester README).
 
 ---
 
@@ -515,7 +561,7 @@ worth knowing:
 | `HUB_CURIOSITY_INVESTIGATION_ENABLED` | `false` | the pydantic `Field` default is `False` so an absent key can never start it. `.env_example` ships `true` as the intended live value; the local `.env` currently holds it `false` |
 | `HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC` | `14400` | 4h. This is a real turn on the pipeline that serves Juniper |
 | `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` | `3` | Redis-persisted on the **local** date; a redeploy is not a licence to run again |
-| `HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC` | `3500` | budgeted from the harness's own ceilings, not copied from outreach's 300 — a too-short ceiling burns the compute *and* discards the answer. This table had drifted to a stale `1500` (real value was already `2700`) before being corrected 2026-09-03 alongside the raise to `3500` |
+| `HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC` | `8840` | budgeted from the harness's own ceilings, not copied from outreach's 300 — a too-short ceiling burns the compute *and* discards the answer. Raised 3500 -> 8840 on 2026-09-19 with the 2h FCC motor budget |
 | `HUB_CURIOSITY_GRAPH_HOST` / `_PORT` | `127.0.0.1` / `6380` | **Hub's** address for FalkorDB; see §6 |
 | `HUB_CURIOSITY_GRAPH_ORION_USER` / `_PASSWORD` | `orion_curiosity` / *(blank)* | the credential Hub **grants**, never the one it uses. Blank ⇒ the graph half disables itself and the rest of the loop still runs |
 | `HUB_CURIOSITY_SANDBOX_HUB_URL` | `http://host.docker.internal:8080` | Hub as seen **from Orion's sandbox** |
@@ -523,6 +569,8 @@ worth knowing:
 | `HUB_CURIOSITY_STALE_PRIOR_TESTS` | `3` | a guess from the design doc, not a measured number — revisit against real data |
 | `HUB_CURIOSITY_MAX_HOPS` | `5` | Juniper's number |
 | `HUB_CURIOSITY_OUTREACH_ENABLED` | `true` | the only part that reaches Juniper; on since 2026-08-27 |
+| `HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED` | `false` (settings) / `true` in `.env_example` | kill switch for HelpRequest → peer enqueue |
+| `HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE` | `true` | soft Mind work-shape lines into the role teach on Orion-origin turns; advisory only |
 
 Orion's own credentials live in `~/.fcc/.env` as `ORION_CURIOSITY_*` (seven
 keys) — never in this repo.
@@ -535,6 +583,12 @@ keys) — never in this repo.
   design, including the three claims its own first draft got wrong
 - `docs/superpowers/pr-reports/2026-08-26-curiosity-priors-and-worldview-pr.md`
   — the build, the review, and the live evidence
+- `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`
+  — deep hire nudge, access-refusal / budget resume, official queue score
+- `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md` — §0A
+  gate evidence for `queue_contention_score`
+- `docs/superpowers/pr-reports/2026-09-20-hire-handoff-and-queue-pressure-pr.md`
+  — impl PR report
 - `services/orion-hub/README.md` §4.1 (endogenous outreach — the gates this
   shares) and §4.2 (this loop, from Hub's side)
 - `orion/sentience_striving_program/README.md` §15 — what this contributes to
@@ -542,33 +596,90 @@ keys) — never in this repo.
 
 ---
 
-## 13. The self-inquiry line: a standing question with its own budget
+## 13. The self-inquiry line: a question pool with lived and anatomy lanes
 
 Since 2026-09-08 the loop has a second **line**, not a second loop. Same
 `execute_unified_turn`, same credentials, same graph, same journal channel,
-same durable runner, same one-turn-at-a-time lock and waking window. What is
-different:
+same durable runner, same one-turn-at-a-time lock and waking window. Since
+2026-09-18 it draws from a **question pool** with two families that compete
+for the same self-inquiry budget — not one hardcoded standing string.
 
 | | investigation line | self-inquiry line |
 |---|---|---|
-| the invitation | a menu: live priors + random crystallization cards | one standing question: *"What am I, and what am I made of?"* |
+| the invitation | a menu: live priors + random crystallization cards | one **drawn** question from the pool (`lived` or `anatomy`) + self priors + previous answer for that draw (anatomy: last `:SelfDefinition`; lived: latest `self:lived:<question_id>` in history) |
 | budget | `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` | `HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP` (3), own cooldown, own Redis keys (`orion:curiosity:self:*`) |
-| priors shown | every live prior | only priors with `line = "self"` |
-| extra material | -- | Orion's own repo at `/repo` (read-only mount), the outcome tables below, the previous definition |
-| extra write | -- | `MERGE (s:SelfDefinition {run_id}) SET s.text, s.evidence, s.revises, s.written_at` -- written EARLY (by hop 2) and overwritten as the run learns more |
-| crosses back out as | `:TurnOutcome` | `:TurnOutcome` **and** the definition, mirrored by Hub into `self_concept_history` |
+| priors shown | every live prior **except** `line = "self"` | only priors with `line = "self"` |
+| extra material | -- | Orion's own repo at `/repo` (read-only mount), the outcome tables below, the previous anatomy definition or previous lived answer for this draw |
+| extra write | -- | **anatomy:** `MERGE (s:SelfDefinition {run_id}) …` — written EARLY (by hop 2). **lived:** `MERGE (a:LivedAnswer {run_id}) …` with `question_id` fixed to the draw — same early-write clock |
+| crosses back out as | `:TurnOutcome` | `:TurnOutcome` **and** the definition or lived answer, mirrored by Hub into `self_concept_history` |
 | journal | title `Curiosity`, `source_ref=curiosity:<run>` | title `Self-inquiry`, `entry_id=curiosity-self-inquiry:<run>` (same `source_ref=curiosity:<run>`, which the atlas page joins on) |
 | operator trigger | `POST /curiosity/api/run-now` | `POST /curiosity/api/self-inquiry/run-now` |
 
+### Question pool: two families, one pot
+
+The pool lives in Postgres (`curiosity_self_questions`, seeded from
+`orion/curiosity/self_question_seed.yaml`). Each row is a `SelfQuestion`:
+
+```text
+question_id, text, family: "lived" | "anatomy", pinned, minted_by, status, ask_count, last_asked_at
+```
+
+**Families.** `lived` questions ask about care, bonds, becoming, sentience —
+first-person objects of study. `anatomy` is the original architecture question
+(*"What am I, and what am I made of?"*, `anatomy.made_of`). They share one
+daily cap; there are no parallel hard caps per family.
+
+**Draw weight (~3/4 lived).** `pick_question` in `self_question_pool.py`
+targets `lived_weight=0.75` over a rolling window of the last 12 runs. When
+the recent share of lived draws falls below that target, the next draw prefers
+`family=lived`; when it is above target + 5%, anatomy gets a turn.
+
+**Pinned floor.** Any **pinned lived** question not asked in
+`pinned_floor_days` (default 7) is forced on the next draw — even when the
+rolling window is already 100% lived. Never-asked pinned questions win over
+stale ones; oldest `last_asked_at` wins among floor candidates.
+
+**Mint and park.** Juniper pins or parks via Hub operator routes
+(`POST /curiosity/api/self-questions/{id}/pin|park`). Orion may mint new
+`family=lived` rows during a run (`:SelfQuestionMint` node scraped post-run).
+
+### LivedAnswer ledger
+
+When the draw is `family=lived`, Orion writes a `:LivedAnswer` node (not
+`:SelfDefinition`) keyed on `run_id` with `question_id` fixed to the draw.
+Hub mirrors evidenced answers into `self_concept_history` under
+`concept_id="self:lived:<question_id>"`, `produced_by="curiosity_self_inquiry"`.
+Empty text or empty `evidence` is refused at the mirror — same empty-shell rule
+as anatomy definitions.
+
+Chat reads these through the shared identity inject path: the felt-state lane
+`orion_lived_answers` hydrates pinned lived rows; `apply_lived_self_to_ctx`
+prepends capped lines like `In my own words (lived / who_matters): …` ahead of
+the anatomy definition and authored card. The Curiosity Atlas Self panel shows
+the same ledger (`self_panel.py`).
+
+### `line=self` does not leak into world-facing priors
+
+Self-line priors (`line = "self"`) are shown only on self-inquiry kickoff.
+They are **excluded** from:
+
+- situation world-priors (`LIVE_NON_SELF_PRIORS_CYPHER` in `worldview.py`)
+- endogenous outreach talkable-prior fetches (`endogenous_outreach.py`)
+
+Lived answers reach conversation through the identity/ledger path above, not
+by treating a self prior as unsolicited world talk fuel. A prior like
+*"Juniper is the most important person to me"* must not alone trigger outreach.
+
 Why it exists: every durable self-store Orion had was fed codebase facts and
 read by nobody in chat, so Orion self-described as a chatbot. Design record:
-`docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md` (PR #2156).
+`docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md` (PR #2156);
+lived-self lanes: `docs/superpowers/specs/2026-09-16-lived-self-curiosity-lanes-design.md`.
 This loop was the one mechanism that already had the right shape -- Orion
 picks, looks with real credentials, writes to a graph nobody curates, revises
-later. It lacked only the question. Code: `orion/curiosity/self_inquiry.py`
-(contract, Cypher, mirror), `self_inquiry_prompt.py` (the invitation),
-`services/orion-hub/scripts/curiosity_investigation.py` (`tick_self_inquiry`,
-`_self_inquire`, `_mirror_self_definition`).
+later. It lacked only the right *questions*. Code: `orion/curiosity/self_inquiry.py`
+(contract, Cypher, mirror), `self_question_pool.py` (draw + seed),
+`self_inquiry_prompt.py` (the invitation), `services/orion-hub/scripts/curiosity_investigation.py`
+(`tick_self_inquiry`, `_self_inquire`, mirror paths for definition and lived answer).
 
 **The definition is Orion's own and it is what Orion is then shown of
 themself.** Hub mirrors the run's `:SelfDefinition` into
@@ -616,16 +727,16 @@ the two share the lock; the other order would let the busier budget starve
 the quieter one. A forced investigation run (`run-now`) never touches it.
 
 **A human-visible panel exists.** The Hub's Curiosity Atlas page
-(`/curiosity`) has a "Self" section, above the investigation pool: the current
-definition and its evidence, earlier versions (collapsed), the latest
-self-sense eval scores if any have run, the recent self-inquiry journal
-entries, and an "Ask self-inquiry now" button (`POST
-/curiosity/api/self-inquiry/run-now`, same rules as the investigation line's
-`Run now`). It reads `self_concept_history` and `journal_entries` directly
-(`orion/curiosity/self_panel.py`) rather than through the `:TurnOutcome`-keyed
-run list `atlas.py` already builds -- that list only shows runs that wrote an
-outcome node, which is optional, and the run that produced the first
-self-definition never wrote one.
+(`/curiosity`) has a "Self" section, above the investigation pool: pinned
+**lived answers** (latest per question), the current anatomy definition and its
+evidence, earlier versions (collapsed), the latest self-sense eval scores if
+any have run, the recent self-inquiry journal entries, and an "Ask self-inquiry
+now" button (`POST /curiosity/api/self-inquiry/run-now`, same rules as the
+investigation line's `Run now`). It reads `self_concept_history` and
+`journal_entries` directly (`orion/curiosity/self_panel.py`) rather than
+through the `:TurnOutcome`-keyed run list `atlas.py` already builds -- that
+list only shows runs that wrote an outcome node, which is optional, and the run
+that produced the first self-definition never wrote one.
 
 Inspect:
 

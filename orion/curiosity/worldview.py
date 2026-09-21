@@ -70,6 +70,8 @@ LABEL_CONCEPT = "Concept"
 LABEL_FINDING = "Finding"
 LABEL_HOP = "Hop"
 LABEL_TURN_OUTCOME = "TurnOutcome"
+LABEL_INVESTIGATION_ROLE = "InvestigationRole"
+LABEL_REVIEW_ROLE = "ReviewRole"
 
 STATUS_OPEN = "open"
 STATUS_SUPPORTED = "supported"
@@ -254,6 +256,63 @@ class HopRecord:
     run_id: str
     n: int
     note: str
+    # Graph clock (ms), `timestamp()` at write time -- see `kickoff_prompt.
+    # _hops_section`. None on every hop written before 2026-09-19: `n` was
+    # the ONLY ordering those carried, and `n` restarts at 1 when a run's
+    # turn is retried under the same run_id (the "Hop.n collision" in the
+    # supervisor design doc), so it cannot order a resumed run on its own.
+    written_at: Optional[int] = None
+
+
+def hop_order_key(hop: "HopRecord | tuple[int, Optional[int]]") -> tuple[int, int, int]:
+    """Chronological-as-far-as-the-graph-knows sort key for one run's hops.
+
+    Untimestamped (legacy) hops first, then by `written_at`, then `n`. "First"
+    for legacy is the honest choice, not a guess: every untimestamped hop was
+    written before the timestamp shipped, so it predates every timestamped
+    one in the same run. Within the legacy group `n` is all there is -- two
+    attempts' worth of 1,1,2,2,3,3 stay interleaved, which is the collision
+    this key exists to stop recurring, not something it can undo.
+    """
+    if isinstance(hop, HopRecord):
+        n, written_at = hop.n, hop.written_at
+    else:
+        n, written_at = hop
+    return (0 if written_at is None else 1, written_at or 0, n)
+
+
+@dataclass(frozen=True)
+class InvestigationRoleRecord:
+    """Orion-authored provisional role for one sitting.
+
+    Hub reads these nodes and never writes them. `local_crawl` is a decision
+    to work this sitting alone; missing the node is "no decision"; a
+    HelpRequest is the hire ticket. Latest `written_at` wins if Orion revises.
+    """
+
+    run_id: str
+    choice: str
+    why: str
+    written_at: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ReviewRoleRecord:
+    """Orion-authored, optional choice for how this sitting's hops get graded.
+
+    Same shape and same authorship rule as `InvestigationRoleRecord`: Python
+    never MERGEs this node. Missing the node is "no decision" and the
+    curiosity supervisor (orion/curiosity/supervisor.py) treats that as
+    `self_review` -- so every run written before this patch shipped, which
+    has no `:ReviewRole` at all, keeps grading exactly the way it always did.
+    `choice` is `"self_review"` or `"hire_cursor_review"`; latest
+    `written_at` wins if Orion revises mid-sitting.
+    """
+
+    run_id: str
+    choice: str
+    why: str
+    written_at: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -455,6 +514,20 @@ LIVE_PRIORS_CYPHER = (
     f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
 )
 
+# The `line` property on a :Prior tags which curiosity line formed it.
+# Self-inquiry priors use line="self"; see `SELF_PRIOR_LINE` in
+# `orion.curiosity.self_inquiry` (canonical consumer of this constant).
+SELF_PRIOR_LINE = "self"
+
+# Situation (#1994) and outreach (#2224) must not treat self-inquiry priors
+# as "world" talkable content. Null line stays eligible (world-pulse /
+# investigate often omit line). See design 2026-09-16 lived-self lanes.
+LIVE_NON_SELF_PRIORS_CYPHER = (
+    f"MATCH (p:{LABEL_PRIOR}) WHERE {_LIVE_WHERE} "
+    f"AND (p.line IS NULL OR p.line <> '{SELF_PRIOR_LINE}') "
+    f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
+)
+
 # EVERY prior regardless of status -- live AND closed, no WHERE at all.
 #
 # For the curiosity supervisor (orion/curiosity/supervisor.py), NOT for the
@@ -628,10 +701,63 @@ def outcome_for_run_cypher(run_id: str) -> str:
 def hops_for_run_cypher(run_id: str) -> str:
     if not _RUN_ID_RE.match(str(run_id or "")):
         raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    # Ordered in Python by `hop_order_key`, not here: `ORDER BY h.n` alone
+    # interleaves a retried attempt's 1,2,3 with the first attempt's 1,2,3,
+    # and Cypher NULL ordering for legacy `written_at` is not something to
+    # lean on. The LIMIT is a safety cap, not a page size, sized for the worst
+    # case this reader must stay correct under, not the shipped default: up
+    # to `DURABLE_RUNS_RETRY_MAX_ATTEMPTS` (le=20) attempts of up to
+    # `DEFAULT_MAX_HOPS` (5) hops each -- 100 -- with headroom, because an
+    # unordered truncation here would drop whichever rows FalkorDB felt like,
+    # possibly the highest-`n` ones `next_hop_n` needs to continue correctly.
     return (
         f"MATCH (h:{LABEL_HOP}) WHERE h.run_id = '{run_id}' "
-        "RETURN h.n AS n, h.note AS note ORDER BY h.n ASC LIMIT 20"
+        "RETURN h.n AS n, h.note AS note, h.written_at AS written_at LIMIT 200"
     )
+
+
+def list_investigation_roles_for_run_cypher(run_id: str) -> str:
+    """RO Cypher: InvestigationRole nodes Orion wrote during one run.
+
+    Ordered oldest-first so a caller can take the last row as latest-wins.
+    Python never MERGEs these nodes.
+    """
+    if not _RUN_ID_RE.match(str(run_id or "")):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH (r:{LABEL_INVESTIGATION_ROLE}) WHERE r.run_id = '{run_id}' "
+        "RETURN r.run_id AS run_id, r.choice AS choice, r.why AS why, "
+        "r.written_at AS written_at "
+        "ORDER BY r.written_at ASC"
+    )
+
+
+def list_review_roles_for_run_cypher(run_id: str) -> str:
+    """RO Cypher: ReviewRole nodes Orion wrote during one run.
+
+    Ordered oldest-first so a caller can take the last row as latest-wins,
+    same convention as `list_investigation_roles_for_run_cypher`.
+    """
+    if not _RUN_ID_RE.match(str(run_id or "")):
+        raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
+    return (
+        f"MATCH (r:{LABEL_REVIEW_ROLE}) WHERE r.run_id = '{run_id}' "
+        "RETURN r.run_id AS run_id, r.choice AS choice, r.why AS why, "
+        "r.written_at AS written_at "
+        "ORDER BY r.written_at ASC"
+    )
+
+
+# EVERY ReviewRole, across every run -- the curiosity supervisor's
+# `generate_all_readings` needs to know each run's grading choice up front,
+# not one run at a time, same reason `ALL_HOPS_CYPHER` exists alongside
+# `hops_for_run_cypher`. No `run_id` parameter -- takes none.
+ALL_REVIEW_ROLES_CYPHER = (
+    f"MATCH (r:{LABEL_REVIEW_ROLE}) "
+    "RETURN r.run_id AS run_id, r.choice AS choice, r.why AS why, "
+    "r.written_at AS written_at "
+    "ORDER BY r.written_at ASC"
+)
 
 
 # EVERY hop, across every run -- for the curiosity supervisor
@@ -649,7 +775,8 @@ HOPS_LIMIT = 2000
 
 ALL_HOPS_CYPHER = (
     f"MATCH (h:{LABEL_HOP}) "
-    f"RETURN h.run_id AS run_id, h.n AS n, h.note AS note LIMIT {HOPS_LIMIT}"
+    "RETURN h.run_id AS run_id, h.n AS n, h.note AS note, "
+    f"h.written_at AS written_at LIMIT {HOPS_LIMIT}"
 )
 
 
@@ -689,6 +816,32 @@ def build_turn_outcome(row: dict[str, Any]) -> Optional[TurnOutcome]:
         continue_note=str(row.get("continue_note") or "").strip(),
         reach_out=_as_bool(row.get("reach_out")),
         reach_out_why=str(row.get("reach_out_why") or "").strip(),
+        written_at=_as_int(row.get("written_at"), 0) or None,
+    )
+
+
+def build_investigation_role(row: dict[str, Any]) -> Optional[InvestigationRoleRecord]:
+    run_id = str(row.get("run_id") or "").strip()
+    choice = str(row.get("choice") or "").strip()
+    if not run_id or not choice:
+        return None
+    return InvestigationRoleRecord(
+        run_id=run_id,
+        choice=choice,
+        why=str(row.get("why") or "").strip(),
+        written_at=_as_int(row.get("written_at"), 0) or None,
+    )
+
+
+def build_review_role(row: dict[str, Any]) -> Optional[ReviewRoleRecord]:
+    run_id = str(row.get("run_id") or "").strip()
+    choice = str(row.get("choice") or "").strip()
+    if not run_id or not choice:
+        return None
+    return ReviewRoleRecord(
+        run_id=run_id,
+        choice=choice,
+        why=str(row.get("why") or "").strip(),
         written_at=_as_int(row.get("written_at"), 0) or None,
     )
 
@@ -1114,17 +1267,74 @@ def read_finding_connectivity(
 
 
 def read_hop_notes(reader: WorldviewReader, run_id: str) -> list[tuple[int, str]]:
-    """The reflections Orion recorded as it went, in order. `[]` on failure."""
+    """The reflections Orion recorded as it went, in order. `[]` on failure.
+
+    `(n, note)` pairs -- the shape both Hub's journal read and
+    `services/orion-durable-runs`' turn-result read consume, unchanged.
+    Order is `hop_order_key` (legacy first, then by `written_at`, then `n`),
+    so a run resumed after a cut-off turn reads first-attempt then
+    second-attempt, whatever numbers each attempt used.
+    """
     try:
         rows = reader.query(hops_for_run_cypher(run_id))
     except (WorldviewUnavailable, ValueError) as exc:
         logger.warning("curiosity_hop_notes_read_failed run=%s err=%s", run_id, exc)
         return []
-    return [
-        (_as_int(r.get("n"), 0), str(r.get("note") or "").strip())
+    kept = [
+        (
+            _as_int(r.get("n"), 0),
+            str(r.get("note") or "").strip(),
+            # `_stamp_ms`, not a bare int(): the same "Orion hand-writes this
+            # by hand and the prompt asks for timestamp()" mistake `_stamp_ms`
+            # exists for on `TurnOutcome.written_at` (run 32b42392f495 wrote
+            # ISO) is exactly as reachable on `Hop.written_at` -- same prompt
+            # pattern, same author. A bare int() would silently read that ISO
+            # hop as legacy and sort it first, ahead of real-clock hops.
+            _stamp_ms(r.get("written_at")),
+        )
         for r in rows
         if str(r.get("note") or "").strip()
     ]
+    kept.sort(key=lambda t: hop_order_key((t[0], t[2])))
+    return [(n, note) for n, note, _ in kept]
+
+
+def next_hop_n(hops: Sequence[tuple[int, str]]) -> int:
+    """The `n` a resumed attempt should continue at: one past the highest
+    already written, never 1 again. 1 when the run holds nothing."""
+    return max((n for n, _ in hops), default=0) + 1
+
+
+def read_investigation_roles(
+    reader: WorldviewReader, run_id: str
+) -> list[InvestigationRoleRecord]:
+    """Orion-authored roles for this run, oldest first. `[]` on failure.
+
+    Python never writes these nodes. Take `latest_investigation_role` for the
+    current choice; absence means no decision, not local_crawl.
+    """
+    try:
+        rows = reader.query(list_investigation_roles_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError) as exc:
+        logger.warning(
+            "curiosity_investigation_role_read_failed run=%s err=%s", run_id, exc
+        )
+        return []
+    out: list[InvestigationRoleRecord] = []
+    for row in rows:
+        rec = build_investigation_role(row)
+        if rec is not None:
+            out.append(rec)
+    return out
+
+
+def latest_investigation_role(
+    records: Sequence[InvestigationRoleRecord],
+) -> Optional[InvestigationRoleRecord]:
+    """Newest written_at wins. None when Orion has not written a role."""
+    if not records:
+        return None
+    return max(records, key=lambda r: r.written_at or 0)
 
 
 def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:
@@ -1159,8 +1369,50 @@ def read_all_hops(reader: WorldviewReader) -> list[HopRecord]:
         note = str(row.get("note") or "").strip()
         if not run_id or not note:
             continue
-        out.append(HopRecord(run_id=run_id, n=_as_int(row.get("n"), 0), note=note))
+        out.append(
+            HopRecord(
+                run_id=run_id,
+                n=_as_int(row.get("n"), 0),
+                note=note,
+                written_at=_stamp_ms(row.get("written_at")),
+            )
+        )
     return out
+
+
+def read_all_review_roles(reader: WorldviewReader) -> list[ReviewRoleRecord]:
+    """Every `ReviewRole` node, across every run. `[]` on failure.
+
+    Same shape as `read_all_hops`: the curiosity supervisor's
+    `generate_all_readings` (orion/curiosity/supervisor.py) needs every run's
+    grading choice at once, not one run at a time, so it needs the whole-graph
+    query rather than `list_review_roles_for_run_cypher`.
+    """
+    try:
+        rows = reader.query(ALL_REVIEW_ROLES_CYPHER)
+    except WorldviewUnavailable as exc:
+        logger.warning("curiosity_all_review_roles_read_failed err=%s", exc)
+        return []
+    out: list[ReviewRoleRecord] = []
+    for row in rows:
+        rec = build_review_role(row)
+        if rec is not None:
+            out.append(rec)
+    return out
+
+
+def latest_review_role_by_run(
+    records: Sequence[ReviewRoleRecord],
+) -> dict[str, ReviewRoleRecord]:
+    """Newest `written_at` per `run_id`. A run with no record is absent here
+    -- callers treat absence as `self_review`, the same "missing node is no
+    decision" rule `latest_investigation_role` applies to hire choice."""
+    latest: dict[str, ReviewRoleRecord] = {}
+    for rec in records:
+        current = latest.get(rec.run_id)
+        if current is None or (rec.written_at or 0) >= (current.written_at or 0):
+            latest[rec.run_id] = rec
+    return latest
 
 
 def read_all_priors(reader: WorldviewReader) -> list[Prior]:

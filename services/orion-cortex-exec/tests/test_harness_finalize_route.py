@@ -16,8 +16,8 @@ def _base_ctx(mode: str = "brain") -> dict:
     }
 
 
-def test_harness_finalize_reflect_uses_agent_route() -> None:
-    """Automated reflection uses the dedicated agent lane, not user chat."""
+def test_harness_finalize_reflect_empty_context_falls_back_to_agent_route() -> None:
+    """The verb defaults to agent when finalize omitted its owner stamp."""
     step = ExecutionStep(
         step_name="llm_harness_finalize_reflect",
         verb_name="harness_finalize_reflect",
@@ -46,8 +46,8 @@ def test_harness_finalize_reflect_uses_agent_route() -> None:
     assert sent_req.route == "agent"
 
 
-def test_orion_response_repair_uses_agent_route() -> None:
-    """Automated voice finalization uses the dedicated agent lane."""
+def test_orion_response_repair_empty_context_falls_back_to_agent_route() -> None:
+    """The verb defaults to agent when finalize omitted its owner stamp."""
     step = ExecutionStep(
         step_name="llm_orion_response_repair",
         verb_name="orion_response_repair",

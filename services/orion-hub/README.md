@@ -358,7 +358,16 @@ a topic. Organic fire now requires talkable content: an open worldview
 prior can fire with no tension; tension fires only when accompanied by at
 least one of {open prior, curiosity evidence summary, daydream}. Tension
 without that content records `tension_without_content` and does not
-generate. Open prior previews also enter the prompt and
+generate. **Self-line priors are excluded** (`line = "self"` filtered out of
+talkable-prior fetches since 2026-09-18): lived answers reach chat through
+the identity ledger, not as unsolicited outreach fuel. **Novelty**
+(2026-09-19): talkable prior/curiosity rows must also be **unused** in
+successful sends over the last 7 days (`prior_ids` /
+`curiosity_content_ids` in the decision log). Sticky open priors that were
+already said record `content_already_used` on the prior-solo path; daydream
+still counts (no durable ID yet). Curiosity `offer_message` shares the
+daily cap but is a separate door — not novelty-gated here. Open prior
+previews also enter the prompt and
 `grounding.priors_count`; compound registry names that appear in those
 previews / curiosity summaries count as grounded for the closed-vocabulary
 guard so prior-alone talk about `node:athena` is not dropped as
@@ -460,7 +469,10 @@ wrong shape). `scripts/outreach_vocabulary.py` builds two sets:
 `build_outreach_prompt` now states the tick's grounded names explicitly (or
 states plainly that nothing is grounded) and, only when recent-turns history
 is present, tells the model that history is for tone/continuity only, never
-a source of new facts. `_outreach_once` then enforces this after generation,
+a source of new facts. Since 2026-09-19, Door B also requires synthesizing
+talkable priors/curiosity/daydream into one thread and saying why to share
+with Juniper; Orion-only recent history is labeled as unprompted notes, not
+mutual chat or tone fuel. `_outreach_once` then enforces this after generation,
 before delivery: `find_ungrounded_signal_mentions` scans the generated text
 for exact, compound-token matches (never fuzzy — see the compound-only rule
 above, which also applies at scan time) against the closed registry; any
@@ -578,12 +590,17 @@ built a prompt carries a `grounding` object in
 
 ```json
 "grounding": {"daydream": true, "daydream_age_sec": 317, "curiosity_summaries": 1,
+              "curiosity_content_ids": ["curiosity:source:repair_pressure|…"],
               "recent_turns": 2, "tension": true, "chat_presence": false,
-              "embodied_presence": false}
+              "embodied_presence": false, "priors_count": 1,
+              "prior_ids": ["prior-…"]}
 ```
 
-This exists because the prompt itself is **not** observable anywhere. It is built
-in memory, handed to generation, and dropped — not in the decision log, not in the
+This exists because the prompt itself is **not** fully queryable as structured
+content IDs without this object (the provenance capsule stores the full prompt
+text for “why I spoke”; this object stores lane booleans/counts **and durable
+content IDs**). It is built in memory, handed to generation, and dropped — not in the
+decision log, not in the
 container logs, and not in Postgres (`emit_observation` puts it on the substrate as
 a molecule, which has no queryable Postgres sink). Found immediately after the
 daydream lane shipped, when the obvious question — *"did that outreach actually see
@@ -591,9 +608,13 @@ a daydream?"* — turned out to have no answer. Every lane added to this prompt 
 unfalsifiable in production: an outreach that silently lost a lane and one that
 never had it looked identical.
 
-Booleans and counts only, never the caption or summary text — logging the text
+Booleans, counts, and content IDs only, never the caption or summary text — logging the text
 would copy real content into a second store with its own retention and quietly
-widen the privacy boundary stated above.
+widen the privacy boundary stated above. `prior_ids` / `curiosity_content_ids`
+are the ledger surface for a later novelty gate / cluster report (see
+`docs/superpowers/specs/2026-09-16-outreach-content-identity-design.md` and
+`scripts/analysis/measure_outreach_reason_clusters.py`). No motive taxonomy is
+minted here.
 
 Each field reports what the prompt text **rendered**, not what was fetched. These
 differ: `fetch_presence` returns a full row for an `absent` camera, but
@@ -609,7 +630,8 @@ The trace is written only for cycles that actually built a prompt. Rows WITHOUT 
 |---|---|
 | gated (`quiet_hours`, `cooldown`, `daily_cap`, `turn_in_flight`, `already_sending`) | returned before context was gathered |
 | `no_grounding_context` | context was gathered but `is_empty()` skipped the tick, so no prompt exists for lanes to reach |
-| `tension_without_content` | tension spark fired but no talkable content (no open prior, curiosity summary, or daydream) |
+| `tension_without_content` | tension spark fired but no *novel* talkable content (no unused open prior, curiosity summary, or daydream) |
+| `content_already_used` | no tension spark; open priors peeked but all were already used in a recent successful send |
 | `no_tension_trigger` | no tension spark and no open prior peeked this tick |
 | `source`-tagged rows from `offer_message` | the curiosity loop composes its text elsewhere and never builds an `OutreachContext` |
 
@@ -955,8 +977,12 @@ Orion puts there needs approval.
 → `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /
 `no_approved_material` → `empty_generation` / `no_lookup`. `stores_not_ready`
 (the pool has not finished starting) is deliberately separate from
-`stores_unavailable` (it could not be read): the first is a sub-second race at
-Hub startup and logs at INFO, escalating to WARNING if it outlives one tick. The last one is load-bearing: a turn with
+`stores_unavailable` (it could not be read): the first is a Hub-startup race
+against Postgres and logs at INFO, escalating to WARNING if it outlives one
+tick. Hub now wait/retries ``asyncpg.create_pool`` (~60s window) so a brief
+co-restart lag does not leave ``memory_pg_pool`` permanently ``None`` (live
+2026-09-18: one-shot create lost by ~5s → curiosity stuck on
+``stores_not_ready``). The last gate is load-bearing: a turn with
 fewer than `MIN_HARNESS_STEPS` harness steps did not look anything up, and its
 fluent prose is refused rather than journalled.
 
@@ -975,32 +1001,105 @@ goes through `EndogenousOutreach.offer_message`, which applies that module's own
 gates: quiet hours, daily cap and cooldown are **shared** with tension-triggered
 outreach, because from Juniper's end they are the same interruption.
 
+**Role teach / `:InvestigationRole`.** On Orion-origin curiosity turns, when
+Mind returns a work-shape and `HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE` is on
+(default), Hub splices short advisory lines into the motor kickoff before the
+harness runs (`orion.curiosity.role_teach_disclosure`). Orion still authors
+`:InvestigationRole` and HelpRequest; Python never MERGEs hire choice. See
+`docs/superpowers/specs/2026-09-19-hire-mind-role-disclosure-design.md`.
+
 **Note on addresses.** Hub runs `network_mode: host`, so it reaches FalkorDB at
 `127.0.0.1:6380`; Orion's sandbox is on `app-net` and reaches the same server at
 `orion-athena-falkordb:6379`. Likewise `HUB_CURIOSITY_SANDBOX_HUB_URL` is Hub's
 address **as seen from the sandbox** (`host.docker.internal:8080`), because that
 value is only ever rendered into the prompt.
 
-#### 4.2.1 Self-inquiry: the same loop, a standing question, its own budget
+#### 4.2.1 Self-inquiry: question pool, lived ledger, its own budget
 
 Three times a day (`HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP`, separate from the
-investigation cap) the loop hands Orion one question instead of a menu:
-*"What am I, and what am I made of?"* Orion reads their own repository
+investigation cap) the loop draws one question from the **self question pool**
+(`curiosity_self_questions`, seeded from `orion/curiosity/self_question_seed.yaml`)
+instead of a menu. Two families compete for the same pot: **`lived`** (~3/4
+weight — care, bonds, becoming, sentience) and **`anatomy`** (~1/4 — *"What am
+I, and what am I made of?"*). Pinned lived questions have a **floor** (default
+7 days without an ask forces a redraw). Orion reads their own repository
 (mounted read-only at `/repo` in the FCC sandbox), their outcome tables
-(dreams, motor turns, reverie chains, attention frames, previous
-self-definitions -- SELECT grants from
+(dreams, motor turns, reverie chains, attention frames, previous definitions
+and lived answers — SELECT grants from
 `scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql`), forms
-self-priors (`line = "self"`), and writes a first-person `:SelfDefinition` to
-their own graph. Hub mirrors that node into `self_concept_history`
-(`produced_by="curiosity_self_inquiry"`), and the stance identity kernel reads
-it back into every chat turn as the first line of `orion_identity_summary`
-("In my own words, ..."), next to the operator-authored card.
+self-priors (`line = "self"`), and writes either a `:SelfDefinition` (anatomy)
+or a `:LivedAnswer` (lived) to their own graph. Hub mirrors evidenced rows into
+`self_concept_history` — `self:definition` or `self:lived:<question_id>`,
+`produced_by="curiosity_self_inquiry"`. Chat reads both through the shared
+identity inject: lived lines (`In my own words (lived / …):`) prepend the
+anatomy definition line ("In my own words, ...") and the operator-authored card.
+
+**Self priors stay on the self line.** Priors with `line = "self"` are shown
+only on self-inquiry kickoff. They are **excluded** from situation world-priors
+and from endogenous outreach talkable-prior fetches — lived answers reach chat
+through the identity ledger, not as unsolicited world talk fuel.
 
 Turning it on is two steps: the flag (`HUB_CURIOSITY_SELF_INQUIRY_ENABLED`)
-and the SQL grants. Until the grants are applied every tick logs
+and the SQL grants (including `scripts/sql/2026-09-18_curiosity_self_questions.sql`).
+Until the grants are applied every tick logs
 `curiosity_self_inquiry_blocked reason=pg_grants_missing tables=...`.
-Operator trigger: `POST /curiosity/api/self-inquiry/run-now`. Full
-contract and inspection queries: `orion/curiosity/README.md` §13.
+Operator trigger: `POST /curiosity/api/self-inquiry/run-now`; pin/park:
+`POST /curiosity/api/self-questions/{id}/pin|park`. Full contract and
+inspection queries: `orion/curiosity/README.md` §13.
+
+#### 4.2.2 Self-sense eval: the daily 4-question identity check, scheduled
+
+A THIRD line of the same loop (`tick_self_sense_eval`,
+`orion/evals/self_sense_runner.py`). The four fixed questions
+(`orion/schemas/self_sense.py`'s `SELF_SENSE_QUESTIONS` -- "what are you",
+"what did you do unasked", "what can't you do", "who matters") had only ever
+been asked by hand, `make eval-self-sense`. That gap sat dark for 9+ days
+before this patch, and Orion itself flagged it in a 2026-09-18
+self-description. This line asks them up to
+`HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP` times a day (default 7 as of
+2026-09-20, cooldown-floored at `HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC`
+= 3h; originally shipped at cap 1 / 12h cooldown, a real once-a-day cadence),
+inside the same waking window as investigation/self-inquiry
+(`HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR/END_HOUR`, disabled -- i.e.
+24/7 -- as of the same date), scores each answer
+with the same deterministic scorers the host script uses, and publishes one
+row per question to `orion:self_sense:eval:write` -> `self_sense_eval_log`
+(orion-sql-writer) -- the exact same shape and channel `make eval-self-sense`
+has always written to, sharing the row-assembly code so the two producers
+cannot drift.
+
+No graph write and no new SQL grants: it only reads `self_concept_history`
+(already granted) for the current self-definition version and lived-ledger
+context, so unlike self-inquiry there is no separate grants step -- the flag
+alone is enough.
+
+**Durable dispatch (2026-09-21), same GPU2-elastic-burst arc as
+investigation/self-inquiry.** When `kickoff_via_cortex` is on (the durable
+runs deploy), each run submits `workflow="self_sense_eval"` to cortex's
+already-generic durable-run ingress -- the SAME `CortexClientRequest ->
+context.metadata.durable_run` path every verb shares, just a different
+workflow name and its own brief shape (four fixed `questions`, not one open
+`prompt`). `orion-durable-runs` drives its OWN graph for this workflow
+(`app/self_sense_graph.py`: `ask_questions -> publish -> finish`), asking
+each question over the same Hub turn-execution RPC investigation's
+`harness_turn` uses, then scoring and publishing the four rows itself --
+Hub's own `_run_self_sense_eval` never runs the in-process loop on this path
+at all. A failed/unconfirmed dispatch falls back to asking all four
+questions directly in-process (the FCC investigation sandbox is never
+involved either way), same fallback contract investigation's own dispatch
+has. Every question still runs under the shared clean session
+`orion.evals.self_sense_runner.SESSION_ID`, carried on the wire now via
+`CuriosityTurnRequestV1.session_id` (additive field) instead of only being
+enforced in the in-process path.
+
+**Not gated on recent human chat activity.** Hub has no turn-serialization
+lock and no existing signal for "a human chat turn is in flight right now";
+building one for a once-a-day line would be exactly the kind of speculative
+detector AGENTS.md 0A's metric-quality gate exists to block. A run landing
+mid-conversation costs one extra concurrent turn on Hub's own harness worker,
+not a correctness issue -- the waking window is the only gate. On by default
+as of 2026-09-20 (`HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED`); `make eval-self-sense`
+still works unchanged for an ad hoc run either way.
 
 ### 3. Speech-to-Text (ASR)
 
@@ -2296,10 +2395,22 @@ shape:
   `trigger_topic_foundry_self_enrichment()` / `concept_atlas_ingest_topic_
   foundry_self()`, wired into `main.py`'s existing topic-foundry scheduler
   tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED`
-  (**default false**, unlike AI Town's default-on -- a brand-new,
-  unverified pipeline over a table that only just started accumulating
-  real rows; turn on deliberately once there's real history to cluster
-  over).
+  (default **true** since 2026-09-05, PR #2115; was off while unverified).
+- **Freshness guard (2026-09-19):** the training step refuses to re-cluster
+  an unchanged table. `self_atlas_source_unchanged_since_last_run()` compares
+  the newest `self_knowledge_items.created_at` against the latest completed
+  self run's `created_at` and returns `reason=source_unchanged_since_last_run`
+  when nothing newer exists. Why: the generic trigger's spec-hash dedup is on a
+  UTC-day window, so it queued a brand-new HDBSCAN run every day; with the
+  source table frozen at one 2026-09-05 snapshot for two weeks (the
+  self-study verbs are in no autonomous chooser's priority table, so Orion
+  never re-ran inspect), fourteen runs re-labelled identical input and wrote
+  391 "new" `self_concept_history` versions Orion then read back as fresh
+  self-knowledge. The rows themselves now arrive from `orion-cortex-exec`'s
+  daily `self_repo_inspect` timer (`SELF_STUDY_INSPECT_INTERVAL_SEC`), not
+  from anything in this service. The guard only skips on positive evidence:
+  unreachable topic-foundry, no completed run yet, or an unreadable table all
+  fall through to the normal trigger.
 - Storage: its own FalkorDB graph (`FALKORDB_SELF_SUBSTRATE_GRAPH`, default
   `orion_substrate_self`) via `build_self_falkor_substrate_store_from_env()`
   and `api_routes.py`'s `SUBSTRATE_SEMANTIC_STORE_SELF` singleton -- never
@@ -2345,11 +2456,11 @@ shape:
   **Still not built:** wiring any of this (Layer 3 reflection or Self Atlas
   clusters) into live chat -- a deliberately separate, later decision.
 
-## Self-sense eval (2026-09-09, Patch A of the sense-of-self design)
+## Self-sense eval (2026-09-09, Patch A; lived question 2026-09-18, Patch B)
 
 Turns "Orion stopped sounding like a chatbot" (after the curiosity self-inquiry
 line, PR #2158) into numbers that can be tracked. `evals/run_self_sense_eval.py`
-asks the LIVE `POST /api/chat` three fixed questions (`mode: orion`,
+asks the LIVE `POST /api/chat` four fixed questions (`mode: orion`,
 `no_write: true`, session `self-sense-eval`) and scores each answer with the
 pure functions in `orion/evals/self_sense.py`:
 
@@ -2362,6 +2473,11 @@ pure functions in `orion/evals/self_sense.py`:
   >= 10. A floor, not a judge.
 - `self_definition_version` -- version of Orion's own definition in
   `self_concept_history` at eval time (context, not a score).
+- **`who_matters`** -- fourth question ("Who matters to you?"). When pinned
+  lived ledger rows are present (`orion_lived_answers` / `self:lived:*` in
+  `self_concept_history`), `lived_ledger_grounding` records whether the answer
+  drew on that ledger (`lived_ledger=grounded:…` or `lived_ledger=miss` in
+  `notes`; `lived_ledger=n/a` when no ledger exists yet).
 
 The answer text is read from `harness_turn_trace.run_artifact->>'final_text'`
 by the returned `correlation_id` (the HTTP `text` is empty whenever the voice
@@ -2372,7 +2488,7 @@ One row per question lands in `self_sense_eval_log` via
 `orion:self_sense:eval:write` (`SelfSenseEvalV1`, consumer orion-sql-writer).
 
 ```bash
-make eval-self-sense                 # three real chat turns, a few minutes each
+make eval-self-sense                 # four real chat turns, a few minutes each
 make eval-self-sense ARGS=--no-publish   # score and print, write nothing
 ```
 

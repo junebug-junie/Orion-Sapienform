@@ -36,6 +36,58 @@ Hub tick (scheduling, material, worldview, prompt)
 - A thread older than `DURABLE_RUNS_MAX_AGE_HOURS` is abandoned (one `abandoned` state
   event), never resumed into a different day's material.
 
+## Workflow registry (2026-09-21)
+
+`DurableRunner` can drive more than one compiled graph, keyed by
+`DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --
+this is plumbing for a second and third workflow (self-sense-eval's own graph, reflect's
+own graph) landing in follow-on PRs, not a behavior change on its own. Full rationale
+(the shared-checkpointer safety argument, `_peek_workflow`'s ordering, the
+backward-compat default for pre-registry checkpoints) lives once, next to the code, in
+`app/runner.py`'s module docstring and `WorkflowSpec`/`_peek_workflow`'s own docstrings --
+read those rather than a second copy here.
+
+Adding a real second workflow needs, at minimum: a new `WorkflowSpec` (its own graph,
+node list, `finish_detail`), a new entry in `DurableWorkflowV1`
+(`orion/schemas/durable_run.py`), and its own request/brief shape if it doesn't
+fit `CuriosityRunBriefV1`.
+
+### `self_sense_eval` (2026-09-21) -- the second registered workflow
+
+Its own graph (`app/self_sense_graph.py`): `ask_questions -> publish -> finish`.
+Deliberately NOT a branch inside `graph.py`'s curiosity pipeline -- self-sense-eval has
+no material/worldview read, no journal, no outreach, and asks four fixed questions
+instead of one open prompt, so sharing `journal`/`read_turn_result` would have meant
+threading a `line`-conditional through nodes real production investigation runs already
+depend on.
+
+Reuses curiosity's own turn-execution RPC to Hub as-is (`Deps.run_turn` ==
+`DurableRunner._run_turn`, unchanged) -- Hub's `_handle_turn_request` was already
+content-agnostic, so the only wire change needed was additive:
+`CuriosityTurnRequestV1.session_id`, so each question runs under the shared clean
+session `orion.evals.self_sense_runner.SESSION_ID` instead of curiosity's own
+investigation session. `CuriosityRunBriefV1` gained three more additive fields for this
+workflow: `questions` (the four fixed `(key, text)` pairs, Hub's copy of
+`orion.schemas.self_sense.SELF_SENSE_QUESTIONS`), `self_definition_version` and
+`lived_answers` (read by Hub before dispatch, same "Hub does the DB reads, the runner
+just executes" split `material` already uses for investigation).
+
+Hub's dispatch (`curiosity_investigation.py:_dispatch_self_sense_eval_durable_run`)
+uses the exact same generic ingress every verb already shares
+(`cortex-orch/app/durable_runs.py`) -- not a new RPC path, one more
+`CortexClientRequest` carrying a `durable_run` metadata blob, same as
+investigation/self-inquiry's own `_dispatch_durable_run`.
+
+**Caught before merge, not after:** `self_sense_graph.py` transitively imports
+`orion.evals.self_sense_runner` -> `orion.evals.self_sense`, and that module reads
+`config/field/orion_field_topology.v1.yaml` at IMPORT time. Since this module is
+imported eagerly at `DurableRunner.__init__` (building both graphs), this service's
+Dockerfile needed the same `COPY config/field /app/config/field` line that fixed the
+exact same bug in `orion-hub` on 2026-09-21 -- without it, this container would have
+failed to boot entirely the moment this workflow was registered, not just failed one
+tick. Verified with a real `docker build` + import + `DurableRunner()` construction
+inside the built image, not just a scratch-container copy.
+
 ## Deploy order
 
 The operator templates select admitted Curiosity. Before restarting, apply both

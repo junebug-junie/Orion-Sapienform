@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
@@ -119,6 +119,97 @@ def _attachment_meta_for_cockpit(raw_attachments: Any) -> list[dict[str, Any]]:
         if meta:
             out.append(meta)
     return out
+
+
+def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
+    """Build refusal + budget + FieldState queue progress for Orion-origin turns.
+
+    Prefer prebuilt ``payload['role_teach_progress_lines']`` when present
+    (tests / callers). Otherwise compose from hop notes + PeerBrief hint in
+    the payload plus a fail-open FieldState score read. Each source is
+    independent — never invent a Hub Redis EWMA fallback for the queue score.
+
+    Sync on purpose (SQLAlchemy + pure formatters). Async callers must run
+    this via ``asyncio.to_thread`` so Hub's event loop is not blocked — same
+    contract as ``fetch_latest_outreach_provenance``.
+    """
+    prebuilt = payload.get("role_teach_progress_lines")
+    if isinstance(prebuilt, (list, tuple)):
+        cleaned = [str(x).strip() for x in prebuilt if str(x).strip()]
+        if cleaned:
+            return cleaned
+
+    hop_raw = payload.get("role_teach_hop_notes") or ()
+    hop_texts: list[str] = []
+    if isinstance(hop_raw, (list, tuple)):
+        for item in hop_raw:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                hop_texts.append(str(item[1]))
+            else:
+                hop_texts.append(str(item))
+
+    brief = payload.get("role_teach_peer_brief") or {}
+    if not isinstance(brief, Mapping):
+        brief = {}
+    peer_status = brief.get("status")
+    next_hop_n = brief.get("next_hop_n")
+    if next_hop_n is not None:
+        try:
+            next_hop_n = int(next_hop_n)
+        except (TypeError, ValueError):
+            next_hop_n = None
+
+    queue_score: float | None = None
+    queue_driver: str | None = None
+    try:
+        from orion.hub.queue_contention_field_read import read_latest_queue_contention
+
+        queue_score, queue_driver = read_latest_queue_contention()
+    except Exception:  # noqa: BLE001 — omit queue line only
+        logger.debug("role_teach_queue_contention_read_failed", exc_info=True)
+
+    try:
+        from orion.curiosity.hire_progress import build_role_teach_progress_lines
+
+        return build_role_teach_progress_lines(
+            hop_note_texts=hop_texts,
+            peer_brief_status=str(peer_status) if peer_status is not None else None,
+            peer_brief_next_hop_n=next_hop_n,
+            queue_score=queue_score,
+            queue_driver=queue_driver,
+        )
+    except Exception:  # noqa: BLE001 — fail-open entire gather
+        logger.debug("role_teach_progress_gather_failed", exc_info=True)
+        return []
+
+
+def _maybe_splice_role_teach_disclosure(
+    user_message: str,
+    *,
+    utterance_origin: str | None,
+    mind_work_shape: Mapping[str, Any] | None,
+    enabled: bool,
+    progress_lines: Sequence[str] = (),
+) -> str:
+    """Advisory Mind work-shape into the motor kickoff when Orion-origin.
+
+    Only for ``utterance_origin == "orion"`` with a truthy work-shape or
+    progress lines and the Hub flag on. Fail-open otherwise. Stance appraisal
+    is untouched — callers must apply this to the motor ``user_message`` only.
+    """
+    if not enabled or utterance_origin != "orion":
+        return user_message
+    if not mind_work_shape and not progress_lines:
+        return user_message
+    from orion.curiosity.role_teach_disclosure import (
+        format_role_teach_disclosure,
+        splice_role_teach_disclosure,
+    )
+
+    lines = format_role_teach_disclosure(mind_work_shape, progress_lines=progress_lines)
+    if not lines:
+        return user_message
+    return splice_role_teach_disclosure(user_message, lines)
 
 
 def _cockpit_ingress_payload(
@@ -530,6 +621,54 @@ async def _run_pre_turn_appraisal(
     return bundle, texture
 
 
+def fetch_latest_outreach_provenance(
+    session_id: str | None,
+    *,
+    max_age_hours: float = 12.0,
+) -> dict[str, Any] | None:
+    """Module-level re-export so tests can monkeypatch the DB lookup."""
+    from scripts.outreach_provenance import (
+        fetch_latest_outreach_provenance as _impl,
+    )
+
+    return _impl(session_id, max_age_hours=max_age_hours)
+
+
+async def _situation_with_outreach_provenance(
+    situation_prompt_fragment: str | None,
+    session_id: str | None,
+    *,
+    correlation_id: str | None = None,
+) -> str | None:
+    """Append still-relevant outreach provenance to the situation fragment.
+
+    Fail-open: never raise into the turn. Uses DB lookup (not continuity
+    messages) because unsolicited rows are excluded from rehydrate.
+    Sync SQLAlchemy fetch runs via asyncio.to_thread so Hub's event loop
+    is not blocked.
+    """
+    try:
+        from scripts.outreach_provenance import (
+            format_outreach_provenance_block,
+            merge_situation_with_outreach_provenance,
+        )
+
+        capsule = await asyncio.to_thread(
+            fetch_latest_outreach_provenance, session_id
+        )
+        block = format_outreach_provenance_block(capsule)
+        return merge_situation_with_outreach_provenance(
+            situation_prompt_fragment, block or None
+        )
+    except Exception:
+        logger.warning(
+            "outreach_provenance_inject_failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
+        return situation_prompt_fragment
+
+
 async def _build_situation_prompt_fragment(
     *,
     session_id: str | None,
@@ -708,6 +847,8 @@ async def execute_unified_turn(
     reading_context: str | None = None,
     reading_parent_run_id: str | None = None,
     reading_only: bool = False,
+    utterance_origin: str | None = None,
+    mind_appraisal_text: str | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -867,13 +1008,22 @@ async def execute_unified_turn(
         if payload.get("resource_lease") is not None
         else None
     )
+    appraisal = (mind_appraisal_text or "").strip()
+    stance_user_message = appraisal or user_message
+    stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
+    if utterance_origin in ("juniper", "orion"):
+        stance_inputs["utterance_origin"] = utterance_origin
+    if appraisal:
+        # Motor/harness still sees the full prompt; stance_inputs["user_message"]
+        # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
+        stance_inputs["harness_user_message"] = user_message
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
-        user_message=user_message,
+        user_message=stance_user_message,
         association=association,
         repair_bundle=repair_bundle,
-        stance_inputs={"user_message": user_message},
+        stance_inputs=stance_inputs,
         # Admission owns the lane for the whole turn. Without a lease, preserve
         # the resolved motor preference: agent override or Exec's chat default.
         llm_route=(
@@ -881,6 +1031,16 @@ async def execute_unified_turn(
             else "agent" if is_agent_route_model_label(resolved_fcc_model_label) else None
         ),
         resource_lease=stance_lease,
+        # endogenous_outreach.py (OUTREACH_TAG="endogenous_outreach") already runs
+        # its OWN agent-lane-then-chat-lane fallback around this whole call (PR
+        # #2163) -- it re-invokes execute_unified_turn a second time on a fresh
+        # correlation_id, which means a second stance_react from scratch. Letting
+        # orion-thought's own fallback (services/orion-thought/app/bus_listener.py's
+        # execute_stance_react_with_lane_fallback) ALSO retry here would let one
+        # outreach tick spend up to 4 stance attempts instead of 2. Every other
+        # agent-preferring caller (autonomous reading, curiosity) has no
+        # caller-side fallback and needs orion-thought's.
+        caller_handles_lane_fallback=payload.get("source") == "endogenous_outreach",
     )
     await _deliver_cockpit_frames(
         [
@@ -1050,6 +1210,11 @@ async def execute_unified_turn(
     situation_prompt_fragment = situation_bundle.get("compact_text")
     if isinstance(situation_prompt_fragment, str) and not situation_prompt_fragment.strip():
         situation_prompt_fragment = None
+    situation_prompt_fragment = await _situation_with_outreach_provenance(
+        situation_prompt_fragment,
+        session_id,
+        correlation_id=correlation_id,
+    )
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
     situation_hop_status = str(situation_bundle.get("status") or "ok")
     if situation_hop_status == "empty":
@@ -1159,6 +1324,37 @@ async def execute_unified_turn(
         ReadingToolBindingV1(invocation_context=reading_context,
                              parent_run_id=reading_parent_run_id or correlation_id, parent_trace_id=correlation_id)
         if reading_context is not None else None
+    )
+    # Curiosity hire role teach: soft Mind work-shape into motor kickoff only
+    # (stance already used appraisal/subject). Resume preamble stays in
+    # curiosity_investigation._prompt_for_attempt — do not duplicate here.
+    # Progress lines (denials / budget / official FieldState queue score) are
+    # gathered only for Orion-origin turns; each source fails open alone.
+    # Sync FieldState SQL runs via to_thread (outreach_provenance pattern).
+    progress_lines: Sequence[str] = ()
+    if utterance_origin == "orion":
+        try:
+            progress_lines = await asyncio.to_thread(
+                _gather_role_teach_progress_lines, payload
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "role_teach_progress_lines_failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
+            progress_lines = ()
+    shape_for_splice = thought.mind_work_shape
+    if utterance_origin == "orion":
+        from orion.curiosity.role_teach_disclosure import ensure_orion_hire_depth
+
+        shape_for_splice = ensure_orion_hire_depth(thought.mind_work_shape)
+    user_message = _maybe_splice_role_teach_disclosure(
+        user_message,
+        utterance_origin=utterance_origin,
+        mind_work_shape=shape_for_splice,
+        enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
+        progress_lines=progress_lines,
     )
     harness_req = HarnessRunRequestV1(
         resource_lease=payload.get("resource_lease"),
@@ -1622,6 +1818,7 @@ async def run_unified_turn(
             harness_step_queue=step_queue,
             cockpit_sink=cockpit_sink,
             cockpit_run_holder=cockpit_run_holder,
+            utterance_origin="juniper",
         )
     finally:
         if harness_step_relay is not None and step_queue is not None:

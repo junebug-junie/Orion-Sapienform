@@ -71,15 +71,16 @@ class HarnessMotorResult:
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
     # Wall time for the FCC leg ALONE -- the motor loop, not the turn. This is
-    # the quantity `HARNESS_FCC_TIMEOUT_SEC` (2400s) actually compares against,
+    # the quantity `HARNESS_FCC_TIMEOUT_SEC` (7200s) actually compares against,
     # and the one that decides `grounding_status == "fcc_timeout"`.
     #
     # Nothing measured it before. Hub could only time the WHOLE unified turn
-    # (stance <=400s + governor queue + this + finalize <=485s), so up to ~885s
-    # of what it recorded was not the motor -- and for a timed-out run this leg
-    # is pinned at 2400s by construction, meaning every bit of variance Hub
-    # could see was overhead. With this, a grounded run's distance from 2400s
-    # is real headroom and "the budget is too small" stops being a guess.
+    # (stance <=400s + governor queue + this + finalize <=1025s), so up to
+    # ~1425s of what it recorded was not the motor -- and for a timed-out run
+    # this leg is pinned at 7200s by construction, meaning every bit of
+    # variance Hub could see was overhead. With this, a grounded run's
+    # distance from 7200s is real headroom and "the budget is too small"
+    # stops being a guess.
     fcc_elapsed_sec: float | None = None
     # Verbosity/stuck-loop signals (see runner.py's step loop for how these accumulate).
     # Carried on the result object -- not just recorded into grammar_collector -- because
@@ -174,6 +175,8 @@ def build_harness_prompt(
     current_served_model: str | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
     situation_prompt_fragment: str | None = None,
+    reading_binding: Any = None,
+    reading_only: bool = False,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -185,6 +188,8 @@ def build_harness_prompt(
         current_served_model=current_served_model,
         recent_turns=recent_turns,
         situation_prompt_fragment=situation_prompt_fragment,
+        reading_binding=reading_binding,
+        reading_only=reading_only,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -344,6 +349,8 @@ class HarnessRunner:
             current_served_model=current_served_model,
             recent_turns=list(getattr(request, "recent_turns", None) or []),
             situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
+            reading_binding=getattr(request, "reading_binding", None),
+            reading_only=getattr(request, "reading_only", False),
         )
 
         try:

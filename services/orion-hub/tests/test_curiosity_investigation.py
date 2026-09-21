@@ -120,6 +120,7 @@ def test_the_first_ever_tick_is_not_blocked_by_cooldown() -> None:
 class _FakeRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.lists: dict[str, list] = {}
 
     async def get(self, key):
         return self.values.get(key)
@@ -143,6 +144,30 @@ class _FakeRedis:
 
     async def expire(self, key, ttl):
         return True
+
+    async def rpush(self, key, *values):
+        lst = self.lists.setdefault(key, [])
+        lst.extend(values)
+        return len(lst)
+
+    async def ltrim(self, key, start, stop):
+        lst = self.lists.get(key, [])
+        n = len(lst)
+        if start < 0:
+            start = max(0, n + start)
+        if stop < 0:
+            stop = n + stop
+        self.lists[key] = lst[start : stop + 1]
+        return True
+
+    async def lrange(self, key, start, stop):
+        lst = self.lists.get(key, [])
+        n = len(lst)
+        if start < 0:
+            start = max(0, n + start)
+        if stop < 0:
+            stop = n + stop
+        return lst[start : stop + 1]
 
 
 class _FakeBus:
@@ -251,7 +276,9 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._bus = bus
     loop._harness_rpc_bus = bus
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(
+        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None
+    ):
         loop.seen_prompt = prompt
         return (text or ""), {
             "elapsed_sec": 1.0,
@@ -1012,6 +1039,60 @@ def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> No
     assert not is_pass_response(
         "Having written this out, it is more interesting to have found than to hear."
     )
+
+
+def test_maybe_reach_out_passes_hop_notes_into_composition_prompt(monkeypatch) -> None:
+    """Hops already in hand must reach the compose builder — not only finding+why."""
+    from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
+    from orion.curiosity.worldview import TurnOutcome
+
+    captured: dict = {}
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return build_outreach_composition_prompt(**kwargs)
+
+    # Patch the exact globals the method closes over (hub scripts path).
+    monkeypatch.setitem(
+        CuriosityInvestigation._maybe_reach_out.__globals__,
+        "build_outreach_composition_prompt",
+        fake_build,
+    )
+
+    bus = _FakeBus()
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        bus,
+        reader=_reach_out_reader(None),
+        outreach_enabled=True,
+        outreach_provider=lambda: outreach,
+    )
+
+    async def fake_generate(prompt, correlation_id, **kwargs):
+        return "PASS", {}
+
+    loop._generate = fake_generate  # type: ignore[method-assign]
+
+    outcome = TurnOutcome(
+        run_id="run-hops",
+        continue_line=False,
+        continue_note="",
+        reach_out=True,
+        reach_out_why="she should hear this",
+    )
+    hops = [(1, "first stop"), (2, "second stop")]
+
+    asyncio.run(
+        loop._maybe_reach_out(
+            outcome=outcome,
+            finding_text="end finding",
+            run_id="run-hops",
+            hop_notes=hops,
+        )
+    )
+    assert captured.get("hop_notes") == hops
+    assert captured.get("reach_out_why") == "she should hear this"
+    assert "end finding" in str(captured.get("finding_text") or "")
 
 
 # --- the startup race, found on the first real deploy -----------------------
@@ -2049,6 +2130,52 @@ def test_the_lane_actually_reaches_the_unified_turn() -> None:
     # downstream (chat_history_log tags, HarnessRunRequestV1.mode) shifts.
     assert "mode" not in seen["payload"]
     assert seen["payload"]["no_write"] is True
+    assert seen.get("utterance_origin") == "orion"
+
+
+def test_kickoff_passes_investigation_subject_not_full_prompt_to_mind() -> None:
+    """Mind appraises the short subject; harness still gets the kickoff prompt.
+
+    The HelpRequest Cypher teach block is operator/harness instruction. If it
+    rides on StanceReactRequestV1.user_message, Mind treats a self-authored
+    investigation as a hire request. Kickoff must keep that block on
+    user_message and omit it from mind_appraisal_text.
+    """
+    import orion.hub.turn_orchestrator as orch
+
+    seen: dict = {}
+
+    async def _fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "ok", "harness_step_count": 14}]
+
+    original = orch.execute_unified_turn
+    orch.execute_unified_turn = _fake_turn
+    try:
+        bus = _FakeBus()
+        bus.redis.values["orion:curiosity:last_run_id"] = "aaaaaaaaaaaa"
+        reader = _FakeReader(answers={"t.run_id = 'aaaaaaaaaaaa'": _outcome_rows(
+            run_id="aaaaaaaaaaaa",
+            continue_line=True,
+            continue_note="still do not know why substrate.route has no edges",
+        )})
+        loop = _graph_loop(bus, reader=reader, text=None, contractor_peer_enabled=True)
+        loop._generate = CuriosityInvestigation._generate.__get__(loop)
+        asyncio.run(loop.tick())
+    finally:
+        orch.execute_unified_turn = original
+
+    user_message = str(seen.get("user_message") or "")
+    appraisal = str(seen.get("mind_appraisal_text") or "")
+    assert "ASKING FOR CONTRACTOR" in user_message
+    assert "MERGE (h:HelpRequest" in user_message
+    assert "substrate.route has no edges" in user_message
+    assert appraisal
+    assert appraisal != user_message
+    assert "MERGE (h:HelpRequest" not in appraisal
+    assert "ASKING FOR CONTRACTOR" not in appraisal
+    assert "substrate.route has no edges" in appraisal
+    assert "not yet chosen" in appraisal.lower() or "no claim" in appraisal.lower()
 
 
 # --- attention schema surface ------------------------------------------------
@@ -2285,7 +2412,7 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2314,6 +2441,44 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
         assert reply.ok and reply.text == "the finding"
 
 
+def test_distinct_correlation_ids_under_one_run_id_are_two_real_turns_not_a_cache_collision() -> None:
+    """Review finding, 2026-09-21: self_sense_eval sends FOUR turn requests
+    under ONE run_id (one per question), each with its own correlation_id --
+    breaking the "one turn per run_id" shape the cache/inflight key used to
+    assume. Keying on bare run_id made question 2 silently receive
+    question 1's cached answer, published=4/failed=0, no error anywhere.
+    The fix keys on (run_id, correlation_id); this proves two DIFFERENT
+    correlation_ids under the SAME run_id are two real, independent turns."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.durable_run import CuriosityTurnResultV1
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True)
+    calls: list[tuple[str, str]] = []
+
+    async def recording_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
+        calls.append((prompt, correlation_id))
+        return f"answer for {prompt}", {"harness_step_count": 1, "elapsed_sec": 1.0}
+
+    loop._generate = recording_generate  # type: ignore[assignment]
+
+    def _env(reply_to: str, correlation_id: str, prompt: str) -> dict:
+        env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to=reply_to,
+                           payload={"run_id": "shared-run-id", "correlation_id": correlation_id, "prompt": prompt, "timeout_sec": 10.0, "attempt": 1})
+        return {"data": bus.codec.encode(env)}
+
+    asyncio.run(loop._handle_turn_request(_env("r1", "corr-q1", "question one")))
+    asyncio.run(loop._handle_turn_request(_env("r2", "corr-q2", "question two")))
+
+    # Two real turns ran, one per distinct correlation_id -- not one turn
+    # whose result got served twice.
+    assert calls == [("question one", "corr-q1"), ("question two", "corr-q2")]
+    reply1 = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "r1"][0].payload)
+    reply2 = CuriosityTurnResultV1.model_validate([e for c, e in bus.published if c == "r2"][0].payload)
+    assert reply1.text == "answer for question one"
+    assert reply2.text == "answer for question two"
+
+
 def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     """Cortex was unreachable at dispatch time but the runner got the run
     anyway (or Hub misread the reply): the tick's in-process fallback and the
@@ -2326,7 +2491,7 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2337,7 +2502,12 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
         tick = asyncio.create_task(loop.tick())
         await asyncio.sleep(0.05)  # tick is inside its in-process fallback turn
         assert len(calls) == 1 and len(loop._turn_inflight) == 1
-        run_id = next(iter(loop._turn_inflight))
+        # The inflight key is now "{run_id}:{correlation_id}" (review fix,
+        # 2026-09-21 -- see _turn_result_for's docstring), not bare run_id;
+        # strip the known correlation_id suffix to recover the real run_id.
+        key = next(iter(loop._turn_inflight))
+        assert key.endswith(f":{calls[0]}")
+        run_id = key[: -(len(calls[0]) + 1)]
         env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to="r-runner",
                            payload={"run_id": run_id, "correlation_id": calls[0], "prompt": "p", "timeout_sec": 10.0, "attempt": 1})
         rpc = asyncio.create_task(loop._handle_turn_request({"data": bus.codec.encode(env)}))

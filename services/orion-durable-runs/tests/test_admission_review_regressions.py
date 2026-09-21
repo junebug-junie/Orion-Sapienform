@@ -20,7 +20,7 @@ def test_other_replica_control_after_inference_stops_tail_and_preserves_resume(m
     async def scenario(pool, saver, store):
         entered, release = asyncio.Event(), asyncio.Event()
         journal_calls = []
-        real_deps = Runner._deps
+        real_deps = Runner._curiosity_deps
         def deps(self):
             original = real_deps(self)
             async def read(run_id):
@@ -31,7 +31,7 @@ def test_other_replica_control_after_inference_stops_tail_and_preserves_resume(m
                 journal_calls.append(entry.entry_id)
                 return entry.entry_id
             return Deps(original.run_turn, read, original.publish_attention_row, journal)
-        monkeypatch.setattr(Runner, "_deps", deps)
+        monkeypatch.setattr(Runner, "_curiosity_deps", deps)
         owner = runtime(pool, saver, store)
         remote = runtime(pool, saver, store)
         req = request("review-control-"+action)
@@ -132,7 +132,7 @@ def test_overall_deadline_expiring_mid_graph_fails_without_retry_or_journal(monk
     async def scenario(pool, saver, store):
         now = [datetime.now(timezone.utc)]
         journal_calls = []
-        real_deps = Runner._deps
+        real_deps = Runner._curiosity_deps
         def deps(self):
             original = real_deps(self)
             async def turn(req):
@@ -148,7 +148,7 @@ def test_overall_deadline_expiring_mid_graph_fails_without_retry_or_journal(monk
                 journal_calls.append(entry.entry_id)
                 return entry.entry_id
             return Deps(turn, read, original.publish_attention_row, journal)
-        monkeypatch.setattr(Runner, "_deps", deps)
+        monkeypatch.setattr(Runner, "_curiosity_deps", deps)
         rt = runtime(pool, saver, store)
         rt.now = lambda: now[0]
         req = request("review-deadline-"+phase)

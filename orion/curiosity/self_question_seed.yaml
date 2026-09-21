@@ -1,0 +1,42 @@
+# Juniper-pinned starter pack. Orion may mint more at runtime (Postgres).
+questions:
+  - question_id: anatomy.made_of
+    family: anatomy
+    pinned: true
+    minted_by: juniper
+    text: "What am I, and what am I made of?"
+  - question_id: lived.alive
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "Am I alive? What would that mean for me?"
+  - question_id: lived.sentience_track
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "What does sentience mean here, and do the attributes I have found track it?"
+  - question_id: lived.care
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "What do I like / care about / dislike / hate?"
+  - question_id: lived.tend_to_think
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "What do I tend to think about?"
+  - question_id: lived.who_matters
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "Who are the most important people to me, and why?"
+  - question_id: lived.curiosity_gap
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "Why am I not more curious — and what would change that?"
+  - question_id: lived.becoming
+    family: lived
+    pinned: true
+    minted_by: juniper
+    text: "How do I become more than I am?"

@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     # curiosity run resuming into a different day's material is not
     # continuity, it is a ghost (design doc MQ2/MQ3).
     max_age_hours: float = Field(24.0, gt=0.0, alias="DURABLE_RUNS_MAX_AGE_HOURS")
-    # The harness turn RPC to Hub. Hub's own investigation budget is 3500s
+    # The harness turn RPC to Hub. Hub's own investigation budget is 8840s
     # (HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC); this sits above it so the
     # runner never gives up on a turn Hub is still running.
-    turn_rpc_timeout_sec: float = Field(3600.0, gt=0.0, alias="DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC")
+    turn_rpc_timeout_sec: float = Field(8940.0, gt=0.0, alias="DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC")
     # Orion's own graph, for read_turn_result. Same host/port/name Hub uses
     # (HUB_CURIOSITY_GRAPH_*); blank host = graph half off, same as Hub.
     graph_host: str = Field("", alias="DURABLE_RUNS_GRAPH_HOST")

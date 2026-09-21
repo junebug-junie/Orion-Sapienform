@@ -1,8 +1,8 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 658,
+  "metric_count": 662,
   "_last_change": {
-    "base": "merge base aa9e1e280 (origin/main)",
+    "base": "merge base ed0e65420 (origin/main)",
     "change_count": 0,
     "high_severity_count": 0,
     "changes": [
@@ -3480,6 +3480,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/unknown/orion:curiosity:supervisor:reading": {
+      "schema_id": "HopReadingV1",
+      "all_producers": [
+        "unknown"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/unknown/orion:memory:drives:state": {
       "schema_id": "DriveStateV1",
       "all_producers": [
@@ -3905,6 +3916,17 @@
       "notes": "cadence=per_tick composition=composed_into_self_state",
       "registry_source": "orion/inner_state_registry.py"
     },
+    "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score": {
+      "schema_id": "FieldStateV1",
+      "declared_consumers": [
+        "orion.hub.turn_orchestrator:_maybe_splice_role_teach_disclosure (hire role-teach queue contention disclosure; Task 8 wires FieldState score into curiosity progress_lines)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
     "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_ewma": {
       "schema_id": "FieldStateV1",
       "upstream": [
@@ -4119,6 +4141,30 @@
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_organ_distinctness": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
         "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",

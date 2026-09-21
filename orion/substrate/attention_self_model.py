@@ -219,15 +219,26 @@ _HEARTBEAT_VERDICTS = frozenset({"redundant", "concentrated", "mixed"})
 
 def _heartbeat_h1_fields(
     heartbeat_h1: dict | None,
-) -> tuple[float | None, str | None, str, float | None, float | None]:
-    """Extract `(mean_ratio, verdict, basis, std_ratio, bulk_penetration_depth)`
-    from a caller-supplied orion-heartbeat `/h1` payload. Fails open to
-    `(None, None, "", None, None)` when mean_ratio/verdict are malformed.
-    `std_ratio` and `bulk_penetration_depth` are optional extras: when absent
-    or invalid they stay None while mean_ratio/verdict still populate.
+) -> tuple[
+    float | None,
+    str | None,
+    str,
+    float | None,
+    float | None,
+    list[str],
+    dict[str, int],
+    float | None,
+    float | None,
+    bool | None,
+]:
+    """Extract heartbeat /h1 fields. Fails open when mean_ratio/verdict are
+    malformed. Proprioception extras (dark seats, smear, distinctness) are
+    optional: invalid extras stay empty/None while the verdict still
+    populates. Basis names dark seats, not the saturated mean_ratio.
     """
+    empty = (None, None, "", None, None, [], {}, None, None, None)
     if not isinstance(heartbeat_h1, dict):
-        return None, None, "", None, None
+        return empty
     mean_ratio = heartbeat_h1.get("mean_ratio")
     verdict = heartbeat_h1.get("verdict")
     if (
@@ -236,7 +247,7 @@ def _heartbeat_h1_fields(
         or not math.isfinite(mean_ratio)
         or verdict not in _HEARTBEAT_VERDICTS
     ):
-        return None, None, "", None, None
+        return empty
     mean_ratio = max(0.0, min(1.0, float(mean_ratio)))
 
     std_ratio: float | None = None
@@ -258,11 +269,73 @@ def _heartbeat_h1_fields(
     ):
         bulk_depth = max(0.0, min(1.0, float(raw_bulk)))
 
+    dark_seats: list[str] = []
+    raw_dark = heartbeat_h1.get("dark_seats")
+    if isinstance(raw_dark, list) and all(isinstance(name, str) and name for name in raw_dark):
+        dark_seats = sorted(set(raw_dark))
+
+    fire_counts: dict[str, int] = {}
+    raw_counts = heartbeat_h1.get("organ_fire_counts")
+    if isinstance(raw_counts, dict):
+        parsed: dict[str, int] = {}
+        valid = True
+        for key, value in raw_counts.items():
+            if not isinstance(key, str) or not key:
+                valid = False
+                break
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                valid = False
+                break
+            parsed[key] = value
+        if valid:
+            fire_counts = parsed
+
+    distinctness: float | None = None
+    raw_distinct = heartbeat_h1.get("organ_distinctness")
+    if (
+        isinstance(raw_distinct, (int, float))
+        and not isinstance(raw_distinct, bool)
+        and math.isfinite(raw_distinct)
+    ):
+        distinctness = max(0.0, min(1.0, float(raw_distinct)))
+
+    smear: float | None = None
+    raw_smear = heartbeat_h1.get("smear")
+    if (
+        isinstance(raw_smear, (int, float))
+        and not isinstance(raw_smear, bool)
+        and math.isfinite(raw_smear)
+        and raw_smear >= 0.0
+    ):
+        smear = float(raw_smear)
+
+    smeared: bool | None = None
+    raw_smeared = heartbeat_h1.get("smeared")
+    if isinstance(raw_smeared, bool):
+        smeared = raw_smeared
+
+    if dark_seats:
+        seats_note = ",".join(dark_seats)
+    elif fire_counts:
+        seats_note = "none"
+    else:
+        seats_note = "untracked"
     basis = (
-        f"orion-heartbeat /h1 ensemble mean_ratio (tick_count="
-        f"{heartbeat_h1.get('tick_count', '?')})"
+        f"orion-heartbeat /h1 proprioception dark_seats={seats_note} "
+        f"(tick_count={heartbeat_h1.get('tick_count', '?')})"
     )
-    return float(mean_ratio), verdict, basis, std_ratio, bulk_depth
+    return (
+        float(mean_ratio),
+        verdict,
+        basis,
+        std_ratio,
+        bulk_depth,
+        dark_seats,
+        fire_counts,
+        distinctness,
+        smear,
+        smeared,
+    )
 
 
 def _read_override_absent_reason(
@@ -556,15 +629,29 @@ def reduce_attention_self_model(
             if domain in model.prediction_error_by_domain
         } or None if prediction_error_evidence_by_domain else None
 
-    hb_mean_ratio, hb_verdict, hb_basis, hb_std_ratio, hb_bulk_depth = _heartbeat_h1_fields(
-        heartbeat_h1
-    )
+    (
+        hb_mean_ratio,
+        hb_verdict,
+        hb_basis,
+        hb_std_ratio,
+        hb_bulk_depth,
+        hb_dark_seats,
+        hb_fire_counts,
+        hb_distinctness,
+        hb_smear,
+        hb_smeared,
+    ) = _heartbeat_h1_fields(heartbeat_h1)
     if hb_verdict is not None:
         model.heartbeat_mean_ratio = _round_or_none(hb_mean_ratio)
         model.heartbeat_std_ratio = _round_or_none(hb_std_ratio)
         model.heartbeat_bulk_penetration_depth = _round_or_none(hb_bulk_depth)
         model.heartbeat_verdict = hb_verdict
         model.heartbeat_basis = hb_basis
+        model.heartbeat_dark_seats = list(hb_dark_seats)
+        model.heartbeat_organ_fire_counts = dict(hb_fire_counts)
+        model.heartbeat_organ_distinctness = _round_or_none(hb_distinctness)
+        model.heartbeat_smear = _round_or_none(hb_smear)
+        model.heartbeat_smeared = hb_smeared
 
     # --- Broadcast lane: what was last dispatched + cadence-mismatch state -
     broadcast_age_sec: float | None = None

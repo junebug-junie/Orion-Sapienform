@@ -28,6 +28,7 @@ import pytest
 from orion.curiosity.worldview import (
     COUNTS_CYPHER,
     CONCEPT_COUNT_CYPHER,
+    LIVE_NON_SELF_PRIORS_CYPHER,
     LIVE_PRIORS_CYPHER,
     RECENT_RUNS_CYPHER,
     RECENT_SETTLED_CYPHER,
@@ -48,6 +49,7 @@ from orion.situational.context import (
     _build_curiosity_context,
     _build_prompt_fragment,
     _build_reverie_context,
+    _fetch_curiosity_context,
     settings_from_runtime,
 )
 from orion.situational.reverie_reader import ReverieRow
@@ -138,6 +140,21 @@ async def test_curiosity_no_graph_host_is_unconfigured_not_an_error() -> None:
     assert ctx.available is False
     assert ctx.source == "unconfigured"
     assert diag.provider_status["curiosity"] == "unconfigured"
+
+
+def test_fetch_curiosity_context_uses_non_self_priors_cypher(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_read_snapshot(_reader, **kwargs):
+        captured.update(kwargs)
+        return WorldviewSnapshot(unavailable_reason="test")
+
+    monkeypatch.setattr(situation_mod, "read_snapshot", _fake_read_snapshot)
+    _fetch_curiosity_context(
+        _cfg(curiosity_enabled=True, curiosity_graph_host="127.0.0.1", curiosity_graph_port=6380)
+    )
+    assert captured.get("priors_cypher") == LIVE_NON_SELF_PRIORS_CYPHER
+    assert captured.get("priors_cypher") != LIVE_PRIORS_CYPHER
 
 
 @pytest.mark.asyncio
@@ -240,7 +257,7 @@ async def test_curiosity_confident_priors_survive_a_large_live_pool(monkeypatch)
         },
     ]
     rows_by_cypher = {
-        LIVE_PRIORS_CYPHER: near_toss_up + confident,
+        LIVE_NON_SELF_PRIORS_CYPHER: near_toss_up + confident,
         COUNTS_CYPHER: [{"live_total": 27, "closed_total": 0}],
         CONCEPT_COUNT_CYPHER: [{"n": 0}],
         RECENT_SETTLED_CYPHER: [],
@@ -277,7 +294,7 @@ async def test_curiosity_heavily_tested_confident_prior_still_shown(monkeypatch)
     test next" queue is configured with.
     """
     rows_by_cypher = {
-        LIVE_PRIORS_CYPHER: [
+        LIVE_NON_SELF_PRIORS_CYPHER: [
             {
                 "prior_id": "well-tested-confident",
                 "claim": "Juniper drinks her coffee black.",

@@ -278,6 +278,12 @@ details.journal summary:hover { color: var(--ink); }
 .self-history-row { padding: 12px 0; border-bottom: 1px solid var(--grid); }
 .self-history-row:last-child { border-bottom: none; }
 .self-history-row .content { font-size: 13px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
+.self-lived-wrap { margin-bottom: 16px; }
+.self-lived-wrap h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+.self-lived-row { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+.self-lived-row:last-child { border-bottom: none; }
+.self-lived-row .qid { font-size: 11px; font-family: var(--mono); color: var(--ink-muted); }
+.self-lived-row .content { font-size: 13px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; margin-top: 4px; }
 
 /* --- tables ------------------------------------------------------------ */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -323,6 +329,10 @@ tr:last-child td { border-bottom: none; }
       a <span class="mono">:TurnOutcome</span> node, and a definition can exist
       without one.
     </p>
+    <div class="card self-lived-wrap" id="self-lived-wrap" hidden>
+      <h3>Lived answers</h3>
+      <div id="self-lived"></div>
+    </div>
     <div class="card self-current" id="self-current"></div>
     <details class="journal" id="self-history-wrap" hidden>
       <summary id="self-history-summary">Earlier versions</summary>
@@ -674,11 +684,24 @@ function renderSelf(d) {
   if (self.available === false) {
     $("self-current").innerHTML =
       `<p class="dim">Could not be read: ${esc(self.reason || "unknown")}.</p>`;
+    $("self-lived-wrap").hidden = true;
     $("self-history-wrap").hidden = true;
     $("self-eval-wrap").hidden = true;
     $("self-journal").innerHTML = "";
     return;
   }
+  const lived = self.lived_answers || [];
+  $("self-lived-wrap").hidden = lived.length === 0;
+  $("self-lived").innerHTML = lived.map((la) => `
+    <div class="self-lived-row">
+      <div class="head">
+        <span class="qid">${esc(la.question_id)}</span>
+        <span class="when">${fmtStamp(la.created_at)}</span>
+      </div>
+      <div class="content">${esc(la.content)}</div>
+      ${la.evidence_refs && la.evidence_refs.length ? `<ul class="evidence-list">${
+        la.evidence_refs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
+    </div>`).join("");
   const cur = self.current;
   if (!cur) {
     $("self-current").innerHTML =

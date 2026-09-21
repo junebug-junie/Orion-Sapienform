@@ -14,15 +14,18 @@ requires_gpu: false
 requires_memory: false
 recall_profile: null
 # Both timeouts here are deliberately LARGER than self_study.py's own
-# SELF_STUDY_REFLECT_TIMEOUT_SEC (480s / 480000ms client-side RPC wait,
-# raised 2026-09-05 from 240s after two real end-to-end test calls against a
-# real, hundreds-of-concepts snapshot both timed out at 240s) -- see that
+# SELF_STUDY_REFLECT_TIMEOUT_SEC (1400s / 1400000ms client-side RPC wait,
+# raised 2026-09-21 from 480s after the first real autonomous attempt --
+# via the daily scheduler shipped in PR #2261 -- timed out at exactly 480s
+# (elapsed_ms=480007.5, live in orion-athena-cortex-exec-chat's logs). That
+# was the first genuine live data point this timeout had ever had; the two
+# 2026-09-05 failures that drove 240->480 were manual test calls. See that
 # key's .env_example comment. The client giving up first produces a clean,
 # catchable TimeoutError on the caller's side; the orchestrator's step
 # timeout firing first would instead kill the step out from under an
 # in-flight RPC wait, which self_study.py cannot distinguish from any other
 # RPC failure but which is a worse failure mode to induce on purpose.
-timeout_ms: 520000
+timeout_ms: 1500000
 max_recursion_depth: 0
 steps:
   - name: draft_self_study_reflection
@@ -33,4 +36,4 @@ steps:
     prompt_template: self_study_reflect_prompt.j2
     requires_gpu: false
     requires_memory: false
-    timeout_ms: 520000
+    timeout_ms: 1500000

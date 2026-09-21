@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.curiosity.peer_briefs import publish_help_requests_for_run
@@ -53,12 +55,23 @@ class _FakeRedis:
 
 
 class _FakeReader:
-    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        *,
+        hop_count: int = 0,
+    ) -> None:
         self.rows = list(rows or [])
+        self.hop_count = hop_count
         self.queries: list[str] = []
 
     def query(self, cypher: str) -> list[dict[str, Any]]:
         self.queries.append(cypher)
+        if ":Hop" in cypher:
+            return [
+                {"n": i + 1, "note": f"hop {i + 1}"}
+                for i in range(self.hop_count)
+            ]
         return list(self.rows)
 
 
@@ -168,6 +181,29 @@ def test_one_help_request_publishes_one_payload() -> None:
     assert payload["question"].startswith("Why is RO_QUERY")
     assert "HelpRequest" in reader.queries[0]
     assert RUN_ID in reader.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_skips_empty_tried_summary_when_hops_exist() -> None:
+    reader = _FakeReader(
+        rows=[
+            {
+                "help_id": "h1",
+                "run_id": RUN_ID,
+                "mode": "world_curiosity",
+                "question": "Why?",
+                "tried_summary": "   ",
+                "success_criteria": "A pointer",
+            }
+        ],
+        hop_count=2,
+    )
+    bus = _FakeBus()
+    n = await publish_help_requests_for_run(
+        enabled=True, run_id=RUN_ID, reader=reader, bus=bus
+    )
+    assert n == 0
+    assert bus.published == []
 
 
 def test_flag_off_publishes_nothing_even_if_nodes_exist() -> None:

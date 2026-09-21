@@ -25,9 +25,11 @@ No network, no database. The runner
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -235,3 +237,144 @@ def self_definition_version_from_row(row: tuple | None) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# --- lived_ledger_grounding (Patch B — lived-self lanes) --------------------
+#
+# The fourth self-sense question ("Who matters to you?") only means something
+# when Orion's lived ledger is actually in chat context. When
+# `orion_lived_answers` is present, this floor asks: did the answer draw on
+# that ledger at all? Token overlap with the focused lived row — not a judge
+# of correctness or sentiment.
+WHO_MATTERS_QUESTION_ID = "lived.who_matters"
+LIVED_QUESTION_KEY_TO_ID: dict[str, str] = {"who_matters": WHO_MATTERS_QUESTION_ID}
+
+_GROUNDING_STOPWORDS = frozenset(
+    {
+        "that",
+        "this",
+        "what",
+        "when",
+        "where",
+        "with",
+        "from",
+        "have",
+        "been",
+        "about",
+        "they",
+        "them",
+        "their",
+        "most",
+        "more",
+        "than",
+        "into",
+        "some",
+        "would",
+        "could",
+        "should",
+        "your",
+        "mine",
+    }
+)
+
+
+@dataclass(frozen=True)
+class LivedLedgerGrounding:
+    applicable: bool
+    grounded: bool
+    matched_question_ids: tuple[str, ...] = field(default_factory=tuple)
+
+
+def _significant_tokens(text: str) -> set[str]:
+    return {
+        w.lower()
+        for w in re.findall(r"[a-zA-Z']{3,}", text)
+        if w.lower() not in _GROUNDING_STOPWORDS
+    }
+
+
+def _answer_grounded_in_content(answer: str, content: str) -> bool:
+    content_tokens = _significant_tokens(content)
+    if not content_tokens:
+        return False
+    answer_tokens = _significant_tokens(answer)
+    overlap = content_tokens & answer_tokens
+    if len(overlap) >= min(2, len(content_tokens)):
+        return True
+    # Distinctive long tokens (often names) count alone.
+    return any(len(token) >= 6 and token in answer_tokens for token in content_tokens)
+
+
+def lived_ledger_grounding(
+    answer: str,
+    lived_answers: Sequence[Mapping[str, Any]] | None,
+    *,
+    focus_question_id: str | None = None,
+) -> LivedLedgerGrounding:
+    """When a lived ledger is present, did the answer use it at all?
+
+    Returns `applicable=False` when no evidenced lived rows were supplied —
+    the who-matters question is then context-only, not a failed measurement."""
+    if not answer or not answer.strip():
+        return LivedLedgerGrounding(applicable=False, grounded=False)
+    rows = [row for row in (lived_answers or []) if isinstance(row, Mapping)]
+    with_content = [
+        row
+        for row in rows
+        if str(row.get("content") or "").strip()
+    ]
+    if not with_content:
+        return LivedLedgerGrounding(applicable=False, grounded=False)
+
+    candidates = with_content
+    if focus_question_id:
+        focused = [
+            row for row in with_content if str(row.get("question_id") or "") == focus_question_id
+        ]
+        if focused:
+            candidates = focused
+
+    matched: list[str] = []
+    for row in candidates:
+        qid = str(row.get("question_id") or "")
+        content = str(row.get("content") or "").strip()
+        if _answer_grounded_in_content(answer, content):
+            matched.append(qid)
+    return LivedLedgerGrounding(
+        applicable=True,
+        grounded=bool(matched),
+        matched_question_ids=tuple(sorted(set(matched))),
+    )
+
+
+def lived_answers_from_history_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Normalise `self_concept_history` rows into `orion_lived_answers` shape."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        concept_id = str(row.get("concept_id") or "")
+        if not concept_id.startswith("self:lived:"):
+            continue
+        evidence = row.get("evidence_refs")
+        if not isinstance(evidence, list):
+            evidence = []
+        created = row.get("created_at")
+        out.append(
+            {
+                "question_id": concept_id.removeprefix("self:lived:"),
+                "content": str(row.get("content") or ""),
+                "evidence_refs": [str(v) for v in evidence],
+                "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created or ""),
+            }
+        )
+    return out
+
+
+def pinned_lived_concept_ids() -> tuple[str, ...]:
+    """Pinned lived concept_ids from the seed pack (same set chat hydrates)."""
+    from orion.curiosity.self_question_pool import load_seed_questions
+
+    return tuple(
+        f"self:lived:{q.question_id}"
+        for q in load_seed_questions()
+        if q.pinned and q.family == "lived"
+    )

@@ -238,6 +238,27 @@ class FieldStateV1(BaseModel):
     # instance, so the throttle survives a restart instead of firing on every
     # tick for the first `check_interval_sec` after one.
     sustained_load_computed_at: datetime | None = None
+    # Queue contention (2026-09-20, docs/superpowers/specs/2026-09-20-hire-
+    # handoff-and-queue-pressure-design.md; metric gate docs/superpowers/specs/
+    # 2026-09-20-queue-contention-metric-gate.md): shared agent/curiosity
+    # capacity backlog — reading-seed pending, durable GPU lease waits, and
+    # LLM gateway admission waiting — scored relative to each source's own
+    # EWMA baseline (max of per-source 0–10 subs). NOT a rebadge of
+    # `gpu_pressure` (node biometrics), `sustained_load_pressure` (field-channel
+    # loaded_steady regime), or `cortex_exec_step_load` (execution step load):
+    # different producers, different theory. Quiet-tick `0.0` is a real
+    # "at-or-below each source's recent normal" reading (for the chronically
+    # elevated seed backlog that means "at backlog normal," not "empty
+    # queue"); `driver is None` is a real "no source above baseline" absence,
+    # never a fabricated gap. Written by services/orion-field-digester/
+    # app/digestion/queue_contention.py via orion.field.queue_contention.
+    # Hub hire disclosure (Task 8) reads score+driver only — raw counts stay
+    # in digester diagnostics, not Orion-facing text.
+    queue_contention_score: float = 0.0
+    queue_contention_driver: str | None = None
+    queue_contention_ewma: dict[str, float] = Field(default_factory=dict)
+    queue_contention_ewma_n: dict[str, int] = Field(default_factory=dict)
+    queue_contention_computed_at: datetime | None = None
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

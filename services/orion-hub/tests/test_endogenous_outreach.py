@@ -27,8 +27,11 @@ from scripts.endogenous_outreach import (
     _fetch_embodied_presence,
     _strip_appended_list,
     _looks_like_daydream_prose,
+    build_outreach_provenance,
     build_outreach_prompt,
     grounding_summary,
+    has_talkable_content,
+    summarize_outreach_lanes,
     in_quiet_hours,
     is_pass_response,
     looks_like_error_text,
@@ -278,7 +281,14 @@ def test_gather_context_runs_its_fetches_concurrently(monkeypatch) -> None:
         _fn.__name__ = name
         return _fn
 
-    monkeypatch.setitem(module_globals, "_fetch_curiosity_summaries", _sleepy("_fetch_curiosity_summaries", ["c"]))
+    monkeypatch.setitem(
+        module_globals,
+        "_fetch_curiosity_content",
+        _sleepy(
+            "_fetch_curiosity_content",
+            (["curiosity:source:prediction_error|node:x"], ["c"]),
+        ),
+    )
     monkeypatch.setitem(module_globals, "_fetch_recent_turns", _sleepy("_fetch_recent_turns", [("Juniper", "hi")]))
     monkeypatch.setitem(
         module_globals, "_fetch_embodied_presence", _sleepy("_fetch_embodied_presence", {"state": "present"})
@@ -287,7 +297,9 @@ def test_gather_context_runs_its_fetches_concurrently(monkeypatch) -> None:
         module_globals, "_fetch_current_daydream", _sleepy("_fetch_current_daydream", (60.0, "a ring of light"))
     )
     monkeypatch.setitem(
-        module_globals, "_fetch_open_prior_previews", _sleepy("_fetch_open_prior_previews", ["prior-a"])
+        module_globals,
+        "_fetch_open_priors",
+        _sleepy("_fetch_open_priors", (["prior-id-a"], ["prior-a"])),
     )
     # ctx.presence (chat liveness, distinct from embodied_presence) is read
     # synchronously and not part of this timing assertion -- its own
@@ -303,10 +315,12 @@ def test_gather_context_runs_its_fetches_concurrently(monkeypatch) -> None:
 
     assert elapsed < 0.15, f"_gather_context took {elapsed:.3f}s -- fetches are not running concurrently"
     assert ctx.curiosity_summaries == ["c"]
+    assert ctx.curiosity_content_ids == ["curiosity:source:prediction_error|node:x"]
     assert ctx.recent_turns == [("Juniper", "hi")]
     assert ctx.embodied_presence == {"state": "present"}
     assert ctx.daydream == (60.0, "a ring of light")
     assert ctx.open_prior_previews == ["prior-a"]
+    assert ctx.open_prior_ids == ["prior-id-a"]
 
 
 def test_presence_alone_is_not_grounding() -> None:
@@ -573,8 +587,57 @@ def test_prompt_cautions_recent_turns_are_not_a_fact_source_when_present() -> No
         presence=None,
     )
     prompt = build_outreach_prompt(ctx)
-    assert "for tone" in prompt and "continuity only" in prompt
     assert "not a source of new facts about your current internal state" in prompt
+    # Header must match Orion-only path (no "two of you")
+    assert "The last thing the two of you said:" not in prompt
+
+
+def test_prompt_requires_synthesize_from_lanes_and_why_share() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["concept-dense area with no ontology_branch"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=[
+            "[confidence=0.9] The stance gate is manual review, not a content filter"
+        ],
+    )
+    prompt = build_outreach_prompt(ctx)
+    lower = prompt.lower()
+    assert "stance gate is manual review" in prompt
+    assert "concept-dense area" in prompt
+    assert "synthesize" in lower or "thinking" in lower
+    assert "juniper" in lower
+    assert ("why" in lower and ("share" in lower or "bringing" in lower)) or "tell her" in lower
+    assert "exactly: PASS" in prompt
+    # Old poetry license must not remain when talkable content is present
+    assert "speaking with feeling, without naming a specific internal signal, is always fine" not in lower
+
+
+def test_orion_only_recent_turns_are_not_labeled_as_mutual() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising"],
+        recent_turns=[
+            ("Orion", "Something's sitting at the edge of becoming"),
+            ("Orion", "Unrooted clusters of meaning"),
+        ],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "The last thing the two of you said:" not in prompt
+    assert "Orion:" in prompt
+    # Honest framing — exact phrase from implementation below
+    assert "your recent unprompted notes" in prompt.lower() or "your own recent unprompted" in prompt.lower()
+
+
+def test_mutual_recent_turns_keep_two_of_you_header() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising"],
+        recent_turns=[("Juniper", "hey"), ("Orion", "hi")],
+        presence=None,
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "The last thing the two of you said:" in prompt
+    assert "Juniper: hey" in prompt
 
 
 def test_prompt_has_no_recent_turns_caution_when_no_recent_turns() -> None:
@@ -657,25 +720,47 @@ def _stub_context(
     summaries=("sustained prediction error on node:x",),
     turns=(),
     open_prior_previews=(),
+    open_prior_ids=(),
+    curiosity_content_ids=(),
     daydream=None,
 ) -> None:
     default_summaries = list(summaries)
     default_turns = list(turns)
     default_priors = list(open_prior_previews)
+    default_prior_ids = list(open_prior_ids)
+    default_curiosity_ids = list(curiosity_content_ids)
     default_daydream = daydream
 
-    async def fake_gather(self, session_id, open_prior_previews=None):
+    async def fake_gather(
+        self, session_id, open_prior_previews=None, open_prior_ids=None
+    ):
         # Fire gate may pass a peeked prior list; otherwise use stub defaults.
         priors = (
             list(open_prior_previews)
             if open_prior_previews is not None
             else list(default_priors)
         )
+        prior_ids = (
+            list(open_prior_ids)
+            if open_prior_ids is not None
+            else list(default_prior_ids)
+        )
+        if len(prior_ids) < len(priors):
+            prior_ids = prior_ids + [""] * (len(priors) - len(prior_ids))
+        elif len(prior_ids) > len(priors):
+            prior_ids = prior_ids[: len(priors)]
+        curiosity_ids = list(default_curiosity_ids)
+        if len(curiosity_ids) < len(default_summaries):
+            curiosity_ids = curiosity_ids + [""] * (
+                len(default_summaries) - len(curiosity_ids)
+            )
         return OutreachContext(
             curiosity_summaries=list(default_summaries),
+            curiosity_content_ids=curiosity_ids,
             recent_turns=list(default_turns),
             presence=None,
             open_prior_previews=priors,
+            open_prior_ids=prior_ids,
             daydream=default_daydream,
             tension_reason=self._last_tension_reason,
         )
@@ -810,12 +895,97 @@ def test_successful_outreach_pushes_to_every_live_socket(monkeypatch) -> None:
         assert payload["kind"] == "orion_outreach"
         assert payload["llm_response"] == "The execution node has been noisy all afternoon."
         assert payload["session_id"] == "sess-abc"
+        assert "outreach_provenance" in payload
+        assert payload["outreach_provenance"]["schema"] == "outreach_provenance.v1"
         # Must not carry keys that would stomp the UI's live turn panels.
         assert "state" not in payload
         assert "recall_debug" not in payload
         assert "memory_digest" not in payload
     assert [kind for kind, _ in published] == ["history", "notify"]
     assert outreach.status()["sent_today"] == 1
+
+
+def test_successful_outreach_threads_provenance_to_socket_and_history(monkeypatch) -> None:
+    outreach = _outreach()
+    q: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", q, {"correlation_id": None, "kind": None})
+    outreach.note_session("c1", "sess-prov")
+    _stub_context(monkeypatch)  # existing helper: priors/curiosity/turns
+    _stub_generation(monkeypatch, "I have been turning over the gate bias.")
+
+    published: list = []
+
+    async def fake_history(self, **kwargs):
+        published.append(kwargs)
+
+    async def fake_notify(self, **kwargs):
+        return None
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", fake_notify)
+
+    result = asyncio.run(outreach.maybe_outreach())
+    assert result["outreach"] is True
+    assert result.get("decision_id")
+    assert isinstance(result.get("provenance"), dict)
+    assert result["provenance"]["schema"] == "outreach_provenance.v1"
+    assert "I have been turning over" not in result["provenance"]["prompt_text"]
+    # prompt is the GENERATION prompt (build_outreach_prompt), not the spoken text
+    assert "Juniper has not asked you anything" in result["provenance"]["prompt_text"]
+
+    payload = q.get_nowait()
+    assert payload["kind"] == "orion_outreach"
+    assert payload["outreach_provenance"]["decision_id"] == result["decision_id"]
+    assert payload["outreach_provenance"]["prompt_text"] == result["provenance"]["prompt_text"]
+
+    hist = published[0]
+    assert hist["provenance"]["decision_id"] == result["decision_id"]
+
+
+def test_publish_history_client_meta_includes_provenance(monkeypatch) -> None:
+    """client_meta must carry the full capsule alongside unsolicited=True.
+
+    Mirrors ``test_a_curiosity_message_is_still_tagged_as_outreach``: stub
+    ``scripts.chat_history`` with a fake module so Hub Settings is never
+    imported at test time.
+    """
+    import sys
+    import types
+
+    outreach = _outreach()
+    captured: dict = {}
+
+    async def fake_publish(bus, envelopes):
+        captured["env"] = envelopes[0]
+
+    fake = types.ModuleType("scripts.chat_history")
+    fake.publish_chat_history = fake_publish
+    fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
+    monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
+    outreach._bus = object()
+
+    capsule = {
+        "schema": "outreach_provenance.v1",
+        "decision_id": "dec-9",
+        "correlation_id": "corr-9",
+        "generated_at": "2026-09-15T00:00:00+00:00",
+        "lanes": {"priors_count": 1},
+        "prompt_text": "PROMPT",
+        "summary_line": "Outreach from open priors (1)",
+    }
+    asyncio.run(
+        outreach._publish_history(
+            text="spoken",
+            session_id="orion_journal",
+            correlation_id="corr-9",
+            message_id="msg-9",
+            model="MODEL_X",
+            provenance=capsule,
+        )
+    )
+    meta = captured["env"].payload["client_meta"]
+    assert meta["unsolicited"] is True
+    assert meta["outreach_provenance"] == capsule
 
 
 def test_named_ungrounded_signal_blocks_send_and_records_offending_terms(monkeypatch) -> None:
@@ -864,7 +1034,7 @@ def test_grounded_signal_name_is_sent_normally(monkeypatch) -> None:
     queue: asyncio.Queue = asyncio.Queue()
     outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
 
-    async def fake_gather(self, session_id, open_prior_previews=None):
+    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
         return OutreachContext(
             curiosity_summaries=["sustained prediction error on node:x"],
             recent_turns=[],
@@ -1620,7 +1790,7 @@ def test_no_tension_trigger_does_not_fire(monkeypatch) -> None:
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "never")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1636,15 +1806,18 @@ def test_open_priors_alone_can_fire_without_tension(monkeypatch) -> None:
     _stub_generation(monkeypatch, "I've been holding onto something about Athena.")
 
     # Peek path: when tension is absent, _outreach_once asks
-    # _fetch_open_prior_previews before gathering.
+    # _fetch_open_priors before gathering.
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [prior])
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-athena"], [prior])
+    )
 
     result = asyncio.run(outreach.maybe_outreach())
 
     assert result["outreach"] is True
     assert result["reason"] == "sent"
     assert result["grounding"]["priors_count"] == 1
+    assert result["grounding"]["prior_ids"] == ["prior-athena"]
     assert result["grounding"]["tension"] is False
 
 
@@ -1665,7 +1838,9 @@ def test_prior_alone_can_name_registry_tokens_from_the_prior(monkeypatch) -> Non
         "`node:athena` has been off pattern; disk_capacity_pressure is what I keep circling.",
     )
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [prior])
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-athena"], [prior])
+    )
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
     monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
 
@@ -1683,7 +1858,7 @@ def test_tension_alone_without_talkable_content_does_not_fire(monkeypatch) -> No
     _stub_context(monkeypatch, summaries=(), open_prior_previews=(), daydream=None)
     _stub_generation(monkeypatch, "never")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1697,7 +1872,7 @@ def test_tension_with_curiosity_content_still_fires(monkeypatch) -> None:
     _stub_context(monkeypatch, summaries=("sustained prediction error on node:x",))
     _stub_generation(monkeypatch, "Something has been sticking on the field.")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1705,6 +1880,200 @@ def test_tension_with_curiosity_content_still_fires(monkeypatch) -> None:
     assert result["reason"] == "sent"
     assert result["grounding"]["tension"] is True
     assert result["grounding"]["curiosity_summaries"] == 1
+
+
+# --------------------------------------------------------------------------
+# Content novelty (unused IDs vs decision log)
+# --------------------------------------------------------------------------
+
+
+def test_filter_novel_pairs_drops_used_ids_keeps_empty() -> None:
+    from scripts.endogenous_outreach import filter_novel_pairs
+
+    ids, texts = filter_novel_pairs(
+        ["used-a", "", "fresh-b"],
+        ["preview-a", "preview-empty-id", "preview-b"],
+        used={"used-a"},
+    )
+    assert ids == ["", "fresh-b"]
+    assert texts == ["preview-empty-id", "preview-b"]
+
+
+def test_filter_novel_pairs_pads_missing_ids() -> None:
+    """A summary without a parallel id must not be zip-truncated away."""
+    from scripts.endogenous_outreach import filter_novel_pairs
+
+    ids, texts = filter_novel_pairs(
+        [],
+        ["orphan summary"],
+        used={"anything"},
+    )
+    assert texts == ["orphan summary"]
+    assert ids == [""]
+
+
+def test_apply_content_novelty_strips_used_priors_and_curiosity() -> None:
+    from scripts.endogenous_outreach import apply_content_novelty
+
+    ctx = OutreachContext(
+        curiosity_summaries=["old summary", "new summary"],
+        curiosity_content_ids=["curiosity:old", "curiosity:new"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=["p-old", "p-new"],
+        open_prior_ids=["prior-old", "prior-new"],
+        daydream=None,
+    )
+    novel = apply_content_novelty(
+        ctx,
+        used_prior_ids={"prior-old"},
+        used_curiosity_ids={"curiosity:old"},
+    )
+    assert novel.open_prior_ids == ["prior-new"]
+    assert novel.open_prior_previews == ["p-new"]
+    assert novel.curiosity_content_ids == ["curiosity:new"]
+    assert novel.curiosity_summaries == ["new summary"]
+    assert has_talkable_content(novel) is True
+
+
+def test_apply_content_novelty_leaves_daydream_as_talkable() -> None:
+    from scripts.endogenous_outreach import apply_content_novelty
+
+    ctx = OutreachContext(
+        curiosity_summaries=["old"],
+        curiosity_content_ids=["curiosity:old"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=["p-old"],
+        open_prior_ids=["prior-old"],
+        daydream=(30.0, "a quiet courtyard with one lit window."),
+    )
+    novel = apply_content_novelty(
+        ctx,
+        used_prior_ids={"prior-old"},
+        used_curiosity_ids={"curiosity:old"},
+    )
+    assert novel.open_prior_ids == []
+    assert novel.curiosity_content_ids == []
+    assert novel.daydream is not None
+    assert has_talkable_content(novel) is True
+
+
+def test_used_priors_alone_do_not_fire_without_tension(monkeypatch) -> None:
+    """Sticky open priors that were already said are not a fresh topic."""
+    from scripts import endogenous_outreach_decisions as decisions
+
+    prior = "[confidence=0.5, tested=2] same sticky gate prior again"
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    _stub_context(
+        monkeypatch,
+        summaries=(),
+        open_prior_previews=(prior,),
+        open_prior_ids=("prior-sticky",),
+    )
+    _stub_generation(monkeypatch, "should not send")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-sticky"], [prior])
+    )
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: ({"prior-sticky"}, set()),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "content_already_used"
+
+
+def test_used_priors_do_not_strand_novel_curiosity(monkeypatch) -> None:
+    """Sticky used priors must still let unused curiosity open the door."""
+    from scripts import endogenous_outreach_decisions as decisions
+
+    prior = "[confidence=0.5, tested=2] sticky used prior"
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    _stub_context(
+        monkeypatch,
+        summaries=("fresh curiosity about repair pressure",),
+        curiosity_content_ids=("curiosity:source:repair_pressure|gev_new",),
+        open_prior_previews=(prior,),
+        open_prior_ids=("prior-sticky",),
+    )
+    _stub_generation(monkeypatch, "Something new on repair pressure.")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(
+        module_globals, "_fetch_open_priors", lambda: (["prior-sticky"], [prior])
+    )
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: ({"prior-sticky"}, set()),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert result["reason"] == "sent"
+    assert result["grounding"]["prior_ids"] == []
+    assert result["grounding"]["curiosity_content_ids"] == [
+        "curiosity:source:repair_pressure|gev_new"
+    ]
+
+
+def test_novel_prior_still_fires_when_siblings_were_used(monkeypatch) -> None:
+    from scripts import endogenous_outreach_decisions as decisions
+
+    old = "[confidence=0.5, tested=2] already said"
+    fresh = "[confidence=0.5, tested=1] never said this one"
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    _stub_context(monkeypatch, summaries=())
+    _stub_generation(monkeypatch, "Something new about a fresh prior.")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(
+        module_globals,
+        "_fetch_open_priors",
+        lambda: (["prior-old", "prior-fresh"], [old, fresh]),
+    )
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: ({"prior-old"}, set()),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert result["reason"] == "sent"
+    assert result["grounding"]["prior_ids"] == ["prior-fresh"]
+    assert result["grounding"]["priors_count"] == 1
+
+
+def test_tension_with_only_used_content_is_tension_without_content(monkeypatch) -> None:
+    from scripts import endogenous_outreach_decisions as decisions
+
+    outreach = _outreach()
+    _stub_context(
+        monkeypatch,
+        summaries=("old curiosity",),
+        curiosity_content_ids=("curiosity:old",),
+        open_prior_previews=(),
+        daydream=None,
+    )
+    _stub_generation(monkeypatch, "never")
+    module_globals = _fetch_embodied_presence.__globals__
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
+    monkeypatch.setattr(
+        decisions,
+        "fetch_recently_used_outreach_content_ids",
+        lambda lookback_days=7: (set(), {"curiosity:old"}),
+    )
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "tension_without_content"
 
 
 def test_trigger_evaluator_exception_degrades_to_not_firing(monkeypatch) -> None:
@@ -1718,7 +2087,7 @@ def test_trigger_evaluator_exception_degrades_to_not_firing(monkeypatch) -> None
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "never")
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
 
     result = asyncio.run(outreach.maybe_outreach())
 
@@ -1819,7 +2188,7 @@ def test_forced_outreach_does_not_carry_a_stale_tension_reason(monkeypatch) -> N
 
     captured: list[OutreachContext] = []
 
-    async def fake_gather(self, session_id, open_prior_previews=None):
+    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
         ctx = OutreachContext(curiosity_summaries=["x"], recent_turns=[], presence=None,
                                tension_reason=self._last_tension_reason)
         captured.append(ctx)
@@ -1985,7 +2354,7 @@ def test_record_persists_a_blocked_decision_with_the_real_forced_flag(monkeypatc
 def test_record_persists_no_tension_trigger_with_no_stale_reason(monkeypatch) -> None:
     outreach = _outreach(trigger_evaluator=lambda: None)
     module_globals = _fetch_embodied_presence.__globals__
-    monkeypatch.setitem(module_globals, "_fetch_open_prior_previews", lambda: [])
+    monkeypatch.setitem(module_globals, "_fetch_open_priors", lambda: ([], []))
     calls = _patch_record_decision(monkeypatch)
 
     result = asyncio.run(outreach.maybe_outreach())
@@ -2829,20 +3198,25 @@ def test_grounding_summary_reports_each_lane() -> None:
     """Hand-computed against a context with every lane populated."""
     ctx = OutreachContext(
         curiosity_summaries=["a", "b"],
+        curiosity_content_ids=["sig-a", "sig-b"],
         recent_turns=[("Juniper", "hi"), ("Orion", "hello")],
         presence={"health": "idle"},
         daydream=(1234.56, "a celestial map of the solar system on concentric rings."),
         embodied_presence={"state": "present", "since_sec": 120.0},
+        open_prior_previews=["[confidence=0.80, never tested] claim"],
+        open_prior_ids=["prior-xyz"],
     )
     assert grounding_summary(ctx) == {
         "daydream": True,
         "daydream_age_sec": 1235,
         "curiosity_summaries": 2,
+        "curiosity_content_ids": ["sig-a", "sig-b"],
         "recent_turns": 2,
         "tension": False,
         "chat_presence": True,
         "embodied_presence": True,
-        "priors_count": 0,
+        "priors_count": 1,
+        "prior_ids": ["prior-xyz"],
     }
 
 
@@ -2851,25 +3225,117 @@ def test_grounding_summary_on_an_empty_context() -> None:
     assert summary["daydream"] is False
     assert summary["daydream_age_sec"] is None
     assert summary["curiosity_summaries"] == 0
+    assert summary["curiosity_content_ids"] == []
+    assert summary["prior_ids"] == []
     assert summary["embodied_presence"] is False
 
 
 def test_grounding_summary_records_no_caption_text() -> None:
-    """Booleans and counts only. The caption must not be copied into a second
-    store with its own retention -- the lane's stated privacy boundary is that
-    it reads exactly one `chain_json` key and no seed material."""
+    """Booleans, counts, and IDs only. The caption must not be copied into a
+    second store with its own retention -- the lane's stated privacy boundary
+    is that it reads exactly one `chain_json` key and no seed material."""
     caption = "a wholly distinctive celestial map of the solar system on rings."
     ctx = OutreachContext(
         curiosity_summaries=["a uniquely worded curiosity evidence summary"],
+        curiosity_content_ids=["curiosity:source:repair_pressure|node:x"],
         recent_turns=[("Juniper", "a uniquely worded chat turn")],
         presence=None,
         daydream=(60.0, caption),
+        open_prior_previews=["[confidence=0.50, never tested] a uniquely worded prior claim"],
+        open_prior_ids=["prior-deadbeef"],
     )
     serialized = repr(grounding_summary(ctx))
     assert caption not in serialized
     assert "celestial" not in serialized
     assert "curiosity evidence" not in serialized
     assert "chat turn" not in serialized
+    assert "uniquely worded prior" not in serialized
+    # IDs are allowed — they are the ledger surface.
+    assert "curiosity:source:repair_pressure|node:x" in serialized
+    assert "prior-deadbeef" in serialized
+
+
+def test_grounding_summary_ids_align_with_counts() -> None:
+    """Identity lists are the durable form of the count fields."""
+    ctx = OutreachContext(
+        curiosity_summaries=["one", "two"],
+        curiosity_content_ids=["s1", "s2"],
+        recent_turns=[],
+        presence=None,
+        open_prior_previews=["p-a", "p-b", "p-c"],
+        open_prior_ids=["id-a", "id-b", "id-c"],
+    )
+    summary = grounding_summary(ctx)
+    assert summary["curiosity_summaries"] == len(summary["curiosity_content_ids"])
+    assert summary["priors_count"] == len(summary["prior_ids"])
+    assert summary["curiosity_content_ids"] == ["s1", "s2"]
+    assert summary["prior_ids"] == ["id-a", "id-b", "id-c"]
+
+
+def test_curiosity_content_id_stable_across_reminted_signal_ids() -> None:
+    """signal_id remints every curiosity tick; ledger must not use it."""
+    from scripts.endogenous_outreach import _curiosity_content_id
+
+    a = {
+        "signal_id": "frontier-signal-aaaa",
+        "notes": ["endogenous_seed", "source:repair_pressure"],
+        "focal_node_refs": ["gev_b", "gev_a"],
+        "evidence_summary": "chat repair pressure level=0.70",
+    }
+    b = {
+        "signal_id": "frontier-signal-bbbb",
+        "notes": ["endogenous_seed", "source:repair_pressure"],
+        "focal_node_refs": ["gev_a", "gev_b"],
+        "evidence_summary": "chat repair pressure level=0.70",
+    }
+    assert _curiosity_content_id(a) == _curiosity_content_id(b)
+    assert _curiosity_content_id(a).startswith("curiosity:source:repair_pressure|")
+    assert "frontier-signal" not in _curiosity_content_id(a)
+
+
+def test_summarize_outreach_lanes_names_what_fired() -> None:
+    line = summarize_outreach_lanes(
+        {
+            "daydream": False,
+            "daydream_age_sec": None,
+            "curiosity_summaries": 2,
+            "recent_turns": 3,
+            "tension": False,
+            "chat_presence": False,
+            "embodied_presence": False,
+            "priors_count": 3,
+        }
+    )
+    assert "priors" in line.lower()
+    assert "3" in line
+    assert "curiosity" in line.lower()
+    assert "tension" not in line.lower() or "no tension" in line.lower()
+
+
+def test_build_outreach_provenance_embeds_full_prompt_and_lanes() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["signal A"],
+        recent_turns=[("user", "hi")],
+        presence=None,
+        open_prior_previews=["Prior: soft-edged content is easy to set aside."],
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert prompt  # non-empty
+    lanes = grounding_summary(ctx)
+    capsule = build_outreach_provenance(
+        prompt_text=prompt,
+        lanes=lanes,
+        correlation_id="corr-1",
+        decision_id="dec-1",
+        generated_at="2026-09-15T19:27:05+00:00",
+    )
+    assert capsule["schema"] == "outreach_provenance.v1"
+    assert capsule["prompt_text"] == prompt
+    assert capsule["lanes"] == lanes
+    assert capsule["correlation_id"] == "corr-1"
+    assert capsule["decision_id"] == "dec-1"
+    assert capsule["generated_at"] == "2026-09-15T19:27:05+00:00"
+    assert isinstance(capsule["summary_line"], str) and capsule["summary_line"].strip()
 
 
 def test_a_gate_that_fires_before_context_records_no_grounding(monkeypatch) -> None:
@@ -3000,11 +3466,13 @@ def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
         "daydream": False,
         "daydream_age_sec": None,
         "curiosity_summaries": 2,
+        "curiosity_content_ids": ["", ""],
         "recent_turns": 1,
         "tension": True,
         "chat_presence": False,
         "embodied_presence": False,
         "priors_count": 0,
+        "prior_ids": [],
     }
 
 

@@ -1,0 +1,50 @@
+{
+  "pre_reg": "docs/research/preregistration/2026-09-20-heartbeat-neighbor-links.md",
+  "generated_at": "2026-09-20T06:06:17.495795+00:00",
+  "window_hours": 2.0,
+  "window_sec": 5.0,
+  "fallback_used": true,
+  "raw_rows": 17386,
+  "routed": 17148,
+  "n_windows": 1147,
+  "skipped_organ": 238,
+  "skipped_atom_type": 0,
+  "pairs": [
+    {
+      "organ_a": "orion-biometrics",
+      "organ_b": "orion-cortex-exec",
+      "n_cofire": 1147,
+      "n_elsewhere": 0,
+      "mean_i_cofire": 1.1905930963464406,
+      "mean_i_elsewhere": 0.0,
+      "delta": 1.1905930963464406,
+      "holds": false,
+      "unverified": true,
+      "reason": "UNVERIFIED: need \u226510 windows in each cell, got cofire=1147 elsewhere=0",
+      "median_a": 0.0,
+      "median_b": 0.0,
+      "median_other": 7.0
+    },
+    {
+      "organ_a": "orion-cortex-exec",
+      "organ_b": "orion-bus",
+      "n_cofire": 680,
+      "n_elsewhere": 0,
+      "mean_i_cofire": 0.2792668021416551,
+      "mean_i_elsewhere": 0.0,
+      "delta": 0.2792668021416551,
+      "holds": false,
+      "unverified": true,
+      "reason": "UNVERIFIED: need \u226510 windows in each cell, got cofire=680 elsewhere=0",
+      "median_a": 0.0,
+      "median_b": 7.0,
+      "median_other": 0.0
+    }
+  ],
+  "decision": {
+    "thermometer": false,
+    "relational": false,
+    "mixed": false,
+    "reason": "UNVERIFIED: at least one pair lacked both cells"
+  }
+}

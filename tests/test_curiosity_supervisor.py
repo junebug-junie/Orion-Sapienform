@@ -11,11 +11,14 @@ from __future__ import annotations
 import pytest
 
 from orion.curiosity.supervisor import (
+    build_grading_sealed_prompt,
     build_reading_options,
     build_reading_prompt,
     build_run_order,
     generate_all_readings,
     generate_readings_for_run,
+    generate_readings_for_run_routed,
+    generate_readings_for_run_via_cursor,
     group_hops_by_run,
     group_readings_by_prior,
     is_circling,
@@ -24,9 +27,11 @@ from orion.curiosity.supervisor import (
 from orion.curiosity.worldview import (
     ALL_HOPS_CYPHER,
     ALL_PRIORS_CYPHER,
+    ALL_REVIEW_ROLES_CYPHER,
     RECENT_RUNS_LIMIT,
     HopRecord,
     Prior,
+    ReviewRoleRecord,
     WorldviewReader,
     WorldviewUnavailable,
     read_all_hops,
@@ -405,6 +410,297 @@ async def test_generate_all_readings_survives_one_failing_run(monkeypatch):
     assert sorted(calls) == ["run_bad", "run_ok"]
     assert len(out) == 1
     assert out[0].hop_run_id == "run_ok"
+
+
+# --- self-review vs. hire_cursor_review: build_grading_sealed_prompt -------
+
+
+def test_build_grading_sealed_prompt_includes_hop_notes_priors_and_why():
+    hops = [HopRecord(run_id="r1", n=1, note="checked the ledger")]
+    priors = [_prior(pid="p1", claim="a claim to check")]
+    text = build_grading_sealed_prompt(
+        run_id="r1", hops=hops, priors=priors, why="queue is backed up"
+    )
+    assert "checked the ledger" in text
+    assert "a claim to check" in text
+    assert "queue is backed up" in text
+    assert "read-only contractor" in text
+    assert "grade Orion's OWN past reasoning" in text
+    # must not ask Cursor to write belief-graph nodes
+    assert "Do not write :Prior, :Finding, :HopReading, :ReviewRole" in text
+
+
+def test_build_grading_sealed_prompt_blank_why_omits_the_reason_line():
+    text = build_grading_sealed_prompt(run_id="r1", hops=[], priors=[], why="")
+    assert "stated reason" not in text
+
+
+# --- generate_readings_for_run_via_cursor -----------------------------------
+
+
+class _FakeCompletedProcess:
+    def __init__(self, *, stdout="", stderr="", returncode=0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+@pytest.mark.asyncio
+async def test_generate_readings_for_run_via_cursor_refuses_on_unobserved_budget(monkeypatch):
+    # observe_cursor_limit() with nothing configured returns unobserved,
+    # which decide_cursor_budget fails closed on -- the real, un-mocked
+    # budget gate, same one the investigation hire path uses.
+    monkeypatch.delenv("CURIOSITY_PEER_CURSOR_LIMIT_STATE", raising=False)
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+    with pytest.raises(RuntimeError, match="cursor_grading_budget_refused"):
+        await generate_readings_for_run_via_cursor(
+            run_id="r1", hops=hops, priors=[], agent_bin="cursor-agent", cwd=".",
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_readings_for_run_via_cursor_parses_response_on_clear_budget(monkeypatch):
+    from orion.dev_economics.cursor_limit_events import CursorLimitObservation
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.observe_cursor_limit",
+        lambda: CursorLimitObservation(observed=True, state="clear", staleness_sec=1.0),
+    )
+    hops = [HopRecord(run_id="r1", n=1, note="a hop", written_at=1000)]
+    priors = [_prior(pid="p1")]
+
+    captured_argv: list[str] = []
+
+    def _fake_run(argv, **kwargs):
+        import json as _json
+
+        captured_argv.extend(argv)
+        one_reading = HopReadingV1(
+            hop_run_id="ignored", hop_n=1, about_prior_id="p1", kind="test",
+            moved_the_claim=True, reading_confidence=0.8, reasoning="ok",
+        ).model_dump(mode="json")
+        body = _json.dumps({"readings": [one_reading]})
+        return _FakeCompletedProcess(stdout=body, returncode=0)
+
+    out = await generate_readings_for_run_via_cursor(
+        run_id="r1", hops=hops, priors=priors,
+        agent_bin="cursor-agent", cwd="/repo", model="composer-2.5",
+        run=_fake_run,
+    )
+    assert len(out) == 1
+    assert out[0].hop_run_id == "r1"  # stamped from the caller, not Cursor's echo
+    assert out[0].hop_written_at == 1000
+    # the same read-only safety policy orion-curiosity-peer uses
+    assert "--mode" in captured_argv and "ask" in captured_argv
+    assert "--trust" in captured_argv
+    assert "--force" not in captured_argv and "--yolo" not in captured_argv
+
+
+@pytest.mark.asyncio
+async def test_generate_readings_for_run_via_cursor_nonzero_exit_raises(monkeypatch):
+    from orion.dev_economics.cursor_limit_events import CursorLimitObservation
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.observe_cursor_limit",
+        lambda: CursorLimitObservation(observed=True, state="clear", staleness_sec=1.0),
+    )
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+
+    def _fake_run(argv, **kwargs):
+        return _FakeCompletedProcess(stdout="", stderr="boom", returncode=1)
+
+    with pytest.raises(RuntimeError, match="cursor agent exited 1"):
+        await generate_readings_for_run_via_cursor(
+            run_id="r1", hops=hops, priors=[], agent_bin="cursor-agent", cwd=".", run=_fake_run,
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_readings_for_run_via_cursor_prose_response_raises_not_empty(monkeypatch):
+    # Cursor can exit 0 with prose instead of the requested JSON object
+    # ("I looked but couldn't produce structured output..."). That must
+    # raise -- so generate_readings_for_run_routed falls back to
+    # self_review -- not silently succeed with zero readings, which would
+    # be exactly the empty-shell "graded, but graded nothing" success state
+    # CLAUDE.md 0A bans. Caught in review.
+    from orion.dev_economics.cursor_limit_events import CursorLimitObservation
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.observe_cursor_limit",
+        lambda: CursorLimitObservation(observed=True, state="clear", staleness_sec=1.0),
+    )
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+
+    def _fake_run(argv, **kwargs):
+        return _FakeCompletedProcess(
+            stdout="I looked at the hop notes but could not produce structured output.",
+            returncode=0,
+        )
+
+    with pytest.raises(RuntimeError, match="cursor_grading_produced_no_readings"):
+        await generate_readings_for_run_via_cursor(
+            run_id="r1", hops=hops, priors=[], agent_bin="cursor-agent", cwd=".", run=_fake_run,
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_readings_for_run_via_cursor_empty_hops_short_circuits():
+    out = await generate_readings_for_run_via_cursor(
+        run_id="r1", hops=[], priors=[], agent_bin="cursor-agent", cwd=".",
+    )
+    assert out == []
+
+
+# --- generate_readings_for_run_routed: dispatch + fallback ------------------
+
+
+@pytest.mark.asyncio
+async def test_routed_dispatches_to_cursor_when_chosen_and_bin_set(monkeypatch):
+    calls = {"cursor": 0, "self_review": 0}
+
+    async def _fake_cursor(**kwargs):
+        calls["cursor"] += 1
+        return [_reading(run_id="r1", n=1)]
+
+    async def _fake_self(bus, **kwargs):
+        calls["self_review"] += 1
+        return [_reading(run_id="r1", n=1)]
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.generate_readings_for_run_via_cursor", _fake_cursor
+    )
+    monkeypatch.setattr("orion.curiosity.supervisor.generate_readings_for_run", _fake_self)
+
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+    role = ReviewRoleRecord(run_id="r1", choice="hire_cursor_review", why="", written_at=1)
+    out = await generate_readings_for_run_routed(
+        object(), run_id="r1", hops=hops, priors=[], review_choice=role,
+        cortex_request_channel="c", cortex_result_prefix="p",
+        source=None, cursor_agent_bin="cursor-agent", cursor_cwd=".",
+    )
+    assert calls == {"cursor": 1, "self_review": 0}
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_routed_defaults_to_self_review_without_cursor_agent_bin(monkeypatch):
+    calls = {"cursor": 0, "self_review": 0}
+
+    async def _fake_cursor(**kwargs):
+        calls["cursor"] += 1
+        return []
+
+    async def _fake_self(bus, **kwargs):
+        calls["self_review"] += 1
+        return [_reading(run_id="r1", n=1)]
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.generate_readings_for_run_via_cursor", _fake_cursor
+    )
+    monkeypatch.setattr("orion.curiosity.supervisor.generate_readings_for_run", _fake_self)
+
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+    role = ReviewRoleRecord(run_id="r1", choice="hire_cursor_review", why="", written_at=1)
+    # cursor_agent_bin left None (the default) -- must NOT call the Cursor path
+    out = await generate_readings_for_run_routed(
+        object(), run_id="r1", hops=hops, priors=[], review_choice=role,
+        cortex_request_channel="c", cortex_result_prefix="p", source=None,
+    )
+    assert calls == {"cursor": 0, "self_review": 1}
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_routed_missing_review_role_defaults_to_self_review(monkeypatch):
+    calls = {"self_review": 0}
+
+    async def _fake_self(bus, **kwargs):
+        calls["self_review"] += 1
+        return [_reading(run_id="r1", n=1)]
+
+    monkeypatch.setattr("orion.curiosity.supervisor.generate_readings_for_run", _fake_self)
+
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+    out = await generate_readings_for_run_routed(
+        object(), run_id="r1", hops=hops, priors=[], review_choice=None,
+        cortex_request_channel="c", cortex_result_prefix="p", source=None,
+        cursor_agent_bin="cursor-agent", cursor_cwd=".",
+    )
+    assert calls == {"self_review": 1}
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_routed_falls_back_to_self_review_when_cursor_path_fails(monkeypatch):
+    calls = {"cursor": 0, "self_review": 0}
+
+    async def _fake_cursor(**kwargs):
+        calls["cursor"] += 1
+        raise RuntimeError("cursor_grading_budget_refused run=r1 reason=budget_unobserved")
+
+    async def _fake_self(bus, **kwargs):
+        calls["self_review"] += 1
+        return [_reading(run_id="r1", n=1)]
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.generate_readings_for_run_via_cursor", _fake_cursor
+    )
+    monkeypatch.setattr("orion.curiosity.supervisor.generate_readings_for_run", _fake_self)
+
+    hops = [HopRecord(run_id="r1", n=1, note="a hop")]
+    role = ReviewRoleRecord(run_id="r1", choice="hire_cursor_review", why="", written_at=1)
+    out = await generate_readings_for_run_routed(
+        object(), run_id="r1", hops=hops, priors=[], review_choice=role,
+        cortex_request_channel="c", cortex_result_prefix="p", source=None,
+        cursor_agent_bin="cursor-agent", cursor_cwd=".",
+    )
+    # never "graded nothing" -- falls back rather than propagating the refusal
+    assert calls == {"cursor": 1, "self_review": 1}
+    assert len(out) == 1
+
+
+# --- generate_all_readings: reads :ReviewRole and dispatches per run -------
+
+
+@pytest.mark.asyncio
+async def test_generate_all_readings_reads_review_roles_and_routes_per_run(monkeypatch):
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    reader = _FakeReader(answers={
+        ALL_HOPS_CYPHER.split(" RETURN")[0]: [
+            {"run_id": "run_self", "n": "1", "note": "note A"},
+            {"run_id": "run_cursor", "n": "1", "note": "note B"},
+        ],
+        ALL_PRIORS_CYPHER.split(" RETURN")[0]: [
+            {"prior_id": "p1", "claim": "c1", "status": "open", "times_tested": "1"},
+        ],
+        ALL_REVIEW_ROLES_CYPHER: [
+            {"run_id": "run_cursor", "choice": "hire_cursor_review", "why": "", "written_at": 100},
+        ],
+    })
+
+    routed_calls: list[tuple[str, str]] = []
+
+    async def _fake_routed(bus, *, run_id, review_choice, **kwargs):
+        choice = review_choice.choice if review_choice else "self_review"
+        routed_calls.append((run_id, choice))
+        return [_reading(run_id=run_id, n=1)]
+
+    monkeypatch.setattr(
+        "orion.curiosity.supervisor.generate_readings_for_run_routed", _fake_routed
+    )
+
+    out = await generate_all_readings(
+        object(), reader,
+        cortex_request_channel="c", cortex_result_prefix="p",
+        source=ServiceRef(name="test", node="local", version="0.0.1"),
+        cursor_agent_bin="cursor-agent", cursor_cwd=".",
+    )
+    assert sorted(routed_calls) == [
+        ("run_cursor", "hire_cursor_review"),
+        ("run_self", "self_review"),
+    ]
+    assert len(out) == 2
 
 
 # --- run ordering ---------------------------------------------------------

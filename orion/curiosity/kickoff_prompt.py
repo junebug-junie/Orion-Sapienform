@@ -52,7 +52,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 from orion.curiosity.study_material import StudyMaterial
-from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip
+from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, next_hop_n
 
 DEFAULT_MAX_HOPS = 5
 
@@ -489,7 +489,14 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "graph before you take the next one:",
         "",
         '    CREATE (:Hop {run_id: "<RUN_ID>", n: 1, note: "what I just learned '
-        'and what I want to look at next"})',
+        'and what I want to look at next", written_at: timestamp()})',
+        "",
+        "`n` counts up from 1 within this sitting -- UNLESS you were told "
+        "above that this is a resumed sitting, in which case start at the n "
+        "given there instead; this example assumes a fresh start. Leave "
+        "`written_at` as `timestamp()` -- it is the graph's own clock, and "
+        "it is what lets the path be read back in the order it was walked "
+        "even if this sitting gets cut off and picked up again.",
         "",
     ] if writable else [
         # No graph to write to this run. The stops are still worth making and
@@ -523,6 +530,52 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         ),
         "",
     ]
+
+
+def build_resume_preamble(
+    prior_hops: Sequence[tuple[int, str]], *, run_id: str
+) -> str:
+    """What Hub prepends to the frozen kickoff prompt when a turn is retried.
+
+    A curiosity run's turn is retried under the SAME run_id when it fails --
+    `services/orion-durable-runs` re-sends `CuriosityRunBriefV1.prompt`
+    verbatim with `attempt` bumped -- and the prompt it re-sends says
+    "n: 1". Every retried attempt therefore restarted its hop numbering at
+    1 on top of the earlier attempt's hops, and did the earlier attempt's
+    work again without knowing it had been done: live 2026-09-19, run
+    `58b638778228` held 6 hops numbered 1,1,2,2,3,3; the design doc's own
+    example `4255a432f394` held 1,1,2,2,3,3,4. This is the whole fix -- tell
+    the resumed sitting what it already wrote and where the count stands.
+    Empty string when there is nothing to resume from, so the caller can
+    prepend unconditionally.
+    """
+    hops = [(n, note) for n, note in prior_hops if str(note or "").strip()]
+    if not hops:
+        return ""
+    next_n = next_hop_n(hops)
+    lines = [
+        f"RESUMED SITTING. This run (run_id \"{run_id}\") was already started "
+        "once and cut off before it could write up. What that attempt "
+        "recorded is still in your graph -- these hops, and any priors, "
+        "findings or edges it wrote alongside them:",
+        "",
+    ]
+    for n, note in hops:
+        lines.append(f"  n={n}: {note}")
+    lines += [
+        "",
+        f"Pick up from there, not from scratch. Number your next hop n={next_n} "
+        "and count up -- do not start at 1 again, that leaves two hops with "
+        "the same number and no way to tell which came first. Do not redo a "
+        "query whose answer is already written above; do use it. If the "
+        "earlier attempt was mid-thread, that thread is yours to continue or "
+        "to drop on purpose -- either is fine, silently repeating it is not.",
+        "",
+        "----",
+        "",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
@@ -711,24 +764,45 @@ def _peer_briefs_section(peer_briefs: Sequence = ()) -> list[str]:
     return format_soft_nudge(peer_briefs or ())
 
 
-def _help_request_section(
+def _role_and_help_section(
     *,
     own_graph: str,
     run_id: str,
     mode: str = "world_curiosity",
     extra_lines: Sequence[str] = (),
 ) -> list[str]:
+    """Teach Orion-authored role split + HelpRequest as the hire ticket.
+
+    Role is not enqueue. Python never writes :InvestigationRole; Orion MERGEs.
+    extra_lines is the soft-disclosure hook (Mind labels later; empty is fine).
+    """
     lines = [
-        f"ASKING FOR CONTRACTOR HELP ({own_graph}). Optional. Only when you are "
-        "genuinely stuck after looking yourself — not as a default. The peer is "
-        "a read-only investigator. They return notes; YOU still write priors and "
-        "findings. Do not write :PeerBrief yourself.",
+        f"YOUR ROLE FOR THIS SITTING ({own_graph}). Write this early. It is a "
+        "provisional choice: local_crawl (you work this sitting yourself) or "
+        "hire_cursor (you intend to hire a read-only contractor). You may revise "
+        "mid-run by writing again; the newest written_at is the one that counts.",
+        "",
+        "Writing the role does not enqueue Cursor and does not wake a peer. "
+        "A role is not a hire ticket.",
+        "",
+        "    MERGE (r:InvestigationRole {",
+        '      run_id: "<RUN_ID>",',
+        '      choice: "local_crawl|hire_cursor",',
+        '      why: "<one sentence: why this role now>",',
+        "      written_at: timestamp()",
+        "    })",
+        "",
+        "ASKING FOR CONTRACTOR HELP. Write a HelpRequest only when you are "
+        "actually hiring, after a short local look so tried_summary is something "
+        "you actually did. The peer is a read-only investigator. They return "
+        "notes; YOU still write priors and findings. Do not write :PeerBrief "
+        "yourself.",
         "",
         '  MERGE (h:HelpRequest {help_id: "<unique help id>"})',
         "  ON CREATE SET",
         '    h.run_id = "<RUN_ID>",',
         f'    h.mode = "{mode}",',
-        '    h.question = "<what you need unstuck>",',
+        '    h.question = "<what you need looked at>",',
         '    h.tried_summary = "<what you already looked at>",',
         '    h.success_criteria = "<what would count as useful>",',
         "    h.written_at = timestamp()",
@@ -743,6 +817,47 @@ def _help_request_section(
         if lines[-1] != "":
             lines.append("")
     return lines
+
+
+_help_request_section = _role_and_help_section
+
+
+def _review_role_section(*, run_id: str) -> list[str]:
+    """Teach Orion an optional, separate choice: who grades this sitting's
+    hops later -- you, or a read-only Cursor contractor.
+
+    Same authorship rule as :InvestigationRole: Python never MERGEs this
+    node. Writing nothing is fine -- the curiosity supervisor
+    (orion/curiosity/supervisor.py) treats a run with no :ReviewRole as
+    self_review, so every run before this section existed keeps grading
+    exactly the way it always did. This does not enqueue anything itself;
+    grading still only happens when the supervisor is run.
+
+    Any queue-contention line already shown above (role-teach disclosure,
+    same live FieldState reading the hire decision uses) applies here too --
+    not recomputed, not repeated.
+    """
+    return [
+        "WHO GRADES THIS SITTING'S HOPS (optional, separate from your role "
+        "above). Later, something reads back through your hop notes and "
+        "judges whether each one moved the claim it was about. You may say "
+        "who should do that: self_review (the usual case) or "
+        "hire_cursor_review (hand your own notes to a read-only Cursor "
+        "contractor instead). Same shared-queue tradeoff as hiring Cursor to "
+        "investigate applies here -- if it's backed up, that's a reason to "
+        "prefer self_review, not hire_cursor_review.",
+        "",
+        "Writing nothing is fine and means self_review. You may revise "
+        "mid-run; the newest written_at is the one that counts.",
+        "",
+        "    MERGE (r:ReviewRole {",
+        f'      run_id: "{run_id}",',
+        '      choice: "self_review|hire_cursor_review",',
+        '      why: "<one sentence: why this choice now>",',
+        "      written_at: timestamp()",
+        "    })",
+        "",
+    ]
 
 
 _INSTRUCTION = """\
@@ -831,7 +946,8 @@ def build_kickoff_prompt(
     if writable:
         lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
         if contractor_peer_enabled:
-            lines += _help_request_section(own_graph=own_graph, run_id=run_id)
+            lines += _role_and_help_section(own_graph=own_graph, run_id=run_id)
+            lines += _review_role_section(run_id=run_id)
         lines += _outcome_section(run_id=run_id)
 
     lines.append(_INSTRUCTION)

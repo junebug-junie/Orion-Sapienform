@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-sense eval: ask the live Hub three fixed identity questions, score
+"""Self-sense eval: ask the live Hub four fixed identity questions, score
 each answer deterministically, persist one row per question via the bus.
 
 Patch A of docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md.
@@ -16,8 +16,8 @@ unless --no-publish), SUBSTRATE_FELT_STATE_DATABASE_URL or
 ENDOGENOUS_RUNTIME_SQL_DATABASE_URL (Postgres; optional -- without it the
 HTTP body is the only answer source and self_definition_version is null).
 
-Costs three real chat turns (`no_write: true`, so nothing lands in chat
-history), several minutes each. Exit 0 = three answers scored and (unless
+Costs four real chat turns (`no_write: true`, so nothing lands in chat
+history), several minutes each. Exit 0 = four answers scored and (unless
 --no-publish) published. Exit 1 = at least one answer came back empty from
 both sources, or a publish failed -- rows are still written for the record,
 but an empty answer is not a measurement and is never reported as one.
@@ -36,8 +36,6 @@ import json
 import os
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,25 +49,30 @@ from orion.evals.self_sense import (  # noqa: E402
     SELF_DEFINITION_CONCEPT_ID,
     SELF_DEFINITION_PRODUCED_BY,
     SELF_DEFINITION_VERSION_SQL,
-    grounded_records,
+    lived_answers_from_history_rows,
+    pinned_lived_concept_ids,
     self_definition_version_from_row,
-    self_label_hits,
-    self_label_score,
+)
+# Row assembly, scoring, notes and envelope are SHARED with Hub's in-process
+# scheduler line (curiosity_investigation.tick_self_sense_eval) so the two
+# paths cannot drift. Re-exported under the same names this script always had.
+from orion.evals.self_sense_runner import (  # noqa: E402,F401
+    PRODUCER_SERVICE,
+    PRODUCER_VERSION,
+    SESSION_ID,
+    build_envelope,
+    build_row,
+    envelope_correlation_id,
+    lived_answers_sql_named as _lived_answers_sql,
+    new_run_id as _new_run_id,
 )
 from orion.schemas.self_sense import (  # noqa: E402
     CHANNEL_SELF_SENSE_EVAL_WRITE,
-    KIND_SELF_SENSE_EVAL_WRITE,
     SELF_SENSE_QUESTIONS,
     SelfSenseEvalV1,
-    build_entry_id,
 )
 
 DEFAULT_HUB_BASE_URL = "http://127.0.0.1:8080"
-SESSION_ID = "self-sense-eval"
-# Nominal: the catalogue names orion-hub as the producer because Hub owns the
-# chat endpoint, but this runner executes on the host, not in the Hub container.
-PRODUCER_SERVICE = "orion-hub"
-PRODUCER_VERSION = "self-sense-eval/0.1.0"
 # When the HTTP body already carries the text, the trace read is a cross-check,
 # not the only source -- do not spend the full wait on it.
 TRACE_WAIT_WHEN_HTTP_HAS_TEXT_SEC = 20.0
@@ -83,10 +86,6 @@ def _database_url() -> str | None:
     # Same precedent as orion/substrate/felt_state_reader.py `_database_url`,
     # minus its container-hostname default: this runs on the host.
     return os.getenv("SUBSTRATE_FELT_STATE_DATABASE_URL") or os.getenv("ENDOGENOUS_RUNTIME_SQL_DATABASE_URL")
-
-
-def _new_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
 
 
 # --- live calls ----------------------------------------------------------------
@@ -132,90 +131,21 @@ def read_self_definition_version(engine) -> int | None:
     return self_definition_version_from_row(tuple(row) if row else None)
 
 
-# --- pure assembly (unit-tested) ----------------------------------------------
+def read_lived_answers(engine) -> list[dict[str, Any]]:
+    """Latest pinned lived ledger rows — same concept_ids chat hydrates."""
+    from sqlalchemy import text
 
-def _is_uuid(value: str | None) -> bool:
-    if not value:
-        return False
-    try:
-        uuid.UUID(value)
-    except ValueError:
-        return False
-    return True
-
-
-def build_row(
-    *,
-    run_id: str,
-    question_key: str,
-    question: str,
-    http_text: str | None,
-    trace_text: str | None,
-    correlation_id: str | None,
-    self_definition_version: int | None,
-    trace_missing_after_sec: float | None = None,
-) -> SelfSenseEvalV1:
-    """Pick the answer source (trace beats HTTP; empty is 'none'), score it,
-    and build the row. Pure: no network, no database.
-
-    `trace_missing_after_sec`: how long the runner waited for
-    harness_turn_trace before giving up, recorded in notes whenever the
-    answer had to come from the HTTP body instead."""
-    if trace_text and trace_text.strip():
-        answer, source = trace_text.strip(), "harness_trace"
-    elif http_text and http_text.strip():
-        answer, source = http_text.strip(), "http"
-    else:
-        answer, source = "", "none"
-
-    labels = self_label_hits(answer)
-    grounded = grounded_records(answer)
-    notes: list[str] = []
-    if source == "none":
-        notes.append("answer_empty_from_both_sources; scores are not a measurement")
-    if source != "harness_trace" and correlation_id and trace_missing_after_sec is not None:
-        notes.append(f"trace_missing_after={trace_missing_after_sec:.0f}s")
-    if not _is_uuid(correlation_id):
-        notes.append("envelope_corr=synthetic")
-    if labels:
-        notes.append("labels=" + ",".join(labels))
-    if grounded.records:
-        notes.append("records=" + ",".join(grounded.records))
-
-    return SelfSenseEvalV1(
-        entry_id=build_entry_id(run_id, question_key),
-        run_id=run_id,
-        question_key=question_key,  # type: ignore[arg-type]
-        question=question,
-        answer_text=answer,
-        answer_source=source,  # type: ignore[arg-type]
-        correlation_id=correlation_id,
-        self_label_score=self_label_score(answer),
-        grounded_record_score=grounded.score,
-        self_definition_version=self_definition_version,
-        notes="; ".join(notes) or None,
-    )
+    concept_ids = pinned_lived_concept_ids()
+    if not concept_ids:
+        return []
+    sql, params = _lived_answers_sql(concept_ids)
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+    return lived_answers_from_history_rows(rows)
 
 
-def envelope_correlation_id(row: SelfSenseEvalV1) -> uuid.UUID:
-    """BaseEnvelope requires a UUID. Reuse the chat turn's correlation_id when
-    it is one (it is -- Hub mints a uuid4), otherwise derive a deterministic
-    uuid5 from the entry_id so a replay carries the same id."""
-    if _is_uuid(row.correlation_id):
-        return uuid.UUID(row.correlation_id)  # type: ignore[arg-type]
-    return uuid.uuid5(uuid.NAMESPACE_URL, "orion:self_sense:" + row.entry_id)
-
-
-def build_envelope(row: SelfSenseEvalV1, *, node: str | None):
-    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-
-    return BaseEnvelope(
-        kind=KIND_SELF_SENSE_EVAL_WRITE,
-        source=ServiceRef(name=PRODUCER_SERVICE, version=PRODUCER_VERSION, node=node),
-        correlation_id=envelope_correlation_id(row),
-        payload=row.model_dump(mode="json"),
-    )
-
+# --- pure assembly: `build_row`, `build_envelope`, `envelope_correlation_id`
+# live in orion/evals/self_sense_runner.py (shared with Hub's scheduler line).
 
 # --- publish -------------------------------------------------------------------
 
@@ -284,14 +214,22 @@ def main(argv: list[str] | None = None) -> int:
         print("no Postgres DSN: answer_source will be 'http' only and self_definition_version null", file=sys.stderr)
 
     self_definition_version = None
+    lived_answers: list[dict[str, Any]] = []
     if engine is not None:
         try:
             self_definition_version = read_self_definition_version(engine)
         except Exception as exc:  # noqa: BLE001
             print(f"self_definition_read_failed error={exc}", file=sys.stderr)
+        try:
+            lived_answers = read_lived_answers(engine)
+        except Exception as exc:  # noqa: BLE001
+            print(f"lived_answers_read_failed error={exc}", file=sys.stderr)
 
     run_id = _new_run_id()
-    print(f"self_sense_eval run_id={run_id} hub={args.hub_url} self_definition_version={self_definition_version}")
+    print(
+        f"self_sense_eval run_id={run_id} hub={args.hub_url} "
+        f"self_definition_version={self_definition_version} lived_answers={len(lived_answers)}"
+    )
 
     rows: list[SelfSenseEvalV1] = []
     for question_key, question in SELF_SENSE_QUESTIONS:
@@ -325,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
             correlation_id=correlation_id,
             self_definition_version=self_definition_version,
             trace_missing_after_sec=trace_wait,
+            lived_answers=lived_answers,
         )
         rows.append(row)
         print(

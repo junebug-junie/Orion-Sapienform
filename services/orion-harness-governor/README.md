@@ -137,7 +137,7 @@ Claude Code only writes a `stream-json` line once a step fully completes — wit
 
 This does not fix a runaway upstream generation (e.g. a local model that never emits a stop token) — that failure mode lives in the model-serving stack outside this repo. It bounds how long a turn can be stuck waiting on one before the operator gets a diagnosable, fast failure instead of a silent hang.
 
-**Raised 180 -> 420 (2026-09-08):** every confirmed world-pulse-read Stage 2 `empty_generation` failure investigated (`services/orion-hub/scripts/world_pulse_read_stage2.py`) matched the identical signature — `grounding_status = "fcc stream stalled for 180.0s without completing a step ..."`, two of them with `fcc_served_model=null`, meaning the model server hadn't even confirmed it started serving before the 180s ran out. That is a contended-shared-GPU symptom, not a genuinely dead process. The whole-turn budget (`HARNESS_FCC_TIMEOUT_SEC`) had already been raised three times for the same contended-GPU reason (900 -> 1600 -> 2400 across the curiosity-turn-budget and fcc-deadline-chain PRs) but this stall cap was never touched in any of those raises. 420s leaves ample room under the 2400s whole-turn ceiling to still catch a genuinely dead process fast.
+**Raised 180 -> 420 (2026-09-08):** every confirmed world-pulse-read Stage 2 `empty_generation` failure investigated (`services/orion-hub/scripts/world_pulse_read_stage2.py`) matched the identical signature — `grounding_status = "fcc stream stalled for 180.0s without completing a step ..."`, two of them with `fcc_served_model=null`, meaning the model server hadn't even confirmed it started serving before the 180s ran out. That is a contended-shared-GPU symptom, not a genuinely dead process. The whole-turn budget (`HARNESS_FCC_TIMEOUT_SEC`) had already been raised three times for the same contended-GPU reason (900 -> 1600 -> 2400 across the curiosity-turn-budget and fcc-deadline-chain PRs) but this stall cap was never touched in any of those raises. 420s leaves ample room under the current 7200s whole-turn ceiling to still catch a genuinely dead process fast.
 
 ### Served-model self-context
 
@@ -228,4 +228,7 @@ Gateway. The broker fence is the protected request's admission authority.
 Admitted harness turns carry the same resource lease through the FCC motor,
 reflection, optional re-reflection, and conditional response repair. These LLM calls use
 the lease's assigned lane and generation, so a continuation does not wait behind
-its own reservation. Ordinary finalization keeps the existing agent route.
+its own reservation. Unleashed finalization uses the turn owner lane: chat for non-agent FCC
+labels (default Hub chat / `MODEL_SONNET`), agent for the agent FCC model
+label. Admitted leases still force their assigned lane for every finalize
+LLM hop.

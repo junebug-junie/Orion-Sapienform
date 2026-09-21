@@ -683,7 +683,7 @@ class Settings(BaseSettings):
     # here; the first of those has already drifted once from copies like this
     # one. Nobody is waiting on this turn; the loop's cooldown is 4h.
     HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC: float = Field(
-        default=3500.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
+        default=8840.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
     )
     HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
         default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
@@ -766,6 +766,11 @@ class Settings(BaseSettings):
     )
     HUB_WORLD_PULSE_READ_LLM_ROUTE: str = Field(
         default="agent", alias="HUB_WORLD_PULSE_READ_LLM_ROUTE"
+    )
+    # Bounded retry for transient turn failures, shared by Stage 1 and Stage 2.
+    # 1 == terminal on first failure (pre-2026-09-19 behaviour).
+    HUB_WORLD_PULSE_READ_MAX_ATTEMPTS: int = Field(
+        default=3, ge=1, le=10, alias="HUB_WORLD_PULSE_READ_MAX_ATTEMPTS"
     )
     # --- World-pulse Stage 2 (Wallet B) -----------------------------------
     # Sibling of Stage 1. Isolated Redis prefix orion:wp_read:wallet_b:*.
@@ -890,6 +895,13 @@ class Settings(BaseSettings):
         default=False,
         alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
     )
+    # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
+    # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
+    # Default on; set false to leave motor kickoff prompts unchanged.
+    HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE: bool = Field(
+        default=True,
+        alias="HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE",
+    )
     # Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-
     # cognition-runs-from-cortex-design.md). True (default) = the curiosity tick
     # still owns scheduling, material, worldview and the prompt, but hands the
@@ -925,11 +937,41 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC: float = Field(
         default=7200.0, alias="HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC"
     )
+    HUB_CURIOSITY_SELF_LIVED_WEIGHT: float = Field(
+        default=0.75, alias="HUB_CURIOSITY_SELF_LIVED_WEIGHT"
+    )
+    HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS: float = Field(
+        default=7.0, alias="HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS"
+    )
     # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
     # harness governor's compose mounts it read-only at /repo). Rendered into
     # the self-inquiry prompt only; Hub never reads it.
     HUB_CURIOSITY_SANDBOX_REPO_ROOT: str = Field(
         default="/repo", alias="HUB_CURIOSITY_SANDBOX_REPO_ROOT"
+    )
+    # A THIRD line of the same loop: the daily 4-question self-sense eval
+    # (orion/evals/self_sense_runner.py), previously only run by hand
+    # (`make eval-self-sense`) and dark for 9+ days. No graph, no new grants --
+    # just a scheduled version of the same chat turns the host script sends,
+    # scored and published the same way. On by default as of 2026-09-20 --
+    # shipped off in PR #2247, turned on deliberately once that patch was
+    # confirmed live, then matched to the other two curiosity lines' cap of 7
+    # the same day (PR #2256); see services/orion-hub/README.md 4.2.2 for
+    # what it costs.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED"
+    )
+    # Raised 1 -> 7 (PR #2256, 2026-09-20), matching investigation/self-inquiry.
+    # MIN_COOLDOWN_SEC below is the real pacing floor at this cap, not this
+    # number.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP: int = Field(
+        default=7, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP"
+    )
+    # Cut 43200 -> 10800 (3h) the same day so cap 7 is actually reachable
+    # (up to 8 slots/24h) instead of being capped in practice at ~2 by the
+    # old 12h floor.
+    HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC: float = Field(
+        default=10800.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
     )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
@@ -1044,11 +1086,11 @@ class Settings(BaseSettings):
     # stance-evaluation step ALONE still in flight at ~33s elapsed, before
     # the harness governor's own fcc-motor/finalize run had even started.
     # Real turns have no hard Hub-side ceiling at all (the harness governor's
-    # own RPC wait is a soft HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC, currently
-    # 2960s -- see that field's own comment below for its derivation and
-    # history; no literal restated here, it has already drifted once before --
-    # liveness-extendable to a hard HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=
-    # 3600s) -- Juniper's UI just shows "thinking" for as long as it takes.
+    # own RPC wait is a soft HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC -- see that
+    # field's own comment below for its derivation and history; no literal
+    # restated here, it has already drifted once before -- liveness-extendable
+    # to a hard HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC) -- Juniper's UI just
+    # shows "thinking" for as long as it takes.
     # 300.0 is a reasoned, NOT yet a measured-from-a-real-distribution,
     # middle ground: generous enough to plausibly cover Thought react + a
     # normal-speed harness run for a short, tool-free outreach message,
@@ -1450,28 +1492,21 @@ class Settings(BaseSettings):
     # --- Unified Orion turn (orion-thought + harness governor) ---
     ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
     ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
-    # 2960, raised from 2160 on 2026-09-03 alongside the motor's own
-    # HARNESS_FCC_TIMEOUT_SEC 1600 -> 2400 (curiosity moved to the slower
-    # `agent` lane -- see that key's comment in
-    # orion-harness-governor/.env_example). With the motor now at 2400, the
-    # worst case is 2400 + 485 (finalize chain) = 2885; 2960 leaves 75s of
-    # margin, same as 2160 left over the prior 2085 worst case.
-    #
-    # 2160 itself was not 960 (2026-08-26). The old default was derived as
-    # "900 + 60" -- the FCC motor plus slack, as if the finalize chain running
-    # AFTER the motor were free. It is not: substrate 5 + reflect 180 + voice
-    # 300 = 485s more. Sized to cover the worst case WITHOUT leaning on the
-    # liveness extension below, because the finalize chain emits no harness
-    # steps -- liveness reads False for exactly the stretch this most needs to
-    # cover. Measured: a turn published a real verdict five seconds after Hub
-    # abandoned the RPC at 960s.
+    # 8300, raised from 2960 on 2026-09-19 alongside the motor's own
+    # HARNESS_FCC_TIMEOUT_SEC 2400 -> 7200. Finalize is now substrate 5 +
+    # reflect 480 + repair 540 = 1025 (reflect/repair raised 2026-09-15).
+    # Worst case 7200 + 1025 = 8225; 8300 leaves 75s of margin, same style
+    # as 2960 left over 2885. Sized to cover the worst case WITHOUT leaning
+    # on the liveness extension below, because the finalize chain emits no
+    # harness steps -- liveness reads False for exactly the stretch this
+    # most needs to cover.
     HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC: float = Field(
-        default=2960.0,
+        default=8300.0,
         alias="HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC",
         description="Hub bus RPC wait for unified-turn harness governor (FCC motor + finalize chain).",
     )
     HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC: float = Field(
-        default=3600.0,
+        default=8940.0,
         alias="HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC",
         description=(
             "Hard ceiling for the harness governor RPC wait. Beyond "

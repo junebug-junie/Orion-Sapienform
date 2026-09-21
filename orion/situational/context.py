@@ -24,7 +24,13 @@ from .perception_reader import (
 )
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
-from orion.curiosity.worldview import LIVE_PRIORS_LIMIT, Prior, WorldviewReader, read_snapshot
+from orion.curiosity.worldview import (
+    LIVE_NON_SELF_PRIORS_CYPHER,
+    LIVE_PRIORS_LIMIT,
+    Prior,
+    WorldviewReader,
+    read_snapshot,
+)
 from orion.telemetry.cabinet_sensors import (
     CabinetPressureConfig,
     CabinetSensorTracker,
@@ -1692,6 +1698,7 @@ def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
         # queue (HUB_CURIOSITY_STALE_PRIOR_TESTS); it was never a real gate
         # for "what does Orion currently believe."
         stale_after=0,
+        priors_cypher=LIVE_NON_SELF_PRIORS_CYPHER,
     )
     if snapshot.is_unavailable:
         return CuriosityPriorContextV1(available=False, source="error")

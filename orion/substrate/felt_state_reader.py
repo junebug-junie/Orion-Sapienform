@@ -11,6 +11,10 @@ from sqlalchemy import create_engine, text
 
 logger = logging.getLogger("orion.substrate.felt_state_reader")
 
+LIVED_ANSWERS_CTX_KEY = "orion_lived_answers"
+_LIVED_ANSWERS_CACHE_TTL_SEC = 300
+_LIVED_ANSWERS_MAX_AGE_SEC = 30 * 86400
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 _DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
@@ -139,6 +143,21 @@ def _database_url() -> str:
     )
 
 
+def _pinned_lived_concept_ids() -> tuple[str, ...]:
+    """Seed YAML pinned lived questions -> self_concept_history concept_ids."""
+    try:
+        from orion.curiosity.self_question_pool import load_seed_questions
+
+        return tuple(
+            f"self:lived:{q.question_id}"
+            for q in load_seed_questions()
+            if q.pinned and q.family == "lived"
+        )
+    except Exception:
+        logger.debug("pinned lived concept_ids unavailable", exc_info=True)
+        return ()
+
+
 class SubstrateFeltStateReader:
     def __init__(self, *, enabled: bool, database_url: str, max_age_sec: int) -> None:
         self._enabled = enabled
@@ -146,6 +165,76 @@ class SubstrateFeltStateReader:
         self._max_age_sec = max_age_sec
         self._engine = create_engine(database_url, pool_pre_ping=True) if enabled else None
         self._cache: dict[str, tuple[Any, float]] = {}
+
+    def _fetch_lived_answers(self) -> list[dict[str, Any]] | None:
+        """Latest row per pinned lived concept_id, or None when nothing to serve."""
+        if self._engine is None:
+            return None
+        concept_ids = _pinned_lived_concept_ids()
+        if not concept_ids:
+            return None
+        placeholders = ", ".join(f":cid{i}" for i in range(len(concept_ids)))
+        params = {f"cid{i}": cid for i, cid in enumerate(concept_ids)}
+        query = text(
+            "SELECT concept_id, content, evidence_refs, created_at "
+            "FROM self_concept_history "
+            f"WHERE concept_id IN ({placeholders}) "
+            "AND produced_by = 'curiosity_self_inquiry' "
+            "ORDER BY concept_id, created_at DESC"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(query, params).mappings().all()
+        if not rows:
+            return None
+        latest_by_concept: dict[str, dict[str, Any]] = {}
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            concept_id = str(row.get("concept_id") or "")
+            if not concept_id or concept_id in latest_by_concept:
+                continue
+            ts = row.get("created_at")
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = (now - ts).total_seconds()
+            if age > _LIVED_ANSWERS_MAX_AGE_SEC:
+                continue
+            question_id = concept_id.removeprefix("self:lived:")
+            evidence = row.get("evidence_refs")
+            if not isinstance(evidence, list):
+                evidence = []
+            latest_by_concept[concept_id] = {
+                "question_id": question_id,
+                "content": str(row.get("content") or ""),
+                "evidence_refs": [str(v) for v in evidence],
+                "created_at": ts.isoformat(),
+            }
+        if not latest_by_concept:
+            return None
+        return [latest_by_concept[cid] for cid in concept_ids if cid in latest_by_concept]
+
+    def _hydrate_lived_answers(self, ctx: dict) -> None:
+        if ctx.get(LIVED_ANSWERS_CTX_KEY) is not None:
+            return
+        cached = self._cache.get(LIVED_ANSWERS_CTX_KEY)
+        if cached is not None:
+            payload, fetched_at = cached
+            if (time.monotonic() - fetched_at) <= _LIVED_ANSWERS_CACHE_TTL_SEC:
+                if payload is not None:
+                    ctx[LIVED_ANSWERS_CTX_KEY] = payload
+                return
+        try:
+            payload = self._fetch_lived_answers()
+        except Exception:
+            logger.debug("felt-state lived answers hydrate failed", exc_info=True)
+            self._cache[LIVED_ANSWERS_CTX_KEY] = (None, time.monotonic())
+            return
+        if payload is None:
+            self._cache[LIVED_ANSWERS_CTX_KEY] = (None, time.monotonic())
+            return
+        ctx[LIVED_ANSWERS_CTX_KEY] = payload
+        self._cache[LIVED_ANSWERS_CTX_KEY] = (payload, time.monotonic())
 
     def _fetch_lane(self, lane: LaneSpec) -> tuple[Any, datetime] | None:
         if self._engine is None:
@@ -193,6 +282,11 @@ class SubstrateFeltStateReader:
         pay eight blocking SELECTs for one key (review finding on PR #2169)."""
         if not self._enabled:
             return
+        if lanes is None or LIVED_ANSWERS_CTX_KEY in lanes:
+            try:
+                self._hydrate_lived_answers(ctx)
+            except Exception:
+                logger.debug("felt-state lived answers lane failed", exc_info=True)
         for lane in _LANES:
             if lanes is not None and lane.ctx_key not in lanes:
                 continue

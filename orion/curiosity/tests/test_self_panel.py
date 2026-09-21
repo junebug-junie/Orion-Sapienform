@@ -24,8 +24,9 @@ from orion.curiosity.self_panel import (
 class _FakeConn:
     """Matches asyncpg's surface for the three queries this module runs."""
 
-    def __init__(self, *, history=None, journals=None, eval_run_id=None, eval_rows=None, raises=False):
+    def __init__(self, *, history=None, lived=None, journals=None, eval_run_id=None, eval_rows=None, raises=False):
         self.history = history if history is not None else []
+        self.lived = lived if lived is not None else []
         self.journals = journals if journals is not None else []
         self.eval_run_id = eval_run_id
         self.eval_rows = eval_rows if eval_rows is not None else []
@@ -42,6 +43,8 @@ class _FakeConn:
         self.fetch_calls.append((sql, args))
         if self.raises:
             raise RuntimeError("connection refused")
+        if "concept_id LIKE 'self:lived:%'" in sql:
+            return self.lived
         if "self_concept_history" in sql:
             assert args[0] == SELF_DEFINITION_CONCEPT_ID
             assert "ORDER BY created_at DESC" in sql, "current must be created_at, not version -- see review finding"
@@ -153,8 +156,8 @@ def test_journal_entries_are_read_by_title_independent_of_the_graph() -> None:
     assert len(view.journal_entries) == 1
     assert view.journal_entries[0].body == "I looked."
     # The query filters on title, never on any graph-derived run id.
-    sql, args = conn.fetch_calls[1]
-    assert args[0] == "Self-inquiry"
+    journal_call = next(c for c in conn.fetch_calls if "journal_entries" in c[0])
+    assert journal_call[1][0] == "Self-inquiry"
 
 
 def test_eval_rows_are_scoped_to_the_single_latest_run() -> None:

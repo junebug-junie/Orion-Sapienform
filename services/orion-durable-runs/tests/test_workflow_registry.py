@@ -176,3 +176,47 @@ def test_start_run_rejects_an_unregistered_workflow_without_crashing(monkeypatch
     )
     asyncio.run(runner.start_run(fake_request))
     assert runner._active == {}
+
+
+def test_register_workflow_refuses_a_duplicate_name(monkeypatch):
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    monkeypatch.setenv("ORION_BUS_ENABLED", "false")
+    saver = InMemorySaver()
+    runner = _runner(saver)
+    with pytest.raises(ValueError):
+        runner.register_workflow(
+            WorkflowSpec(workflow=DEFAULT_WORKFLOW, graph=_build_toy_graph(saver), nodes=["echo", "finish"], finish_detail=_toy_finish_detail)
+        )
+
+
+def test_start_run_refuses_a_request_whose_workflow_does_not_match_the_existing_checkpoint(monkeypatch):
+    """The review finding this patch fixes: a resume must be matched against
+    the CHECKPOINT's own workflow, never trust the new request's declared
+    one -- otherwise a mismatched retry could resume a thread through the
+    wrong graph's node/edge schema."""
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    monkeypatch.setenv("ORION_BUS_ENABLED", "false")
+    saver = InMemorySaver()
+    runner = _runner(saver)
+    runner.register_workflow(
+        WorkflowSpec(workflow=TOY_WORKFLOW, graph=_build_toy_graph(saver), nodes=["echo", "finish"], finish_detail=_toy_finish_detail)
+    )
+    run_id = "shared-run-id"
+    toy_initial: ToyState = {
+        "run_id": run_id, "correlation_id": "corr-5", "workflow": TOY_WORKFLOW,
+        "brief": {"prompt": "hi"}, "attempt": 0,
+    }
+    asyncio.run(runner._spec_for(TOY_WORKFLOW).graph.ainvoke(toy_initial, runner._config(run_id)))
+
+    # A curiosity request arrives for the SAME run_id -- must be refused,
+    # not resumed through curiosity's graph.
+    mismatched = DurableRunRequestV1.model_construct(
+        schema_version="durable.run.request.v1", run_id=run_id, workflow="curiosity.investigate",
+        correlation_id="corr-6", requested_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        brief=_curiosity_request(run_id).brief, admission=None,
+    )
+    asyncio.run(runner.start_run(mismatched))
+    assert runner._active == {}
+    # The toy thread's checkpoint is untouched -- no spurious curiosity state.
+    toy_snap = asyncio.run(runner._spec_for(TOY_WORKFLOW).graph.aget_state(runner._config(run_id)))
+    assert toy_snap.values["text"] == "echo:hi"

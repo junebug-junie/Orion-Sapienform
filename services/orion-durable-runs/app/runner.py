@@ -139,25 +139,33 @@ class DurableRunner:
         """Add a workflow after construction (used by graphs whose Deps need
         a reference back to this runner, e.g. a turn-executor built from
         `self._source()`). Must be called before any run for that workflow
-        is submitted -- there is no dynamic re-registration mid-run."""
+        is submitted -- there is no dynamic re-registration mid-run, and
+        registering the same name twice (a hot-reload path, a bug) would
+        swap the graph object out from under any task in `self._active`
+        still holding a reference to the old spec, so it's refused (review
+        finding, 2026-09-21)."""
+        if spec.workflow in self._workflows:
+            raise ValueError(f"workflow already registered: {spec.workflow}")
         self._workflows[spec.workflow] = spec
 
     def _spec_for(self, workflow: str) -> WorkflowSpec | None:
         return self._workflows.get(workflow)
 
-    async def _peek_workflow(self, thread_id: str) -> str:
-        """The `workflow` a checkpointed thread belongs to, read directly off
-        the shared checkpointer -- BEFORE calling any compiled graph's
-        `aget_state`, since calling the wrong graph reads that thread through
-        the wrong node/edge schema. Missing key (pre-registry checkpoint) or
-        an unreadable tuple both read as the original single workflow, so
-        every already-in-flight run keeps resuming exactly as before."""
+    async def _peek_workflow(self, thread_id: str) -> str | None:
+        """The `workflow` a checkpointed thread belongs to, or ``None`` when
+        no checkpoint exists for it at all (or the read failed) -- kept
+        distinct from "checkpoint exists but predates the `workflow` key"
+        (which resolves to `DEFAULT_WORKFLOW`) because `start_run` needs to
+        tell a genuinely new run apart from a resume; see its own docstring.
+        Reads directly off the shared checkpointer -- BEFORE calling any
+        compiled graph's `aget_state`, since calling the wrong graph reads
+        that thread through the wrong node/edge schema."""
         try:
             tup = await self._checkpointer.aget_tuple(self._config(thread_id))
         except Exception:  # noqa: BLE001
-            return DEFAULT_WORKFLOW
+            return None
         if tup is None or not tup.checkpoint:
-            return DEFAULT_WORKFLOW
+            return None
         values = tup.checkpoint.get("channel_values") or {}
         workflow = values.get("workflow")
         return str(workflow) if isinstance(workflow, str) and workflow else DEFAULT_WORKFLOW
@@ -388,10 +396,22 @@ class DurableRunner:
 
     async def start_run(self, request: DurableRunRequestV1) -> None:
         """New run: seed the thread and drive it. Idempotent on run_id -- a
-        duplicate request for a thread that already exists is a resume."""
+        duplicate request for a thread that already exists is a resume,
+        matched against the CHECKPOINT's own workflow (`_peek_workflow`),
+        never the new request's declared one -- a request naming a
+        different workflow than the thread was actually created under is
+        refused outright rather than silently resumed through the wrong
+        graph's node/edge schema (review finding, 2026-09-21)."""
         run_id = request.run_id
         if run_id in self._active:
             logger.info("durable_run_already_active run=%s", run_id)
+            return
+        existing_workflow = await self._peek_workflow(run_id)
+        if existing_workflow is not None and existing_workflow != request.workflow:
+            logger.error(
+                "durable_run_workflow_mismatch run=%s checkpoint_workflow=%s request_workflow=%s -- refusing",
+                run_id, existing_workflow, request.workflow,
+            )
             return
         spec = self._spec_for(request.workflow)
         if spec is None:
@@ -473,9 +493,11 @@ class DurableRunner:
     async def unfinished_threads(self) -> list[tuple[str, str, datetime | None, str]]:
         """(thread_id, next_node, checkpoint_ts, workflow) for every thread
         whose latest checkpoint still has a next node. Newest checkpoint per
-        thread wins (`alist` yields newest first). `workflow` is resolved
-        with `_peek_workflow` BEFORE any graph-specific `aget_state` call --
-        see the module docstring for why that ordering matters."""
+        thread wins (`alist` yields newest first). `workflow` is read
+        straight off the SAME checkpoint tuple this scan already holds (not
+        a second `_peek_workflow` round trip per thread -- review finding,
+        2026-09-21), still strictly BEFORE any graph-specific `aget_state`
+        call; see the module docstring for why that ordering matters."""
         # MATERIALISE the listing before asking for any state. The Postgres
         # saver serialises its cursor use behind one asyncio.Lock; `alist` is
         # an async generator that holds that lock while it yields, and
@@ -483,22 +505,25 @@ class DurableRunner:
         # deadlocked the runner at boot the first time a checkpoint existed
         # (live, 2026-09-07 01:16Z: "Waiting for application startup" forever,
         # zero Postgres activity). Newest checkpoint per thread wins.
-        newest_ts: dict[str, datetime | None] = {}
+        newest: dict[str, tuple[datetime | None, str]] = {}
         async for cp in self._checkpointer.alist(None):
             thread_id = str(((cp.config or {}).get("configurable") or {}).get("thread_id") or "")
-            if not thread_id or thread_id in newest_ts:
+            if not thread_id or thread_id in newest:
                 continue
-            ts_raw = (cp.checkpoint or {}).get("ts")
+            checkpoint = cp.checkpoint or {}
+            ts_raw = checkpoint.get("ts")
             ts = None
             if isinstance(ts_raw, str):
                 try:
                     ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
                 except ValueError:
                     ts = None
-            newest_ts[thread_id] = ts
+            values = checkpoint.get("channel_values") or {}
+            workflow_raw = values.get("workflow")
+            workflow = str(workflow_raw) if isinstance(workflow_raw, str) and workflow_raw else DEFAULT_WORKFLOW
+            newest[thread_id] = (ts, workflow)
         out: list[tuple[str, str, datetime | None, str]] = []
-        for thread_id, ts in newest_ts.items():
-            workflow = await self._peek_workflow(thread_id)
+        for thread_id, (ts, workflow) in newest.items():
             spec = self._spec_for(workflow)
             if spec is None:
                 logger.warning("durable_run_resume_unknown_workflow thread=%s workflow=%s -- skipped", thread_id, workflow)
@@ -518,9 +543,12 @@ class DurableRunner:
             if thread_id in self._active:
                 counts["active"] += 1
                 continue
+            # unfinished_threads() already filters to registered workflows
+            # only -- an unresolvable spec here would be a real invariant
+            # break, not a routine skip, so it fails loudly rather than a
+            # silent `continue` (review finding, 2026-09-21).
             spec = self._spec_for(workflow)
-            if spec is None:
-                continue  # already logged in unfinished_threads
+            assert spec is not None, f"unfinished_threads returned an unregistered workflow: {workflow}"
             # An unparseable/missing checkpoint timestamp is UNKNOWN age, not
             # zero age -- treating it as brand new disabled the one guard that
             # stops a stale checkpoint from resuming into a different day's

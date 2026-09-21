@@ -36,6 +36,23 @@ Hub tick (scheduling, material, worldview, prompt)
 - A thread older than `DURABLE_RUNS_MAX_AGE_HOURS` is abandoned (one `abandoned` state
   event), never resumed into a different day's material.
 
+## Workflow registry (2026-09-21)
+
+`DurableRunner` can drive more than one compiled graph, keyed by
+`DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --
+this is plumbing for a second and third workflow (self-sense-eval's own graph, reflect's
+own graph) landing in follow-on PRs, not a behavior change on its own. Full rationale
+(the shared-checkpointer safety argument, `_peek_workflow`'s ordering, the
+backward-compat default for pre-registry checkpoints) lives once, next to the code, in
+`app/runner.py`'s module docstring and `WorkflowSpec`/`_peek_workflow`'s own docstrings --
+read those rather than a second copy here.
+
+Adding a real second workflow needs, at minimum: a new `WorkflowSpec` (its own graph,
+node list, `finish_detail`), a new entry in `DurableWorkflowV1`
+(`orion/schemas/durable_run.py`, currently `Literal["curiosity.investigate"]` --
+deliberately not widened by this patch), and its own request/brief shape if it doesn't
+fit `CuriosityRunBriefV1`.
+
 ## Deploy order
 
 The operator templates select admitted Curiosity. Before restarting, apply both

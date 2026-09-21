@@ -45,8 +45,8 @@ class TransportRunner(Runner):
         self.endpoint = endpoint
         self.journals = []
 
-    def _deps(self):
-        deps = super()._deps()
+    def _curiosity_deps(self):
+        deps = super()._curiosity_deps()
 
         async def turn(req):
             self.calls.append(req)

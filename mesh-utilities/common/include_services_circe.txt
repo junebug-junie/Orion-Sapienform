@@ -1,6 +1,16 @@
 ## Services that run on the circe mesh node (positive allowlist for post-merge rebuild).
 # When this file exists for the detected host, only listed services are eligible
 # to rebuild — mesh-utilities/common/exclude_services.txt does NOT apply on circe.
+#
+# NOTE (2026-09-21): as of this repo's current up_all_services.sh /
+# up_all_services_batched.sh, neither script actually reads this file or
+# does host detection -- COMPOSE_BASENAME is hardcoded to "docker-compose.yml"
+# and EXCLUDE_FILE always defaults to exclude_services.txt, with no circe
+# branch. This file is kept as the documented record of what actually runs
+# on circe (referenced by services/orion-power-guard/README.md), but treat
+# it as documentation, not a live gate, until the host-detection wiring
+# this comment describes actually exists.
+#
 # one service per line
 orion-affectgpt-worker
 orion-ai-town
@@ -9,6 +19,13 @@ orion-diffusion-host
 orion-gpu-lane-controller
 orion-juniper-affective-state
 orion-power-guard
-orion-vision-host
-orion-whisper-tts
 orion-world-model
+# orion-vision-host REMOVED 2026-09-21: this entry only ever meant the
+# circe-qwen second lane (docker-compose.circe-qwen.yml) -- the plain
+# docker-compose.yml this allowlist would actually target is athena's
+# shared BLIP-base instance, never deployed on circe. That qwen lane moved
+# to athena's Tesla T10 in PR #2277; circe no longer runs anything under
+# services/orion-vision-host/.
+# orion-whisper-tts REMOVED 2026-09-21: moved from circe (moonlighting on a
+# shared V100) onto athena's new Tesla T10. See PR #2276 and this repo's
+# exclude_services.txt, where it was removed from athena's exclude list.

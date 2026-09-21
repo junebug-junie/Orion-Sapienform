@@ -1,6 +1,5 @@
 ## service to exclude from auto rebuilding
 # one service per line
-orion-whisper-tts
 orion-bus
 orion-agent-council
 orion-gpu-lane-controller
@@ -44,3 +43,8 @@ orion-ai-town
 # athena's (or any other host's) bring-up-all doesn't spam
 # "Skipped (missing services/<svc>/.env)" on every run.
 orion-world-model
+# orion-whisper-tts REMOVED from this exclude list 2026-09-21: it moved from
+# circe (moonlighting on a shared V100) onto athena's new Tesla T10, so
+# athena's bring-up-all should now be allowed to manage it like any other
+# athena-resident service. See PR #2276 and this file's include_services_
+# circe.txt counterpart, where it was removed from circe's allowlist.

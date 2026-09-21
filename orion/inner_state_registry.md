@@ -110,7 +110,9 @@ of four composition statuses:
   here as of 2026-07-13 is no longer accurate** -- `orion.mood_arc.fit_encoder`
   is now imported directly by `services/orion-field-digester/app/anomaly_scorer.py`
   and feeds the Hub's main-page Cognitive EKG viz, gated behind
-  `FIELD_CHANNEL_ANOMALY_ENABLED` (default off). **Update, 2026-09-03**: that
+  `FIELD_CHANNEL_ANOMALY_ENABLED` (default `true` as of 2026-09-21; ran live
+  ~2026-09-03 through ~1-2 weeks before 2026-09-21 before a live `.env`
+  silently reset it to `false` with no record of when/why). **Update, 2026-09-03**: that
   consumer used to read a separately-tracked model directory, disconnected
   from this entry's own `v4` -- converged, it now resolves this module's own
   `active.json` directly, with live per-tick enrichment added for the

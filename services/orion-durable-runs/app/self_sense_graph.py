@@ -31,6 +31,7 @@ doesn't cost the other three.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
 
@@ -93,9 +94,21 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
         for question_key, question in questions:
             if question_key in answers:
                 continue  # already answered on a prior attempt (resume)
+            # A fresh uuid4 per question, not a composite of the run's own
+            # correlation_id -- two reasons, both review findings
+            # (2026-09-21): (1) Hub's _turn_result_for cache/inflight key is
+            # keyed on (run_id, correlation_id); reusing a derived, merely
+            # question-scoped string still works for uniqueness, but a real
+            # uuid4 is also what (2) orion.evals.self_sense_runner.is_uuid()
+            # needs to recognise this as a genuine turn correlation id rather
+            # than fall back to a synthetic derived one -- the same
+            # "correlation_id IS the envelope's correlation_id" contract
+            # every other self-sense-eval producer (Hub's in-process loop,
+            # the host script) already gives it.
+            correlation_id = str(uuid.uuid4())
             request = CuriosityTurnRequestV1(
                 run_id=state["run_id"],
-                correlation_id=f"{state['correlation_id']}:{question_key}",
+                correlation_id=correlation_id,
                 prompt=question,
                 fcc_model_label=brief.get("fcc_model_label"),
                 timeout_sec=float(brief.get("timeout_sec") or 600.0),
@@ -114,7 +127,9 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                     "self_sense_eval_question_failed run=%s question=%s error=%s",
                     state["run_id"], question_key, result.error,
                 )
-            answers[question_key] = {"text": result.text or "", "debug": dict(result.debug or {})}
+            answers[question_key] = {
+                "text": result.text or "", "debug": dict(result.debug or {}), "correlation_id": correlation_id,
+            }
         return {"answers": answers, "attempt": attempt}
 
     async def publish(state: SelfSenseRunState) -> dict[str, Any]:
@@ -130,6 +145,15 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
             text = str(answer.get("text") or "")
             if not text:
                 empty += 1
+            # The SAME correlation_id ask_questions minted for this
+            # question's real turn -- never a derived/composite string, so
+            # build_row/is_uuid recognise it as genuine and skip the
+            # synthetic fallback (review finding, 2026-09-21). Falls back to
+            # a fresh uuid4 only if ask_questions somehow never populated
+            # this key (shouldn't happen -- every question is always
+            # written, even on failure -- kept defensive rather than a
+            # KeyError over a publish-time edge case).
+            correlation_id = str(answer.get("correlation_id") or uuid.uuid4())
             rows.append(
                 build_row(
                     run_id=state["run_id"],
@@ -137,7 +161,7 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                     question=question,
                     http_text=text,
                     trace_text=None,
-                    correlation_id=f"{state['correlation_id']}:{question_key}",
+                    correlation_id=correlation_id,
                     self_definition_version=self_definition_version,
                     lived_answers=lived_answers,
                 )

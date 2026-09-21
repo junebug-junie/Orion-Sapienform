@@ -2863,6 +2863,73 @@ class CuriosityInvestigation:
             line=line,
         )
 
+    async def _dispatch_via_cortex(
+        self,
+        *,
+        run_id: str,
+        correlation_id: str,
+        request: DurableRunRequestV1,
+        line: str,
+        content_label: str,
+        log_prefix: str,
+    ) -> bool:
+        """Shared envelope-build/RPC/decode/accepted-check for every durable
+        dispatch (`_dispatch_durable_run`, `_dispatch_self_sense_eval_durable_run`)
+        -- same ingress every verb already shares
+        (`cortex-orch/app/durable_runs.py: has_durable_run_request`/
+        `dispatch_durable_run`), just a caller-built `DurableRunRequestV1`
+        and a couple of labels. Factored out 2026-09-21 (review finding):
+        the two callers had drifted -- the self-sense-eval one was missing
+        the `run_dispatched` activity-tracking call below, an accidental
+        omission from copy-pasting ~65 lines instead of sharing them; a
+        second fix to this same decode step (see the 2026-09-06 comment
+        below) would otherwise have needed hand-applying twice again.
+
+        True only when cortex replied `accepted`."""
+        if self._bus is None:
+            return False
+        payload = {
+            "mode": "brain",
+            "context": {
+                "messages": [{"role": "user", "content": content_label}],
+                "user_message": content_label,
+                "session_id": self.session_id,
+                "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
+            },
+        }
+        reply_channel = f"{self.cortex_result_prefix}:{correlation_id}"
+        envelope = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=self._source_ref,
+            correlation_id=uuid5(NAMESPACE_URL, f"durable_kickoff:{run_id}"),
+            reply_to=reply_channel,
+            payload=payload,
+        )
+        try:
+            raw = await self._bus.rpc_request(
+                self.cortex_request_channel, envelope, reply_channel=reply_channel, timeout_sec=20.0
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s_failed run=%s err=%s", log_prefix, run_id, exc)
+            return False
+        # rpc_request hands back the raw pubsub message; decode the envelope.
+        # (Live 2026-09-06 20:52Z: reading `payload` off the raw message read
+        # nothing, every kickoff logged status=no_reply and fell back to the
+        # in-process turn while the runner ALSO ran the run -- two turns.)
+        try:
+            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+            result = decoded.envelope.payload if decoded.ok else None
+        except Exception:  # noqa: BLE001
+            result = None
+        status = str((result or {}).get("status") or "")
+        accepted = status == "accepted"
+        logger.info("%s run=%s corr=%s status=%s", log_prefix, run_id, correlation_id, status or "no_reply")
+        if accepted:
+            # The only place that knows the run's line before it finishes;
+            # the runner's state events carry `line` only in finish_detail.
+            get_runtime_activity().run_dispatched(run_id=run_id, correlation_id=correlation_id, line=line)
+        return accepted
+
     async def _dispatch_durable_run(
         self,
         *,
@@ -2886,49 +2953,10 @@ class CuriosityInvestigation:
                 resource=f"llm.route.{self.llm_route or 'agent'}",
             ) if self.durable_admission_enabled else None),
         )
-        payload = {
-            "mode": "brain",
-            "context": {
-                "messages": [{"role": "user", "content": "curiosity.investigate"}],
-                "user_message": "curiosity.investigate",
-                "session_id": self.session_id,
-                "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
-            },
-        }
-        reply_channel = f"{self.cortex_result_prefix}:{correlation_id}"
-        envelope = BaseEnvelope(
-            kind="cortex.orch.request",
-            source=self._source_ref,
-            correlation_id=uuid5(NAMESPACE_URL, f"durable_kickoff:{run_id}"),
-            reply_to=reply_channel,
-            payload=payload,
+        return await self._dispatch_via_cortex(
+            run_id=run_id, correlation_id=correlation_id, request=request, line=line,
+            content_label="curiosity.investigate", log_prefix="curiosity_durable_dispatched",
         )
-        try:
-            raw = await self._bus.rpc_request(
-                self.cortex_request_channel, envelope, reply_channel=reply_channel, timeout_sec=20.0
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("curiosity_durable_dispatch_failed run=%s err=%s", run_id, exc)
-            return False
-        # rpc_request hands back the raw pubsub message; decode the envelope.
-        # (Live 2026-09-06 20:52Z: reading `payload` off the raw message read
-        # nothing, every kickoff logged status=no_reply and fell back to the
-        # in-process turn while the runner ALSO ran the run -- two turns.)
-        try:
-            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
-            result = decoded.envelope.payload if decoded.ok else None
-        except Exception:  # noqa: BLE001
-            result = None
-        status = str((result or {}).get("status") or "")
-        accepted = status == "accepted"
-        logger.info(
-            "curiosity_durable_dispatched run=%s corr=%s status=%s", run_id, correlation_id, status or "no_reply"
-        )
-        if accepted:
-            # The only place that knows the run's line before it finishes;
-            # the runner's state events carry `line` only in finish_detail.
-            get_runtime_activity().run_dispatched(run_id=run_id, correlation_id=correlation_id, line=line)
-        return accepted
 
     async def _dispatch_self_sense_eval_durable_run(
         self,
@@ -2938,12 +2966,9 @@ class CuriosityInvestigation:
         self_definition_version: Optional[int],
         lived_answers: list[dict],
     ) -> bool:
-        """Hand a self-sense-eval run to cortex, same ingress every verb
-        already shares (`cortex-orch/app/durable_runs.py:
-        has_durable_run_request`/`dispatch_durable_run`), same
-        accepted/reply-decode contract as `_dispatch_durable_run` above --
-        different workflow name and brief shape only. True only when cortex
-        replied `accepted`."""
+        """Hand a self-sense-eval run to cortex -- same shared helper
+        `_dispatch_durable_run` uses, different workflow name and brief
+        shape only. True only when cortex replied `accepted`."""
         if self._bus is None:
             return False
         from orion.evals.self_sense_runner import SESSION_ID as SELF_SENSE_SESSION_ID
@@ -2972,42 +2997,10 @@ class CuriosityInvestigation:
                 resource=f"llm.route.{self.llm_route or 'agent'}",
             ) if self.durable_admission_enabled else None),
         )
-        payload = {
-            "mode": "brain",
-            "context": {
-                "messages": [{"role": "user", "content": "self_sense_eval"}],
-                "user_message": "self_sense_eval",
-                "session_id": self.session_id,
-                "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
-            },
-        }
-        reply_channel = f"{self.cortex_result_prefix}:{correlation_id}"
-        envelope = BaseEnvelope(
-            kind="cortex.orch.request",
-            source=self._source_ref,
-            correlation_id=uuid5(NAMESPACE_URL, f"durable_kickoff:{run_id}"),
-            reply_to=reply_channel,
-            payload=payload,
+        return await self._dispatch_via_cortex(
+            run_id=run_id, correlation_id=correlation_id, request=request, line=LINE_SELF_SENSE_EVAL,
+            content_label="self_sense_eval", log_prefix="curiosity_self_sense_eval_durable_dispatched",
         )
-        try:
-            raw = await self._bus.rpc_request(
-                self.cortex_request_channel, envelope, reply_channel=reply_channel, timeout_sec=20.0
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("curiosity_self_sense_eval_durable_dispatch_failed run=%s err=%s", run_id, exc)
-            return False
-        try:
-            decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
-            result = decoded.envelope.payload if decoded.ok else None
-        except Exception:  # noqa: BLE001
-            result = None
-        status = str((result or {}).get("status") or "")
-        accepted = status == "accepted"
-        logger.info(
-            "curiosity_self_sense_eval_durable_dispatched run=%s corr=%s status=%s",
-            run_id, correlation_id, status or "no_reply",
-        )
-        return accepted
 
     async def _turn_request_loop(self) -> None:
         """Keep intake available while admitted lanes execute independently.
@@ -3101,13 +3094,27 @@ class CuriosityInvestigation:
     async def _turn_result_for(
         self, request: CuriosityTurnRequestV1, *, hold_lock: bool
     ) -> CuriosityTurnResultV1:
-        """One harness turn per run_id, however many times it is asked for.
+        """One harness turn per (run_id, correlation_id), however many times
+        it is asked for.
+
+        Correlation_id, not bare run_id, is the real turn identity: investigation
+        sends the SAME correlation_id on every retry of one logical turn
+        (`graph.py:turn_correlation_id`, deterministic per run_id+lease
+        generation), so keying on it still cache-hits a retry exactly as
+        before. self_sense_eval breaks the "one turn per run_id" assumption
+        bare run_id alone encoded -- it sends FOUR requests under one run_id,
+        one per question, each with its own correlation_id
+        (`self_sense_graph.py`'s `"{run_corr}:{question_key}"`). Keying on
+        run_id alone made questions 2-4 silently receive question 1's cached
+        answer (review finding, 2026-09-21) -- exactly the "no empty-shell
+        cognition" failure mode CLAUDE.md 0A warns about, just quieter: not
+        an empty answer, a WRONG one that looks fully valid.
 
         `hold_lock=True` from the RPC listener (serialise with the tick);
         `False` from inside the tick, which already holds `_run_lock`
         (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
-        key = request.run_id
+        key = f"{request.run_id}:{request.correlation_id}"
         if request.lease is not None:
             lease = request.lease
             if lease.run_id != request.run_id or request.assigned_lane != lease.lane:
@@ -3116,7 +3123,7 @@ class CuriosityInvestigation:
                 lease.model_dump(mode="json"), lane=lease.lane, backend_key=lease.backend_key,
                 validation_url=self.lease_validation_url,
             )
-            key = f"{request.run_id}:{lease.lease_id}:{lease.generation}"
+            key = f"{request.run_id}:{request.correlation_id}:{lease.lease_id}:{lease.generation}"
         cached = self._turn_results.get(key)
         if cached is not None and now - cached[1] <= TURN_RESULT_CACHE_SEC and cached[0].ok:
             logger.info("curiosity_turn_request_served_from_cache run=%s attempt=%s", request.run_id, request.attempt)

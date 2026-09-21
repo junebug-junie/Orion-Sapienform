@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -26,6 +27,8 @@ from orion.schemas.self_sense import SELF_SENSE_QUESTIONS  # noqa: E402
 
 from app.self_sense_graph import Deps, build_self_sense_graph, finish_detail  # noqa: E402
 
+_QUESTION_BY_TEXT = {text: key for key, text in SELF_SENSE_QUESTIONS}
+
 
 class _World:
     """Fake deps that record every run_turn call and every published row."""
@@ -40,9 +43,13 @@ class _World:
 
     async def _run_turn(self, request: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
         self.turn_calls.append(request)
-        # question_key rides on the tail of the per-question correlation_id
-        # ("<run_corr>:<question_key>"), same convention the node itself uses.
-        question_key = request.correlation_id.rsplit(":", 1)[-1]
+        # Identify the question by its PROMPT TEXT, not correlation_id --
+        # correlation_id is now a real uuid4 per question (review finding,
+        # 2026-09-21: a derived "<run_corr>:<question_key>" string both
+        # collided in Hub's per-(run_id, correlation_id) turn cache and
+        # broke build_row's is_uuid() traceability check), so it can no
+        # longer be reverse-engineered to a question_key here either.
+        question_key = _QUESTION_BY_TEXT[request.prompt]
         if question_key in self.fail_keys:
             return CuriosityTurnResultV1(
                 run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error="empty_generation"
@@ -80,12 +87,25 @@ def test_a_full_run_asks_every_question_once_and_publishes_one_row_each():
     final = asyncio.run(graph.ainvoke(initial, _cfg("sse-run-1")))
 
     assert len(world.turn_calls) == len(SELF_SENSE_QUESTIONS)
-    asked_keys = {c.correlation_id.rsplit(":", 1)[-1] for c in world.turn_calls}
-    assert asked_keys == {k for k, _ in SELF_SENSE_QUESTIONS}
+    asked_prompts = {c.prompt for c in world.turn_calls}
+    assert asked_prompts == {q for _, q in SELF_SENSE_QUESTIONS}
     # Every turn ran under the shared clean self-sense session, not curiosity's.
     assert all(c.session_id == "self-sense-eval" for c in world.turn_calls)
+    # Every question gets its OWN real correlation_id -- distinct (the actual
+    # bug: Hub's turn cache is keyed on (run_id, correlation_id), and a
+    # shared/derived correlation_id across questions under one run_id made
+    # questions 2-4 silently receive question 1's cached answer) and a real
+    # uuid4, not a derived string (so build_row/is_uuid don't treat it as
+    # synthetic). Review findings, 2026-09-21.
+    turn_corr_ids = [c.correlation_id for c in world.turn_calls]
+    assert len(set(turn_corr_ids)) == len(SELF_SENSE_QUESTIONS)
+    for corr_id in turn_corr_ids:
+        UUID(corr_id)  # raises ValueError if not a real uuid
 
     assert len(world.published_rows) == len(SELF_SENSE_QUESTIONS)
+    # Published rows carry the SAME correlation_id the real turn used, not a
+    # fresh/synthetic one -- turn-to-row traceability.
+    assert {r.correlation_id for r in world.published_rows} == set(turn_corr_ids)
     assert final["status"] == "completed"
     assert final["published"] == len(SELF_SENSE_QUESTIONS) and final["failed"] == 0 and final["empty"] == 0
     detail = finish_detail(final)

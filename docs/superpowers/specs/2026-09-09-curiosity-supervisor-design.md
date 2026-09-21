@@ -127,11 +127,9 @@ how to *continue*, and has no opinion on whether continuing is worthwhile.
    `interrupt` or `abort` entry point was found in `services/orion-durable-runs/`.
    "Stop a circling run" may require building that, and the honest fallback is
    "let this run finish, act before the next one".
-2. **How quickly do hops land?** If Orion writes all hops in one burst near the
-   end of a turn, a mid-turn poller has nothing to see in time and the whole
-   mid-turn seam collapses into the between-runs one. `Hop` carries **no
-   timestamp**, so this is not answerable from the existing data — it needs
-   observation, and it decides between the two seams above.
+2. ~~**How quickly do hops land?**~~ **Answered 2026-09-19 by live observation —
+   see "Missing question 2, answered" below.** Hops land as the turn goes, not
+   in one end-of-turn burst. A mid-turn poller is a real option now.
 3. **Is "circling" separable from "hard"?** Three steps with no movement might be
    a stuck loop or an genuinely difficult problem being worked properly. Getting
    this wrong means killing good work.
@@ -349,6 +347,58 @@ answer missing question 2 before building the mid-turn poller path, and
 should treat the truncation issue as a prerequisite to trust before any
 intervention reads a `HopReadingV1` as ground truth for something that acts.
 
+## Missing question 2, answered (2026-09-19)
+
+**Method.** No code change. Subscribed read-only to `orion:harness:run:step`
+(the bus channel `HarnessRunner.run()` already publishes one message per tool
+step of Orion's own FCC-Claude subprocess — see `orion/harness/runner.py`,
+`orion/harness/step_stream.py`) while a live curiosity turn ran, and separately
+diffed the graph's `Hop`/`TurnOutcome` state before and after. Two independent
+signals, not one:
+
+1. **The step stream.** Caught Orion issuing a `CREATE (:Hop {...})` Cypher
+   write (via a `Bash` tool call running `redis-cli GRAPH.QUERY`, after first
+   tripping over its own shell-quoting on an apostrophe and retrying) at step
+   36 of the transcript — well inside the run, not at the tail end.
+2. **The note content itself.** The finished run (`run_id=58b638778228`,
+   `TurnOutcome.written_at` 2026-09-19T03:27:36Z) left 6 hop notes, and one of
+   them narrates its own remaining time budget mid-investigation:
+
+   > "Clock: 3500s budget, ~3207s left, 420s/step stall — generous, reserve
+   > last quarter for writing."
+
+   That is Orion checking its own clock and choosing to keep researching
+   rather than switch to write-up, partway through — only possible if the hop
+   recording it was written in the middle of the run, with real time still on
+   the clock, not reconstructed afterward.
+
+**Verdict: hops land as the turn goes.** The docstring in
+`services/orion-hub/scripts/curiosity_investigation.py` ("hop notes ... written
+as the turn goes rather than reconstructed at the end") and the instruction
+Orion is actually given (`orion/curiosity/kickoff_prompt.py`'s `_hops_section`:
+"Record each stop as it happens ... before you take the next one") both
+describe *intent*. This is the first time that intent was checked against a
+live run instead of just the code that asks for it, and it held. The design's
+own fallback — "if hops land in a burst at the end, the mid-turn poller is
+pointless" — does not apply. A mid-turn seam is a real option, not foreclosed
+by the data.
+
+**A second, unrelated finding, live-caught in the same run: the `Hop.n`
+collision (named as a known defect in Non-goals) is still unfixed.** The same
+run's 6 hop notes carry only 3 distinct `n` values — 1, 2, and 3, each written
+*twice*, with different real content each time (not a duplicate write of the
+same note). Numbering resets instead of accumulating, almost certainly across
+an internal retry within the run. This means `n` cannot be trusted as a
+within-run ordinal today — anything that orders hops by `(run_id, n)` (the
+supervisor's own `read_all_hops`/grouping included) will interleave two
+different sequences under the same numbers. Not fixed here; recorded because
+it was seen firsthand, on today's date, unchanged from the 2026-09-10 report.
+
+**What this does not give us:** a full timestamp-by-timestamp table of all 6
+hop writes. The step-stream watch used a coarse text match for the write
+Cypher and only caught 1 of the run's 6 hop-writes verbatim on the wire (later
+writes' Cypher didn't match the same substring — not investigated further,
+since the two signals above already answer the question without it).
 ## Missing question 2 and the `Hop.n` collision: separate patches (2026-09-19)
 
 Two follow-ups shipped separately from this file's edit history (their own

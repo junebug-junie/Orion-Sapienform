@@ -86,9 +86,10 @@ services:
 
     # GPU pin. Deliberately NOT `gpus: all` / `count: all` (the previous form,
     # replaced 2026-08-29): those hand the container every visible card and
-    # leave torch to pick cuda:0. That is harmless on athena, which has one
-    # card, and wrong on circe, where cuda:0 is a V100 carrying other lanes
-    # and the card this service wants is the P100 at nvidia-smi index 4.
+    # leave torch to pick cuda:0. athena is no longer single-card either
+    # (T10 added at index 1, 2026-09-21) -- `gpus: all` there would now grab
+    # both the P4 (already vision-host's) and the T10, and leave torch to
+    # pick whichever cuda:0 resolves to. Always use device_ids.
     #
     # `device_ids` is the only form here that actually pins a specific card
     # (`docker run --gpus '"device=N"'` is a different, CLI-only schema, and

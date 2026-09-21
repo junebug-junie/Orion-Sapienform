@@ -59,6 +59,7 @@ class _FakeBus:
     ) -> None:
         self.codec = OrionCodec()
         self.rpc_calls: list[str] = []
+        self.call_order: list[str] = []  # "subscribe" / "durable_kickoff" / "direct", in the order they really happened
         self._dispatch_status = dispatch_status
         self._dispatch_rpc_error = dispatch_rpc_error
         self._state_envelopes = state_envelopes or []
@@ -68,6 +69,7 @@ class _FakeBus:
         payload = envelope.payload
         is_durable_kickoff = isinstance(payload, dict) and "durable_run" in (payload.get("context") or {}).get("metadata", {})
         self.rpc_calls.append("durable_kickoff" if is_durable_kickoff else "direct")
+        self.call_order.append("durable_kickoff" if is_durable_kickoff else "direct")
         if is_durable_kickoff:
             if self._dispatch_rpc_error:
                 raise RuntimeError("cortex down")
@@ -84,6 +86,7 @@ class _FakeBus:
         return {"data": self.codec.encode(result)}
 
     def subscribe(self, channel):
+        self.call_order.append("subscribe")
         return _FakePubSub(self)
 
     async def iter_messages(self, pubsub: _FakePubSub):
@@ -233,3 +236,89 @@ def test_an_accepted_dispatch_with_no_completion_event_times_out_to_none(monkeyp
     ))
     assert bus.rpc_calls == ["durable_kickoff"]  # no fallback -- accepted means trust the durable path
     assert result is None
+
+
+def test_the_state_channel_is_subscribed_before_the_dispatch_rpc_not_after(monkeypatch):
+    """Review finding, 2026-09-21: DURABLE_RUN_STATE_CHANNEL is a plain
+    Redis pub/sub with no replay -- subscribing only after the dispatch RPC
+    returns `accepted` leaves a real gap where a fast completion event
+    (published between the runner registering the run and this late
+    subscribe) is lost forever, and this call never falls back once
+    accepted. The fix subscribes BEFORE dispatching; this pins that order
+    so it can't silently regress."""
+    monkeypatch.setattr(self_study, "SELF_STUDY_REFLECT_DURABLE_ENABLED", True)
+    bus = _FakeBus(dispatch_status="accepted")
+    snapshot, concepts = _snapshot_and_concepts()
+
+    async def scenario():
+        task = asyncio.create_task(self_study._call_self_study_reflect_llm(
+            bus=bus, source=SOURCE, snapshot=snapshot, concepts=concepts, correlation_id="c7",
+        ))
+        # Let dispatch (and only dispatch) run, then find the run_id from
+        # the very first RPC and complete it immediately -- if subscribe
+        # happened after dispatch, this event would already be missed.
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if bus.rpc_calls:
+                break
+        assert bus.call_order[0] == "subscribe"
+        assert "durable_kickoff" in bus.call_order
+        assert bus.call_order.index("subscribe") < bus.call_order.index("durable_kickoff")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+
+def test_a_cancelled_run_is_recognized_immediately_not_after_the_full_timeout(monkeypatch):
+    """Review finding, 2026-09-21: the completion waiter only recognized
+    `completed`/`failed` as terminal, ignoring `cancelled`/`abandoned` (both
+    real DurableRunStatusV1 values) -- those would burn the full
+    SELF_STUDY_REFLECT_TIMEOUT_SEC waiting for an event that will never
+    arrive. A short timeout (2s) with a `cancelled` event arriving almost
+    immediately proves it returns fast, not after the timeout."""
+    monkeypatch.setattr(self_study, "SELF_STUDY_REFLECT_DURABLE_ENABLED", True)
+    monkeypatch.setattr(self_study, "SELF_STUDY_REFLECT_TIMEOUT_SEC", 5.0)
+    snapshot, concepts = _snapshot_and_concepts()
+
+    async def scenario():
+        captured: dict = {}
+
+        class _CapturingBus(_FakeBus):
+            async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):
+                payload = envelope.payload
+                if isinstance(payload, dict) and "durable_run" in (payload.get("context") or {}).get("metadata", {}):
+                    captured["run_id"] = payload["context"]["metadata"]["durable_run"]["run_id"]
+                return await super().rpc_request(request_channel, envelope, reply_channel=reply_channel, timeout_sec=timeout_sec)
+
+        bus = _CapturingBus(dispatch_status="accepted")
+
+        async def call():
+            return await self_study._call_self_study_reflect_llm(
+                bus=bus, source=SOURCE, snapshot=snapshot, concepts=concepts, correlation_id="c8",
+            )
+
+        task = asyncio.create_task(call())
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if "run_id" in captured:
+                break
+        state = DurableRunStateV1(
+            run_id=captured["run_id"], workflow="self_study.reflect", thread_id=captured["run_id"], node="llm_call",
+            status="cancelled", correlation_id="11111111-1111-1111-1111-111111111111", detail={},
+        )
+        bus._state_envelopes = [BaseEnvelope(
+            kind="durable.run.state.v1", source=SOURCE, correlation_id="11111111-1111-1111-1111-111111111111",
+            payload=state.model_dump(mode="json"),
+        )]
+        started = asyncio.get_event_loop().time()
+        result = await task
+        elapsed = asyncio.get_event_loop().time() - started
+        return result, elapsed
+
+    result, elapsed = asyncio.run(scenario())
+    assert result is None
+    assert elapsed < 2.0  # well under the 5s timeout -- recognized immediately, not timed out

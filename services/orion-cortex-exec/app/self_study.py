@@ -1425,13 +1425,27 @@ async def _call_self_study_reflect_llm(
     investigation/self-sense-eval's own durable dispatch has. Once a dispatch
     IS accepted, this does NOT also fall back on a llm_call_failed durable
     outcome -- that would double-spend the reflect timeout budget on two
-    separate attempts for one logical reflection."""
+    separate attempts for one logical reflection.
+
+    Subscribes to the state channel BEFORE dispatching, not after (review
+    finding, 2026-09-21): `DURABLE_RUN_STATE_CHANNEL` is a plain Redis
+    pub/sub with no replay (`orion/core/bus/async_service.py`'s `subscribe`
+    only sees messages published after it), so subscribing only once the
+    dispatch RPC has already returned `accepted` leaves a real gap -- any
+    completion published in that window (a fast `llm_call_ok=False` from a
+    malformed/rejected downstream call is entirely plausible) would be lost
+    forever, and this function does not fall back once accepted, so that
+    run would silently burn the full timeout and return None instead of the
+    real (already-known) outcome."""
     if SELF_STUDY_REFLECT_DURABLE_ENABLED and bus is not None:
-        dispatched, run_id = await _dispatch_reflect_durable_run(
-            bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id,
-        )
-        if dispatched:
-            return await _await_reflect_durable_completion(bus=bus, run_id=run_id)
+        from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL
+
+        async with bus.subscribe(DURABLE_RUN_STATE_CHANNEL) as pubsub:
+            dispatched, run_id = await _dispatch_reflect_durable_run(
+                bus=bus, source=source, snapshot=snapshot, concepts=concepts, correlation_id=correlation_id,
+            )
+            if dispatched:
+                return await _await_reflect_durable_completion(bus=bus, pubsub=pubsub, run_id=run_id)
         logger.warning(
             "self_study_reflect_durable_dispatch_fell_back corr=%s -- running the direct RPC", correlation_id
         )
@@ -1514,35 +1528,43 @@ async def _dispatch_reflect_durable_run(
     return accepted, run_id
 
 
-async def _await_reflect_durable_completion(*, bus: Any, run_id: str) -> list[dict[str, Any]] | None:
-    """Subscribe to the durable-run state channel and wait for THIS run's
-    completion, bounded by the SAME SELF_STUDY_REFLECT_TIMEOUT_SEC the
-    direct RPC path always used as its deadline. Returns the raw findings
-    list on a real success, or None on failure/timeout/unreadable event --
+async def _await_reflect_durable_completion(*, bus: Any, pubsub: Any, run_id: str) -> list[dict[str, Any]] | None:
+    """Wait for THIS run's completion on an ALREADY-OPEN state-channel
+    subscription (opened by the caller BEFORE dispatch -- see
+    `_call_self_study_reflect_llm`'s docstring for why that ordering is
+    load-bearing on a replay-less pub/sub channel), bounded by the SAME
+    SELF_STUDY_REFLECT_TIMEOUT_SEC the direct RPC path always used as its
+    deadline. Recognizes every terminal `DurableRunStatusV1`
+    (`completed`/`failed`/`cancelled`/`abandoned`), not just the two most
+    common ones -- missing `cancelled`/`abandoned` would otherwise burn the
+    full timeout waiting for an event that will never arrive (review
+    finding, 2026-09-21). Returns the raw findings list on a real success,
+    or None on any other terminal status, timeout, or unreadable event --
     never raises, matching every other branch of this call's contract."""
-    from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DurableRunStateV1
+    from orion.schemas.durable_run import DurableRunStateV1
+
+    _TERMINAL = ("completed", "failed", "cancelled", "abandoned")
 
     async def _wait() -> list[dict[str, Any]] | None:
-        async with bus.subscribe(DURABLE_RUN_STATE_CHANNEL) as pubsub:
-            async for msg in bus.iter_messages(pubsub):
-                try:
-                    decoded = bus.codec.decode(msg.get("data"))
-                    if not decoded.ok or decoded.envelope is None:
-                        continue
-                    state = DurableRunStateV1.model_validate(decoded.envelope.payload or {})
-                except Exception:  # noqa: BLE001 -- an unreadable event is not this run's completion
+        async for msg in bus.iter_messages(pubsub):
+            try:
+                decoded = bus.codec.decode(msg.get("data"))
+                if not decoded.ok or decoded.envelope is None:
                     continue
-                if state.run_id != run_id or state.status not in ("completed", "failed"):
-                    continue
-                detail = state.detail or {}
-                if state.status != "completed" or not detail.get("llm_call_ok"):
-                    logger.warning(
-                        "self_study_reflect_durable_run_failed run=%s status=%s error=%s",
-                        run_id, state.status, detail.get("llm_call_error"),
-                    )
-                    return None
-                findings = detail.get("findings")
-                return [item for item in findings if isinstance(item, dict)] if isinstance(findings, list) else None
+                state = DurableRunStateV1.model_validate(decoded.envelope.payload or {})
+            except Exception:  # noqa: BLE001 -- an unreadable event is not this run's completion
+                continue
+            if state.run_id != run_id or state.status not in _TERMINAL:
+                continue
+            detail = state.detail or {}
+            if state.status != "completed" or not detail.get("llm_call_ok"):
+                logger.warning(
+                    "self_study_reflect_durable_run_failed run=%s status=%s error=%s",
+                    run_id, state.status, detail.get("llm_call_error"),
+                )
+                return None
+            findings = detail.get("findings")
+            return [item for item in findings if isinstance(item, dict)] if isinstance(findings, list) else None
         return None  # pubsub closed without a matching event -- treat as no reflection
 
     try:

@@ -138,7 +138,9 @@ def test_execute_unified_turn_wires_maybe_splice() -> None:
     idx = source.index(marker)
     window = source[idx : idx + 500]
     assert "utterance_origin=utterance_origin" in window
-    assert "mind_work_shape=thought.mind_work_shape" in window
+    # Orion fail-open: missing/unknown depth → deep via ensure_orion_hire_depth.
+    assert "ensure_orion_hire_depth" in source
+    assert "mind_work_shape=shape_for_splice" in window
     assert "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE" in window
     assert "progress_lines=progress_lines" in window
     assert "_gather_role_teach_progress_lines" in source

@@ -1344,10 +1344,15 @@ async def execute_unified_turn(
                 exc_info=True,
             )
             progress_lines = ()
+    shape_for_splice = thought.mind_work_shape
+    if utterance_origin == "orion":
+        from orion.curiosity.role_teach_disclosure import ensure_orion_hire_depth
+
+        shape_for_splice = ensure_orion_hire_depth(thought.mind_work_shape)
     user_message = _maybe_splice_role_teach_disclosure(
         user_message,
         utterance_origin=utterance_origin,
-        mind_work_shape=thought.mind_work_shape,
+        mind_work_shape=shape_for_splice,
         enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
         progress_lines=progress_lines,
     )

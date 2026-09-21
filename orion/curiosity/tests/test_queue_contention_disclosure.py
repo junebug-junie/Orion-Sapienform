@@ -41,3 +41,10 @@ def test_queue_line_never_embeds_raw_counts() -> None:
     assert "121" not in text
     assert "pending=" not in text
     assert "count" not in text
+
+
+def test_queue_line_prefers_hire_not_compete_with_gpu() -> None:
+    text = "\n".join(format_queue_contention_progress(score=8.0, driver=SOURCE_DURABLE)).lower()
+    assert "hire_cursor" in text or "hire cursor" in text
+    assert "compete" not in text
+    assert "prefer hire when mind says deep" not in text

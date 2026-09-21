@@ -64,10 +64,11 @@ Example for a simple operational turn:
 {"conversation_frame":"mixed","task_mode":"direct_response","identity_salience":"low","user_intent":"User is running a smoketest.","self_relevance":"Confirm receipt without over-interpreting.","juniper_relevance":"Stay concise and operational.","response_priorities":["confirm receipt"],"response_hazards":["do not invent context"],"answer_strategy":"DirectAnswer","stance_summary":"Operational smoketest turn."}"""
 
 _ORION_WORK_SHAPE_INSTRUCTION = """
-When the utterance origin is Orion (self-authored investigation subject), also fill these optional work-shape fields (use unknown if unsure):
-- expected_depth: shallow | deep | unknown
+When the utterance origin is Orion (self-authored investigation / curiosity subject), you MUST fill work-shape:
+- expected_depth: shallow | deep  (REQUIRED — never omit; prefer deep when the subject is unresolved archaeology, multi-hop, cross-service, or otherwise needs repo/runtime digging; shallow only for a single bounded lookup)
 - cross_cutting: yes | no | unknown
 - foresight_note: short note, max 240 chars
+Do not leave expected_depth blank or "unknown". Deep means Orion should prefer hire_cursor for the dig.
 """
 
 _VALID_EXPECTED_DEPTH: frozenset[str] = frozenset({"shallow", "deep", "unknown"})
@@ -144,6 +145,19 @@ def _minimal_stance_from_pack(pack: MindEvidencePackV1) -> dict[str, Any]:
     }
 
 
+def ensure_orion_expected_depth(payload: dict[str, Any]) -> dict[str, Any]:
+    """Orion-origin sittings: missing/unknown depth becomes deep (use Cursor path).
+
+    Live 2026-09-21: Mind often returned foresight/intent with no expected_depth,
+    so Hub never spliced the strong hire_cursor nudge. Prefer deep over silent omit.
+    """
+    out = dict(payload)
+    depth = str(out.get("expected_depth") or "").strip().lower()
+    if depth not in ("shallow", "deep"):
+        out["expected_depth"] = "deep"
+    return out
+
+
 def run_stance_handoff(
     frontier: ActiveCognitiveFrontierV1,
     synthesis: SemanticSynthesisV1,
@@ -197,15 +211,22 @@ def run_stance_handoff(
     )
     if raw is None:
         base = _minimal_stance_from_pack(pack)
+        if origin == "orion":
+            base = ensure_orion_expected_depth(base)
         telemetry.validation_ok = False
         return base, err or "stance_handoff_failed", telemetry
     payload = raw.get("stance_payload") if isinstance(raw.get("stance_payload"), dict) else raw
     if not isinstance(payload, dict):
+        base = _minimal_stance_from_pack(pack)
+        if origin == "orion":
+            base = ensure_orion_expected_depth(base)
         telemetry.validation_ok = False
-        return _minimal_stance_from_pack(pack), "stance_payload_not_object", telemetry
+        return base, "stance_payload_not_object", telemetry
     merged = _minimal_stance_from_pack(pack)
     merged.update(payload)
     merged, _ = try_coerce_stance_payload(merged)
+    if origin == "orion":
+        merged = ensure_orion_expected_depth(merged)
     valid, validation_err = validate_merged_stance_brief_optional(merged)
     if valid is None:
         telemetry.validation_ok = False

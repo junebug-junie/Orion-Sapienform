@@ -70,5 +70,6 @@ def format_queue_contention_progress(
 
     return [
         f"Queue pressure: {shown}/10 ({band}) — {blurb}. "
-        "Deep Cursor digs compete with that. Prefer hire when Mind says deep."
+        "Prefer hire_cursor for deep work — the local agent GPU seat is the "
+        "expensive one; keep only a short tried_summary yourself."
     ]

@@ -76,13 +76,18 @@ from orion.schemas.durable_run import (
     CURIOSITY_TURN_REQUEST_KIND,
     CURIOSITY_TURN_RESULT_KIND,
     DURABLE_RUN_STATE_KIND,
+    SELF_SENSE_EVAL_NODES,
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
     DurableRunRequestV1,
     DurableRunStateV1,
 )
+from orion.schemas.self_sense import CHANNEL_SELF_SENSE_EVAL_WRITE, KIND_SELF_SENSE_EVAL_WRITE, SelfSenseEvalV1
+from orion.evals.self_sense_runner import envelope_correlation_id as self_sense_envelope_correlation_id
 
 from app.graph import CuriosityRunState, Deps, build_curiosity_graph, finish_detail
+from app.self_sense_graph import Deps as SelfSenseDeps
+from app.self_sense_graph import build_self_sense_graph, finish_detail as self_sense_finish_detail
 from app.settings import Settings
 
 logger = logging.getLogger("orion-durable-runs.runner")
@@ -90,6 +95,7 @@ logger = logging.getLogger("orion-durable-runs.runner")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 
 DEFAULT_WORKFLOW = "curiosity.investigate"
+SELF_SENSE_EVAL_WORKFLOW = "self_sense_eval"
 
 
 def _corr_uuid(raw: str) -> UUID:
@@ -128,6 +134,12 @@ class DurableRunner:
                 graph=build_curiosity_graph(self._curiosity_deps(), checkpointer),
                 nodes=list(CURIOSITY_NODES),
                 finish_detail=finish_detail,
+            ),
+            SELF_SENSE_EVAL_WORKFLOW: WorkflowSpec(
+                workflow=SELF_SENSE_EVAL_WORKFLOW,
+                graph=build_self_sense_graph(self._self_sense_deps(), checkpointer),
+                nodes=list(SELF_SENSE_EVAL_NODES),
+                finish_detail=self_sense_finish_detail,
             ),
         }
         self._active: dict[str, asyncio.Task[None]] = {}
@@ -179,6 +191,24 @@ class DurableRunner:
             publish_attention_row=self._publish_attention_row,
             publish_journal=self._publish_journal,
         )
+
+    def _self_sense_deps(self) -> SelfSenseDeps:
+        # `run_turn` reuses the SAME Hub RPC curiosity's harness_turn uses --
+        # `_run_turn` only cares about the CuriosityTurnRequestV1 it's given,
+        # never which graph built it.
+        return SelfSenseDeps(run_turn=self._run_turn, publish_rows=self._publish_self_sense_rows)
+
+    async def _publish_self_sense_rows(self, rows: list[SelfSenseEvalV1]) -> tuple[int, int]:
+        published = failed = 0
+        for row in rows:
+            ok = await self._publish(
+                CHANNEL_SELF_SENSE_EVAL_WRITE, KIND_SELF_SENSE_EVAL_WRITE, row, self_sense_envelope_correlation_id(row)
+            )
+            if ok:
+                published += 1
+            else:
+                failed += 1
+        return published, failed
 
     def _source(self) -> ServiceRef:
         s = self._settings

@@ -45,7 +45,7 @@ from scripts.curiosity_investigation import (
     _line_keys,
 )
 
-from test_curiosity_investigation import _FakeBus, _FakeConn, _loop
+from test_curiosity_investigation import _CortexBus, _FakeBus, _FakeConn, _loop
 
 
 class _SenseEvalConn(_FakeConn):
@@ -253,3 +253,52 @@ def test_a_cancelled_run_refunds_its_own_in_process_counter_only() -> None:
     assert loop._sense_eval_done_today == 0
     assert loop._done_today == 5, "the investigation counter must not move"
     assert loop._self_done_today == 2, "nor the self-inquiry counter"
+
+
+# --- durable dispatch (GPU2 elastic-burst arc, 2026-09-21) -------------------
+
+
+def test_durable_dispatch_hands_the_run_to_cortex_and_does_not_ask_in_process() -> None:
+    from orion.schemas.durable_run import DurableRunRequestV1
+
+    bus = _CortexBus()
+    loop = _self_sense_loop(bus, kickoff_via_cortex=True)
+    calls = []
+    original = loop._generate
+
+    async def counting_generate(*a, **k):
+        calls.append(a)
+        return await original(*a, **k)
+
+    loop._generate = counting_generate  # type: ignore[assignment]
+    assert asyncio.run(loop.tick_self_sense_eval()) is None
+    assert calls == []  # no question was asked in-process
+    assert _published_rows(bus) == []  # publishing happens in the runner's graph, not here
+    assert len(bus.rpc_calls) == 1
+    channel, envelope, reply_channel = bus.rpc_calls[0]
+    assert channel == loop.cortex_request_channel
+    durable = envelope.payload["context"]["metadata"]["durable_run"]
+    request = DurableRunRequestV1.model_validate(durable)
+    assert request.workflow == "self_sense_eval"
+    assert request.brief.line == "self_sense_eval"
+    assert {k for k, _ in request.brief.questions} == {k for k, _ in SELF_SENSE_QUESTIONS}
+    assert request.brief.session_id == SELF_SENSE_SESSION_ID
+    assert request.brief.self_definition_version == 5  # from _SenseEvalConn's default
+    # The slot is still recorded here (scheduling stays in Hub either way).
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert bus.redis.values.get(f"{_SENSE_EVAL_DAILY_COUNT_KEY_PREFIX}{today}") == "1"
+
+
+def test_durable_dispatch_falls_back_to_asking_in_process_when_cortex_is_down() -> None:
+    bus = _CortexBus(raise_on_rpc=True)
+    loop = _self_sense_loop(bus, kickoff_via_cortex=True)
+    assert asyncio.run(loop.tick_self_sense_eval()) is None
+    assert len(_published_rows(bus)) == 4  # ran in-process after the failed dispatch
+
+
+def test_durable_dispatch_off_is_the_in_process_path_exactly() -> None:
+    bus = _CortexBus()
+    loop = _self_sense_loop(bus, kickoff_via_cortex=False)
+    assert asyncio.run(loop.tick_self_sense_eval()) is None
+    assert len(_published_rows(bus)) == 4
+    assert bus.rpc_calls == []

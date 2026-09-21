@@ -1070,9 +1070,27 @@ cannot drift.
 
 No graph write and no new SQL grants: it only reads `self_concept_history`
 (already granted) for the current self-definition version and lived-ledger
-context, and runs each question as a direct in-process chat turn (not the FCC
-investigation sandbox), so unlike self-inquiry there is no separate grants
-step -- the flag alone is enough.
+context, so unlike self-inquiry there is no separate grants step -- the flag
+alone is enough.
+
+**Durable dispatch (2026-09-21), same GPU2-elastic-burst arc as
+investigation/self-inquiry.** When `kickoff_via_cortex` is on (the durable
+runs deploy), each run submits `workflow="self_sense_eval"` to cortex's
+already-generic durable-run ingress -- the SAME `CortexClientRequest ->
+context.metadata.durable_run` path every verb shares, just a different
+workflow name and its own brief shape (four fixed `questions`, not one open
+`prompt`). `orion-durable-runs` drives its OWN graph for this workflow
+(`app/self_sense_graph.py`: `ask_questions -> publish -> finish`), asking
+each question over the same Hub turn-execution RPC investigation's
+`harness_turn` uses, then scoring and publishing the four rows itself --
+Hub's own `_run_self_sense_eval` never runs the in-process loop on this path
+at all. A failed/unconfirmed dispatch falls back to asking all four
+questions directly in-process (the FCC investigation sandbox is never
+involved either way), same fallback contract investigation's own dispatch
+has. Every question still runs under the shared clean session
+`orion.evals.self_sense_runner.SESSION_ID`, carried on the wire now via
+`CuriosityTurnRequestV1.session_id` (additive field) instead of only being
+enforced in the in-process path.
 
 **Not gated on recent human chat activity.** Hub has no turn-serialization
 lock and no existing signal for "a human chat turn is in flight right now";

@@ -48,3 +48,8 @@ def test_queue_line_prefers_hire_not_compete_with_gpu() -> None:
     assert "hire_cursor" in text or "hire cursor" in text
     assert "compete" not in text
     assert "prefer hire when mind says deep" not in text
+    # Elevated queue must push hire, never excuse staying local.
+    assert "reason to hire" in text or "reason to hire_cursor" in text
+    assert "not a reason to stay" in text or "not a reason to" in text
+    assert "no hire" not in text
+    assert "uneconom" not in text

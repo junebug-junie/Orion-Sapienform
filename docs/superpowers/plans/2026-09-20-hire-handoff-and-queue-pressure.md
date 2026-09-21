@@ -503,7 +503,7 @@ def test_queue_line_names_score_and_driver_not_raw_count():
 Example line:
 
 ```text
-Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Prefer hire_cursor for deep work — the local agent GPU seat is the expensive one; keep only a short tried_summary yourself.
+Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Elevated queue is a reason to hire_cursor (offload), not a reason to stay on local_crawl — the local agent GPU seat is the expensive one. Keep only a short tried_summary yourself, then write HelpRequest.
 ```
 
 - [ ] **Step 3: Wire curiosity / orchestrator**

@@ -91,6 +91,8 @@ def test_spread_gate_suppresses_decay_under_disagreement() -> None:
 
 
 def test_compute_h1_ensemble_shape_and_verdict_consistency() -> None:
+    from app.substrate.reconstruction import classify_ensemble_verdict
+
     ensemble = EnsembleSubstrate(config=_small_config(), base_seed=6000)
     result = compute_h1_ensemble(ensemble)
 
@@ -98,9 +100,11 @@ def test_compute_h1_ensemble_shape_and_verdict_consistency() -> None:
     assert result.seeds == ensemble.seeds
     assert 0.0 <= result.mean_ratio <= 1.0
     assert result.std_ratio >= 0.0
-    if result.mean_ratio >= 0.6:
-        assert result.verdict == "redundant"
-    elif result.mean_ratio <= 0.2:
-        assert result.verdict == "concentrated"
-    else:
-        assert result.verdict == "mixed"
+    assert result.verdict == classify_ensemble_verdict(
+        mean_ratio=result.mean_ratio,
+        std_ratio=result.std_ratio,
+        bulk_penetration_depth=result.bulk_penetration_depth,
+    )
+    assert result.dark_seats == []
+    assert result.organ_fire_counts == {}
+    assert result.organ_distinctness is None

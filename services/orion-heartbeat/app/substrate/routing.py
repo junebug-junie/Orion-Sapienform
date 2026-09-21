@@ -53,6 +53,7 @@ ORGAN_SITE_MAP: dict[str, int] = {
     "orion-bus": 3,  # transport
     "orion-cortex-orch": 4,  # route
 }
+SITE_ORGAN_MAP: dict[int, str] = {index: name for name, index in ORGAN_SITE_MAP.items()}
 
 N_SITES = 10
 BOUNDARY_SITES: tuple[int, ...] = (0, 1, 2, 3, 4)

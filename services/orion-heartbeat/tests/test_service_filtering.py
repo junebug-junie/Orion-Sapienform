@@ -114,6 +114,26 @@ def test_latest_h1_dict_is_none_before_first_computation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_absorb_records_organ_fire_window_for_h1() -> None:
+    from app.substrate.reconstruction import compute_h1_ensemble
+
+    svc = HeartbeatService()
+    await svc._handle_grammar_message(_atom_event(source_service="orion-cortex-exec"))
+    await svc._handle_grammar_message(_atom_event(source_service="orion-cortex-exec"))
+    await svc._handle_grammar_message(_atom_event(source_service="orion-bus"))
+    await svc._drain_absorb_queue()
+
+    counts = svc.organ_fires.counts()
+    assert counts["orion-cortex-exec"] == 2
+    assert counts["orion-bus"] == 1
+    assert counts["orion-hub"] == 0
+
+    result = compute_h1_ensemble(svc.ensemble, fire_counts=counts)
+    assert "orion-hub" in result.dark_seats
+    assert "orion-cortex-exec" not in result.dark_seats
+
+
+@pytest.mark.asyncio
 async def test_unknown_atom_type_is_skipped_through_full_handler_path() -> None:
     # Review gap: events_skipped_atom_type was only tested at the routing
     # module level in isolation (test_routing.py), never through

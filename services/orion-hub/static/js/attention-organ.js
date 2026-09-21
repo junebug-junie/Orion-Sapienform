@@ -6,7 +6,8 @@
 //
 //   orion-heartbeat's N-trajectory dissipation ensemble  (the organ)
 //     -> AttentionSelfModelV1's heartbeat_* fields       (the wire)
-//       -> AST/HOT's own per-domain prediction error     (the problem)
+//       -> dark seats / smear / distinctness on this tab (the headline)
+// Mean ratio is kept as a secondary number. It saturates under traffic.
 //
 // Backed entirely by /api/attention-organ/snapshot + /history. This file owns
 // rendering and the poll lifecycle only; every number it draws comes from a
@@ -152,6 +153,31 @@
     if (verdict === "concentrated") return "border-emerald-700 bg-emerald-950/50 text-emerald-200";
     if (verdict === "mixed") return "border-sky-700 bg-sky-950/50 text-sky-200";
     return "border-gray-700 bg-gray-900 text-gray-400";
+  }
+
+  function shortOrgan(name) {
+    if (name === "orion-hub") return "hub";
+    if (name === "orion-biometrics") return "biometrics";
+    if (name === "orion-cortex-exec") return "exec";
+    if (name === "orion-bus") return "bus";
+    if (name === "orion-cortex-orch") return "orch";
+    return name;
+  }
+
+  function darkSeatsHeadline(h1) {
+    var seats = h1 && h1.dark_seats;
+    var counts = (h1 && h1.organ_fire_counts) || {};
+    if (!Array.isArray(seats)) return "untracked";
+    if (!seats.length && !Object.keys(counts).length) return "untracked";
+    if (!seats.length) return "all seats lit";
+    return seats.map(shortOrgan).join(", ") + " dark";
+  }
+
+  function formatSeats(seats, counts) {
+    if (!Array.isArray(seats)) return "untracked";
+    if (!seats.length && (!counts || !Object.keys(counts).length)) return "untracked";
+    if (!seats.length) return "none";
+    return seats.map(shortOrgan).join(", ");
   }
 
   function note(host, text, tone) {
@@ -626,12 +652,28 @@
 
     var headline = el("div", "flex items-end justify-between gap-3 mb-2");
     var left = el("div");
-    left.appendChild(el("div", "text-3xl font-mono text-white leading-none", num(h1.mean_ratio, 4)));
-    left.appendChild(el("div", "text-[10px] uppercase tracking-wide text-gray-500 mt-1", "ensemble mean ratio"));
+    left.appendChild(
+      el(
+        "div",
+        "text-3xl font-mono text-white leading-none",
+        darkSeatsHeadline({ dark_seats: h1.dark_seats, organ_fire_counts: h1.organ_fire_counts })
+      )
+    );
+    left.appendChild(el("div", "text-[10px] uppercase tracking-wide text-gray-500 mt-1", "dark seats"));
     headline.appendChild(left);
     var right = el("div", "text-right");
     right.appendChild(badge(h1.verdict || "unknown", verdictTone(h1.verdict)));
-    right.appendChild(el("div", "text-[10px] text-gray-500 mt-1 font-mono", "±" + num(h1.std_ratio, 4) + " spread"));
+    right.appendChild(
+      el(
+        "div",
+        "text-[10px] text-gray-500 mt-1 font-mono",
+        "smear " +
+          num(h1.smear, 3) +
+          (h1.smeared === true ? " · smeared" : h1.smeared === false ? " · local" : "") +
+          " · distinct " +
+          num(h1.organ_distinctness, 3)
+      )
+    );
     headline.appendChild(right);
     host.appendChild(headline);
 
@@ -646,13 +688,15 @@
     grid.appendChild(statTile("Trajectories", int(h1.seeds ? h1.seeds.length : (config ? config.n_trajectories : null))));
     grid.appendChild(statTile("Bulk depth", num(h1.bulk_penetration_depth, 4)));
     grid.appendChild(statTile("Max bond", int(hb.health ? hb.health.max_bond : null)));
+    grid.appendChild(statTile("Mean ratio (secondary)", num(h1.mean_ratio, 4)));
+    grid.appendChild(statTile("Spread", "±" + num(h1.std_ratio, 4)));
     host.appendChild(grid);
 
     note(
       host,
-      "Spread is agreement between independently-seeded trajectories absorbing the same real event stream — " +
-        "wide spread means the self-model's state is genuinely undetermined, not noisy measurement. " +
-        "Mean at cut-5 saturates under real traffic; std and bulk are the discriminating axes."
+      "Dark seats are organs that have not talked in the last 64 absorbed atoms. " +
+        "Smear is far/near entanglement on the current profile. Distinctness is occupancy concentration. " +
+        "Mean at cut-5 saturates under real traffic and is kept only as a secondary number."
     );
   }
 
@@ -712,9 +756,45 @@
           (history.truncated ? " (truncated at row cap)" : "")
       )
     );
+    var smearSeries = (history.series || []).filter(function (point) {
+      return point.heartbeat_smear !== null && point.heartbeat_smear !== undefined;
+    });
+    var smearMax = 1;
+    smearSeries.forEach(function (point) {
+      var smearValue = Number(point.heartbeat_smear);
+      if (isFinite(smearValue) && smearValue > smearMax) smearMax = smearValue;
+    });
+    histWrap.appendChild(
+      el("div", "text-[10px] uppercase tracking-wide text-gray-500 mb-1", "Smear (far/near)")
+    );
+    renderSeries(
+      histWrap,
+      timePositions(smearSeries).map(function (x, index) {
+        return {
+          x: x,
+          value: Number(smearSeries[index].heartbeat_smear),
+          spread: NaN,
+        };
+      }),
+      {
+        color: "#f59e0b",
+        min: 0,
+        max: smearMax,
+        guides: [{ value: 0.5, color: "#b45309" }],
+        emptyText: "No heartbeat_smear values persisted in this window.",
+        heightClass: "h-24",
+      }
+    );
     var series = (history.series || []).filter(function (point) {
       return point.heartbeat_mean_ratio !== null && point.heartbeat_mean_ratio !== undefined;
     });
+    histWrap.appendChild(
+      el(
+        "div",
+        "text-[10px] uppercase tracking-wide text-gray-500 mb-1 mt-3",
+        "Mean ratio (secondary, saturates)"
+      )
+    );
     renderSeries(
       histWrap,
       // Positioned by real elapsed time, not row index: a window containing a
@@ -983,10 +1063,28 @@
     grid.appendChild(leftCol);
 
     var rightCol = el("div");
-    rightCol.appendChild(kvRow("heartbeat_mean_ratio", num(model.heartbeat_mean_ratio, 4)));
-    rightCol.appendChild(kvRow("heartbeat_std_ratio", num(model.heartbeat_std_ratio, 4)));
     rightCol.appendChild(
-      kvRow("heartbeat_bulk_penetration_depth", num(model.heartbeat_bulk_penetration_depth, 4))
+      kvRow(
+        "heartbeat_dark_seats",
+        formatSeats(model.heartbeat_dark_seats, model.heartbeat_organ_fire_counts),
+        model.heartbeat_dark_seats && model.heartbeat_dark_seats.length
+          ? "text-amber-200"
+          : "text-gray-200"
+      )
+    );
+    rightCol.appendChild(
+      kvRow(
+        "heartbeat_smear",
+        num(model.heartbeat_smear, 4) +
+          (model.heartbeat_smeared === true
+            ? " · smeared"
+            : model.heartbeat_smeared === false
+              ? " · local"
+              : "")
+      )
+    );
+    rightCol.appendChild(
+      kvRow("heartbeat_organ_distinctness", num(model.heartbeat_organ_distinctness, 4))
     );
     rightCol.appendChild(
       kvRow(
@@ -994,6 +1092,11 @@
         model.heartbeat_verdict || "—",
         model.heartbeat_verdict ? "text-gray-200" : "text-amber-300"
       )
+    );
+    rightCol.appendChild(kvRow("heartbeat_mean_ratio", num(model.heartbeat_mean_ratio, 4), "text-gray-500"));
+    rightCol.appendChild(kvRow("heartbeat_std_ratio", num(model.heartbeat_std_ratio, 4)));
+    rightCol.appendChild(
+      kvRow("heartbeat_bulk_penetration_depth", num(model.heartbeat_bulk_penetration_depth, 4))
     );
     rightCol.appendChild(kvRow("field_lane_present", String(model.field_lane_present)));
     rightCol.appendChild(kvRow("field_overall_salience", num(model.field_overall_salience, 4)));
@@ -1065,8 +1168,22 @@
           : "text-gray-200"
       )
     );
-    rows.appendChild(kvRow("row's mean_ratio", num(link.self_model_mean_ratio, 4)));
-    rows.appendChild(kvRow("organ's mean_ratio now", num(link.live_mean_ratio, 4)));
+    rows.appendChild(
+      kvRow(
+        "row's dark seats",
+        formatSeats(link.self_model_dark_seats, link.self_model_organ_fire_counts)
+      )
+    );
+    rows.appendChild(
+      kvRow(
+        "organ's dark seats now",
+        formatSeats(link.live_dark_seats, link.live_organ_fire_counts)
+      )
+    );
+    rows.appendChild(kvRow("row's smear", num(link.self_model_smear, 4)));
+    rows.appendChild(kvRow("organ's smear now", num(link.live_smear, 4)));
+    rows.appendChild(kvRow("row's mean_ratio (secondary)", num(link.self_model_mean_ratio, 4), "text-gray-500"));
+    rows.appendChild(kvRow("organ's mean_ratio now", num(link.live_mean_ratio, 4), "text-gray-500"));
     rows.appendChild(kvRow("organ tick_count now", int(link.live_tick_count)));
 
     // The row's own basis string names the tick it was built from, so the gap

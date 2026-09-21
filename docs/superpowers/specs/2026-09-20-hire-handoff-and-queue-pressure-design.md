@@ -148,7 +148,7 @@ Resume preamble (#2244) already renumbers hops — this patch **names the budget
 3. Per-source sub-score: `clip(10 * (ratio - 1) / 4, 0, 10)` — ratio 1.0x → 0, ratio 5x → 10, linear between. Explainable on purpose.
 4. **Overall score = `max()` of the three sub-scores, not an average.** One badly-backed-up queue is enough; averaging against two calm queues would hide the spike that should change the hire decision.
 5. Persist at least: overall score (0–10 or normalized 0–1 — pick one and lock it in the FieldState field docstring), driving source id, and keep raw counts in digester diagnostics / tick logs for soak forensics (not shown to Orion in the hire line).
-6. Hub hire disclosure **only reads** the latest field state (or the existing situation/cabinet path that already surfaces field pressures) and formats one line: *"Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Deep Cursor digs compete with that. Prefer hire when Mind says deep."* Never call Cursor "expensive" — the **shared queue** is the scarce thing.
+6. Hub hire disclosure **only reads** the latest field state (or the existing situation/cabinet path that already surfaces field pressures) and formats one line: *"Queue pressure: 8/10 (high) — durable GPU demand is running well above its normal level. Prefer hire_cursor for deep work — the local agent GPU seat is the expensive one; keep only a short tried_summary yourself."* The scarce/expensive seat is the **local V100 agent path**, not Cursor — do not tell Orion to "compete with GPU demand" by staying local.
 
 **Metric quality gate (CLAUDE.md §0A) — blocking before wire-in, recorded in this doc / PR:**
 
@@ -191,7 +191,7 @@ Hub's job is **consume + format**. If digester is down or score absent, disclosu
 
 | Failure | Mitigation |
 | --- | --- |
-| Strong deep-nudge → Orion hires every shallow sitting | Only fire strong line when Mind `expected_depth=deep` (or denials≥2); keep flag to disable disclosure block |
+| Strong deep-nudge → Orion hires every shallow sitting | Strong line when `expected_depth=deep` (Mind-authored or Hub Orion fail-open for missing/unknown); explicit Mind `shallow` is preserved; keep flag to disable disclosure block |
 | Denial counter false positives | Allow-list refusal strings; unit fixtures from live hop notes; threshold ≥2 |
 | Budget refuse ignored → hire spam | Explicit resume teach + peer already refuse; eval on refused_budget brief path |
 | Queue pressure stale/wrong | Digester fails open / Hub omits line if score absent; never Hub-side EWMA fallback |

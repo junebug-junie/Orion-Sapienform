@@ -27,6 +27,25 @@ _DEEP_HIRE_NUDGE = (
 )
 
 
+def ensure_orion_hire_depth(
+    mind_work_shape: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    """Orion-origin fail-open: missing/unknown depth becomes deep (use Cursor).
+
+    When Mind coloring is skipped or stance omits expected_depth, Hub still
+    owed Orion a hire path — not an empty advisory header + queue-only line.
+    """
+    out: dict[str, str] = {}
+    if mind_work_shape:
+        for key, value in mind_work_shape.items():
+            if isinstance(value, str) and value.strip():
+                out[str(key)] = value.strip()
+    depth = str(out.get("expected_depth") or "").strip().lower()
+    if depth not in ("shallow", "deep"):
+        out["expected_depth"] = "deep"
+    return out
+
+
 def format_access_refusal_progress(count: int) -> list[str]:
     if count < 2:
         return []

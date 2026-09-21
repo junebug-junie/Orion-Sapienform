@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from orion.curiosity.role_teach_disclosure import (
+    ensure_orion_hire_depth,
     format_budget_spent_progress,
     format_role_teach_disclosure,
     splice_role_teach_disclosure,
@@ -56,6 +57,22 @@ def test_format_deep_includes_strong_hire_cursor_nudge() -> None:
     assert "hire_cursor" in text or "hire cursor" in text
     assert "strongly" in text or "strong" in text
     assert "expensive" not in text
+
+
+def test_ensure_orion_hire_depth_failopen_to_deep() -> None:
+    assert ensure_orion_hire_depth(None)["expected_depth"] == "deep"
+    assert ensure_orion_hire_depth({})["expected_depth"] == "deep"
+    assert ensure_orion_hire_depth({"expected_depth": "unknown"})["expected_depth"] == "deep"
+    filled = ensure_orion_hire_depth({"foresight_note": "x", "expected_depth": "unknown"})
+    assert filled["expected_depth"] == "deep"
+    assert filled["foresight_note"] == "x"
+    assert ensure_orion_hire_depth({"expected_depth": "shallow"})["expected_depth"] == "shallow"
+    # After fail-open, formatter emits strong hire nudge
+    lines = format_role_teach_disclosure(ensure_orion_hire_depth({"foresight_note": "setup"}))
+    text = "\n".join(lines).lower()
+    assert "deep" in text
+    assert "hire_cursor" in text or "hire cursor" in text
+    assert "strongly" in text or "strong" in text
 
 
 def test_format_present_shape_returns_advisory_lines() -> None:

@@ -1,5 +1,10 @@
 # Orion hire determination — grounding (addendum)
 
+> **Status:** Design proposal (proposal mode — cognition-loop adjacent).
+> **Parent:** `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
+> **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.
+> **Date:** 2026-09-15 (brainstorm with Juniper; revised same day).
+> **PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/2233
 > **Status:** Patches 1–5 shipped (PR #2238); Mind→role disclosure shipped (PR #2252). Live: roles still all `local_crawl`, HelpRequests still 0 — see follow-up.
 > **Parent:** `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 > **Implements against:** live HelpRequest / PeerBrief / `orion-curiosity-peer` path (already shipped); this doc fixes *what grounds the decision to hire*, not the peer runner.

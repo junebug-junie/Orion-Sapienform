@@ -324,12 +324,19 @@ profiles:
     # misleading. Vision is resolved at runtime from the worker's /props.
 
     gpu:
-      num_gpus: 2
+      num_gpus: 1
       tensor_parallel_size: 1
-      # Primary = SXM2 (device 1 on Circe host numbering via CUDA_VISIBLE / override).
-      # Keep both cards visible so overflow layers + long KV can land on the second V100.
-      device_ids: [1, 0]
-      max_model_len: 131072
+      # CHANGED 2026-09-21 (operator decision, Juniper): single V100-PCIE-32GB
+      # (circe host index 0 -- see ATLAS_CHAT_CUDA_VISIBLE_DEVICES), freeing
+      # the second V100 (host index 3) for fast+metacog. Previously 2 GPUs
+      # (device_ids [1, 0], the "Primary = SXM2" comment here was already
+      # stale/wrong -- ATLAS_CHAT_CUDA_VISIBLE_DEVICES has always been "0,3",
+      # both plain V100-PCIE, never the SXM2 card). Dropping to one card only
+      # fits because max_model_len also drops 131072 -> 65536 in lockstep
+      # below -- do not raise this back toward 131072 without adding the
+      # second GPU back too, see the "VRAM is the real risk" note below.
+      device_ids: [0]
+      max_model_len: 65536
       max_batch_tokens: 958
       max_concurrent_requests: 1
       gpu_memory_fraction: 0.90
@@ -355,15 +362,24 @@ profiles:
       # _ensure_mmproj_file() in orion-llamacpp-host/app/main.py), and the mtmd
       # build requirement is already met -- this worker reports build_info
       # b10398-8e7f22b67, the same binary the agent lane serves images on
-      # (verified live 2026-08-14). ctx_size is deliberately UNCHANGED at 131072.
+      # (verified live 2026-08-14).
       #
-      # VRAM is the real risk and it is NOT yet measured: ~24GB of Q5_K_M weights
-      # plus a 131k KV cache already sit close to the 2x V100 32GB budget, and the
-      # projector adds ~1-2GB on top. If bring-up OOMs, drop ctx_size to 98304
-      # before touching n_gpu_layers -- KV at this context is the larger term.
-      # Note 131072 is documented above as needing to stay in lockstep with
-      # HARNESS_FCC_MAX_CONTEXT_TOKENS and the Hub agent-claude budget, so lowering
-      # it is not a free knob -- it is an operator decision, not a silent fallback.
+      # CHANGED 2026-09-21: ctx_size dropped 131072 -> 65536 as the explicit
+      # operator decision (Juniper) to free the second V100 for fast+metacog
+      # -- this was already the documented first fallback step below for OOM
+      # avoidance, now used deliberately rather than reactively. HARNESS_FCC_
+      # MAX_CONTEXT_TOKENS and HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS were
+      # dropped to 65536 in the same changeset (services/orion-harness-
+      # governor/.env_example, services/orion-hub/.env_example) -- verify
+      # with scripts/check_fcc_context_parity.py before trusting this lane
+      # again if either drifts.
+      #
+      # VRAM: ~25GB of Q5_K_M weights plus a 65k KV cache (roughly half the
+      # 131k cache this lane used to carry across 2 GPUs) plus the ~1-2GB
+      # projector now target ONE 32GB V100 instead of two. This is tighter
+      # than the old 2-GPU budget, not looser -- if bring-up OOMs, the
+      # correct fallback is going back to 2 GPUs (device_ids: [1, 0] +
+      # tensor_split "3,1" above), not lowering ctx_size further first.
       #
       # Still genuinely unverified: whether b10398 recognises the Qwen3-VL vision
       # tower for THIS gguf. The same binary handles Muse Glimmer's ViT-G/14, but
@@ -373,9 +389,10 @@ profiles:
       host: "0.0.0.0"
       port: 8080
 
-      # Native train ctx is 262k; 131k is the monster-FCC step before full native.
+      # Native train ctx is 262k; 65536 is the current step (down from 131072
+      # on 2026-09-21 to free a GPU -- see the "CHANGED 2026-09-21" note above).
       # Must stay in lockstep with HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent-claude budget.
-      ctx_size: 131072
+      ctx_size: 65536
       n_gpu_layers: 99
       #97
       threads: 18
@@ -429,13 +446,12 @@ profiles:
       #  enable_thinking: true
 
       no_context_shift: true
-      # ~25GB Q5 fits one 32GB V100; skew layers to GPU0 so GPU1 is mostly KV/overflow.
-      # Equal 1,1 pays PCIe tax without buying context. No YaRN — native 262k first.
-      # 2026-07-10 note: after llama-optimus, multi-GPU briefly produced token salad on this
-      # host; may have been dirty GPU state. Dual 3,1 was previously stable for ~2 days —
-      # re-verify with a short completion smoke after Circe reboot before trusting FCC.
-      split_mode: "layer"
-      tensor_split: "3,1"
+      # CHANGED 2026-09-21: single GPU now (num_gpus: 1 above), so split_mode/
+      # tensor_split no longer apply -- both removed. If this profile ever
+      # goes back to 2 GPUs, split_mode: "layer" + tensor_split: "3,1" was the
+      # last known-stable combination (skew weights to the primary card so
+      # the second card mostly carries KV/overflow; equal "1,1" paid PCIe tax
+      # without buying context). No YaRN — native 262k first.
       flash_attn: "off"
 
       # Cooler than Unsloth chat defaults (0.7/0.8/1.5) for FCC tool+code stability.
@@ -459,13 +475,20 @@ profiles:
       #draft_max: 16
 
     notes: |
-      Deep-cognition Qwen 3.6 35B-A3B profile for two V100 32GB GPUs (monster FCC).
+      Deep-cognition Qwen 3.6 35B-A3B profile, single V100 32GB GPU (monster FCC).
+      - CHANGED 2026-09-21 (operator decision, Juniper): dropped from 2x V100 32GB /
+        131072 ctx to 1x V100 32GB / 65536 ctx, freeing the second V100 for
+        fast+metacog. To revert: device_ids [1, 0], num_gpus 2, split_mode "layer",
+        tensor_split "3,1", max_model_len/ctx_size back to 131072 -- and raise
+        HARNESS_FCC_MAX_CONTEXT_TOKENS / HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS back
+        to 131072 in the same changeset.
       - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
       - Uses Unsloth dynamic GGUF UD-Q5_K_M (~25GB) — prefer over Q6 so KV headroom survives.
-      - 131k ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
-      - tensor_split 3,1 + layer: park weights on primary V100; second card absorbs overflow/KV.
+      - 65536 ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
       - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
-      - If OOM at 131k: try tensor_split 3,1 then 2,1, then lower ctx_size to 98304 / 65536.
+      - If OOM at 65536 on one GPU: go back to 2 GPUs (see revert steps above), not
+        further ctx reduction -- single-GPU headroom is already tighter than the
+        old 2-GPU budget was.
       - Do not enable YaRN until native 262k is proven and still insufficient.
       - Speculative decoding: host supports hf_draft_* / draft_min / draft_max / n_gpu_layers_draft.
         Uncomment the draft block above only after a live Circe VRAM + tg/s check. Draft VRAM

@@ -71,6 +71,20 @@ class Settings(BaseSettings):
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
 
+    # self_study.reflect's llm_call node only: the SAME channel cortex-exec's
+    # own self_study.py reads via its CORTEX_REQUEST_CHANNEL env var
+    # (default "orion:cortex:request") -- this service becomes a caller of
+    # it for the first time with the reflect workflow (every other graph
+    # here only talks to Hub and the state channel).
+    cortex_request_channel: str = Field("orion:cortex:request", alias="CORTEX_REQUEST_CHANNEL")
+    # RPC budget for that single LLM call. Mirrors cortex-exec's own
+    # SELF_STUDY_REFLECT_TIMEOUT_SEC (480s -> 1400s, 2026-09-21) plus slack
+    # for the round trip -- cortex-exec's synchronous wait for this run's
+    # completion event uses its OWN timeout as the real deadline; this is
+    # only how long the runner itself waits on the verb-dispatch RPC before
+    # giving up and failing the node (resumable, same as harness_turn).
+    reflect_llm_call_timeout_sec: float = Field(1500.0, gt=0.0, alias="DURABLE_RUNS_REFLECT_LLM_CALL_TIMEOUT_SEC")
+
     @model_validator(mode="after")
     def valid_lease_heartbeat(self):
         if self.elastic_enabled and not (self.enabled and self.admission_enabled and self.capacity_enabled):

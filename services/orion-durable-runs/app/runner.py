@@ -42,7 +42,7 @@ from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.curiosity.attention_schema import (
     read_attended_priors,
@@ -69,6 +69,7 @@ from orion.schemas.attention_schema import (
     AttentionSchemaV1,
     bind_correlation,
 )
+from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
 from orion.schemas.durable_run import (
     CURIOSITY_NODES,
     CURIOSITY_TURN_REPLY_PREFIX,
@@ -77,6 +78,7 @@ from orion.schemas.durable_run import (
     CURIOSITY_TURN_RESULT_KIND,
     DURABLE_RUN_STATE_KIND,
     SELF_SENSE_EVAL_NODES,
+    SELF_STUDY_REFLECT_NODES,
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
     DurableRunRequestV1,
@@ -88,6 +90,13 @@ from orion.evals.self_sense_runner import envelope_correlation_id as self_sense_
 from app.graph import CuriosityRunState, Deps, build_curiosity_graph, finish_detail
 from app.self_sense_graph import Deps as SelfSenseDeps
 from app.self_sense_graph import build_self_sense_graph, finish_detail as self_sense_finish_detail
+from app.reflect_graph import (
+    SELF_STUDY_REFLECT_VERB,
+    Deps as ReflectDeps,
+    build_reflect_graph,
+    finish_detail as reflect_finish_detail,
+    parse_reflect_findings,
+)
 from app.settings import Settings
 
 logger = logging.getLogger("orion-durable-runs.runner")
@@ -96,6 +105,7 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_EVAL_WORKFLOW = "self_sense_eval"
+SELF_STUDY_REFLECT_WORKFLOW = "self_study.reflect"
 
 
 def _corr_uuid(raw: str) -> UUID:
@@ -140,6 +150,12 @@ class DurableRunner:
                 graph=build_self_sense_graph(self._self_sense_deps(), checkpointer),
                 nodes=list(SELF_SENSE_EVAL_NODES),
                 finish_detail=self_sense_finish_detail,
+            ),
+            SELF_STUDY_REFLECT_WORKFLOW: WorkflowSpec(
+                workflow=SELF_STUDY_REFLECT_WORKFLOW,
+                graph=build_reflect_graph(self._reflect_deps(), checkpointer),
+                nodes=list(SELF_STUDY_REFLECT_NODES),
+                finish_detail=reflect_finish_detail,
             ),
         }
         self._active: dict[str, asyncio.Task[None]] = {}
@@ -209,6 +225,78 @@ class DurableRunner:
             else:
                 failed += 1
         return published, failed
+
+    def _reflect_deps(self) -> ReflectDeps:
+        return ReflectDeps(call_reflect_llm=self._call_reflect_llm)
+
+    async def _call_reflect_llm(
+        self, self_study_reflect_input: dict[str, Any], llm_route: str
+    ) -> list[dict[str, Any]] | None:
+        """The real verb-dispatch RPC to cortex-orch -- the exact same
+        request shape cortex-exec's own `_call_self_study_reflect_llm` built
+        directly before this patch (`verb="self_study.reflect"`,
+        `options={"policy_dispatch_only": True, ...}`); only WHERE it's sent
+        from moved, not its shape. Returns a list of raw finding dicts on
+        success, or None on ANY failure (bad input, RPC error/timeout,
+        non-ok result, empty/unparseable text, wrong JSON shape) -- same
+        "produce nothing on failure" contract, never raises for those."""
+        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+
+        request = CortexClientRequest(
+            mode="brain",
+            route_intent="none",
+            verb=SELF_STUDY_REFLECT_VERB,
+            options={
+                "policy_dispatch_only": True,
+                **({"llm_route": llm_route} if llm_route else {}),
+            },
+            recall=RecallDirective(enabled=False, required=False),
+            context=CortexClientContext(
+                messages=[LLMMessage(role="user", content="Reflect on self-study snapshot.")],
+                raw_user_text="Reflect on self-study snapshot.",
+                metadata={"self_study_reflect_input": self_study_reflect_input},
+            ),
+        )
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:cortex:result:self-study-reflect:{rpc_correlation_id}"
+        envelope = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=self._source(),
+            correlation_id=rpc_correlation_id,
+            reply_to=reply_channel,
+            payload=request.model_dump(mode="json"),
+        )
+        try:
+            msg = await self._bus.rpc_request(
+                self._settings.cortex_request_channel,
+                envelope,
+                reply_channel=reply_channel,
+                timeout_sec=self._settings.reflect_llm_call_timeout_sec,
+            )
+            decoded = self._bus.codec.decode(msg.get("data"))
+            if not decoded.ok or decoded.envelope is None:
+                logger.warning("self_study_reflect_llm_decode_failed corr=%s err=%s", rpc_correlation_id, decoded.error)
+                return None
+            payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        except Exception as exc:  # noqa: BLE001 -- construction/RPC/decode failure degrades to "no reflection"
+            logger.warning("self_study_reflect_llm_call_failed corr=%s err=%s", rpc_correlation_id, exc)
+            return None
+
+        if not payload.get("ok", False):
+            logger.warning(
+                "self_study_reflect_llm_not_ok corr=%s status=%s error=%s",
+                rpc_correlation_id, payload.get("status"), payload.get("error"),
+            )
+            return None
+        text = extract_cortex_payload_text(payload)
+        if not text:
+            logger.warning("self_study_reflect_llm_empty_text corr=%s", rpc_correlation_id)
+            return None
+        findings = parse_reflect_findings(text)
+        if findings is None:
+            logger.warning("self_study_reflect_llm_unparseable_or_bad_shape corr=%s", rpc_correlation_id)
+            return None
+        return findings
 
     def _source(self) -> ServiceRef:
         s = self._settings

@@ -52,6 +52,36 @@ node list, `finish_detail`), a new entry in `DurableWorkflowV1`
 (`orion/schemas/durable_run.py`), and its own request/brief shape if it doesn't
 fit `CuriosityRunBriefV1`.
 
+### `self_study.reflect` (2026-09-21) -- the third registered workflow
+
+Its own graph (`app/reflect_graph.py`): `llm_call -> finish`. Two nodes, not three --
+unlike `self_sense_eval`, finding validation and the journal/`self_concept_history`
+writes stay in `orion-cortex-exec`, unmoved. That logic (`_finding_from_llm_item`'s
+evidence-chain construction, `publish_self_reflection_artifacts`,
+`publish_self_concept_history_from_reflection`) needs the FULL `SelfSnapshotV1`/induced
+concepts for evidence grounding, not just the small `self_study_reflect_input` summary
+this graph's brief carries -- moving it here would have meant either re-deriving that
+context inside this service (duplicating cortex-exec's repo-scan logic) or serializing
+the whole snapshot through the brief on every dispatch. Neither was worth it for a graph
+whose only real benefit is GPU2 elastic-burst eligibility on the ONE LLM call.
+
+`llm_call` sends the exact same `CortexClientRequest` shape
+(`verb="self_study.reflect"`, `options={"policy_dispatch_only": True, ...}`)
+`orion-cortex-exec`'s own `_call_self_study_reflect_llm` always built directly -- this
+patch only moves WHERE it's sent from (`DurableRunner._call_reflect_llm`, this
+service's first-ever caller of cortex-orch's verb-dispatch channel; every other graph
+here only talks to Hub and the state channel). `cortex-orch`'s existing
+`self_study.reflect` verb dispatch is completely unchanged.
+
+`orion-cortex-exec` dispatches this run then waits SYNCHRONOUSLY for its completion
+event (subscribes to the state channel, filters on `run_id`, bounded by the same
+`SELF_STUDY_REFLECT_TIMEOUT_SEC` the direct RPC always used as its deadline) --
+`_call_self_study_reflect_llm`'s external contract (`list[dict] | None`) is completely
+unchanged either way, so nothing downstream of it needed to change. A
+failed/unconfirmed dispatch falls back to the direct RPC unchanged; an accepted
+dispatch whose run genuinely fails does NOT also fall back (no double-spending the
+reflect timeout budget on two separate attempts for one logical reflection).
+
 ### `self_sense_eval` (2026-09-21) -- the second registered workflow
 
 Its own graph (`app/self_sense_graph.py`): `ask_questions -> publish -> finish`.

@@ -422,3 +422,67 @@ triggered by hand. Turning that into an always-on recurring loop (mirroring
 `CuriosityInvestigation`'s shape: cadence, an incremental cursor so it
 doesn't re-read every hop in history each tick) is a distinct, separately-
 scoped next step, not folded into this patch.
+
+## Self-review vs. outsource-to-Cursor grading (2026-09-20)
+
+`docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`
+(PR #2259/#2263, merged) shipped an official field-digester metric,
+`queue_contention_score`/`queue_contention_driver`, and used it to ground
+Orion's investigation hire decision (`local_crawl` vs `hire_cursor`) in real
+shared-capacity backlog. That doc's own "Follow-up" section reserved the same
+score as a second consumer: Orion choosing whether to grade its **own hop
+notes** itself, or hand that grading to Cursor. This patch implements that
+follow-up.
+
+**What Orion sees:** an optional, separate choice alongside the existing
+investigation-role teach — `:ReviewRole {run_id, choice: "self_review" |
+"hire_cursor_review", why, written_at}`. Same authorship rule as
+`:InvestigationRole`: Python never MERGEs this node, and a missing node means
+`self_review` — the same "missing node is no decision" default the hire-role
+side already uses, so every run written before this patch shipped keeps
+grading exactly the way it always did. The same live `queue_contention_score`
+line already shown for the hire decision applies here too, not recomputed —
+one live reading, two decisions in the same prompt.
+
+**What happens when a run is graded (still only on-demand, via
+`scripts/report_curiosity_supervisor_readings.py`):**
+`generate_all_readings` now reads every `:ReviewRole` alongside every hop
+and prior, and dispatches per run through `generate_readings_for_run_routed`
+— `self_review` calls the existing internal cortex grader unchanged;
+`hire_cursor_review` calls a new `generate_readings_for_run_via_cursor`,
+gated by the same fail-closed budget check the investigation hire path uses
+(`orion.dev_economics.cursor_limit_events.decide_cursor_budget`). A refusal,
+CLI failure, or timeout on the Cursor path falls back to `self_review` for
+that run and logs why, rather than returning no readings — "graded
+differently," never "graded nothing." Both paths validate through the same
+`parse_reading_batch`, so a `HopReadingV1`'s shape is identical regardless of
+which grader produced it.
+
+**Architecture call, not asked as a question:** outsourced grading does
+**not** go through the existing `HelpRequest` → bus → `orion-curiosity-peer`
+→ `PeerBriefV1` pipeline. `PeerBriefV1` is free-form prose
+(`summary`/`evidence_pointers`/`open_questions`) — right for "investigate and
+report back," wrong for "produce one `HopReadingV1` per hop." Instead, the
+new grading path calls the Cursor Agent CLI directly, in the same read-only
+ask-mode argv the investigation path uses
+(`orion.curiosity.cursor_policy.assert_read_only_cli_argv` — moved out of
+`services/orion-curiosity-peer/app/policy.py`, which now re-exports it, so a
+safety-critical read-only check has exactly one implementation instead of a
+fork per caller now that `orion/curiosity/supervisor.py` is a second Cursor
+invoker).
+
+**Off by default:** `cursor_agent_bin` is `None` unless the report script's
+new `--cursor-agent-bin` flag is passed — with it unset, every run grades via
+`self_review` regardless of what any `:ReviewRole` says, so this patch is a
+no-op for anyone already running the script without the new flag.
+
+**Explicitly not built here** (per the reservation this patch closes and per
+CLAUDE.md's own proposal-mode gate):
+
+- The scheduled/automatic grading trigger ("watches on its own") — still not
+  built. This patch only changes *which* mechanism grades a run once grading
+  is (still, manually) triggered.
+- Writing a reading back onto its `Prior` — a separate primitive Juniper
+  specifically wants (*"gives Orion a sense of their judgement acumen"*),
+  explicitly deferred as its own future proposal since it is a belief-graph
+  write, not a read.

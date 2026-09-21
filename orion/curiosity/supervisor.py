@@ -30,16 +30,23 @@ already applies -- not a claim that it actually happened last.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import subprocess
 import uuid
 from typing import Any, Optional, Sequence
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.curiosity.cursor_policy import assert_read_only_cli_argv, build_cursor_agent_argv
+from orion.dev_economics.cursor_limit_events import decide_cursor_budget, observe_cursor_limit
 from orion.memory_graph.json_extract import extract_first_json_object_text
 from orion.curiosity.worldview import (
     HopRecord,
     Prior,
+    ReviewRoleRecord,
     hop_order_key,
+    latest_review_role_by_run,
+    read_all_review_roles,
     RECENT_RUNS_CYPHER,
     RECENT_RUNS_LIMIT,
     WorldviewReader,
@@ -78,6 +85,11 @@ DEFAULT_LLM_ROUTE = "chat"
 DEFAULT_TIMEOUT_SEC = 180.0
 DEFAULT_MAX_TOKENS = 6000
 _VERB = "curiosity_hop_reading"
+
+# Same default as orion-curiosity-peer's Cursor jobs (services/orion-curiosity-
+# peer/app/worker.py:_default_cursor -> run_cursor_job's own default) -- one
+# run's worth of hops is a comparable-sized read to one HelpRequest.
+DEFAULT_CURSOR_TIMEOUT_SEC = 600.0
 
 
 def group_hops_by_run(
@@ -171,6 +183,45 @@ def build_reading_prompt(priors: Sequence[Prior], hops: Sequence[HopRecord]) -> 
         "cannot tell. `kind` is a short free-text label for the kind of "
         "step (e.g. 'test', 'revise', 'dead_end', 'bookkeeping') -- your own "
         "words, not a fixed list.",
+    ]
+    return "\n".join(lines)
+
+
+def build_grading_sealed_prompt(
+    *, run_id: str, hops: Sequence[HopRecord], priors: Sequence[Prior], why: str = ""
+) -> str:
+    """Sealed read-only contractor prompt: grade Orion's own hops, not
+    investigate a new claim. Orion chose this via `:ReviewRole
+    {choice: "hire_cursor_review"}` -- see `kickoff_prompt._review_role_section`.
+
+    Same "read-only contractor" framing convention as `services/orion-
+    curiosity-peer/app/cursor_invoker.py:build_sealed_prompt`'s `self_inquiry`
+    branch (that prompt already names "hop notes" as valid evidence), but
+    targets `HopReadingBatchV1` JSON, not `PeerBriefV1` -- a free-form brief
+    cannot carry "one reading per hop," which is exactly what grading needs.
+    Content reuses `build_reading_prompt` verbatim so Cursor and the internal
+    cortex grader are shown identical hop/prior material; only the framing
+    and output-shape instructions differ.
+    """
+    lines = [
+        "You are a read-only contractor hired by Orion to grade Orion's OWN "
+        "past reasoning, not to investigate a new claim.",
+        "Investigate with read/grep/glob/ls only. Do not edit, shell, delete, or mutate.",
+        "Do not write :Prior, :Finding, :HopReading, :ReviewRole, or any belief graph node.",
+        "",
+        f"run_id: {run_id}",
+    ]
+    if why.strip():
+        lines.append(f"Orion's stated reason for asking a contractor to grade this: {why.strip()}")
+    lines += ["", build_reading_prompt(priors, hops), ""]
+    lines += [
+        "Respond with a single JSON object (no markdown fence required) shaped like:",
+        '  {"readings": [<one object per hop above>]}',
+        "Each reading object's schema (fields you do not know, like reading_id or "
+        "timestamps, are filled in by the caller -- do not invent them):",
+        json.dumps(_reading_schema_for_model()),
+        'An honest "could not tell" (moved_the_claim: null) is a real answer -- '
+        "never invent a verdict to fill the field.",
     ]
     return "\n".join(lines)
 
@@ -387,6 +438,25 @@ def parse_reading_batch(
     return out
 
 
+def _written_at_by_n(hops: Sequence[HopRecord]) -> dict[int, Optional[int]]:
+    """`hop_n -> hop_written_at`, `None` on a genuine `n` collision rather
+    than last-wins. Shared by both graders (`generate_readings_for_run` and
+    `generate_readings_for_run_via_cursor`) -- one implementation of this
+    rule, not a fork per caller.
+
+    None, not last-wins, when an `n` is shared by more than one hop --
+    legacy collision (both None, ambiguous either way) or, in principle, a
+    fresh one (the resume preamble is advisory prose, not a write-time
+    guard, so a model that ignores it can still collide with two real
+    timestamps). Silently picking one via a plain dict comprehension would
+    stamp a reading about the EARLIER hop with the LATER hop's clock.
+    """
+    grouped: dict[int, list[Optional[int]]] = {}
+    for h in hops:
+        grouped.setdefault(h.n, []).append(h.written_at)
+    return {n: (vals[0] if len(vals) == 1 else None) for n, vals in grouped.items()}
+
+
 async def generate_readings_for_run(
     bus: Any,
     *,
@@ -433,18 +503,7 @@ async def generate_readings_for_run(
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
     hop_ns = [h.n for h in hops]
-    # None, not last-wins, when an `n` is shared by more than one hop --
-    # legacy collision (both None, ambiguous either way) or, in principle, a
-    # fresh one (the resume preamble is advisory prose, not a write-time
-    # guard, so a model that ignores it can still collide with two real
-    # timestamps). Silently picking one via a plain dict comprehension would
-    # stamp a reading about the EARLIER hop with the LATER hop's clock.
-    _n_written_ats: dict[int, list[Optional[int]]] = {}
-    for h in hops:
-        _n_written_ats.setdefault(h.n, []).append(h.written_at)
-    written_at_by_n = {
-        n: (vals[0] if len(vals) == 1 else None) for n, vals in _n_written_ats.items()
-    }
+    written_at_by_n = _written_at_by_n(hops)
     prompt = build_reading_prompt(priors, hops)
     last_err: Optional[str] = None
     for attempt in range(1, max_attempts + 1):
@@ -530,6 +589,159 @@ async def generate_readings_for_run(
     raise RuntimeError(f"curiosity_supervisor exhausted retries run={run_id}: {last_err}")
 
 
+async def generate_readings_for_run_via_cursor(
+    *,
+    run_id: str,
+    hops: Sequence[HopRecord],
+    priors: Sequence[Prior],
+    why: str = "",
+    agent_bin: str,
+    cwd: str,
+    model: Optional[str] = None,
+    timeout_sec: float = DEFAULT_CURSOR_TIMEOUT_SEC,
+    run: Optional[Any] = None,
+) -> list[HopReadingV1]:
+    """Grade one run's hops via a read-only Cursor contractor instead of the
+    internal cortex LLM grader -- Orion's own choice, via `:ReviewRole
+    {choice: "hire_cursor_review"}`.
+
+    Same budget gate as the investigation-side hire path
+    (`orion.dev_economics.cursor_limit_events.decide_cursor_budget`):
+    fail-closed on anything but a fresh observed "clear" reading. Raises on
+    refusal rather than returning `[]` -- the caller
+    (`generate_readings_for_run_routed`) catches this and falls back to
+    `self_review` for the run, so a refusal means "graded differently," not
+    "graded nothing."
+
+    Deliberately does NOT go through the `HelpRequest` -> bus ->
+    `orion-curiosity-peer` -> `PeerBriefV1` pipeline the investigation hire
+    path uses: `PeerBriefV1` is free-form prose (summary/evidence_pointers/
+    open_questions), right for "investigate and report back," wrong for "one
+    `HopReadingV1` per hop." This calls the Cursor Agent CLI directly, in the
+    same read-only ask-mode argv (`orion.curiosity.cursor_policy.
+    assert_read_only_cli_argv` -- the same safety check
+    `orion-curiosity-peer` uses, not a fork of it), and parses the response
+    through the SAME `parse_reading_batch` the internal grader uses, so a
+    reading's shape is identical regardless of which grader produced it.
+    `run` is an injectable `subprocess.run`-shaped callable for tests; never
+    call a live Cursor agent from a test.
+    """
+    if not hops:
+        return []
+    limit = observe_cursor_limit()
+    refusal = decide_cursor_budget(limit)
+    if refusal is not None:
+        raise RuntimeError(
+            f"cursor_grading_budget_refused run={run_id} reason={refusal}"
+        )
+
+    hop_ns = [h.n for h in hops]
+    written_at_by_n = _written_at_by_n(hops)
+    prompt = build_grading_sealed_prompt(run_id=run_id, hops=hops, priors=priors, why=why)
+    argv = build_cursor_agent_argv(agent_bin=agent_bin, prompt=prompt, workspace=cwd, model=model)
+    assert_read_only_cli_argv(argv)
+
+    runner = run or subprocess.run
+    try:
+        proc = await asyncio.to_thread(
+            runner, argv, capture_output=True, text=True, timeout=timeout_sec, check=False
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"cursor agent binary not found: {agent_bin}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"cursor grading timed out after {exc.timeout}s run={run_id}"
+        ) from exc
+
+    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"cursor agent exited {proc.returncode} run={run_id}: {combined[:2000]}"
+        )
+
+    json_blob = extract_first_json_object_text(combined) or combined
+    out = parse_reading_batch(
+        json_blob, run_id=run_id, hop_ns=hop_ns, written_at_by_n=written_at_by_n
+    )
+    if not out:
+        # `parse_reading_batch` is tolerant by design -- unparseable JSON,
+        # prose instead of a JSON object, or a wrong-shape response all
+        # return `[]` rather than raising (same contract the internal cortex
+        # grader relies on for a single BAD reading in an otherwise-good
+        # batch). Cursor returning exit 0 with prose instead of structured
+        # output would silently pass through as "graded, zero readings" --
+        # exactly the empty-shell success CLAUDE.md 0A bans, and exactly
+        # what this function's own docstring promises never happens (raise,
+        # not grade nothing, so the caller falls back to self_review).
+        # Caught in review.
+        raise RuntimeError(
+            f"cursor_grading_produced_no_readings run={run_id} hops={len(hops)} "
+            f"raw_output={combined[:500]!r}"
+        )
+    return out
+
+
+async def generate_readings_for_run_routed(
+    bus: Any,
+    *,
+    run_id: str,
+    hops: Sequence[HopRecord],
+    priors: Sequence[Prior],
+    review_choice: Optional[ReviewRoleRecord],
+    cortex_request_channel: str,
+    cortex_result_prefix: str,
+    source: ServiceRef,
+    llm_route: str = DEFAULT_LLM_ROUTE,
+    timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    cursor_agent_bin: Optional[str] = None,
+    cursor_cwd: Optional[str] = None,
+    cursor_model: Optional[str] = None,
+    cursor_timeout_sec: float = DEFAULT_CURSOR_TIMEOUT_SEC,
+) -> list[HopReadingV1]:
+    """Dispatch one run's grading to self-review or Cursor, per Orion's
+    `:ReviewRole` (missing node, or `cursor_agent_bin` unset, means
+    `self_review` -- the same "missing node is no decision" default
+    `:InvestigationRole` uses for hire choice).
+
+    A Cursor failure (budget refusal, CLI error, timeout) falls back to
+    `self_review` for THIS run rather than returning `[]` -- "graded
+    differently," never "graded nothing." The fallback is logged so a soak
+    can tell how often Orion's choice actually held.
+    """
+    choice = (review_choice.choice if review_choice else "self_review") or "self_review"
+    if choice == "hire_cursor_review" and cursor_agent_bin:
+        try:
+            return await generate_readings_for_run_via_cursor(
+                run_id=run_id,
+                hops=hops,
+                priors=priors,
+                why=review_choice.why if review_choice else "",
+                agent_bin=cursor_agent_bin,
+                cwd=cursor_cwd or ".",
+                model=cursor_model,
+                timeout_sec=cursor_timeout_sec,
+            )
+        except Exception as exc:  # noqa: BLE001 -- fall back, do not grade nothing
+            logger.warning(
+                "curiosity_supervisor_cursor_grading_fell_back run=%s err=%s -- "
+                "falling back to self_review for this run",
+                run_id, exc,
+            )
+    return await generate_readings_for_run(
+        bus,
+        run_id=run_id,
+        hops=hops,
+        priors=priors,
+        cortex_request_channel=cortex_request_channel,
+        cortex_result_prefix=cortex_result_prefix,
+        source=source,
+        llm_route=llm_route,
+        timeout_sec=timeout_sec,
+        max_tokens=max_tokens,
+    )
+
+
 async def generate_all_readings(
     bus: Any,
     reader: WorldviewReader,
@@ -541,34 +753,50 @@ async def generate_all_readings(
     timeout_sec: float = DEFAULT_TIMEOUT_SEC,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     on_run_done: Optional[Any] = None,
+    cursor_agent_bin: Optional[str] = None,
+    cursor_cwd: Optional[str] = None,
+    cursor_model: Optional[str] = None,
+    cursor_timeout_sec: float = DEFAULT_CURSOR_TIMEOUT_SEC,
 ) -> list[HopReadingV1]:
-    """Read every hop and every prior once, then one RPC call per run.
+    """Read every hop, every prior, and every `:ReviewRole` once, then one
+    grading call per run -- self_review (cortex RPC) or hire_cursor_review
+    (Cursor CLI), per Orion's own choice; see `generate_readings_for_run_routed`.
 
-    A run's own LLM call failing (timeout, decode error) is caught and
-    logged, not raised -- so one bad run out of twenty-three cannot blank out
-    the readings for the other twenty-two. `on_run_done(run_id, readings)`,
-    if given, fires after each run -- the CLI script uses it to print
-    progress as it goes rather than going quiet for the whole sweep.
+    A run's own grading call failing is caught and logged, not raised -- so
+    one bad run out of twenty-three cannot blank out the readings for the
+    other twenty-two. `cursor_agent_bin=None` (the default) disables the
+    Cursor path entirely regardless of what any `:ReviewRole` says -- every
+    run grades via self_review, same as before this patch existed, until a
+    caller explicitly opts in by passing a real binary path.
+    `on_run_done(run_id, readings)`, if given, fires after each run -- the
+    CLI script uses it to print progress as it goes rather than going quiet
+    for the whole sweep.
     """
     hops = read_all_hops(reader)
     priors = read_all_priors(reader)
     run_order = build_run_order(reader)
     grouped = group_hops_by_run(hops, run_order=run_order)
+    review_choices = latest_review_role_by_run(read_all_review_roles(reader))
 
     all_readings: list[HopReadingV1] = []
     for run_id, run_hops in grouped:
         try:
-            readings = await generate_readings_for_run(
+            readings = await generate_readings_for_run_routed(
                 bus,
                 run_id=run_id,
                 hops=run_hops,
                 priors=priors,
+                review_choice=review_choices.get(run_id),
                 cortex_request_channel=cortex_request_channel,
                 cortex_result_prefix=cortex_result_prefix,
                 source=source,
                 llm_route=llm_route,
                 timeout_sec=timeout_sec,
                 max_tokens=max_tokens,
+                cursor_agent_bin=cursor_agent_bin,
+                cursor_cwd=cursor_cwd,
+                cursor_model=cursor_model,
+                cursor_timeout_sec=cursor_timeout_sec,
             )
         except Exception as exc:  # noqa: BLE001 -- one run's failure must not blank the sweep
             logger.warning(

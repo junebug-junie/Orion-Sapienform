@@ -822,6 +822,44 @@ def _role_and_help_section(
 _help_request_section = _role_and_help_section
 
 
+def _review_role_section(*, run_id: str) -> list[str]:
+    """Teach Orion an optional, separate choice: who grades this sitting's
+    hops later -- you, or a read-only Cursor contractor.
+
+    Same authorship rule as :InvestigationRole: Python never MERGEs this
+    node. Writing nothing is fine -- the curiosity supervisor
+    (orion/curiosity/supervisor.py) treats a run with no :ReviewRole as
+    self_review, so every run before this section existed keeps grading
+    exactly the way it always did. This does not enqueue anything itself;
+    grading still only happens when the supervisor is run.
+
+    Any queue-contention line already shown above (role-teach disclosure,
+    same live FieldState reading the hire decision uses) applies here too --
+    not recomputed, not repeated.
+    """
+    return [
+        "WHO GRADES THIS SITTING'S HOPS (optional, separate from your role "
+        "above). Later, something reads back through your hop notes and "
+        "judges whether each one moved the claim it was about. You may say "
+        "who should do that: self_review (the usual case) or "
+        "hire_cursor_review (hand your own notes to a read-only Cursor "
+        "contractor instead). Same shared-queue tradeoff as hiring Cursor to "
+        "investigate applies here -- if it's backed up, that's a reason to "
+        "prefer self_review, not hire_cursor_review.",
+        "",
+        "Writing nothing is fine and means self_review. You may revise "
+        "mid-run; the newest written_at is the one that counts.",
+        "",
+        "    MERGE (r:ReviewRole {",
+        f'      run_id: "{run_id}",',
+        '      choice: "self_review|hire_cursor_review",',
+        '      why: "<one sentence: why this choice now>",',
+        "      written_at: timestamp()",
+        "    })",
+        "",
+    ]
+
+
 _INSTRUCTION = """\
 Pick something. A prior you want to settle, any of the material, something you
 notice by its absence, or a thread between two of them. You do not have to
@@ -909,6 +947,7 @@ def build_kickoff_prompt(
         lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
         if contractor_peer_enabled:
             lines += _role_and_help_section(own_graph=own_graph, run_id=run_id)
+            lines += _review_role_section(run_id=run_id)
         lines += _outcome_section(run_id=run_id)
 
     lines.append(_INSTRUCTION)

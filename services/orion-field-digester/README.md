@@ -142,7 +142,7 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `FIELD_DIGESTER_HEALTH_CHECK_INTERVAL_SEC` | `900.0` | Health-monitor check cadence |
 | `FIELD_STATE_STALL_MULTIPLIER` | `1.5` | Alert if `substrate_field_state`'s oldest row exceeds this × retention hours |
 | `FIELD_APPLIED_DELTAS_ALERT_ROW_COUNT` | `5000000` | Alert if `substrate_field_applied_deltas` row count exceeds this |
-| `FIELD_DIGESTER_DB_SIZE_ALERT_GB` | `60.0` | Alert if the `conjourney` database exceeds this size (observed baseline ~37.5GB as of 2026-07-12; default leaves real headroom, not a round guess) |
+| `FIELD_DIGESTER_DB_SIZE_ALERT_GB` | `120.0` | Alert if the `conjourney` database exceeds this size. Raised from `60.0` on 2026-09-21 after the DB grew from ~37.5GB (2026-07-12) to ~56-60GB, mostly from unbounded growth in `substrate_execution_dispatch_frames`, `cognition_traces`, `substrate_mutation_signal`, and `substrate_policy_decision_frames` (no retention job on any of those tables yet). This buys headroom; it does not add retention -- that is unaddressed follow-up work, not done here |
 | `NOTIFY_BASE_URL` | `http://orion-athena-notify:7140` | `orion-notify` base URL for health-monitor attention alerts |
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
 | `LOG_LEVEL` | `INFO` | Python log level |

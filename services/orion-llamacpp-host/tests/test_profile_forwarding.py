@@ -399,8 +399,6 @@ def test_qwen36_chat_profile_forwards_mmproj_and_image_flags(monkeypatch):
             "--jinja",
             "--reasoning-budget",
             "--no-context-shift",
-            "--split-mode",
-            "--tensor-split",
             "--mmproj",
             "--ubatch-size",
             "--image-min-tokens",
@@ -433,9 +431,15 @@ def test_qwen36_chat_profile_forwards_mmproj_and_image_flags(monkeypatch):
     # documented on every mmproj profile in this file) must actually hold for
     # the values this test just forwarded, not just be true on paper.
     assert int(_find_flag_value(cmd, "--ubatch-size")) >= int(_find_flag_value(cmd, "--image-max-tokens"))
-    assert _find_flag_value(cmd, "--ctx-size") == "131072"
-    assert _find_flag_value(cmd, "--split-mode") == "layer"
-    assert _find_flag_value(cmd, "--tensor-split") == "3,1"
+    # 2026-09-21: profile dropped to 1 GPU + 65536 ctx (freed the second V100
+    # for fast+metacog) -- split_mode/tensor_split no longer apply on one GPU,
+    # and main.py only appends them when the profile sets a value (main.py's
+    # `if cfg.tensor_split is not None` / split_mode equivalent), so they must
+    # be entirely absent from cmd now, not just unset via _find_flag_value
+    # (which raises ValueError on a missing flag rather than returning None).
+    assert _find_flag_value(cmd, "--ctx-size") == "65536"
+    assert "--split-mode" not in cmd
+    assert "--tensor-split" not in cmd
 
 
 _MUSE_GLIMMER_SUPPORTED_FLAGS_BASE = {

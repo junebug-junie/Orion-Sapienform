@@ -67,6 +67,18 @@
 # before the command above -- docker compose reads the real process
 # environment too, not just --env-file:
 #   CIRCE_QWEN_CUDA_VISIBLE_DEVICES=5 docker compose ...
+#
+# Explicit `name:` below, added 2026-09-21: neither this file nor the main
+# docker-compose.yml declares a project name, so compose defaults BOTH to
+# the directory basename ("orion-vision-host") -- harmless while this lane
+# ran on a different host (circe) from the main instance (athena), but now
+# that both run on athena, every `up`/`down` on either file sees the
+# other's container as an "orphan" of its own project (confirmed live:
+# bringing up the main instance warned "Found orphan containers
+# ([orion-athena-vision-host-qwen])", and vice versa). A distinct project
+# name here stops compose from conflating the two files' containers at all,
+# rather than relying on nobody ever passing --remove-orphans.
+name: orion-vision-host-qwen
 
 services:
   vision-host-circe-qwen:

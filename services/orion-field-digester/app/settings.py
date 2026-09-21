@@ -65,9 +65,10 @@ class Settings(BaseSettings):
     applied_deltas_alert_row_count: int = Field(
         5_000_000, alias="FIELD_APPLIED_DELTAS_ALERT_ROW_COUNT"
     )
-    # Default set with real headroom above the observed conjourney baseline
-    # (~37.5GB as of 2026-07-12) -- not a round number picked in the abstract.
-    db_size_alert_gb: float = Field(60.0, alias="FIELD_DIGESTER_DB_SIZE_ALERT_GB")
+    # Raised 60.0 -> 120.0 on 2026-09-21: conjourney had grown to ~56-60GB
+    # (unbounded growth in a few substrate tables, tracked separately), so 60GB
+    # left no real headroom left. See services/orion-field-digester/README.md.
+    db_size_alert_gb: float = Field(120.0, alias="FIELD_DIGESTER_DB_SIZE_ALERT_GB")
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 

@@ -347,6 +347,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "priority": _definitional_priority(route_id),
                     "reserved_free_slots": None,
                     "upstream": None,
+                    "gate_open": None,
                 }
             )
         else:
@@ -367,10 +368,13 @@ def build_routes_response() -> Dict[str, Any]:
                     "priority": getattr(target, "priority", None) or _definitional_priority(route_id),
                     "reserved_free_slots": getattr(target, "reserved_free_slots", None),
                     "upstream": getattr(target, "url", None) or None,
+                    # Unknown until the first refresh reads the gate; a consumer must treat
+                    # None as "not confirmed open", never as open.
+                    "gate_open": None,
                 }
             )
     return {
-        "default_route": str(settings.llm_route_default or "chat"),
+        "default_route": str(settings.llm_route_default or "quick"),
         "routes": routes,
     }
 

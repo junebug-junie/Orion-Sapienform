@@ -253,7 +253,8 @@ def test_http_chat_is_held_and_never_reaches_cortex_when_lent(monkeypatch, hub):
 
     resp = client.post(
         "/api/chat",
-        json={"mode": "brain", "user_id": "juniper", "messages": [{"role": "user", "content": "held me"}]},
+        json={"mode": "brain", "user_id": "juniper", "browser_client_id": "ui-1",
+              "messages": [{"role": "user", "content": "held me"}]},
         headers={"X-Orion-Session-Id": "sid-held"},
     )
     assert resp.status_code == 200, resp.text
@@ -296,7 +297,7 @@ def test_http_chat_held_with_no_write_skips_history_but_still_emails(monkeypatch
     monkeypatch.setattr(lend, "hold_chat_message_for_email", _hold)
     monkeypatch.setattr(api_routes, "publish_chat_history", _publish)
 
-    resp = client.post("/api/chat", json={"text_input": "fallback text", "no_write": True})
+    resp = client.post("/api/chat", json={"text_input": "fallback text", "no_write": True, "browser_client_id": "ui-1"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["emailed"] is False
     assert published == []
@@ -381,3 +382,30 @@ def test_gate_proxy_returns_502_when_the_gateway_is_unreachable(monkeypatch, hub
     monkeypatch.setattr(gateway, "set_route_gate", _boom)
     assert client.get("/api/llm-routes/chat-burst/gate").status_code == 502
     assert client.put("/api/llm-routes/chat-burst/gate", json={"open": True}).status_code == 502
+
+
+def test_http_chat_from_a_bridge_is_not_held_even_when_lent(monkeypatch, hub):
+    # orion-social-room-bridge and orion-embodiment POST /api/chat too and publish the reply
+    # text as Orion's words. They never send browser_client_id (only app.js does), so the hold
+    # must not answer them with the held notice or email Juniper once per room message.
+    client, api_routes, lend = hub.client, hub.api_routes, hub.lend
+    calls = []
+
+    async def _lent():
+        return True
+
+    async def _hold(**kwargs):
+        raise AssertionError("a bridge call must not be emailed")
+
+    async def _handle(cortex_client, payload, session_id, **kwargs):
+        calls.append(payload)
+        return {"text": "orion answered", "correlation_id": "c1"}
+
+    monkeypatch.setattr(lend, "chat_lane_is_lent", _lent)
+    monkeypatch.setattr(lend, "hold_chat_message_for_email", _hold)
+    monkeypatch.setattr(api_routes, "handle_chat_request", _handle)
+
+    resp = client.post("/api/chat", json={"messages": [{"role": "user", "content": "room msg"}], "no_write": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("held") is None
+    assert len(calls) == 1

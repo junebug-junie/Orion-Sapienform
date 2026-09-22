@@ -78,8 +78,11 @@ async def _redis() -> aioredis.Redis:
         _client = aioredis.from_url(
             settings.orion_bus_url,
             decode_responses=True,
-            socket_connect_timeout=2.0,
-            socket_timeout=2.0,
+            # Tight on purpose: this read runs inside the catalog refresh that durable-runs
+            # fetches with a 5 s timeout; a stalled bus Redis must read as closed quickly,
+            # not turn every lane's admission off by timing the whole catalog out.
+            socket_connect_timeout=0.5,
+            socket_timeout=0.5,
         )
     return _client
 

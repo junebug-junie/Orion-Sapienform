@@ -27,6 +27,7 @@ What it scans (never a `.env`):
     services/*/scripts/**/*.py
     services/*/settings.py
     services/*/.env_example
+    services/*/docker-compose*.yml
 
 excluding tests/, evals/, docs/, graphify-out/, venv/, .venv/, node_modules/.
 
@@ -39,7 +40,17 @@ Shapes it detects (one line at a time; comment-only lines are skipped):
     Field("chat" / = "chat"           (LHS identifier contains route|profile)
     return "chat"                     (inside a def whose name has route|lane)
     route in ("chat", ...)            (a hard-coded route fallback order)
-    KEY=chat in .env_example          (KEY contains ROUTE or PROFILE)
+    "route": "chat" / "llm_route": "chat"   (dict literal, either quote style)
+    .get("...route|profile...", "chat")     (a dict lookup defaulting to chat)
+    KEY=chat in .env_example          (KEY contains ROUTE or PROFILE; quoted
+                                       values and trailing # comments tolerated)
+    ${KEY:-chat} in docker-compose    (KEY contains ROUTE or PROFILE -- a set env
+                                       var beats the pydantic default, so a host
+                                       missing the key still dispatched on chat)
+
+Deliberately NOT matched: `llm_lane="chat"` / `LLM_LANE_DEFAULT` / `EXEC_LANE`.
+That is the lane-class axis (chat-class vs background-class traffic), not the
+gateway route id, so it says nothing about which worker a call lands on.
 
 Allow-list keys are `<repo-relative path>:<enclosing def or env KEY>`; the
 def part is `<module>` for module-level lines. `fnmatch` wildcards are
@@ -108,7 +119,11 @@ ALLOW: dict[str, str] = {
         "FOVEAL_LLM_ROUTE=chat: multimodal worker requirement (vision lives on circe-worker-1)"
     ),
     # ---- catalog lookups and constants, not a dispatch -----------------------
-    "orion/situational/context.py:*": (
+    "orion/situational/context.py:settings_from_runtime": (
+        "ORION_SITUATION_RUNTIME_ROUTE names which route's status to read from the catalog, "
+        "not where to send a request"
+    ),
+    "orion/situational/context.py:hub_settings_to_runtime_namespace": (
         "ORION_SITUATION_RUNTIME_ROUTE names which route's status to read from the catalog, "
         "not where to send a request"
     ),
@@ -116,6 +131,9 @@ ALLOW: dict[str, str] = {
         "ORION_SITUATION_RUNTIME_ROUTE code default: catalog lookup, not a dispatch"
     ),
     "services/orion-cortex-exec/.env_example:ORION_SITUATION_RUNTIME_ROUTE": (
+        "catalog lookup, not a dispatch"
+    ),
+    "services/orion-cortex-exec/docker-compose.yml:ORION_SITUATION_RUNTIME_ROUTE": (
         "catalog lookup, not a dispatch"
     ),
     "orion/schemas/situation.py:<module>": (
@@ -126,19 +144,25 @@ ALLOW: dict[str, str] = {
         "a constant the Hub reads, not a dispatch default"
     ),
     # ---- gateway last resorts, gated off live ------------------------------
-    "services/orion-llm-gateway/app/lane_routes.py:*": (
-        "_chat_fallback is gated off by LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK=false and allow_chat_fallback"
+    "services/orion-llm-gateway/app/lane_routes.py:_norm_lane": (
+        "lane-class normalizer: `default` is the caller's LLM_LANE_DEFAULT (chat-class vs "
+        "background-class), not a gateway route"
     ),
-    "services/orion-llm-gateway/app/llm_backend.py:*": (
+    "services/orion-llm-gateway/app/lane_routes.py:_chat_fallback": (
+        "`_chat_fallback` is gated off by LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK=false; the "
+        "chat-lane branch prefers quick and only falls to chat when quick is absent from the "
+        "route table"
+    ),
+    "services/orion-llm-gateway/app/llm_backend.py:_resolve_route": (
         "`or 'chat'` last resort behind LLM_ROUTE_DEFAULT, which is quick live"
     ),
-    "services/orion-llm-gateway/app/anthropic_passthrough.py:*": (
+    "services/orion-llm-gateway/app/llm_backend.py:plan_llm_chat": (
+        "`or 'chat'` last resort behind LLM_ROUTE_DEFAULT / LLM_LANE_DEFAULT, which are quick live"
+    ),
+    "services/orion-llm-gateway/app/anthropic_passthrough.py:resolve_anthropic_route": (
         "`or 'chat'` last resort behind LLM_ROUTE_DEFAULT, which is quick live"
     ),
-    "services/orion-llm-gateway/app/openai_passthrough.py:*": (
-        "`or 'chat'` last resort behind LLM_ROUTE_DEFAULT, which is quick live"
-    ),
-    "services/orion-llm-gateway/app/route_catalog.py:*": (
+    "services/orion-llm-gateway/app/openai_passthrough.py:resolve_openai_route": (
         "`or 'chat'` last resort behind LLM_ROUTE_DEFAULT, which is quick live"
     ),
 }
@@ -155,7 +179,10 @@ _ASSIGN_RE = re.compile(r"""^\s*([A-Za-z_][\w.]*)\s*(?::[^=]*)?=\s*["']chat["']"
 _LHS_RE = re.compile(r"""^\s*([A-Za-z_][\w.]*)\s*(?::[^=]*)?=""")
 _RETURN_RE = re.compile(r"""^\s*return\s+["']chat["']\s*(?:#.*)?$""")
 _ROUTE_TUPLE_RE = re.compile(r"""\broute\w*\b[^=]*\bin\s*\(\s*["']chat["']\s*,""")
-_ENV_RE = re.compile(r"^[A-Z0-9_]*(?:ROUTE|PROFILE)[A-Z0-9_]*=chat$")
+_ENV_RE = re.compile(r"""^([A-Z0-9_]*(?:ROUTE|PROFILE)[A-Z0-9_]*)=["']?chat["']?\s*(?:#.*)?$""")
+_COMPOSE_RE = re.compile(r"\$\{([A-Z0-9_]*(?:ROUTE|PROFILE)[A-Z0-9_]*):-chat\}")
+_DICT_LITERAL_RE = re.compile(r"""["'](?:llm_route|route)["']\s*:\s*["']chat["']""")
+_GET_DEFAULT_RE = re.compile(r"""\.get\(\s*["'][^"']*(?:route|profile)[^"']*["']\s*,\s*["']chat["']\s*\)""", re.IGNORECASE)
 _NAME_HINT_RE = re.compile(r"route|profile", re.IGNORECASE)
 _OR_HINT_RE = re.compile(r"route|lane|profile", re.IGNORECASE)
 _DEF_HINT_RE = re.compile(r"route|lane", re.IGNORECASE)
@@ -185,6 +212,7 @@ def iter_scan_files(root: pathlib.Path) -> list[pathlib.Path]:
         "services/*/scripts/**/*.py",
         "services/*/settings.py",
         "services/*/.env_example",
+        "services/*/docker-compose*.yml",
     )
     seen: set[pathlib.Path] = set()
     for pattern in globs:
@@ -237,6 +265,10 @@ def scan_python_text(text: str, rel: str) -> list[Hit]:
                 shape = "return_chat"
         elif _ROUTE_TUPLE_RE.search(code):
             shape = "route_tuple"
+        elif _DICT_LITERAL_RE.search(code):
+            shape = "dict_literal"
+        elif _GET_DEFAULT_RE.search(code):
+            shape = "get_default"
         if shape:
             hits.append(Hit(path=rel, lineno=lineno, scope=scope, shape=shape, line=stripped))
     return hits
@@ -246,9 +278,21 @@ def scan_env_text(text: str, rel: str) -> list[Hit]:
     hits: list[Hit] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.rstrip()
-        if _ENV_RE.match(line):
-            key = line.split("=", 1)[0]
-            hits.append(Hit(path=rel, lineno=lineno, scope=key, shape="env_default", line=line))
+        m = _ENV_RE.match(line)
+        if m:
+            hits.append(Hit(path=rel, lineno=lineno, scope=m.group(1), shape="env_default", line=line))
+    return hits
+
+
+def scan_compose_text(text: str, rel: str) -> list[Hit]:
+    hits: list[Hit] = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = _COMPOSE_RE.search(stripped)
+        if m:
+            hits.append(Hit(path=rel, lineno=lineno, scope=m.group(1), shape="compose_default", line=stripped))
     return hits
 
 
@@ -278,6 +322,8 @@ def scan_tree(root: pathlib.Path) -> list[Hit]:
             continue
         if path.name == ".env_example":
             hits.extend(scan_env_text(text, rel))
+        elif path.suffix == ".yml":
+            hits.extend(scan_compose_text(text, rel))
         else:
             hits.extend(scan_python_text(text, rel))
     return hits

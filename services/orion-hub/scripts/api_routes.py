@@ -3855,7 +3855,10 @@ async def api_chat(
     # never reach cortex. Mirrors the WebSocket path in websocket_handler.py.
     from .chat_lane_lend import chat_lane_is_lent
 
-    if await chat_lane_is_lent():
+    # Only the Hub UI's own HTTP fallback is held. orion-social-room-bridge and orion-embodiment
+    # also POST here and would otherwise speak the held notice as Orion in a room and email
+    # Juniper once per room message (review finding). Only app.js sends browser_client_id.
+    if payload.get("browser_client_id") and await chat_lane_is_lent():
         return await _hold_http_chat_for_lent_lane(bus, payload, session_id, no_write=no_write)
 
     # Core chat handling

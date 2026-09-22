@@ -64,6 +64,75 @@ def _fake_tree(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _new_shape_tree(tmp_path: Path) -> Path:
+    # A compose default: a set env var beats the pydantic default.
+    _write(
+        tmp_path,
+        "services/orion-thing/docker-compose.yml",
+        "services:\n  thing:\n    environment:\n"
+        "      - THING_LLM_ROUTE=${THING_LLM_ROUTE:-chat}\n"
+        "      - THING_LLM_LANE=${THING_LLM_LANE:-chat}\n"
+        "      # - THING_OLD_ROUTE=${THING_OLD_ROUTE:-chat}\n"
+        "      - THING_TIMEOUT=${THING_TIMEOUT:-5}\n",
+    )
+    # Dict literal and .get default, both quote styles.
+    _write(
+        tmp_path,
+        "orion/thing/dispatch.py",
+        "def build_payload(opts):\n"
+        "    body = {'route': 'chat', 'messages': []}\n"
+        "    other = {\"llm_route\": \"chat\"}\n"
+        "    picked = opts.get('LLM_ROUTE', 'chat')\n"
+        "    lane = opts.get('llm_lane', 'chat')\n"
+        "    return body, other, picked, lane\n",
+    )
+    # Quoted env value and trailing comment.
+    _write(
+        tmp_path,
+        "services/orion-thing/.env_example",
+        'THING_LLM_ROUTE="chat"  # reserved lane\n'
+        "THING_LLM_PROFILE='chat'\n"
+        "THING_LLM_LANE=chat\n"
+        "THING_ROUTE_NAME=chatter\n",
+    )
+    return tmp_path
+
+
+def test_new_shapes_compose_dict_get_and_quoted_env(tmp_path: Path) -> None:
+    root = _new_shape_tree(tmp_path)
+    hits = gate.scan_tree(root)
+    got = sorted((h.key, h.shape) for h in hits)
+    assert got == [
+        ("orion/thing/dispatch.py:build_payload", "dict_literal"),
+        ("orion/thing/dispatch.py:build_payload", "dict_literal"),
+        ("orion/thing/dispatch.py:build_payload", "get_default"),
+        ("services/orion-thing/.env_example:THING_LLM_PROFILE", "env_default"),
+        ("services/orion-thing/.env_example:THING_LLM_ROUTE", "env_default"),
+        ("services/orion-thing/docker-compose.yml:THING_LLM_ROUTE", "compose_default"),
+    ]
+    # The lane-class axis (LLM_LANE, llm_lane) is deliberately not a hit.
+    assert not any("LANE" in h.scope or "lane" in h.line.split("=")[0] for h in hits if h.shape != "dict_literal")
+
+
+def test_compose_default_fails_unless_allow_listed(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = _new_shape_tree(tmp_path)
+    monkeypatch.setattr(gate, "ALLOW", {"orion/thing/dispatch.py:*": "ok", "services/orion-thing/.env_example:*": "ok"})
+    rc = gate.main(["--root", str(root)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "THING_LLM_ROUTE=${THING_LLM_ROUTE:-chat}" in out
+    monkeypatch.setattr(
+        gate,
+        "ALLOW",
+        {
+            "orion/thing/dispatch.py:*": "ok",
+            "services/orion-thing/.env_example:*": "ok",
+            "services/orion-thing/docker-compose.yml:THING_LLM_ROUTE": "ok",
+        },
+    )
+    assert gate.main(["--root", str(root)]) == 0
+
+
 def test_classify_splits_allowed_disallowed_and_stale(tmp_path: Path) -> None:
     root = _fake_tree(tmp_path)
     hits = gate.scan_tree(root)

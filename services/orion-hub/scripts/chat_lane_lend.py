@@ -30,7 +30,10 @@ from scripts.settings import settings
 logger = logging.getLogger("orion-hub.chat-lane-lend")
 
 GATE_ROUTE_ID = "chat-burst"
-CACHE_TTL_SEC = 3.0
+CACHE_TTL_SEC = 15.0
+# The gate read must never add a visible delay to a chat turn: the gateway answers it from
+# Redis, so 1.5 s is generous; the module answers False (normal chat) on timeout.
+GATE_READ_TIMEOUT_SEC = 1.5
 
 #: Single source of the user-facing notice for both the WebSocket and HTTP transports.
 HELD_NOTICE_TEXT = (
@@ -68,7 +71,7 @@ async def chat_lane_is_lent() -> bool:
     if _cached_at is not None and (now - _cached_at) < CACHE_TTL_SEC:
         return _cached_lent
     try:
-        gate = await fetch_route_gate(GATE_ROUTE_ID)
+        gate = await asyncio.wait_for(fetch_route_gate(GATE_ROUTE_ID), GATE_READ_TIMEOUT_SEC)
         lent = bool(gate.get("open"))
         if _failure_streak:
             logger.info("chat_lane_gate_read_recovered after %s failures", _failure_streak)

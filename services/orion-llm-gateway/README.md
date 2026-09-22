@@ -621,6 +621,12 @@ available only while she says so.
   `chat` call wait (`durable_lease_active`), and a live chat permit keeps the broker from
   granting a chat-burst lease (`owner_request_active` / non-zero backend estimate). The Hub
   additionally holds and emails chat-box messages while the gate is open.
+- **Blast radius while open**: the fence above applies to EVERY unleased caller of
+  `chat`/`harness` on circe-worker-1, not only the Hub -- the allow-listed callers in
+  `scripts/check_chat_route_poachers.py` (vision-council foveal probe, affective-state vision,
+  context-exec, curiosity supervisor readings, the history compactor, harness finalize) wait
+  and then fail with `capacity_wait_budget_exhausted` for as long as a chat-burst lease is
+  held. Lending is a deliberate trade: the whole worker, for the whole window.
 
 Smoke:
 

@@ -132,8 +132,11 @@ h2 {
   color: var(--ink-muted); margin: 0 0 3px;
 }
 .section-note { color: var(--ink-2); font-size: 12.5px; margin: 0 0 14px; max-width: 76ch; }
-.section-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .section-head h2 { margin: 0; }
+.section-head .pager { margin-left: auto; }
+.pager { display: flex; gap: 6px; flex-wrap: wrap; }
+.pager button:disabled { opacity: 0.4; cursor: default; }
 .card {
   background: var(--surface); border: 1px solid var(--hairline);
   border-radius: 11px; box-shadow: var(--shadow);
@@ -360,14 +363,14 @@ tr:last-child td { border-bottom: none; }
   <section>
     <div class="section-head">
       <h2>Sittings, <span id="strip-range">last 14 days</span></h2>
-      <span class="dim" id="strip-note"></span>
+      <div class="pager" id="strip-pager" aria-label="Fortnight pager">
+        <button type="button" class="ghost" id="strip-older" title="Show the previous 14 days">← Older fortnight</button>
+        <button type="button" class="ghost" id="strip-newer" title="Show the next 14 days" disabled>Newer fortnight →</button>
+      </div>
     </div>
+    <p class="section-note" id="strip-note"></p>
     <div class="strip-controls">
       <div class="line-chips" id="line-chips" role="tablist" aria-label="Curiosity line"></div>
-      <div class="pager">
-        <button type="button" class="ghost" id="strip-older" title="Previous 14 days">← Older</button>
-        <button type="button" class="ghost" id="strip-newer" title="Next 14 days" disabled>Newer →</button>
-      </div>
     </div>
     <div class="card">
       <div class="strip" id="strip"></div>
@@ -378,8 +381,12 @@ tr:last-child td { border-bottom: none; }
   <section>
     <div class="section-head">
       <h2>Run story</h2>
-      <span class="dim" id="story-note"></span>
+      <div class="pager" id="story-pager" aria-label="Sitting pager" hidden>
+        <button type="button" class="ghost" id="story-older" title="Older sitting in this fortnight">← Older sitting</button>
+        <button type="button" class="ghost" id="story-newer" title="Newer sitting in this fortnight">Newer sitting →</button>
+      </div>
     </div>
+    <p class="section-note" id="story-note"></p>
     <div class="card story" id="story"><p class="dim">Pick a sitting above.</p></div>
   </section>
 
@@ -645,15 +652,17 @@ function renderStrip(d, now) {
     </div>`;
   }).join("");
   $("strip-range").textContent = fmtWindowRange(d);
-  const notes = [`${runs.length} sitting${runs.length === 1 ? "" : "s"}`];
+  const notes = [`${runs.length} sitting${runs.length === 1 ? "" : "s"} in this fortnight`];
   if (state.line !== "all") notes.push(LINE_LABEL[state.line] || state.line);
   if (undated) notes.push(`${undated} with no clock, not shown`);
   if (offWindow) notes.push(`${offWindow} outside this fortnight`);
+  if (d && d.has_older) notes.push("use ← Older fortnight for earlier sittings");
   $("strip-note").textContent = notes.join(" · ");
   const older = $("strip-older"), newer = $("strip-newer");
   if (older) older.disabled = !(d && d.has_older);
   if (newer) newer.disabled = !(d && d.has_newer);
   renderLineChips();
+  renderStoryPager();
   $("legend").innerHTML =
     ["investigate", "self_inquiry", "self_sense_eval"].map((l) =>
       `<span><span class="sw chip line-${l}"></span>${esc(LINE_LABEL[l])}</span>`).join("") +
@@ -773,11 +782,13 @@ function renderStory(d) {
   if (!d || d.available === false) {
     el.innerHTML = `<p class="dim">Could not read this run: ${esc((d && d.reason) || "unknown")}.</p>`;
     $("story-note").textContent = "";
+    renderStoryPager();
     return;
   }
   if (d.found === false) {
     el.innerHTML = `<p class="dim">No store knows run <span class="mono">${esc(d.run_id || "")}</span>.</p>`;
     $("story-note").textContent = "";
+    renderStoryPager();
     return;
   }
   const run = d.run;
@@ -881,7 +892,50 @@ function renderStory(d) {
     ${readingsNote}${selfSense}${reachHtml}${harness}
     ${d.journal_body ? `<details class="journal"><summary>Journal entry</summary><div class="journal-body">${esc(d.journal_body)}</div></details>` : ""}
   `;
-  $("story-note").textContent = `${(d.timeline || []).length} events`;
+  const n = (d.timeline || []).length;
+  $("story-note").textContent = n
+    ? `${n} timeline step${n === 1 ? "" : "s"} in this sitting · use ← Older sitting / Newer sitting to move between chips`
+    : "No timeline steps recorded";
+  renderStoryPager();
+}
+
+function sittingOrder() {
+  // Newest first, same order as /api/runs. Missing clocks sort last.
+  const runs = ((state.runs || {}).runs) || [];
+  return runs.slice().sort((a, b) => {
+    const ta = a.started_at || a.finished_at || 0;
+    const tb = b.started_at || b.finished_at || 0;
+    if (tb !== ta) return tb - ta;
+    return String(b.run_id || "").localeCompare(String(a.run_id || ""));
+  });
+}
+
+function renderStoryPager() {
+  const pager = $("story-pager");
+  const olderBtn = $("story-older");
+  const newerBtn = $("story-newer");
+  if (!pager || !olderBtn || !newerBtn) return;
+  const order = sittingOrder();
+  const idx = order.findIndex((r) => r.run_id === state.openRunId);
+  if (idx < 0 || order.length < 2) {
+    pager.hidden = true;
+    return;
+  }
+  pager.hidden = false;
+  // order is newest-first: higher index = older sitting
+  newerBtn.disabled = idx <= 0;
+  olderBtn.disabled = idx >= order.length - 1;
+  newerBtn.title = idx > 0 ? `Newer sitting: ${order[idx - 1].run_id}` : "Already on the newest sitting in this fortnight";
+  olderBtn.title = idx < order.length - 1 ? `Older sitting: ${order[idx + 1].run_id}` : "Already on the oldest sitting in this fortnight";
+}
+
+function openNeighborSitting(delta) {
+  // delta +1 = older (farther down the newest-first list), -1 = newer
+  const order = sittingOrder();
+  const idx = order.findIndex((r) => r.run_id === state.openRunId);
+  if (idx < 0) return;
+  const next = order[idx + delta];
+  if (next && next.run_id) openRun(next.run_id);
 }
 
 /* ---- self card ---------------------------------------------------------- */
@@ -1156,6 +1210,8 @@ function wire() {
   });
   $("strip-older").addEventListener("click", () => pageOlder());
   $("strip-newer").addEventListener("click", () => pageNewer());
+  $("story-older").addEventListener("click", () => openNeighborSitting(+1));
+  $("story-newer").addEventListener("click", () => openNeighborSitting(-1));
   window.addEventListener("hashchange", () => {
     const line = lineFromHash() || "all";
     const until = untilFromHash();

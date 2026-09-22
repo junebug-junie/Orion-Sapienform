@@ -145,6 +145,17 @@ def run_ids_since_cypher(since_ms: int) -> str:
     )
 
 
+def run_ids_between_cypher(since_ms: int, until_ms: int) -> str:
+    """Every run id that wrote a dated node in `[since_ms, until_ms)`."""
+    return (
+        f"CYPHER since={int(since_ms)} until={int(until_ms)} "
+        "MATCH (n) WHERE n.run_id IS NOT NULL "
+        "AND n.written_at IS NOT NULL AND n.written_at >= $since "
+        "AND n.written_at < $until "
+        "RETURN DISTINCT n.run_id AS run_id"
+    )
+
+
 def run_nodes_cypher(label: str, run_ids: list[str]) -> str:
     fields = RUN_NODE_FIELDS[label]
     return f"CYPHER ids={_id_list(run_ids)} MATCH (n:{label}) WHERE n.run_id IN $ids RETURN {fields}"
@@ -209,6 +220,13 @@ def read_run_ids_since(reader: WorldviewReader, since_ms: int) -> list[str]:
     """Raises `WorldviewUnavailable`; the caller decides what a dead graph
     means for its payload."""
     rows = reader.query(run_ids_since_cypher(since_ms))
+    return [i for i in (valid_run_id(r.get("run_id")) for r in rows) if i]
+
+
+def read_run_ids_between(reader: WorldviewReader, since_ms: int, until_ms: int) -> list[str]:
+    """Run ids with a dated node in `[since_ms, until_ms)`. Raises
+    `WorldviewUnavailable`."""
+    rows = reader.query(run_ids_between_cypher(since_ms, until_ms))
     return [i for i in (valid_run_id(r.get("run_id")) for r in rows) if i]
 
 

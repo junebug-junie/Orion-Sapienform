@@ -171,6 +171,22 @@ h2 {
 .tile .value.is-critical { color: var(--critical); }
 
 /* --- sittings strip ---------------------------------------------------- */
+.strip-controls {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 8px 16px; margin: 0 0 8px;
+}
+.line-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.line-chips button {
+  font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.01em;
+  border: 1px solid var(--hairline); background: var(--plane); color: var(--ink-2);
+  border-radius: 999px; padding: 4px 11px; cursor: pointer;
+}
+.line-chips button.is-on { color: var(--ink); border-color: var(--ink-muted); background: var(--surface); }
+.line-chips button.line-investigate.is-on { border-color: var(--series-1); color: var(--series-1); }
+.line-chips button.line-self_inquiry.is-on { border-color: var(--series-2); color: var(--series-2); }
+.line-chips button.line-self_sense_eval.is-on { border-color: var(--series-3); color: var(--series-3); }
+.pager { display: flex; gap: 6px; }
+.pager button:disabled { opacity: 0.4; cursor: default; }
 .strip { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 4px; padding: 12px 12px 8px; }
 .strip .day { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 84px; }
 .strip .day .date { font-size: 10.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -340,8 +356,15 @@ tr:last-child td { border-bottom: none; }
 
   <section>
     <div class="section-head">
-      <h2>Sittings, last <span id="strip-days">14</span> days</h2>
+      <h2>Sittings, <span id="strip-range">last 14 days</span></h2>
       <span class="dim" id="strip-note"></span>
+    </div>
+    <div class="strip-controls">
+      <div class="line-chips" id="line-chips" role="tablist" aria-label="Curiosity line"></div>
+      <div class="pager">
+        <button type="button" class="ghost" id="strip-older" title="Previous 14 days">← Older</button>
+        <button type="button" class="ghost" id="strip-newer" title="Next 14 days" disabled>Newer →</button>
+      </div>
     </div>
     <div class="card">
       <div class="strip" id="strip"></div>
@@ -419,6 +442,12 @@ const GLYPH = {
 };
 const POLL_MS = 60000;
 const DAYS = 14;
+const LINE_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "investigate", label: "World question" },
+  { id: "self_inquiry", label: "Self question" },
+  { id: "self_sense_eval", label: "Self-sense check" },
+];
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -484,8 +513,11 @@ function payloadHash(obj) {
 const state = {
   runsHash: null, atlasHash: null,
   runs: null, atlas: null,
+  tileSource: null,  // last live-window payload; budget/reach-out tiles never page
   openRunId: null, openRunSummaryHash: null,
   showClosed: false, filter: "",
+  line: "all",
+  untilMs: null,  // null = live window (now)
 };
 
 /* ---- budget tiles ------------------------------------------------------- */
@@ -555,16 +587,42 @@ function runOneLiner(r) {
   if (r.error) bits.push(r.error);
   return bits.join(" · ");
 }
+function renderLineChips() {
+  $("line-chips").innerHTML = LINE_FILTERS.map((f) => {
+    const on = state.line === f.id ? " is-on" : "";
+    const cls = f.id === "all" ? "" : ` line-${f.id}`;
+    return `<button type="button" class="${cls}${on}" data-line="${f.id}" role="tab" aria-selected="${state.line === f.id}">${esc(f.label)}</button>`;
+  }).join("");
+}
+function fmtWindowRange(d) {
+  const days = (d && d.window_days) || DAYS;
+  if (!d || d.until_is_now) return `last ${days} days`;
+  const until = d.until_ms != null ? new Date(d.until_ms) : new Date(d.until || Date.now());
+  const since = d.since_ms != null ? new Date(d.since_ms) : new Date(until.getTime() - days * 86400000);
+  const opts = { month: "short", day: "numeric" };
+  return `${since.toLocaleDateString(undefined, opts)} – ${until.toLocaleDateString(undefined, opts)}`;
+}
 function renderStrip(d, now) {
   const runs = (d && d.runs) || [];
-  const days = stripDays(d && d.window_days || DAYS, now || Date.now());
+  const windowEnd = (d && d.until_ms != null) ? d.until_ms : (now || Date.now());
+  const days = stripDays(d && d.window_days || DAYS, windowEnd);
   const byDay = new Map(days.map((x) => [x.key, []]));
+  const sinceMs = d && d.since_ms != null ? d.since_ms : null;
+  const untilMs = d && d.until_ms != null ? d.until_ms : (now || Date.now());
   let undated = 0;
+  let offWindow = 0;
   for (const r of runs) {
     const t = r.started_at || r.finished_at;
     if (!t) { undated++; continue; }
     const k = dayKey(t);
-    if (byDay.has(k)) byDay.get(k).push(r);
+    if (byDay.has(k)) {
+      byDay.get(k).push(r);
+    } else if (sinceMs != null && t >= sinceMs && t < untilMs && days.length) {
+      // Half-open window can start mid-day; that sitting is still in this fortnight.
+      byDay.get(days[0].key).push(r);
+    } else {
+      offWindow++;
+    }
   }
   const todayKey = dayKey(now || Date.now());
   $("strip").innerHTML = days.map((day) => {
@@ -581,10 +639,16 @@ function renderStrip(d, now) {
       }).join("")}</div>
     </div>`;
   }).join("");
-  $("strip-days").textContent = String(d && d.window_days || DAYS);
+  $("strip-range").textContent = fmtWindowRange(d);
   const notes = [`${runs.length} sitting${runs.length === 1 ? "" : "s"}`];
+  if (state.line !== "all") notes.push(LINE_LABEL[state.line] || state.line);
   if (undated) notes.push(`${undated} with no clock, not shown`);
+  if (offWindow) notes.push(`${offWindow} outside this fortnight`);
   $("strip-note").textContent = notes.join(" · ");
+  const older = $("strip-older"), newer = $("strip-newer");
+  if (older) older.disabled = !(d && d.has_older);
+  if (newer) newer.disabled = !(d && d.has_newer);
+  renderLineChips();
   $("legend").innerHTML =
     ["investigate", "self_inquiry", "self_sense_eval"].map((l) =>
       `<span><span class="sw chip line-${l}"></span>${esc(LINE_LABEL[l])}</span>`).join("") +
@@ -926,9 +990,10 @@ function applyRuns(d, now) {
   if (h === state.runsHash) return false;
   state.runsHash = h;
   state.runs = d;
-  renderTiles(d);
+  if (d && d.until_is_now) state.tileSource = d;
+  renderTiles(state.tileSource || d);
   renderStrip(d, now);
-  renderBanners(d, state.atlas);
+  renderBanners(state.tileSource || d, state.atlas);
   return true;
 }
 function applyAtlas(d) {
@@ -952,6 +1017,32 @@ function runFromHash() {
   const m = /(?:^|[#&])run=([A-Za-z0-9_.:-]{1,64})/.exec(String(location.hash || ""));
   return m ? m[1] : null;
 }
+function lineFromHash() {
+  const m = /(?:^|[#&])line=([a-z_]+)/.exec(String(location.hash || ""));
+  const v = m ? m[1] : null;
+  return LINE_FILTERS.some((f) => f.id === v) ? v : null;
+}
+function untilFromHash() {
+  const m = /(?:^|[#&])until=([0-9]{10,13}|[^&#]+)/.exec(String(location.hash || ""));
+  if (!m) return null;
+  const raw = decodeURIComponent(m[1]);
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return n > 1e12 ? n : n * 1000;
+  }
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+function writeHash() {
+  const parts = [];
+  if (state.openRunId) parts.push(`run=${encodeURIComponent(state.openRunId)}`);
+  if (state.line && state.line !== "all") parts.push(`line=${state.line}`);
+  if (state.untilMs != null) parts.push(`until=${state.untilMs}`);
+  const next = parts.length ? `#${parts.join("&")}` : "#";
+  if (location.hash !== next && location.hash !== (parts.length ? `#${parts.join("&")}` : "")) {
+    history.replaceState(null, "", parts.length ? `#${parts.join("&")}` : location.pathname + location.search);
+  }
+}
 async function openRun(runId, { fromPoll = false } = {}) {
   if (!runId) return;
   const summary = state.runs && (state.runs.runs || []).find((r) => r.run_id === runId);
@@ -960,7 +1051,7 @@ async function openRun(runId, { fromPoll = false } = {}) {
   if (fromPoll && runId === state.openRunId && summaryHash === state.openRunSummaryHash) return;
   state.openRunId = runId;
   state.openRunSummaryHash = summaryHash;
-  if (!fromPoll && runFromHash() !== runId) history.replaceState(null, "", `#run=${runId}`);
+  if (!fromPoll) writeHash();
   document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("is-open", c.getAttribute("data-run") === runId));
   try {
     renderStory(await fetchJson(`/curiosity/api/run/${encodeURIComponent(runId)}`));
@@ -968,9 +1059,28 @@ async function openRun(runId, { fromPoll = false } = {}) {
     renderStory({ available: false, reason: String(err) });
   }
 }
+function runsUrl() {
+  const q = [`days=${DAYS}`, `line=${encodeURIComponent(state.line || "all")}`];
+  if (state.untilMs != null) q.push(`until=${state.untilMs}`);
+  return `/curiosity/api/runs?${q.join("&")}`;
+}
 async function loadRuns({ fromPoll = false } = {}) {
-  const d = await fetchJson(`/curiosity/api/runs?days=${DAYS}&line=all`);
+  const d = await fetchJson(runsUrl());
+  if (d && d.until_ms != null && !d.until_is_now) state.untilMs = d.until_ms;
+  if (d && d.until_is_now) state.untilMs = null;
   applyRuns(d, Date.now());
+  // Budget tiles stay on the live window; deep-link into a past fortnight
+  // still needs one live fetch for the tiles.
+  if (d && !d.until_is_now && !state.tileSource) {
+    try {
+      const live = await fetchJson(`/curiosity/api/runs?days=${DAYS}&line=all`);
+      if (live && live.available !== false) {
+        state.tileSource = live;
+        renderTiles(live);
+        renderBanners(live, state.atlas);
+      }
+    } catch (_) { /* tiles stay on paged fallback */ }
+  }
   const wanted = state.openRunId || runFromHash() || ((d.runs || [])[0] || {}).run_id || null;
   if (wanted) await openRun(wanted, { fromPoll: fromPoll || wanted === state.openRunId });
 }
@@ -986,15 +1096,55 @@ async function load({ fromPoll = false } = {}) {
     $("updated").textContent = "Load failed";
   }
 }
+function setLine(line) {
+  if (!LINE_FILTERS.some((f) => f.id === line)) return;
+  if (state.line === line) return;
+  state.line = line;
+  state.runsHash = null;
+  writeHash();
+  loadRuns();
+}
+function pageOlder() {
+  const d = state.runs;
+  if (!d || !d.has_older || d.since_ms == null) return;
+  state.untilMs = d.since_ms;
+  state.runsHash = null;
+  writeHash();
+  loadRuns();
+}
+function pageNewer() {
+  const d = state.runs;
+  if (!d || !d.has_newer) return;
+  const days = (d.window_days || DAYS);
+  const nextUntil = (d.until_ms != null ? d.until_ms : Date.now()) + days * 86400000;
+  if (nextUntil >= Date.now() - 1000) state.untilMs = null;
+  else state.untilMs = nextUntil;
+  state.runsHash = null;
+  writeHash();
+  loadRuns();
+}
 
 /* ---- wiring -------------------------------------------------------------- */
 function wire() {
   $("refresh").addEventListener("click", () => load());
   document.addEventListener("click", (e) => {
+    const lineBtn = e.target.closest && e.target.closest("[data-line]");
+    if (lineBtn) { e.preventDefault(); setLine(lineBtn.getAttribute("data-line")); return; }
     const t = e.target.closest && e.target.closest("[data-run]");
     if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
   });
-  window.addEventListener("hashchange", () => { const r = runFromHash(); if (r && r !== state.openRunId) openRun(r); });
+  $("strip-older").addEventListener("click", () => pageOlder());
+  $("strip-newer").addEventListener("click", () => pageNewer());
+  window.addEventListener("hashchange", () => {
+    const line = lineFromHash() || "all";
+    const until = untilFromHash();
+    let reload = false;
+    if (line !== state.line) { state.line = line; reload = true; }
+    if ((until || null) !== state.untilMs) { state.untilMs = until; reload = true; }
+    if (reload) { state.runsHash = null; loadRuns(); }
+    const r = runFromHash();
+    if (r && r !== state.openRunId) openRun(r);
+  });
   $("toggle-closed").addEventListener("click", () => { state.showClosed = !state.showClosed; renderPriors(state.atlas); });
   $("prior-filter").addEventListener("input", (e) => { state.filter = e.target.value || ""; renderPriors(state.atlas); });
   const arm = (btnId, msgId, url, confirmText) => {
@@ -1039,7 +1189,14 @@ document.addEventListener("visibilitychange", () => {
   else if (timer === null) activate();
 });
 
-function boot() { wire(); activate(); }
+function boot() {
+  const line = lineFromHash();
+  if (line) state.line = line;
+  const until = untilFromHash();
+  if (until != null) state.untilMs = until;
+  wire();
+  activate();
+}
 boot();
 </script>
 </body>

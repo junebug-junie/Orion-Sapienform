@@ -31,7 +31,8 @@ pytestmark = pytest.mark.skipif(
     shutil.which("node") is None, reason="node is not available on this host"
 )
 
-_IDS = ["updated", "banners", "tiles", "strip", "strip-days", "strip-note", "legend",
+_IDS = ["updated", "banners", "tiles", "strip", "strip-range", "strip-note", "legend",
+        "line-chips", "strip-older", "strip-newer",
         "story", "story-note", "self-current", "self-lived-wrap", "self-lived-summary",
         "self-lived", "self-history-wrap", "self-history-summary", "self-history",
         "priors", "priors-note", "toggle-closed", "prior-filter", "briefs-summary",
@@ -114,6 +115,8 @@ def _run(**over) -> dict:
 def _runs(runs=None, **over) -> dict:
     base = {
         "available": True, "window_days": 14, "line": "all",
+        "until_is_now": True, "has_older": True, "has_newer": False,
+        "since_ms": NOW_MS - 14 * 86400000, "until_ms": NOW_MS,
         "stores": {"postgres": "ok", "graph": "ok"},
         "runs": runs if runs is not None else [_run()],
         "reach_outs": {"wanted": 6, "sent": 0, "blocked_by": {"blocked:daily_cap": 4}, "top_block_reason": "blocked:daily_cap", "not_recorded": 2},
@@ -161,6 +164,9 @@ def test_the_three_lines_are_named_in_plain_words_and_the_old_unbounded_panels_a
     for label in ("World question", "Self question", "Self-sense check"):
         assert label in page, label
     assert 'id="strip"' in page and 'id="story"' in page
+    assert 'id="line-chips"' in page and 'id="strip-older"' in page and 'id="strip-newer"' in page
+    assert "strip-days" not in page
+    assert "/curiosity/api/runs?days=" in page or "runsUrl" in page or "line=" in page
     assert 'id="growth"' not in page and "What each run added" not in page
     assert 'id="priors-table"' not in page
     assert "<h2>Every prior</h2>" not in page and 'id="priors-table"' not in page
@@ -170,11 +176,27 @@ def test_the_three_lines_are_named_in_plain_words_and_the_old_unbounded_panels_a
 
 def test_the_page_fetches_the_two_run_endpoints_and_routes_by_hash() -> None:
     page = TEMPLATE.read_text(encoding="utf-8")
-    assert "/curiosity/api/runs?days=" in page
+    assert "days=${DAYS}" in page and "/curiosity/api/runs?" in page
     assert "/curiosity/api/run/" in page
     assert "/curiosity/api/atlas" in page
-    assert "#run=" in page and "hashchange" in page and "location.hash" in page
+    assert "hashchange" in page and "location.hash" in page
+    assert "until=" in page and "pageOlder" in page and "setLine" in page
     assert "payloadHash" in page and "state.runsHash" in page, "the hash-compare guard"
+
+
+def test_strip_shows_line_chips_and_paged_range(tmp_path) -> None:
+    until = NOW_MS - 14 * 86400000
+    since = until - 14 * 86400000
+    out = _render({"runs": _runs(
+        until_is_now=False, has_older=True, has_newer=True,
+        until_ms=until, since_ms=since,
+        line="investigate",
+    ), "now": NOW_MS}, tmp_path)
+    assert "data-line=\"all\"" in out["line-chips"]
+    assert "World question" in out["line-chips"]
+    assert "Self-sense check" in out["line-chips"]
+    assert "last 14 days" not in out["strip-range"]
+    assert out["strip-range"]
 
 
 def test_a_poll_with_an_unchanged_payload_touches_no_dom(tmp_path) -> None:

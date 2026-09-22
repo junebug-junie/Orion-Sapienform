@@ -311,27 +311,35 @@ def _run_store():
 
 @router.get("/api/runs")
 async def curiosity_runs_api(
-    days: Optional[int] = None, line: str = "all"
+    days: Optional[int] = None,
+    line: str = "all",
+    until: Optional[str] = None,
 ) -> JSONResponse:
     """The sittings strip: one summary per run in the window, newest first,
     across all three lines (or one), plus the reach-out tally and the
     per-line budget. `days` is clamped to 1..90; an unknown `line` is `all`.
-    Never 500s: a dead store is named in `stores`, both dead is
+    `until` (ISO or epoch) ends the half-open window; omit for the live
+    fortnight. Never 500s: a dead store is named in `stores`, both dead is
     `available: false`."""
     try:
         store = _run_store()
         payload = await store.read_runs_payload(
             pool=_get_memory_pg_pool(), reader=_build_reader(),
-            days=store.clamp_days(days), line=store.clamp_line(line),
+            days=store.clamp_days(days), line=store.clamp_line(line), until=until,
         )
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_runs_api_failed err=%s", exc)
         payload = {"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
     payload["schedule"] = await _read_schedule()
-    payload["schedule"]["runs_seen_today"] = _runs_on_local_date(
-        payload.get("runs", []), payload["schedule"].get("local_date"),
-        payload["schedule"].get("tz"),
-    )
+    # Counter-vs-stores warn is only meaningful on the live window; a paged
+    # fortnight would under-count "today" and false-alarm.
+    if payload.get("until_is_now", True):
+        payload["schedule"]["runs_seen_today"] = _runs_on_local_date(
+            payload.get("runs", []), payload["schedule"].get("local_date"),
+            payload["schedule"].get("tz"),
+        )
+    else:
+        payload["schedule"]["runs_seen_today"] = None
     return JSONResponse(content=payload, headers=_NO_CACHE)
 
 

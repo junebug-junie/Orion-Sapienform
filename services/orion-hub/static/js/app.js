@@ -10320,6 +10320,60 @@ document.addEventListener("DOMContentLoaded", () => {
     return null;
   }
 
+  // "Lend chat lane" button: opens/closes the chat-burst operator gate on the gateway.
+  // While open, the chat worker serves the durable burst queue and Hub chat messages are
+  // held + emailed instead of answered (see scripts/chat_lane_lend.py). chat-burst itself
+  // is a `system` route and stays out of the Compute picker above.
+  const CHAT_LANE_LEND_ROUTE = 'chat-burst';
+  const chatLaneLendToggle = document.getElementById('chatLaneLendToggle');
+  let chatLaneLendOpen = false;
+
+  function renderChatLaneLend(gate) {
+    if (!chatLaneLendToggle) return;
+    const on = !!(gate && (gate.open === true || gate.gate_open === true));
+    chatLaneLendOpen = on;
+    chatLaneLendToggle.textContent = on ? 'Lend chat lane: on' : 'Lend chat lane: off';
+    chatLaneLendToggle.classList.toggle('bg-emerald-700', on);
+    chatLaneLendToggle.classList.toggle('border-emerald-500', on);
+  }
+
+  function chatBurstGateFromCatalog(catalog) {
+    const entry = ((catalog && catalog.routes) || []).find(
+      (r) => String(r.id || '').toLowerCase() === CHAT_LANE_LEND_ROUTE,
+    );
+    return entry ? { open: entry.gate_open === true } : null;
+  }
+
+  async function toggleChatLaneLend() {
+    if (!chatLaneLendToggle) return;
+    const wantOpen = !chatLaneLendOpen;
+    chatLaneLendToggle.disabled = true;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/llm-routes/${CHAT_LANE_LEND_ROUTE}/gate`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ open: wantOpen, changed_by: 'hub-ui' }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        const detail = body && body.detail ? body.detail : `HTTP ${res.status}`;
+        throw new Error(String(detail));
+      }
+      renderChatLaneLend(body);
+      updateStatus(chatLaneLendOpen
+        ? 'Chat lane lent to burst queue: Hub chat is held + emailed until you turn this off.'
+        : 'Chat lane returned: Hub chat goes to Orion again.');
+    } catch (err) {
+      appendMessage('System', `Lend chat lane failed: ${err && err.message ? err.message : err}`, 'text-red-400');
+    } finally {
+      chatLaneLendToggle.disabled = false;
+    }
+  }
+
+  if (chatLaneLendToggle) {
+    chatLaneLendToggle.addEventListener('click', () => { toggleChatLaneLend(); });
+  }
+
   async function loadLlmRouteCatalog() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/llm-routes`);
@@ -10329,6 +10383,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!known.has(String(selectedLlmRoute || '').toLowerCase())) {
         selectedLlmRoute = HUB_COMPUTE_DEFAULT;
       }
+      // The catalog already polls every 30 s; piggyback the gate state on it so the
+      // button follows a flip made from another tab without its own timer.
+      const gate = chatBurstGateFromCatalog(llmRouteCatalog);
+      if (gate) renderChatLaneLend(gate);
     } catch (err) {
       console.warn('[Compute lanes] catalog load failed', err);
     }
@@ -12003,6 +12061,14 @@ document.addEventListener("DOMContentLoaded", () => {
           return body;
         })
         .then(d => {
+            if (d && d.held) {
+              // Chat lane is lent to the burst queue: the server saved + emailed the
+              // message and did not ask Orion. Not Orion speech, so a System line.
+              const heldText = String(d.text || '') + (d.emailed === false ? ' (email delivery failed)' : '');
+              appendMessage('System', heldText, 'text-yellow-400');
+              updateStatusBasedOnState();
+              return;
+            }
             const displayText = resolveAssistantDisplayText(d);
             if (shouldAppendOrionWsPayload(d)) {
               appendMessage('Orion', displayText || '', 'text-white', {

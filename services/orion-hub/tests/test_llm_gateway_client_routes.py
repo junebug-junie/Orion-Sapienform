@@ -86,13 +86,39 @@ def test_an_unknown_route_id_from_the_gateway_is_ignored():
     ("quick", "quick"),
     ("quick_background", "quick_background"),
     ("chat_quick", "quick"),        # legacy alias resolves rather than collapsing to chat
-    ("nonsense", "chat"),
-    (None, "chat"),
+    # Unrecognised/missing default falls back to "quick", NOT "chat": chat is the most
+    # contended lane (Juniper's own worker) and must not be poached by a bad default.
+    ("nonsense", "quick"),
+    (None, "quick"),
 ])
 def test_default_route_is_normalized_not_name_matched(raw, expected):
     payload = _gateway_payload()
     payload["default_route"] = raw
     assert _normalize(payload)["default_route"] == expected
+
+
+class TestOperatorGateIsPassedThrough:
+    """`gate_open` is what the Hub's "Lend chat lane" button renders from. Dropping it in
+    the reassembly below would leave the button permanently "off" while the gate is open."""
+
+    def test_gate_open_is_passed_through_for_a_reported_route(self):
+        payload = _gateway_payload()
+        payload["routes"].append({"id": "chat-burst", "served_by": "circe-worker-1",
+                                  "status": "operator_closed", "priority": "system",
+                                  "gate_open": False})
+        out = _normalize(payload)
+        burst = next(r for r in out["routes"] if r["id"] == "chat-burst")
+        assert burst["gate_open"] is False
+        assert burst["priority"] == "system"
+        payload["routes"][-1]["gate_open"] = True
+        out = _normalize(payload)
+        assert next(r for r in out["routes"] if r["id"] == "chat-burst")["gate_open"] is True
+
+    def test_non_gated_and_backfilled_routes_report_none(self):
+        out = _normalize(_gateway_payload())
+        assert next(r for r in out["routes"] if r["id"] == "chat")["gate_open"] is None
+        # chat-burst is absent from _gateway_payload(), so this is the backfill row.
+        assert next(r for r in out["routes"] if r["id"] == "chat-burst")["gate_open"] is None
 
 
 class TestPriorityIsFailSafe:

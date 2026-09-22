@@ -38,6 +38,7 @@ from scripts.social_room import (
 )
 from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
+from scripts.chat_lane_lend import chat_lane_is_lent, held_notice_text, hold_chat_message_for_email
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
 from scripts.utils import split_sentences
@@ -1836,6 +1837,35 @@ async def websocket_endpoint(websocket: WebSocket):
                     client_meta=turn_client_meta,
                 )
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
+
+            # Juniper lent her chat lane to the burst queue (Hub "Lend chat lane" button):
+            # the worker is busy, so the message stays held -- it is already in chat history
+            # above, gets emailed here, and never reaches cortex. Mirrors /api/chat.
+            if await chat_lane_is_lent():
+                emailed = await hold_chat_message_for_email(
+                    text=str(transcript or ""),
+                    session_id=str(publish_session_id or session_id or "anonymous"),
+                    correlation_id=str(trace_id),
+                    mode=str(mode),
+                    speaker=str(data.get("user_id") or "user"),
+                )
+                logger.info("hub.chat.held_lane_lent corr=%s emailed=%s transport=ws", trace_id, emailed)
+                # `turn_deferred` is the frame the UI already renders as a yellow System
+                # line ("Turn deferred: <reason>") and then stops waiting on the turn.
+                await websocket.send_json(
+                    await _with_biometrics(
+                        {
+                            "type": "turn_deferred",
+                            "reason": held_notice_text(emailed),
+                            "held": True,
+                            "emailed": bool(emailed),
+                            "correlation_id": trace_id,
+                            "mode": mode,
+                        },
+                        cache=biometrics_cache,
+                    )
+                )
+                continue
 
             orion_response_text = ""
             memory_digest = None

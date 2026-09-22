@@ -296,6 +296,53 @@ def test_a_not_recorded_decision_is_not_dressed_up_as_a_gate(tmp_path) -> None:
     assert "blocked:" not in out["story"]
 
 
+def test_story_shows_summary_prior_outcome_and_lived_answer(tmp_path) -> None:
+    run = _run(hops=3, findings=1, revisions=0)
+    story = {
+        "available": True, "found": True, "run": run, "readings_available": False,
+        "journal_body": "",
+        "summary": {
+            "hops": 3, "findings": 1, "revisions": 0, "helps": 1,
+            "peer_briefs": [{"status": "ok", "peer": "claude"}],
+            "role": {"choice": "hire_peer", "why": "needed an outside read"},
+            "active_sec": 120.0, "lane_wait_sec": 30.0,
+            "has_starting_prior": True, "verdict": "answered",
+        },
+        "prior_outcome": {
+            "prior": {
+                "prior_id": "self:outward_learning_in_record_not_in_loop_20260921",
+                "claim": "outward learning lives in the record but not the loop",
+                "status": "open", "confidence": 0.42,
+            },
+            "outcome_text": "The loop still does not ingest outward learning as a first-class hop.",
+            "outcome_kind": "lived_answer",
+            "verdict": "answered",
+            "verdict_basis": "Wrote lived answer; peer brief ok",
+        },
+        "timeline": [
+            {"at": None, "offset_sec": None, "kind": "starting_prior", "prior_id": "self:outward_learning_in_record_not_in_loop_20260921",
+             "claim": "outward learning lives in the record but not the loop", "status": "open", "confidence": 0.42},
+            {"at": NOW_MS, "offset_sec": 10.0, "kind": "self_write", "write_kind": "lived_answer",
+             "text": "The loop still does not ingest outward learning as a first-class hop.",
+             "evidence": "graph", "question_id": "q1"},
+        ],
+    }
+    out = _render({"story": story}, tmp_path)
+    s = out["story"]
+    assert "Run snapshot" in s
+    assert "<b>3</b> hops" in s and "<b>1</b> help requests" in s
+    assert "peer: <b>ok/claude</b>" in s
+    assert "Prior → outcome" in s
+    assert "self:outward_learning_in_record_not_in_loop_20260921" in s
+    assert "outward learning lives in the record but not the loop" in s
+    assert "What it found" in s
+    assert "The loop still does not ingest outward learning" in s
+    assert 'class="verdict answered">answered' in s
+    assert "Wrote lived answer" in s
+    assert "starting prior" in s
+    assert "wrote a lived answer" in s
+
+
 def test_a_missing_run_and_an_unreadable_run_read_differently(tmp_path) -> None:
     missing = _render({"story": {"available": True, "found": False, "run_id": "nope"}}, tmp_path)
     broken = _render({"story": {"available": False, "reason": "ConnectionError: nope"}}, tmp_path)

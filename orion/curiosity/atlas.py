@@ -102,6 +102,7 @@ _ID_LIST_MAX = 2000
 # lived answer read as "wrote nothing" (run `3dc94088912b`, live 2026-09-22).
 LABEL_SELF_DEFINITION = "SelfDefinition"
 LABEL_LIVED_ANSWER = "LivedAnswer"
+LABEL_HELP_REQUEST = "HelpRequest"
 
 RUN_NODE_FIELDS: dict[str, str] = {
     LABEL_SELF_DEFINITION: "n.run_id AS run_id, n.text AS text, n.evidence AS evidence, n.revises AS revises, n.written_at AS written_at",
@@ -150,15 +151,41 @@ def run_nodes_cypher(label: str, run_ids: list[str]) -> str:
 
 
 def prior_claims_cypher(prior_ids: list[str]) -> str:
-    """Claim text for the priors a set of revisions touched. Prior ids are
-    Orion-authored free text, so they are parameterised as a JSON string
-    list rather than trusted against `_RUN_ID_RE`."""
+    """Claim text for the priors a set of revisions / HelpRequests touched.
+
+    Prior ids are Orion-authored free text, so they are parameterised as a
+    JSON string list rather than trusted against `_RUN_ID_RE`.
+    """
     import json as _json
 
     clean = sorted({str(p)[:200] for p in prior_ids if p})[:_ID_LIST_MAX]
     return (
         f"CYPHER ids={_json.dumps(clean)} MATCH (p:{LABEL_PRIOR}) WHERE p.prior_id IN $ids "
-        "RETURN p.prior_id AS prior_id, p.claim AS claim, p.line AS line"
+        "RETURN p.prior_id AS prior_id, p.claim AS claim, p.line AS line, "
+        "p.status AS status, p.confidence AS confidence"
+    )
+
+
+def help_requests_with_prior_cypher(run_ids: list[str]) -> str:
+    """HelpRequests for runs, with ABOUT prior claim when linked."""
+    return (
+        f"CYPHER ids={_id_list(run_ids)} MATCH (h:{LABEL_HELP_REQUEST}) WHERE h.run_id IN $ids "
+        f"OPTIONAL MATCH (h)-[:ABOUT]->(p:{LABEL_PRIOR}) "
+        "RETURN h.help_id AS help_id, h.run_id AS run_id, "
+        "coalesce(h.prior_id, p.prior_id) AS prior_id, "
+        "h.question AS question, h.tried_summary AS tried_summary, "
+        "h.success_criteria AS success_criteria, h.written_at AS written_at, "
+        "p.claim AS prior_claim, p.status AS prior_status, "
+        "p.confidence AS prior_confidence, p.line AS prior_line"
+    )
+
+
+def peer_briefs_for_runs_cypher(run_ids: list[str]) -> str:
+    return (
+        f"CYPHER ids={_id_list(run_ids)} MATCH (b:{LABEL_PEER_BRIEF}) WHERE b.run_id IN $ids "
+        "RETURN b.brief_id AS brief_id, b.help_id AS help_id, b.run_id AS run_id, "
+        "b.peer AS peer, b.status AS status, b.summary AS summary, "
+        "b.refusal_reason AS refusal_reason, b.written_at AS written_at"
     )
 
 
@@ -174,6 +201,8 @@ class RunNodeRows:
     priors: list[dict[str, Any]] = field(default_factory=list)
     # `:SelfDefinition` / `:LivedAnswer`, each row tagged `kind`.
     self_writes: list[dict[str, Any]] = field(default_factory=list)
+    help_requests: list[dict[str, Any]] = field(default_factory=list)
+    peer_briefs: list[dict[str, Any]] = field(default_factory=list)
 
 
 def read_run_ids_since(reader: WorldviewReader, since_ms: int) -> list[str]:
@@ -185,7 +214,7 @@ def read_run_ids_since(reader: WorldviewReader, since_ms: int) -> list[str]:
 
 def read_run_nodes(reader: WorldviewReader, run_ids: list[str]) -> RunNodeRows:
     """Every node kind a run story is built from, for the given runs, plus
-    the claim text of every prior those runs revised. Raises
+    the claim text of every prior those runs revised or hired about. Raises
     `WorldviewUnavailable`."""
     ids = [i for i in (valid_run_id(x) for x in run_ids) if i]
     if not ids:
@@ -200,12 +229,28 @@ def read_run_nodes(reader: WorldviewReader, run_ids: list[str]) -> RunNodeRows:
     ] + [
         {**r, "kind": "lived_answer"} for r in reader.query(run_nodes_cypher(LABEL_LIVED_ANSWER, ids))
     ]
+    # Help/peer are best-effort: missing labels must not kill the core story.
+    help_requests: list[dict[str, Any]] = []
+    peer_briefs: list[dict[str, Any]] = []
+    try:
+        help_requests = list(reader.query(help_requests_with_prior_cypher(ids)) or [])
+    except Exception:  # noqa: BLE001
+        logger.debug("run_story_help_request_read_failed", exc_info=True)
+    try:
+        peer_briefs = list(reader.query(peer_briefs_for_runs_cypher(ids)) or [])
+    except Exception:  # noqa: BLE001
+        logger.debug("run_story_peer_brief_read_failed", exc_info=True)
+
     prior_ids = [str(r.get("prior_id") or "") for r in revisions]
+    prior_ids.extend(str(h.get("prior_id") or "") for h in help_requests)
+    prior_ids = [p for p in prior_ids if p]
     priors = reader.query(prior_claims_cypher(prior_ids)) if prior_ids else []
     return RunNodeRows(
         roles=list(roles), hops=list(hops), findings=list(findings),
         revisions=list(revisions), outcomes=list(outcomes), priors=list(priors),
         self_writes=self_writes,
+        help_requests=help_requests,
+        peer_briefs=peer_briefs,
     )
 
 

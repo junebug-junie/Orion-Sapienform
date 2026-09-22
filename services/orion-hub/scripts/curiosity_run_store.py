@@ -260,7 +260,8 @@ def _rows(lifecycle, sense, admission, nodes: RunNodeRows, secondary) -> RunStor
         revisions=nodes.revisions, outcomes=nodes.outcomes, priors=nodes.priors,
         journals=secondary["journals"], outreach=secondary["outreach"],
         chat=secondary["chat"], readings=secondary["readings"], self_sense=sense,
-        self_writes=nodes.self_writes, admission=admission,
+        self_writes=nodes.self_writes, help_requests=nodes.help_requests,
+        peer_briefs=nodes.peer_briefs, admission=admission,
         resource_events=secondary["events"], event_counts=secondary["event_counts"],
     )
 

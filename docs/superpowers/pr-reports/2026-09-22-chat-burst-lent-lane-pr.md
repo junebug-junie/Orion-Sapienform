@@ -145,12 +145,51 @@ Hub email hold, live: one labelled smoke message through hold_chat_message_for_e
   notify logged email_send_eligible / email_send_attempted / email_send_succeeded
   (event_kind orion.hub.chat.lane_lent). Juniper's inbox should have it.
 UNVERIFIED (needs deploy): a durable run actually being granted chat-burst and running its FCC
-  turn on it; the Hub button in a browser; the WebSocket hold loop under real traffic.
+  turn on it; the Hub button in a browser; the WebSocket hold under real traffic (no test
+  harness drives that receive loop; placement and bindings were checked by reading).
 ```
 
 ## Review findings fixed
 
-See the section appended below after review.
+Review ran via the code-review skill at high effort in a subagent, plus an independent read of
+the durable admission code. Fixed in commit `556c970ed`:
+
+- Finding: the WebSocket hold sat after the unified-turn branch, so Mode=Orion/Agent (the live
+  default) never reached it and would have hung on `durable_lease_active` with no email.
+  - Fix: hold moved before that branch; skips agent-claude (never touches the worker); pops
+    the unanswered history entry; still publishes the user chat-history row.
+  - Evidence: `websocket_handler.py` hold now at the `trace_id` assignment; 419 Hub tests
+    touching the handler pass.
+- Finding: `/api/chat` is also called by orion-social-room-bridge and orion-embodiment, which
+  would have posted the held notice as Orion's words and emailed Juniper per room message.
+  - Fix: the HTTP hold only fires when the payload carries `browser_client_id` (only app.js sends it).
+  - Evidence: new test `test_http_chat_from_a_bridge_is_not_held_even_when_lent`.
+- Finding: embodiment and mind docker-compose defaults `:-chat` undid two re-points on any
+  host missing the key; the poacher gate never scanned compose.
+  - Fix: compose defaults -> quick / metacog; gate scans compose `:-chat}`, dict literals,
+    `.get(..., "chat")`, quoted env values; wildcards narrowed. 23 allow entries, 38 hits.
+  - Evidence: negative proof re-adding the compose default fails the gate; 8 gate tests pass.
+- Finding: durable-runs README claimed closing the gate "pauses" a leased run; it actually
+  costs one failed attempt and the partial FCC turn.
+  - Fix: README states the real semantics and advises closing when no lease is active;
+    follow-up named (exempt `route_operator_closed` from the attempt count).
+- Finding: gate Redis read (2 s + 2 s) inside the catalog refresh could push `GET /routes`
+  past durable-runs' 5 s client timeout, turning admission off on every lane.
+  - Fix: 0.5 s connect/socket timeouts on the gate client.
+- Finding: Hub gate read on every message behind a 3 s cache with a 5 s timeout.
+  - Fix: 15 s cache, 1.5 s timeout; PUT still resets the cache.
+- Finding: `lane_routes.py` chat-lane branch preferred `chat` for an unknown route and the
+  allow-list reason wrongly said it was gated off.
+  - Fix: prefers `quick`; reason corrected. `test_lane_routes.py` still passes.
+- Finding: `.env_example` lane policy omitted the live `agent-burst` entry.
+  - Fix: example now carries it (operator contract matches live).
+- Finding: lending fences every unleased `chat`/`harness` caller, not only the Hub.
+  - Fix: documented in the gateway README and the button tooltip (blast radius is the design).
+- Nits fixed: catalog pre-cache rows carry `gate_open: null`; `default_route` fallback quick.
+
+Not fixed (follow-ups): exempt operator close from the retry count in `admitted_graph.py`;
+persist a held marker in chat history so a reload shows why a turn has no reply; the
+long-context poachers still allow-listed (need durable admission).
 
 ## Restart required
 
@@ -169,10 +208,10 @@ Deploy order: gateway first (durable-runs reads its catalog), then durable-runs,
 
 ## Risks / concerns
 
-- Severity: should. Concern: a run first granted `chat-burst` stays pinned to it
-  (`run_assignment_locked`); closing the gate pauses that run until reopened rather than
-  migrating it. Mitigation: documented in durable-runs README; same retention rule as
-  `agent-burst`. A follow-up could release the lease on gate close.
+- Severity: should. Concern: closing the gate while a run holds a chat-burst lease costs that
+  run one failed attempt and its partial FCC turn (3 attempts max). Mitigation: documented;
+  close when `GET /admission` shows no active chat-burst lease. Follow-up: exempt
+  `route_operator_closed` from the attempt count.
 - Severity: should. Concern: `quality_drop: 0` for chat-burst is a declaration (35B-A3B vs the
   27B agent model); context is smaller (65536 vs 131072) and enforced live from the catalog.
   Mitigation: curiosity runs declare no minimum context today.

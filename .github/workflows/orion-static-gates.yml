@@ -163,6 +163,14 @@ jobs:
       - name: No blocking DB calls inside async routes
         run: python scripts/check_async_routes_not_blocking.py
 
+      # The gateway route `chat` is Juniper's reserved interactive Hub-chat lane
+      # (circe-worker-1, n_parallel: 1). Any background classifier, annotator or
+      # fallback that defaults onto it queues against her own turn on a
+      # single-slot worker. Line-based scan; every hit must be allow-listed with
+      # a reason, and a stale allow entry fails too.
+      - name: No non-Hub caller defaults onto the reserved chat LLM route
+        run: python scripts/check_chat_route_poachers.py
+
       # Hub frontend unit tests. These are plain `node:test` files with no DOM,
       # no network and no service dependencies -- as static as anything else in
       # this workflow. There are 13 of them and, until now, NOTHING ran any of

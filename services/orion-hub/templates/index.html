@@ -374,6 +374,12 @@
             >
               <option value="quick">quick — loading…</option>
             </select>
+            <button
+              id="chatLaneLendToggle"
+              type="button"
+              class="shrink-0 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700"
+              title="Lend Orion's chat lane (circe-worker-1) to the durable burst queue. While on: Hub chat messages are emailed to Juniper instead of answered, and every other caller of the chat/harness lane (vision probes, context-exec, finalize) waits behind the burst lease."
+            >Lend chat lane: off</button>
           </div>
           <div class="flex flex-wrap items-center gap-x-3 gap-y-2 pt-1 border-t border-gray-700/80">
             <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">

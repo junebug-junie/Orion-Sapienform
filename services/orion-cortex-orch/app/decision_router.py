@@ -257,7 +257,12 @@ class DecisionRouter:
     async def llm_router(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
         prompt = self._build_prompt(req, shortlist=shortlist)
         payload = ChatRequestPayload(
-            route="chat",
+            # A 512-token classifier must not sit on chat (Juniper's reserved, n_parallel=1 Hub
+            # lane; see scripts/check_chat_route_poachers.py). metacog serves 4096 tokens live
+            # (same as quick, catalog 2026-09-21), so an oversized Hub message overflows here;
+            # that is already handled -- any LLM-router failure falls back to the heuristic
+            # router below, which is the same degradation a 5 s timeout produced on chat.
+            route="metacog",
             messages=[{"role": "user", "content": prompt}],
             raw_user_text=req.context.raw_user_text or req.context.user_message,
             options={

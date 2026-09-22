@@ -1135,7 +1135,8 @@ class EmbodimentWorker:
                     prompt,
                     correlation_id=correlation_id,
                     verb="chat_general",
-                    lane=str(getattr(self._settings, "speech_hub_llm_route", "chat") or "chat"),
+                    # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
+                    lane=str(getattr(self._settings, "speech_hub_llm_route", "quick") or "quick"),
                     hub_chat_lane="grounded_small",
                     timeout_sec=float(self._settings.unified_timeout_sec),
                     participant_continuity=participant_continuity,

@@ -20,6 +20,8 @@ from orion.schemas.resource_admission import (
     CapacityReleaseResultV1, CapacityRenewResultV1,
 )
 
+from orion.llm.routes import BURST_LLM_ROUTES
+
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway.capacity")
@@ -159,8 +161,11 @@ class CapacityPermit:
         self._lost.set()
 
     async def acquire(self) -> "CapacityPermit":
-        if self.lane == "agent-burst" and (not self.enabled or not self.lease):
-            raise CapacityRejected("agent_burst_requires_durable_capacity_lease")
+        if self.lane in BURST_LLM_ROUTES and (not self.enabled or not self.lease):
+            # Borrowed capacity is only ever reached through a durable lease: `agent-burst`
+            # because the worker is physically borrowed from GPU2, `chat-burst` because the
+            # worker is Juniper's own chat lane lent out by the Hub gate (lane_gate.py).
+            raise CapacityRejected(f"{self.lane.replace('-', '_')}_requires_durable_capacity_lease")
         if not self.enabled:
             return self
         payload = CapacityAcquireV1(

@@ -138,7 +138,9 @@ def resolve_llm_lane_route(
     if logical_lane == "chat":
         br = str(body_route or "").strip() or str(llm_route_default or "chat")
         if br not in route_table_keys:
-            br = _first_route_key(route_table_keys, ("chat", "quick")) or str(llm_route_default or "chat")
+            # quick first: a misspelled route must not land on Juniper's reserved chat lane
+            # (scripts/check_chat_route_poachers.py); chat only if quick is not in the table.
+            br = _first_route_key(route_table_keys, ("quick", "chat")) or str(llm_route_default or "quick")
         if br not in route_table_keys:
             return _missing("chat_lane_no_matching_route_table_key")
         st = "invalid_lane" if invalid_lane else "ok"

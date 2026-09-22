@@ -38,6 +38,7 @@ from scripts.social_room import (
 )
 from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
+from scripts.chat_lane_lend import chat_lane_is_lent, held_notice_text, hold_chat_message_for_email
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
 from scripts.utils import split_sentences
@@ -1369,6 +1370,51 @@ async def websocket_endpoint(websocket: WebSocket):
 
             trace_id = str(uuid.uuid4())
 
+            # Juniper lent her chat lane to the burst queue (Hub "Lend chat lane" button).
+            # This sits BEFORE the unified-turn branch below on purpose: Mode=Orion/Agent
+            # (the live default) `continue`s out of that branch onto the harness lane, which
+            # is the SAME worker (circe-worker-1) -- review caught the hold placed after it,
+            # so the default mode would have hung on `durable_lease_active` with no email and
+            # no notice. agent-claude never touches that worker, so it keeps working.
+            if client_mode not in ("agent-claude", "agent_claude") and await chat_lane_is_lent():
+                if history and history[-1].get("role") == "user":
+                    history.pop()  # no assistant turn will answer it (same as the exits below)
+                if bus and not no_write:
+                    _schedule_publish(
+                        publish_chat_history(bus, [build_chat_history_envelope(
+                            content=transcript, role="user", session_id=publish_session_id,
+                            correlation_id=trace_id, speaker=data.get("user_id") or "user",
+                            tags=[mode], message_id=f"{trace_id}:user",
+                            memory_status="accepted", memory_tier="ephemeral",
+                        )]),
+                        "chat.history user (held)",
+                    )
+                emailed = await hold_chat_message_for_email(
+                    text=str(transcript or ""),
+                    session_id=str(publish_session_id or session_id or "anonymous"),
+                    correlation_id=str(trace_id),
+                    mode=str(mode),
+                    speaker=str(data.get("user_id") or "user"),
+                )
+                logger.info("hub.chat.held_lane_lent corr=%s emailed=%s transport=ws mode=%s", trace_id, emailed, client_mode)
+                # `turn_deferred` is the frame the UI already renders as a yellow System
+                # line ("Turn deferred: <reason>") and then stops waiting on the turn.
+                await _safe_ws_send_json(
+                    websocket,
+                    await _with_biometrics(
+                        {
+                            "type": "turn_deferred",
+                            "reason": held_notice_text(emailed),
+                            "held": True,
+                            "emailed": bool(emailed),
+                            "correlation_id": trace_id,
+                            "mode": mode,
+                        },
+                        cache=biometrics_cache,
+                    ),
+                )
+                continue
+
             # "agent" rides the exact same FCC/harness-governor path as
             # "orion" -- same claude -p spawn mechanism, same
             # run_unified_turn plumbing, just tagged differently below for
@@ -1836,6 +1882,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     client_meta=turn_client_meta,
                 )
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
+
 
             orion_response_text = ""
             memory_digest = None

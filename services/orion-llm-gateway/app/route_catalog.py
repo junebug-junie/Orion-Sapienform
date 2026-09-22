@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
 
-from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, SYSTEM_LLM_ROUTES
+from orion.llm.routes import (
+    BACKGROUND_LLM_ROUTES,
+    LLM_ROUTE_DISPLAY_ORDER,
+    OPERATOR_GATED_LLM_ROUTES,
+    SYSTEM_LLM_ROUTES,
+)
+
+from . import lane_gate
 
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
@@ -57,6 +64,12 @@ class RouteHealthEntry:
     # to a hardcoded name list.
     priority: Optional[str] = None
     reserved_free_slots: Optional[int] = None
+    # Operator gate (lane_gate.py). None for every route that has no gate. For a gated route
+    # (`chat-burst`) this is the Hub's "Lend chat lane" state; while False the entry's
+    # `status` is `operator_closed` regardless of what the worker's probe said, because
+    # "the worker is up" and "you may borrow it" are different facts and only the second
+    # one is what durable admission is allowed to act on.
+    gate_open: Optional[bool] = None
 
 
 _cache: Dict[str, RouteHealthEntry] = {}
@@ -280,9 +293,17 @@ async def refresh_route_health_cache(*, force: bool = False) -> None:
                 entries[route_id] = _entry_from_probe(route_id, target, "down", None, None, None)
             else:
                 entries[route_id] = _entry_from_probe(route_id, target, *probe)
+            if route_id in OPERATOR_GATED_LLM_ROUTES:
+                entries[route_id] = _apply_operator_gate(entries[route_id], await lane_gate.is_open(route_id))
         _cache.clear()
         _cache.update(entries)
         _last_refresh_mono = now
+
+
+def _apply_operator_gate(entry: RouteHealthEntry, gate_open: bool) -> RouteHealthEntry:
+    """A closed gate overrides an `up` probe; a down worker stays down even when open."""
+    status = entry.status if gate_open else "operator_closed"
+    return replace(entry, gate_open=gate_open, status=status)
 
 
 def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
@@ -299,6 +320,7 @@ def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
         "priority": entry.priority,
         "reserved_free_slots": entry.reserved_free_slots,
         "upstream": entry.upstream,
+        "gate_open": entry.gate_open,
     }
 
 
@@ -325,6 +347,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "priority": _definitional_priority(route_id),
                     "reserved_free_slots": None,
                     "upstream": None,
+                    "gate_open": None,
                 }
             )
         else:
@@ -345,10 +368,13 @@ def build_routes_response() -> Dict[str, Any]:
                     "priority": getattr(target, "priority", None) or _definitional_priority(route_id),
                     "reserved_free_slots": getattr(target, "reserved_free_slots", None),
                     "upstream": getattr(target, "url", None) or None,
+                    # Unknown until the first refresh reads the gate; a consumer must treat
+                    # None as "not confirmed open", never as open.
+                    "gate_open": None,
                 }
             )
     return {
-        "default_route": str(settings.llm_route_default or "chat"),
+        "default_route": str(settings.llm_route_default or "quick"),
         "routes": routes,
     }
 

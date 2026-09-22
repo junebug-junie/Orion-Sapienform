@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
 from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
+from . import lane_gate
+from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
 from .capacity import CapacityPermit, CapacityRejected, CapacityStreamingResponse, capacity_error, stream_cleanup
 
 logger = logging.getLogger("orion-llm-gateway.anthropic")
@@ -313,6 +315,11 @@ async def handle_messages_post(request: Request) -> Response:
         return JSONResponse(error_payload, status_code=status)
 
     assert target is not None and route_key is not None and upstream_model is not None
+    if route_key in OPERATOR_GATED_LLM_ROUTES and not await lane_gate.is_open(route_key):
+        # A lent lane (chat-burst) is closed until the Hub opens it. Checked per request, so
+        # closing the gate stops the NEXT FCC call of a run already leased onto it.
+        logger.warning("route_operator_closed route=%s corr=%s", route_key, _extract_correlation_id(request))
+        return JSONResponse(lane_gate.route_operator_closed_error(route_key), status_code=503)
     try:
         forward_body = normalize_anthropic_system_messages(body)
     except ValueError as exc:

@@ -1,4 +1,4 @@
-.PHONY: check-async-routes-not-blocking check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
+.PHONY: check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
 
 SERVICE ?=
 ARGS ?=
@@ -78,6 +78,12 @@ check-system-health-producers:
 # python3, not bare `python` -- see the note on check-system-health-producers.
 check-async-routes-not-blocking:
 	@python3 scripts/check_async_routes_not_blocking.py
+
+# The gateway route `chat` is Juniper's reserved Hub-chat lane (circe-worker-1,
+# n_parallel: 1). No background classifier, annotator or fallback may default
+# onto it; every hit must be allow-listed in the script with a reason.
+check-chat-route-poachers:
+	@python3 scripts/check_chat_route_poachers.py
 
 # One owner per tuned env key. Some numbers are restated in a service's
 # .env_example, its compose default, a Field(...) default, and prose deriving a

@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     # Optional grounded_small pass via cortex chat_general before chat_quick fallback.
     # Off by default: full chat_general stance stack exceeds town turn budgets.
     speech_unified_enabled: bool = Field(False, alias="EMBODIMENT_SPEECH_UNIFIED_ENABLED")
-    speech_hub_llm_route: str = Field("chat", alias="EMBODIMENT_SPEECH_HUB_LLM_ROUTE")
+    # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
+    speech_hub_llm_route: str = Field("quick", alias="EMBODIMENT_SPEECH_HUB_LLM_ROUTE")
     # The hub runs `network_mode: host`, so the Docker service DNS name does NOT resolve
     # from this app-net container. Reach it at the node's host-reachable (Tailscale) IP,
     # mirroring ORION_BUS_URL. Override per node if the hub lives elsewhere.

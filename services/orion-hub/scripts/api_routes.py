@@ -1771,6 +1771,51 @@ async def api_llm_routes():
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+class LlmRouteGateRequest(BaseModel):
+    """Body for PUT /api/llm-routes/{route_id}/gate: open or close an operator gate."""
+
+    open: bool
+    changed_by: str = "hub-ui"
+
+
+def _require_operator_gated_route(route_id: str) -> str:
+    """Refuse locally before touching the gateway: only routes the route table marks as
+    operator-gated (today: chat-burst) have a gate at all."""
+    from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
+
+    rid = str(route_id or "").strip().lower()
+    if rid not in OPERATOR_GATED_LLM_ROUTES:
+        raise HTTPException(status_code=404, detail="route_not_operator_gated")
+    return rid
+
+
+@router.get("/api/llm-routes/{route_id}/gate")
+async def api_llm_route_gate_get(route_id: str):
+    from .llm_gateway_client import LlmGatewayClientError, fetch_route_gate
+
+    rid = _require_operator_gated_route(route_id)
+    try:
+        return await fetch_route_gate(rid)
+    except LlmGatewayClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.put("/api/llm-routes/{route_id}/gate")
+async def api_llm_route_gate_put(route_id: str, body: LlmRouteGateRequest):
+    from .chat_lane_lend import reset_cache as _reset_lane_lend_cache
+    from .llm_gateway_client import LlmGatewayClientError, set_route_gate
+
+    rid = _require_operator_gated_route(route_id)
+    try:
+        result = await set_route_gate(rid, open=body.open, changed_by=body.changed_by)
+    except LlmGatewayClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    # The chat hold reads the gate through a short cache; drop it so the very next
+    # message after a flip sees the new state instead of the stale one.
+    _reset_lane_lend_cache()
+    return result
+
+
 @router.get("/api/fcc-model-labels")
 async def api_fcc_model_labels():
     from scripts.fcc_env_catalog import catalog_from_settings
@@ -3733,6 +3778,57 @@ async def handle_chat_request(
 # ======================================================================
 # 💬 CHAT ENDPOINT (HTTP wrapper around core)
 # ======================================================================
+async def _hold_http_chat_for_lent_lane(bus, payload: dict, session_id: str, *, no_write: bool) -> Dict[str, Any]:
+    """HTTP twin of the WebSocket hold: store the user's message, email it, answer with the
+    held notice. Returns the /api/chat response body."""
+    from .chat_lane_lend import HELD_NOTICE_TEXT, hold_chat_message_for_email
+
+    latest_user_text = ""
+    user_messages = payload.get("messages")
+    if isinstance(user_messages, list) and user_messages and isinstance(user_messages[-1], dict):
+        latest_user_text = str(user_messages[-1].get("content") or "")
+    if not latest_user_text:
+        latest_user_text = str(payload.get("text_input") or "")
+    corr = str(uuid4())
+    mode = str(payload.get("mode") or "brain")
+    speaker = str(payload.get("user_id") or "user")
+    if latest_user_text and getattr(bus, "enabled", False) and not no_write:
+        try:
+            await publish_chat_history(
+                bus,
+                [
+                    build_chat_history_envelope(
+                        content=latest_user_text,
+                        role="user",
+                        session_id=session_id,
+                        correlation_id=corr,
+                        speaker=speaker,
+                        tags=[mode],
+                        message_id=f"{corr}:user",
+                        memory_status="accepted",
+                        memory_tier="ephemeral",
+                    )
+                ],
+            )
+        except Exception:
+            logger.warning("hub.chat.held_history_publish_failed corr=%s", corr, exc_info=True)
+    emailed = await hold_chat_message_for_email(
+        text=latest_user_text,
+        session_id=session_id,
+        correlation_id=corr,
+        mode=mode,
+        speaker=speaker,
+    )
+    logger.info("hub.chat.held_lane_lent corr=%s emailed=%s transport=http", corr, emailed)
+    return {
+        "text": HELD_NOTICE_TEXT,
+        "held": True,
+        "reason": "chat_lane_lent",
+        "emailed": bool(emailed),
+        "correlation_id": corr,
+    }
+
+
 @router.post("/api/chat")
 async def api_chat(
     request: Request,
@@ -3753,6 +3849,17 @@ async def api_chat(
     no_write = _normalize_bool(payload.get("no_write"), default=False) or _normalize_bool(
         x_orion_no_write, default=False
     )
+
+    # Juniper lent her chat lane to the burst queue (Hub "Lend chat lane" button): the
+    # worker is busy, so hold the message -- save it to chat history, email it -- and
+    # never reach cortex. Mirrors the WebSocket path in websocket_handler.py.
+    from .chat_lane_lend import chat_lane_is_lent
+
+    # Only the Hub UI's own HTTP fallback is held. orion-social-room-bridge and orion-embodiment
+    # also POST here and would otherwise speak the held notice as Orion in a room and email
+    # Juniper once per room message (review finding). Only app.js sends browser_client_id.
+    if payload.get("browser_client_id") and await chat_lane_is_lent():
+        return await _hold_http_chat_for_lent_lane(bus, payload, session_id, no_write=no_write)
 
     # Core chat handling
     result = await handle_chat_request(

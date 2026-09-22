@@ -94,3 +94,27 @@ def test_display_order_still_matches_accepted_routes() -> None:
     # RuntimeError from an unrelated test file that happened to import the module first.
     assert set(LLM_ROUTE_DISPLAY_ORDER) == set(ACCEPTED_LLM_ROUTES)
     assert len(LLM_ROUTE_DISPLAY_ORDER) == len(set(LLM_ROUTE_DISPLAY_ORDER))
+
+
+def test_chat_burst_is_a_lent_system_burst_lane() -> None:
+    # `chat-burst` (2026-09-21): Juniper's chat worker lent to the durable burst queue. It is
+    # accepted (the gateway must dispatch a leased FCC turn labelled llamacpp/chat-burst),
+    # displayed (operators see its gate state in the catalog), system-only (never a human's
+    # Compute pick, refused as a caller override), a burst lane (unleased calls refused by
+    # CapacityPermit), and the only operator-gated route.
+    from orion.llm.routes import (
+        BURST_LLM_ROUTES,
+        CHAT_BURST_LENDS_ROUTE,
+        OPERATOR_GATED_LLM_ROUTES,
+        fcc_model_for_route,
+    )
+
+    assert "chat-burst" in ACCEPTED_LLM_ROUTES
+    assert "chat-burst" in LLM_ROUTE_DISPLAY_ORDER
+    assert "chat-burst" in SYSTEM_LLM_ROUTES
+    assert "chat-burst" not in BACKGROUND_LLM_ROUTES
+    assert BURST_LLM_ROUTES == {"agent-burst", "chat-burst"}
+    assert OPERATOR_GATED_LLM_ROUTES == {"chat-burst"}
+    assert CHAT_BURST_LENDS_ROUTE == "chat"
+    assert normalize_llm_route("chat-burst") is None
+    assert fcc_model_for_route("chat-burst") is None

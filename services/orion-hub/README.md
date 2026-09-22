@@ -2850,3 +2850,40 @@ GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
 and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
 for this service's exact flags, HTTP contracts and operator commands.
 No production env sync, migration, GPU transition or deployment was performed.
+
+## Lend chat lane (chat-burst)
+
+Juniper's chat lane and the `chat-burst` gateway route are the same physical worker
+(circe-worker-1). The **Lend chat lane** button in the composer control strip (next to the
+Compute picker) opens or closes the `chat-burst` operator gate on the LLM gateway. While
+the gate is open, durable-runs burst admission may use that worker, so the Hub treats the
+chat lane as lent out:
+
+- Any message typed into the Hub chat box (WebSocket or `POST /api/chat`) is **not**
+  dispatched to cortex. It is still written to chat history as the user's row (unless
+  no-write), then **emailed to Juniper** through orion-notify (`recipient_group`
+  `juniper_primary`, `channels_requested: ["email"]`, event kind
+  `orion.hub.chat.lane_lent`, deduped per correlation id) so nothing is lost.
+- The transcript shows one yellow System line: *"Orion's chat lane is currently lent to
+  the burst queue. Your message was saved and emailed to Juniper; it was not sent to
+  Orion."* -- with " (email delivery failed)" appended if notify did not accept it.
+  No assistant chat-history row is written for the notice.
+- Server log line per held message: `hub.chat.held_lane_lent corr=... emailed=...`.
+- The gate is read through a ~3 s cache (`scripts/chat_lane_lend.py`); any gateway error
+  reads as "not lent", so a gateway outage never blocks normal chat. A gate flip from the
+  Hub clears that cache immediately.
+
+Hub API (both proxy the gateway; 404 `route_not_operator_gated` for any route id other
+than one in `OPERATOR_GATED_LLM_ROUTES`, 502 when the gateway is unreachable):
+
+```text
+GET /api/llm-routes/chat-burst/gate
+PUT /api/llm-routes/chat-burst/gate   {"open": true|false, "changed_by": "hub-ui"}
+-> {"route_id":"chat-burst","open":bool,"changed_at":iso|null,"changed_by":str|null,"lends_route":"chat"}
+```
+
+`GET /api/llm-routes` catalog rows carry `gate_open` (true/false for chat-burst, null
+otherwise); the button re-renders from the existing 30 s catalog poll, so a flip made in
+another tab shows up without its own timer. `chat-burst` is a `system` route and never
+appears in the Compute picker. Uses `HUB_LLM_GATEWAY_URL`, `NOTIFY_BASE_URL` and
+`NOTIFY_API_TOKEN`; no new env keys.

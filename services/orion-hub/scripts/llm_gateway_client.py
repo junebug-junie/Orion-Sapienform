@@ -37,26 +37,57 @@ def _timeout() -> aiohttp.ClientTimeout:
     return aiohttp.ClientTimeout(total=float(settings.HUB_LLM_GATEWAY_TIMEOUT_SEC))
 
 
-async def fetch_routes() -> dict[str, Any]:
+async def _gateway_json(method: str, path: str, *, json_body: Any = None) -> dict[str, Any]:
+    """One HTTP round-trip to the gateway, returning its JSON object or raising the
+    controlled client error. Shared by the catalog fetch and the gate helpers below so
+    all three fail the same way (unreachable -> LlmGatewayClientError, never a raw aiohttp
+    exception leaking into a route handler)."""
     base = _base_url()
     if not base:
         raise LlmGatewayClientError("HUB_LLM_GATEWAY_URL is not configured")
-    url = f"{base}/routes"
+    url = f"{base}{path}"
+    # session.get / session.put by name rather than session.request(method, ...): the
+    # existing tests fake ClientSession with just those verbs, and GET must not send a body.
+    kwargs = {} if json_body is None else {"json": json_body}
     try:
         async with aiohttp.ClientSession(timeout=_timeout()) as session:
-            async with session.get(url) as response:
+            async with getattr(session, method.lower())(url, **kwargs) as response:
                 if response.status >= 400:
                     body = await response.text()
                     raise LlmGatewayClientError(
-                        f"LLM gateway /routes HTTP {response.status}: {body[:240]}"
+                        f"LLM gateway {path} HTTP {response.status}: {body[:240]}"
                     )
                 payload = await response.json()
     except aiohttp.ClientError as exc:
-        logger.warning("LLM gateway /routes unreachable: %s", exc)
-        raise LlmGatewayClientError("LLM gateway /routes unreachable") from exc
+        logger.warning("LLM gateway %s unreachable: %s", path, exc)
+        raise LlmGatewayClientError(f"LLM gateway {path} unreachable") from exc
     if not isinstance(payload, dict):
-        raise LlmGatewayClientError("LLM gateway /routes returned non-object payload")
+        raise LlmGatewayClientError(f"LLM gateway {path} returned non-object payload")
+    return payload
+
+
+async def fetch_routes() -> dict[str, Any]:
+    payload = await _gateway_json("GET", "/routes")
     return _normalize_routes_payload(payload)
+
+
+async def fetch_route_gate(route_id: str) -> dict[str, Any]:
+    """Read one operator gate (open/closed) from the gateway.
+
+    Only routes in OPERATOR_GATED_LLM_ROUTES have a gate; the gateway answers 404
+    `route_not_operator_gated` for anything else, which surfaces here as
+    LlmGatewayClientError.
+    """
+    return await _gateway_json("GET", f"/routes/{route_id}/gate")
+
+
+async def set_route_gate(route_id: str, *, open: bool, changed_by: str) -> dict[str, Any]:
+    """Open or close one operator gate. Returns the gateway's new gate state."""
+    return await _gateway_json(
+        "PUT",
+        f"/routes/{route_id}/gate",
+        json_body={"open": bool(open), "changed_by": str(changed_by)},
+    )
 
 
 def _priority_for(route_id: str, reported: Any) -> str | None:
@@ -85,7 +116,9 @@ def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
     # normalize_llm_route resolves aliases too, so a gateway reporting a legacy alias as its
     # default no longer silently collapses to "chat" here.
-    default_route = normalize_llm_route(payload.get("default_route")) or "chat"
+    # Fallback is "quick", not "chat": an unrecognised gateway default must not be shown as
+    # the most contended lane (chat is Juniper's own always-resident worker).
+    default_route = normalize_llm_route(payload.get("default_route")) or "quick"
     routes_raw = payload.get("routes") or []
     routes: list[dict[str, Any]] = []
     if isinstance(routes_raw, list):
@@ -112,6 +145,9 @@ def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     # probe could not answer. The composer greys out its attach
                     # button on anything that is not True.
                     "vision": item.get("vision"),
+                    # True/False for an operator-gated route (chat-burst: is Juniper
+                    # lending her chat lane right now?), None for every other route.
+                    "gate_open": item.get("gate_open"),
                 }
             )
     by_id = {r["id"]: r for r in routes}
@@ -137,6 +173,7 @@ def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 # yielding lane to a human, so the definitional answer is used instead.
                 "priority": _priority_for(route_id, None),
                 "reserved_free_slots": None,
+                "gate_open": None,
             },
         )
     ordered = [by_id[rid] for rid in LLM_ROUTE_DISPLAY_ORDER]

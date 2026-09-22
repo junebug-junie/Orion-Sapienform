@@ -120,10 +120,19 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                 assigned_lane=(state.get("lease") or {}).get("lane"),
                 session_id=SELF_SENSE_SESSION_ID,
             )
+            # Stamp the in-flight id on the same state dict execute() holds,
+            # so a timeout/cancel can address this uuid4 (not the lease-derived
+            # curiosity id). Cleared when the turn returns.
+            inflight = state.setdefault("_inflight_turn_correlation_ids", [])
+            if isinstance(inflight, list):
+                inflight.append(correlation_id)
             try:
                 result, meta = await timed_turn(deps.run_turn, request)
             except Exception as exc:  # noqa: BLE001 -- transport failure, resumable
                 raise SelfSenseAskFailed(f"{type(exc).__name__}: {exc}") from exc
+            finally:
+                if isinstance(inflight, list) and correlation_id in inflight:
+                    inflight.remove(correlation_id)
             if not result.ok:
                 logger.info(
                     "self_sense_eval_question_failed run=%s question=%s error=%s",

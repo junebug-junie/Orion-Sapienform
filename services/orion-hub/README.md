@@ -1196,8 +1196,10 @@ reach-out. Design doc:
 (PR #2288 root-caused this): every transition lands in
 `durable_resource_events` (`durable_admission_runs` holds the acceptance
 row), and only the terminal `completed` row is copied into the older
-`substrate_durable_run_state` table -- mislabelling its `workflow` as
-`curiosity.investigate` even for a self-sense check. `run_story.py` reads
+`substrate_durable_run_state` table -- historically mislabelling its `workflow` as
+`curiosity.investigate` even for a self-sense check (admission always drove the
+curiosity graph; fixed 2026-09-22 so `request.workflow` selects the admitted
+graph). `run_story.py` reads
 the admission path when it has rows for a run (acceptance is the true start
 of the sitting, lane wait included) and falls back to the bridge table only
 for a run that predates 2026-09-14. Noisy admission events

@@ -54,6 +54,22 @@ class Runner:
             return entry.entry_id
         return Deps(turn, read, row, journal)
 
+    def _self_sense_deps(self):
+        from app.self_sense_graph import Deps as SelfSenseDeps
+
+        async def turn(req):
+            self.calls.append(req)
+            if self.block:
+                await self.block.wait()
+            return CuriosityTurnResultV1(
+                run_id=req.run_id, correlation_id=req.correlation_id, text="self-sense answer", ok=True
+            )
+
+        async def publish_rows(rows):
+            return len(rows), 0
+
+        return SelfSenseDeps(run_turn=turn, publish_rows=publish_rows)
+
     async def _publish(self, channel, kind, model, corr):
         self.events.append((kind, model))
         return True

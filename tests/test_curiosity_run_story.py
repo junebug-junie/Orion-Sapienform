@@ -33,6 +33,7 @@ from orion.curiosity.run_story import (
     story_to_payload,
     summaries,
 )
+from orion.schemas.self_sense import SELF_SENSE_QUESTIONS
 
 T0 = datetime(2026, 9, 21, 15, 48, tzinfo=timezone.utc)
 MS0 = int(T0.timestamp() * 1000)
@@ -774,3 +775,93 @@ def test_flat_revised_status_is_a_measured_verdict() -> None:
     po = build_stories(rows)[run_id].prior_outcome
     assert po["verdict"] == "revised"
     assert "revised" in po["verdict_basis"].lower()
+
+
+def test_about_prefers_help_question_then_prior_then_brief() -> None:
+    run_id = "about-help"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        admission=[{
+            "run_id": run_id,
+            "request": json.dumps({
+                "workflow": "curiosity.investigate",
+                "brief": {"line": "investigate", "prompt": "fallback brief prompt that is long enough"},
+            }),
+            "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+        }],
+        help_requests=[{
+            "run_id": run_id, "help_id": "h1", "prior_id": "p1",
+            "question": "Does outward learning land in the working loop?",
+            "prior_claim": "outward learning lives only in the journal",
+            "written_at": _ms(1),
+        }],
+        priors=[{"prior_id": "p1", "claim": "outward learning lives only in the journal",
+                 "status": "open", "line": "investigate"}],
+    )
+    story = build_stories(rows)[run_id]
+    assert story.about["source"] == "help_request"
+    assert "outward learning" in story.about["text"]
+    assert story.run.about["text"] == story.about["text"]
+    payload = story_to_payload(story)
+    assert payload["about"]["source"] == "help_request"
+
+
+def test_about_uses_prior_claim_when_no_help_question() -> None:
+    run_id = "about-prior"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        help_requests=[{
+            "run_id": run_id, "help_id": "h1", "prior_id": "p1",
+            "question": "",  # hire without a question string
+            "prior_claim": "who matters is a singleton, not a crowd",
+            "written_at": _ms(1),
+        }],
+        priors=[{"prior_id": "p1", "claim": "who matters is a singleton, not a crowd",
+                 "status": "open", "line": "self_inquiry"}],
+    )
+    about = build_stories(rows)[run_id].about
+    assert about["source"] == "prior"
+    assert "who matters" in about["text"]
+
+
+def test_about_for_self_sense_lists_the_four_fixed_questions() -> None:
+    run_id = "20260922T211540Z-ff890d"
+    rows = _admission_run(run_id, workflow="self_sense_eval", line="self_sense_eval", bridge=False)
+    # Placeholder prompt only -- the bug that left Juniper with no subject.
+    rows.admission[0] = {
+        "run_id": run_id,
+        "request": json.dumps({
+            "workflow": "self_sense_eval",
+            "brief": {
+                "line": "self_sense_eval",
+                "prompt": "self-sense eval: four fixed questions",
+                "questions": [list(q) for q in SELF_SENSE_QUESTIONS],
+            },
+        }),
+        "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+    }
+    about = build_stories(rows)[run_id].about
+    assert about["source"] == "self_sense_questions"
+    assert about["text"] == "Four fixed self-sense questions"
+    assert len(about["detail"]) == 4
+    assert any("what are you" in q.lower() for q in about["detail"])
+
+
+def test_about_ignores_self_sense_placeholder_prompt_on_investigate_misroute() -> None:
+    """If a self-sense job was driven as investigate (ff890d), the placeholder
+    prompt must not masquerade as the subject -- fall through to finding."""
+    run_id = "misroute"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10, finding_text="I looked at my own self_sense_eval_log instead.")],
+        admission=[{
+            "run_id": run_id,
+            "request": json.dumps({
+                "workflow": "curiosity.investigate",
+                "brief": {"line": "investigate", "prompt": "self-sense eval: four fixed questions"},
+            }),
+            "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+        }],
+    )
+    about = build_stories(rows)[run_id].about
+    assert about["source"] == "finding"
+    assert "self_sense_eval_log" in about["text"]

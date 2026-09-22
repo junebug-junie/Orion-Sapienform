@@ -211,8 +211,9 @@ new `agent`-preferring run derives it as an alternative at submission. It needs 
 `allow_elastic_activation`: nothing is physically borrowed. Eligibility follows the gateway
 catalog: while the Hub gate is closed the gateway reports the route `operator_closed`, which
 `refresh_lanes` maps to `healthy=False` (`health_unknown_or_unavailable` in the run's
-`suppressed` map). Runs already queued before this policy change keep their frozen
-alternatives and will not widen onto it. A run first granted `chat-burst` stays pinned to it
+`suppressed` map). Runs already queued before a policy change reach a newly declared lane through the
+policy-additive union in `widen_alternatives` (PR fix/durable-additive-alternatives); until
+that merges, their frozen alternatives do not include it. A run first granted `chat-burst` stays pinned to it
 (`run_assignment_locked`). Closing the gate mid-run makes the run's next gateway call fail
 (`route_operator_closed`), which `admitted_graph.py` records as one failed attempt: the lease
 is released, the partial FCC turn is lost, and the run waits on the closed lane for its next

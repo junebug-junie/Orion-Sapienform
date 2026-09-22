@@ -235,6 +235,19 @@ h2 {
 .reach-block .dec.blocked { color: var(--critical); }
 .reach-block .dec.unknown { color: var(--ink-muted); }
 .story .none { font-size: 12px; color: var(--ink-2); background: var(--plane); border: 1px dashed var(--axis); border-radius: 8px; padding: 9px 11px; }
+.story-card {
+  margin: 10px 0 14px; padding: 12px 14px; border-radius: 10px;
+  background: var(--plane); border: 1px solid var(--hairline); font-size: 13px; line-height: 1.45;
+}
+.story-card .card-title { font-weight: 620; margin-bottom: 6px; }
+.story-card .stat-row { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--ink-2); font-size: 12px; margin-bottom: 4px; }
+.story-card .stat-row b { color: var(--ink); font-weight: 620; }
+.story-card .claim, .story-card .outcome-text { white-space: pre-wrap; color: var(--ink-2); margin-top: 6px; }
+.story-card .verdict { display: inline-block; font-size: 11px; font-weight: 620; letter-spacing: 0.02em;
+  border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 9px; margin-top: 8px; }
+.story-card .verdict.answered, .story-card .verdict.supported, .story-card .verdict.revised_up, .story-card .verdict.revised, .story-card .verdict.peer_ok { border-color: var(--good-text); color: var(--good-text); }
+.story-card .verdict.refuted, .story-card .verdict.revised_down, .story-card .verdict.peer_failed { border-color: var(--critical); color: var(--critical); }
+.timeline li.k-starting_prior::before { background: var(--series-5); }
 
 /* --- disclosures ------------------------------------------------------- */
 details.journal { margin-top: 11px; }
@@ -596,6 +609,14 @@ function timelineRow(it, run) {
     : `<span class="t" title="${esc(fmtStamp(it.at))}">${fmtOffset(it.offset_sec)}</span>`;
   let cls = `k-${it.kind}`, what = "";
   switch (it.kind) {
+    case "starting_prior":
+      what = `<span class="lbl">starting prior</span>` +
+             (it.prior_id ? ` <span class="dim mono">${esc(it.prior_id)}</span>` : "") +
+             (it.status || it.confidence != null
+               ? ` <span class="dim">${it.status ? esc(it.status) : ""}${it.confidence != null ? ` · conf ${conf(it.confidence)}` : ""}</span>`
+               : "") +
+             (it.claim ? `<div class="txt">${esc(it.claim)}</div>` : "");
+      break;
     case "role_choice":
       what = `<span class="lbl">started</span> · ${esc(LINE_LABEL[run.line] || run.line)} · ` +
              (it.choice === "local_crawl" ? "working alone" : `role: ${esc(it.choice)}`) +
@@ -638,11 +659,15 @@ function timelineRow(it, run) {
              `<span class="dim">self-label ${it.self_label_score ?? "—"} · grounded ${it.grounded_record_score ?? "—"} · ${esc(it.answer_source)}</span>` +
              (it.answer_text ? `<div class="txt">${esc(clip(it.answer_text, 600))}</div>` : "");
       break;
-    case "self_write":
-      what = `<span class="lbl">wrote ${it.kind === "lived_answer" ? "a lived answer" : "a self-definition"}</span>` +
+    case "self_write": {
+      const writeKind = it.write_kind || "";
+      const lived = writeKind === "lived_answer";
+      what = `<span class="lbl">wrote ${lived ? "a lived answer" : "a self-definition"}</span>` +
              `${it.question_id ? ` <span class="dim">(${esc(it.question_id)})</span>` : ""}` +
-             `<div class="txt">${esc(it.text)}</div>` + (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+             (it.text ? `<div class="txt">${esc(it.text)}</div>` : "") +
+             (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
       break;
+    }
     case "finding":
       what = `<span class="lbl">finding</span><div class="txt">${esc(it.text)}</div>` +
              (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
@@ -727,11 +752,46 @@ function renderStory(d) {
     ? `<div class="dim" style="font-size:12px;margin-top:8px">${run.self_sense.questions_answered} of ${run.self_sense.questions_expected} questions scored` +
       `${run.self_sense.self_definition_version ? ` · against self-definition v${run.self_sense.self_definition_version}` : ""}</div>`
     : (run.line === "self_sense_eval" ? `<p class="none">No scores were recorded for this check.</p>` : "");
+
+  const sum = d.summary || {};
+  const peerBits = (sum.peer_briefs || []).map((b) => `${esc(b.status || "?")}${b.peer ? `/${esc(b.peer)}` : ""}`).join(", ");
+  const summaryCard = `<div class="story-card summary-card">
+      <div class="card-title">Run snapshot</div>
+      <div class="stat-row">
+        <span><b>${sum.hops ?? run.hops ?? 0}</b> hops</span>
+        <span><b>${sum.findings ?? run.findings ?? 0}</b> findings</span>
+        <span><b>${sum.revisions ?? run.revisions ?? 0}</b> prior revisions</span>
+        <span><b>${sum.helps ?? 0}</b> help requests</span>
+        ${peerBits ? `<span>peer: <b>${peerBits}</b></span>` : ""}
+        ${sum.role && sum.role.choice ? `<span>role: <b>${esc(sum.role.choice)}</b></span>` : ""}
+        ${sum.active_sec != null ? `<span>active <b>${esc(fmtDuration(sum.active_sec))}</b></span>` : ""}
+        ${sum.lane_wait_sec != null ? `<span>lane wait <b>${esc(fmtDuration(sum.lane_wait_sec))}</b></span>` : ""}
+      </div>
+      ${sum.role && sum.role.why ? `<div class="dim" style="font-size:12px;margin-top:4px">${esc(clip(sum.role.why, 280))}</div>` : ""}
+    </div>`;
+
+  const po = d.prior_outcome;
+  let priorOutcomeCard = "";
+  if (po && (po.prior || po.outcome_text)) {
+    const prior = po.prior || {};
+    priorOutcomeCard = `<div class="story-card prior-outcome-card">
+        <div class="card-title">Prior → outcome</div>
+        ${prior.prior_id ? `<div class="dim mono" style="font-size:12px">${esc(prior.prior_id)}${prior.status ? ` · ${esc(prior.status)}` : ""}${prior.confidence != null ? ` · conf ${conf(prior.confidence)}` : ""}</div>` : `<div class="dim">No starting prior stamped on this run</div>`}
+        ${prior.claim ? `<div class="claim">${esc(prior.claim)}</div>` : ""}
+        <div class="card-title" style="margin-top:10px">What it found</div>
+        ${po.outcome_text ? `<div class="outcome-text">${esc(po.outcome_text)}</div>` : `<div class="dim">No lived answer / peer summary recorded</div>`}
+        <div><span class="verdict ${esc(po.verdict || "unknown")}">${esc((po.verdict || "unknown").replace(/_/g, " "))}</span>
+          <span class="dim" style="font-size:12px;margin-left:8px">${esc(po.verdict_basis || "")}</span></div>
+      </div>`;
+  }
+
   el.innerHTML = `
     <div class="head">
       <span class="title mono">${esc(run.run_id)}</span>${pills.join("")}
       <span class="when">${esc(when)}</span>
     </div>
+    ${summaryCard}
+    ${priorOutcomeCard}
     <ul class="timeline">${(d.timeline || []).map((it) => timelineRow(it, run)).join("")}</ul>
     ${readingsNote}${selfSense}${reachHtml}${harness}
     ${d.journal_body ? `<details class="journal"><summary>Journal entry</summary><div class="journal-body">${esc(d.journal_body)}</div></details>` : ""}

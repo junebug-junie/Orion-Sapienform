@@ -101,6 +101,7 @@ _REASON_TO_DECISION = {
 # Timeline tie-break within one millisecond: a role choice precedes a hop
 # written at the same instant, an outcome precedes the journal it prompted.
 _KIND_RANK = {
+    "starting_prior": -1,
     "role_choice": 0,
     "lifecycle": 1,
     "attempt": 2,
@@ -235,6 +236,8 @@ class RunStoryRows:
     readings: list[dict[str, Any]] = field(default_factory=list)
     self_sense: list[dict[str, Any]] = field(default_factory=list)
     self_writes: list[dict[str, Any]] = field(default_factory=list)
+    help_requests: list[dict[str, Any]] = field(default_factory=list)
+    peer_briefs: list[dict[str, Any]] = field(default_factory=list)
     # Admission path (since 2026-09-14): one `durable_admission_runs` row per
     # run, its `durable_resource_events`, and per-run counts of the noisy
     # anomaly events the store does not fetch row by row.
@@ -270,7 +273,7 @@ class TimelineItem:
         n = _as_int(self.data.get("n"), 0)
         if self.at is not None:
             return (1, self.at, rank, n)
-        if self.kind in ("hop", "role_choice", "attempt"):
+        if self.kind in ("hop", "role_choice", "attempt", "starting_prior"):
             return (0, 0, rank, n)
         if self.kind in ("finding", "revision", "self_write") and anchor is not None:
             return (1, anchor, rank + 0.5, n)
@@ -352,6 +355,9 @@ class RunStory:
     timeline: list[TimelineItem]
     journal_body: str
     readings_available: bool
+    starting_prior: Optional[dict[str, Any]] = None
+    summary: Optional[dict[str, Any]] = None
+    prior_outcome: Optional[dict[str, Any]] = None
 
 
 # --- the join -------------------------------------------------------------
@@ -368,6 +374,8 @@ def _slot_factory() -> dict[str, Any]:
         "journals": [],
         "self_sense": [],
         "self_writes": [],
+        "help_requests": [],
+        "peer_briefs": [],
         "admission": None,
         "events": [],
         "event_counts": {},
@@ -389,7 +397,8 @@ def _group(rows: RunStoryRows) -> dict[str, dict[str, Any]]:
         s = slot(row.get("run_id"))
         if s is not None:
             s["lifecycle"].append(row)
-    for key in ("roles", "hops", "findings", "revisions", "outcomes", "self_writes"):
+    for key in ("roles", "hops", "findings", "revisions", "outcomes", "self_writes",
+                "help_requests", "peer_briefs"):
         for row in getattr(rows, key):
             s = slot(row.get("run_id"))
             if s is not None:
@@ -722,11 +731,230 @@ def _outcome_kind(*, status: str, reach: ReachOut, wrote: int) -> str:
     return OUTCOME_FINISHED
 
 
+def _starting_prior_for_slot(
+    *,
+    help_rows: list[dict[str, Any]],
+    revisions: list[dict[str, Any]],
+    prior_claims: dict[str, str],
+    prior_meta: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Subject prior for the sitting: HelpRequest ABOUT first, else first revision.
+
+    Status/confidence prefer the *start-of-sitting* values from the first
+    PriorRevision of that prior (`from_status` / `from_confidence`). The live
+    `:Prior` node is already post-write-back after a finished sitting.
+    """
+    def _start_state(pid: str) -> tuple[Optional[str], Optional[float]]:
+        for rev in revisions:
+            if _text(rev.get("prior_id"), 200) != pid:
+                continue
+            status = _text(rev.get("from_status"), 60) or None
+            conf = _as_float(rev.get("from_confidence"))
+            return status, conf
+        meta = prior_meta.get(pid) or {}
+        return _text(meta.get("status"), 60) or None, _as_float(meta.get("confidence"))
+
+    for h in sorted(help_rows, key=lambda r: _ms(r.get("written_at")) or 0):
+        pid = _text(h.get("prior_id"), 200)
+        if not pid:
+            continue
+        meta = prior_meta.get(pid) or {}
+        claim = _text(h.get("prior_claim")) or prior_claims.get(pid, "") or _text(meta.get("claim"))
+        status, conf = _start_state(pid)
+        # HelpRequest may still carry a hire-time snapshot; prefer revision
+        # from_* when present, else the help row, else live meta (via _start_state).
+        if status is None:
+            status = _text(h.get("prior_status"), 60) or None
+        if conf is None and h.get("prior_confidence") is not None:
+            conf = _as_float(h.get("prior_confidence"))
+        return {
+            "prior_id": pid,
+            "claim": claim,
+            "status": status,
+            "confidence": conf,
+            "source": "help_request_about",
+            "help_id": _text(h.get("help_id"), 200) or None,
+        }
+    if revisions:
+        rev = revisions[0]
+        pid = _text(rev.get("prior_id"), 200)
+        if pid:
+            meta = prior_meta.get(pid) or {}
+            status, conf = _start_state(pid)
+            return {
+                "prior_id": pid,
+                "claim": prior_claims.get(pid, "") or _text(meta.get("claim")),
+                "status": status or _text(rev.get("from_status"), 60) or None,
+                "confidence": conf if conf is not None else _as_float(rev.get("from_confidence")),
+                "source": "prior_revision",
+                "help_id": None,
+            }
+    return None
+
+
+def _subject_prior_revision(
+    revisions: list[dict[str, Any]],
+    starting_prior: Optional[dict[str, Any]],
+    prior_claims: dict[str, str],
+) -> Optional[dict[str, Any]]:
+    """Last PriorRevision that touches the sitting's subject prior.
+
+    Side revisions of other priors must not drive the prior→outcome verdict.
+    """
+    if not revisions:
+        return None
+    subject_id = _text((starting_prior or {}).get("prior_id"), 200) if starting_prior else ""
+    chosen = None
+    for rev in revisions:
+        pid = _text(rev.get("prior_id"), 200)
+        if not pid:
+            continue
+        if subject_id and pid != subject_id:
+            continue
+        chosen = rev
+    if chosen is None and not subject_id and revisions:
+        chosen = revisions[-1]
+    if chosen is None:
+        return None
+    pid = _text(chosen.get("prior_id"), 200)
+    return {
+        "prior_id": pid,
+        "claim": prior_claims.get(pid, ""),
+        "from": _as_float(chosen.get("from_confidence")),
+        "to": _as_float(chosen.get("to_confidence")),
+        "from_status": _text(chosen.get("from_status"), 60),
+        "to_status": _text(chosen.get("to_status"), 60),
+    }
+
+
+def _prior_outcome_block(
+    *,
+    starting_prior: Optional[dict[str, Any]],
+    prior_touched: Optional[dict[str, Any]],
+    self_written: Optional[dict[str, Any]],
+    peer_rows: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Prior → what was found, with a measured verdict label."""
+    if starting_prior is None and self_written is None and not peer_rows and prior_touched is None:
+        return None
+
+    outcome_text = ""
+    outcome_kind = "none"
+    if self_written and _text(self_written.get("text")):
+        outcome_text = _text(self_written.get("text"))
+        outcome_kind = _text(self_written.get("kind"), 40) or "lived_answer"
+    peer = None
+    if peer_rows:
+        latest = sorted(peer_rows, key=lambda r: _ms(r.get("written_at")) or 0)[-1]
+        peer = {
+            "status": _text(latest.get("status"), 60),
+            "peer": _text(latest.get("peer"), 80),
+            "summary": _text(latest.get("summary"), 1200),
+            "refusal_reason": _text(latest.get("refusal_reason"), 240) or None,
+            "help_id": _text(latest.get("help_id"), 200) or None,
+        }
+        if not outcome_text and peer["summary"]:
+            outcome_text = peer["summary"]
+            outcome_kind = "peer_brief"
+
+    to_status = _text((prior_touched or {}).get("to_status"), 60).lower()
+    from_conf = (prior_touched or {}).get("from")
+    to_conf = (prior_touched or {}).get("to")
+    if to_status in ("refuted", "retired_unresolvable", "retired"):
+        verdict, basis = "refuted", f"Prior status moved to {to_status}"
+    elif to_status in ("supported", "settled", "confirmed"):
+        verdict, basis = "supported", f"Prior status moved to {to_status}"
+    elif to_status == "revised":
+        if (
+            isinstance(from_conf, (int, float))
+            and isinstance(to_conf, (int, float))
+            and to_conf != from_conf
+        ):
+            direction = "up" if to_conf > from_conf else "down"
+            verdict, basis = f"revised_{direction}", f"Confidence {from_conf} → {to_conf}"
+        else:
+            verdict, basis = "revised", "Prior marked revised"
+    elif (
+        isinstance(from_conf, (int, float))
+        and isinstance(to_conf, (int, float))
+        and to_conf > from_conf
+    ):
+        verdict, basis = "revised_up", f"Confidence {from_conf} → {to_conf}"
+    elif (
+        isinstance(from_conf, (int, float))
+        and isinstance(to_conf, (int, float))
+        and to_conf < from_conf
+    ):
+        verdict, basis = "revised_down", f"Confidence {from_conf} → {to_conf}"
+    elif outcome_kind in ("lived_answer", "self_definition") and outcome_text:
+        verdict, basis = "answered", f"Wrote {outcome_kind.replace('_', ' ')}"
+        if peer and peer["status"] == "ok":
+            basis += "; peer brief ok"
+        elif peer and peer["status"]:
+            basis += f"; peer {peer['status']}"
+    elif peer and peer["status"] == "ok":
+        verdict, basis = "peer_ok", "Peer brief returned ok"
+    elif peer and peer["status"] in ("failed", "refused_budget"):
+        verdict, basis = "peer_failed", f"Peer brief {peer['status']}"
+    elif starting_prior:
+        verdict, basis = "open", "Prior still open; no measured write-back"
+    else:
+        verdict, basis = "unknown", "No prior or outcome recorded"
+
+    return {
+        "prior": starting_prior,
+        "outcome_text": outcome_text,
+        "outcome_kind": outcome_kind,
+        "verdict": verdict,
+        "verdict_basis": basis,
+        "revision": prior_touched,
+        "peer": peer,
+    }
+
+
+def _summary_card(
+    *,
+    run: RunSummary,
+    role: Optional[dict[str, Any]],
+    help_rows: list[dict[str, Any]],
+    peer_rows: list[dict[str, Any]],
+    starting_prior: Optional[dict[str, Any]],
+    prior_outcome: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "line": run.plain_line_label,
+        "status": run.status,
+        "hops": run.hops,
+        "findings": run.findings,
+        "revisions": run.revisions,
+        "helps": len(help_rows),
+        "peer_briefs": [
+            {
+                "status": _text(b.get("status"), 60),
+                "peer": _text(b.get("peer"), 80),
+            }
+            for b in peer_rows
+        ],
+        "role": role,
+        "duration_sec": run.duration_sec,
+        "active_sec": run.active_sec,
+        "lane_wait_sec": run.lane_wait_sec,
+        "outcome_kind": run.outcome_kind,
+        "has_starting_prior": starting_prior is not None,
+        "verdict": (prior_outcome or {}).get("verdict"),
+    }
+
+
 def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
     """Every run the rows describe, keyed by run_id. One pass; the summary
     list and the single-run story are both projections of this."""
     slots = _group(rows)
     prior_claims = {_text(p.get("prior_id"), 200): _text(p.get("claim")) for p in rows.priors}
+    prior_meta = {
+        _text(p.get("prior_id"), 200): p
+        for p in rows.priors
+        if _text(p.get("prior_id"), 200)
+    }
     prior_lines = {_text(p.get("prior_id"), 200): _text(p.get("line"), 40) for p in rows.priors}
     outreach_by_key = {_text(r.get("correlation_id"), 64): r for r in rows.outreach}
     sent_by_key: dict[str, dict[str, Any]] = {}
@@ -764,6 +992,25 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
         graph_stamps: list[int] = []
 
         roles = sorted(slot["roles"], key=lambda r: _ms(r.get("written_at")) or 0)
+        help_rows = sorted(slot["help_requests"], key=lambda r: _ms(r.get("written_at")) or 0)
+        peer_rows = sorted(slot["peer_briefs"], key=lambda r: _ms(r.get("written_at")) or 0)
+        revisions_early = sorted(slot["revisions"], key=lambda r: _ms(r.get("written_at")) or 0)
+        starting_prior = _starting_prior_for_slot(
+            help_rows=help_rows,
+            revisions=revisions_early,
+            prior_claims=prior_claims,
+            prior_meta=prior_meta,
+        )
+        if starting_prior is not None:
+            items.append(TimelineItem(at=None, kind="starting_prior", data={
+                "prior_id": starting_prior["prior_id"],
+                "claim": starting_prior.get("claim") or "",
+                "status": starting_prior.get("status"),
+                "confidence": starting_prior.get("confidence"),
+                "source": starting_prior.get("source"),
+                "help_id": starting_prior.get("help_id"),
+            }))
+
         for r in roles:
             at = _ms(r.get("written_at"))
             if at is not None:
@@ -978,11 +1225,36 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
         dated_hops = [it.at for it in hop_items if it.at is not None]
         anchor = max(dated_hops) if dated_hops else None
         items.sort(key=lambda it: it.sort_key(anchor))
+
+        role_summary = None
+        if roles:
+            r0 = roles[0]
+            role_summary = {
+                "choice": _text(r0.get("choice"), 60),
+                "why": _text(r0.get("why"), _NOTE_LIMIT),
+            }
+        prior_outcome = _prior_outcome_block(
+            starting_prior=starting_prior,
+            prior_touched=_subject_prior_revision(revisions, starting_prior, prior_claims),
+            self_written=self_written,
+            peer_rows=peer_rows,
+        )
+        summary_card = _summary_card(
+            run=summary,
+            role=role_summary,
+            help_rows=help_rows,
+            peer_rows=peer_rows,
+            starting_prior=starting_prior,
+            prior_outcome=prior_outcome,
+        )
         out[run_id] = RunStory(
             run=summary,
             timeline=items,
             journal_body=journal_body,
             readings_available=bool(readings_by_run.get(run_id)),
+            starting_prior=starting_prior,
+            summary=summary_card,
+            prior_outcome=prior_outcome,
         )
     return out
 
@@ -1080,22 +1352,39 @@ def run_to_payload(r: RunSummary) -> dict[str, Any]:
 
 def story_to_payload(s: RunStory) -> dict[str, Any]:
     start = s.run.started_at
+    timeline = []
+    for it in s.timeline:
+        data = dict(it.data)
+        # LivedAnswer / SelfDefinition rows carry nested `kind`; do not let
+        # that overwrite the timeline event kind (self_write) or the UI
+        # falls through to a bare label with no text.
+        write_kind = None
+        if it.kind == "self_write":
+            write_kind = _text(data.pop("kind", None), 40) or "self_definition"
+        entry = {
+            "at": it.at,
+            "at_iso": _iso(it.at),
+            # Relative clock the page prints as +m:ss; None when either
+            # end is unknown rather than a fake 0.
+            "offset_sec": (
+                round((it.at - start) / 1000, 1)
+                if it.at is not None and start is not None
+                else None
+            ),
+            "kind": it.kind,
+            "attempt": it.attempt,
+            **data,
+        }
+        if write_kind is not None:
+            entry["write_kind"] = write_kind
+        timeline.append(entry)
     return {
         "run": run_to_payload(s.run),
-        "timeline": [
-            {
-                "at": it.at,
-                "at_iso": _iso(it.at),
-                # Relative clock the page prints as +m:ss; None when either
-                # end is unknown rather than a fake 0.
-                "offset_sec": (round((it.at - start) / 1000, 1) if it.at is not None and start is not None else None),
-                "kind": it.kind,
-                "attempt": it.attempt,
-                **it.data,
-            }
-            for it in s.timeline
-        ],
+        "timeline": timeline,
         "journal_body": s.journal_body,
         "readings_available": s.readings_available,
         "harness": s.run.harness,
+        "starting_prior": s.starting_prior,
+        "summary": s.summary,
+        "prior_outcome": s.prior_outcome,
     }

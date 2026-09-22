@@ -87,8 +87,8 @@ def test_the_happy_run_tells_its_story_in_clock_order() -> None:
     stories = build_stories(_happy_run())
     story = stories["446ddd7165d5"]
     kinds = [it.kind for it in story.timeline]
-    assert kinds[0] == "lifecycle", kinds
-    assert kinds[1] == "role_choice"
+    assert kinds[0] == "starting_prior", kinds
+    assert kinds.count("starting_prior") == 1
     assert kinds[-1] == "lifecycle" and story.timeline[-1].data["status"] == "completed"
     hops = [it for it in story.timeline if it.kind == "hop"]
     assert [h.data["n"] for h in hops] == [1, 2], "hops come back unordered from the graph"
@@ -98,6 +98,16 @@ def test_the_happy_run_tells_its_story_in_clock_order() -> None:
     assert run.plain_line_label == "World question"
     assert run.status == STATUS_COMPLETED
     assert run.started_from == "lifecycle"
+    assert story.starting_prior is not None
+    assert story.starting_prior["prior_id"] == "p1"
+    assert story.starting_prior["claim"] == "who matters is a singleton"
+    assert story.starting_prior["source"] == "prior_revision"
+    assert story.prior_outcome is not None
+    assert story.prior_outcome["verdict"] == "supported"
+    assert story.summary["hops"] == 2
+    assert story.summary["findings"] == 1
+    assert story.summary["revisions"] == 1
+
     assert run.duration_sec == 850.0
     assert run.prior_touched == {"prior_id": "p1", "claim": "who matters is a singleton",
                                  "from": 0.6, "to": 0.68, "from_status": "revised", "to_status": "supported"}
@@ -112,7 +122,10 @@ def test_offsets_are_relative_to_the_start_and_none_when_unknown() -> None:
     payload = story_to_payload(build_stories(_happy_run())["446ddd7165d5"])
     hop1 = next(it for it in payload["timeline"] if it["kind"] == "hop" and it["n"] == 1)
     assert hop1["offset_sec"] == 714.0
-    assert payload["timeline"][0]["offset_sec"] == 0.0
+    start = next(it for it in payload["timeline"] if it["kind"] == "lifecycle")
+    assert start["offset_sec"] == 0.0
+    prior = next(it for it in payload["timeline"] if it["kind"] == "starting_prior")
+    assert prior["offset_sec"] is None, "undated starting prior prints with no fake clock"
     assert json.dumps(payload), "json-safe"
 
 
@@ -609,3 +622,155 @@ def test_the_payload_carries_the_admission_fields() -> None:
     assert payload["lane"] == "agent" and payload["lane_wait_sec"] == 25419.0
     assert payload["retries"] == 0 and payload["anomalies"] == {"run.checkpoint_resume_failed": 12}
     assert json.dumps(payload)
+
+
+def test_help_request_about_is_the_starting_prior_ahead_of_revisions() -> None:
+    """The subject of the sitting is the HelpRequest ABOUT prior, not the
+    first revision's prior — those can diverge when a run revises something
+    else along the way."""
+    run_id = "c9649dc67459"
+    rows = RunStoryRows(
+        lifecycle=[_life(run_id, "harness_turn", "running", 0), _completed(run_id, 100)],
+        help_requests=[{
+            "run_id": run_id, "help_id": "h1",
+            "prior_id": "self:outward_learning_in_record_not_in_loop_20260921",
+            "prior_claim": "outward learning lives in the record but not the loop",
+            "prior_status": "open", "prior_confidence": 0.42,
+            "written_at": _ms(5),
+        }],
+        revisions=[{
+            "run_id": run_id, "prior_id": "other:prior", "from_confidence": 0.5,
+            "to_confidence": 0.55, "from_status": "open", "to_status": "revised",
+            "written_at": _ms(80),
+        }],
+        priors=[
+            {"prior_id": "self:outward_learning_in_record_not_in_loop_20260921",
+             "claim": "outward learning lives in the record but not the loop",
+             "status": "open", "confidence": 0.42, "line": "self_inquiry"},
+            {"prior_id": "other:prior", "claim": "something else", "line": ""},
+        ],
+        self_writes=[{
+            "run_id": run_id, "kind": "lived_answer",
+            "text": "The loop still does not ingest outward learning as a first-class hop.",
+            "evidence": "graph read", "written_at": _ms(90),
+            "question_id": "q1",
+        }],
+        peer_briefs=[{
+            "run_id": run_id, "brief_id": "b1", "help_id": "h1", "peer": "claude",
+            "status": "ok", "summary": "peer agrees the loop gap is real",
+            "written_at": _ms(95),
+        }],
+    )
+    story = build_stories(rows)[run_id]
+    assert story.starting_prior["prior_id"].startswith("self:outward_learning")
+    assert story.starting_prior["source"] == "help_request_about"
+    assert story.starting_prior["help_id"] == "h1"
+    assert story.starting_prior["confidence"] == 0.42
+    prior_items = [it for it in story.timeline if it.kind == "starting_prior"]
+    assert len(prior_items) == 1
+    assert "outward learning" in prior_items[0].data["claim"]
+
+    assert story.prior_outcome["outcome_text"].startswith("The loop still does not")
+    assert story.prior_outcome["outcome_kind"] == "lived_answer"
+    assert story.prior_outcome["verdict"] == "answered"
+    assert "lived answer" in story.prior_outcome["verdict_basis"]
+    assert story.prior_outcome["peer"]["status"] == "ok"
+
+    assert story.summary["helps"] == 1
+    assert story.summary["peer_briefs"] == [{"status": "ok", "peer": "claude"}]
+    assert story.summary["has_starting_prior"] is True
+    assert story.summary["verdict"] == "answered"
+    assert story.summary["hops"] == 0
+
+    payload = story_to_payload(story)
+    assert payload["starting_prior"]["prior_id"].startswith("self:outward")
+    assert payload["prior_outcome"]["verdict"] == "answered"
+    assert payload["summary"]["helps"] == 1
+    writes = [it for it in payload["timeline"] if it["kind"] == "self_write"]
+    assert len(writes) == 1
+    assert writes[0]["write_kind"] == "lived_answer"
+    assert "kind" not in writes[0] or writes[0].get("kind") == "self_write"
+    assert writes[0]["text"].startswith("The loop still")
+
+
+def test_lived_answer_write_kind_survives_payload_nesting() -> None:
+    """Regression: nested `kind: lived_answer` used to overwrite timeline
+    kind and blank the UI row."""
+    run_id = "lived1"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        self_writes=[{
+            "run_id": run_id, "kind": "lived_answer",
+            "text": "I noticed the queue pressure but kept going.",
+            "written_at": _ms(5),
+        }],
+    )
+    payload = story_to_payload(build_stories(rows)[run_id])
+    row = next(it for it in payload["timeline"] if it["kind"] == "self_write")
+    assert row["write_kind"] == "lived_answer"
+    assert row["text"].startswith("I noticed")
+    assert payload["prior_outcome"]["verdict"] == "answered"
+    assert payload["prior_outcome"]["outcome_kind"] == "lived_answer"
+
+
+def test_peer_failure_labels_the_prior_outcome_verdict() -> None:
+    run_id = "peerfail"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        help_requests=[{
+            "run_id": run_id, "help_id": "h", "prior_id": "p",
+            "prior_claim": "claim", "prior_status": "open", "written_at": _ms(1),
+        }],
+        priors=[{"prior_id": "p", "claim": "claim", "status": "open", "line": ""}],
+        peer_briefs=[{
+            "run_id": run_id, "brief_id": "b", "help_id": "h", "peer": "cursor",
+            "status": "refused_budget", "summary": "", "refusal_reason": "budget_limited",
+            "written_at": _ms(8),
+        }],
+    )
+    po = build_stories(rows)[run_id].prior_outcome
+    assert po["verdict"] == "peer_failed"
+    assert "refused_budget" in po["verdict_basis"]
+
+
+def test_subject_prior_revision_wins_over_a_later_side_revision() -> None:
+    """Help ABOUT A was supported; a later revision of B must not erase that."""
+    run_id = "side-rev"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 20)],
+        help_requests=[{
+            "run_id": run_id, "help_id": "h", "prior_id": "A",
+            "prior_claim": "subject claim", "written_at": _ms(1),
+        }],
+        revisions=[
+            {"run_id": run_id, "prior_id": "A", "from_confidence": 0.4, "to_confidence": 0.7,
+             "from_status": "open", "to_status": "supported", "written_at": _ms(10)},
+            {"run_id": run_id, "prior_id": "B", "from_confidence": 0.5, "to_confidence": 0.55,
+             "from_status": "open", "to_status": "revised", "written_at": _ms(15)},
+        ],
+        priors=[
+            {"prior_id": "A", "claim": "subject claim", "status": "supported", "confidence": 0.7, "line": ""},
+            {"prior_id": "B", "claim": "side", "status": "revised", "line": ""},
+        ],
+    )
+    story = build_stories(rows)[run_id]
+    assert story.starting_prior["prior_id"] == "A"
+    assert story.starting_prior["status"] == "open"
+    assert story.starting_prior["confidence"] == 0.4
+    assert story.prior_outcome["verdict"] == "supported"
+    assert story.prior_outcome["revision"]["prior_id"] == "A"
+
+
+def test_flat_revised_status_is_a_measured_verdict() -> None:
+    run_id = "flat-rev"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        revisions=[{
+            "run_id": run_id, "prior_id": "p", "from_confidence": 0.5, "to_confidence": 0.5,
+            "from_status": "open", "to_status": "revised", "written_at": _ms(5),
+        }],
+        priors=[{"prior_id": "p", "claim": "c", "status": "revised", "confidence": 0.5, "line": ""}],
+    )
+    po = build_stories(rows)[run_id].prior_outcome
+    assert po["verdict"] == "revised"
+    assert "revised" in po["verdict_basis"].lower()

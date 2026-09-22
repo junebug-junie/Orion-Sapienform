@@ -477,3 +477,40 @@ def test_static_scanner_does_not_confuse_scopes(tmp_path: Path) -> None:
         "    await bus.publish(channel, {'rating': 1})\n"
     )
     assert _dict_literal_publishes_to_chat_history(mixed) == []
+
+
+def test_unified_turn_history_rows_carry_the_reply_stamp(_publish_enabled) -> None:
+    """Reply stamp (2026-09-22): `client_meta` handed to the unified-turn
+    publisher lands on BOTH envelopes (sql-writer merges user+assistant into
+    one chat_history_log row and only writes client_meta when present), and
+    is absent -- not `{}` -- when nothing was stamped."""
+    from orion.hub.turn_orchestrator import _publish_unified_turn_chat_history
+
+    def _history_payloads(bus):
+        out = []
+        for _channel, env in bus.published:
+            msg = getattr(env, "payload", None)  # ChatHistoryMessageV1
+            role = getattr(msg, "role", None)
+            if role in ("user", "assistant"):
+                out.append({"role": role, "client_meta": getattr(msg, "client_meta", None)})
+        return out
+
+    stamp = {"in_reply_to": "corr-uuid5", "in_reply_to_source": "curiosity_outreach"}
+    bus = _RecordingBus()
+    asyncio.run(
+        _publish_unified_turn_chat_history(
+            bus=bus, correlation_id=_CORR_ID, session_id="sess-1",
+            user_message="yes, that stall is real", response_text="an answer",
+            payload={"user_id": "juniper"}, run=_make_run(), client_meta=stamp,
+        )
+    )
+    rows = _history_payloads(bus)
+    assert [r["role"] for r in rows] == ["user", "assistant"], rows
+    assert all(r["client_meta"] == stamp for r in rows), rows
+    assert rows[0]["client_meta"] is not stamp, "must be a copy, not the caller's dict"
+
+    bus = _RecordingBus()
+    _run_ws_publish(bus)
+    rows = _history_payloads(bus)
+    assert len(rows) == 2
+    assert all(r["client_meta"] is None for r in rows), rows

@@ -849,6 +849,7 @@ async def execute_unified_turn(
     reading_only: bool = False,
     utterance_origin: str | None = None,
     mind_appraisal_text: str | None = None,
+    client_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -1531,6 +1532,7 @@ async def execute_unified_turn(
             run=run,
             source_label=str(payload.get("chat_history_source") or "hub_orion"),
             fcc_model_label=resolved_model_label,
+            client_meta=client_meta,
         )
         degraded_frame = {
             "type": "turn_degraded",
@@ -1560,6 +1562,7 @@ async def execute_unified_turn(
         run=run,
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
         fcc_model_label=resolved_model_label,
+        client_meta=client_meta,
     )
     await _finish_cockpit(run, success=True)
     return _success_frames(
@@ -1581,8 +1584,19 @@ async def _publish_unified_turn_chat_history(
     run: HarnessRunV1,
     source_label: str = "hub_orion",
     fcc_model_label: str | None = None,
+    client_meta: dict[str, Any] | None = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
+
+    ``client_meta`` (2026-09-22): the reply stamp (`in_reply_to`,
+    `in_reply_to_source`) computed by `websocket_handler` before the lane
+    split. Until this argument existed the unified lane -- the live default
+    for every one of Juniper's turns -- published its history rows with no
+    `client_meta` at all (checked live: `jsonb_typeof(client_meta) = 'null'`
+    on every solicited row), so anything stamped on the legacy lane's
+    `turn_client_meta` never reached a real row. Applied to BOTH envelopes:
+    sql-writer merges user+assistant into one `chat_history_log` row and only
+    writes `client_meta` when the event carries one.
 
     Persists the finalized turn only after the governor returned final text:
     chat-history envelopes (so sql-writer lands chat_history_log rows) and a
@@ -1658,6 +1672,7 @@ async def _publish_unified_turn_chat_history(
             message_id=f"{correlation_id}:user",
             memory_status="accepted",
             memory_tier="ephemeral",
+            client_meta=dict(client_meta) if client_meta else None,
         ),
         build_chat_history_envelope(
             content=response_text,
@@ -1669,6 +1684,7 @@ async def _publish_unified_turn_chat_history(
             tags=[mode_tag],
             message_id=f"{correlation_id}:assistant",
             reasoning_trace=reasoning_trace,
+            client_meta=dict(client_meta) if client_meta else None,
         ),
     ]
     await publish_chat_history(bus, envelopes)
@@ -1727,6 +1743,7 @@ async def run_unified_turn(
     biometrics_cache: Any = None,
     harness_rpc_bus: Any | None = None,
     harness_step_relay: Any | None = None,
+    client_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute unified turn and emit WS frames."""
     step_queue: asyncio.Queue | None = None
@@ -1819,6 +1836,7 @@ async def run_unified_turn(
             cockpit_sink=cockpit_sink,
             cockpit_run_holder=cockpit_run_holder,
             utterance_origin="juniper",
+            client_meta=client_meta,
         )
     finally:
         if harness_step_relay is not None and step_queue is not None:

@@ -368,12 +368,20 @@ from scripts.outreach_provenance import (  # noqa: E402
 )
 
 
-def _plain_outreach_row(*, minute: int, row_id: str, source: str | None = "curiosity_outreach"):
+def _plain_outreach_row(
+    *, minute: int, row_id: str, source: str | None = "curiosity_outreach", corr: str | None = None
+):
     """A curiosity reach-out: unsolicited, NO provenance capsule."""
     meta: dict = {"unsolicited": True}
     if source:
         meta["source"] = source
-    return {"id": row_id, "created_at": _ts(minute), "client_meta": meta, "response": "hey"}
+    return {
+        "id": row_id,
+        "correlation_id": corr if corr is not None else row_id,
+        "created_at": _ts(minute),
+        "client_meta": meta,
+        "response": "hey",
+    }
 
 
 def test_meta_unsolicited_matches_the_live_jsonb_boolean() -> None:
@@ -433,6 +441,15 @@ def test_reply_target_without_an_id_is_not_a_stamp() -> None:
     assert select_reply_target(rows) is None
 
 
+def test_reply_target_prefers_the_correlation_id_column_over_id() -> None:
+    """The run story joins on `correlation_id` (the run-derived uuid5), not
+    on `id`; sql-writer happens to set both equal, but that is its invariant."""
+    rows = [_plain_outreach_row(minute=1, row_id="pk-row", corr="corr-uuid5")]
+    assert select_reply_target(rows)["correlation_id"] == "corr-uuid5"
+    rows = [{"id": "only-id", "created_at": _ts(1), "client_meta": {"unsolicited": True}, "response": "x"}]
+    assert select_reply_target(rows)["correlation_id"] == "only-id"
+
+
 def test_fetch_reply_target_window_is_enforced_by_the_query(monkeypatch) -> None:
     """The 12h window is a SQL predicate: a 13h-old row is never loaded, so
     the selector sees no rows. Pinned by asserting the bound parameters."""
@@ -444,6 +461,7 @@ def test_fetch_reply_target_window_is_enforced_by_the_query(monkeypatch) -> None
     assert params["max_age_secs"] == 12.0 * 3600.0
     assert params["lim"] == 500
     assert "LIMIT :lim" in str(sql)
+    assert "correlation_id" in str(sql)
     assert "make_interval(secs => :max_age_secs)" in str(sql)
 
 

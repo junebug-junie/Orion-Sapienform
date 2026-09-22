@@ -79,20 +79,30 @@ def test_unified_path_emits_turn_started_after_correlation_id() -> None:
     assert started_idx < run_idx
 
 
-def test_inbound_turn_client_meta_gets_the_reply_stamp_before_the_user_row_is_published() -> None:
-    """Reply stamp (2026-09-22): `turn_client_meta` is the dict every history
-    publish on this path copies from (`enriched_client_meta = dict(turn_client_meta)`),
-    so stamping it once, right after it is built and before the user row is
-    published, covers text and voice (both arrive here after STT). Static
-    check, same convention as the rest of this file."""
+def test_reply_stamp_is_computed_before_the_lane_split_and_reaches_both_lanes() -> None:
+    """Reply stamp (2026-09-22). Review of the first cut found it stamped
+    only the legacy lane's `turn_client_meta`; the unified lane (the live
+    default for every one of Juniper's turns, `ORION_UNIFIED_TURN_ENABLED=true`)
+    `continue`s before that dict is built and published its rows with no
+    client_meta at all. So: computed ONCE before `if client_mode in
+    ("orion", "agent")`, handed to `run_unified_turn(client_meta=...)`, and
+    merged into `turn_client_meta` for the legacy lane. Static check, same
+    convention as the rest of this file; the orchestrator side is covered
+    behaviourally in test_chat_history_no_raw_publish.py."""
     source = WS_PATH.read_text(encoding="utf-8")
     assert "from scripts.outreach_provenance import reply_stamp_for_session" in source
+    stamp = source.index("reply_stamp = await reply_stamp_for_session(session_id)")
+    split = source.index('if client_mode in ("orion", "agent") and settings.ORION_UNIFIED_TURN_ENABLED:')
+    unified = source.index("client_meta=reply_stamp or None,")
     build = source.index("turn_client_meta = dict(client_meta)")
-    stamp = source.index("turn_client_meta.update(await reply_stamp_for_session(session_id))")
+    legacy = source.index("turn_client_meta.update(reply_stamp)")
     publish = source.index('_schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")')
-    assert build < stamp < publish
+    assert stamp < split < unified < build < legacy < publish
+    # The unified call actually receives it.
+    run_call = source.index("run_unified_turn(\n                            websocket,")
+    assert run_call < unified < source.index("continue", unified)
     # Gated the same way the history publish is, so a no_write turn never
     # spends a lookup it cannot use.
-    assert "if bus and not no_write:\n                turn_client_meta.update(await reply_stamp_for_session" in source
-    # Exactly one dict is stamped and every later publish derives from it.
+    assert "if bus and not no_write:\n                reply_stamp = await reply_stamp_for_session(session_id)" in source
+    # Exactly one legacy dict is stamped and every later publish derives from it.
     assert source.count("enriched_client_meta = dict(turn_client_meta)") == 1

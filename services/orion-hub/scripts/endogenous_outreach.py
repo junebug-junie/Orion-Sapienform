@@ -2064,17 +2064,27 @@ class EndogenousOutreach:
         `result_json.source` key, so an operator still sees ONE outreach
         history. ``extra`` lands in `result_json` (e.g. `run_id`, `line`);
         the core keys always win over it.
+
+        Does NOT become this loop's `_last_result` (what `status()` and
+        `GET /api/debug/endogenous-outreach` show as "the last decision"):
+        this loop did nothing here, and a pre-check block fires on every
+        `reach_out=true` run during quiet hours or over the cap, so letting
+        it win would hide the endogenous tick's own last outcome.
         """
-        return self._record(
-            {
-                **dict(extra or {}),
-                "outreach": False,
-                "reason": str(reason or "unknown"),
-                "source": source,
-                "correlation_id": correlation_id,
-            },
-            forced=False,
-        )
+        previous = self._last_result
+        try:
+            return self._record(
+                {
+                    **dict(extra or {}),
+                    "outreach": False,
+                    "reason": str(reason or "unknown"),
+                    "source": source,
+                    "correlation_id": correlation_id,
+                },
+                forced=False,
+            )
+        finally:
+            self._last_result = previous
 
     async def offer_message(
         self,

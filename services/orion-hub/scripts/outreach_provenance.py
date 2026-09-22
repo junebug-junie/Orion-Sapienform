@@ -137,14 +137,17 @@ def select_reply_target(
 
     Same clearing rule as provenance, without the capsule requirement (a
     curiosity reach-out carries no capsule). Returns
-    ``{"correlation_id": <row id>, "source": <client_meta.source or None>}``
-    or ``None``. Rows without an ``id`` cannot be pointed at and are skipped
-    by returning ``None`` rather than a stamp with no target.
+    ``{"correlation_id": <row correlation_id>, "source": <client_meta.source
+    or None>}`` or ``None``. The join key the run story uses is the
+    ``correlation_id`` column (the run-derived uuid5); ``id`` is only a
+    fallback for a row that somehow lacks one (sql-writer sets both to the
+    same value today, but that is its invariant, not this reader's). A row
+    with neither cannot be pointed at: ``None`` rather than an empty stamp.
     """
     row = select_active_unsolicited_row(rows, require_capsule=False)
     if row is None:
         return None
-    row_id = str(row.get("id") or "").strip()
+    row_id = str(row.get("correlation_id") or row.get("id") or "").strip()
     if not row_id:
         return None
     meta = row.get("client_meta") or {}
@@ -231,9 +234,9 @@ def _fetch_session_rows(
             result = conn.execute(
                 text(
                     """
-                    SELECT id, created_at, client_meta, response
+                    SELECT id, correlation_id, created_at, client_meta, response
                     FROM (
-                        SELECT id, created_at, client_meta, response
+                        SELECT id, correlation_id, created_at, client_meta, response
                         FROM chat_history_log
                         WHERE session_id = :sid
                           AND created_at >= now() - make_interval(secs => :max_age_secs)

@@ -2617,7 +2617,9 @@ def test_record_blocked_goes_through_the_single_writer(monkeypatch) -> None:
     assert "at" in row
     assert calls[-1]["result"]["reason"] == "quiet_hours"
     assert calls[-1]["forced"] is False
-    assert outreach.last_result()["reason"] == "quiet_hours" if hasattr(outreach, "last_result") else True
+    # The endogenous loop's own last result is untouched by another loop's
+    # pre-check block -- the status endpoint keeps describing THIS loop.
+    assert outreach.status()["last_result"] == {}
 
 
 def test_history_row_client_meta_carries_the_source_tag(monkeypatch) -> None:

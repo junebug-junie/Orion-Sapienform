@@ -2840,13 +2840,16 @@ class CuriosityInvestigation:
         decision without recomputing the uuid5.
         """
         correlation_id = str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{run_id}"))
-        outreach = self._outreach_provider() if self._outreach_provider else None
         if not self.outreach_enabled:
+            # Same order as before: the provider is not consulted when this
+            # loop's own outreach switch is off. The row goes straight to the
+            # decision-log module.
             logger.info("curiosity_outreach_disabled run=%s", run_id)
             self._record_outreach_skip(
-                outreach, "disabled", correlation_id=correlation_id, run_id=run_id, line=line
+                None, "disabled", correlation_id=correlation_id, run_id=run_id, line=line
             )
             return "disabled"
+        outreach = self._outreach_provider() if self._outreach_provider else None
         if outreach is None:
             logger.warning(
                 "curiosity_outreach_unavailable run=%s -- Orion asked to reach out "

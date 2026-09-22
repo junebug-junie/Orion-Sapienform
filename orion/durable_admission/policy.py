@@ -24,6 +24,28 @@ def satisfies(capabilities: Mapping[str, Any], requirements: Mapping[str, Any]) 
     return True
 
 
+def widen_alternatives(requirement: Mapping[str, Any], lanes: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Union a demand's frozen alternatives with what the CURRENT lane policy declares compatible.
+
+    Alternatives are frozen at submission so a duplicate receipt can never shrink a demand.
+    That freeze also meant a lane added to DURABLE_RUNS_LANE_POLICY_JSON later never reached
+    runs already waiting: live 2026-09-22, `chat-burst` was declared and opened while 7 runs
+    (oldest 14 h) sat with alternatives=['agent-burst'] only, and none could widen onto it.
+    This is additive only -- nothing stored is removed -- and the persisted requirement is
+    left untouched; the wider list lives in the per-tick decision.
+    """
+    preferred = str(requirement.get("preferred_lane", "agent"))
+    stored = [str(lane) for lane in (requirement.get("alternatives") or [])]
+    declared = sorted(
+        lane for lane, meta in lanes.items()
+        if lane != preferred and lane not in stored
+        and preferred in ((meta or {}).get("compatible_with") or [])
+    )
+    if not declared:
+        return dict(requirement)
+    return {**requirement, "alternatives": stored + declared}
+
+
 @dataclass(frozen=True)
 class LaneDecision:
     requested_lane: str

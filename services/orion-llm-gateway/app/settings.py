@@ -89,7 +89,9 @@ class Settings(BaseSettings):
 
     # Route table (single-subscriber routing)
     llm_route_table_json: Optional[str] = Field(None, alias="LLM_GATEWAY_ROUTE_TABLE_JSON")
-    llm_route_default: str = Field("chat", alias="LLM_ROUTE_DEFAULT")
+    # `quick`, not `chat`: a request that names no route must never land on Juniper's reserved
+    # Hub lane (live .env has said quick since 2026-08; the code default lagged behind it).
+    llm_route_default: str = Field("quick", alias="LLM_ROUTE_DEFAULT")
 
     # Background-priority routes (RouteTarget.priority == "background"): wait
     # for upstream /slots slack before dispatch instead of competing evenly

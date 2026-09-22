@@ -167,7 +167,8 @@ async def _rpc_annotation_llm(
     settings = get_settings()
     await bus.connect()
     payload = ChatRequestPayload(
-        route="chat",
+        # Background classifier over one turn; on failure the caller falls back to regex. chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
+        route="quick_background",
         messages=[{"role": "user", "content": prompt}],
         raw_user_text=turn_text,
         options={

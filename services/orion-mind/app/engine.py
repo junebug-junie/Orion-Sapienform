@@ -771,7 +771,8 @@ def run_mind_llm_synthesis(
     configured_timeout = float(getattr(s, "MIND_LLM_TIMEOUT_SEC", 25.0))
     semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
     appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
-    stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))
+    # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
+    stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "metacog"))
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
@@ -1078,7 +1079,8 @@ def _llm_fail_open_from_exception(
         failed_phase="unknown",
         semantic_route=str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")),
         appraisal_route=str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")),
-        stance_route=str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "chat")),
+        # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
+        stance_route=str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "metacog")),
         fallback_reason=["llm_synthesis_exception", str(exc)],
     )
 

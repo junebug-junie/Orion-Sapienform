@@ -20,7 +20,7 @@ def _clear_route_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     route_catalog.reset_route_health_cache_for_tests()
 
 
-def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_routes_response_defaults_to_quick(monkeypatch: pytest.MonkeyPatch) -> None:
     table = {
         "chat": {"url": "http://chat:8011", "served_by": "atlas-worker-1", "backend": "llamacpp"},
         "quick": {"url": "http://quick:8013", "served_by": "atlas-worker-fast-1", "backend": "llamacpp"},
@@ -38,7 +38,9 @@ def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch)
 
     payload = route_catalog.build_routes_response()
 
-    assert payload["default_route"] == "chat"
+    # `quick` since 2026-09-21: the code default followed the live .env off Juniper's reserved
+    # chat lane (scripts/check_chat_route_poachers.py).
+    assert payload["default_route"] == "quick"
     # The catalog lists every route that EXISTS as a name, in the shared display order -- not
     # only the ones this route table happens to configure. `quick_background` is deliberately
     # absent from `table` above, and the honest answer is a row saying `not_configured`, not

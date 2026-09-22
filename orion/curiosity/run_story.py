@@ -95,6 +95,7 @@ _KIND_RANK = {
     "attempt": 2,
     "hop": 3,
     "self_sense_answer": 3,
+    "self_write": 4,
     "finding": 4,
     "revision": 5,
     "outcome": 6,
@@ -199,6 +200,7 @@ class RunStoryRows:
     chat: list[dict[str, Any]] = field(default_factory=list)
     readings: list[dict[str, Any]] = field(default_factory=list)
     self_sense: list[dict[str, Any]] = field(default_factory=list)
+    self_writes: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- outputs --------------------------------------------------------------
@@ -211,15 +213,28 @@ class TimelineItem:
     data: dict[str, Any]
     attempt: Optional[int] = None
 
-    def sort_key(self) -> tuple:
-        # Undated first: the only undated items are legacy hops, which predate
-        # every dated node in the same run (see `hop_order_key`).
-        return (
-            0 if self.at is None else 1,
-            self.at or 0,
-            _KIND_RANK.get(self.kind, 50),
-            _as_int(self.data.get("n"), 0),
-        )
+    def sort_key(self, anchor: Optional[int] = None) -> tuple:
+        """Where an item sits when its clock is missing, by kind:
+
+        - a hop or role choice: FIRST. Undated hops are legacy (pre
+          2026-09-19) and predate every dated node in the run
+          (`hop_order_key`); a role choice is written at the start.
+        - a finding, revision or self-write: right after the last dated hop
+          (`anchor`). 95 of 117 live Findings carry no clock, and the prompt
+          has Orion write them after the hops; floating them to the top
+          told the story backwards. Printed with no offset, so the
+          placement is visibly a placement and not a measurement.
+        - anything else (a `not_recorded` outreach, a reply): LAST.
+        """
+        rank = _KIND_RANK.get(self.kind, 50)
+        n = _as_int(self.data.get("n"), 0)
+        if self.at is not None:
+            return (1, self.at, rank, n)
+        if self.kind in ("hop", "role_choice", "attempt"):
+            return (0, 0, rank, n)
+        if self.kind in ("finding", "revision", "self_write") and anchor is not None:
+            return (1, anchor, rank + 0.5, n)
+        return (2, 0, rank, n)
 
 
 @dataclass(frozen=True)
@@ -291,6 +306,7 @@ def _slot_factory() -> dict[str, Any]:
         "outcomes": [],
         "journals": [],
         "self_sense": [],
+        "self_writes": [],
     }
 
 
@@ -309,7 +325,7 @@ def _group(rows: RunStoryRows) -> dict[str, dict[str, Any]]:
         s = slot(row.get("run_id"))
         if s is not None:
             s["lifecycle"].append(row)
-    for key in ("roles", "hops", "findings", "revisions", "outcomes"):
+    for key in ("roles", "hops", "findings", "revisions", "outcomes", "self_writes"):
         for row in getattr(rows, key):
             s = slot(row.get("run_id"))
             if s is not None:
@@ -549,6 +565,18 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
                 "finding_id": _text(f.get("finding_id"), 200),
                 "text": _text(f.get("text")), "evidence": _text(f.get("evidence"))}))
 
+        self_writes = sorted(slot["self_writes"], key=lambda r: _ms(r.get("written_at")) or 0)
+        for w in self_writes:
+            at = _ms(w.get("written_at"))
+            if at is not None:
+                graph_stamps.append(at)
+            items.append(TimelineItem(at=at, kind="self_write", data={
+                "kind": _text(w.get("kind"), 40) or "self_definition",
+                "question_id": _text(w.get("question_id"), 120),
+                "family": _text(w.get("family"), 40),
+                "text": _text(w.get("text")), "evidence": _text(w.get("evidence")),
+                "revises": _text(w.get("revises"), 200)}))
+
         revisions = sorted(slot["revisions"], key=lambda r: _ms(r.get("written_at")) or 0)
         for rev in revisions:
             at = _ms(rev.get("written_at"))
@@ -674,6 +702,10 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
         elif _text(detail.get("lived_answer")):
             self_written = {"kind": "lived_answer", "text": _text(detail.get("lived_answer")),
                             "family": _text(detail.get("self_question_family"), 60)}
+        elif self_writes:
+            w = self_writes[-1]
+            self_written = {"kind": _text(w.get("kind"), 40) or "self_definition",
+                            "text": _text(w.get("text")), "family": _text(w.get("family"), 60)}
 
         self_sense: Optional[dict[str, Any]] = None
         if sense_rows:
@@ -698,7 +730,8 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
                 "turn_correlation_id": _text(detail.get("turn_correlation_id"), 64) or None,
             }
 
-        wrote = len(slot["hops"]) + len(slot["findings"]) + len(revisions) + len(sense_rows)
+        wrote = (len(slot["hops"]) + len(slot["findings"]) + len(revisions)
+                 + len(sense_rows) + len(self_writes))
         summary = RunSummary(
             run_id=run_id,
             line=line,
@@ -722,7 +755,9 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
             harness=harness,
             outcome_kind=_outcome_kind(status=status, reach=reach, wrote=wrote),
         )
-        items.sort(key=TimelineItem.sort_key)
+        dated_hops = [it.at for it in hop_items if it.at is not None]
+        anchor = max(dated_hops) if dated_hops else None
+        items.sort(key=lambda it: it.sort_key(anchor))
         out[run_id] = RunStory(
             run=summary,
             timeline=items,

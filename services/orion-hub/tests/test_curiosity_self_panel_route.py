@@ -81,7 +81,6 @@ def test_atlas_api_includes_the_self_key(monkeypatch) -> None:
         return {}
 
     monkeypatch.setattr(cr, "_read_schedule", fake_schedule)
-    monkeypatch.setattr(cr, "_wrote_on", lambda *a, **k: None)
 
     response = asyncio.run(cr.curiosity_atlas_api())
     import json

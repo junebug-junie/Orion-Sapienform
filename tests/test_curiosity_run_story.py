@@ -377,3 +377,42 @@ def test_orion_prose_is_bounded_not_trusted() -> None:
     story = build_stories(rows)["446ddd7165d5"]
     hop = next(it for it in story.timeline if it.kind == "hop" and it.data["n"] == 2)
     assert len(hop.data["note"]) == 2000
+
+
+def test_an_undated_finding_sits_after_the_last_dated_hop_not_at_the_top() -> None:
+    """95 of 117 live Findings carry no `written_at`. Undated-first (the
+    legacy-hop rule) put the finding above the role choice and told the
+    story backwards."""
+    rows = _happy_run()
+    del rows.findings[0]["written_at"]
+    story = build_stories(rows)["446ddd7165d5"]
+    kinds = [it.kind for it in story.timeline]
+    assert kinds.index("finding") > kinds.index("hop")
+    assert kinds.index("finding") < kinds.index("outcome")
+    finding = next(it for it in story.timeline if it.kind == "finding")
+    assert finding.at is None
+    payload = story_to_payload(story)
+    assert next(it for it in payload["timeline"] if it["kind"] == "finding")["offset_sec"] is None
+
+
+def test_an_unrecorded_reach_out_decision_sits_last() -> None:
+    story = build_stories(_happy_run(reach_out=True, why="w"))["446ddd7165d5"]
+    assert story.timeline[-1].kind == "outreach"
+    assert story.timeline[-1].at is None
+
+
+def test_a_self_inquiry_lived_answer_counts_as_having_written_something() -> None:
+    """Run `3dc94088912b` (live 2026-09-22): a completed finish row, a
+    journal and one `:LivedAnswer` node -- and it rendered as "wrote
+    nothing" with no start clock, because the reader only knew five labels."""
+    rows = RunStoryRows(
+        lifecycle=[_completed("3dc94088912b", 900, line="self_inquiry")],
+        self_writes=[{"run_id": "3dc94088912b", "kind": "lived_answer", "question_id": "q7",
+                      "family": "lived", "text": "I hold it against the records.", "evidence": "journal",
+                      "written_at": _ms(30)}],
+    )
+    story = build_stories(rows)["3dc94088912b"]
+    assert story.run.outcome_kind == OUTCOME_FINISHED
+    assert story.run.started_at == _ms(30) and story.run.started_from == "graph"
+    assert story.run.self_written == {"kind": "lived_answer", "text": "I hold it against the records.", "family": "lived"}
+    assert [it.kind for it in story.timeline] == ["self_write", "lifecycle"]

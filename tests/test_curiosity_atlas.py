@@ -12,15 +12,20 @@ from __future__ import annotations
 import pytest
 
 from orion.curiosity.atlas import (
-    ATLAS_EDGE_GROWTH_CYPHER,
-    ATLAS_GROWTH_CYPHER,
+    ATLAS_EDGES_CYPHER,
     ATLAS_PRIORS_CYPHER,
     ATLAS_REVISIONS_CYPHER,
+    ATLAS_UNUSED_CYPHER,
     AtlasView,
-    assemble_runs,
+    prior_claims_cypher,
     read_atlas,
+    read_run_ids_since,
+    read_run_nodes,
+    run_ids_since_cypher,
+    run_nodes_cypher,
     to_payload,
     trajectory_for,
+    valid_run_id,
 )
 from orion.curiosity.worldview import WorldviewReader, WorldviewUnavailable
 
@@ -59,10 +64,6 @@ def _prior(pid="p1", claim="a claim", conf="0.85", status="open", tested=0,
 
 _PRIORS = "RETURN p.prior_id AS prior_id"
 _REVS = "r.from_confidence"
-_GROWTH = "WHERE n.run_id IS NOT NULL"
-_OUTCOMES = "t.continue_line"
-_HOPS = "h.n AS n"
-_FINDINGS = "f.finding_id"
 
 
 # --- unreachable, unconfigured and empty are three different states --------
@@ -71,7 +72,7 @@ _FINDINGS = "f.finding_id"
 def test_an_unreachable_graph_is_not_an_empty_world_view() -> None:
     view = read_atlas(_Reader(raises=True))
     assert view.is_unavailable
-    assert view.priors == [] and view.runs == []
+    assert view.priors == [] and view.revisions == []
     payload = to_payload(view)
     assert payload["available"] is False
     assert "ConnectionError" in payload["reason"]
@@ -165,102 +166,92 @@ def test_confidence_going_down_is_representable() -> None:
     assert view.revisions[0].delta == pytest.approx(-0.50)
 
 
-# --- runs are assembled from run_id attribution ----------------------------
+# --- per-run graph nodes: bounded by window, keyed by run id --------------
+#
+# The run-by-run read used to be `assemble_runs` over every Hop/Finding/
+# TurnOutcome ever written under a 5000-row LIMIT, sorted by `n` alone. It
+# now feeds `orion/curiosity/run_story.py`, reads only the runs in a window,
+# and SELECTS `written_at` on hops -- the field the atlas never adopted, so a
+# retried run rendered its attempts interleaved 1,1,2,2 (design doc
+# 2026-09-22-curiosity-tab-redesign, "Read-model changes").
 
 
-def test_a_run_appears_even_when_it_never_wrote_an_outcome() -> None:
-    """A turn killed mid-write leaves hops and no `:TurnOutcome`. Showing
-    nothing for it would hide exactly the runs worth looking at — this happened
-    live on 2026-08-27 when both containers were recreated mid-turn."""
-    runs = assemble_runs(
-        growth_rows=[{"label": "Hop", "run_id": "killed", "n": 2}],
-        outcome_rows=[],
-        hop_rows=[
-            {"run_id": "killed", "n": 1, "note": "got this far"},
-            {"run_id": "killed", "n": 2, "note": "and this far"},
-        ],
-        finding_rows=[],
-        priors=[],
-    )
-    assert [r.run_id for r in runs] == ["killed"]
-    assert runs[0].hops == 2
-    assert [h["n"] for h in runs[0].hop_notes] == [1, 2]
-    assert runs[0].added == {"Hop": 2}
-    # No outcome node, so the safe defaults hold: a killed turn must not read
-    # as having decided to continue or to reach out.
-    assert runs[0].written_at is None
-    assert runs[0].continue_line is False
-    assert runs[0].reach_out is False
+def test_hops_are_read_with_their_clock() -> None:
+    cypher = run_nodes_cypher("Hop", ["446ddd7165d5"])
+    assert "n.written_at AS written_at" in cypher
+    assert "n.n AS n" in cypher and "n.note AS note" in cypher
 
 
-def test_hop_notes_are_ordered_by_their_own_number_not_by_read_order() -> None:
-    """FalkorDB returns rows unordered and the notes are a narrative: hop 3
-    printed above hop 1 is a scrambled account of the turn."""
-    runs = assemble_runs(
-        growth_rows=[], outcome_rows=[],
-        hop_rows=[{"run_id": "r", "n": n, "note": f"note {n}"} for n in (3, 1, 5, 2)],
-        finding_rows=[], priors=[],
-    )
-    assert [h["n"] for h in runs[0].hop_notes] == [1, 2, 3, 5]
+def test_run_ids_reach_a_query_only_through_the_parameter_prefix() -> None:
+    """Values ride in FalkorDB's `CYPHER k=v` prefix, never spliced into the
+    pattern, and every id passes the allow-list first -- a run id comes off
+    a URL path in `/curiosity/api/run/{run_id}`."""
+    cypher = run_nodes_cypher("Hop", ["446ddd7165d5", "bad id", "x' OR 1=1 //", "20260921T174910Z-10faa7"])
+    assert cypher.startswith("CYPHER ids=['20260921T174910Z-10faa7','446ddd7165d5'] MATCH")
+    assert "OR 1=1" not in cypher
+    assert "$ids" in cypher
+    assert valid_run_id("446ddd7165d5") == "446ddd7165d5"
+    assert valid_run_id("x' OR 1=1") is None
+    assert valid_run_id("") is None
+    assert valid_run_id("a" * 65) is None
 
 
-def test_a_run_with_no_timestamp_sorts_last_not_first() -> None:
-    """A missing `written_at` is "unknown", not "oldest". Sorting it as 0 would
-    float every killed run to the bottom of a newest-first list, or worse, the
-    top."""
-    runs = assemble_runs(
-        growth_rows=[
-            {"label": "Hop", "run_id": "dated", "n": 1},
-            {"label": "Hop", "run_id": "undated", "n": 1},
-        ],
-        outcome_rows=[{"run_id": "dated", "written_at": 1787840568235,
-                       "continue_line": True, "continue_note": "n",
-                       "reach_out": False, "reach_out_why": ""}],
-        hop_rows=[], finding_rows=[], priors=[],
-    )
-    assert [r.run_id for r in runs] == ["dated", "undated"]
+def test_prior_ids_are_json_quoted_because_orion_writes_them_freehand() -> None:
+    cypher = prior_claims_cypher(["self:it's-mine", "p2"])
+    assert cypher.startswith('CYPHER ids=["p2", "self:it\'s-mine"] MATCH')
+    assert "p.claim AS claim" in cypher and "p.line AS line" in cypher
 
 
-def test_creating_and_re_testing_a_prior_are_attributed_to_different_runs() -> None:
-    """`run_id` is who made it, `last_run_id` is who last touched it. Collapsing
-    them would credit run 5 with forming a prior run 3 wrote."""
-    priors = read_atlas(_Reader(answers={_PRIORS: [
-        _prior(pid="p1", run="run_three", last_run="run_five", tested=1)]})).priors
-    runs = assemble_runs(
-        growth_rows=[], outcome_rows=[], hop_rows=[], finding_rows=[],
-        priors=priors,
-    )
-    by_id = {r.run_id: r for r in runs}
-    assert by_id["run_three"].priors_created == ["p1"]
-    assert by_id["run_three"].priors_touched == []
-    assert by_id["run_five"].priors_touched == ["p1"]
-    assert by_id["run_five"].priors_created == []
+def test_the_window_query_is_an_int_bound_and_skips_undated_nodes() -> None:
+    cypher = run_ids_since_cypher(1790000000000.9)
+    assert "CYPHER since=1790000000000 " in cypher
+    assert "n.written_at IS NOT NULL AND n.written_at >= $since" in cypher
+    assert "RETURN DISTINCT n.run_id AS run_id" in cypher
 
 
-def test_a_prior_created_and_tested_by_one_run_is_not_double_counted() -> None:
-    priors = read_atlas(_Reader(answers={_PRIORS: [
-        _prior(pid="p1", run="r1", last_run="r1")]})).priors
-    runs = assemble_runs(growth_rows=[], outcome_rows=[], hop_rows=[],
-                         finding_rows=[], priors=priors)
-    assert runs[0].priors_created == ["p1"]
-    assert runs[0].priors_touched == []
+def test_read_run_nodes_reads_all_five_kinds_and_the_touched_priors() -> None:
+    reader = _Reader(answers={
+        "MATCH (n:InvestigationRole)": [{"run_id": "r1", "choice": "local_crawl", "why": "w", "written_at": 1}],
+        "MATCH (n:Hop)": [{"run_id": "r1", "n": 1, "note": "h", "written_at": 2}],
+        "MATCH (n:Finding)": [{"run_id": "r1", "finding_id": "f", "text": "t", "evidence": "e", "written_at": 3}],
+        "MATCH (n:PriorRevision)": [{"run_id": "r1", "prior_id": "p1", "from_confidence": 0.6,
+                                     "to_confidence": 0.7, "from_status": "open", "to_status": "revised", "written_at": 4}],
+        "MATCH (n:TurnOutcome)": [{"run_id": "r1", "continue_line": True, "continue_note": "c",
+                                   "reach_out": False, "reach_out_why": "", "written_at": 5}],
+        "MATCH (p:Prior) WHERE p.prior_id IN": [{"prior_id": "p1", "claim": "the claim", "line": ""}],
+        "MATCH (n:LivedAnswer)": [{"run_id": "r1", "question_id": "q", "family": "lived", "text": "t",
+                                   "evidence": "e", "revises": "", "written_at": 6}],
+        "MATCH (n:SelfDefinition)": [],
+    })
+    rows = read_run_nodes(reader, ["r1", "not valid!"])
+    assert [h["written_at"] for h in rows.hops] == [2]
+    assert rows.self_writes == [{"run_id": "r1", "question_id": "q", "family": "lived", "text": "t",
+                                 "evidence": "e", "revises": "", "written_at": 6, "kind": "lived_answer"}]
+    assert rows.roles[0]["choice"] == "local_crawl"
+    assert rows.priors[0]["claim"] == "the claim"
+    assert all("['r1']" in q for q in reader.queries if "n.run_id IN" in q), reader.queries
+    assert '["p1"]' in next(q for q in reader.queries if "p.prior_id IN" in q)
 
 
-def test_growth_is_counted_from_labels_not_from_the_typed_readers() -> None:
-    """Totals come from one `MATCH (n)` over every labelled node, so a kind
-    nobody has a reader for yet still shows up rather than silently vanishing
-    from the graph-growth panel."""
-    assert "MATCH (n)" in ATLAS_GROWTH_CYPHER
-    assert "labels(n)[0]" in ATLAS_GROWTH_CYPHER
-    runs = assemble_runs(
-        growth_rows=[{"label": "SomethingNew", "run_id": "r1", "n": 4}],
-        outcome_rows=[], hop_rows=[], finding_rows=[], priors=[],
-    )
-    assert runs[0].added == {"SomethingNew": 4}
-    assert runs[0].total_added == 4
+def test_read_run_nodes_with_no_valid_ids_issues_no_query() -> None:
+    reader = _Reader()
+    rows = read_run_nodes(reader, ["", "bad id"])
+    assert rows.hops == [] and reader.queries == []
 
 
-# --- the reads themselves ---------------------------------------------------
+def test_read_run_ids_since_drops_ids_that_could_not_reach_a_query() -> None:
+    reader = _Reader(answers={"RETURN DISTINCT n.run_id": [{"run_id": "ok1"}, {"run_id": "bad id"}, {"run_id": None}]})
+    assert read_run_ids_since(reader, 5) == ["ok1"]
+
+
+def test_a_dead_graph_raises_for_the_run_readers_rather_than_reading_as_empty() -> None:
+    """Unlike `read_atlas`, these return rows, not a view; the caller owns the
+    `available: false` payload. An empty list here would render as "no runs
+    in 14 days" during an outage."""
+    with pytest.raises(WorldviewUnavailable):
+        read_run_nodes(_Reader(raises=True), ["r1"])
+    with pytest.raises(WorldviewUnavailable):
+        read_run_ids_since(_Reader(raises=True), 1)
 
 
 def test_every_atlas_read_goes_out_read_only() -> None:
@@ -281,7 +272,7 @@ def test_every_atlas_read_goes_out_read_only() -> None:
 def test_the_atlas_takes_no_caller_input_into_a_query() -> None:
     """Every constant here is static. Nothing on this page is user-supplied, and
     keeping it that way is why there is no sanitiser to get wrong."""
-    for cypher in (ATLAS_PRIORS_CYPHER, ATLAS_REVISIONS_CYPHER, ATLAS_GROWTH_CYPHER):
+    for cypher in (ATLAS_PRIORS_CYPHER, ATLAS_REVISIONS_CYPHER, ATLAS_UNUSED_CYPHER, ATLAS_EDGES_CYPHER):
         assert "{" not in cypher and "%" not in cypher
 
 
@@ -294,20 +285,28 @@ def test_the_payload_is_json_safe() -> None:
     import json
 
     view = read_atlas(_Reader(answers={
-        _PRIORS: [_prior(pid="p1", tested=1, last_run="r2")],
+        _PRIORS: [{**_prior(pid="p1", tested=1, last_run="r2"),
+                   "last_tested_at": "2026-09-21T16:02:00+00:00"}],
         _REVS: [{"prior_id": "p1", "run_id": "r2", "from_confidence": "0.9",
                  "to_confidence": "0.85", "from_status": "open",
                  "to_status": "revised", "written_at": 7}],
-        _GROWTH: [{"label": "Prior", "run_id": "r1", "n": 1}],
-        _OUTCOMES: [{"run_id": "r1", "continue_line": True, "continue_note": "n",
-                     "reach_out": True, "reach_out_why": "w", "written_at": 9}],
-        _HOPS: [{"run_id": "r1", "n": 1, "note": "h"}],
-        _FINDINGS: [{"finding_id": "f1", "text": "t", "evidence": "e",
-                     "run_id": "r1", "written_at": 9}],
     }))
-    blob = json.dumps(to_payload(view))
-    assert '"reach_out": true' in blob
+    payload = to_payload(view)
+    blob = json.dumps(payload)
     assert '"history_recorded": true' in blob
+    assert "runs" not in payload, "the run story endpoints own runs now"
+    assert "growth" not in blob
+    prior = payload["priors"][0]
+    assert prior["last_tested_at_ms"] == _ms("2026-09-21T16:02:00+00:00")
+    assert [pt["written_at"] for pt in prior["trajectory"]] == [None, 7]
+
+
+def test_the_current_point_carries_the_priors_last_tested_clock() -> None:
+    view = read_atlas(_Reader(answers={_PRIORS: [
+        {**_prior(pid="p1", conf="0.5"), "last_tested_at": 1790005960076}]}))
+    traj = to_payload(view)["priors"][0]["trajectory"]
+    assert traj == [{"run_id": "r1", "confidence": 0.5, "status": "open",
+                     "recorded": False, "written_at": 1790005960076}]
 
 
 # --- the surface itself -----------------------------------------------------
@@ -341,10 +340,14 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
     # finding -- Orion still authors everything the turn produces. Pinned by
     # path so a second write route cannot be added without this going red and
     # someone having to justify it.
-    assert [r.path for r in writes] == ["/curiosity/api/run-now"], [
-        (r.path, sorted(r.methods)) for r in writes
-    ]
-    assert writes[0].methods == {"POST"}
+    # Two, both CONTROL actions: each asks a line to take a turn sooner than
+    # its cooldown would have. The park/pin self-question routes that sat
+    # here were removed 2026-09-22: nothing called them and this test had
+    # been red since they landed.
+    assert sorted(r.path for r in writes) == [
+        "/curiosity/api/run-now", "/curiosity/api/self-inquiry/run-now",
+    ], [(r.path, sorted(r.methods)) for r in writes]
+    assert all(r.methods == {"POST"} for r in writes)
 
 
 def test_the_schedule_keys_are_imported_from_the_loop_that_writes_them() -> None:
@@ -408,40 +411,37 @@ def test_a_run_is_counted_against_the_zone_the_counter_keys_on() -> None:
     """The live case, 2026-08-27 20:33 MDT: the host clock already said the
     28th while Juniper's date was still the 27th and the counter key was
     `orion:curiosity:count:2026-08-27`. Counting in UTC puts this run on the
-    wrong day and the page reports a run that vanished."""
-    runs = [{"run_id": "r", "written_at": _ms("2026-08-28T02:22:00+00:00"),
-             "total_added": 3}]
-    assert _routes()._wrote_on(runs, "2026-08-27", "America/Denver") == 1
-    assert _routes()._wrote_on(runs, "2026-08-28", "UTC") == 1
-    assert _routes()._wrote_on(runs, "2026-08-27", "UTC") == 0
+    wrong day and the budget tile disagrees with the counter it sits beside."""
+    runs = [{"run_id": "r", "line": "investigate",
+             "started_at": _ms("2026-08-28T02:22:00+00:00"), "finished_at": None}]
+    assert _routes()._runs_on_local_date(runs, "2026-08-27", "America/Denver") == {"investigate": 1}
+    assert _routes()._runs_on_local_date(runs, "2026-08-28", "UTC") == {"investigate": 1}
+    assert _routes()._runs_on_local_date(runs, "2026-08-27", "UTC") == {}
 
 
-def test_an_undated_run_that_wrote_still_counts_as_having_written() -> None:
-    """Its only timestamp comes from a `:TurnOutcome`, so a turn killed
-    mid-write has none. Calling that "not today" reported it as traceless when
-    it plainly left a trace."""
-    runs = [{"run_id": "killed", "written_at": None, "total_added": 3}]
-    assert _routes()._wrote_on(runs, "2026-08-27", "America/Denver") == 1
+def test_a_run_with_only_an_end_clock_is_dated_by_it() -> None:
+    runs = [{"run_id": "r", "line": "self_inquiry", "started_at": None,
+             "finished_at": _ms("2026-08-27T10:00:00+00:00")}]
+    assert _routes()._runs_on_local_date(runs, "2026-08-27", "UTC") == {"self_inquiry": 1}
 
 
-def test_a_run_that_wrote_nothing_is_never_counted() -> None:
-    runs = [{"run_id": "empty", "written_at": None, "total_added": 0}]
-    assert _routes()._wrote_on(runs, "2026-08-27", "America/Denver") == 0
+def test_an_undated_run_is_not_counted_on_any_day() -> None:
+    runs = [{"run_id": "killed", "line": "investigate", "started_at": None, "finished_at": None}]
+    assert _routes()._runs_on_local_date(runs, "2026-08-27", "America/Denver") == {}
 
 
 def test_no_local_date_reads_as_unknown_not_zero() -> None:
-    """None must reach the page as None. Zero would fire the "wrote nothing"
-    alarm on every load during a Redis outage that has nothing to do with
-    Orion."""
-    runs = [{"run_id": "r", "written_at": _ms("2026-08-27T10:00:00+00:00"),
-             "total_added": 1}]
-    assert _routes()._wrote_on(runs, None, "America/Denver") is None
+    """None must reach the page as None. Zero would make every tile claim a
+    run vanished during a Redis outage that has nothing to do with Orion."""
+    runs = [{"run_id": "r", "line": "investigate",
+             "started_at": _ms("2026-08-27T10:00:00+00:00"), "finished_at": None}]
+    assert _routes()._runs_on_local_date(runs, None, "America/Denver") is None
 
 
 def test_an_unknown_zone_falls_back_rather_than_raising() -> None:
-    runs = [{"run_id": "r", "written_at": _ms("2026-08-27T10:00:00+00:00"),
-             "total_added": 1}]
-    assert _routes()._wrote_on(runs, "2026-08-27", "Not/AZone") == 1
+    runs = [{"run_id": "r", "line": "investigate",
+             "started_at": _ms("2026-08-27T10:00:00+00:00"), "finished_at": None}]
+    assert _routes()._runs_on_local_date(runs, "2026-08-27", "Not/AZone") == {"investigate": 1}
 
 
 def test_an_iso_written_at_is_parsed_rather_than_read_as_missing() -> None:
@@ -459,47 +459,3 @@ def test_an_iso_written_at_is_parsed_rather_than_read_as_missing() -> None:
     assert _stamp_ms(None) is None
     assert _stamp_ms("") is None
     assert _stamp_ms("not a date") is None
-
-
-# --- edges in the growth panel ----------------------------------------------
-#
-# Review deleted the `+ list(reader.query(ATLAS_EDGE_GROWTH_CYPHER))` term from
-# `read_atlas` and all 154 tests stayed green: `ATLAS_EDGE_GROWTH_CYPHER`
-# appeared nowhere in `tests/`. Half of "make an edge visible" was unguarded --
-# the half that reaches the page Juniper actually looks at.
-
-
-def test_the_growth_panel_reads_edges_as_well_as_nodes() -> None:
-    reader = _Reader(answers={
-        "MATCH (n) WHERE n.run_id IS NOT NULL": [
-            {"label": "Finding", "run_id": "r1", "n": 3},
-        ],
-        "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL": [
-            {"label": "-> SUPPORTS", "run_id": "r1", "n": 2},
-        ],
-    })
-    view = read_atlas(reader)
-    run = next(r for r in view.runs if r.run_id == "r1")
-    assert run.added == {"Finding": 3, "-> SUPPORTS": 2}
-    assert run.total_added == 5, "an edge Orion drew is part of what it wrote"
-
-
-def test_an_edge_type_named_like_a_node_label_does_not_delete_it() -> None:
-    """Both queries feed ONE fold keyed on `label`, and edge rows are appended
-    last, so an unprefixed collision silently overwrote the node count -- 4
-    Concept nodes plus 1 Concept-typed edge rendering as `1`, with the real
-    history being the half destroyed. The `-> ` prefix is the fix; this asserts
-    the prefix is actually in the query rather than assumed."""
-    assert "'-> ' + type(r)" in ATLAS_EDGE_GROWTH_CYPHER
-    reader = _Reader(answers={
-        "MATCH (n) WHERE n.run_id IS NOT NULL": [
-            {"label": "Concept", "run_id": "r1", "n": 4},
-        ],
-        "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL": [
-            {"label": "-> Concept", "run_id": "r1", "n": 1},
-        ],
-    })
-    run = next(r for r in read_atlas(reader).runs if r.run_id == "r1")
-    assert run.added["Concept"] == 4, "the node count was overwritten"
-    assert run.added["-> Concept"] == 1
-    assert run.total_added == 5

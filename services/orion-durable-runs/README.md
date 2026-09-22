@@ -204,6 +204,19 @@ backend permit drains. Model outputs, FCC execution and external knowledge reads
 are explicit isolated fixtures; this is not evidence of production cognition.
 
 
+## Lent lane: `chat-burst`
+
+`DURABLE_RUNS_LANE_POLICY_JSON` declares `chat-burst` as `compatible_with: ["agent"]`, so every
+new `agent`-preferring run derives it as an alternative at submission. It needs no
+`allow_elastic_activation`: nothing is physically borrowed. Eligibility follows the gateway
+catalog: while the Hub gate is closed the gateway reports the route `operator_closed`, which
+`refresh_lanes` maps to `healthy=False` (`health_unknown_or_unavailable` in the run's
+`suppressed` map). Runs already queued before this policy change keep their frozen
+alternatives and will not widen onto it. A run first granted `chat-burst` stays pinned to it
+(`run_assignment_locked`), so closing the gate pauses that run until the gate reopens rather
+than migrating it -- the same retention rule `agent-burst` follows.
+
+
 ## Optional GPU2 elastic admission
 
 GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the

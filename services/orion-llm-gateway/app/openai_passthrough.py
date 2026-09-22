@@ -30,6 +30,8 @@ from .priority_admission import background_admission
 from .settings import settings
 from .capacity import CapacityPermit, CapacityRejected, CapacityStreamingResponse, capacity_error, stream_cleanup
 from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
+from . import lane_gate
+from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
 
 logger = logging.getLogger("orion-llm-gateway.openai")
 
@@ -276,6 +278,8 @@ async def handle_chat_completions_post(request: Request) -> Response:
         return JSONResponse(error_payload, status_code=status)
 
     assert target is not None and route_key is not None and upstream_model is not None
+    if route_key in OPERATOR_GATED_LLM_ROUTES and not await lane_gate.is_open(route_key):
+        return JSONResponse(lane_gate.route_operator_closed_error(route_key), status_code=503)
     forward_body = dict(body)
     if forward_body.get("model") != upstream_model:
         forward_body["model"] = upstream_model

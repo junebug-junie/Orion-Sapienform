@@ -594,6 +594,44 @@ remain outside this Gateway boundary. Disable the capacity flag to restore the
 existing admission behavior; no production activation is performed by this patch.
 
 
+## Lent lane: `chat-burst` and its operator gate
+
+`chat-burst` (2026-09-21) is Juniper's own chat worker (`circe-worker-1`, the same upstream as
+`chat` and `harness`) lent to the durable-runs burst queue. Nothing is physically borrowed the
+way `agent-burst` borrows GPU2; what is borrowed is Juniper's attention, so the lane is
+available only while she says so.
+
+- **Gate state** lives in bus Redis under `orion:llm_gateway:lane_gate:chat-burst`
+  (`app/lane_gate.py`). Missing key, corrupt value, or Redis error all read as **closed**.
+- **Producer**: the Hub's "Lend chat lane" button -> `PUT /routes/chat-burst/gate`
+  `{"open": true|false, "changed_by": "hub-ui"}`. `GET /routes/chat-burst/gate` reads it.
+  Any other route id returns 404 `route_not_operator_gated`.
+- **Catalog**: `GET /routes` carries `gate_open` (null for ungated routes) and reports
+  `chat-burst` as `operator_closed` while the gate is shut, even when the worker probes `up`.
+  Durable admission reads that status as unhealthy, so it never widens onto a closed lane.
+- **Dispatch**: every surface (bus/HTTP chat, `/v1/messages`, `/v1/chat/completions`) refuses a
+  closed gated route with `route_operator_closed` (HTTP 503) before any lease or capacity work.
+  Checked per request, so closing the gate stops the *next* call of a run already leased on it;
+  the in-flight generation finishes.
+- **Lease required**: like `agent-burst`, an unleased call on `chat-burst` is refused by
+  `CapacityPermit` (`chat_burst_requires_durable_capacity_lease`). The only way onto the lane
+  is a durable lease granted by orion-durable-runs after the widening threshold.
+- **Fairness with live chat**: `chat`, `harness` and `chat-burst` share one backend key, so
+  the existing capacity permits already fence them: a chat-burst lease holder makes an unleased
+  `chat` call wait (`durable_lease_active`), and a live chat permit keeps the broker from
+  granting a chat-burst lease (`owner_request_active` / non-zero backend estimate). The Hub
+  additionally holds and emails chat-box messages while the gate is open.
+
+Smoke:
+
+```bash
+curl -fsS http://127.0.0.1:8210/routes/chat-burst/gate
+curl -fsS -X PUT http://127.0.0.1:8210/routes/chat-burst/gate -H 'Content-Type: application/json' -d '{"open":true,"changed_by":"smoke"}'
+curl -fsS http://127.0.0.1:8210/routes | python3 -c 'import json,sys; print([r for r in json.load(sys.stdin)["routes"] if r["id"]=="chat-burst"])'
+curl -fsS -X PUT http://127.0.0.1:8210/routes/chat-burst/gate -H 'Content-Type: application/json' -d '{"open":false,"changed_by":"smoke"}'
+```
+
+
 ## Optional GPU2 elastic admission
 
 GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the

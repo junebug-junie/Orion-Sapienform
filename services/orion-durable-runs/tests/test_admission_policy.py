@@ -78,3 +78,21 @@ def test_aliases_share_work_ahead_and_quality_drop_is_bounded():
 
 def test_native_work_ahead_prevents_widened_work_overtaking():
     assert decide(queued_ahead={"b": 400}).assigned_lane is None
+
+
+def test_chat_burst_widens_without_elastic_permission_but_only_while_gate_open():
+    # `chat-burst` (2026-09-21) is Juniper's chat worker lent to this queue by a Hub gate.
+    # Unlike `agent-burst` it needs no run-level `allow_elastic_activation`: nothing is
+    # physically borrowed. The gate shows up here as health -- the gateway reports the route
+    # `operator_closed` while shut, which refresh_lanes maps to healthy=False.
+    lanes_ = {"agent": {"backend_key": "a", "configured": True, "healthy": True, "capabilities": {}},
+              "chat-burst": {"backend_key": "c", "configured": True, "healthy": True,
+                             "compatible_with": ["agent"], "capabilities": {}, "quality_drop": 0}}
+    req = {"preferred_lane": "agent", "alternatives": ["chat-burst"]}
+    open_gate = decide(requirement=req, lanes=lanes_)
+    assert open_gate.eligible_lanes == ["agent", "chat-burst"]
+    assert open_gate.assigned_lane == "chat-burst"
+    lanes_["chat-burst"]["healthy"] = False  # status == operator_closed
+    closed = decide(requirement=req, lanes=lanes_)
+    assert closed.assigned_lane is None
+    assert closed.suppressed["chat-burst"] == "health_unknown_or_unavailable"

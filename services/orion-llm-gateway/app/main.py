@@ -9,11 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
@@ -33,7 +33,9 @@ from .priority_admission import background_admission
 from .upstream_admission import UpstreamAdmission, get_upstream_admission
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from .route_catalog import get_routes_payload
+from .route_catalog import get_routes_payload, refresh_route_health_cache
+from . import lane_gate
+from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
 import math
 
 from .admission_ledger import get_ledger
@@ -124,6 +126,37 @@ async def ready() -> JSONResponse:
 @app.get("/routes")
 async def routes_catalog() -> Dict[str, Any]:
     return await get_routes_payload()
+
+
+class LaneGateUpdate(BaseModel):
+    open: bool
+    changed_by: str = "unknown"
+
+
+# The operator gate on a lent lane (lane_gate.py). `chat-burst` is Juniper's chat worker lent
+# to the durable burst queue; the Hub's "Lend chat lane" button is the only writer. A PUT
+# forces the catalog cache to refresh so GET /routes flips to/from `operator_closed` at once
+# instead of up to 15s later -- durable admission reads that catalog to decide eligibility.
+@app.get("/routes/{route_id}/gate")
+async def route_gate(route_id: str) -> Dict[str, Any]:
+    try:
+        return await lane_gate.read_gate(route_id)
+    except lane_gate.RouteNotOperatorGated:
+        raise HTTPException(status_code=404, detail="route_not_operator_gated")
+    except lane_gate.LaneGateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.put("/routes/{route_id}/gate")
+async def route_gate_set(route_id: str, update: LaneGateUpdate) -> Dict[str, Any]:
+    try:
+        state = await lane_gate.set_gate(route_id, open=update.open, changed_by=update.changed_by)
+    except lane_gate.RouteNotOperatorGated:
+        raise HTTPException(status_code=404, detail="route_not_operator_gated")
+    except lane_gate.LaneGateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    await refresh_route_health_cache(force=True)
+    return state
 
 
 # ROADMAP A5. The read side of the admission ledger: how often background dispatch was actually
@@ -270,6 +303,13 @@ def _executor(loop: asyncio.AbstractEventLoop) -> ThreadPoolExecutor:
 
 async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, Any]:
     plan = plan_llm_chat(body)
+    if plan.route in OPERATOR_GATED_LLM_ROUTES and not await lane_gate.is_open(plan.route):
+        # A lent lane (chat-burst) is closed until the Hub opens it -- refused before any
+        # lease/capacity work, so a closed gate never even queues on the worker.
+        logger.warning("route_operator_closed correlation_id=%s route=%s", correlation_id, plan.route)
+        return {"text": "", "content": "", "route": plan.route,
+                "raw": {"error": "route_operator_closed",
+                        "details": lane_gate.route_operator_closed_error(plan.route)["error"]}}
     guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route, backend_key=plan.upstream)
     try:
         await guard.check()

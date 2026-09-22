@@ -89,7 +89,17 @@ from typing import FrozenSet, Optional
 #: other. `harness` is also in SYSTEM_LLM_ROUTES below: it is never meant to be a human's
 #: interactive Compute choice, and that is enforced, not just documented -- see that set for why.
 ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
-    {"chat", "quick", "metacog", "metacog_background", "quick_background", "agent", "harness", "agent-burst"}
+    {
+        "chat",
+        "quick",
+        "metacog",
+        "metacog_background",
+        "quick_background",
+        "agent",
+        "harness",
+        "agent-burst",
+        "chat-burst",
+    }
 )
 
 #: Historical spellings of `quick`, kept working because live config still carries them.
@@ -118,6 +128,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "agent",
     "harness",
     "agent-burst",
+    "chat-burst",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -190,13 +201,55 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # ordinary chooseable lane. `priority: "system"` is the route-table value that signals this; the
 # fail-safe/fail-open reasoning for keeping a *definitional* copy here, not just relying on the
 # route table, mirrors BACKGROUND_LLM_ROUTES above.
-SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness", "agent-burst"})
+SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness", "agent-burst", "chat-burst"})
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
         "SYSTEM_LLM_ROUTES names routes that are not accepted: "
         f"{sorted(SYSTEM_LLM_ROUTES - ACCEPTED_LLM_ROUTES)}"
     )
+
+
+# Burst lanes: capacity that is *lent* to durable admission, never dispatched on directly.
+#
+# A burst route only ever carries a durable resource lease -- the gateway's CapacityPermit
+# refuses an unleased call on any of these outright (capacity.py), so a caller cannot reach
+# borrowed capacity by naming the route. Both members are also SYSTEM_LLM_ROUTES (hidden from
+# the human picker, refused by normalize_llm_route).
+#
+# `agent-burst` (GPU2 elastic, 2026-09) is *physically* borrowed: the worker only exists after
+# diffusion is drained off the GPU. `chat-burst` (2026-09-21) is *operationally* borrowed: the
+# worker is Juniper's own always-resident chat lane (circe-worker-1, the same upstream as
+# `chat`/`harness`), lent to the durable queue only while the operator gate below is open.
+# Live 2026-09-21: the agent lane had 6 durable runs queued, the oldest waiting 12+ hours,
+# while agent-burst was down (GPU2 held by diffusion) and the chat worker sat idle.
+BURST_LLM_ROUTES: FrozenSet[str] = frozenset({"agent-burst", "chat-burst"})
+
+if not BURST_LLM_ROUTES <= SYSTEM_LLM_ROUTES:
+    raise RuntimeError(
+        "BURST_LLM_ROUTES must be system-only routes: "
+        f"{sorted(BURST_LLM_ROUTES - SYSTEM_LLM_ROUTES)}"
+    )
+
+
+# Routes whose availability is an operator decision, not a health probe. The gateway keeps one
+# open/closed gate per member (services/orion-llm-gateway/app/lane_gate.py); closed is the
+# default and the fail-safe. While closed, `GET /routes` reports the route `operator_closed`
+# (so durable admission never widens onto it) and any dispatch on it is refused with
+# `route_operator_closed` (so nothing reaches the worker by naming the route). The Hub's
+# "Lend chat lane" button is the only producer of the open state.
+OPERATOR_GATED_LLM_ROUTES: FrozenSet[str] = frozenset({"chat-burst"})
+
+if not OPERATOR_GATED_LLM_ROUTES <= BURST_LLM_ROUTES:
+    raise RuntimeError(
+        "OPERATOR_GATED_LLM_ROUTES must be burst routes: "
+        f"{sorted(OPERATOR_GATED_LLM_ROUTES - BURST_LLM_ROUTES)}"
+    )
+
+#: The lane whose worker `chat-burst` lends out. Lending is meaningful only because these two
+#: route ids resolve to ONE upstream (`served_by: circe-worker-1`); the Hub reads this to know
+#: which of its own traffic to hold back while the gate is open.
+CHAT_BURST_LENDS_ROUTE = "chat"
 
 if SYSTEM_LLM_ROUTES & BACKGROUND_LLM_ROUTES:
     raise RuntimeError(

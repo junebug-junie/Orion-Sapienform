@@ -303,6 +303,28 @@ def test_a_self_inquiry_run_without_a_finish_row_is_recognised_by_its_journal_ti
     assert run.line == "self_inquiry" and run.line_known is True
 
 
+def test_the_last_resort_line_fallback_reads_the_revised_priors_own_line_field() -> None:
+    """No finish-row `line`, no admission brief, no self-sense marker, no
+    Self-inquiry journal title -- the only thing left to ask is the prior
+    the run actually revised. `line_known=False` here: this is a guess from
+    a different node's field, not something the run itself recorded."""
+    rows = _happy_run("guessed")
+    rows.lifecycle = []
+    rows.journals[0]["title"] = "Curiosity"  # not the self-inquiry title
+    rows.priors[0]["line"] = "self"
+    run = build_stories(rows)["guessed"].run
+    assert run.line == "self_inquiry" and run.line_known is False
+    assert run.plain_line_label == "Self question"
+
+
+def test_the_last_resort_fallback_defaults_to_investigate_when_nothing_names_a_line() -> None:
+    rows = _happy_run("unnamed")
+    rows.lifecycle = []
+    rows.journals[0]["title"] = "Curiosity"
+    run = build_stories(rows)["unnamed"].run
+    assert run.line == "investigate" and run.line_known is False
+
+
 def test_a_failed_run_reads_as_died() -> None:
     rows = RunStoryRows(lifecycle=[
         _life("dead", "harness_turn", "running", 0),

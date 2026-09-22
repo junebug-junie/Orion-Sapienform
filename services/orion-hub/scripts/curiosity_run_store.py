@@ -59,24 +59,32 @@ JOURNALS_SQL = (
     "SELECT entry_id, source_ref, title, body, created_at FROM journal_entries "
     "WHERE source_ref = ANY($1::text[])"
 )
-# PR #2290 (patch 2, merged): every curiosity outreach decision -- including a
-# pre-check block, which used to log a line and write nothing -- gets a row
-# keyed `correlation_id = uuid5(NAMESPACE_URL, f"curiosity_outreach:{run_id}")`
+# PR #2290 ("fix(hub): record every curiosity outreach decision; stamp
+# Juniper's reply") -- OPEN, NOT MERGED as of this branch. Once it lands,
+# every curiosity outreach decision -- including a pre-check block, which
+# today only logs a line and writes nothing -- gets a row keyed
+# `correlation_id = uuid5(NAMESPACE_URL, f"curiosity_outreach:{run_id}")`
 # (`orion.curiosity.run_story.outreach_key`, the same derivation the loop
 # itself uses) with `result_json.source = "curiosity_outreach"` and
-# `result_json.run_id` for a reverse lookup. The source filter is redundant
-# with the correlation_id match in practice (uuid5 over a fixed namespace
-# does not collide across sources) but is kept explicit: a decision row this
-# query returns must be self-evidently a curiosity decision, not merely one
-# that happened to share a key.
+# `result_json.run_id` for a reverse lookup. This query is written against
+# that (still-pending) contract now so the read side needs no change when
+# #2290 merges; until then it simply finds no rows for any run, and the
+# join degrades to `not_recorded` (`run_story.py`'s own contract, unaffected
+# by whether #2290 has landed). The source filter is redundant with the
+# correlation_id match in practice (uuid5 over a fixed namespace does not
+# collide across sources) but is kept explicit: a decision row this query
+# returns must be self-evidently a curiosity decision, not merely one that
+# happened to share a key.
 OUTREACH_SQL = (
     "SELECT decision_id, decided_at, reason, correlation_id, session_id, "
     "result_json::text AS result_json FROM endogenous_outreach_decisions "
     "WHERE correlation_id = ANY($1::text[]) AND result_json->>'source' = 'curiosity_outreach'"
 )
 # The sent message carries the outreach key as its own correlation id; a
-# reply (patch B / PR #2290) carries it as `client_meta.in_reply_to` on the
-# next chat_history_log row equal to that same correlation_id. One query, both.
+# reply (PR #2290, not yet merged -- see above) will carry it as
+# `client_meta.in_reply_to` on the next chat_history_log row equal to that
+# same correlation_id. One query, both; both return no rows until #2290
+# lands, same as OUTREACH_SQL above.
 CHAT_SQL = (
     "SELECT correlation_id, session_id, prompt, response, "
     "client_meta::text AS client_meta, created_at FROM chat_history_log "

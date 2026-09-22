@@ -1141,17 +1141,22 @@ counted, not fetched row by row, and rendered as an anomaly badge rather than
 3,482 timeline entries.
 
 **Reach-out honesty.** A run's `:TurnOutcome.reach_out` only ever meant
-"wanted to"; whether it became a message lived in a different table keyed by
+"wanted to"; whether it became a message lives in a different table, keyed by
 `correlation_id = uuid5(NAMESPACE_URL, "curiosity_outreach:<run_id>")`
-(`orion.curiosity.run_story.outreach_key`) and, until PR #2290, only existed
-for a decision that got far enough to compose a message -- a pre-check block
-(`daily_cap`, `quiet_hours`, `turn_in_flight`, ...) logged a line and wrote
-nothing. The story reads `endogenous_outreach_decisions` filtered to
+(`orion.curiosity.run_story.outreach_key`). Today that table only ever gets a
+row for a decision that got far enough to compose a message -- a pre-check
+block (`daily_cap`, `quiet_hours`, `turn_in_flight`, ...) logs a line and
+writes nothing, so every historical reach-out reads `not_recorded`. PR #2290
+("record every curiosity outreach decision; stamp Juniper's reply", **open,
+not yet merged**) makes the pre-check block write a row too, and stamps
+Juniper's reply. This patch's read side is already written against that
+contract -- `endogenous_outreach_decisions` filtered to
 `result_json->>'source' = 'curiosity_outreach'` for the decision, and
 `chat_history_log` rows where `client_meta->>'in_reply_to'` equals that same
-correlation id for Juniper's reply -- a time-adjacency heuristic (next
-message in that session, within 12h), labelled as such on the page, not
-passed off as an exact link. A wanted reach-out with no decision row reads
+correlation id for Juniper's reply, a time-adjacency heuristic (next message
+in that session, within 12h) labelled as such on the page, not passed off as
+an exact link -- so no change is needed here once #2290 merges. A wanted
+reach-out with no decision row reads
 `not_recorded`, never a guessed gate.
 
 **Bounded by construction.** The strip shows at most 14 days (`days`,

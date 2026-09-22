@@ -310,10 +310,12 @@ def test_the_self_sense_line_name_matches_the_loop() -> None:
 
 
 def test_the_outreach_query_requires_the_curiosity_source_tag() -> None:
-    """PR #2290's write side stamps `result_json.source = 'curiosity_outreach'`
-    on every decision it records. The read side requires it too -- explicit,
-    not merely implied by the correlation_id match -- so a decision row this
-    query returns is self-evidently a curiosity decision."""
+    """PR #2290 (open, not yet merged) will stamp
+    `result_json.source = 'curiosity_outreach'` on every decision it records.
+    The read side requires it too, now -- explicit, not merely implied by
+    the correlation_id match -- so a decision row this query returns is
+    self-evidently a curiosity decision, and no read-side change is needed
+    when #2290 lands."""
     assert "result_json->>'source' = 'curiosity_outreach'" in store.OUTREACH_SQL
 
 

@@ -347,3 +347,169 @@ def test_fetch_latest_missing_env_or_session_returns_none(monkeypatch) -> None:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test/db")
     assert fetch_latest_outreach_provenance(None) is None
     assert fetch_latest_outreach_provenance("  ") is None
+
+
+# ---------------------------------------------------------------------------
+# Reply stamp (2026-09-22): the same clearing rule, without the capsule
+# requirement, gives Juniper's next inbound turn `client_meta.in_reply_to`.
+# ---------------------------------------------------------------------------
+
+# NOTE: the async tests below call `mod.reply_stamp_for_session` off a module
+# imported INSIDE the test. `tests/conftest.py::_ensure_hub_paths` evicts every
+# `scripts.*` entry from sys.modules, so a function bound at this file's import
+# time can read globals from a different module object than the one a later
+# `import scripts.outreach_provenance as mod` + monkeypatch touches.
+from scripts.outreach_provenance import (  # noqa: E402
+    fetch_reply_target,
+    reply_stamp_from_target,
+    select_active_unsolicited_row,
+    select_reply_target,
+    _meta_unsolicited,
+)
+
+
+def _plain_outreach_row(*, minute: int, row_id: str, source: str | None = "curiosity_outreach"):
+    """A curiosity reach-out: unsolicited, NO provenance capsule."""
+    meta: dict = {"unsolicited": True}
+    if source:
+        meta["source"] = source
+    return {"id": row_id, "created_at": _ts(minute), "client_meta": meta, "response": "hey"}
+
+
+def test_meta_unsolicited_matches_the_live_jsonb_boolean() -> None:
+    """Live rows store `unsolicited` as jsonb `true`; SQLAlchemy returns
+    Python `True`. `str(True) == "True"`, so the old `== "true"` check never
+    matched a real row (checked live 2026-09-22)."""
+    assert _meta_unsolicited({"unsolicited": True})
+    assert _meta_unsolicited({"unsolicited": "true"})
+    assert _meta_unsolicited({"unsolicited": "True"})
+    assert not _meta_unsolicited({"unsolicited": False})
+    assert not _meta_unsolicited({"unsolicited": "false"})
+    assert not _meta_unsolicited({})
+
+
+def test_provenance_selection_still_requires_the_capsule() -> None:
+    """Widening for the reply stamp must not widen provenance injection: a
+    capsule-less curiosity row is a reply target but not an injection."""
+    rows = [_plain_outreach_row(minute=1, row_id="row-a")]
+    assert select_active_outreach_provenance(rows) is None
+    assert select_active_unsolicited_row(rows, require_capsule=True) is None
+    assert select_active_unsolicited_row(rows, require_capsule=False) is rows[0]
+
+
+def test_reply_target_after_an_unsolicited_row() -> None:
+    rows = [
+        {"id": "u0", "created_at": _ts(0), "client_meta": {}, "response": "earlier"},
+        _plain_outreach_row(minute=1, row_id="row-a"),
+    ]
+    assert select_reply_target(rows) == {"correlation_id": "row-a", "source": "curiosity_outreach"}
+    assert reply_stamp_from_target(select_reply_target(rows)) == {
+        "in_reply_to": "row-a",
+        "in_reply_to_source": "curiosity_outreach",
+    }
+
+
+def test_reply_target_cleared_by_a_later_solicited_reply() -> None:
+    rows = [
+        _plain_outreach_row(minute=1, row_id="row-a"),
+        {"id": "s1", "created_at": _ts(2), "client_meta": {"unsolicited": "false"},
+         "response": "normal reply"},
+    ]
+    assert select_reply_target(rows) is None
+    assert reply_stamp_from_target(None) == {}
+
+
+def test_reply_target_newest_unsolicited_wins_and_source_is_optional() -> None:
+    rows = [
+        _plain_outreach_row(minute=1, row_id="row-old"),
+        _plain_outreach_row(minute=2, row_id="row-new", source=None),
+    ]
+    assert select_reply_target(rows) == {"correlation_id": "row-new", "source": None}
+    assert reply_stamp_from_target(select_reply_target(rows)) == {"in_reply_to": "row-new"}
+
+
+def test_reply_target_without_an_id_is_not_a_stamp() -> None:
+    rows = [{"created_at": _ts(1), "client_meta": {"unsolicited": True}, "response": "x"}]
+    assert select_reply_target(rows) is None
+
+
+def test_fetch_reply_target_window_is_enforced_by_the_query(monkeypatch) -> None:
+    """The 12h window is a SQL predicate: a 13h-old row is never loaded, so
+    the selector sees no rows. Pinned by asserting the bound parameters."""
+    engine = _install_fake_engine(monkeypatch, [])
+    assert fetch_reply_target("sid-1", max_age_hours=12.0) is None
+    conn = engine.connect.return_value.__enter__.return_value
+    sql, params = conn.execute.call_args.args
+    assert params["sid"] == "sid-1"
+    assert params["max_age_secs"] == 12.0 * 3600.0
+    assert params["lim"] == 500
+    assert "LIMIT :lim" in str(sql)
+    assert "make_interval(secs => :max_age_secs)" in str(sql)
+
+
+def test_fetch_reply_target_via_mocked_engine(monkeypatch) -> None:
+    rows = [_plain_outreach_row(minute=1, row_id="row-a")]
+    _install_fake_engine(monkeypatch, rows)
+    assert fetch_reply_target("sid-1") == {"correlation_id": "row-a", "source": "curiosity_outreach"}
+
+
+def test_fetch_reply_target_db_failure_is_none(monkeypatch) -> None:
+    import sqlalchemy
+
+    def _boom(uri, **kwargs):
+        raise RuntimeError("no db")
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://test/db")
+    monkeypatch.setattr(sqlalchemy, "create_engine", _boom)
+    assert fetch_reply_target("sid-1") is None
+
+
+@pytest.mark.asyncio
+async def test_reply_stamp_for_session_sets_stamp(monkeypatch) -> None:
+    import scripts.outreach_provenance as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_reply_target",
+        lambda sid, *, max_age_hours=12.0: {"correlation_id": "row-a", "source": "curiosity_outreach"},
+    )
+    assert await mod.reply_stamp_for_session("sid-1") == {
+        "in_reply_to": "row-a",
+        "in_reply_to_source": "curiosity_outreach",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reply_stamp_for_session_db_failure_is_empty_and_does_not_raise(monkeypatch) -> None:
+    import scripts.outreach_provenance as mod
+
+    def _boom(sid, *, max_age_hours=12.0):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(mod, "fetch_reply_target", _boom)
+    assert await mod.reply_stamp_for_session("sid-1") == {}
+
+
+@pytest.mark.asyncio
+async def test_reply_stamp_for_session_times_out_to_empty(monkeypatch) -> None:
+    import time as _time
+
+    import scripts.outreach_provenance as mod
+
+    def _slow(sid, *, max_age_hours=12.0):
+        _time.sleep(0.3)
+        return {"correlation_id": "late"}
+
+    monkeypatch.setattr(mod, "fetch_reply_target", _slow)
+    assert await mod.reply_stamp_for_session("sid-1", timeout_sec=0.05) == {}
+
+
+@pytest.mark.asyncio
+async def test_reply_stamp_for_session_no_session_is_empty(monkeypatch) -> None:
+    import scripts.outreach_provenance as mod
+
+    def _never(*a, **k):
+        raise AssertionError("must not query without a session id")
+
+    monkeypatch.setattr(mod, "fetch_reply_target", _never)
+    assert await mod.reply_stamp_for_session(None) == {}
+    assert await mod.reply_stamp_for_session("  ") == {}

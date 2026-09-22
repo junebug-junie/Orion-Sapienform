@@ -2045,6 +2045,37 @@ class EndogenousOutreach:
         """
         return outreach_block_reason(self._gate_inputs())
 
+    def record_blocked(
+        self,
+        reason: str,
+        *,
+        correlation_id: str,
+        source: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a decision another loop made NOT to compose, through `_record`.
+
+        `blocked_reason()` is advisory and sync; the curiosity loop calls it
+        before spending a composition turn and, until 2026-09-22, only LOGGED
+        the block. Six runs that set `reach_out=true` between 2026-09-19 and
+        09-21 therefore have no decision row at all -- the run story could not
+        tell "composed and gated" apart from "never tried". This is the
+        missing write: same `_record` writer, same table, same
+        `result_json.source` key, so an operator still sees ONE outreach
+        history. ``extra`` lands in `result_json` (e.g. `run_id`, `line`);
+        the core keys always win over it.
+        """
+        return self._record(
+            {
+                **dict(extra or {}),
+                "outreach": False,
+                "reason": str(reason or "unknown"),
+                "source": source,
+                "correlation_id": correlation_id,
+            },
+            forced=False,
+        )
+
     async def offer_message(
         self,
         *,
@@ -2052,6 +2083,7 @@ class EndogenousOutreach:
         correlation_id: str,
         tag: str,
         model: Optional[str] = None,
+        meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
 
@@ -2080,23 +2112,31 @@ class EndogenousOutreach:
         Returns the same status-dict shape `maybe_outreach` does, and records a
         decision-log row identically, so an operator sees one outreach history
         rather than two.
+
+        ``meta`` (2026-09-22): caller-owned keys copied into EVERY decision row
+        this call records -- sent or not -- so a row can be joined back to its
+        origin without recomputing the caller's correlation key (the curiosity
+        loop passes `run_id` and `line`). Core keys always win over it. Every
+        row this method records also carries ``correlation_id`` for the same
+        reason; before this, only the `sent` row did.
         """
+        extra: Dict[str, Any] = {**dict(meta or {}), "correlation_id": correlation_id}
         body = str(text or "").strip()
         if not body:
             return self._record(
-                {"outreach": False, "reason": "empty_generation", "source": tag},
+                {**extra, "outreach": False, "reason": "empty_generation", "source": tag},
                 forced=False,
             )
         if is_pass_response(body):
             # Orion wrote the message and concluded it was not worth sending.
             # A real answer, and the composition prompt says so explicitly.
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "source": tag},
+                {**extra, "outreach": False, "reason": "orion_passed", "source": tag},
                 forced=False,
             )
         if self._send_lock.locked():
             return self._record(
-                {"outreach": False, "reason": "already_sending", "source": tag},
+                {**extra, "outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
         # The cap is SHARED, so this path has to consume the recovered count
@@ -2109,7 +2149,7 @@ class EndogenousOutreach:
             blocked = outreach_block_reason(self._gate_inputs())
             if blocked:
                 return self._record(
-                    {"outreach": False, "reason": blocked, "source": tag},
+                    {**extra, "outreach": False, "reason": blocked, "source": tag},
                     forced=False,
                 )
             # Closed-vocabulary grounding guard (2026-09-08) -- see module
@@ -2127,6 +2167,7 @@ class EndogenousOutreach:
             if offending_terms:
                 return self._record(
                     {
+                        **extra,
                         "outreach": False,
                         "reason": "named_ungrounded_signal",
                         "source": tag,
@@ -2155,6 +2196,7 @@ class EndogenousOutreach:
             )
             return self._record(
                 {
+                    **extra,
                     "outreach": True,
                     "reason": "sent",
                     "source": tag,
@@ -2635,6 +2677,13 @@ class EndogenousOutreach:
             else:
                 history_tags = list(tags)
             client_meta: Dict[str, Any] = {"unsolicited": True} if unsolicited else {}
+            if source_tag:
+                # `tags` is not a chat_history_log column; the row's own
+                # client_meta is the only place a reader of that table can
+                # learn WHICH loop produced this unsolicited message. The
+                # reply stamp (`outreach_provenance.reply_stamp_for_session`)
+                # copies it into `in_reply_to_source` on Juniper's next turn.
+                client_meta["source"] = str(source_tag)
             if provenance:
                 client_meta["outreach_provenance"] = dict(provenance)
             env = build_chat_history_envelope(

@@ -41,6 +41,7 @@ from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.chat_lane_lend import chat_lane_is_lent, held_notice_text, hold_chat_message_for_email
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
+from scripts.outreach_provenance import reply_stamp_for_session
 from scripts.utils import split_sentences
 from scripts.fcc_claude_bridge import (
     active_turns,
@@ -1715,6 +1716,17 @@ async def websocket_endpoint(websocket: WebSocket):
             mode = chat_req.mode
             recall_payload = chat_req.recall or {"enabled": use_recall}
             turn_client_meta = dict(client_meta)
+            # Reply stamp (2026-09-22): if Orion's last message in this session
+            # was unsolicited (endogenous or curiosity outreach) within 12h and
+            # nothing solicited has been said since, this inbound turn is
+            # Juniper's answer to it. `in_reply_to` = that row's correlation id,
+            # so the curiosity run story can show her reply next to the
+            # reach-out that prompted it. One lookup per turn, text and voice
+            # alike (both land here after STT). Best-effort with a hard
+            # timeout inside the helper: a DB failure costs the stamp, never
+            # the turn. Skipped when this turn will not be written anyway.
+            if bus and not no_write:
+                turn_client_meta.update(await reply_stamp_for_session(session_id))
             if is_social_room_payload(data):
                 turn_client_meta.update(
                     social_room_client_meta(

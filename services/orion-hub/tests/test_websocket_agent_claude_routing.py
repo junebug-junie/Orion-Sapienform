@@ -77,3 +77,22 @@ def test_unified_path_emits_turn_started_after_correlation_id() -> None:
     run_idx = source.index("run_unified_turn(", idx + len(marker))
     started_idx = source.index('"kind": "turn_started"', idx)
     assert started_idx < run_idx
+
+
+def test_inbound_turn_client_meta_gets_the_reply_stamp_before_the_user_row_is_published() -> None:
+    """Reply stamp (2026-09-22): `turn_client_meta` is the dict every history
+    publish on this path copies from (`enriched_client_meta = dict(turn_client_meta)`),
+    so stamping it once, right after it is built and before the user row is
+    published, covers text and voice (both arrive here after STT). Static
+    check, same convention as the rest of this file."""
+    source = WS_PATH.read_text(encoding="utf-8")
+    assert "from scripts.outreach_provenance import reply_stamp_for_session" in source
+    build = source.index("turn_client_meta = dict(client_meta)")
+    stamp = source.index("turn_client_meta.update(await reply_stamp_for_session(session_id))")
+    publish = source.index('_schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")')
+    assert build < stamp < publish
+    # Gated the same way the history publish is, so a no_write turn never
+    # spends a lookup it cannot use.
+    assert "if bus and not no_write:\n                turn_client_meta.update(await reply_stamp_for_session" in source
+    # Exactly one dict is stamped and every later publish derives from it.
+    assert source.count("enriched_client_meta = dict(turn_client_meta)") == 1

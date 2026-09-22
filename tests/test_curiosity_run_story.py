@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from orion.curiosity.run_story import (
+    OUTCOME_CANCELLED,
     DECISION_NOT_RECORDED,
     DECISION_SENT,
     LINE_LABELS,
@@ -416,3 +417,173 @@ def test_a_self_inquiry_lived_answer_counts_as_having_written_something() -> Non
     assert story.run.started_at == _ms(30) and story.run.started_from == "graph"
     assert story.run.self_written == {"kind": "lived_answer", "text": "I hold it against the records.", "family": "lived"}
     assert [it.kind for it in story.timeline] == ["self_write", "lifecycle"]
+
+
+# --- the admission path (since 2026-09-14) ------------------------------------
+
+
+def _event(run_id, event, sec, detail=None, entry_id=None):
+    return {"entry_id": entry_id or f"{run_id}:{event}:{sec}", "run_id": run_id, "event": event,
+            "generated_at": _at(sec), "payload": json.dumps({"event": event, "detail": detail or {}, "run_id": run_id})}
+
+
+def _admission(run_id, sec, *, workflow="curiosity.investigate", line="investigate", terminal="completed", updated=None):
+    return {"run_id": run_id, "request": json.dumps({"workflow": workflow, "brief": {"line": line}}),
+            "created_at": _at(sec), "control": None, "terminal": terminal,
+            "updated_at": _at(updated if updated is not None else sec)}
+
+
+def _admission_run(run_id="446ddd7165d5", *, bridge=True, line="investigate", workflow="curiosity.investigate"):
+    """The live shape of 446ddd7165d5: accepted, waited 7h for the agent
+    lane, admitted, ran, completed; the bridge row is a copy of the terminal
+    event with the workflow mislabelled."""
+    lease = {"lease": {"lane": "agent", "lease_id": "L1"}}
+    rows = RunStoryRows(
+        admission=[_admission(run_id, 0, workflow=workflow, line=line, updated=25600)],
+        resource_events=[
+            _event(run_id, "run.accepted", 0),
+            _event(run_id, "run.waiting_resource", 0.02, {"requested_lane": "agent", "demand_id": "d"}),
+            _event(run_id, "run.lane_swap_suppressed", 0.3, {"reason": "waiting_capacity"}),
+            _event(run_id, "run.waiting_resource", 7, {"node": "resource_request"}),
+            _event(run_id, "run.resource_granted", 25419, lease),
+            _event(run_id, "run.lane_assigned", 25419, lease),
+            _event(run_id, "run.resumed", 25419.1, {"node": "resource_wait"}),
+            _event(run_id, "run.admitted", 25419.2, {"node": "resource_wait"}),
+            _event(run_id, "run.running", 25419.3, {"node": "run_started"}),
+            _event(run_id, "run.started", 25419.4, lease),
+            _event(run_id, "run.running", 27409, {"node": "harness_turn"}),
+            _event(run_id, "run.running", 27409.2, {"node": "read_turn_result"}),
+            _event(run_id, "run.running", 27409.4, {"node": "journal"}),
+            _event(run_id, "resource.lease_released", 27409.5, {"lane": "agent", "reason": "completed"}),
+            _event(run_id, "run.completed", 27410, {"line": line, "attempts": 1, "reach_out": False,
+                                                    "finding_text": "from the event", "journal_entry_id": "j"},
+                   entry_id=f"{run_id}:terminal:completed"),
+        ],
+        event_counts=[{"run_id": run_id, "event": "run.checkpoint_resume_failed", "n": 12}],
+        roles=[{"run_id": run_id, "choice": "local_crawl", "why": "w", "written_at": _ms(25420)}],
+        hops=[{"run_id": run_id, "n": 1, "note": "first", "written_at": _ms(26000)}],
+    )
+    if bridge:
+        rows.lifecycle = [_life(run_id, "finish", "completed", 27410,
+                                detail={"line": line, "finding_text": "from the bridge", "journal_entry_id": "j"})]
+    return rows
+
+
+def test_an_admission_path_run_reads_its_lifecycle_from_the_events() -> None:
+    story = build_stories(_admission_run(bridge=False))["446ddd7165d5"]
+    run = story.run
+    assert run.status == STATUS_COMPLETED
+    assert run.started_at == _ms(0) and run.started_from == "admission"
+    assert run.accepted_at == _ms(0) and run.admitted_at == _ms(25419)
+    assert run.lane == "agent"
+    assert run.lane_wait_sec == 25419.0
+    assert run.active_sec == 27410.0 - 25419.0
+    assert run.duration_sec == 27410.0
+    assert run.finding_text == "from the event"
+    assert run.retries == 0 and run.attempts == 1
+    assert run.anomalies == {"run.checkpoint_resume_failed": 12}
+    statuses = [(it.data.get("status"), it.data.get("node")) for it in story.timeline if it.kind == "lifecycle"]
+    assert statuses[:3] == [("accepted", ""), ("waiting", ""), ("admitted", "")], statuses
+    assert statuses.count(("waiting", "")) == 1, "consecutive waits collapse to one"
+    assert ("running", "harness_turn") in statuses
+    assert statuses[-2:] == [("lease_released", ""), ("completed", "finish")]
+    admitted = next(it for it in story.timeline if it.data.get("status") == "admitted")
+    assert admitted.data["lane"] == "agent" and admitted.data["wait_sec"] == 25419.0
+    assert not any(it.data.get("status") in ("resource_granted", "lane_swap_suppressed") for it in story.timeline)
+    # Graph items interleave by clock: role choice sits after admission.
+    kinds = [it.kind for it in story.timeline]
+    assert kinds.index("role_choice") > kinds.index("lifecycle")
+
+
+def test_the_bridge_row_is_ignored_when_the_admission_path_has_the_run() -> None:
+    """The bridge copies the terminal event and mislabels it. With both
+    present the story must not show two completions or two starts."""
+    story = build_stories(_admission_run(bridge=True))["446ddd7165d5"]
+    completions = [it for it in story.timeline if it.data.get("status") == "completed"]
+    assert len(completions) == 1
+    assert story.run.finding_text == "from the event"
+    assert story.run.started_from == "admission"
+
+
+def test_the_bridge_detail_is_the_fallback_when_the_completed_event_carried_none() -> None:
+    rows = _admission_run(bridge=True)
+    rows.resource_events[-1] = _event("446ddd7165d5", "run.completed", 27410, {}, entry_id="446ddd7165d5:terminal:completed")
+    run = build_stories(rows)["446ddd7165d5"].run
+    assert run.finding_text == "from the bridge"
+
+
+def test_a_legacy_only_run_is_still_read_from_the_bridge_table() -> None:
+    rows = RunStoryRows(lifecycle=[
+        _life("old", "harness_turn", "running", 0),
+        _life("old", "harness_turn", "resumed", 400, resumed="harness_turn"),
+        _completed("old", 900, attempts=2),
+    ])
+    run = build_stories(rows)["old"].run
+    assert run.started_from == "lifecycle" and run.started_at == _ms(0)
+    assert run.status == STATUS_COMPLETED and run.attempts == 2
+    assert run.accepted_at is None and run.lane_wait_sec is None and run.retries == 0
+
+
+def test_a_self_sense_run_is_labelled_from_the_admission_workflow_despite_the_mislabelled_bridge_row() -> None:
+    rows = _admission_run("20260922T025855Z-b88ac9", workflow="self_sense_eval", line="self_sense_eval")
+    # The bridge row says curiosity.investigate and carries no line at all.
+    rows.lifecycle = [_life("20260922T025855Z-b88ac9", "finish", "completed", 27410, detail={"finding_text": "x"})]
+    rows.resource_events[-1] = _event("20260922T025855Z-b88ac9", "run.completed", 27410, {"finding_text": "x"},
+                                      entry_id="20260922T025855Z-b88ac9:terminal:completed")
+    run = build_stories(rows)["20260922T025855Z-b88ac9"].run
+    assert run.line == "self_sense_eval" and run.line_known is True
+    assert run.plain_line_label == "Self-sense check"
+
+
+def test_an_in_flight_admission_run_has_a_line_from_its_brief() -> None:
+    rows = RunStoryRows(
+        admission=[_admission("live", 0, line="self_inquiry", terminal=None)],
+        resource_events=[_event("live", "run.accepted", 0), _event("live", "run.waiting_resource", 1, {"requested_lane": "agent"})],
+    )
+    run = build_stories(rows)["live"].run
+    assert run.status == STATUS_RUNNING
+    assert run.line == "self_inquiry" and run.line_known is True
+    assert run.outcome_kind == "running"
+    assert run.admitted_at is None and run.lane_wait_sec is None
+
+
+def test_a_retried_turn_is_a_failure_mark_not_a_death() -> None:
+    rows = _admission_run(bridge=False)
+    rows.resource_events.insert(11, _event("446ddd7165d5", "run.retrying", 26500, {"node": "harness_turn", "reason": "no_final_frame"}))
+    story = build_stories(rows)["446ddd7165d5"]
+    assert story.run.status == STATUS_COMPLETED
+    assert story.run.retries == 1
+    assert story.run.outcome_kind == OUTCOME_FINISHED, "died means terminal failed"
+    retry = next(it for it in story.timeline if it.data.get("status") == "retrying")
+    assert retry.data["node"] == "harness_turn" and retry.data["error"] == "no_final_frame"
+
+
+def test_a_failed_and_a_cancelled_admission_run() -> None:
+    dead = RunStoryRows(
+        admission=[_admission("dead", 0, terminal="failed", updated=500)],
+        resource_events=[_event("dead", "run.accepted", 0), _event("dead", "run.failed", 500, {"error": "rpc:TimeoutError"},
+                                                                    entry_id="dead:terminal:failed")],
+    )
+    run = build_stories(dead)["dead"].run
+    assert run.status == "failed" and run.error == "rpc:TimeoutError" and run.outcome_kind == OUTCOME_DIED
+    gone = RunStoryRows(admission=[_admission("gone", 0, terminal="cancelled", updated=50)])
+    run = build_stories(gone)["gone"].run
+    assert run.status == "cancelled" and run.outcome_kind == OUTCOME_CANCELLED
+    assert run.finished_at == _ms(50), "terminal without an event falls back to the admission row's updated_at"
+
+
+def test_a_reflect_admission_row_and_its_events_are_excluded() -> None:
+    rows = RunStoryRows(
+        admission=[_admission("refl", 0, workflow="self_study.reflect", line="reflect")],
+        resource_events=[_event("refl", "run.accepted", 0), _event("refl", "run.completed", 5, {}, entry_id="refl:terminal:completed")],
+        event_counts=[{"run_id": "refl", "event": "run.checkpoint_resume_failed", "n": 3}],
+    )
+    assert build_stories(rows) == {}
+
+
+def test_the_payload_carries_the_admission_fields() -> None:
+    payload = run_to_payload(build_stories(_admission_run())["446ddd7165d5"].run)
+    assert payload["accepted_at"] == _ms(0) and payload["admitted_at"] == _ms(25419)
+    assert payload["lane"] == "agent" and payload["lane_wait_sec"] == 25419.0
+    assert payload["retries"] == 0 and payload["anomalies"] == {"run.checkpoint_resume_failed": 12}
+    assert json.dumps(payload)

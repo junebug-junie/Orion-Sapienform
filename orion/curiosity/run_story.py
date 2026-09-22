@@ -27,6 +27,17 @@ its only order and gets no attempt number, because two attempts' worth of
 1,1,2,2 cannot be untangled after the fact -- that is the collision
 `worldview.hop_order_key` exists to stop recurring, not something to undo.
 
+LIFECYCLE HAS TWO SOURCES, AND THE NEWER ONE WINS. Since 2026-09-14 curiosity
+runs go through the resource-admission path, which writes every transition to
+`durable_resource_events` (accepted, waiting for a lane, admitted, running per
+node, retrying, completed/failed) with the run's acceptance in
+`durable_admission_runs`, and copies ONLY the terminal `completed` row into
+`substrate_durable_run_state` -- mislabelling its workflow as
+`curiosity.investigate` even for a self-sense check (root cause: PR #2288).
+So when a run has admission-path rows they are its lifecycle and the bridge
+row is ignored except as a fallback for the finish `detail`; a run with only
+bridge rows (pre 09-14) is read from those. Neither is required.
+
 Two sibling patches land fields this module READS when present and reports as
 not recorded when absent -- it never requires them:
   - outreach decisions for pre-check blocks, with `result_json.source =
@@ -106,14 +117,37 @@ _KIND_RANK = {
 
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
 STATUS_RUNNING = "running"
 STATUS_UNKNOWN = "unknown"
+_TERMINAL = (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED)
+
+# Admission-path events and what the timeline makes of each. Anything not
+# listed is ignored (`run.lane_swap_suppressed`, `run.resource_granted`,
+# `run.resource_eligibility_expanded`, `resource.elastic_*`).
+EVENT_ACCEPTED = "run.accepted"
+EVENT_WAITING = "run.waiting_resource"
+EVENT_ADMITTED = "run.admitted"
+EVENT_LANE_ASSIGNED = "run.lane_assigned"
+EVENT_STARTED = "run.started"
+EVENT_RUNNING = "run.running"
+EVENT_RESUMED = "run.resumed"
+EVENT_RETRYING = "run.retrying"
+EVENT_COMPLETED = "run.completed"
+EVENT_FAILED = "run.failed"
+EVENT_CANCELLED = "run.cancelled"
+EVENT_LEASE_RELEASED = "resource.lease_released"
+EVENT_LEASE_EXPIRED = "resource.lease_expired"
+EVENT_CHECKPOINT_RESUME_FAILED = "run.checkpoint_resume_failed"
+ANOMALY_EVENTS = (EVENT_CHECKPOINT_RESUME_FAILED,)
+WORKFLOW_REFLECT = "self_study.reflect"
 
 # What the strip's glyph says about a run, decided here so the page and the
 # tests read one rule.
 OUTCOME_SENT = "reached_out_sent"
 OUTCOME_REACH_BLOCKED = "reached_out_blocked"
 OUTCOME_DIED = "died"
+OUTCOME_CANCELLED = "cancelled"
 OUTCOME_EMPTY = "wrote_nothing"
 OUTCOME_RUNNING = "running"
 OUTCOME_FINISHED = "finished"
@@ -201,6 +235,12 @@ class RunStoryRows:
     readings: list[dict[str, Any]] = field(default_factory=list)
     self_sense: list[dict[str, Any]] = field(default_factory=list)
     self_writes: list[dict[str, Any]] = field(default_factory=list)
+    # Admission path (since 2026-09-14): one `durable_admission_runs` row per
+    # run, its `durable_resource_events`, and per-run counts of the noisy
+    # anomaly events the store does not fetch row by row.
+    admission: list[dict[str, Any]] = field(default_factory=list)
+    resource_events: list[dict[str, Any]] = field(default_factory=list)
+    event_counts: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --- outputs --------------------------------------------------------------
@@ -261,8 +301,13 @@ class RunSummary:
     line_known: bool
     plain_line_label: str
     started_at: Optional[int]
-    started_from: str  # lifecycle | graph | self_sense | none
+    started_from: str  # admission | lifecycle | graph | self_sense | none
     finished_at: Optional[int]
+    accepted_at: Optional[int]
+    admitted_at: Optional[int]
+    lane: str
+    retries: int
+    anomalies: dict[str, int]
     status: str
     attempts: Optional[int]
     error: str
@@ -280,9 +325,25 @@ class RunSummary:
 
     @property
     def duration_sec(self) -> Optional[float]:
+        """Accepted (or first clock) to finished -- the whole sitting,
+        lane wait included."""
         if self.started_at is None or self.finished_at is None:
             return None
         return round((self.finished_at - self.started_at) / 1000, 1)
+
+    @property
+    def lane_wait_sec(self) -> Optional[float]:
+        if self.accepted_at is None or self.admitted_at is None:
+            return None
+        return round(max(0, self.admitted_at - self.accepted_at) / 1000, 1)
+
+    @property
+    def active_sec(self) -> Optional[float]:
+        """Admitted to finished: the part of the sitting Orion was actually
+        running. None when either end is unknown."""
+        if self.admitted_at is None or self.finished_at is None:
+            return None
+        return round(max(0, self.finished_at - self.admitted_at) / 1000, 1)
 
 
 @dataclass(frozen=True)
@@ -307,6 +368,9 @@ def _slot_factory() -> dict[str, Any]:
         "journals": [],
         "self_sense": [],
         "self_writes": [],
+        "admission": None,
+        "events": [],
+        "event_counts": {},
     }
 
 
@@ -340,6 +404,31 @@ def _group(rows: RunStoryRows) -> dict[str, dict[str, Any]]:
         s = slot(row.get("run_id"))
         if s is not None:
             s["self_sense"].append(row)
+    reflect_ids: set[str] = set()
+    for row in rows.admission:
+        request = _obj(row.get("request"))
+        if _text(request.get("workflow"), 60) == WORKFLOW_REFLECT:
+            reflect_ids.add(_text(row.get("run_id"), 64))
+            continue
+        s = slot(row.get("run_id"))
+        if s is not None:
+            s["admission"] = row
+    for row in rows.resource_events:
+        rid = _text(row.get("run_id"), 64)
+        if rid in reflect_ids:
+            continue
+        s = slot(rid)
+        if s is not None:
+            s["events"].append(row)
+    for row in rows.event_counts:
+        rid = _text(row.get("run_id"), 64)
+        if rid in reflect_ids:
+            continue
+        s = slot(rid)
+        if s is not None:
+            s["event_counts"][_text(row.get("event"), 60)] = _as_int(row.get("n"), 0)
+    for rid in reflect_ids:
+        slots.pop(rid, None)
     return slots
 
 
@@ -361,9 +450,139 @@ def _completed_detail(lifecycle: list[dict[str, Any]]) -> dict[str, Any]:
     return {}
 
 
+@dataclass
+class _Lifecycle:
+    """What the run's lifecycle rows -- from whichever source -- say."""
+
+    items: list[TimelineItem] = field(default_factory=list)
+    detail: dict[str, Any] = field(default_factory=dict)
+    status: Optional[str] = None
+    finished_at: Optional[int] = None
+    accepted_at: Optional[int] = None
+    admitted_at: Optional[int] = None
+    lane: str = ""
+    retries: int = 0
+    error: str = ""
+    non_terminal_stamps: list[int] = field(default_factory=list)
+    source: str = "none"  # admission | lifecycle | none
+
+
+def _event_lane(detail: dict[str, Any]) -> str:
+    lease = _obj(detail.get("lease")) if isinstance(detail.get("lease"), (dict, str)) else {}
+    return _text(lease.get("lane") or detail.get("lane") or detail.get("requested_lane"), 40)
+
+
+def _lifecycle_from_events(slot: dict[str, Any]) -> _Lifecycle:
+    """The admission path, in generated_at order. Consecutive waits collapse
+    to one item (a run re-announces its wait at each checkpoint)."""
+    out = _Lifecycle(source="admission")
+    events = sorted(slot["events"], key=lambda e: (_ms(e.get("generated_at")) or 0, _text(e.get("entry_id"), 200)))
+    admission = slot["admission"] or {}
+    out.accepted_at = _ms(admission.get("created_at"))
+    waiting_open = False
+    for e in events:
+        kind = _text(e.get("event"), 60)
+        payload = _obj(e.get("payload"))
+        detail = _obj(payload.get("detail"))
+        at = _ms(e.get("generated_at"))
+        if at is not None and kind not in (EVENT_COMPLETED, EVENT_FAILED, EVENT_CANCELLED):
+            out.non_terminal_stamps.append(at)
+        if kind == EVENT_ACCEPTED:
+            out.accepted_at = out.accepted_at or at
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={"node": "", "status": "accepted", "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_WAITING:
+            if waiting_open:
+                continue
+            waiting_open = True
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": _text(detail.get("node"), 60), "status": "waiting",
+                "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind in (EVENT_ADMITTED, EVENT_LANE_ASSIGNED, EVENT_STARTED):
+            lane = _event_lane(detail)
+            out.lane = out.lane or lane
+            if out.admitted_at is None:
+                out.admitted_at = at
+                wait = None
+                if at is not None and out.accepted_at is not None:
+                    wait = round(max(0, at - out.accepted_at) / 1000, 1)
+                out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                    "node": _text(detail.get("node"), 60), "status": "admitted", "lane": lane,
+                    "wait_sec": wait, "next_node": "", "resumed_from": "", "error": ""}))
+            waiting_open = False
+        elif kind == EVENT_RUNNING:
+            waiting_open = False
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": _text(detail.get("node"), 60), "status": "running", "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_RESUMED:
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": _text(detail.get("node"), 60), "status": "resumed", "next_node": "",
+                "resumed_from": _text(detail.get("node"), 60), "error": ""}))
+        elif kind == EVENT_RETRYING:
+            out.retries += 1
+            out.error = _text(detail.get("error") or detail.get("reason"), 500) or out.error
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": _text(detail.get("node"), 60), "status": "retrying", "next_node": "", "resumed_from": "",
+                "error": _text(detail.get("error") or detail.get("reason"), 500)}))
+        elif kind == EVENT_LEASE_RELEASED:
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": "", "status": "lease_released", "lane": _event_lane(detail),
+                "reason": _text(detail.get("reason"), 60), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_LEASE_EXPIRED:
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": "", "status": "lease_expired", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind in (EVENT_COMPLETED, EVENT_FAILED, EVENT_CANCELLED):
+            status = {EVENT_COMPLETED: STATUS_COMPLETED, EVENT_FAILED: STATUS_FAILED, EVENT_CANCELLED: STATUS_CANCELLED}[kind]
+            out.status, out.finished_at = status, at
+            if status == STATUS_COMPLETED:
+                out.detail = detail
+            else:
+                out.error = _text(detail.get("error"), 500) or out.error
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": _text(detail.get("node"), 60) or "finish", "status": status, "next_node": "",
+                "resumed_from": "", "error": _text(detail.get("error"), 500)}))
+    terminal = _text(admission.get("terminal"), 20)
+    if terminal in _TERMINAL:
+        out.status = terminal
+        out.finished_at = out.finished_at or _ms(admission.get("updated_at"))
+    elif out.status is None:
+        out.status = STATUS_RUNNING
+    return out
+
+
+def _lifecycle_from_bridge(lifecycle: list[dict[str, Any]]) -> _Lifecycle:
+    """`substrate_durable_run_state` rows: the only source before 2026-09-14."""
+    out = _Lifecycle(source="lifecycle")
+    for row in lifecycle:
+        at = _ms(row.get("created_at"))
+        status = _text(row.get("status"), 20)
+        d = _obj(row.get("detail"))
+        if at is not None and status not in _TERMINAL:
+            out.non_terminal_stamps.append(at)
+        if status == STATUS_FAILED:
+            out.error = _text(d.get("error"), 500)
+        out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+            "node": _text(row.get("node"), 60), "next_node": _text(row.get("next_node"), 60),
+            "status": status, "resumed_from": _text(row.get("resumed_from_node"), 60),
+            "error": _text(d.get("error"), 500)}))
+    terminal = _terminal_row(lifecycle)
+    if terminal is not None:
+        out.status = _text(terminal.get("status"), 20)
+        out.finished_at = _ms(terminal.get("created_at"))
+    elif lifecycle:
+        out.status = STATUS_RUNNING
+    out.detail = _completed_detail(lifecycle)
+    return out
+
+
 def _line_for(slot: dict[str, Any], detail: dict[str, Any], prior_lines: dict[str, str]) -> tuple[str, bool]:
     """(line, known). The finish row is the only place the line is recorded;
     everything after it is a fallback that says so via `known=False`."""
+    request = _obj((slot.get("admission") or {}).get("request"))
+    if _text(request.get("workflow"), 60) == WORKFLOW_SELF_SENSE:
+        return LINE_SELF_SENSE_EVAL, True
+    brief_line = _text(_obj(request.get("brief")).get("line"), 40)
+    if brief_line in LINE_LABELS:
+        return brief_line, True
     line = _text(detail.get("line"), 40)
     if line in LINE_LABELS:
         return line, True
@@ -494,6 +713,8 @@ def _outcome_kind(*, status: str, reach: ReachOut, wrote: int) -> str:
         return OUTCOME_REACH_BLOCKED
     if status == STATUS_FAILED:
         return OUTCOME_DIED
+    if status == STATUS_CANCELLED:
+        return OUTCOME_CANCELLED
     if status == STATUS_RUNNING:
         return OUTCOME_RUNNING
     if wrote == 0:
@@ -524,12 +745,22 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
     out: dict[str, RunStory] = {}
     for run_id, slot in slots.items():
         lifecycle = _lifecycle_sorted(slot["lifecycle"])
-        detail = _completed_detail(lifecycle)
-        terminal = _terminal_row(lifecycle)
+        bridge = _lifecycle_from_bridge(lifecycle)
+        if slot["events"] or slot["admission"]:
+            life = _lifecycle_from_events(slot)
+            # The bridge row is a copy of the terminal event; its detail is
+            # the fallback when the event carried none.
+            if not life.detail:
+                life.detail = bridge.detail
+            if life.status in (None, STATUS_RUNNING) and bridge.status in _TERMINAL:
+                life.status, life.finished_at = bridge.status, bridge.finished_at
+        else:
+            life = bridge
+        detail = life.detail
         line, line_known = _line_for(slot, detail, prior_lines)
         sense_rows = sorted(slot["self_sense"], key=lambda r: _ms(r.get("created_at")) or 0)
 
-        items: list[TimelineItem] = []
+        items: list[TimelineItem] = list(life.items)
         graph_stamps: list[int] = []
 
         roles = sorted(slot["roles"], key=lambda r: _ms(r.get("written_at")) or 0)
@@ -539,17 +770,6 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
                 graph_stamps.append(at)
             items.append(TimelineItem(at=at, kind="role_choice", data={
                 "choice": _text(r.get("choice"), 60), "why": _text(r.get("why"), _NOTE_LIMIT)}))
-
-        for row in lifecycle:
-            at = _ms(row.get("created_at"))
-            d = _obj(row.get("detail"))
-            items.append(TimelineItem(at=at, kind="lifecycle", data={
-                "node": _text(row.get("node"), 60),
-                "next_node": _text(row.get("next_node"), 60),
-                "status": _text(row.get("status"), 20),
-                "resumed_from": _text(row.get("resumed_from_node"), 60),
-                "error": _text(d.get("error"), 500),
-            }))
 
         hop_items, hop_attempts = _hop_items(slot["hops"], readings_by_run.get(run_id, []))
         for it in hop_items:
@@ -635,18 +855,16 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
                                       data={"text": reach.reply_text}))
 
         # --- clocks and status -----------------------------------------
-        # Only a NON-terminal row can mark a start. Since 2026-09-14 the only
-        # row that lands is `completed`, and that is the end of the run; taking
-        # `min(created_at)` over all rows would report the finish as the start
-        # and every duration as 0.
-        lifecycle_stamps = [
-            x for x in (_ms(r.get("created_at")) for r in lifecycle
-                        if _text(r.get("status"), 20) not in (STATUS_COMPLETED, STATUS_FAILED))
-            if x is not None
-        ]
+        # Start = acceptance when the admission path recorded it (the true
+        # start of the sitting, lane wait included); else the earliest
+        # NON-terminal lifecycle row -- since 2026-09-14 the bridge table only
+        # receives `completed`, and that is the end, not the start; else the
+        # first graph node; else the first self-sense score.
         sense_stamps = [x for x in (_ms(r.get("created_at")) for r in sense_rows) if x is not None]
-        if lifecycle_stamps:
-            started_at, started_from = min(lifecycle_stamps), "lifecycle"
+        if life.accepted_at is not None:
+            started_at, started_from = life.accepted_at, "admission"
+        elif life.non_terminal_stamps:
+            started_at, started_from = min(life.non_terminal_stamps), life.source
         elif graph_stamps:
             started_at, started_from = min(graph_stamps), "graph"
         elif sense_stamps:
@@ -654,10 +872,9 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
         else:
             started_at, started_from = None, "none"
 
-        if terminal is not None:
-            status = _text(terminal.get("status"), 20)
-            finished_at = _ms(terminal.get("created_at"))
-        elif lifecycle:
+        if life.status in _TERMINAL:
+            status, finished_at = life.status, life.finished_at
+        elif life.status == STATUS_RUNNING:
             status, finished_at = STATUS_RUNNING, None
         elif outcome is not None:
             # The graph says Orion wrote its end-of-turn note; nothing in
@@ -673,16 +890,14 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
         attempts: Optional[int] = None
         if detail.get("attempts") is not None:
             attempts = _as_int(detail.get("attempts"), 0) or None
-        if attempts is None and lifecycle:
+        if attempts is None and life.retries:
+            attempts = life.retries + 1
+        if attempts is None and lifecycle and life.source == "lifecycle":
             attempts = 1 + sum(1 for r in lifecycle if _text(r.get("status"), 20) == "resumed")
         if attempts is None:
             attempts = hop_attempts
 
-        error = ""
-        for row in reversed(lifecycle):
-            if _text(row.get("status"), 20) == STATUS_FAILED:
-                error = _text(_obj(row.get("detail")).get("error"), 500)
-                break
+        error = life.error
 
         prior_touched: Optional[dict[str, Any]] = None
         if revisions:
@@ -740,6 +955,11 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
             started_at=started_at,
             started_from=started_from,
             finished_at=finished_at,
+            accepted_at=life.accepted_at,
+            admitted_at=life.admitted_at,
+            lane=life.lane,
+            retries=life.retries,
+            anomalies={k: v for k, v in slot["event_counts"].items() if k in ANOMALY_EVENTS and v},
             status=status,
             attempts=attempts,
             error=error,
@@ -834,6 +1054,13 @@ def run_to_payload(r: RunSummary) -> dict[str, Any]:
         "finished_at": r.finished_at,
         "finished_at_iso": _iso(r.finished_at),
         "duration_sec": r.duration_sec,
+        "accepted_at": r.accepted_at,
+        "admitted_at": r.admitted_at,
+        "lane": r.lane,
+        "lane_wait_sec": r.lane_wait_sec,
+        "active_sec": r.active_sec,
+        "retries": r.retries,
+        "anomalies": r.anomalies,
         "status": r.status,
         "attempts": r.attempts,
         "error": r.error,

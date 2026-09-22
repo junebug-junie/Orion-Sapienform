@@ -92,6 +92,7 @@
   --shadow:       0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
 }
 
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -116,6 +117,14 @@ button.ghost {
 }
 button.ghost:hover { color: var(--ink); }
 button.ghost[aria-pressed="true"] { color: var(--ink); border-color: var(--axis); }
+button.ghost.run-now { border-color: var(--axis); color: var(--ink); }
+button.ghost.run-now[disabled] { opacity: 0.55; cursor: default; }
+.run-msg { font-size: 12px; color: var(--ink-2); }
+.run-msg.bad { color: var(--critical); }
+input.filter {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--hairline); border-radius: 7px; padding: 4px 9px; min-width: 200px;
+}
 
 section { margin: 0 0 30px; }
 h2 {
@@ -123,16 +132,12 @@ h2 {
   color: var(--ink-muted); margin: 0 0 3px;
 }
 .section-note { color: var(--ink-2); font-size: 12.5px; margin: 0 0 14px; max-width: 76ch; }
-
+.section-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.section-head h2 { margin: 0; }
 .card {
   background: var(--surface); border: 1px solid var(--hairline);
   border-radius: 11px; box-shadow: var(--shadow);
 }
-
-button.ghost.run-now { border-color: var(--axis); color: var(--ink); }
-button.ghost.run-now[disabled] { opacity: 0.55; cursor: default; }
-.run-msg { font-size: 12px; color: var(--ink-2); }
-.run-msg.bad { color: var(--critical); }
 
 /* --- banners ----------------------------------------------------------- */
 .banner {
@@ -148,98 +153,90 @@ button.ghost.run-now[disabled] { opacity: 0.55; cursor: default; }
 .banner.warning  { border-left-color: var(--warning); }
 .banner.info     { border-left-color: var(--series-1); }
 
-/* --- stat tiles -------------------------------------------------------- */
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
-.tile { padding: 15px 16px 14px; }
+/* --- budget tiles ------------------------------------------------------ */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.tile { padding: 14px 16px 13px; border-top: 3px solid var(--axis); }
+.tile.line-investigate { border-top-color: var(--series-1); }
+.tile.line-self_inquiry { border-top-color: var(--series-5); }
+.tile.line-self_sense_eval { border-top-color: var(--series-3); }
+.tile.reach { border-top-color: var(--series-2); }
 .tile .label {
   font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--ink-muted); font-weight: 600; margin-bottom: 7px;
-}
-.tile .value { font-size: 27px; font-weight: 640; line-height: 1.05; letter-spacing: -0.02em; }
-.tile .value .unit { font-size: 15px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
-.tile .foot { font-size: 12px; color: var(--ink-2); margin-top: 6px; }
-.tile .value.is-critical { color: var(--critical); }
-
-/* --- small multiples --------------------------------------------------- */
-.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(292px, 1fr)); gap: 12px; }
-.spark { padding: 14px 15px 12px; display: flex; flex-direction: column; gap: 9px; }
-.spark .claim {
-  font-size: 13px; line-height: 1.45; color: var(--ink);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-}
-.spark .sub { font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
-.spark svg { display: block; width: 100%; height: 74px; overflow: visible; }
-.spark .none {
-  font-size: 12px; color: var(--ink-2); background: var(--plane);
-  border: 1px dashed var(--axis); border-radius: 8px; padding: 9px 11px; line-height: 1.45;
-}
-
-/* --- stacked bars ------------------------------------------------------ */
-.growth { padding: 16px 18px 14px; }
-.legend { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 14px; }
-.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
-.legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-.bars { display: flex; flex-direction: column; gap: 11px; }
-.barrow { display: grid; grid-template-columns: 128px 1fr 56px; gap: 13px; align-items: center; }
-.barrow .name {
-  font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.barrow .total { font-size: 12px; color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
-.track { display: flex; height: 22px; gap: 2px; }
-.seg {
-  height: 100%; display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 600; min-width: 3px;
-  color: var(--on-series); font-variant-numeric: tabular-nums;
-}
-.seg:first-child { border-radius: 4px 0 0 4px; }
-.seg:last-child  { border-radius: 0 4px 4px 0; }
-.seg:only-child  { border-radius: 4px; }
-
-/* --- run ledger -------------------------------------------------------- */
-.runs { display: flex; flex-direction: column; gap: 12px; }
-.run { padding: 15px 17px; }
-.run .head { display: flex; gap: 11px; align-items: baseline; flex-wrap: wrap; margin-bottom: 9px; }
-.run .rid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 620; }
-.run .when { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
-.pill {
-  font-size: 11px; font-weight: 620; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--hairline); color: var(--ink-2); white-space: nowrap;
-}
-.pill.good     { color: var(--good-text); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
-.pill.critical { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 40%, transparent); }
-.pill.warn     { color: var(--ink); border-color: color-mix(in srgb, var(--warning) 55%, transparent); }
-.run .note {
-  font-size: 13px; line-height: 1.5; color: var(--ink-2);
-  border-left: 2px solid var(--grid); padding-left: 11px; margin: 9px 0 0;
-}
-.run .note b { color: var(--ink); font-weight: 620; }
-.run .wrote { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
-
-/* --- a run's actual working --------------------------------------------- */
-.working { margin-top: 11px; }
-.working-label {
-  font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
   color: var(--ink-muted); font-weight: 600; margin-bottom: 6px;
 }
-ol.hops { margin: 0; padding-left: 0; list-style: none; counter-reset: hop; }
-ol.hops li {
-  counter-increment: hop; position: relative; padding: 0 0 9px 26px;
-  font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
-  border-left: 1px solid var(--grid); margin-left: 7px;
+.tile .value { font-size: 24px; font-weight: 640; line-height: 1.05; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.tile .value .unit { font-size: 14px; font-weight: 500; color: var(--ink-2); margin-left: 3px; }
+.tile .foot { font-size: 12px; color: var(--ink-2); margin-top: 6px; line-height: 1.4; }
+.tile .foot.warn { color: var(--critical); }
+.tile .value.is-critical { color: var(--critical); }
+
+/* --- sittings strip ---------------------------------------------------- */
+.strip { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 4px; padding: 12px 12px 8px; }
+.strip .day { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 84px; }
+.strip .day .date { font-size: 10.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.strip .day.today .date { color: var(--ink); font-weight: 650; }
+.strip .day .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; }
+.chip {
+  font: inherit; font-size: 12px; line-height: 1; width: 20px; height: 20px;
+  border-radius: 5px; border: 1px solid var(--hairline); background: var(--surface);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--on-series); padding: 0;
 }
-ol.hops li:last-child { padding-bottom: 0; border-left-color: transparent; }
-ol.hops li::before {
-  content: counter(hop); position: absolute; left: -7px; top: 1px;
-  width: 15px; height: 15px; border-radius: 50%;
-  background: var(--surface); border: 1px solid var(--axis);
-  color: var(--ink-muted); font-size: 9px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
+.chip.line-investigate { background: var(--series-1); }
+.chip.line-self_inquiry { background: var(--series-5); }
+.chip.line-self_sense_eval { background: var(--series-3); }
+.chip.is-open { outline: 2px solid var(--ink); outline-offset: 1px; }
+.chip.glyph-died, .chip.glyph-cancelled { background: var(--critical); color: #fff; }
+.chip.has-retries { box-shadow: inset 0 0 0 2px var(--critical); }
+.chip.glyph-running { opacity: 0.6; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 0 12px 12px; font-size: 12px; color: var(--ink-2); }
+.legend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+.legend .g { font-family: ui-monospace, monospace; margin-right: 4px; }
+
+/* --- run story --------------------------------------------------------- */
+.story { padding: 16px 18px 14px; }
+.story .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.story .head .title { font-size: 15px; font-weight: 640; }
+.story .head .pill {
+  font-size: 11px; font-weight: 620; letter-spacing: 0.02em; color: var(--ink-2);
+  border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 9px;
 }
-.evidence {
-  display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-muted);
+.story .head .pill.line-investigate { border-color: var(--series-1); }
+.story .head .pill.line-self_inquiry { border-color: var(--series-5); }
+.story .head .pill.line-self_sense_eval { border-color: var(--series-3); }
+.story .head .pill.status-failed { color: var(--critical); border-color: var(--critical); }
+.story .head .when { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.timeline { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--grid); }
+.timeline li { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 6px 0 6px 12px; position: relative; }
+.timeline li::before {
+  content: ""; position: absolute; left: -6px; top: 12px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--axis);
 }
-.evidence b { color: var(--ink-muted); font-weight: 620; }
+.timeline li.k-hop::before { background: var(--series-1); }
+.timeline li.k-finding::before, .timeline li.k-self_write::before { background: var(--series-3); }
+.timeline li.k-revision::before { background: var(--series-4); }
+.timeline li.k-outcome::before { background: var(--series-7); }
+.timeline li.k-failed::before { background: var(--critical); }
+.timeline li.k-outreach::before, .timeline li.k-reply::before { background: var(--series-2); }
+.timeline li.k-attempt { color: var(--ink-muted); font-size: 12px; }
+.timeline li.k-attempt::before { background: var(--critical); }
+.timeline .t { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; padding-top: 2px; }
+.timeline .t.unk { color: var(--axis); }
+.timeline .what { font-size: 13px; line-height: 1.5; color: var(--ink); }
+.timeline .what .lbl { font-weight: 620; }
+.timeline .what .txt { white-space: pre-wrap; color: var(--ink-2); }
+.timeline .what .sub { font-size: 12px; color: var(--ink-muted); margin-top: 2px; }
+.timeline .what .flag { color: var(--critical); font-weight: 620; }
+.timeline .reading { font-size: 12px; color: var(--ink-2); border-left: 2px solid var(--series-8); padding-left: 8px; margin-top: 4px; }
+.reach-block { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--plane); border: 1px dashed var(--axis); font-size: 13px; }
+.reach-block .lbl { font-weight: 620; }
+.reach-block .dec { font-weight: 620; }
+.reach-block .dec.sent { color: var(--good-text); }
+.reach-block .dec.blocked { color: var(--critical); }
+.reach-block .dec.unknown { color: var(--ink-muted); }
+.story .none { font-size: 12px; color: var(--ink-2); background: var(--plane); border: 1px dashed var(--axis); border-radius: 8px; padding: 9px 11px; }
+
+/* --- disclosures ------------------------------------------------------- */
 details.journal { margin-top: 11px; }
 details.journal summary {
   cursor: pointer; font-size: 12px; color: var(--ink-2);
@@ -256,42 +253,40 @@ details.journal summary:hover { color: var(--ink); }
   max-height: 30rem; overflow-y: auto;
 }
 
-.self-current { display: flex; flex-direction: column; gap: 10px; }
-.self-current .head {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-}
-.self-current .version-pill {
+/* --- self card --------------------------------------------------------- */
+.self-current { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; }
+.self-current .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.version-pill {
   font-size: 11px; font-weight: 620; letter-spacing: 0.02em;
-  color: var(--ink-2); border: 1px solid var(--hairline); border-radius: 999px;
-  padding: 2px 9px;
+  color: var(--ink-2); border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 9px;
 }
-.self-current .content {
-  font-size: 14.5px; line-height: 1.65; color: var(--ink); white-space: pre-wrap;
-}
-.self-current .evidence-list {
-  margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px;
-}
-.self-current .evidence-list li {
-  font-size: 12px; color: var(--ink-muted); padding-left: 14px; position: relative;
-}
-.self-current .evidence-list li::before { content: "—"; position: absolute; left: 0; }
-.self-history-row { padding: 12px 0; border-bottom: 1px solid var(--grid); }
-.self-history-row:last-child { border-bottom: none; }
-.self-history-row .content { font-size: 13px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
-.self-lived-wrap { margin-bottom: 16px; }
-.self-lived-wrap h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); }
-.self-lived-row { padding: 10px 0; border-bottom: 1px solid var(--grid); }
-.self-lived-row:last-child { border-bottom: none; }
-.self-lived-row .qid { font-size: 11px; font-family: var(--mono); color: var(--ink-muted); }
-.self-lived-row .content { font-size: 13px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; margin-top: 4px; }
+.self-current .when, .self-lived-row .when, .self-history-row .when { font-size: 12px; color: var(--ink-muted); }
+.self-current .content { font-size: 14.5px; line-height: 1.65; color: var(--ink); white-space: pre-wrap; }
+.evidence-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.evidence-list li { font-size: 12px; color: var(--ink-muted); padding-left: 14px; position: relative; }
+.evidence-list li::before { content: "—"; position: absolute; left: 0; }
+.self-history-row, .self-lived-row { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+.self-history-row:last-child, .self-lived-row:last-child { border-bottom: none; }
+.self-history-row .content, .self-lived-row .content { font-size: 13px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; margin-top: 4px; }
+.self-lived-row .qid { font-size: 11px; font-family: ui-monospace, monospace; color: var(--ink-muted); }
+
+/* --- priors ------------------------------------------------------------ */
+.priors { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.prior { padding: 14px 15px 12px; display: flex; flex-direction: column; gap: 8px; }
+.prior.closed { opacity: 0.75; }
+.prior .claim { font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.prior .sub { font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; display: flex; gap: 8px; flex-wrap: wrap; }
+.prior .sub .status { font-weight: 620; color: var(--ink-2); }
+.prior .sub .status.closed { color: var(--critical); }
+.prior svg { display: block; width: 100%; height: 60px; overflow: visible; }
+.prior .none { font-size: 12px; color: var(--ink-2); background: var(--plane); border: 1px dashed var(--axis); border-radius: 8px; padding: 7px 10px; }
+a.runlink { color: var(--series-1); text-decoration: none; font-family: ui-monospace, monospace; font-size: 11.5px; cursor: pointer; }
+a.runlink:hover { text-decoration: underline; }
 
 /* --- tables ------------------------------------------------------------ */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--grid); vertical-align: top; }
-th {
-  font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
-  color: var(--ink-muted); font-weight: 600; border-bottom-color: var(--axis);
-}
+th { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-muted); font-weight: 600; border-bottom-color: var(--axis); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: none; }
 .table-wrap { overflow-x: auto; }
@@ -304,87 +299,84 @@ tr:last-child td { border-bottom: none; }
 <div class="wrap">
 
   <header class="page">
-    <h1>Curiosity Atlas</h1>
-    <span class="sub">What Orion has worked out, and what each run changed.</span>
+    <h1>Curiosity</h1>
+    <span class="sub">What happened in each sitting, and what came of it.</span>
   </header>
   <div class="meta-row">
     <span id="updated">Loading…</span>
     <button class="ghost" id="refresh" type="button">Refresh</button>
-    <button class="ghost" id="toggle-tables" type="button" aria-pressed="false">Table view</button>
-    <button class="ghost run-now" id="run-now" type="button">Run now</button>
+    <button class="ghost run-now" id="run-now" type="button">Ask a world question now</button>
     <span id="run-now-msg" class="run-msg"></span>
-    <button class="ghost run-now" id="self-run-now" type="button">Ask self-inquiry now</button>
+    <button class="ghost run-now" id="self-run-now" type="button">Ask a self question now</button>
     <span id="self-run-now-msg" class="run-msg"></span>
   </div>
 
   <div id="banners"></div>
 
   <section>
-    <h2>Self</h2>
+    <h2>Today's budget</h2>
     <p class="section-note">
-      What Orion currently says about themself, written by Orion during a
-      self-inquiry curiosity run and read into every chat turn. Read directly
-      from <span class="mono">self_concept_history</span> and the self-inquiry
-      journal — not from the runs list below, which only lists runs that wrote
-      a <span class="mono">:TurnOutcome</span> node, and a definition can exist
-      without one.
+      Three kinds of sitting run under one lock, each with its own daily cap.
+      <b>World question</b>: tests a belief about the world or the substrate in up to five hops.
+      <b>Self question</b>: the same shape, aimed at a standing "what am I" question.
+      <b>Self-sense check</b>: four fixed questions, scored; no investigation.
+      Counts come from the same Redis keys the loop reads.
     </p>
-    <div class="card self-lived-wrap" id="self-lived-wrap" hidden>
-      <h3>Lived answers</h3>
-      <div id="self-lived"></div>
-    </div>
-    <div class="card self-current" id="self-current"></div>
-    <details class="journal" id="self-history-wrap" hidden>
-      <summary id="self-history-summary">Earlier versions</summary>
-      <div id="self-history"></div>
-    </details>
-    <details class="journal" id="self-eval-wrap" hidden>
-      <summary id="self-eval-summary">Latest self-sense check</summary>
-      <div class="card table-wrap"><table id="self-eval-table"></table></div>
-    </details>
-    <div id="self-journal"></div>
-  </section>
-
-  <section>
-    <h2>Pool</h2>
     <div class="tiles" id="tiles"></div>
   </section>
 
   <section>
-    <h2>Contractor briefs</h2>
+    <div class="section-head">
+      <h2>Sittings, last <span id="strip-days">14</span> days</h2>
+      <span class="dim" id="strip-note"></span>
+    </div>
+    <div class="card">
+      <div class="strip" id="strip"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Run story</h2>
+      <span class="dim" id="story-note"></span>
+    </div>
+    <div class="card story" id="story"><p class="dim">Pick a sitting above.</p></div>
+  </section>
+
+  <section>
+    <h2>Self</h2>
     <p class="section-note">
-      Peer answers to Orion's <span class="mono">:HelpRequest</span> nodes —
-      including <span class="mono">refused_budget</span>. Read from
-      <span class="mono">:PeerBrief</span>; empty when none exist or the label
-      is not yet present.
+      What Orion currently says about themself, written during a self question
+      and read into every chat turn.
     </p>
-    <div class="card table-wrap"><table id="peer-briefs-table"></table></div>
+    <div class="card self-current" id="self-current"></div>
+    <details class="journal" id="self-lived-wrap" hidden>
+      <summary id="self-lived-summary">Lived answers</summary>
+      <div id="self-lived"></div>
+    </details>
+    <details class="journal" id="self-history-wrap" hidden>
+      <summary id="self-history-summary">Earlier versions</summary>
+      <div id="self-history"></div>
+    </details>
   </section>
 
   <section>
-    <h2>Confidence, before and after</h2>
-    <p class="section-note" id="traj-note"></p>
-    <div class="multiples" id="trajectories"></div>
+    <div class="section-head">
+      <h2>Priors</h2>
+      <input class="filter" id="prior-filter" type="search" placeholder="filter claims…" />
+      <button class="ghost" id="toggle-closed" type="button" aria-pressed="false">Show closed</button>
+      <span class="dim" id="priors-note"></span>
+    </div>
+    <div class="priors" id="priors"></div>
   </section>
 
   <section>
-    <h2>What each run added</h2>
-    <p class="section-note">
-      Nodes written per run, by kind. Every node Orion writes carries its run id,
-      so this is the graph growing — not an estimate.
-    </p>
-    <div class="card growth" id="growth"></div>
-    <div class="card table-wrap growth-table" id="growth-table" hidden></div>
-  </section>
-
-  <section>
-    <h2>Runs</h2>
-    <div class="runs" id="runs"></div>
-  </section>
-
-  <section>
-    <h2>Every prior</h2>
-    <div class="card table-wrap"><table id="priors-table"></table></div>
+    <details class="journal" id="briefs-wrap">
+      <summary id="briefs-summary">Contractor briefs</summary>
+      <p class="section-note">Peer answers to Orion's <span class="mono">:HelpRequest</span> nodes, including refusals.</p>
+      <div class="card table-wrap"><table id="peer-briefs-table"></table></div>
+    </details>
   </section>
 
 </div>
@@ -392,574 +384,603 @@ tr:last-child td { border-bottom: none; }
 <script>
 "use strict";
 
-const SERIES = ["--series-1", "--series-2", "--series-3",
-                "--series-4", "--series-5", "--series-6",
-                "--series-7", "--series-8", "--series-9"];
-// Fixed order, never cycled. KNOWN kinds lead in this order; anything Orion
-// starts writing that is not listed still gets a segment, because the growth
-// query counts every labelled node and `total_added` sums all of them --
-// filtering the segments to a hardcoded list made the bar disagree with its
-// own total (a run writing 1 Prior + 5 PriorRevision rendered a full-width
-// bar labelled "1" beside a total of "6"). Review finding. Past six the tail
-// folds into one "Other" segment rather than inventing a seventh hue.
-// Edge kinds are listed EXPLICITLY, and last, so they get stable dedicated
-// slots. Without them the panel degraded exactly when the new edge capability
-// started working: every unlisted kind maps to the final colour, so SUPPORTS,
-// CONTRADICTS and ABOUT would have rendered as one hue and as each other, and
-// crossing six kinds would fold real node labels into a grey "Other". A review
-// finding. The `-> ` prefix comes from ATLAS_EDGE_GROWTH_CYPHER and keeps an
-// edge type from colliding with a node label of the same name.
-const KIND_ORDER = ["Prior", "Finding", "Hop", "TurnOutcome",
-                    "PriorRevision", "Concept",
-                    "-> SUPPORTS", "-> CONTRADICTS", "-> ABOUT"];
-const OTHER = "Other";
+/* ---- vocabulary: the only words the page uses for the three lines ------ */
+const LINE_LABEL = {
+  investigate: "World question",
+  self_inquiry: "Self question",
+  self_sense_eval: "Self-sense check",
+};
+const LINE_PLURAL = {
+  investigate: "World questions",
+  self_inquiry: "Self questions",
+  self_sense_eval: "Self-sense checks",
+};
+const GLYPH = {
+  finished: ["●", "finished"],
+  died: ["✕", "died"],
+  wrote_nothing: ["○", "finished but wrote nothing"],
+  reached_out_sent: ["▲", "reached out, sent"],
+  reached_out_blocked: ["△", "reached out, not sent"],
+  running: ["◐", "in flight"],
+  cancelled: ["⊘", "cancelled"],
+};
+const POLL_MS = 60000;
+const DAYS = 14;
 
-function kindsPresent(runs) {
-  const seen = new Set();
-  runs.forEach((r) => Object.keys(r.added || {}).forEach((k) => seen.add(k)));
-  const known = KIND_ORDER.filter((k) => seen.has(k));
-  const extra = [...seen].filter((k) => !KIND_ORDER.includes(k)).sort();
-  const kinds = known.concat(extra);
-  return kinds.length <= SERIES.length
-    ? { kinds, folded: [] }
-    : { kinds: kinds.slice(0, SERIES.length - 1).concat(OTHER),
-        folded: kinds.slice(SERIES.length - 1) };
-}
-
-function bucketed(added, kinds, folded) {
-  const out = {};
-  kinds.forEach((k) => {
-    out[k] = k === OTHER
-      ? folded.reduce((n, f) => n + (added[f] || 0), 0)
-      : (added[k] || 0);
-  });
-  return out;
-}
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
-  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-));
-
-function kindColor(kind) {
-  const i = KIND_ORDER.indexOf(kind);
-  return `var(${SERIES[i === -1 ? SERIES.length - 1 : i]})`;
-}
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 
 function fmtStamp(v) {
   if (v === null || v === undefined || v === "") return "—";
   const d = typeof v === "number" ? new Date(v) : new Date(String(v));
   if (isNaN(d.getTime())) return String(v);
-  return d.toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-  });
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
-
-function isToday(v) {
-  if (v === null || v === undefined || v === "") return false;
+function fmtClock(v) {
   const d = typeof v === "number" ? new Date(v) : new Date(String(v));
-  if (isNaN(d.getTime())) return false;
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear()
-    && d.getMonth() === now.getMonth()
-    && d.getDate() === now.getDate();
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
-
 function relative(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
   const mins = Math.round((d.getTime() - Date.now()) / 60000);
-  const ahead = mins >= 0;
-  const n = Math.abs(mins);
+  const ahead = mins >= 0, n = Math.abs(mins);
   if (n < 60) return ahead ? `in ${n}m` : `${n}m ago`;
   const h = Math.floor(n / 60), m = n % 60;
   const t = m ? `${h}h ${m}m` : `${h}h`;
   return ahead ? `in ${t}` : `${t} ago`;
 }
+function fmtOffset(sec) {
+  if (sec === null || sec === undefined) return "";
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return h ? `+${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`
+           : `+${m}:${String(r).padStart(2, "0")}`;
+}
+function fmtDuration(sec) {
+  if (sec === null || sec === undefined) return "—";
+  const m = Math.round(sec / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+function dayKey(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function conf(v) { return v === null || v === undefined ? "—" : Number(v).toFixed(2); }
+function clip(s, n) { const t = String(s || "").trim(); return t.length <= n ? t : t.slice(0, n - 1) + "…"; }
+function banner(kind, icon, title, detail) {
+  return `<div class="banner ${kind}"><span class="icon">${icon}</span>` +
+         `<div><div class="t">${title}</div><div class="d">${detail}</div></div></div>`;
+}
 
-/* --- banners ------------------------------------------------------------ */
-function renderBanners(d) {
-  const out = [];
-  if (d.available === false) {
-    // "Never configured" and "could not be reached" are different states and
-    // must never render the same -- a broken ACL would otherwise look exactly
-    // like a mind that has not formed a prior yet.
-    const configured = d.reason !== "graph_not_configured";
-    out.push(banner(configured ? "critical" : "info", configured ? "⚠" : "○",
-      configured ? "Orion's graph could not be read" : "The graph half is switched off",
-      configured
-        ? `${esc(d.reason || "unknown")} — this is an outage, not an empty world view.`
-        : "HUB_CURIOSITY_GRAPH_ORION_USER / _PASSWORD are unset, so the loop runs without a graph."));
-  } else if (d.pool_is_dead) {
-    out.push(banner("critical", "⚠", "No priors are still in play",
-      `All ${d.closed_total} have been refuted or retired, so the next run inherits nothing to test. ` +
-      `Legal if Orion genuinely closed them all — and also the exact shape of the 2026-08-27 filter outage.`));
-  } else if (d.live_total === 0 && d.closed_total === 0) {
-    out.push(banner("info", "○", "Orion has not written a prior yet",
-      "A normal place to start, not a gap. Distinct from a dead pool above."));
-  }
-  // Named because it is an ABSENCE. A zero never shows up in a per-run
-  // breakdown -- nothing renders for a thing that was not written -- so the
-  // page has to ask for it by name or the loop looks busier than it is.
-  if (d.available !== false && (d.runs || []).length
-      && d.concept_total === 0 && d.edge_total === 0) {
-    out.push(banner("warning", "\u25b3", "Orion has written no concepts and no edges",
-      "It is handed a sample of the concept-induction graph every run, and the " +
-      "prompt offers it <span class=\"mono\">:Concept</span> nodes and " +
-      "SUPPORTS / CONTRADICTS / ABOUT edges. Across every run so far it has used " +
-      "neither, so its world view is disconnected nodes rather than a graph \u2014 " +
-      "and every prior it holds is on one subject."));
-  }
-  // A run that was KILLED before writing anything carries no run_id on any
-  // node, so it is invisible to every panel here -- and it is the run you most
-  // want to see. Redis counted it; the graph did not. The gap between the two
-  // is the only evidence left, and it is worth surfacing loudly: this happened
-  // for real on 2026-08-27 when both containers were recreated mid-turn and a
-  // whole slot was spent on nothing.
-  const s = d.schedule || {};
-  if (s.available && typeof s.runs_today === "number" && d.available !== false) {
-    // Both numbers come from the SERVER, in the zone the counter is keyed in.
-    // Counting "today" in the browser compared a tally from one timezone
-    // against a tally from another -- right only while the viewer and
-    // HUB_ENDOGENOUS_OUTREACH_TZ agree, and wrong for everyone during the
-    // hours the two dates disagree. It was 20:33 MDT on the 27th when this was
-    // written and the host clock already said the 28th.
-    //
-    // An undated run counts as having written: its only timestamp comes from a
-    // :TurnOutcome, so a turn killed mid-write has none, and calling that "not
-    // today" reported it as traceless when it plainly left a trace.
-    const wrote = s.runs_wrote_today;
-    if (typeof wrote !== "number") { $("banners").innerHTML = out.join(""); return; }
-    const missing = s.runs_today - wrote;
-    if (missing > 0) {
-      out.push(banner("warning", "△",
-        `${missing} run${missing === 1 ? "" : "s"} today wrote nothing at all`,
-        `The daily counter says ${s.runs_today} ran and ${wrote} left ` +
-        `a node behind. A turn killed before it writes still spends its slot, and carries ` +
-        `no run id on anything — so it appears in no panel below. Check Hub logs for it.`));
+/* A cheap content hash so a poll that returns the same payload touches no
+   DOM. Re-rendering every 60s is what lost every open disclosure and scroll
+   position on the previous page. djb2 over the JSON text. */
+function payloadHash(obj) {
+  const s = JSON.stringify(obj);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return `${s.length}:${h}`;
+}
+
+/* ---- state -------------------------------------------------------------- */
+const state = {
+  runsHash: null, atlasHash: null,
+  runs: null, atlas: null,
+  openRunId: null, openRunSummaryHash: null,
+  showClosed: false, filter: "",
+};
+
+/* ---- budget tiles ------------------------------------------------------- */
+function renderTiles(d) {
+  const sched = (d && d.schedule) || {};
+  const lines = sched.lines || {};
+  const seen = sched.runs_seen_today || null;
+  const tiles = [];
+  for (const line of ["investigate", "self_inquiry", "self_sense_eval"]) {
+    const l = lines[line] || {};
+    const cap = l.daily_cap ?? "—";
+    const n = l.runs_today;
+    const foot = [];
+    if (l.enabled === false) foot.push("switched off");
+    if (l.next_eligible_at) {
+      const when = new Date(l.next_eligible_at);
+      foot.push(when.getTime() > Date.now() ? `next at ${fmtClock(when)} (${relative(l.next_eligible_at)})` : "eligible now");
+    } else if (l.last_at) {
+      foot.push(`last ${relative(l.last_at)}`);
     }
+    let warn = "";
+    if (seen && typeof n === "number" && (seen[line] || 0) < n) {
+      warn = `<div class="foot warn">counter says ${n}, the stores show ${seen[line] || 0}: ` +
+             `${n - (seen[line] || 0)} left no trace</div>`;
+    }
+    const atCap = typeof n === "number" && typeof cap === "number" && cap > 0 && n >= cap;
+    tiles.push(`<div class="card tile line-${line}">
+      <div class="label">${esc(LINE_PLURAL[line])}</div>
+      <div class="value${atCap ? " is-critical" : ""}">${n === null || n === undefined ? "—" : n}<span class="unit">of ${esc(cap)} today</span></div>
+      <div class="foot">${esc(foot.join(" · ")) || (sched.available ? "" : "counter not readable")}</div>${warn}
+    </div>`);
+  }
+  const r = (d && d.reach_outs) || null;
+  let rv = "—", rf = "not readable";
+  if (r) {
+    rv = `${r.sent}<span class="unit">of ${r.wanted} sent</span>`;
+    const parts = [];
+    if (r.top_block_reason) parts.push(`most blocked by ${esc(r.top_block_reason.replace(/^blocked:/, "").replace(/_/g, " "))}`);
+    if (r.not_recorded) parts.push(`${r.not_recorded} with no decision recorded`);
+    rf = parts.join(" · ") || (r.wanted ? "" : "no run asked to reach out");
+  }
+  tiles.push(`<div class="card tile reach">
+    <div class="label">Reach-outs, ${esc(d && d.window_days || DAYS)} days</div>
+    <div class="value${r && r.wanted && !r.sent ? " is-critical" : ""}">${rv}</div>
+    <div class="foot">${rf}</div>
+  </div>`);
+  $("tiles").innerHTML = tiles.join("");
+}
+
+/* ---- sittings strip ----------------------------------------------------- */
+function stripDays(n, now) {
+  const out = [];
+  const base = new Date(now); base.setHours(0, 0, 0, 0);
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(base); d.setDate(base.getDate() - i);
+    out.push({ key: dayKey(d.getTime()), label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) });
+  }
+  return out;
+}
+function runOneLiner(r) {
+  const bits = [LINE_LABEL[r.line] || r.line, r.status];
+  if (r.duration_sec != null) bits.push(fmtDuration(r.duration_sec));
+  if (r.hops) bits.push(`${r.hops} hop${r.hops === 1 ? "" : "s"}`);
+  if (r.prior_touched) bits.push(`${conf(r.prior_touched.from)} → ${conf(r.prior_touched.to)}`);
+  if (r.lane_wait_sec != null && r.lane_wait_sec > 60) bits.push(`waited ${fmtDuration(r.lane_wait_sec)} for a lane`);
+  if (r.reach_out && r.reach_out.wanted) bits.push(`reach-out: ${r.reach_out.decision || "?"}`);
+  if (r.error) bits.push(r.error);
+  return bits.join(" · ");
+}
+function renderStrip(d, now) {
+  const runs = (d && d.runs) || [];
+  const days = stripDays(d && d.window_days || DAYS, now || Date.now());
+  const byDay = new Map(days.map((x) => [x.key, []]));
+  let undated = 0;
+  for (const r of runs) {
+    const t = r.started_at || r.finished_at;
+    if (!t) { undated++; continue; }
+    const k = dayKey(t);
+    if (byDay.has(k)) byDay.get(k).push(r);
+  }
+  const todayKey = dayKey(now || Date.now());
+  $("strip").innerHTML = days.map((day) => {
+    const chips = byDay.get(day.key).slice().sort((a, b) => (a.started_at || a.finished_at) - (b.started_at || b.finished_at));
+    return `<div class="day${day.key === todayKey ? " today" : ""}">
+      <div class="date">${esc(day.label)}</div>
+      <div class="chips">${chips.map((r) => {
+        const [g, gl] = GLYPH[r.outcome_kind] || ["?", r.outcome_kind || "unknown"];
+        const open = r.run_id === state.openRunId ? " is-open" : "";
+        const retried = r.retries ? " has-retries" : "";
+        return `<button type="button" class="chip line-${esc(r.line)} glyph-${esc(r.outcome_kind)}${open}${retried}" ` +
+               `data-run="${esc(r.run_id)}" title="${esc(fmtStamp(r.started_at || r.finished_at))} · ${esc(runOneLiner(r))} · ${esc(gl)}` +
+               `${r.retries ? ` · retried ${r.retries}×` : ""}">${g}</button>`;
+      }).join("")}</div>
+    </div>`;
+  }).join("");
+  $("strip-days").textContent = String(d && d.window_days || DAYS);
+  const notes = [`${runs.length} sitting${runs.length === 1 ? "" : "s"}`];
+  if (undated) notes.push(`${undated} with no clock, not shown`);
+  $("strip-note").textContent = notes.join(" · ");
+  $("legend").innerHTML =
+    ["investigate", "self_inquiry", "self_sense_eval"].map((l) =>
+      `<span><span class="sw chip line-${l}"></span>${esc(LINE_LABEL[l])}</span>`).join("") +
+    Object.entries(GLYPH).map(([k, [g, label]]) => `<span><span class="g">${g}</span>${esc(label)}</span>`).join("") +
+    `<span><span class="sw chip has-retries"></span>retried at least once</span>`;
+}
+
+/* ---- run story ---------------------------------------------------------- */
+function decisionLabel(reach) {
+  const d = reach && reach.decision;
+  if (!d) return ["", "unknown"];
+  if (d === "sent") return [`sent${reach.sent_at ? " " + fmtStamp(reach.sent_at) : ""}`, "sent"];
+  if (d === "not_recorded") return ["not recorded — nothing wrote a decision (blocked before composing, most likely)", "unknown"];
+  if (d === "composed_empty") return ["composed nothing to send", "blocked"];
+  if (d === "passed") return ["Orion chose not to send", "blocked"];
+  if (d.startsWith("blocked:")) return [`blocked: ${d.slice(8).replace(/_/g, " ")}`, "blocked"];
+  return [d, "unknown"];
+}
+function timelineRow(it, run) {
+  const t = it.offset_sec === null || it.offset_sec === undefined
+    ? `<span class="t unk" title="no clock on this record">?</span>`
+    : `<span class="t" title="${esc(fmtStamp(it.at))}">${fmtOffset(it.offset_sec)}</span>`;
+  let cls = `k-${it.kind}`, what = "";
+  switch (it.kind) {
+    case "role_choice":
+      what = `<span class="lbl">started</span> · ${esc(LINE_LABEL[run.line] || run.line)} · ` +
+             (it.choice === "local_crawl" ? "working alone" : `role: ${esc(it.choice)}`) +
+             (it.why ? `<div class="txt">${esc(it.why)}</div>` : "");
+      break;
+    case "lifecycle":
+      switch (it.status) {
+        case "accepted": what = `<span class="lbl">accepted</span> · queued for a turn`; break;
+        case "waiting": what = `<span class="dim">waiting for the ${esc(it.lane || "agent")} lane</span>`; break;
+        case "admitted":
+          what = `<span class="lbl">got the ${esc(it.lane || "agent")} lane</span>` +
+                 (it.wait_sec != null ? ` after ${esc(fmtDuration(it.wait_sec))} waiting` : "");
+          break;
+        case "running": what = `<span class="dim">${esc(it.node || "running")}</span>`; break;
+        case "resumed": what = `<span class="lbl">resumed</span> at ${esc(it.node)}`; break;
+        case "retrying":
+          cls += " k-failed";
+          what = `<span class="flag">turn died, retrying</span> at ${esc(it.node)}${it.error ? `: <span class="txt">${esc(it.error)}</span>` : ""}`;
+          break;
+        case "lease_released": what = `<span class="dim">released the ${esc(it.lane || "agent")} lane${it.reason ? ` (${esc(it.reason)})` : ""}</span>`; break;
+        case "lease_expired": cls += " k-failed"; what = `<span class="flag">lane lease expired</span>`; break;
+        case "failed": cls += " k-failed"; what = `<span class="flag">died</span> at ${esc(it.node)}${it.error ? `: <span class="txt">${esc(it.error)}</span>` : ""}`; break;
+        case "cancelled": cls += " k-failed"; what = `<span class="flag">cancelled</span>`; break;
+        case "completed": what = `<span class="lbl">done</span>${run.attempts > 1 ? ` after ${run.attempts} attempts` : ""}`; break;
+        default: what = `<span class="dim">${esc(it.node)} ${esc(it.status)}</span>`;
+      }
+      break;
+    case "attempt":
+      what = `── attempt ${it.attempt} ──`;
+      break;
+    case "hop":
+      what = `<span class="lbl">hop ${it.n}</span>${it.attempt > 1 ? ` <span class="dim">(attempt ${it.attempt})</span>` : ""}` +
+             `<div class="txt">${esc(it.note)}</div>` +
+             (it.readings || []).map((r) => `<div class="reading">supervisor read this as <b>${esc(r.kind)}</b>` +
+               `${r.moved_the_claim ? ", moved the claim" : ""}${r.confidence != null ? ` (${conf(r.confidence)})` : ""}` +
+               `${r.reasoning ? `: ${esc(r.reasoning)}` : ""}</div>`).join("");
+      break;
+    case "self_sense_answer":
+      what = `<span class="lbl">${esc(it.question || it.question_key)}</span> ` +
+             `<span class="dim">self-label ${it.self_label_score ?? "—"} · grounded ${it.grounded_record_score ?? "—"} · ${esc(it.answer_source)}</span>` +
+             (it.answer_text ? `<div class="txt">${esc(clip(it.answer_text, 600))}</div>` : "");
+      break;
+    case "self_write":
+      what = `<span class="lbl">wrote ${it.kind === "lived_answer" ? "a lived answer" : "a self-definition"}</span>` +
+             `${it.question_id ? ` <span class="dim">(${esc(it.question_id)})</span>` : ""}` +
+             `<div class="txt">${esc(it.text)}</div>` + (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+      break;
+    case "finding":
+      what = `<span class="lbl">finding</span><div class="txt">${esc(it.text)}</div>` +
+             (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+      break;
+    case "revision":
+      what = `<span class="lbl">prior ${conf(it.from)} → ${conf(it.to)}</span>, ${esc(it.from_status)} → ${esc(it.to_status)}` +
+             `<div class="txt">${esc(clip(it.claim || it.prior_id, 300))}</div>`;
+      break;
+    case "outcome":
+      what = `<span class="lbl">end of turn</span>` +
+             (it.continue_note ? ` · left itself a note<div class="txt">${esc(it.continue_note)}</div>` : ` · ${it.continue_line ? "will continue this line" : "closed this line"}`) +
+             (it.reach_out ? `<div class="sub">wanted to reach Juniper: ${esc(it.reach_out_why)}</div>` : "");
+      break;
+    case "journal":
+      what = `<span class="lbl">journal written</span> <span class="dim mono">${esc(it.entry_id)}</span>`;
+      break;
+    case "outreach": {
+      const [label, k] = decisionLabel(it);
+      what = `<span class="lbl">reach-out decision:</span> <span class="dec ${k}">${esc(label)}</span>` +
+             (it.composed_text ? `<div class="txt">${esc(it.composed_text)}</div>` : "");
+      break;
+    }
+    case "reply":
+      what = `<span class="lbl">Juniper replied</span> <span class="dim">(next message in that session, within 12h)</span>` +
+             `<div class="txt">${esc(it.text)}</div>`;
+      break;
+    default:
+      what = `<span class="dim">${esc(it.kind)}</span>`;
+  }
+  return `<li class="${cls}">${t}<div class="what">${what}</div></li>`;
+}
+function renderStory(d) {
+  const el = $("story");
+  if (!d || d.available === false) {
+    el.innerHTML = `<p class="dim">Could not read this run: ${esc((d && d.reason) || "unknown")}.</p>`;
+    $("story-note").textContent = "";
+    return;
+  }
+  if (d.found === false) {
+    el.innerHTML = `<p class="dim">No store knows run <span class="mono">${esc(d.run_id || "")}</span>.</p>`;
+    $("story-note").textContent = "";
+    return;
+  }
+  const run = d.run;
+  const pills = [
+    `<span class="pill line-${esc(run.line)}">${esc(run.plain_line_label)}${run.line_known ? "" : " (line not recorded; inferred)"}</span>`,
+    `<span class="pill status-${esc(run.status)}">${esc(run.status)}</span>`,
+  ];
+  if (run.attempts > 1) pills.push(`<span class="pill">${run.attempts} attempts</span>`);
+  if (run.retries) pills.push(`<span class="pill status-failed">${run.retries} retr${run.retries === 1 ? "y" : "ies"}</span>`);
+  const anomalies = Object.entries(run.anomalies || {});
+  for (const [k, n] of anomalies) pills.push(`<span class="pill" title="${esc(k)}">${n} ${esc(k.replace(/^run\./, "").replace(/_/g, " "))}</span>`);
+  let when;
+  if (run.started_at) {
+    const bits = [fmtStamp(run.started_at)];
+    if (run.started_from === "graph") bits.push("start = first graph node; no lifecycle rows");
+    if (run.lane_wait_sec != null) bits.push(`waited ${fmtDuration(run.lane_wait_sec)} for the ${run.lane || "agent"} lane`);
+    if (run.active_sec != null) bits.push(`ran ${fmtDuration(run.active_sec)}`);
+    else if (run.duration_sec != null) bits.push(fmtDuration(run.duration_sec));
+    when = bits.join(" · ");
+  } else {
+    when = run.finished_at ? `finished ${fmtStamp(run.finished_at)} · start unknown` : "no clock";
+  }
+  const reach = run.reach_out || {};
+  let reachHtml = "";
+  if (reach.wanted) {
+    const [label, k] = decisionLabel(reach);
+    reachHtml = `<div class="reach-block"><span class="lbl">reach-out:</span> wanted` +
+      (reach.why ? ` — <span class="txt">${esc(reach.why)}</span>` : "") +
+      ` — <span class="dec ${k}">${esc(label)}</span>` +
+      `<div><span class="lbl">reply:</span> ${reach.reply ? `${esc(reach.reply.text)} <span class="dim">(${fmtStamp(reach.reply.at)}; next message in that session, within 12h)</span>` : "—"}</div></div>`;
+  } else if (run.line !== "self_sense_eval") {
+    reachHtml = `<div class="reach-block"><span class="lbl">reach-out:</span> not wanted</div>`;
+  }
+  const readingsNote = run.line === "self_sense_eval" ? "" :
+    (d.readings_available ? "" : `<p class="none">No supervisor readings for this run's hops — the supervisor only runs by hand today.</p>`);
+  const harness = run.harness
+    ? `<div class="dim" style="font-size:12px;margin-top:8px">harness turn: ${run.harness.elapsed_sec != null ? `${fmtDuration(run.harness.elapsed_sec)} in the harness` : ""}` +
+      `${run.harness.turn_correlation_id ? ` · <span class="mono">${esc(run.harness.turn_correlation_id)}</span>` : ""}</div>`
+    : `<div class="dim" style="font-size:12px;margin-top:8px">harness timing: not recorded for this run</div>`;
+  const selfSense = run.self_sense
+    ? `<div class="dim" style="font-size:12px;margin-top:8px">${run.self_sense.questions_answered} of ${run.self_sense.questions_expected} questions scored` +
+      `${run.self_sense.self_definition_version ? ` · against self-definition v${run.self_sense.self_definition_version}` : ""}</div>`
+    : (run.line === "self_sense_eval" ? `<p class="none">No scores were recorded for this check.</p>` : "");
+  el.innerHTML = `
+    <div class="head">
+      <span class="title mono">${esc(run.run_id)}</span>${pills.join("")}
+      <span class="when">${esc(when)}</span>
+    </div>
+    <ul class="timeline">${(d.timeline || []).map((it) => timelineRow(it, run)).join("")}</ul>
+    ${readingsNote}${selfSense}${reachHtml}${harness}
+    ${d.journal_body ? `<details class="journal"><summary>Journal entry</summary><div class="journal-body">${esc(d.journal_body)}</div></details>` : ""}
+  `;
+  $("story-note").textContent = `${(d.timeline || []).length} events`;
+}
+
+/* ---- self card ---------------------------------------------------------- */
+function renderSelf(d) {
+  const self = (d && d.self) || {};
+  if (self.available === false) {
+    $("self-current").innerHTML = `<p class="dim">Could not be read: ${esc(self.reason || "unknown")}.</p>`;
+    $("self-lived-wrap").hidden = true;
+    $("self-history-wrap").hidden = true;
+    return;
+  }
+  const cur = self.current;
+  $("self-current").innerHTML = cur ? `
+      <div class="head"><span class="version-pill">v${cur.version}</span><span class="when">${fmtStamp(cur.created_at)}</span></div>
+      <div class="content">${esc(cur.content)}</div>
+      ${cur.evidence_refs && cur.evidence_refs.length ? `<ul class="evidence-list">${cur.evidence_refs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}`
+    : `<p class="dim">Orion has not written a self-definition yet.</p>`;
+  const lived = self.lived_answers || [];
+  $("self-lived-wrap").hidden = lived.length === 0;
+  $("self-lived-summary").textContent = `Lived answers (${lived.length})`;
+  $("self-lived").innerHTML = lived.map((la) => `
+    <div class="self-lived-row">
+      <span class="qid">${esc(la.question_id)}</span> <span class="when">${fmtStamp(la.created_at)}</span>
+      <div class="content">${esc(la.content)}</div>
+    </div>`).join("");
+  const earlier = (self.history || []).slice(1);
+  $("self-history-wrap").hidden = earlier.length === 0;
+  $("self-history-summary").textContent = `Earlier version${earlier.length === 1 ? "" : "s"} (${earlier.length})`;
+  $("self-history").innerHTML = earlier.map((h) => `
+    <div class="self-history-row">
+      <span class="version-pill">v${h.version}</span> <span class="when">${fmtStamp(h.created_at)}</span>
+      <div class="content">${esc(h.content)}</div>
+    </div>`).join("");
+}
+
+/* ---- priors ------------------------------------------------------------- */
+function sparkline(pts) {
+  const W = 280, H = 60, PAD = 4;
+  const dated = pts.filter((p) => p.written_at != null);
+  let xs;
+  if (dated.length >= 2) {
+    const t0 = Math.min(...dated.map((p) => p.written_at)), t1 = Math.max(...dated.map((p) => p.written_at));
+    const span = Math.max(1, t1 - t0);
+    xs = pts.map((p, i) => p.written_at == null ? (i === 0 ? 0 : (i / Math.max(1, pts.length - 1))) : (p.written_at - t0) / span);
+  } else {
+    xs = pts.map((_, i) => pts.length === 1 ? 0.5 : i / (pts.length - 1));
+  }
+  const y = (c) => PAD + (1 - Math.max(0, Math.min(1, Number(c) || 0))) * (H - 2 * PAD);
+  const x = (f) => PAD + f * (W - 2 * PAD);
+  const path = pts.map((p, i) => `${i ? "L" : "M"}${x(xs[i]).toFixed(1)},${y(p.confidence).toFixed(1)}`).join(" ");
+  const dots = pts.map((p, i) => `<circle cx="${x(xs[i]).toFixed(1)}" cy="${y(p.confidence).toFixed(1)}" r="3" ` +
+    `fill="${p.recorded ? "var(--series-1)" : "var(--surface)"}" stroke="var(--series-1)" stroke-width="1.5">` +
+    `<title>${esc(conf(p.confidence))} ${esc(p.status)}${p.written_at ? " · " + esc(fmtStamp(p.written_at)) : ""}${p.run_id ? " · " + esc(p.run_id) : ""}</title></circle>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">` +
+    `<line x1="${PAD}" y1="${y(0.5).toFixed(1)}" x2="${W - PAD}" y2="${y(0.5).toFixed(1)}" stroke="var(--grid)" stroke-dasharray="3 3"/>` +
+    `<path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="1.5"/>${dots}</svg>`;
+}
+function renderPriors(d) {
+  const el = $("priors");
+  if (!d || d.available === false) { el.innerHTML = `<p class="dim">Priors unavailable.</p>`; $("priors-note").textContent = ""; return; }
+  const all = d.priors || [];
+  const closedN = all.filter((p) => p.is_closed).length;
+  $("toggle-closed").textContent = state.showClosed ? `Hide closed (${closedN})` : `Show closed (${closedN})`;
+  $("toggle-closed").setAttribute("aria-pressed", String(state.showClosed));
+  const q = state.filter.trim().toLowerCase();
+  const shown = all
+    .filter((p) => state.showClosed || !p.is_closed)
+    .filter((p) => !q || (p.claim || "").toLowerCase().includes(q) || (p.prior_id || "").toLowerCase().includes(q))
+    .sort((a, b) => (b.last_tested_at_ms || 0) - (a.last_tested_at_ms || 0) || (b.times_tested - a.times_tested));
+  $("priors-note").textContent = `${shown.length} shown of ${all.length} (${d.live_total} live, ${closedN} closed)`;
+  el.innerHTML = shown.length ? shown.map((p) => {
+    const traj = p.trajectory || [];
+    const rec = traj.filter((t) => t.recorded).length;
+    const lastRun = p.last_run_id || p.created_by_run;
+    return `<div class="card prior${p.is_closed ? " closed" : ""}">
+      <div class="claim" title="${esc(p.claim)}">${esc(p.claim)}</div>
+      <div class="sub">
+        <span class="status${p.is_closed ? " closed" : ""}">${esc(p.status)}</span>
+        <span>${conf(p.confidence)}</span>
+        <span>tested ${p.times_tested}×</span>
+        <span>${p.last_tested_at_ms ? `last ${fmtStamp(p.last_tested_at_ms)}` : "never tested"}</span>
+        ${lastRun ? `<a class="runlink" data-run="${esc(lastRun)}" title="open this run">by ${esc(lastRun)}</a>` : ""}
+      </div>
+      ${rec >= 1 && traj.length >= 2 ? sparkline(traj) : `<div class="none">no revision recorded yet — the line starts at the first recorded move</div>`}
+    </div>`;
+  }).join("") : `<p class="dim">${all.length ? "Nothing matches." : "Orion has not written a prior yet."}</p>`;
+}
+
+/* ---- contractor briefs -------------------------------------------------- */
+function renderPeerBriefs(d) {
+  const el = $("peer-briefs-table");
+  if (!el) return;
+  const briefs = (d && d.peer_briefs) || [];
+  $("briefs-summary").textContent = `Contractor briefs (${briefs.length})`;
+  el.innerHTML = `<thead><tr><th>Status</th><th>Peer</th><th>Summary</th><th>Run</th><th>Help</th></tr></thead>
+    <tbody>${briefs.length ? briefs.map((b) => {
+      const refused = b.status === "refused_budget";
+      const summary = refused ? (b.refusal_reason ? `refused: ${clip(b.refusal_reason, 120)}` : "refused_budget") : clip(b.summary, 160);
+      return `<tr><td><span class="mono">${esc(b.status || "—")}</span></td><td>${esc(b.peer || "—")}</td><td>${esc(summary)}</td>` +
+             `<td><a class="runlink" data-run="${esc(b.run_id)}">${esc(b.run_id || "—")}</a></td><td class="mono">${esc(b.help_id || "—")}</td></tr>`;
+    }).join("") : `<tr><td colspan="5" class="dim">No contractor briefs yet.</td></tr>`}</tbody>`;
+}
+
+/* ---- banners ------------------------------------------------------------ */
+function renderBanners(runs, atlas) {
+  const out = [];
+  if (runs && runs.available === false) {
+    out.push(banner("critical", "⚠", "Sittings could not be read", esc(runs.reason || "unknown")));
+  } else if (runs && runs.stores) {
+    for (const [name, st] of Object.entries(runs.stores)) {
+      if (st && st !== "ok" && st !== "graph_not_configured") out.push(banner("warning", "◐", `${name} read failed — stories are partial`, esc(st)));
+      if (st === "graph_not_configured") out.push(banner("info", "○", "Graph half is switched off", "Orion's own graph is not configured, so hops, findings and revisions cannot be shown."));
+    }
+  }
+  if (atlas && atlas.available === false) {
+    if (atlas.reason === "graph_not_configured") out.push(banner("info", "○", "Priors are switched off", "The graph half of curiosity is not configured."));
+    else out.push(banner("critical", "⚠", "Priors could not be read", `${esc(atlas.reason || "unknown")} — treat as an outage, not as an empty pool.`));
+  } else if (atlas && atlas.pool_is_dead) {
+    out.push(banner("critical", "⚠", "No priors are still in play", "Every prior is refuted or retired; the next sitting inherits nothing to test."));
   }
   $("banners").innerHTML = out.join("");
 }
 
-const banner = (cls, icon, title, detail) => `
-  <div class="banner ${cls}"><span class="icon">${icon}</span>
-    <div><div class="t">${title}</div><div class="d">${detail}</div></div></div>`;
-
-/* --- tiles -------------------------------------------------------------- */
-function renderTiles(d) {
-  const s = d.schedule || {};
-  const cap = s.daily_cap;
-  const today = s.runs_today;
-  const tiles = [
-    tile("Live priors", d.live_total ?? "—", "still open to testing", d.pool_is_dead),
-    tile("Closed", d.closed_total ?? "—", "refuted or retired"),
-    tile("Runs today", today === null || today === undefined ? "—" : today,
-         cap ? `of ${cap} allowed` : "cap unknown",
-         cap && today >= cap),
-    // A past cooldown is eligibility, not history: "8h 21m ago" read as though
-    // something had been missed.
-    tile("Next eligible",
-         !s.next_eligible_at ? "—"
-           : (new Date(s.next_eligible_at) <= new Date() ? "now"
-              : fmtStamp(s.next_eligible_at)),
-         !s.next_eligible_at ? "no cooldown recorded"
-           : (new Date(s.next_eligible_at) <= new Date()
-               ? (cap && today >= cap ? "cooldown clear — daily cap reached"
-                  : "cooldown clear")
-               : relative(s.next_eligible_at))),
-  ];
-  $("tiles").innerHTML = tiles.join("");
+/* ---- apply: render only when the payload changed ------------------------- */
+function applyRuns(d, now) {
+  const h = payloadHash(d);
+  if (h === state.runsHash) return false;
+  state.runsHash = h;
+  state.runs = d;
+  renderTiles(d);
+  renderStrip(d, now);
+  renderBanners(d, state.atlas);
+  return true;
+}
+function applyAtlas(d) {
+  const h = payloadHash(d);
+  if (h === state.atlasHash) return false;
+  state.atlasHash = h;
+  state.atlas = d;
+  renderSelf(d);
+  renderPriors(d);
+  renderPeerBriefs(d);
+  renderBanners(state.runs, d);
+  return true;
 }
 
-const tile = (label, value, foot, critical) => `
-  <div class="card tile">
-    <div class="label">${label}</div>
-    <div class="value${critical ? " is-critical" : ""}">${esc(value)}</div>
-    <div class="foot">${esc(foot)}</div>
-  </div>`;
-
-/* --- confidence small multiples ----------------------------------------
-   One panel per prior rather than one chart with every prior overlaid: a
-   single series per panel needs no categorical palette and no legend, and
-   stays readable past the point where overlapping lines stop being. */
-function renderTrajectories(d) {
-  const priors = (d.priors || []).filter((p) => !p.is_closed);
-  $("traj-note").innerHTML = d.history_recorded
-    ? "Each panel is one prior. The line is its recorded confidence over the runs that tested it."
-    : "<b>No movement has been recorded yet.</b> Orion writes a <span class=\"mono\">:PriorRevision</span> " +
-      "when it tests a prior, and that is the only record of a claim <i>moving</i> rather than of where it " +
-      "landed. Until the first one lands each panel shows a single point at where the prior stands now — " +
-      "which means &ldquo;not recorded&rdquo;, never &ldquo;confidence never moved&rdquo;.";
-
-  if (!priors.length) { $("trajectories").innerHTML = ""; return; }
-  $("trajectories").innerHTML = priors.map((p) => {
-    const pts = (p.trajectory || []).filter((t) => t.confidence !== null && t.confidence !== undefined);
-    const body = pts.length > 1 ? sparkline(pts) : `
-      <div class="none">${pts.length === 1
-        ? `Held at <b>${pts[0].confidence.toFixed(2)}</b> — no revision recorded yet.`
-        : "No confidence recorded."}</div>`;
-    const delta = pts.length > 1 ? pts[pts.length - 1].confidence - pts[0].confidence : null;
-    return `<div class="card spark">
-      <div class="claim">${esc(p.claim)}</div>
-      ${body}
-      <div class="sub">${esc(p.status)} · tested ${p.times_tested}×${
-        delta === null ? "" : ` · ${delta >= 0 ? "+" : ""}${delta.toFixed(2)} overall`}</div>
-    </div>`;
-  }).join("");
+/* ---- loading ------------------------------------------------------------- */
+async function fetchJson(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  return res.json();
 }
-
-function sparkline(pts) {
-  const W = 260, H = 74, PAD_X = 26, PAD_Y = 12;
-  const xs = (i) => PAD_X + (i / (pts.length - 1)) * (W - PAD_X * 2);
-  const ys = (c) => PAD_Y + (1 - c) * (H - PAD_Y * 2);   // fixed 0..1 domain
-  const path = pts.map((p, i) => `${i ? "L" : "M"}${xs(i).toFixed(1)},${ys(p.confidence).toFixed(1)}`).join("");
-  const dots = pts.map((p, i) =>
-    `<circle cx="${xs(i).toFixed(1)}" cy="${ys(p.confidence).toFixed(1)}" r="4"
-       fill="var(--series-1)" stroke="var(--surface)" stroke-width="2">
-       <title>${esc(p.run_id || "before")} · ${p.confidence.toFixed(2)}</title></circle>`).join("");
-  const first = pts[0].confidence, last = pts[pts.length - 1].confidence;
-  return `<svg viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="Confidence from ${first.toFixed(2)} to ${last.toFixed(2)} over ${pts.length} points">
-    <line x1="${PAD_X}" y1="${ys(0.5)}" x2="${W - PAD_X}" y2="${ys(0.5)}"
-          stroke="var(--grid)" stroke-width="1" stroke-dasharray="2 3" />
-    <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2"
-          stroke-linejoin="round" stroke-linecap="round" />
-    ${dots}
-    <text x="${PAD_X - 6}" y="${ys(first) + 4}" text-anchor="end"
-          font-size="10" fill="var(--ink-muted)">${first.toFixed(2)}</text>
-    <text x="${W - PAD_X + 6}" y="${ys(last) + 4}"
-          font-size="10" fill="var(--ink-2)" font-weight="600">${last.toFixed(2)}</text>
-  </svg>`;
+function runFromHash() {
+  const m = /(?:^|[#&])run=([A-Za-z0-9_.:-]{1,64})/.exec(String(location.hash || ""));
+  return m ? m[1] : null;
 }
-
-/* --- growth stacks ------------------------------------------------------ */
-function renderGrowth(d) {
-  const runs = (d.runs || []).filter((r) => r.total_added > 0);
-  if (!runs.length) {
-    $("growth").innerHTML = `<div class="dim" style="font-size:13px">No runs have written to the graph yet.</div>`;
-    $("growth-table").innerHTML = "";
-    return;
-  }
-  const { kinds, folded } = kindsPresent(runs);
-  const max = Math.max(...runs.map((r) => r.total_added));
-
-  $("growth").innerHTML = `
-    <div class="legend">${kinds.map((k) => `
-      <span class="item"><span class="swatch" style="background:${kindColor(k)}"></span>${esc(k)}</span>`).join("")}
-    </div>
-    <div class="bars">${runs.map((r) => {
-      const width = (r.total_added / max) * 100;
-      return `<div class="barrow">
-        <span class="name" title="${esc(r.run_id)}">${esc(r.run_id.slice(0, 12))}</span>
-        <div class="track" style="width:${width.toFixed(1)}%">${(() => {
-          const b = bucketed(r.added || {}, kinds, folded);
-          return kinds.map((k) => {
-          const n = b[k] || 0;
-          if (!n) return "";
-          // Direct label inside every segment: light-mode aqua and yellow are
-          // sub-3:1 on the surface, so the relief rule requires visible labels.
-          return `<div class="seg" style="background:${kindColor(k)};flex:${n}"
-                       title="${esc(k === OTHER ? folded.join(", ") : k)}: ${n}">${n >= 1 ? n : ""}</div>`;
-        }).join(""); })()}</div>
-        <span class="total">${r.total_added}</span>
-      </div>`;
-    }).join("")}</div>`;
-
-  $("growth-table").innerHTML = `<table>
-    <thead><tr><th>Run</th>${kinds.map((k) => `<th class="num">${esc(k)}</th>`).join("")}<th class="num">Total</th></tr></thead>
-    <tbody>${runs.map((r) => {
-      const b = bucketed(r.added || {}, kinds, folded);
-      return `<tr>
-      <td class="mono">${esc(r.run_id)}</td>
-      ${kinds.map((k) => `<td class="num">${b[k] || 0}</td>`).join("")}
-      <td class="num">${r.total_added}</td></tr>`;
-    }).join("")}</tbody></table>`;
-}
-
-/* --- run ledger --------------------------------------------------------- */
-/* --- self (Orion's own definition) -------------------------------------- */
-function renderSelf(d) {
-  const self = d.self || {};
-  if (self.available === false) {
-    $("self-current").innerHTML =
-      `<p class="dim">Could not be read: ${esc(self.reason || "unknown")}.</p>`;
-    $("self-lived-wrap").hidden = true;
-    $("self-history-wrap").hidden = true;
-    $("self-eval-wrap").hidden = true;
-    $("self-journal").innerHTML = "";
-    return;
-  }
-  const lived = self.lived_answers || [];
-  $("self-lived-wrap").hidden = lived.length === 0;
-  $("self-lived").innerHTML = lived.map((la) => `
-    <div class="self-lived-row">
-      <div class="head">
-        <span class="qid">${esc(la.question_id)}</span>
-        <span class="when">${fmtStamp(la.created_at)}</span>
-      </div>
-      <div class="content">${esc(la.content)}</div>
-      ${la.evidence_refs && la.evidence_refs.length ? `<ul class="evidence-list">${
-        la.evidence_refs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
-    </div>`).join("");
-  const cur = self.current;
-  if (!cur) {
-    $("self-current").innerHTML =
-      `<p class="dim">Orion has not written a self-definition yet. ` +
-      `The self-inquiry line runs on its own schedule (see the button above ` +
-      `to ask now), and this panel fills in the moment one is mirrored.</p>`;
-  } else {
-    $("self-current").innerHTML = `
-      <div class="head">
-        <span class="version-pill">v${cur.version}</span>
-        <span class="when">${fmtStamp(cur.created_at)}</span>
-      </div>
-      <div class="content">${esc(cur.content)}</div>
-      ${cur.evidence_refs.length ? `<ul class="evidence-list">${
-        cur.evidence_refs.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
-    `;
-  }
-  const earlier = (self.history || []).slice(1);
-  $("self-history-wrap").hidden = earlier.length === 0;
-  $("self-history-summary").textContent =
-    `Earlier version${earlier.length === 1 ? "" : "s"} (${earlier.length})`;
-  $("self-history").innerHTML = earlier.map((h) => `
-    <div class="self-history-row">
-      <div class="head"><span class="version-pill">v${h.version}</span>
-        <span class="when">${fmtStamp(h.created_at)}</span></div>
-      <div class="content">${esc(h.content)}</div>
-    </div>`).join("");
-
-  const evalRows = self.latest_eval || [];
-  $("self-eval-wrap").hidden = evalRows.length === 0;
-  $("self-eval-summary").textContent =
-    `Latest self-sense check (${self.latest_eval_run_id || "—"})`;
-  $("self-eval-table").innerHTML = `
-    <thead><tr><th>Question</th><th class="num">Self-label</th>
-      <th class="num">Grounded records</th><th>Source</th></tr></thead>
-    <tbody>${evalRows.map((r) => `<tr>
-      <td>${esc(r.question || r.question_key)}</td>
-      <td class="num">${r.self_label_score ?? "—"}</td>
-      <td class="num">${r.grounded_record_score ?? "—"}</td>
-      <td class="mono dim">${esc(r.answer_source)}</td>
-    </tr>`).join("")}</tbody>`;
-
-  const journals = self.journal_entries || [];
-  $("self-journal").innerHTML = journals.length ? `
-    <details class="journal">
-      <summary>Self-inquiry journal (${journals.length} recent)</summary>
-      ${journals.map((j) => `<div class="journal-body">${
-        fmtStamp(j.created_at)} — ${esc(j.body)}</div>`).join("")}
-    </details>` : "";
-}
-
-function renderRuns(d) {
-  const runs = d.runs || [];
-  if (!runs.length) { $("runs").innerHTML = `<div class="card run dim">No runs recorded.</div>`; return; }
-  $("runs").innerHTML = runs.map((r) => {
-    const wrote = Object.entries(r.added || {}).map(([k, n]) => `${n} ${k}`).join(", ");
-    const pills = [];
-    // A run with hops and no outcome was killed mid-write. Showing it as an
-    // ordinary quiet run would hide exactly the runs worth looking at.
-    if (!r.written_at && r.hops > 0) pills.push(`<span class="pill critical">died before writing an outcome</span>`);
-    if (r.reach_out) pills.push(`<span class="pill warn">wanted to reach out</span>`);
-    if (r.continue_line) pills.push(`<span class="pill good">left itself a note</span>`);
-    return `<div class="card run">
-      <div class="head">
-        <span class="rid">${esc(r.run_id)}</span>
-        <span class="when">${fmtStamp(r.written_at)}</span>
-        <span class="when">${r.hops} hop${r.hops === 1 ? "" : "s"}</span>
-        ${pills.join(" ")}
-      </div>
-      <div class="wrote">${wrote ? `wrote ${esc(wrote)}` : "wrote nothing"}${
-        r.priors_touched.length ? ` · re-tested ${r.priors_touched.length} prior${r.priors_touched.length === 1 ? "" : "s"}` : ""}</div>
-      ${(r.hop_notes || []).length ? `<div class="working">
-        <div class="working-label">The turn, step by step</div>
-        <ol class="hops">${r.hop_notes.map((h) =>
-          `<li>${esc(h.note)}</li>`).join("")}</ol>
-      </div>` : ""}
-      ${(r.findings || []).map((f) => `<p class="note"><b>Found</b> ${esc(f.text)}
-        ${f.evidence ? `<span class="evidence"><b>Looked at</b> ${esc(f.evidence)}</span>` : ""}</p>`).join("")}
-      ${r.journal ? `<details class="journal"><summary>What it wrote to you (${r.journal.length} chars)</summary>
-        <div class="journal-body">${esc(r.journal)}</div></details>` : ""}
-      ${r.reach_out_why ? `<p class="note"><b>Wanted to say</b> ${esc(r.reach_out_why)}</p>` : ""}
-      ${r.continue_note ? `<p class="note"><b>Next</b> ${esc(r.continue_note)}</p>` : ""}
-    </div>`;
-  }).join("");
-}
-
-/* --- priors table ------------------------------------------------------- */
-function renderPriors(d) {
-  const priors = d.priors || [];
-  $("priors-table").innerHTML = `
-    <thead><tr>
-      <th>Claim</th><th>Status</th><th class="num">Confidence</th>
-      <th class="num">Tested</th><th>Created by</th><th>Last tested by</th>
-    </tr></thead>
-    <tbody>${priors.length ? priors.map((p) => `<tr>
-      <td>${esc(p.claim)}</td>
-      <td>${esc(p.status)}${p.is_closed ? ` <span class="dim">(closed)</span>` : ""}</td>
-      <td class="num">${p.confidence === null || p.confidence === undefined ? "—" : p.confidence.toFixed(2)}</td>
-      <td class="num">${p.times_tested}</td>
-      <td class="mono">${esc(p.created_by_run || "—")}</td>
-      <td class="mono">${esc(p.last_run_id || "—")}</td>
-    </tr>`).join("") : `<tr><td colspan="6" class="dim">No priors.</td></tr>`}</tbody>`;
-}
-
-/* --- contractor peer briefs -------------------------------------------- */
-function clipSummary(s, n) {
-  const t = String(s || "").trim();
-  if (!t) return "—";
-  return t.length <= n ? t : t.slice(0, n - 1) + "…";
-}
-
-function renderPeerBriefs(d) {
-  const el = $("peer-briefs-table");
-  if (!el) return;
-  if (d.available === false) {
-    el.innerHTML = `<tbody><tr><td class="dim">Atlas unavailable.</td></tr></tbody>`;
-    return;
-  }
-  const briefs = d.peer_briefs || [];
-  el.innerHTML = `
-    <thead><tr>
-      <th>Status</th><th>Peer</th><th>Summary</th><th>Run</th><th>Help</th>
-    </tr></thead>
-    <tbody>${briefs.length ? briefs.map((b) => {
-      const refused = b.status === "refused_budget";
-      const summary = refused
-        ? (b.refusal_reason
-            ? `refused: ${clipSummary(b.refusal_reason, 120)}`
-            : "refused_budget")
-        : clipSummary(b.summary, 160);
-      return `<tr>
-      <td><span class="mono">${esc(b.status || "—")}</span></td>
-      <td>${esc(b.peer || "—")}</td>
-      <td>${esc(summary)}</td>
-      <td class="mono">${esc(b.run_id || "—")}</td>
-      <td class="mono">${esc(b.help_id || "—")}</td>
-    </tr>`;
-    }).join("") : `<tr><td colspan="5" class="dim">No contractor briefs yet.</td></tr>`}</tbody>`;
-}
-
-/* --- load --------------------------------------------------------------- */
-async function load() {
+async function openRun(runId, { fromPoll = false } = {}) {
+  if (!runId) return;
+  const summary = state.runs && (state.runs.runs || []).find((r) => r.run_id === runId);
+  const summaryHash = summary ? payloadHash(summary) : null;
+  // An open story survives a poll: only re-fetch when its own summary moved.
+  if (fromPoll && runId === state.openRunId && summaryHash === state.openRunSummaryHash) return;
+  state.openRunId = runId;
+  state.openRunSummaryHash = summaryHash;
+  if (!fromPoll && runFromHash() !== runId) history.replaceState(null, "", `#run=${runId}`);
+  document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("is-open", c.getAttribute("data-run") === runId));
   try {
-    const res = await fetch("/curiosity/api/atlas", { cache: "no-store" });
-    const d = await res.json();
-    renderBanners(d);
-    renderTiles(d);
-    renderPeerBriefs(d);
-    renderTrajectories(d);
-    renderGrowth(d);
-    renderSelf(d);
-    renderRuns(d);
-    renderPriors(d);
+    renderStory(await fetchJson(`/curiosity/api/run/${encodeURIComponent(runId)}`));
+  } catch (err) {
+    renderStory({ available: false, reason: String(err) });
+  }
+}
+async function loadRuns({ fromPoll = false } = {}) {
+  const d = await fetchJson(`/curiosity/api/runs?days=${DAYS}&line=all`);
+  applyRuns(d, Date.now());
+  const wanted = state.openRunId || runFromHash() || ((d.runs || [])[0] || {}).run_id || null;
+  if (wanted) await openRun(wanted, { fromPoll: fromPoll || wanted === state.openRunId });
+}
+async function loadAtlas() {
+  applyAtlas(await fetchJson("/curiosity/api/atlas"));
+}
+async function load({ fromPoll = false } = {}) {
+  try {
+    await Promise.all([loadRuns({ fromPoll }), loadAtlas()]);
     $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (err) {
-    $("banners").innerHTML = banner("critical", "⚠", "Could not load the atlas", esc(String(err)));
+    $("banners").innerHTML = banner("critical", "⚠", "Could not load the page", esc(String(err)));
     $("updated").textContent = "Load failed";
   }
 }
 
-$("refresh").addEventListener("click", load);
-
-// Skips the cooldown and the daily cap and nothing else. Confirmed first,
-// because a turn is a real ~20-minute run on the same pipeline that serves
-// Juniper -- a mis-click should not spend one.
-$("run-now").addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  const msg = $("run-now-msg");
-  if (!window.confirm(
-        "Take a curiosity turn now?\n\n" +
-        "Skips the cooldown and the daily cap. It still counts against today, " +
-        "and it runs for about 20 minutes on the same pipeline that serves you.")) {
-    return;
-  }
-  btn.disabled = true;
-  msg.className = "run-msg";
-  msg.textContent = "Requesting…";
-  try {
-    const res = await fetch("/curiosity/api/run-now", { method: "POST" });
-    const d = await res.json();
-    if (d.ok) {
-      msg.textContent = d.detail || "Turn requested.";
-      setTimeout(load, 3000);
-    } else {
-      msg.className = "run-msg bad";
-      msg.textContent = `Refused: ${d.reason || res.status}`;
-    }
-  } catch (err) {
-    msg.className = "run-msg bad";
-    msg.textContent = `Failed: ${String(err)}`;
-  }
-  // Left disabled: the turn takes ~20 minutes and a second press would be
-  // rejected as already_running anyway. Reload the page to arm it again.
-});
-$("self-run-now").addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  const msg = $("self-run-now-msg");
-  if (!window.confirm(
-        "Ask the self-inquiry line to run now?\n\n" +
-        "Skips that line's own cooldown and daily cap (separate from the " +
-        "investigation budget above). It still counts against today, and it " +
-        "runs for about 20 minutes on the same pipeline that serves you.")) {
-    return;
-  }
-  btn.disabled = true;
-  msg.className = "run-msg";
-  msg.textContent = "Requesting…";
-  try {
-    const res = await fetch("/curiosity/api/self-inquiry/run-now", { method: "POST" });
-    const d = await res.json();
-    if (d.ok) {
-      msg.textContent = d.detail || "Turn requested.";
-      setTimeout(load, 3000);
-    } else {
-      msg.className = "run-msg bad";
-      msg.textContent = `Refused: ${d.reason || res.status}`;
-    }
-  } catch (err) {
-    msg.className = "run-msg bad";
-    msg.textContent = `Failed: ${String(err)}`;
-  }
-});
-$("toggle-tables").addEventListener("click", (e) => {
-  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
-  e.currentTarget.setAttribute("aria-pressed", String(on));
-  $("growth-table").hidden = !on;
-  $("growth").hidden = on;
-});
-
-/* The Hub embeds this page in an iframe on the Curiosity tab, and an iframe
-   keeps running when its panel is hidden. A bare setInterval would be a
-   FalkorDB read every 60s for a panel nobody is looking at, so the timer is
-   owned by an activate/deactivate contract -- the same one Concept Atlas
-   established, rather than a second convention. Standalone at /curiosity there
-   is no host to call these, so the page starts its own timer immediately. */
-const POLL_MS = 60000;
-let timer = null;
-
-function activate() {
-  load();
-  if (timer === null) timer = setInterval(load, POLL_MS);
+/* ---- wiring -------------------------------------------------------------- */
+function wire() {
+  $("refresh").addEventListener("click", () => load());
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest && e.target.closest("[data-run]");
+    if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
+  });
+  window.addEventListener("hashchange", () => { const r = runFromHash(); if (r && r !== state.openRunId) openRun(r); });
+  $("toggle-closed").addEventListener("click", () => { state.showClosed = !state.showClosed; renderPriors(state.atlas); });
+  $("prior-filter").addEventListener("input", (e) => { state.filter = e.target.value || ""; renderPriors(state.atlas); });
+  const arm = (btnId, msgId, url, confirmText) => {
+    $(btnId).addEventListener("click", async (e) => {
+      const btn = e.currentTarget, msg = $(msgId);
+      if (!window.confirm(confirmText)) return;
+      btn.disabled = true;
+      msg.className = "run-msg";
+      msg.textContent = "Requesting…";
+      try {
+        const res = await fetch(url, { method: "POST" });
+        const d = await res.json();
+        if (d.ok) { msg.textContent = d.detail || "Turn requested."; setTimeout(() => load(), 3000); }
+        else { msg.className = "run-msg bad"; msg.textContent = `Refused: ${d.reason || res.status}`; }
+      } catch (err) { msg.className = "run-msg bad"; msg.textContent = `Failed: ${String(err)}`; }
+      // Left disabled: the turn takes ~20 minutes and a second press would be
+      // rejected as already_running anyway. Reload the page to arm it again.
+    });
+  };
+  arm("run-now", "run-now-msg", "/curiosity/api/run-now",
+      "Take a world-question turn now?\n\nSkips the cooldown and the daily cap. It still counts against today, and it runs for about 20 minutes on the same pipeline that serves you.");
+  arm("self-run-now", "self-run-now-msg", "/curiosity/api/self-inquiry/run-now",
+      "Ask a self question now?\n\nSkips that line's own cooldown and daily cap. It still counts against today, and it runs for about 20 minutes on the same pipeline that serves you.");
 }
 
+/* The Hub embeds this page in an iframe on the Curiosity tab, and an iframe
+   keeps running when its panel is hidden. The timer is owned by an
+   activate/deactivate contract the host calls (app.js), so a hidden panel is
+   not a FalkorDB read every 60s. Standalone at /curiosity there is no host,
+   so the page starts its own timer. */
+let timer = null;
+function activate() {
+  load();
+  if (timer === null) timer = setInterval(() => load({ fromPoll: true }), POLL_MS);
+}
 function deactivate() {
   if (timer !== null) { clearInterval(timer); timer = null; }
 }
-
-window.OrionCuriosityAtlas = { refresh: load, activate, deactivate };
-
-// Also stop while the whole tab is backgrounded, not only while the Hub panel
-// is hidden -- the two are independent and either one alone leaves the poll
-// running in a window nobody is looking at.
+window.OrionCuriosityAtlas = { refresh: () => load(), activate, deactivate };
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) deactivate();
   else if (timer === null) activate();
 });
 
-activate();
+function boot() { wire(); activate(); }
+boot();
 </script>
 </body>
 </html>

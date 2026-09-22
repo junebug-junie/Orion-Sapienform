@@ -640,8 +640,10 @@ the recent share of lived draws falls below that target, the next draw prefers
 rolling window is already 100% lived. Never-asked pinned questions win over
 stale ones; oldest `last_asked_at` wins among floor candidates.
 
-**Mint and park.** Juniper pins or parks via Hub operator routes
-(`POST /curiosity/api/self-questions/{id}/pin|park`). Orion may mint new
+**Mint and park.** Pin/park is a real column pair in `self_question_pool`
+(`PARK_SQL`/`PIN_SQL`), but the Hub operator HTTP routes that fronted it
+(`POST /curiosity/api/self-questions/{id}/pin|park`) were removed 2026-09-22
+in the Curiosity tab redesign -- nothing called them. Orion may still mint new
 `family=lived` rows during a run (`:SelfQuestionMint` node scraped post-run).
 
 ### LivedAnswer ledger

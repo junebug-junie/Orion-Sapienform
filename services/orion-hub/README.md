@@ -1108,9 +1108,12 @@ Turning it on is two steps: the flag (`HUB_CURIOSITY_SELF_INQUIRY_ENABLED`)
 and the SQL grants (including `scripts/sql/2026-09-18_curiosity_self_questions.sql`).
 Until the grants are applied every tick logs
 `curiosity_self_inquiry_blocked reason=pg_grants_missing tables=...`.
-Operator trigger: `POST /curiosity/api/self-inquiry/run-now`; pin/park:
-`POST /curiosity/api/self-questions/{id}/pin|park`. Full contract and
-inspection queries: `orion/curiosity/README.md` §13.
+Operator trigger: `POST /curiosity/api/self-inquiry/run-now`. The pin/park
+HTTP routes (`POST /curiosity/api/self-questions/{id}/pin|park`) were removed
+2026-09-22 in the Curiosity tab redesign -- nothing called them; pin/park is
+still a real column pair in `orion.curiosity.self_question_pool`, just not
+reachable over HTTP today. Full contract and inspection queries:
+`orion/curiosity/README.md` §13.
 
 #### 4.2.2 Self-sense eval: the daily 4-question identity check, scheduled
 
@@ -1165,6 +1168,69 @@ mid-conversation costs one extra concurrent turn on Hub's own harness worker,
 not a correctness issue -- the waking window is the only gate. On by default
 as of 2026-09-20 (`HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED`); `make eval-self-sense`
 still works unchanged for an ad hoc run either way.
+
+#### 4.2.3 The Curiosity tab: a diary, not a graph inventory (2026-09-22 redesign)
+
+`/curiosity` (`scripts/curiosity_routes.py`, template
+`templates/curiosity_atlas.html`). Rebuilt because the previous page listed
+every prior, every revision and every run ever, re-rendered all of it every
+60 seconds, and never said when anything happened or what became of a
+reach-out. Design doc:
+`docs/superpowers/specs/2026-09-22-curiosity-tab-redesign-design.md`.
+
+**Three reads, three jobs.**
+
+- `GET /curiosity/api/atlas` -- priors (live/closed), revisions, the self
+  panel, contractor briefs, per-line budget. No longer carries `runs[]` or
+  the "what each run added" growth data; both are unbounded by construction
+  and neither answers a question this tab needs to answer.
+- `GET /curiosity/api/runs?days=14&line=all|investigate|self_inquiry|self_sense_eval`
+  -- one bounded summary per run in the window (`orion.curiosity.run_story`),
+  the reach-out tally, and per-line totals. Backs the sittings strip.
+- `GET /curiosity/api/run/{run_id}` -- one run's full story: a clock-ordered
+  timeline joined across Postgres lifecycle rows, Orion's own FalkorDB graph,
+  the journal, the outreach decision and any reply.
+
+**The run's lifecycle has two sources, and the newer one wins.** Since
+2026-09-14 curiosity runs go through the resource-admission path
+(PR #2288 root-caused this): every transition lands in
+`durable_resource_events` (`durable_admission_runs` holds the acceptance
+row), and only the terminal `completed` row is copied into the older
+`substrate_durable_run_state` table -- mislabelling its `workflow` as
+`curiosity.investigate` even for a self-sense check. `run_story.py` reads
+the admission path when it has rows for a run (acceptance is the true start
+of the sitting, lane wait included) and falls back to the bridge table only
+for a run that predates 2026-09-14. Noisy admission events
+(`run.checkpoint_resume_failed`: 3,482 rows in one 14-day window, live) are
+counted, not fetched row by row, and rendered as an anomaly badge rather than
+3,482 timeline entries.
+
+**Reach-out honesty.** A run's `:TurnOutcome.reach_out` only ever meant
+"wanted to"; whether it became a message lives in a different table, keyed by
+`correlation_id = uuid5(NAMESPACE_URL, "curiosity_outreach:<run_id>")`
+(`orion.curiosity.run_story.outreach_key`). Today that table only ever gets a
+row for a decision that got far enough to compose a message -- a pre-check
+block (`daily_cap`, `quiet_hours`, `turn_in_flight`, ...) logs a line and
+writes nothing, so every historical reach-out reads `not_recorded`. PR #2290
+("record every curiosity outreach decision; stamp Juniper's reply", **open,
+not yet merged**) makes the pre-check block write a row too, and stamps
+Juniper's reply. This patch's read side is already written against that
+contract -- `endogenous_outreach_decisions` filtered to
+`result_json->>'source' = 'curiosity_outreach'` for the decision, and
+`chat_history_log` rows where `client_meta->>'in_reply_to'` equals that same
+correlation id for Juniper's reply, a time-adjacency heuristic (next message
+in that session, within 12h) labelled as such on the page, not passed off as
+an exact link -- so no change is needed here once #2290 merges. A wanted
+reach-out with no decision row reads
+`not_recorded`, never a guessed gate.
+
+**Bounded by construction.** The strip shows at most 14 days (`days`,
+clamped 1..90 -- the lifecycle table's retention); the priors list hides
+closed priors by default with a text filter and a "show closed" toggle. The
+page polls every 60s but re-renders a section only when its payload's
+content hash changed, and an open run story survives a poll unless its own
+summary changed -- the previous page rewrote all eight sections from scratch
+every minute and lost every open disclosure and scroll position doing it.
 
 ### 3. Speech-to-Text (ASR)
 

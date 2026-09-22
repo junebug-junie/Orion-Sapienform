@@ -31,6 +31,7 @@ empty trajectory here means "not recorded yet", never "confidence did not move".
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
@@ -41,11 +42,11 @@ from orion.curiosity.worldview import (
     LABEL_CONCEPT,
     LABEL_FINDING,
     LABEL_HOP,
+    LABEL_INVESTIGATION_ROLE,
     LABEL_PRIOR,
     LABEL_TURN_OUTCOME,
     WorldviewReader,
     WorldviewUnavailable,
-    _as_bool,
     _as_float,
     _as_int,
 )
@@ -74,74 +75,139 @@ ATLAS_REVISIONS_CYPHER = (
     "r.to_status AS to_status, r.written_at AS written_at LIMIT 5000"
 )
 
-ATLAS_FINDINGS_CYPHER = (
-    f"MATCH (f:{LABEL_FINDING}) RETURN f.finding_id AS finding_id, "
-    "f.text AS text, f.evidence AS evidence, f.run_id AS run_id, "
-    "f.written_at AS written_at LIMIT 2000"
-)
-
-ATLAS_HOPS_CYPHER = (
-    f"MATCH (h:{LABEL_HOP}) RETURN h.run_id AS run_id, h.n AS n, "
-    "h.note AS note LIMIT 5000"
-)
-
-ATLAS_OUTCOMES_CYPHER = (
-    f"MATCH (t:{LABEL_TURN_OUTCOME}) RETURN t.run_id AS run_id, "
-    "t.continue_line AS continue_line, t.continue_note AS continue_note, "
-    "t.reach_out AS reach_out, t.reach_out_why AS reach_out_why, "
-    "t.written_at AS written_at LIMIT 2000"
-)
-
-# What the prompt OFFERS every run and Orion has never taken up. Counted
-# separately from growth because the interesting number is zero, and a zero
-# never appears in a per-run breakdown -- it is an absence, and an absence has
-# to be asked for by name.
-#
-# Juniper, reading the first version of this page: "I don't see any use of
-# concept induction profiles." She was right, and the page could not have shown
-# it: Orion is handed a sample of 651 concepts and 550 induction relations every
-# single run, and across every run so far it has written no Concept edges at
-# all. Its whole graph is disconnected nodes about one subject.
-#
-# THE SENTENCE HERE USED TO SAY "the prompt gives it ... the SUPPORTS /
-# CONTRADICTS / ABOUT edges", AND THAT WAS WRONG. Checked against the real
-# prompt text on 2026-08-29: every node had a copy-pasteable `CREATE`, and
-# edges had one sentence -- "Edges are yours to name" -- with no syntax
-# anywhere, immediately followed by advice to keep an id "as a property rather
-# than duplicating the node". Orion was not ignoring the instruction; there was
-# no instruction. Measured the same day: 8 runs, 12 Hops, 9 Findings, 5 Priors,
-# 1 Concept, and `db.relationshipTypes()` empty. The ACL was never the limit --
-# the selector grants `+graph.query` on this graph.
 ATLAS_UNUSED_CYPHER = (
     f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 )
 
 ATLAS_EDGES_CYPHER = "MATCH ()-[r]->() RETURN count(r) AS n"
 
-# Edges by type and run, so the growth panel can show a connection being drawn
-# the same way it shows a node being written. Split from ATLAS_GROWTH_CYPHER
-# because a single MATCH covering both would need an OPTIONAL MATCH whose null
-# rows land in the node counts.
-# `'-> ' + type(r)` is NOT decoration. Both this and ATLAS_GROWTH_CYPHER feed
-# ONE fold keyed on `label`, and edge rows are appended after node rows, so a
-# relationship type sharing a name with a node label silently overwrites the
-# node count -- 4 Concept nodes plus 1 Concept-typed edge rendered as `1`, with
-# the real history being the half that was destroyed. Orion writes free-form
-# Cypher and the prompt does not forbid other edge names, so this is reachable.
-# Prefixing puts edges in their own key space and reads correctly in the legend.
-# A review finding, demonstrated against the real `assemble_runs`.
-ATLAS_EDGE_GROWTH_CYPHER = (
-    "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL "
-    "RETURN '-> ' + type(r) AS label, r.run_id AS run_id, count(r) AS n"
-)
+# --- per-run graph nodes, bounded by a window rather than a row cap --------
+#
+# These feed `orion/curiosity/run_story.py`. The earlier atlas read pulled
+# every Hop/Finding/TurnOutcome ever written under a LIMIT (5000 hops) and
+# the page rendered all of it every 60s; the strip is 14 days by
+# construction, so the read is too. Values are injected through FalkorDB's
+# `CYPHER k=v` parameter prefix, never spliced into the pattern: the window is
+# an int by construction and every run id passes `_RUN_ID_RE` first.
+#
+# `written_at` IS SELECTED on hops now. `worldview.hop_order_key` has sorted
+# a resumed run's hops by clock since 2026-09-19, and the atlas read never
+# adopted it -- a retried run rendered its two attempts interleaved 1,1,2,2.
 
-# Every node, by label and run, so graph growth is counted from the same source
-# the other reads use rather than by summing them (a label nobody has a reader
-# for yet would silently vanish from the totals).
-ATLAS_GROWTH_CYPHER = (
-    "MATCH (n) WHERE n.run_id IS NOT NULL "
-    "RETURN labels(n)[0] AS label, n.run_id AS run_id, count(n) AS n"
-)
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_ID_LIST_MAX = 2000
+
+# Self-inquiry runs write one of these instead of a Finding. Both carry
+# `run_id` and `written_at`; without them a self-inquiry run that wrote a
+# lived answer read as "wrote nothing" (run `3dc94088912b`, live 2026-09-22).
+LABEL_SELF_DEFINITION = "SelfDefinition"
+LABEL_LIVED_ANSWER = "LivedAnswer"
+
+RUN_NODE_FIELDS: dict[str, str] = {
+    LABEL_SELF_DEFINITION: "n.run_id AS run_id, n.text AS text, n.evidence AS evidence, n.revises AS revises, n.written_at AS written_at",
+    LABEL_LIVED_ANSWER: (
+        "n.run_id AS run_id, n.question_id AS question_id, n.family AS family, n.text AS text, "
+        "n.evidence AS evidence, n.revises AS revises, n.written_at AS written_at"
+    ),
+    LABEL_INVESTIGATION_ROLE: "n.run_id AS run_id, n.choice AS choice, n.why AS why, n.written_at AS written_at",
+    LABEL_HOP: "n.run_id AS run_id, n.n AS n, n.note AS note, n.written_at AS written_at",
+    LABEL_FINDING: "n.run_id AS run_id, n.finding_id AS finding_id, n.text AS text, n.evidence AS evidence, n.written_at AS written_at",
+    LABEL_PRIOR_REVISION: (
+        "n.run_id AS run_id, n.prior_id AS prior_id, n.from_confidence AS from_confidence, "
+        "n.to_confidence AS to_confidence, n.from_status AS from_status, n.to_status AS to_status, "
+        "n.written_at AS written_at"
+    ),
+    LABEL_TURN_OUTCOME: (
+        "n.run_id AS run_id, n.continue_line AS continue_line, n.continue_note AS continue_note, "
+        "n.reach_out AS reach_out, n.reach_out_why AS reach_out_why, n.written_at AS written_at"
+    ),
+}
+
+
+def valid_run_id(value: Any) -> Optional[str]:
+    """The only shape a run id may take before it reaches a query."""
+    text = str(value or "").strip()
+    return text if _RUN_ID_RE.match(text) else None
+
+
+def _id_list(ids: list[str]) -> str:
+    clean = sorted({i for i in (valid_run_id(x) for x in ids) if i})[:_ID_LIST_MAX]
+    return "[" + ",".join(f"'{i}'" for i in clean) + "]"
+
+
+def run_ids_since_cypher(since_ms: int) -> str:
+    """Every run id that wrote a dated node at or after `since_ms`."""
+    return (
+        f"CYPHER since={int(since_ms)} MATCH (n) WHERE n.run_id IS NOT NULL "
+        "AND n.written_at IS NOT NULL AND n.written_at >= $since "
+        "RETURN DISTINCT n.run_id AS run_id"
+    )
+
+
+def run_nodes_cypher(label: str, run_ids: list[str]) -> str:
+    fields = RUN_NODE_FIELDS[label]
+    return f"CYPHER ids={_id_list(run_ids)} MATCH (n:{label}) WHERE n.run_id IN $ids RETURN {fields}"
+
+
+def prior_claims_cypher(prior_ids: list[str]) -> str:
+    """Claim text for the priors a set of revisions touched. Prior ids are
+    Orion-authored free text, so they are parameterised as a JSON string
+    list rather than trusted against `_RUN_ID_RE`."""
+    import json as _json
+
+    clean = sorted({str(p)[:200] for p in prior_ids if p})[:_ID_LIST_MAX]
+    return (
+        f"CYPHER ids={_json.dumps(clean)} MATCH (p:{LABEL_PRIOR}) WHERE p.prior_id IN $ids "
+        "RETURN p.prior_id AS prior_id, p.claim AS claim, p.line AS line"
+    )
+
+
+@dataclass(frozen=True)
+class RunNodeRows:
+    """One read of every node kind a run story is built from."""
+
+    roles: list[dict[str, Any]] = field(default_factory=list)
+    hops: list[dict[str, Any]] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    revisions: list[dict[str, Any]] = field(default_factory=list)
+    outcomes: list[dict[str, Any]] = field(default_factory=list)
+    priors: list[dict[str, Any]] = field(default_factory=list)
+    # `:SelfDefinition` / `:LivedAnswer`, each row tagged `kind`.
+    self_writes: list[dict[str, Any]] = field(default_factory=list)
+
+
+def read_run_ids_since(reader: WorldviewReader, since_ms: int) -> list[str]:
+    """Raises `WorldviewUnavailable`; the caller decides what a dead graph
+    means for its payload."""
+    rows = reader.query(run_ids_since_cypher(since_ms))
+    return [i for i in (valid_run_id(r.get("run_id")) for r in rows) if i]
+
+
+def read_run_nodes(reader: WorldviewReader, run_ids: list[str]) -> RunNodeRows:
+    """Every node kind a run story is built from, for the given runs, plus
+    the claim text of every prior those runs revised. Raises
+    `WorldviewUnavailable`."""
+    ids = [i for i in (valid_run_id(x) for x in run_ids) if i]
+    if not ids:
+        return RunNodeRows()
+    roles = reader.query(run_nodes_cypher(LABEL_INVESTIGATION_ROLE, ids))
+    hops = reader.query(run_nodes_cypher(LABEL_HOP, ids))
+    findings = reader.query(run_nodes_cypher(LABEL_FINDING, ids))
+    revisions = reader.query(run_nodes_cypher(LABEL_PRIOR_REVISION, ids))
+    outcomes = reader.query(run_nodes_cypher(LABEL_TURN_OUTCOME, ids))
+    self_writes = [
+        {**r, "kind": "self_definition"} for r in reader.query(run_nodes_cypher(LABEL_SELF_DEFINITION, ids))
+    ] + [
+        {**r, "kind": "lived_answer"} for r in reader.query(run_nodes_cypher(LABEL_LIVED_ANSWER, ids))
+    ]
+    prior_ids = [str(r.get("prior_id") or "") for r in revisions]
+    priors = reader.query(prior_claims_cypher(prior_ids)) if prior_ids else []
+    return RunNodeRows(
+        roles=list(roles), hops=list(hops), findings=list(findings),
+        revisions=list(revisions), outcomes=list(outcomes), priors=list(priors),
+        self_writes=self_writes,
+    )
+
 
 # Contractor PeerBriefs. Queried best-effort and separately from the core atlas
 # reads: a missing :PeerBrief label (or any brief-query failure) must empty this
@@ -240,32 +306,9 @@ class AtlasRevision:
 
 
 @dataclass(frozen=True)
-class AtlasRun:
-    """One turn, assembled from every node that carries its run_id."""
-
-    run_id: str
-    written_at: Optional[int] = None
-    hops: int = 0
-    hop_notes: list[dict[str, Any]] = field(default_factory=list)
-    findings: list[dict[str, Any]] = field(default_factory=list)
-    added: dict[str, int] = field(default_factory=dict)
-    priors_created: list[str] = field(default_factory=list)
-    priors_touched: list[str] = field(default_factory=list)
-    continue_line: bool = False
-    continue_note: str = ""
-    reach_out: bool = False
-    reach_out_why: str = ""
-
-    @property
-    def total_added(self) -> int:
-        return sum(self.added.values())
-
-
-@dataclass(frozen=True)
 class AtlasView:
     priors: list[AtlasPrior] = field(default_factory=list)
     revisions: list[AtlasRevision] = field(default_factory=list)
-    runs: list[AtlasRun] = field(default_factory=list)
     peer_briefs: list[AtlasPeerBrief] = field(default_factory=list)
     concept_total: int = 0
     edge_total: int = 0
@@ -376,107 +419,6 @@ def _read_peer_briefs_best_effort(reader: WorldviewReader) -> list[AtlasPeerBrie
     return [b for b in (_build_peer_brief(r) for r in rows) if b is not None]
 
 
-def assemble_runs(
-    *,
-    growth_rows: list[dict[str, Any]],
-    outcome_rows: list[dict[str, Any]],
-    hop_rows: list[dict[str, Any]],
-    finding_rows: list[dict[str, Any]],
-    priors: list[AtlasPrior],
-) -> list[AtlasRun]:
-    """One row per run, newest first, from every node carrying that run_id.
-
-    A run appears here if ANY node carries its id — not only if it wrote a
-    `:TurnOutcome`. A turn killed mid-write (which happened on 2026-08-27 at
-    06:17 when both containers were recreated) leaves hops and no outcome, and
-    showing nothing for it would hide exactly the runs worth looking at.
-    """
-    runs: dict[str, dict[str, Any]] = {}
-
-    def _slot(run_id: str) -> dict[str, Any]:
-        return runs.setdefault(
-            run_id,
-            {
-                "added": {},
-                "hop_notes": [],
-                "findings": [],
-                "priors_created": [],
-                "priors_touched": [],
-                "written_at": None,
-                "continue_line": False,
-                "continue_note": "",
-                "reach_out": False,
-                "reach_out_why": "",
-            },
-        )
-
-    for row in growth_rows:
-        run_id = _text(row.get("run_id"), 40)
-        label = _text(row.get("label"), 60)
-        if not run_id or not label:
-            continue
-        _slot(run_id)["added"][label] = _as_int(row.get("n"), 0)
-
-    for row in hop_rows:
-        run_id = _text(row.get("run_id"), 40)
-        if not run_id:
-            continue
-        _slot(run_id)["hop_notes"].append(
-            {"n": _as_int(row.get("n"), 0), "note": _text(row.get("note"), 2000)}
-        )
-
-    for row in finding_rows:
-        run_id = _text(row.get("run_id"), 40)
-        if not run_id:
-            continue
-        _slot(run_id)["findings"].append(
-            {
-                "finding_id": _text(row.get("finding_id"), 200),
-                "text": _text(row.get("text")),
-                "evidence": _text(row.get("evidence")),
-            }
-        )
-
-    for row in outcome_rows:
-        run_id = _text(row.get("run_id"), 40)
-        if not run_id:
-            continue
-        slot = _slot(run_id)
-        slot["continue_line"] = _as_bool(row.get("continue_line"))
-        slot["continue_note"] = _text(row.get("continue_note"), 2000)
-        slot["reach_out"] = _as_bool(row.get("reach_out"))
-        slot["reach_out_why"] = _text(row.get("reach_out_why"), 2000)
-        slot["written_at"] = _stamp_ms(row.get("written_at"))
-
-    for prior in priors:
-        if prior.created_by_run:
-            _slot(prior.created_by_run)["priors_created"].append(prior.prior_id)
-        if prior.last_run_id and prior.last_run_id != prior.created_by_run:
-            _slot(prior.last_run_id)["priors_touched"].append(prior.prior_id)
-
-    built = [
-        AtlasRun(
-            run_id=run_id,
-            written_at=slot["written_at"],
-            hops=len(slot["hop_notes"]),
-            hop_notes=sorted(slot["hop_notes"], key=lambda h: h["n"]),
-            findings=slot["findings"],
-            added=slot["added"],
-            priors_created=sorted(slot["priors_created"]),
-            priors_touched=sorted(slot["priors_touched"]),
-            continue_line=slot["continue_line"],
-            continue_note=slot["continue_note"],
-            reach_out=slot["reach_out"],
-            reach_out_why=slot["reach_out_why"],
-        )
-        for run_id, slot in runs.items()
-    ]
-    # `written_at` is absent on a run killed before it wrote its outcome, and
-    # those sort last rather than first -- a missing timestamp is not "oldest".
-    built.sort(key=lambda r: (r.written_at is not None, r.written_at or 0), reverse=True)
-    return built
-
-
 def read_atlas(reader: WorldviewReader) -> AtlasView:
     """One read of everything the operator page shows. Never raises.
 
@@ -487,16 +429,6 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
     try:
         prior_rows = reader.query(ATLAS_PRIORS_CYPHER)
         revision_rows = reader.query(ATLAS_REVISIONS_CYPHER)
-        finding_rows = reader.query(ATLAS_FINDINGS_CYPHER)
-        hop_rows = reader.query(ATLAS_HOPS_CYPHER)
-        outcome_rows = reader.query(ATLAS_OUTCOMES_CYPHER)
-        # Node growth and edge growth are concatenated into ONE list on
-        # purpose: the growth panel folds by `label`, so a connection Orion drew
-        # renders alongside the nodes it drew in the same run rather than
-        # needing a second panel nobody looks at.
-        growth_rows = list(reader.query(ATLAS_GROWTH_CYPHER)) + list(
-            reader.query(ATLAS_EDGE_GROWTH_CYPHER)
-        )
         concept_rows = reader.query(ATLAS_UNUSED_CYPHER)
         edge_rows = reader.query(ATLAS_EDGES_CYPHER)
     except WorldviewUnavailable as exc:
@@ -511,8 +443,8 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
         )
     priors = [p for p in (_build_prior(r) for r in prior_rows) if p is not None]
     revisions = [r for r in (_build_revision(x) for x in revision_rows) if r is not None]
-    # A missing `written_at` is UNKNOWN, not oldest -- same rule as
-    # `assemble_runs`. Orion writes these by hand; omit `timestamp()` once
+    # A missing `written_at` is UNKNOWN, not oldest. Orion writes these by
+    # hand; omit `timestamp()` once
     # and sorting it first would seed the trajectory's origin from its
     # `from_confidence` and draw that prior's whole chart backwards.
     revisions.sort(
@@ -524,13 +456,6 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
         edge_total=_as_int(edge_rows[0].get("n"), 0) if edge_rows else 0,
         priors=sorted(priors, key=lambda p: (p.is_closed, -p.times_tested, p.prior_id)),
         revisions=revisions,
-        runs=assemble_runs(
-            growth_rows=growth_rows,
-            outcome_rows=outcome_rows,
-            hop_rows=hop_rows,
-            finding_rows=finding_rows,
-            priors=priors,
-        ),
         peer_briefs=_read_peer_briefs_best_effort(reader),
     )
 
@@ -553,6 +478,11 @@ def trajectory_for(view: AtlasView, prior_id: str) -> list[dict[str, Any]]:
                     "confidence": rev.from_confidence,
                     "status": rev.from_status,
                     "recorded": True,
+                    # The origin has no clock of its own: it is the value
+                    # BEFORE the first recorded revision. None, not the
+                    # revision's stamp, so the sparkline's time axis does
+                    # not draw a zero-length first segment.
+                    "written_at": None,
                 }
             )
         points.append(
@@ -561,6 +491,7 @@ def trajectory_for(view: AtlasView, prior_id: str) -> list[dict[str, Any]]:
                 "confidence": rev.to_confidence,
                 "status": rev.to_status,
                 "recorded": True,
+                "written_at": rev.written_at,
             }
         )
     current = next((p for p in view.priors if p.prior_id == prior_id), None)
@@ -576,6 +507,7 @@ def trajectory_for(view: AtlasView, prior_id: str) -> list[dict[str, Any]]:
                 # `:PriorRevision`. Tagging it True whenever some other revision
                 # exists would invert the one distinction this flag carries.
                 "recorded": False,
+                "written_at": _stamp_ms(current.last_tested_at),
             }
         )
     return points
@@ -598,11 +530,13 @@ def to_payload(view: AtlasView) -> dict[str, Any]:
             {
                 **asdict(p),
                 "is_closed": p.is_closed,
+                # Orion writes `last_tested_at` by hand (ISO or ms); the
+                # page sorts on this parsed epoch, not the raw text.
+                "last_tested_at_ms": _stamp_ms(p.last_tested_at),
                 "trajectory": trajectory_for(view, p.prior_id),
             }
             for p in view.priors
         ],
-        "runs": [{**asdict(r), "total_added": r.total_added} for r in view.runs],
         "revisions": [{**asdict(r), "delta": r.delta} for r in view.revisions],
         "peer_briefs": [
             {

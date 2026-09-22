@@ -87,7 +87,7 @@ from orion.schemas.durable_run import (
 from orion.schemas.self_sense import CHANNEL_SELF_SENSE_EVAL_WRITE, KIND_SELF_SENSE_EVAL_WRITE, SelfSenseEvalV1
 from orion.evals.self_sense_runner import envelope_correlation_id as self_sense_envelope_correlation_id
 
-from app.graph import CuriosityRunState, Deps, build_curiosity_graph, finish_detail
+from app.graph import CuriosityRunState, Deps, build_curiosity_graph, failed_turn_correlation_id, finish_detail
 from app.self_sense_graph import Deps as SelfSenseDeps
 from app.self_sense_graph import build_self_sense_graph, finish_detail as self_sense_finish_detail
 from app.reflect_graph import (
@@ -125,6 +125,11 @@ class WorkflowSpec:
     graph: Any
     nodes: list[str]
     finish_detail: Callable[[dict[str, Any]], dict[str, Any]]
+    # Optional: the correlation the workflow's harness turn ran under, read
+    # off the failing thread's state for the `failed` detail. None for
+    # graphs that cannot know it (self-sense mints one per question inside
+    # the node; reflect has no harness turn).
+    failed_turn_correlation_id: Callable[[dict[str, Any]], str | None] | None = None
 
 
 class DurableRunner:
@@ -144,6 +149,7 @@ class DurableRunner:
                 graph=build_curiosity_graph(self._curiosity_deps(), checkpointer),
                 nodes=list(CURIOSITY_NODES),
                 finish_detail=finish_detail,
+                failed_turn_correlation_id=failed_turn_correlation_id,
             ),
             SELF_SENSE_EVAL_WORKFLOW: WorkflowSpec(
                 workflow=SELF_SENSE_EVAL_WORKFLOW,
@@ -602,9 +608,22 @@ class DurableRunner:
                 except Exception:  # noqa: BLE001
                     logger.warning("durable_run_attempt_stamp_failed run=%s", run_id, exc_info=True)
             logger.warning("durable_run_node_failed run=%s node=%s err=%s -- resumable", run_id, node, exc)
-            await self._emit_state(
-                state, spec=spec, node=node, status="failed", detail={"error": f"{type(exc).__name__}: {exc}"[:500]}
-            )
+            await self._emit_state(state, spec=spec, node=node, status="failed", detail=self._failed_detail(spec, node, state, exc))
+
+    @staticmethod
+    def _failed_detail(spec: WorkflowSpec, node: str, state: dict[str, Any], exc: BaseException) -> dict[str, Any]:
+        """`{"error", "node"}` plus `turn_correlation_id` when the workflow
+        can name it. A helper that itself raises must not turn a resumable
+        failure into a lost state event, so it degrades to the bare shape."""
+        detail: dict[str, Any] = {"error": f"{type(exc).__name__}: {exc}"[:500], "node": node}
+        if spec.failed_turn_correlation_id is not None:
+            try:
+                corr = spec.failed_turn_correlation_id(state)
+            except Exception:  # noqa: BLE001
+                corr = None
+            if corr:
+                detail["turn_correlation_id"] = corr
+        return detail
 
     # --- resume -------------------------------------------------------------
 

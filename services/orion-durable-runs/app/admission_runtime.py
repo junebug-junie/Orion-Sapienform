@@ -13,7 +13,7 @@ from langgraph.graph import START
 from langgraph.types import Command
 
 from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, build_admitted_graph
-from app.graph import finish_detail, turn_correlation_id
+from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
 from orion.durable_admission.broker import ResourceBroker
 from orion.durable_admission.capacity import PostgresCapacityStore
 from orion.durable_admission.store import PostgresAdmissionStore, SubmissionConflict
@@ -210,7 +210,14 @@ class AdmissionRuntime:
                 # replaying the expensive node under a new grant.
                 await self.release(run_id, "worker_recovery")
                 if snap.next[0] in {"harness_turn", "run_started"}:
-                    await self.graph.aupdate_state(cfg, {"lease": None, "status": "retrying", "retry_node": None}, as_node="retry_wait")
+                    # Record the fenced generation's turn identity before the
+                    # lease goes: Hub may still finish that turn and write its
+                    # harness_turn_trace row under this id, and a later
+                    # deadline/cancel terminal should name it, not an older
+                    # attempt's (review finding, 2026-09-22).
+                    await self.graph.aupdate_state(
+                        cfg, {"lease": None, "status": "retrying", "retry_node": None, **failed_turn_meta(state)}, as_node="retry_wait"
+                    )
                 else:
                     await self.graph.aupdate_state(cfg, {"lease": None})
                 snap = await self.graph.aget_state(cfg)
@@ -264,7 +271,16 @@ class AdmissionRuntime:
                 await self.event(state, "run.checkpoint_resume_failed", {"node": list(snap.next)})
 
     async def _terminal(self, run_id, status, state):
-        detail = finish_detail(state) if status == "completed" else {"error": state.get("last_error")}
+        if status == "completed":
+            detail = finish_detail(state)
+        else:
+            # Only what the graph recorded -- never re-derived here, since by
+            # now the lease is cleared and a fresh derivation would name the
+            # run's lineage, not the turn that actually failed.
+            detail = {"error": state.get("last_error")}
+            corr = recorded_turn_correlation_id(state)
+            if corr:
+                detail["turn_correlation_id"] = corr
         actual = await self.store.finish_projection(run_id, status, detail)
         if actual is not None and actual != status:
             await self.graph.aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")

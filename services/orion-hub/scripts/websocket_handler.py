@@ -41,6 +41,7 @@ from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.chat_lane_lend import chat_lane_is_lent, held_notice_text, hold_chat_message_for_email
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
+from scripts.outreach_provenance import reply_stamp_for_session
 from scripts.utils import split_sentences
 from scripts.fcc_claude_bridge import (
     active_turns,
@@ -1428,6 +1429,22 @@ async def websocket_endpoint(websocket: WebSocket):
             # not a different backend. See HUB_AGENT_CONTEXT_EXEC_ENABLED in
             # app/settings.py (now defaults off) for why the old path is
             # naturally unreachable now rather than deleted outright.
+            #
+            # Reply stamp (2026-09-22), computed ONCE here, before the lane
+            # split, because both lanes below publish this turn's history
+            # row and the unified lane `continue`s before the legacy lane's
+            # `turn_client_meta` is ever built. If Orion's last message in
+            # this session was unsolicited (endogenous or curiosity outreach)
+            # within 12h and nothing solicited has been said since, this
+            # inbound turn is Juniper's answer to it: `in_reply_to` = that
+            # row's correlation id, so the curiosity run story can show her
+            # reply next to the reach-out that prompted it. Text and voice
+            # alike (both land here after STT). Best-effort with a hard
+            # timeout inside the helper: a DB failure costs the stamp, never
+            # the turn. Skipped when this turn will not be written anyway.
+            reply_stamp: Dict[str, Any] = {}
+            if bus and not no_write:
+                reply_stamp = await reply_stamp_for_session(session_id)
             if client_mode in ("orion", "agent") and settings.ORION_UNIFIED_TURN_ENABLED:
                 if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
                     # Pop the user turn just appended above -- no assistant
@@ -1571,6 +1588,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             biometrics_cache=biometrics_cache,
                             harness_rpc_bus=rpc_bus or bus,
                             harness_step_relay=harness_step_relay,
+                            client_meta=reply_stamp or None,
                         ),
                         bus=rpc_bus or bus,
                         correlation_id=trace_id,
@@ -1715,6 +1733,10 @@ async def websocket_endpoint(websocket: WebSocket):
             mode = chat_req.mode
             recall_payload = chat_req.recall or {"enabled": use_recall}
             turn_client_meta = dict(client_meta)
+            # Same reply stamp as the unified lane above (computed once,
+            # before the split); every later publish on this lane copies from
+            # `turn_client_meta`.
+            turn_client_meta.update(reply_stamp)
             if is_social_room_payload(data):
                 turn_client_meta.update(
                     social_room_client_meta(

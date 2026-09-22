@@ -832,6 +832,71 @@ including `disabled`, deliberately: this router carries no auth dependency, so a
 `force` carve-out would let one unauthenticated POST undo "off by default". To
 test, flip `HUB_ENDOGENOUS_OUTREACH_ENABLED` and restart.
 
+**Every curiosity reach-out decision gets a row (2026-09-22).** The curiosity
+loop's second door (`curiosity_investigation.py::_maybe_reach_out` →
+`offer_message`) used to write a decision row only for the exits that reached
+`offer_message`. The advisory pre-check (`blocked_reason()`), `disabled`,
+`no_outreach_loop` and an empty composition only *logged* — and a log line
+does not survive a restart. Checked live 2026-09-22: six runs since 09-19 set
+`reach_out=true` and none had a decision row or a chat row, so the run story
+could not tell "composed and gated" from "never tried". Now every exit records
+through the same writer: `EndogenousOutreach.record_blocked(reason,
+correlation_id=, source=, extra=)` when a loop exists, else
+`endogenous_outreach_decisions.record_decision` directly. Every Door-A row —
+sent or not — carries:
+
+- `correlation_id` = `uuid5(NAMESPACE_URL, "curiosity_outreach:<run_id>")`
+  (the column *and* `result_json.correlation_id`; before this only the `sent`
+  row had it);
+- `result_json.source = "curiosity_outreach"`, `result_json.run_id`,
+  `result_json.line` (`investigate` / `self_inquiry`), so the reverse lookup
+  never has to recompute the uuid5.
+
+`offer_message` takes a `meta` dict for this; core keys (`outreach`, `reason`,
+`source`, `correlation_id`) always win over it. Gate order and semantics are
+unchanged — this is a write, not a policy. `record_blocked` deliberately does
+*not* become the endogenous loop's `last_result` (what `GET
+/api/debug/endogenous-outreach` shows): that loop did nothing, and a pre-check
+block fires on every `reach_out=true` run during quiet hours or over the cap.
+
+The unsolicited chat row itself now carries `client_meta.source = <tag>` in
+addition to `unsolicited: true`, because `tags` is not a `chat_history_log`
+column and nothing else in that table said *which* loop spoke.
+
+**Reply stamp (2026-09-22).** When Juniper's next inbound message arrives in a
+session (text and voice both land on the same path after STT,
+`websocket_handler.py`), Hub looks up the session's most recent unsolicited
+assistant row younger than 12h with no later *solicited* assistant reply, and
+stamps the inbound turn's `client_meta.in_reply_to = <that row's
+correlation_id>` (+ `in_reply_to_source` from the row's `client_meta.source`).
+Computed once *before* the lane split: the unified lane (`orion`/`agent`
+modes, the live default) publishes its own history rows from
+`orion/hub/turn_orchestrator.py` and, until this patch, with no `client_meta`
+at all (checked live: `jsonb_typeof(client_meta) = 'null'` on every solicited
+row), so the stamp is threaded through `run_unified_turn(client_meta=)` →
+`execute_unified_turn` → `_publish_unified_turn_chat_history` onto both the
+user and assistant envelopes, and merged into the legacy lane's
+`turn_client_meta`. The stamp rides the existing free-dict `client_meta` on
+`ChatHistoryMessageV1` — no schema, registry or channel change. It reuses the provenance clearing rule
+(`outreach_provenance.select_active_unsolicited_row`, `require_capsule=False`
+for the stamp, `True` for provenance injection, which is otherwise unchanged).
+Heuristic, not a fact: "next message in that session within 12h". Best-effort:
+`reply_stamp_for_session` runs the sync SQLAlchemy read on a worker thread with
+a 1.5s ceiling and returns `{}` on any failure or timeout — a DB outage costs
+the stamp, never the turn. Skipped on `no_write` turns. The row read is bounded
+(`SESSION_ROWS_LIMIT=500` newest rows inside the window); no index covers
+`chat_history_log(session_id, created_at)` today (472 rows live, seq scan),
+which is the same scan the provenance injection already did per turn.
+
+Found while wiring it, fixed here: `_meta_unsolicited` compared
+`str(meta["unsolicited"])` to `"true"`, but the live rows store a jsonb
+boolean (`jsonb_typeof = 'boolean'` on every unsolicited row), which SQLAlchemy
+returns as Python `True` → `"True"`. The provenance selection had been matching
+nothing. It now accepts the boolean and the string forms. **Consequence:** the
+provenance-injection block (`turn_orchestrator._situation_with_outreach_provenance`)
+will start actually reaching Orion's next turn after an endogenous message —
+the behavior it was built for, never live before this fix.
+
 ### 4.2 Curiosity investigation — Orion's own time, and its own graph
 
 `scripts/curiosity_investigation.py`. Code decides only **when** Orion gets

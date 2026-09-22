@@ -439,7 +439,7 @@ def test_worker_recovery_fence_records_the_fenced_generation_before_clearing_the
     assert updates[0]["harness_turn_meta"]["turn_correlation_id"] != "older-attempt"
     # And the runtime source really uses it in that arm (not just importable).
     src = Path(ar.__file__).read_text()
-    arm = src.split('if snap.next[0] in {"harness_turn", "run_started"}:')[1].split("else:")[0]
+    arm = src.split('elif next_node in {"harness_turn", "run_started"}:')[1].split("else:")[0]
     assert "failed_turn_meta(state)" in arm and '"lease": None' in arm
 
 

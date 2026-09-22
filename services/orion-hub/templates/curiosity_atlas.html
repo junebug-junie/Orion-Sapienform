@@ -258,7 +258,10 @@ h2 {
 .story-card .card-title { font-weight: 620; margin-bottom: 6px; }
 .story-card .stat-row { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--ink-2); font-size: 12px; margin-bottom: 4px; }
 .story-card .stat-row b { color: var(--ink); font-weight: 620; }
-.story-card .claim, .story-card .outcome-text { white-space: pre-wrap; color: var(--ink-2); margin-top: 6px; }
+.story-card .claim, .story-card .outcome-text, .story-card .about-text { white-space: pre-wrap; color: var(--ink-2); margin-top: 6px; }
+.story-card .about-text { font-size: 14px; color: var(--ink); }
+.story-card .about-detail { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; }
+.story-card .about-detail li { margin: 2px 0; }
 .story-card .verdict { display: inline-block; font-size: 11px; font-weight: 620; letter-spacing: 0.02em;
   border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 9px; margin-top: 8px; }
 .story-card .verdict.answered, .story-card .verdict.supported, .story-card .verdict.revised_up, .story-card .verdict.revised, .story-card .verdict.peer_ok { border-color: var(--good-text); color: var(--good-text); }
@@ -579,6 +582,8 @@ function stripDays(n, now) {
 }
 function runOneLiner(r) {
   const bits = [LINE_LABEL[r.line] || r.line, r.status];
+  const aboutText = (r.about && r.about.text) || "";
+  if (aboutText) bits.push(clip(aboutText, 120));
   if (r.duration_sec != null) bits.push(fmtDuration(r.duration_sec));
   if (r.hops) bits.push(`${r.hops} hop${r.hops === 1 ? "" : "s"}`);
   if (r.prior_touched) bits.push(`${conf(r.prior_touched.from)} → ${conf(r.prior_touched.to)}`);
@@ -819,6 +824,21 @@ function renderStory(d) {
 
   const sum = d.summary || {};
   const peerBits = (sum.peer_briefs || []).map((b) => `${esc(b.status || "?")}${b.peer ? `/${esc(b.peer)}` : ""}`).join(", ");
+  const about = d.about || run.about || {};
+  let aboutCard = "";
+  if (about.text || (about.detail && about.detail.length)) {
+    const detailList = (about.detail && about.detail.length)
+      ? `<ul class="about-detail">${about.detail.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>`
+      : "";
+    aboutCard = `<div class="story-card about-card">
+        <div class="card-title">What this sitting is about</div>
+        ${about.text ? `<div class="about-text">${esc(about.text)}</div>` : ""}
+        ${detailList}
+        ${about.source && about.source !== "not_recorded" ? `<div class="dim" style="font-size:11px;margin-top:6px">from ${esc(String(about.source).replace(/_/g, " "))}</div>` : ""}
+      </div>`;
+  } else {
+    aboutCard = `<div class="story-card about-card"><div class="card-title">What this sitting is about</div><div class="dim">Not recorded for this run.</div></div>`;
+  }
   const summaryCard = `<div class="story-card summary-card">
       <div class="card-title">Run snapshot</div>
       <div class="stat-row">
@@ -854,6 +874,7 @@ function renderStory(d) {
       <span class="title mono">${esc(run.run_id)}</span>${pills.join("")}
       <span class="when">${esc(when)}</span>
     </div>
+    ${aboutCard}
     ${summaryCard}
     ${priorOutcomeCard}
     <ul class="timeline">${(d.timeline || []).map((it) => timelineRow(it, run)).join("")}</ul>

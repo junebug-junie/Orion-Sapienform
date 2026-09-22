@@ -123,6 +123,15 @@ STATUS_RUNNING = "running"
 STATUS_UNKNOWN = "unknown"
 _TERMINAL = (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED)
 
+# Brief.prompt placeholders that name the work without saying what it is.
+# A self-sense admission used to land one of these as the only "about" signal
+# when the wrong graph ran (live 2026-09-22 ff890d).
+_PLACEHOLDER_PROMPTS = frozenset({
+    "self-sense eval: four fixed questions",
+    "self-sense eval",
+    "self-sense eval four fixed questions",
+})
+
 # Admission-path events and what the timeline makes of each. Anything not
 # listed is ignored (`run.lane_swap_suppressed`, `run.resource_granted`,
 # `run.resource_eligibility_expanded`, `resource.elastic_*`).
@@ -325,6 +334,8 @@ class RunSummary:
     self_sense: Optional[dict[str, Any]]
     harness: Optional[dict[str, Any]]
     outcome_kind: str
+    # Plain "what is this sitting about?" -- not the timeline of how it went.
+    about: Optional[dict[str, Any]] = None
 
     @property
     def duration_sec(self) -> Optional[float]:
@@ -358,6 +369,7 @@ class RunStory:
     starting_prior: Optional[dict[str, Any]] = None
     summary: Optional[dict[str, Any]] = None
     prior_outcome: Optional[dict[str, Any]] = None
+    about: Optional[dict[str, Any]] = None
 
 
 # --- the join -------------------------------------------------------------
@@ -912,6 +924,99 @@ def _prior_outcome_block(
     }
 
 
+def _about_for(
+    *,
+    line: str,
+    slot: dict[str, Any],
+    starting_prior: Optional[dict[str, Any]],
+    finding_text: str,
+    self_written: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """What this sitting is about -- one plain sentence Juniper can read
+    before any timeline. Prefer the question Orion set out with over the
+    finding that came out of it.
+
+    Sources, first hit wins:
+      self_sense_questions | help_request | prior | brief | finding |
+      lived_answer | not_recorded
+    """
+    request = _obj((slot.get("admission") or {}).get("request"))
+    brief = _obj(request.get("brief"))
+
+    if line == LINE_SELF_SENSE_EVAL:
+        detail: list[str] = []
+        raw_qs = brief.get("questions")
+        if isinstance(raw_qs, list) and raw_qs:
+            for item in raw_qs:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    detail.append(_text(item[1], 400))
+                elif isinstance(item, dict):
+                    detail.append(_text(item.get("question"), 400))
+                elif isinstance(item, str):
+                    detail.append(_text(item, 400))
+            detail = [d for d in detail if d]
+        if not detail:
+            detail = [text for _, text in SELF_SENSE_QUESTIONS]
+        return {
+            "text": "Four fixed self-sense questions",
+            "detail": detail,
+            "source": "self_sense_questions",
+            "prior_id": None,
+        }
+
+    for h in sorted(slot.get("help_requests") or [], key=lambda r: _ms(r.get("written_at")) or 0):
+        question = _text(h.get("question"), 500)
+        if question:
+            return {
+                "text": question,
+                "detail": [],
+                "source": "help_request",
+                "prior_id": _text(h.get("prior_id"), 200) or None,
+            }
+
+    claim = _text((starting_prior or {}).get("claim"), 500)
+    if claim:
+        return {
+            "text": claim,
+            "detail": [],
+            "source": "prior",
+            "prior_id": _text((starting_prior or {}).get("prior_id"), 200) or None,
+        }
+
+    prompt = _text(brief.get("prompt"), 600)
+    if prompt and prompt.strip().lower() not in _PLACEHOLDER_PROMPTS:
+        return {
+            "text": prompt,
+            "detail": [],
+            "source": "brief",
+            "prior_id": None,
+        }
+
+    if finding_text:
+        return {
+            "text": finding_text,
+            "detail": [],
+            "source": "finding",
+            "prior_id": None,
+        }
+
+    lived = _text((self_written or {}).get("text"), 500)
+    if lived:
+        return {
+            "text": lived,
+            "detail": [],
+            "source": "lived_answer",
+            "prior_id": None,
+        }
+
+    return {
+        "text": "",
+        "detail": [],
+        "source": "not_recorded",
+        "prior_id": None,
+    }
+
+
 def _summary_card(
     *,
     run: RunSummary,
@@ -942,6 +1047,7 @@ def _summary_card(
         "outcome_kind": run.outcome_kind,
         "has_starting_prior": starting_prior is not None,
         "verdict": (prior_outcome or {}).get("verdict"),
+        "about": run.about,
     }
 
 
@@ -1194,6 +1300,14 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
 
         wrote = (len(slot["hops"]) + len(slot["findings"]) + len(revisions)
                  + len(sense_rows) + len(self_writes))
+        finding_text = _text(detail.get("finding_text"), 600)
+        about = _about_for(
+            line=line,
+            slot=slot,
+            starting_prior=starting_prior,
+            finding_text=finding_text,
+            self_written=self_written,
+        )
         summary = RunSummary(
             run_id=run_id,
             line=line,
@@ -1216,11 +1330,12 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
             prior_touched=prior_touched,
             reach_out=reach,
             journal_entry_id=journal_entry_id,
-            finding_text=_text(detail.get("finding_text"), 600),
+            finding_text=finding_text,
             self_written=self_written,
             self_sense=self_sense,
             harness=harness,
             outcome_kind=_outcome_kind(status=status, reach=reach, wrote=wrote),
+            about=about,
         )
         dated_hops = [it.at for it in hop_items if it.at is not None]
         anchor = max(dated_hops) if dated_hops else None
@@ -1255,6 +1370,7 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
             starting_prior=starting_prior,
             summary=summary_card,
             prior_outcome=prior_outcome,
+            about=about,
         )
     return out
 
@@ -1347,6 +1463,7 @@ def run_to_payload(r: RunSummary) -> dict[str, Any]:
         "self_sense": r.self_sense,
         "harness": r.harness,
         "outcome_kind": r.outcome_kind,
+        "about": r.about,
     }
 
 
@@ -1387,4 +1504,5 @@ def story_to_payload(s: RunStory) -> dict[str, Any]:
         "starting_prior": s.starting_prior,
         "summary": s.summary,
         "prior_outcome": s.prior_outcome,
+        "about": s.about or s.run.about,
     }

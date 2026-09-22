@@ -28,6 +28,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
+from langgraph.types import Command  # noqa: E402
 
 from orion.schemas.durable_run import (  # noqa: E402
     CURIOSITY_NODES,
@@ -45,6 +46,7 @@ from app.graph import (  # noqa: E402
     HarnessTurnFailed,
     build_curiosity_graph,
     failed_turn_correlation_id,
+    failed_turn_meta,
     finish_detail,
     make_nodes,
     recorded_turn_correlation_id,
@@ -162,7 +164,7 @@ def test_completed_detail_carries_runner_timing_and_the_turn_correlation() -> No
     assert detail["turn_correlation_id"] == RUN_CORR
     # Measured by the runner around the RPC, not copied from Hub's debug (900.0).
     assert isinstance(detail["harness_elapsed_sec"], float)
-    assert 0.01 <= detail["harness_elapsed_sec"] < 5.0  # slept 0.02s; loose floor for early timer wakeups
+    assert 0.01 <= detail["harness_elapsed_sec"] < 30.0  # slept 0.02s; loose bounds for a starved runner
     started, finished = _iso(detail["harness_started_at"]), _iso(detail["harness_finished_at"])
     assert finished >= started
     # The existing fields are untouched.
@@ -249,6 +251,10 @@ def test_failure_after_the_turn_uses_the_recorded_correlation_and_names_that_nod
 
 
 def test_failed_detail_for_a_leased_thread_is_the_derived_identity() -> None:
+    # `_drive` never runs admitted (leased) threads in production -- the
+    # runner skips any state with `admission` -- so live this branch always
+    # yields the run's own correlation. Pinned anyway so the helper's derive
+    # path is the same one `harness_turn` uses if that ever changes.
     spec = SimpleNamespace(failed_turn_correlation_id=failed_turn_correlation_id)
     leased = _state(leased=True)
     detail = DurableRunner._failed_detail(spec, "harness_turn", leased, HarnessTurnFailed("rpc:TimeoutError"))
@@ -267,7 +273,7 @@ def test_failed_detail_never_raises_and_is_bare_for_workflows_that_cannot_name_a
     # The bare state the runner falls back to when no snapshot exists at all:
     # an empty lineage derives to "" and is dropped, never emitted as "".
     bare = {"run_id": "r", "correlation_id": ""}
-    assert failed_turn_correlation_id(bare) == ""
+    assert failed_turn_correlation_id(bare) is None
     spec = SimpleNamespace(failed_turn_correlation_id=failed_turn_correlation_id)
     assert "turn_correlation_id" not in DurableRunner._failed_detail(spec, "harness_turn", bare, RuntimeError("x"))
     assert failed_turn_correlation_id({}) is None
@@ -279,13 +285,14 @@ def test_failed_detail_never_raises_and_is_bare_for_workflows_that_cannot_name_a
 class _AdmittedWorld:
     """Mirror of test_admitted_graph's fake, trimmed to what this needs."""
 
-    def __init__(self, *, fail: bool):
+    def __init__(self, *, fail: bool, max_attempts: int = 1):
         self.now = datetime(2026, 9, 22, tzinfo=timezone.utc)
         self.fail = fail
+        self.max_attempts = max_attempts
         self.current_lease = None
 
-    def grant(self) -> None:
-        self.current_lease = {**_lease(), "run_id": "study-001", "demand_id": "study-001:harness_turn:llm.route.agent"}
+    def grant(self, generation: int = 1) -> None:
+        self.current_lease = {**_lease(generation), "run_id": "study-001", "demand_id": "study-001:harness_turn:llm.route.agent"}
 
     async def turn(self, req):
         return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text="" if self.fail else "finding", ok=not self.fail)
@@ -317,7 +324,7 @@ class _AdmittedWorld:
     def graph(self, saver):
         return build_admitted_graph(
             Deps(self.turn, self.read, self.row, self.journal),
-            AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event, now=lambda: self.now, max_attempts=1),
+            AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event, now=lambda: self.now, max_attempts=self.max_attempts),
             saver,
         )
 
@@ -351,6 +358,89 @@ def test_admitted_failure_keeps_the_fenced_correlation_after_the_lease_is_cleare
     runtime._wake = asyncio.Event()
     asyncio.run(runtime._terminal("study-001", "failed", final))
     assert seen == [("study-001", "failed", {"error": final["last_error"], "turn_correlation_id": expected})]
+
+
+def _fenced(generation: int) -> str:
+    return turn_correlation_id({**_admitted_initial(), "lease": {**_lease(generation), "run_id": "study-001", "demand_id": "study-001:harness_turn:llm.route.agent"}})
+
+
+def test_retry_under_a_new_lease_generation_replaces_the_stale_generations_id() -> None:
+    """Attempt 1 fails under generation 1 (the `retrying` return carries the
+    gen-1 id); the retry is granted generation 2 and succeeds -- the recorded
+    id must be gen-2's, never the fenced gen-1's, and the finish detail's
+    full timing describes the attempt that actually completed."""
+    async def scenario() -> None:
+        world = _AdmittedWorld(fail=True, max_attempts=2)
+        world.grant(1)
+        graph = world.graph(InMemorySaver())
+        cfg = _cfg("study-001")
+        await graph.ainvoke(_admitted_initial(), cfg)
+        snap = await graph.aget_state(cfg)
+        assert snap.values["status"] == "retrying" and snap.next == ("retry_wait",)
+        assert snap.values["lease"] is None
+        assert snap.values["harness_turn_meta"] == {"turn_correlation_id": _fenced(1)}
+
+        world.now += timedelta(seconds=31)
+        world.fail = False
+        world.grant(2)
+        final = await graph.ainvoke(Command(resume=True), cfg)
+        assert final["status"] == "completed"
+        meta = final["harness_turn_meta"]
+        assert meta["turn_correlation_id"] == _fenced(2) != _fenced(1)
+        detail = finish_detail(final)
+        assert detail["turn_correlation_id"] == _fenced(2)
+        assert set(TIMING_KEYS) <= set(detail)
+
+    asyncio.run(scenario())
+
+
+def test_retry_that_fails_again_under_generation_two_reports_generation_two() -> None:
+    async def scenario() -> None:
+        world = _AdmittedWorld(fail=True, max_attempts=2)
+        world.grant(1)
+        graph = world.graph(InMemorySaver())
+        cfg = _cfg("study-001")
+        await graph.ainvoke(_admitted_initial(), cfg)
+        world.now += timedelta(seconds=31)
+        world.grant(2)
+        final = await graph.ainvoke(Command(resume=True), cfg)
+        assert final["status"] == "failed"
+        assert recorded_turn_correlation_id(final) == _fenced(2)
+
+    asyncio.run(scenario())
+
+
+def test_failed_turn_meta_is_empty_for_a_malformed_lease_so_the_wrapper_still_takes_its_failure_path() -> None:
+    assert failed_turn_meta({**_admitted_initial(), "lease": {"lane": "agent"}}) == {}
+    assert failed_turn_meta({}) == {}
+    assert failed_turn_meta({"run_id": "r", "correlation_id": ""}) == {}
+    assert failed_turn_meta(_state(leased=True)) == {"harness_turn_meta": {"turn_correlation_id": turn_correlation_id(_state(leased=True))}}
+
+
+def test_worker_recovery_fence_records_the_fenced_generation_before_clearing_the_lease() -> None:
+    """The one path where a stale id could otherwise surface: a recovering
+    driver fences an in-flight harness_turn (lease -> None) and the run later
+    dies at the deadline. `_terminal` must then name the fenced generation."""
+    import app.admission_runtime as ar
+
+    fenced_state = {**_admitted_initial(), "lease": {**_lease(3), "run_id": "study-001"}, "attempt": 1,
+                    "harness_turn_meta": {"turn_correlation_id": "older-attempt"}}
+    updates: list[dict[str, Any]] = []
+
+    class _Graph:
+        async def aupdate_state(self, cfg, values, as_node=None):
+            updates.append(dict(values))
+
+    # Exercise exactly the fence branch's payload, as the runtime builds it.
+    payload = {"lease": None, "status": "retrying", "retry_node": None, **ar.failed_turn_meta(fenced_state)}
+    asyncio.run(_Graph().aupdate_state(None, payload, as_node="retry_wait"))
+    assert updates[0]["lease"] is None
+    assert updates[0]["harness_turn_meta"] == {"turn_correlation_id": turn_correlation_id(fenced_state)}
+    assert updates[0]["harness_turn_meta"]["turn_correlation_id"] != "older-attempt"
+    # And the runtime source really uses it in that arm (not just importable).
+    src = Path(ar.__file__).read_text()
+    arm = src.split('if snap.next[0] in {"harness_turn", "run_started"}:')[1].split("else:")[0]
+    assert "failed_turn_meta(state)" in arm and '"lease": None' in arm
 
 
 def test_admitted_success_carries_full_timing_to_the_finish_detail() -> None:

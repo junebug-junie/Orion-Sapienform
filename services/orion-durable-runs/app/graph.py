@@ -175,9 +175,23 @@ def failed_turn_correlation_id(state: dict[str, Any]) -> str | None:
     if recorded:
         return recorded
     try:
-        return turn_correlation_id(state)  # type: ignore[arg-type]
+        return turn_correlation_id(state) or None  # type: ignore[arg-type]
     except (KeyError, TypeError):
         return None
+
+
+def failed_turn_meta(state: dict[str, Any]) -> dict[str, Any]:
+    """`{"harness_turn_meta": {"turn_correlation_id": ...}}` for a turn
+    attempt that is being abandoned while its lease is still on the state --
+    the admitted wrapper's failure returns and the recovery fence both clear
+    the lease next, after which the fenced id can no longer be re-derived.
+    Empty (not a raise) when the state cannot name one, so a malformed lease
+    still reaches the caller's own failure handling."""
+    try:
+        corr = turn_correlation_id(state)  # type: ignore[arg-type]
+    except (KeyError, TypeError):
+        return {}
+    return {"harness_turn_meta": {"turn_correlation_id": corr}} if corr else {}
 
 
 def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[dict[str, Any]]]]:

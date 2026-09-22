@@ -155,10 +155,15 @@ answered question, same field meanings as above (one self-sense run is several t
 **`failed`** (any workflow, `DurableRunner._failed_detail`): `error`, `node`, and
 `turn_correlation_id` when the workflow can name it (curiosity only: the recorded value
 if the turn had completed, else the identity the raising `harness_turn` derived from the
-same state). The admitted path's terminal projection (`AdmissionRuntime._terminal`)
-carries `error` plus `turn_correlation_id` only when the graph recorded it -- never
-re-derived there, because the lease is already cleared by then and a fresh derivation
-would name the run's lineage instead of the turn that failed.
+same state). The admitted path's terminal projection (`AdmissionRuntime._terminal`,
+which serves `failed` and `cancelled`) carries `error` plus `turn_correlation_id` only
+when the graph recorded it -- never re-derived there, because the lease is already
+cleared by then and a fresh derivation would name the run's lineage instead of the turn
+that failed. On that path the recorded id is the one the last attempt was issued, or
+would have been issued, under: if admission raised before the RPC left (lease lost), the
+id names an attempt no turn ran for, so the join returns no row -- never a wrong row.
+The worker-recovery fence stashes the same id before clearing an in-flight attempt's
+lease, so a later deadline/cancel terminal names the fenced generation, not an older one.
 
 ## Deploy order
 

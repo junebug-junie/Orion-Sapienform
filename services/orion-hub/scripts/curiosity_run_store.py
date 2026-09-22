@@ -59,13 +59,24 @@ JOURNALS_SQL = (
     "SELECT entry_id, source_ref, title, body, created_at FROM journal_entries "
     "WHERE source_ref = ANY($1::text[])"
 )
+# PR #2290 (patch 2, merged): every curiosity outreach decision -- including a
+# pre-check block, which used to log a line and write nothing -- gets a row
+# keyed `correlation_id = uuid5(NAMESPACE_URL, f"curiosity_outreach:{run_id}")`
+# (`orion.curiosity.run_story.outreach_key`, the same derivation the loop
+# itself uses) with `result_json.source = "curiosity_outreach"` and
+# `result_json.run_id` for a reverse lookup. The source filter is redundant
+# with the correlation_id match in practice (uuid5 over a fixed namespace
+# does not collide across sources) but is kept explicit: a decision row this
+# query returns must be self-evidently a curiosity decision, not merely one
+# that happened to share a key.
 OUTREACH_SQL = (
     "SELECT decision_id, decided_at, reason, correlation_id, session_id, "
     "result_json::text AS result_json FROM endogenous_outreach_decisions "
-    "WHERE correlation_id = ANY($1::text[])"
+    "WHERE correlation_id = ANY($1::text[]) AND result_json->>'source' = 'curiosity_outreach'"
 )
 # The sent message carries the outreach key as its own correlation id; a
-# reply (patch B) carries it as `client_meta.in_reply_to`. One query, both.
+# reply (patch B / PR #2290) carries it as `client_meta.in_reply_to` on the
+# next chat_history_log row equal to that same correlation_id. One query, both.
 CHAT_SQL = (
     "SELECT correlation_id, session_id, prompt, response, "
     "client_meta::text AS client_meta, created_at FROM chat_history_log "

@@ -309,6 +309,14 @@ def test_the_self_sense_line_name_matches_the_loop() -> None:
     assert LINE_SELF_SENSE_EVAL == LOOP_LINE
 
 
+def test_the_outreach_query_requires_the_curiosity_source_tag() -> None:
+    """PR #2290's write side stamps `result_json.source = 'curiosity_outreach'`
+    on every decision it records. The read side requires it too -- explicit,
+    not merely implied by the correlation_id match -- so a decision row this
+    query returns is self-evidently a curiosity decision."""
+    assert "result_json->>'source' = 'curiosity_outreach'" in store.OUTREACH_SQL
+
+
 def test_the_outreach_key_matches_the_loops_derivation() -> None:
     from orion.curiosity.journal import OUTREACH_TAG
     from orion.curiosity.run_story import outreach_key

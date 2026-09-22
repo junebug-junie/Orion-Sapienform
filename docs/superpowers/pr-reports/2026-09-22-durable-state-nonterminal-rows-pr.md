@@ -70,9 +70,20 @@ checkpoint_blobs channel=admission decoded for the stuck runs
 
 ## Review findings fixed
 
-- Finding: (filled after code-review subagent returns)
-  - Fix:
-  - Evidence:
+Code-review subagent ran against the finding doc (read-only, re-checked every citation and the live numbers). All citations resolved; the fixes below are to claims and to the recommended patch.
+
+- Finding: doc said Hub's `_handle_run_state` "refunds" on completed, overstating a reason not to widen the bridge.
+  - Fix: reworded -- the handler only feeds the runtime-activity page and returns for anything but `curiosity.investigate`+`completed`; refunds live only on the in-process dispatch path.
+  - Evidence: `curiosity_investigation.py:3228-3241`; `_refund_investigation` callers at L1522/L1561/L2053.
+- Finding: the existing bridge hardcodes `workflow="curiosity.investigate"` and is already mislabeling self-sense-eval completions today; the doc only mentioned it as a future nicety.
+  - Fix: promoted to "Side finding 1" with the live join query and the three affected run ids.
+  - Evidence: `admission_runtime.py:348`; live join of `substrate_durable_run_state` vs `durable_admission_runs` returns 3 rows.
+- Finding: recommended patch sketch was inconsistent (prose said workflow from the row, snippet hardcoded it; snippet would mirror `control()` request events as terminal facts; mirrored set disagreed between prose and code; `run.started`/`run.accepted` silently dropped).
+  - Fix: explicit PROGRESS / TERMINAL_MIRROR sets, terminal statuses only from `:terminal:` entry_ids, control() events excluded, `workflow_from_row` via a join in `pending_outbox()`, and the dropped events named.
+  - Evidence: `admission_runtime.py:393` (`control()` writes `run.paused/cancelled/resumed` before the graph stops); `store.py:137` (`:terminal:` entry_id).
+- Finding: (a)/(b)/(c) lettering undefined in the doc; two line ranges off by a few lines; 09-21 event counts not reproducible without the query; side-finding numbers stale.
+  - Fix: hypotheses spelled out; ranges corrected (344-355, 492-505); query shown, counts re-pulled with `date(generated_at)`; hot-loop numbers re-timestamped at 07:01 UTC (3,345 rows, still looping).
+  - Evidence: live re-query at 07:01 UTC.
 
 ## Restart required
 
@@ -88,4 +99,4 @@ No restart required.
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2288

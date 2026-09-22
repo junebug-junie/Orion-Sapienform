@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
-from app.graph import CuriosityRunState, Deps, make_nodes
+from app.graph import CuriosityRunState, Deps, make_nodes, turn_correlation_id
 from orion.schemas.durable_run import CURIOSITY_NODES
 
 
@@ -58,12 +58,17 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
         return {"status": "admitted", "lease": lease}
 
     async def harness_turn(state: CuriosityRunState) -> dict:
+        # The identity this attempt's turn ran under, captured from the same
+        # state the wrapped node derives it from. Every failure return below
+        # clears `lease`, after which it can no longer be re-derived -- so a
+        # failed attempt stashes it here for the terminal `failed` detail.
+        failed_meta = {"harness_turn_meta": {"turn_correlation_id": turn_correlation_id(state)}}
         try:
             result = await admission.execute(dict(state), original["harness_turn"])
             return {**result, "status": "running", "last_error": None, "retry_at": None}
         except WorkflowDeadline:
             await admission.release(state["run_id"], "workflow_deadline")
-            return {"status": "failed", "last_error": "workflow_deadline", "lease": None}
+            return {"status": "failed", "last_error": "workflow_deadline", "lease": None, **failed_meta}
         except RunControlPending:
             raise
         except Exception as exc:
@@ -72,10 +77,11 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             error = f"{type(exc).__name__}: {exc}"[:500]
             await admission.release(state["run_id"], "attempt_failed")
             if attempt >= admission.max_attempts:
-                return {"status": "failed", "attempt": attempt, "last_error": error, "lease": None}
+                return {"status": "failed", "attempt": attempt, "last_error": error, "lease": None, **failed_meta}
             delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (attempt - 1))
             return {"status": "retrying", "attempt": attempt, "last_error": error,
-                    "lease": None, "retry_node": None, "retry_at": (admission.now() + timedelta(seconds=delay)).isoformat()}
+                    "lease": None, "retry_node": None, "retry_at": (admission.now() + timedelta(seconds=delay)).isoformat(),
+                    **failed_meta}
 
     async def run_started(state: CuriosityRunState) -> dict:
         return {"status": "running"}

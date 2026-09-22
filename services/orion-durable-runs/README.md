@@ -221,6 +221,17 @@ no chat-burst lease is active (`GET /admission` shows active leases). Follow-up:
 `route_operator_closed` from the attempt count.
 
 
+## Alternatives are policy-additive
+
+A demand's `alternatives` are frozen at submission (a duplicate receipt can never shrink a
+demand). On every broker tick they are additionally unioned with whatever the current
+`DURABLE_RUNS_LANE_POLICY_JSON` declares `compatible_with` the run's preferred lane
+(`orion/durable_admission/policy.py::widen_alternatives`), so a lane declared after a run was
+queued still reaches it. The stored row is not rewritten; the wider list shows in the run's
+per-tick `admission.eligible_lanes`. Live 2026-09-22: 7 runs (oldest 14 h) sat with only
+`agent-burst` while the newly opened `chat-burst` lane idled, which is what this closes.
+
+
 ## Optional GPU2 elastic admission
 
 GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the

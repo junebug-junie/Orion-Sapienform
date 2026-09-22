@@ -126,9 +126,15 @@ def test_runs_payload_joins_both_stores_and_excludes_reflect() -> None:
 
     # The window reached every store as a bound, not a row cap.
     lifecycle_call = next(c for c in pool.conn.calls if "substrate_durable_run_state" in c[0])
-    assert lifecycle_call[1] == (["curiosity.investigate", "self_sense_eval"], NOW - timedelta(days=14))
+    assert lifecycle_call[1] == (
+        ["curiosity.investigate", "self_sense_eval"],
+        NOW - timedelta(days=14),
+        NOW,
+    )
     assert "LIMIT" not in lifecycle_call[0]
-    assert any("CYPHER since=" in q for q in reader.queries)
+    assert any("CYPHER since=" in q and "until=" in q for q in reader.queries)
+    assert payload["until_is_now"] is True and payload["has_newer"] is False
+    assert payload["has_older"] is True
     # Secondary reads were keyed by the run's derived outreach id.
     outreach_call = next(c for c in pool.conn.calls if "endogenous_outreach_decisions" in c[0])
     assert str(uuid5(NAMESPACE_URL, "curiosity_outreach:r1")) in outreach_call[1][0]
@@ -174,6 +180,37 @@ def test_runs_payload_filters_by_line_but_tallies_across_all() -> None:
     assert payload["stores"]["graph"] == "graph_not_configured"
 
 
+def test_paged_until_window_excludes_newer_rows_and_sets_pager_flags() -> None:
+    """Older = previous fortnight ending at the live window's `since`."""
+    until = NOW - timedelta(days=14)
+    since = until - timedelta(days=14)
+    pool = _Pool({"FROM substrate_durable_run_state": [
+        _lifecycle("old", "completed", since + timedelta(days=1), line="investigate"),
+        _lifecycle("new", "completed", NOW - timedelta(hours=1), line="investigate"),
+    ]})
+    payload = asyncio.run(store.read_runs_payload(
+        pool=pool, reader=None, days=14, until=until.isoformat(), now=NOW,
+    ))
+    assert payload["until_is_now"] is False
+    assert payload["has_newer"] is True
+    assert payload["has_older"] is True
+    # Fake returns both rows; SQL would have filtered — assert the bound was passed.
+    life = next(c for c in pool.conn.calls if "substrate_durable_run_state" in c[0])
+    assert life[1][1] == since and life[1][2] == until
+    assert "created_at <" in life[0]
+    # Admission uses the historical created_at-only WHERE when not live
+    # (updated_at still appears in the SELECT column list).
+    adm = next(c for c in pool.conn.calls if "durable_admission_runs" in c[0])
+    assert "OR (updated_at" not in adm[0]
+    assert "created_at >= $1 AND created_at < $2" in adm[0]
+
+
+def test_parse_until_clamps_future_and_accepts_epoch_ms() -> None:
+    assert store.parse_until(None, now=NOW) == NOW
+    assert store.parse_until(NOW + timedelta(days=2), now=NOW) == NOW
+    assert store.parse_until(_ms(NOW - timedelta(days=7)), now=NOW) == NOW - timedelta(days=7)
+
+
 def test_a_dead_postgres_still_yields_graph_only_stories() -> None:
     start = NOW - timedelta(hours=2)
     payload = asyncio.run(store.read_runs_payload(pool=_Pool(fail=True), reader=_Reader(_graph("r1", start)), now=NOW))
@@ -192,9 +229,12 @@ def test_both_stores_dead_is_unavailable_not_an_empty_fortnight() -> None:
 
 def test_no_pool_and_no_reader_is_unavailable() -> None:
     payload = asyncio.run(store.read_runs_payload(pool=None, reader=None, now=NOW))
-    assert payload == {"available": False, "reason": "no_pool",
-                       "stores": {"postgres": "no_pool", "graph": "graph_not_configured"},
-                       "window_days": 14, "line": "all"}
+    assert payload["available"] is False
+    assert payload["reason"] == "no_pool"
+    assert payload["stores"] == {"postgres": "no_pool", "graph": "graph_not_configured"}
+    assert payload["window_days"] == 14 and payload["line"] == "all"
+    assert payload["until_is_now"] is True
+    assert "since" in payload and "until" in payload
 
 
 def test_days_and_line_are_clamped() -> None:

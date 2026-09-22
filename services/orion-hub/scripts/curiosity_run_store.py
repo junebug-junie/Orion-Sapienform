@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from orion.curiosity.atlas import (
     RunNodeRows,
-    read_run_ids_since,
+    read_run_ids_between,
     read_run_nodes,
     valid_run_id,
 )
@@ -49,7 +49,8 @@ _LIFECYCLE_COLS = (
 )
 LIFECYCLE_WINDOW_SQL = (
     f"SELECT {_LIFECYCLE_COLS} FROM substrate_durable_run_state "
-    "WHERE workflow = ANY($1::text[]) AND created_at >= $2 ORDER BY created_at ASC"
+    "WHERE workflow = ANY($1::text[]) AND created_at >= $2 AND created_at < $3 "
+    "ORDER BY created_at ASC"
 )
 LIFECYCLE_RUN_SQL = (
     f"SELECT {_LIFECYCLE_COLS} FROM substrate_durable_run_state "
@@ -102,7 +103,7 @@ _SELF_SENSE_COLS = (
 )
 SELF_SENSE_WINDOW_SQL = (
     f"SELECT {_SELF_SENSE_COLS} FROM self_sense_eval_log "
-    "WHERE created_at >= $1 ORDER BY created_at ASC"
+    "WHERE created_at >= $1 AND created_at < $2 ORDER BY created_at ASC"
 )
 SELF_SENSE_RUN_SQL = (
     f"SELECT {_SELF_SENSE_COLS} FROM self_sense_eval_log "
@@ -111,10 +112,18 @@ SELF_SENSE_RUN_SQL = (
 # The admission path (since 2026-09-14; PR #2288): the acceptance row is the
 # run's true start, `request->>'workflow'` its real workflow, and its events
 # the lifecycle. The bridge table above only receives the terminal row.
+# Live window also catches in-flight rows via updated_at; a paged-back window
+# uses created_at only so a late update cannot yank an old run into a past
+# fortnight.
 _ADMISSION_COLS = "run_id, request::text AS request, created_at, control, terminal, updated_at"
 ADMISSION_WINDOW_SQL = (
     f"SELECT {_ADMISSION_COLS} FROM durable_admission_runs "
-    "WHERE created_at >= $1 OR updated_at >= $1 ORDER BY created_at ASC"
+    "WHERE created_at >= $1 AND created_at < $2 ORDER BY created_at ASC"
+)
+ADMISSION_WINDOW_LIVE_SQL = (
+    f"SELECT {_ADMISSION_COLS} FROM durable_admission_runs "
+    "WHERE (created_at >= $1 AND created_at < $2) "
+    "OR (updated_at >= $1 AND updated_at < $2) ORDER BY created_at ASC"
 )
 ADMISSION_RUN_SQL = f"SELECT {_ADMISSION_COLS} FROM durable_admission_runs WHERE run_id = $1"
 # Row-by-row only for events the story renders; the noisy kinds are counted
@@ -149,6 +158,60 @@ def clamp_line(value: Any) -> str:
     return text if text in LINES else "all"
 
 
+def parse_until(value: Any, *, now: datetime) -> datetime:
+    """End of the half-open window `[since, until)`. Absent/invalid → now.
+
+    Accepts epoch ms/seconds or an ISO-8601 string. Future values clamp to now
+    so a bad hash cannot ask for tomorrow's sittings.
+    """
+    if value is None or value == "":
+        return now
+    if isinstance(value, datetime):
+        until = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    else:
+        until = None
+        try:
+            n = float(value)
+            # ms if large; seconds if small
+            if n > 1e12:
+                until = datetime.fromtimestamp(n / 1000.0, tz=timezone.utc)
+            elif n > 1e9:
+                until = datetime.fromtimestamp(n, tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            until = None
+        if until is None:
+            try:
+                parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+            except ValueError:
+                return now
+            until = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    if until > now:
+        return now
+    earliest = now - timedelta(days=WINDOW_DAYS_MAX)
+    # until must leave room for at least a 1-day window inside the 90-day cap
+    if until <= earliest:
+        return earliest + timedelta(days=1)
+    return until
+
+
+def window_bounds(
+    *, days: int, until: datetime, now: datetime
+) -> tuple[datetime, datetime, bool, bool, bool]:
+    """Return (since, until, until_is_now, has_older, has_newer)."""
+    days = clamp_days(days)
+    until = parse_until(until, now=now)
+    until_is_now = until >= now - timedelta(seconds=1)
+    if until_is_now:
+        until = now
+    since = until - timedelta(days=days)
+    earliest = now - timedelta(days=WINDOW_DAYS_MAX)
+    if since < earliest:
+        since = earliest
+    has_older = since > earliest
+    has_newer = not until_is_now
+    return since, until, until_is_now, has_older, has_newer
+
+
 def _dicts(rows: Any) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
@@ -170,7 +233,13 @@ class _Stores:
 
 
 async def _pg_primary(
-    pool: Any, stores: _Stores, *, run_id: Optional[str], since: Optional[datetime]
+    pool: Any,
+    stores: _Stores,
+    *,
+    run_id: Optional[str],
+    since: Optional[datetime],
+    until: Optional[datetime] = None,
+    until_is_now: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """(bridge lifecycle rows, self-sense rows, admission rows): the tables
     that DEFINE which runs exist on the Postgres side."""
@@ -184,9 +253,13 @@ async def _pg_primary(
                 sense = await conn.fetch(SELF_SENSE_RUN_SQL, run_id)
                 admission = await conn.fetch(ADMISSION_RUN_SQL, run_id)
             else:
-                lifecycle = await conn.fetch(LIFECYCLE_WINDOW_SQL, list(CURIOSITY_WORKFLOWS), since)
-                sense = await conn.fetch(SELF_SENSE_WINDOW_SQL, since)
-                admission = await conn.fetch(ADMISSION_WINDOW_SQL, since)
+                assert since is not None and until is not None
+                lifecycle = await conn.fetch(
+                    LIFECYCLE_WINDOW_SQL, list(CURIOSITY_WORKFLOWS), since, until
+                )
+                sense = await conn.fetch(SELF_SENSE_WINDOW_SQL, since, until)
+                admission_sql = ADMISSION_WINDOW_LIVE_SQL if until_is_now else ADMISSION_WINDOW_SQL
+                admission = await conn.fetch(admission_sql, since, until)
         stores.postgres = "ok"
         return _dicts(lifecycle), _dicts(sense), _dicts(admission)
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
@@ -225,12 +298,17 @@ async def _pg_secondary(pool: Any, stores: _Stores, run_ids: list[str]) -> dict[
         return empty
 
 
-async def _graph_ids(reader: Optional[WorldviewReader], stores: _Stores, since_ms: int) -> list[str]:
+async def _graph_ids(
+    reader: Optional[WorldviewReader],
+    stores: _Stores,
+    since_ms: int,
+    until_ms: int,
+) -> list[str]:
     if reader is None:
         stores.graph = "graph_not_configured"
         return []
     try:
-        ids = await asyncio.to_thread(read_run_ids_since, reader, since_ms)
+        ids = await asyncio.to_thread(read_run_ids_between, reader, since_ms, until_ms)
         stores.graph = "ok"
         return ids
     except WorldviewUnavailable as exc:
@@ -272,18 +350,29 @@ async def read_runs_payload(
     reader: Optional[WorldviewReader],
     days: int = WINDOW_DAYS_DEFAULT,
     line: str = "all",
+    until: Any = None,
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
-    """`GET /curiosity/api/runs`: bounded summaries, newest first."""
+    """`GET /curiosity/api/runs`: bounded summaries, newest first.
+
+    Window is the half-open interval `[until - days, until)`, clamped so
+    `since` never predates `now - 90d`. Omit `until` (or pass now) for the
+    live fortnight; pass an earlier `until` to page Older.
+    """
     days = clamp_days(days)
     line = clamp_line(line)
     now = now or datetime.now(timezone.utc)
-    since = now - timedelta(days=days)
+    since, until_dt, until_is_now, has_older, has_newer = window_bounds(
+        days=days, until=parse_until(until, now=now), now=now
+    )
     since_ms = int(since.timestamp() * 1000)
+    until_ms = int(until_dt.timestamp() * 1000)
     stores = _Stores()
 
-    lifecycle, sense, admission = await _pg_primary(pool, stores, run_id=None, since=since)
-    graph_ids = await _graph_ids(reader, stores, since_ms)
+    lifecycle, sense, admission = await _pg_primary(
+        pool, stores, run_id=None, since=since, until=until_dt, until_is_now=until_is_now
+    )
+    graph_ids = await _graph_ids(reader, stores, since_ms, until_ms)
     run_ids = sorted(
         {str(r["run_id"]) for r in lifecycle if r.get("run_id")}
         | {str(r["run_id"]) for r in admission if r.get("run_id")}
@@ -301,6 +390,13 @@ async def read_runs_payload(
             "stores": stores.payload(),
             "window_days": days,
             "line": line,
+            "since": since.isoformat(),
+            "until": until_dt.isoformat(),
+            "until_ms": until_ms,
+            "since_ms": since_ms,
+            "until_is_now": until_is_now,
+            "has_older": has_older,
+            "has_newer": has_newer,
         }
     stories = build_stories(_rows(lifecycle, sense, admission, nodes, secondary))
     runs = summaries(stories, line=line)
@@ -309,6 +405,12 @@ async def read_runs_payload(
         "available": True,
         "window_days": days,
         "since": since.isoformat(),
+        "until": until_dt.isoformat(),
+        "until_ms": until_ms,
+        "since_ms": since_ms,
+        "until_is_now": until_is_now,
+        "has_older": has_older,
+        "has_newer": has_newer,
         "line": line,
         "stores": stores.payload(),
         "runs": [run_to_payload(r) for r in runs],

@@ -1183,8 +1183,29 @@ async function loadRuns({ fromPoll = false } = {}) {
       }
     } catch (_) { /* tiles stay on paged fallback */ }
   }
-  const wanted = state.openRunId || runFromHash() || ((d.runs || [])[0] || {}).run_id || null;
-  if (wanted) await openRun(wanted, { fromPoll: fromPoll || wanted === state.openRunId });
+  // The strip is filtered by `line` / fortnight. The open story must follow:
+  // if the current run is not in this filtered list, open the newest one that
+  // is (otherwise the calendar updates and the story stays on the wrong type).
+  const filtered = (d && d.runs) || [];
+  const ids = new Set(filtered.map((r) => r.run_id).filter(Boolean));
+  let wanted = state.openRunId || runFromHash() || null;
+  if (wanted && !ids.has(wanted)) wanted = null;
+  if (!wanted) wanted = (filtered[0] || {}).run_id || null;
+  if (wanted) {
+    await openRun(wanted, { fromPoll: fromPoll && wanted === state.openRunId });
+  } else {
+    state.openRunId = null;
+    state.openRunSummaryHash = null;
+    writeHash();
+    renderStory({ found: false, run_id: "" });
+    const note = $("story-note");
+    if (note) {
+      note.textContent = state.line !== "all"
+        ? `No ${LINE_LABEL[state.line] || state.line} sittings in this fortnight`
+        : "No sittings in this fortnight";
+    }
+    renderStoryPager();
+  }
 }
 async function loadAtlas() {
   applyAtlas(await fetchJson("/curiosity/api/atlas"));
@@ -1202,6 +1223,10 @@ function setLine(line) {
   if (!LINE_FILTERS.some((f) => f.id === line)) return;
   if (state.line === line) return;
   state.line = line;
+  // Drop the open story so loadRuns picks the newest sitting of this type
+  // instead of clinging to whatever was open under the previous filter.
+  state.openRunId = null;
+  state.openRunSummaryHash = null;
   state.runsHash = null;
   writeHash();
   loadRuns();
@@ -1245,7 +1270,13 @@ function wire() {
     let reload = false;
     if (line !== state.line) { state.line = line; reload = true; }
     if ((until || null) !== state.untilMs) { state.untilMs = until; reload = true; }
-    if (reload) { state.runsHash = null; loadRuns(); }
+    if (reload) {
+      // loadRuns owns which story is open for this line/fortnight — do not
+      // also openRun(hash) or a stale run= from the previous filter wins.
+      state.runsHash = null;
+      loadRuns();
+      return;
+    }
     const r = runFromHash();
     if (r && r !== state.openRunId) openRun(r);
   });

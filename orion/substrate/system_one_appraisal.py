@@ -161,10 +161,11 @@ def build_system_one_input_state(
     )
 
 
-def _frame_id(state: SystemOneInputStateV1, *, model: str) -> str:
+def _frame_id(state: SystemOneInputStateV1, *, provider: str, model: str) -> str:
     source = "|".join(
         [
             QUESTION_SET_ID,
+            provider,
             model,
             state.source_broadcast_projection_id,
             state.source_broadcast_generated_at.isoformat(),
@@ -317,7 +318,7 @@ def run_system_one_appraisal(
         request_id = headers_obj.get("x-typesafe-request-id")
 
     return SystemOneAppraisalFrameV1(
-        frame_id=_frame_id(state, model=model),
+        frame_id=_frame_id(state, provider=provider, model=model),
         question_set_id=QUESTION_SET_ID,
         generated_at=generated_at,
         expires_at=generated_at + timedelta(seconds=ttl),

@@ -247,6 +247,28 @@ async def run_control(run_id: str, action: str):
         raise HTTPException(404, "run not found") from exc
 
 
+@app.post("/runs/{run_id}/release-outreach-lease")
+async def release_outreach_lease(run_id: str):
+    """Hub Door-A finished composing; free the grant held past finish.
+
+    Only acts when the run is already ``terminal=completed`` with an active
+    lease (the Door-A hold). A live in-flight investigation cannot be
+    released through this path. Idempotent when the lease is already gone.
+    """
+    runtime = _admission()
+    row = await runtime.store.get_run(run_id)
+    if row is None:
+        raise HTTPException(404, "run not found")
+    if row.get("terminal") != "completed":
+        raise HTTPException(409, "no door-a outreach lease hold on this run")
+    lease = await runtime.store.get_lease(run_id)
+    if not lease:
+        return {"released": False, "run_id": run_id, "reason": "already_released"}
+    await runtime.store.release(lease, "outreach_done")
+    runtime._wake.set()
+    return {"released": True, "run_id": run_id}
+
+
 @app.post("/leases/validate")
 async def validate_lease(payload: dict[str, Any]):
     lease = payload.get("lease") or {}

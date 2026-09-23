@@ -2678,18 +2678,57 @@ def test_a_turn_in_flight_blocks_a_curiosity_message_too() -> None:
 def test_the_daily_cap_is_shared_because_the_interruption_is_the_same(
     monkeypatch,
 ) -> None:
-    """From Juniper's end a curiosity message and a tension-triggered outreach
-    are the same interruption, so they must not each get their own budget."""
-    outreach = _outreach(daily_cap=1)
+    """Background endogenous sends still share one daily budget with each other.
+
+    (Door-A curiosity offers use skip_schedule_gates and are covered by a
+    separate test -- they do not consume this counter.)
+    """
+    outreach = _outreach(daily_cap=1, min_cooldown_sec=0.0)
     _delivered(outreach)
+    _stub_sent_count(monkeypatch, 0)
     monkeypatch.setattr(
         EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0)
     )
     monkeypatch.setattr(
         EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
     )
-    assert _offer(outreach)["outreach"] is True
-    assert _offer(outreach)["reason"] == "daily_cap"
+    # Non-Door-A delivery eats the shared budget.
+    assert _offer(outreach, tag="endogenous_outreach")["outreach"] is True
+    assert _offer(outreach, tag="endogenous_outreach")["reason"] == "daily_cap"
+
+
+def test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap(
+    monkeypatch,
+) -> None:
+    """Juniper 2026-09-22: a finished curiosity run that asked to share is not
+    held for the clock or the background budget."""
+    outreach = _outreach(
+        daily_cap=0,
+        quiet_start_hour=0,
+        quiet_end_hour=24,
+        min_cooldown_sec=10_000.0,
+    )
+    _delivered(outreach)
+    _stub_sent_count(monkeypatch, 0)
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
+    )
+    assert outreach.blocked_reason(skip_schedule_gates=True) is None
+    assert outreach.blocked_reason() in {"quiet_hours", "daily_cap", "cooldown"}
+    before = outreach._sent_today
+    result = asyncio.run(
+        outreach.offer_message(
+            text="worth saying after a real run",
+            correlation_id="corr-door-a",
+            tag="curiosity_outreach",
+            skip_schedule_gates=True,
+        )
+    )
+    assert result["outreach"] is True and result["reason"] == "sent"
+    assert outreach._sent_today == before, "Door-A must not consume the endogenous cap"
 
 
 def test_empty_text_is_never_shipped() -> None:
@@ -3704,11 +3743,10 @@ def test_a_day_rollover_zeroes_the_counter(monkeypatch) -> None:
 
 
 def test_offer_message_on_a_fresh_process_respects_the_cap(monkeypatch) -> None:
-    """`offer_message` is the curiosity loop's delivery path and increments the
-    SAME shared counter. It has its own gate check, so a restarted hub that
-    never ran recovery here would deliver against a counter sitting at 0 --
-    the cap bypassed on the exact path `blocked_reason()` cannot protect,
-    because it is sync and cannot await the recovery."""
+    """Non-Door-A `offer_message` (no skip_schedule_gates) still recovers and
+    respects the daily cap. Door-A uses skip_schedule_gates=True (see
+    `test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap`).
+    """
     outreach = _outreach(daily_cap=4, min_cooldown_sec=0.0)
     _stub_sent_count(monkeypatch, 4)
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))

@@ -6,12 +6,15 @@ Demand registration is separately checkpointed and idempotent in Postgres.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from app.graph import CuriosityRunState, Deps, failed_turn_meta, make_nodes
 from orion.schemas.durable_run import CURIOSITY_NODES
+
+logger = logging.getLogger(__name__)
 
 
 class RunControlPending(RuntimeError):
@@ -128,6 +131,24 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
         return {"status": "failed"}
 
     async def finish(state: CuriosityRunState) -> dict:
+        # Door-A (2026-09-22): when Orion asked to share, keep the resource
+        # lease through Hub's composition turn. finish_detail carries the
+        # lease; Hub releases via /runs/{id}/release-outreach-lease (or TTL).
+        outcome = state.get("outcome") or {}
+        if bool(outcome.get("reach_out")) and state.get("lease"):
+            if admission.guard is not None:
+                try:
+                    await admission.guard(state)
+                except Exception:  # noqa: BLE001 -- renew is best-effort
+                    logger.warning(
+                        "door_a_lease_renew_failed run=%s", state.get("run_id"), exc_info=True
+                    )
+            await admission.event(
+                state,
+                "run.outreach_pending",
+                {"lease_id": (state.get("lease") or {}).get("lease_id")},
+            )
+            return {"status": "completed"}
         await admission.release(state["run_id"], "completed")
         return {"status": "completed"}
 

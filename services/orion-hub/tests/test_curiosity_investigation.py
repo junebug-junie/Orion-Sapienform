@@ -810,7 +810,7 @@ class _FakeOutreach:
         self.offered: list[dict] = []
         self.recorded: list[dict] = []
 
-    def blocked_reason(self):
+    def blocked_reason(self, *, skip_schedule_gates=False):
         return self.blocked
 
     def record_blocked(self, reason, *, correlation_id, source, extra=None):
@@ -819,9 +819,16 @@ class _FakeOutreach:
         self.recorded.append(row)
         return row
 
-    async def offer_message(self, *, text, correlation_id, tag, model=None, meta=None):
+    async def offer_message(self, *, text, correlation_id, tag, model=None, meta=None,
+                            skip_schedule_gates=False):
         self.offered.append(
-            {"text": text, "tag": tag, "correlation_id": correlation_id, "meta": dict(meta or {})}
+            {
+                "text": text,
+                "tag": tag,
+                "correlation_id": correlation_id,
+                "meta": dict(meta or {}),
+                "skip_schedule_gates": skip_schedule_gates,
+            }
         )
         return self.result
 
@@ -853,7 +860,7 @@ def test_a_finding_orion_wants_to_share_goes_through_a_second_turn() -> None:
     )
     prompts: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         prompts.append(prompt)
         return "here is what I found", {"harness_step_count": 9}
 
@@ -877,7 +884,7 @@ def test_outreach_off_means_the_second_turn_never_runs() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -887,12 +894,11 @@ def test_outreach_off_means_the_second_turn_never_runs() -> None:
     assert outreach.offered == []
 
 
-def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
-    """The gates protect Juniper's sleep. Spending a full unified turn to
-    compose a message that cannot be delivered for another six hours is a waste
-    of Orion's own compute."""
+def test_turn_in_flight_is_checked_before_a_turn_is_spent_composing() -> None:
+    """Door-A skips quiet hours / daily cap, but not a live Hub turn --
+    composing while Juniper is mid-message still wastes the second turn."""
     bus = _FakeBus()
-    outreach = _FakeOutreach(blocked="quiet_hours")
+    outreach = _FakeOutreach(blocked="turn_in_flight")
     loop = _graph_loop(
         bus,
         reader=_reach_out_reader(None),
@@ -901,7 +907,7 @@ def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -914,7 +920,7 @@ def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
 def test_the_journal_is_written_even_when_the_second_turn_is_blocked() -> None:
     """The finding is Orion's regardless of whether it gets to say it."""
     bus = _FakeBus()
-    outreach = _FakeOutreach(blocked="daily_cap")
+    outreach = _FakeOutreach(blocked="turn_in_flight")
     loop = _graph_loop(
         bus,
         reader=_reach_out_reader(None),
@@ -963,7 +969,7 @@ def _reach_out_outcome(run_id: str):
 
 
 def test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line() -> None:
-    outreach = _FakeOutreach(blocked="quiet_hours")
+    outreach = _FakeOutreach(blocked="turn_in_flight")
     loop = _graph_loop(
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
@@ -974,14 +980,14 @@ def test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line() -> None:
             run_id="run-blk", hop_notes=[], line="self_inquiry",
         )
     )
-    assert got == "quiet_hours"
+    assert got == "turn_in_flight"
     assert outreach.offered == [], "a pre-check block must not spend a composition turn"
     assert outreach.recorded == [
         {
             "run_id": "run-blk",
             "line": "self_inquiry",
             "outreach": False,
-            "reason": "quiet_hours",
+            "reason": "turn_in_flight",
             "source": "curiosity_outreach",
             "correlation_id": _expected_corr("run-blk"),
         }
@@ -1009,6 +1015,7 @@ def test_the_sent_path_threads_run_id_and_line_into_offer_message() -> None:
     assert outreach.recorded == []
     assert outreach.offered[0]["correlation_id"] == _expected_corr("run-sent")
     assert outreach.offered[0]["meta"] == {"run_id": "run-sent", "line": "investigate"}
+    assert outreach.offered[0]["skip_schedule_gates"] is True
 
 
 def test_an_empty_composition_writes_a_row_instead_of_only_logging() -> None:
@@ -1081,7 +1088,7 @@ def test_a_failing_decision_write_never_reaches_the_investigation(monkeypatch) -
         def record_blocked(self, *a, **k):
             raise RuntimeError("db down")
 
-    outreach = _Boom(blocked="daily_cap")
+    outreach = _Boom(blocked="turn_in_flight")
     loop = _graph_loop(
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
@@ -1090,7 +1097,7 @@ def test_a_failing_decision_write_never_reaches_the_investigation(monkeypatch) -
         loop._maybe_reach_out(
             outcome=_reach_out_outcome("r3"), finding_text="f", run_id="r3", hop_notes=[]
         )
-    ) == "daily_cap"
+    ) == "turn_in_flight"
 
 
 def test_an_unreadable_footprint_is_not_reported_as_writing_nothing() -> None:
@@ -1157,7 +1164,7 @@ def test_the_composition_turn_is_not_held_to_the_lookup_gate() -> None:
     )
     seen: list[bool] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         seen.append(require_lookup)
         return "a real message", {"harness_step_count": 1}
 

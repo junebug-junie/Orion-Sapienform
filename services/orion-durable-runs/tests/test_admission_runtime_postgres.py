@@ -238,3 +238,33 @@ def test_renew_expiry_fencing_and_fake_clock_widening():
         assert newer["generation"] > token["generation"]
         assert not await store.release(token, "stale_release") and await store.validate(newer)
     asyncio.run(with_database(scenario))
+
+
+def test_door_a_finish_projection_holds_lease_for_hub_compose():
+    """Reach-out completion keeps the grant active past terminal so Hub can
+    compose under it; ordinary completion still releases immediately."""
+    async def scenario(pool, saver, store):
+        rt = runtime(pool, saver, store)
+        req = request("door-a-hold-001")
+        await rt.submit(req)
+        lease = (await rt.broker.tick())[0]
+        detail = {
+            "reach_out": True,
+            "reach_out_why": "she should know",
+            "resource_lease": dict(lease),
+        }
+        assert await store.finish_projection(req.run_id, "completed", detail) == "completed"
+        held = await store.get_lease(req.run_id)
+        assert held is not None and held["lease_id"] == lease["lease_id"]
+        assert await store.validate(lease) is True
+        assert await store.renew(lease, 90) is not None
+        await store.release(held, "outreach_done")
+        assert await store.get_lease(req.run_id) is None
+
+        other = request("door-a-normal-001")
+        await rt.submit(other)
+        other_lease = (await rt.broker.tick())[0]
+        assert await store.finish_projection(other.run_id, "completed", {"reach_out": False}) == "completed"
+        assert await store.get_lease(other.run_id) is None
+        await rt.close()
+    asyncio.run(with_database(scenario))

@@ -269,6 +269,29 @@ def test_a_sent_reach_out_with_a_reply_shows_both() -> None:
     assert kinds[-2:] == ["outreach", "reply"]
     payload = run_to_payload(story.run)
     assert payload["reach_out"]["reply"] == {"at": _ms(1800), "text": "oh no, which step?"}
+    assert r.can_reply is True, "the reply box only shows for a delivered outreach"
+    assert payload["reach_out"]["can_reply"] is True
+
+
+def test_can_reply_is_false_for_a_blocked_reach_out() -> None:
+    rows = _happy_run(reach_out=True, why="w")
+    key = outreach_key("446ddd7165d5")
+    rows.outreach = [{"decision_id": "d1", "decided_at": _at(851), "reason": "daily_cap",
+                      "correlation_id": key, "session_id": None,
+                      "result_json": json.dumps({"source": "curiosity_outreach", "run_id": "446ddd7165d5"})}]
+    story = build_stories(rows)["446ddd7165d5"]
+    assert story.run.reach_out.can_reply is False
+    assert run_to_payload(story.run)["reach_out"]["can_reply"] is False
+
+
+def test_can_reply_is_false_when_not_recorded_or_not_wanted() -> None:
+    not_recorded = build_stories(_happy_run(reach_out=True, why="w"))["446ddd7165d5"].run
+    assert not_recorded.reach_out.decision == DECISION_NOT_RECORDED
+    assert not_recorded.reach_out.can_reply is False
+
+    not_wanted = build_stories(_happy_run(reach_out=False))["446ddd7165d5"].run
+    assert not_wanted.reach_out.wanted is False
+    assert not_wanted.reach_out.can_reply is False
 
 
 def test_a_self_sense_run_comes_from_its_score_rows_alone() -> None:

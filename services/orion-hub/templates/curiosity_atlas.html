@@ -268,6 +268,14 @@ h2 {
 .reach-block .dec.sent { color: var(--good-text); }
 .reach-block .dec.blocked { color: var(--critical); }
 .reach-block .dec.unknown { color: var(--ink-muted); }
+.reply-box { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--axis); }
+.reply-box .lbl { font-weight: 620; display: block; margin-bottom: 4px; }
+.reply-text {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px;
+  font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--hairline); background: var(--plane); color: var(--ink);
+}
+.reply-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .story .none { font-size: 12px; color: var(--ink-2); background: var(--plane); border: 1px dashed var(--axis); border-radius: 8px; padding: 9px 11px; }
 .story-card {
   margin: 10px 0 14px; padding: 12px 14px; border-radius: 10px;
@@ -708,6 +716,52 @@ function decisionLabel(reach) {
   if (d.startsWith("blocked:")) return [`blocked: ${d.slice(8).replace(/_/g, " ")}`, "blocked"];
   return [d, "unknown"];
 }
+
+/* Explicit reply box (design doc "Missing question 1, option (b)"): posts
+   into chat with an EXPLICIT reply key (`client_meta.in_reply_to`), unlike
+   ordinary chat replies which link by time adjacency. Never renders the
+   reply as delivered before the backend confirms it -- on success this only
+   says "sent" and schedules a re-fetch so the real reply (once the turn
+   completes and lands in chat_history_log) shows up on a later poll. */
+async function sendReply(runId) {
+  const btn = document.querySelector(`[data-reply-send="${cssEsc(runId)}"]`);
+  const box = btn && btn.closest && btn.closest(".reply-box");
+  const ta = box ? box.querySelector(".reply-text") : $("reply-text");
+  const msg = $("reply-msg");
+  const text = ((ta && ta.value) || "").trim();
+  if (!text) {
+    if (msg) { msg.className = "run-msg bad"; msg.textContent = "Write something first."; }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (msg) { msg.className = "run-msg"; msg.textContent = "Sending…"; }
+  try {
+    const res = await fetch(`/curiosity/api/run/${encodeURIComponent(runId)}/reply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      if (ta) ta.value = "";
+      if (msg) { msg.className = "run-msg"; msg.textContent = "Sent. Waiting for Orion's answer to land in the story…"; }
+      // The reply itself is written by a real chat turn that has not
+      // necessarily finished by the time this response returns -- re-fetch
+      // later rather than rendering it now, so what shows is what actually
+      // happened, not a guess.
+      setTimeout(() => { if (state.openRunId === runId) openRun(runId); }, 5000);
+    } else {
+      if (msg) { msg.className = "run-msg bad"; msg.textContent = `Refused: ${d.reason || res.status}`; }
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    if (msg) { msg.className = "run-msg bad"; msg.textContent = `Failed: ${String(err)}`; }
+    if (btn) btn.disabled = false;
+  }
+}
+function cssEsc(s) {
+  return String(s).replace(/["\\]/g, "\\$&");
+}
 function timelineRow(it, run) {
   const t = it.offset_sec === null || it.offset_sec === undefined
     ? `<span class="t unk" title="no clock on this record">?</span>`
@@ -842,10 +896,26 @@ function renderStory(d) {
   let reachHtml = "";
   if (reach.wanted) {
     const [label, k] = decisionLabel(reach);
+    // The reply box only shows for a CONFIRMED sent Door-A outreach
+    // (`reach_out.can_reply`, computed server-side from the same decision
+    // row a click here re-checks): a run that only wanted to reach out, or
+    // whose attempt was blocked, has nothing in Juniper's session for a
+    // reply to sit next to.
+    const replyBox = reach.can_reply ? `
+      <div class="reply-box" data-reply-run="${esc(run.run_id)}">
+        <label class="lbl" for="reply-text">Reply to Orion</label>
+        <textarea id="reply-text" class="reply-text" rows="3"
+          placeholder="Answer Orion's reach-out — this posts into chat, linked to this exact run."></textarea>
+        <div class="reply-actions">
+          <button class="ghost run-now reply-send" type="button" data-reply-send="${esc(run.run_id)}">Send reply</button>
+          <span id="reply-msg" class="run-msg"></span>
+        </div>
+      </div>` : "";
     reachHtml = `<div class="reach-block"><span class="lbl">reach-out:</span> wanted` +
       (reach.why ? ` — <span class="txt">${esc(reach.why)}</span>` : "") +
       ` — <span class="dec ${k}">${esc(label)}</span>` +
-      `<div><span class="lbl">reply:</span> ${reach.reply ? `${esc(reach.reply.text)} <span class="dim">(${fmtStamp(reach.reply.at)}; next message in that session, within 12h)</span>` : "—"}</div></div>`;
+      `<div><span class="lbl">reply:</span> ${reach.reply ? `${esc(reach.reply.text)} <span class="dim">(${fmtStamp(reach.reply.at)}; next message in that session, within 12h)</span>` : "—"}</div>` +
+      `${replyBox}</div>`;
   } else if (run.line !== "self_sense_eval") {
     reachHtml = `<div class="reach-block"><span class="lbl">reach-out:</span> not wanted</div>`;
   }
@@ -1259,6 +1329,8 @@ function wire() {
     if (lineBtn) { e.preventDefault(); setLine(lineBtn.getAttribute("data-line")); return; }
     const t = e.target.closest && e.target.closest("[data-run]");
     if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
+    const replyBtn = e.target.closest && e.target.closest("[data-reply-send]");
+    if (replyBtn) { e.preventDefault(); sendReply(replyBtn.getAttribute("data-reply-send")); }
   });
   $("strip-older").addEventListener("click", () => pageOlder());
   $("strip-newer").addEventListener("click", () => pageNewer());

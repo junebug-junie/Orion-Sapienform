@@ -340,12 +340,20 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
     # finding -- Orion still authors everything the turn produces. Pinned by
     # path so a second write route cannot be added without this going red and
     # someone having to justify it.
-    # Two, both CONTROL actions: each asks a line to take a turn sooner than
-    # its cooldown would have. The park/pin self-question routes that sat
-    # here were removed 2026-09-22: nothing called them and this test had
-    # been red since they landed.
+    # Two CONTROL actions: each asks a line to take a turn sooner than its
+    # cooldown would have. The park/pin self-question routes that sat here
+    # were removed 2026-09-22: nothing called them and this test had been
+    # red since they landed.
+    #
+    # A third, 2026-09-23: `/api/run/{run_id}/reply` still writes nothing to
+    # Orion's graph -- it posts Juniper's own text into chat as an ordinary
+    # inbound turn (the exact path every other message she sends already
+    # takes), gated on a CONFIRMED `sent` Door-A outreach decision for that
+    # exact run. It is not a memory/prior/finding write any more than
+    # `/api/chat` is; Orion still authors everything the turn produces.
     assert sorted(r.path for r in writes) == [
-        "/curiosity/api/run-now", "/curiosity/api/self-inquiry/run-now",
+        "/curiosity/api/run-now", "/curiosity/api/run/{run_id}/reply",
+        "/curiosity/api/self-inquiry/run-now",
     ], [(r.path, sorted(r.methods)) for r in writes]
     assert all(r.methods == {"POST"} for r in writes)
 

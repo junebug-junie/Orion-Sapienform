@@ -119,7 +119,8 @@ def test_runs_payload_joins_both_stores_and_excludes_reflect() -> None:
     assert r1["plain_line_label"] == "World question"
     assert r1["started_at"] == _ms(start) and r1["started_from"] == "graph"
     assert r1["reach_out"] == {"wanted": True, "why": "because", "decision": "not_recorded", "gate": None,
-                               "decided_at": None, "sent_at": None, "composed_text": "", "reply": None}
+                               "decided_at": None, "sent_at": None, "composed_text": "", "reply": None,
+                               "can_reply": False}
     assert payload["reach_outs"] == {"wanted": 1, "sent": 0, "blocked_by": {}, "top_block_reason": None, "not_recorded": 1}
     assert payload["totals"] == {"investigate": 1, "self_inquiry": 1, "self_sense_eval": 0}
     assert {r["plain_line_label"] for r in payload["runs"]} <= {"World question", "Self question", "Self-sense check"}

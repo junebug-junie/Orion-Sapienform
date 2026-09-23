@@ -305,6 +305,17 @@ class ReachOut:
     def sent(self) -> bool:
         return self.decision == DECISION_SENT
 
+    @property
+    def can_reply(self) -> bool:
+        """True only for a run whose Door-A outreach was actually delivered.
+
+        `services/orion-hub/scripts/curiosity_routes.py`'s explicit reply
+        endpoint re-checks this exact condition against a live
+        `endogenous_outreach_decisions` row before ever composing a turn --
+        this property is what the page uses to decide whether to show the
+        box at all, not the authority the write path trusts."""
+        return self.sent
+
 
 @dataclass(frozen=True)
 class RunSummary:
@@ -1427,6 +1438,7 @@ def _reach_payload(r: ReachOut) -> dict[str, Any]:
         "sent_at": r.sent_at,
         "composed_text": r.composed_text,
         "reply": {"at": r.reply_at, "text": r.reply_text} if r.reply_at is not None else None,
+        "can_reply": r.can_reply,
     }
 
 

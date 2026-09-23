@@ -184,6 +184,58 @@ class SystemOneAppraisalFrameV1(BaseModel):
             raise ValueError(f"missing System One answers: {sorted(missing)}")
         if extra:
             raise ValueError(f"unexpected System One answers: {sorted(extra)}")
+
+        for question_id, question in self.questions.items():
+            answer = self.answers[question_id]
+            if answer.type != question.type:
+                raise ValueError(
+                    f"answer type mismatch for {question_id!r}: "
+                    f"{answer.type!r} != {question.type!r}"
+                )
+
+            if answer.type in {"choice", "score"}:
+                total = sum(answer.probabilities.values())
+                if abs(total - 1.0) > 0.05:
+                    raise ValueError(
+                        f"probabilities for {question_id!r} must sum to ~1; got {total}"
+                    )
+
+            if answer.type == "score":
+                criteria = question.criteria
+                if not isinstance(criteria, list) or not criteria:
+                    raise ValueError(
+                        f"score question {question_id!r} requires ordered criteria"
+                    )
+                expected_keys = {str(index) for index in range(len(criteria))}
+                if set(answer.probabilities) != expected_keys:
+                    raise ValueError(
+                        f"score probability keys for {question_id!r} do not match criteria"
+                    )
+                if answer.score is None or not 0.0 <= answer.score <= len(criteria) - 1:
+                    raise ValueError(
+                        f"score for {question_id!r} is outside declared criteria range"
+                    )
+                if answer.legend and set(answer.legend) != expected_keys:
+                    raise ValueError(
+                        f"score legend keys for {question_id!r} do not match criteria"
+                    )
+
+            if answer.type == "choice":
+                criteria = question.criteria
+                if not isinstance(criteria, dict) or not criteria:
+                    raise ValueError(
+                        f"choice question {question_id!r} requires option criteria"
+                    )
+                expected_keys = set(criteria)
+                if answer.choice not in expected_keys:
+                    raise ValueError(
+                        f"choice for {question_id!r} is not a declared option"
+                    )
+                if set(answer.probabilities) != expected_keys:
+                    raise ValueError(
+                        f"choice probability keys for {question_id!r} do not match options"
+                    )
+
         if self.expires_at <= self.generated_at:
             raise ValueError("expires_at must be after generated_at")
         return self

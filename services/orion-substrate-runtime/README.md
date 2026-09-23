@@ -187,7 +187,8 @@ recency even though the stored copy may lag.
 
 `orion/substrate/system_one_appraisal.py` is a provider-neutral System One reducer that currently
 speaks Kev's TypeSafe-compatible `POST /v1/systemone` API. It rides the existing attention-broadcast
-tick; there is no new timer, service, graph, or bus channel.
+tick; there is no new timer, graph, or bus channel. The local Kev process is
+`services/orion-kev` (`orion-athena-kev` on `app-net`, restart `unless-stopped`).
 
 Inputs are deliberately bounded existing artifacts:
 
@@ -218,15 +219,18 @@ Enabled on Athena for live shadow collection once the migration is applied and K
 reachable. Still no behavioral consumers — collect distributions before wiring any.
 
 ```bash
+# bring up Kev (GPU Docker; survives reboot via restart: unless-stopped)
+scripts/safe_docker_build.sh orion-kev up -d --build
+
 SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED=true
 SUBSTRATE_SYSTEM_ONE_BASE_URL=http://orion-athena-kev:8009
 SUBSTRATE_SYSTEM_ONE_MODEL=kev-latest
 ```
 
-The endpoint may be local Kev or another TypeSafe-System-One-compatible provider. The bounded
-state excludes raw chat bodies and raw graph snapshots, but it does include derived attention
-summaries that may originate from private conversation; pointing the URL at a hosted provider is
-therefore an explicit privacy-boundary change.
+The endpoint may be local Kev (`services/orion-kev`) or another TypeSafe-System-One-compatible
+provider. The bounded state excludes raw chat bodies and raw graph snapshots, but it does include
+derived attention summaries that may originate from private conversation; pointing the URL at a
+hosted provider is therefore an explicit privacy-boundary change.
 
 Post-deploy checks:
 

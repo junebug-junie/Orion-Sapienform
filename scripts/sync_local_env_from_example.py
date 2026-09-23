@@ -249,6 +249,10 @@ SYNC_PREFIXES = (
     # prefix the default sync silently skips every SUBSTRATE_SYSTEM_ONE_* key
     # and reports "no changes" -- same failure shape as HUB_CURIOSITY_ above.
     "SUBSTRATE_SYSTEM_ONE_",
+    # orion-kev (TypeSafe System One endpoint). Same dual requirement as
+    # HUB_CURIOSITY_: service must be in DEFAULT_SERVICES AND a prefix must
+    # match, or default sync silently skips every KEV_* key.
+    "KEV_",
     # Drive attribution + substrate act (PR drive-attribution-substrate-act)
     "ORION_SUBSTRATE_",
     "ORION_AUTONOMY_",
@@ -444,6 +448,7 @@ DEFAULT_SERVICES = (
     "orion-embodiment",
     "orion-signals",
     "orion-whisper-tts",
+    "orion-kev",
     "orion-exo-exploration",
     # Added 2026-09-08 with the claude_limit producer. Same blind spot as
     # orion-whisper-tts above (PR #1956): the service was absent here AND no

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -168,7 +169,7 @@ async def route_arbitration() -> dict:
 @app.get("/projections/system_one_appraisal")
 async def system_one_appraisal() -> dict:
     """Latest shadow System One appraisal. Read-only; no behavior is driven here."""
-    proj = worker._store.load_latest_system_one_appraisal()
+    proj = await asyncio.to_thread(worker._store.load_latest_system_one_appraisal)
     if proj is None:
         return {"ok": False, "reason": "no_projection"}
     return {"ok": True, "projection": proj.model_dump(mode="json")}

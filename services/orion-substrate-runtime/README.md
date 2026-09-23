@@ -33,8 +33,6 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_substrate_reducer
 # Self-observability v2 (coalition dwell log + endogenous curiosity candidates):
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_coalition_dwell_v1.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_endogenous_curiosity_candidates_v1.sql
-# System One / Kev shadow appraisal (behavior-inert):
-psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_system_one_appraisal_v1.sql
 cp services/orion-substrate-runtime/.env_example services/orion-substrate-runtime/.env
 python scripts/sync_local_env_from_example.py orion-substrate-runtime
 ```
@@ -81,12 +79,11 @@ Hub debug (node-scoped lineage):
 
 ### Projection debug reads (this service, internal)
 
-Same response contract on all four: `{"ok": false, "reason": "no_projection"}` if the reducer hasn't written yet, `{"ok": true, "projection": {...}}` otherwise.
+Same response contract on all three: `{"ok": false, "reason": "no_projection"}` if the reducer hasn't written yet, `{"ok": true, "projection": {...}}` otherwise.
 
 - `GET /projections/execution_trajectory` — `active_execution_trajectory`
 - `GET /projections/chat_session` — `active_chat_session`
 - `GET /projections/route_arbitration` — `active_route_arbitration`
-- `GET /projections/system_one_appraisal` — latest `SystemOneAppraisalFrameV1` shadow frame
 
 ## Grammar production observe
 
@@ -182,62 +179,6 @@ the top-of-tick store snapshot — otherwise a node can never cross into dormant
 decay once persistence stops, since the stale stored value never moves. Fixed in the same patch
 that added the guard; if you touch this loop again, keep the dormancy decision reading fresh
 recency even though the stored copy may lag.
-
-## System One / Kev shadow appraisal
-
-`orion/substrate/system_one_appraisal.py` is a provider-neutral System One reducer that currently
-speaks Kev's TypeSafe-compatible `POST /v1/systemone` API. It rides the existing attention-broadcast
-tick; there is no new timer, service, graph, or bus channel.
-
-Inputs are deliberately bounded existing artifacts:
-
-- `AttentionBroadcastProjectionV1` from this service's current workspace competition;
-- the latest `FieldAttentionFrameV1`, only when it is fresher than
-  `SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC`.
-
-The initial question set (`orion.system_one.shadow.v1`) asks four three-level score questions:
-`reverie_fit`, `curiosity_pull`, `deliberation_need`, and `attention_interrupt`. The full
-probability surface from Kev is persisted; the expected 0..2 score is **not** silently normalized
-into a 0..1 behavioral propensity.
-
-Output is intentionally behavior-inert in this patch:
-
-```text
-attention broadcast + fresh field attention
-        -> Kev / System One reducer
-        -> SystemOneAppraisalFrameV1
-        -> substrate_system_one_appraisal
-        -> GrammarProjectionV1(projection_type=system_one_shadow_appraisal)
-```
-
-No `StateDeltaV1` is emitted and no attention, autonomy, reverie, curiosity, scheduler, or FCC
-consumer reads the frame. This is required by the metric-quality gate: learned appraisals must
-first accumulate real shadow data and pass a labeled/outcome-based calibration evaluation.
-
-Enable only after a compatible endpoint is deployed and the migration is applied:
-
-```bash
-SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED=true
-SUBSTRATE_SYSTEM_ONE_BASE_URL=http://orion-athena-kev:8009
-SUBSTRATE_SYSTEM_ONE_MODEL=kev-latest
-```
-
-The endpoint may be local Kev or another TypeSafe-System-One-compatible provider. The bounded
-state excludes raw chat bodies and raw graph snapshots, but it does include derived attention
-summaries that may originate from private conversation; pointing the URL at a hosted provider is
-therefore an explicit privacy-boundary change. Default is off.
-
-Post-deploy checks:
-
-```bash
-python scripts/smoke_system_one_appraisal.py
-python scripts/analysis/eval_system_one_appraisal.py --hours 24
-```
-
-The evaluator reports variance/saturation/confidence/level distributions only; it does not invent
-behavior thresholds. See
-`docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
-promotion gate and failure model.
 
 ## AST/HOT self-model tick (rung 4)
 

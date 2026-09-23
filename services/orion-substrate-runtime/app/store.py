@@ -30,7 +30,6 @@ from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
-from orion.schemas.system_one_appraisal import SystemOneAppraisalFrameV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
 from orion.substrate.execution_loop.constants import (
@@ -617,84 +616,6 @@ class BiometricsSubstrateStore:
                     """
                 ),
             )
-
-    def save_system_one_appraisal(
-        self, frame: SystemOneAppraisalFrameV1, *, retention_hours: float
-    ) -> None:
-        """Append one behavior-inert System One appraisal frame and prune history.
-
-        `substrate_system_one_appraisal` is single-writer storage owned by
-        this service. The frame id is deterministic over its source snapshots,
-        question set, and model, so retrying the same source tick is idempotent.
-        """
-        now = datetime.now(timezone.utc)
-        with self._engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_system_one_appraisal (
-                        frame_id, generated_at, expires_at, provider, model_id,
-                        source_broadcast_projection_id,
-                        source_field_attention_frame_id,
-                        frame_json, created_at
-                    ) VALUES (
-                        :frame_id, :generated_at, :expires_at, :provider, :model_id,
-                        :source_broadcast_projection_id,
-                        :source_field_attention_frame_id,
-                        :frame_json, :created_at
-                    )
-                    ON CONFLICT (frame_id) DO NOTHING
-                    """
-                ),
-                {
-                    "frame_id": frame.frame_id,
-                    "generated_at": frame.generated_at,
-                    "expires_at": frame.expires_at,
-                    "provider": frame.provider,
-                    "model_id": frame.model_id,
-                    "source_broadcast_projection_id": (
-                        frame.input_state.source_broadcast_projection_id
-                    ),
-                    "source_field_attention_frame_id": (
-                        frame.input_state.source_field_attention_frame_id
-                    ),
-                    "frame_json": Json(frame.model_dump(mode="json")),
-                    "created_at": now,
-                },
-            )
-            conn.execute(
-                text(
-                    f"""
-                    DELETE FROM substrate_system_one_appraisal
-                    WHERE generated_at < now() - interval '{float(retention_hours)} hours'
-                    """
-                )
-            )
-
-    def load_latest_system_one_appraisal(self) -> SystemOneAppraisalFrameV1 | None:
-        try:
-            with self._engine.connect() as conn:
-                row = conn.execute(
-                    text(
-                        """
-                        SELECT frame_json
-                        FROM substrate_system_one_appraisal
-                        ORDER BY generated_at DESC
-                        LIMIT 1
-                        """
-                    )
-                ).mappings().first()
-            if not row:
-                return None
-            payload = row["frame_json"]
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            if not isinstance(payload, dict):
-                return None
-            return SystemOneAppraisalFrameV1.model_validate(payload)
-        except Exception:
-            logger.exception("substrate_system_one_appraisal_load_failed")
-            return None
 
     def get_latest_field_attention_frame(self) -> FieldAttentionFrameV1 | None:
         """Latest row from `substrate_attention_frames`, or None.

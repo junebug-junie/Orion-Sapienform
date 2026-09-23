@@ -225,6 +225,28 @@ def test_partial_provider_response_is_rejected() -> None:
         )
 
 
+def test_non_normalized_probability_surface_is_rejected() -> None:
+    payload = _response_payload()
+    payload["answers"]["reverie_fit"]["probabilities"] = {
+        "0": 0.10,
+        "1": 0.10,
+        "2": 0.10,
+    }
+
+    def fake_post(url, *, json, headers, timeout):
+        return _FakeResponse(payload)
+
+    with pytest.raises(ValueError, match="sum to ~1"):
+        run_system_one_appraisal(
+            broadcast=_broadcast(),
+            field_frame=_field_frame(),
+            base_url="http://kev:8009",
+            model="kev-latest",
+            post=fake_post,
+            now=NOW,
+        )
+
+
 def test_out_of_range_probability_is_rejected() -> None:
     payload = _response_payload()
     payload["answers"]["reverie_fit"]["probabilities"]["2"] = 1.2

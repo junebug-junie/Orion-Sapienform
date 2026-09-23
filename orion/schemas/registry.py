@@ -1758,6 +1758,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=WorldModelPredictionPayload,
         kind="world_model.prediction",
     ),
+    "SystemOneAppraisalFrameV1": SchemaRegistration(
+        model=SystemOneAppraisalFrameV1,
+        kind="system_one.appraisal.frame.v1",
+    ),
 }
 
 

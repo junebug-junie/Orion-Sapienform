@@ -400,6 +400,9 @@ class BiometricsSubstrateWorker:
         # just like _pending_attention_schema above. Each tick replaces the
         # prior batch; no backlog can accumulate if the bus is unavailable.
         self._pending_system_one_grammar_events: list[GrammarEventV1] = []
+        # One-slot handoff for the typed operational System One frame published
+        # on orion:system_one:appraisal (distinct from the grammar shadow).
+        self._pending_system_one_appraisal_frame: Any = None
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
         # Perceptual health state, fed by _vision_artifact_listener_loop and
@@ -2881,11 +2884,11 @@ class BiometricsSubstrateWorker:
         )
 
     def _system_one_appraisal_tick(self, *, broadcast: Any) -> None:
-        """Compile current attention state, call System One, and persist shadow output.
+        """Compile current attention state, call System One, and persist output.
 
-        This is intentionally a *compiled frame* over existing substrate
-        artifacts, not a state mutation. No StateDeltaV1 is emitted and no
-        behavioral consumer reads the result in this patch.
+        Persists the typed frame, queues a grammar shadow event, and queues the
+        same typed frame for the operational bus channel. Per-question consumers
+        decide independently whether a given appraisal is live.
         """
         from orion.substrate.system_one_appraisal import (
             build_system_one_grammar_events,
@@ -2926,6 +2929,7 @@ class BiometricsSubstrateWorker:
             retention_hours=s.system_one_retention_hours,
         )
         self._pending_system_one_grammar_events = build_system_one_grammar_events(frame)
+        self._pending_system_one_appraisal_frame = frame
 
         score_log = {
             key: answer.score
@@ -2940,6 +2944,37 @@ class BiometricsSubstrateWorker:
             frame.latency_ms,
             score_log,
         )
+
+    async def _publish_pending_system_one_appraisal(self) -> None:
+        """Publish the typed operational System One frame (not the grammar shadow)."""
+        frame = self._pending_system_one_appraisal_frame
+        self._pending_system_one_appraisal_frame = None
+        if frame is None or self._bus is None:
+            return
+        try:
+            from orion.core.bus.bus_schemas import BaseEnvelope
+            from orion.core.bus.resilience import publish_with_reconnect
+            from orion.schemas.system_one_appraisal import (
+                SYSTEM_ONE_APPRAISAL_CHANNEL,
+                SYSTEM_ONE_APPRAISAL_KIND,
+            )
+
+            await publish_with_reconnect(
+                self._bus,
+                SYSTEM_ONE_APPRAISAL_CHANNEL,
+                BaseEnvelope(
+                    kind=SYSTEM_ONE_APPRAISAL_KIND,
+                    source=self._service_ref(),
+                    correlation_id=frame.frame_id,
+                    payload=frame.model_dump(mode="json"),
+                ),
+                log_label="substrate_system_one_appraisal_publish",
+            )
+        except Exception:
+            logger.exception(
+                "substrate_system_one_appraisal_publish_failed frame_id=%s",
+                getattr(frame, "frame_id", None),
+            )
 
     async def _publish_pending_system_one_grammar(self) -> None:
         """Publish the causal shadow of the latest compiled System One frame."""
@@ -3004,6 +3039,7 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._attention_broadcast_tick)
                 await self._publish_pending_attention_schema()
                 await self._publish_pending_system_one_grammar()
+                await self._publish_pending_system_one_appraisal()
             except Exception:
                 logger.exception("substrate_attention_broadcast_loop_failed")
             try:
@@ -3377,6 +3413,11 @@ class BiometricsSubstrateWorker:
         ``curiosity_candidate`` signals through ``FrontierCuriosityEvaluator``
         without operator_requested. Output is decision/plan only — no expansion,
         landing, or auto-apply. Default-off; kill switch beats enable.
+
+        When System One is live, ``curiosity_pull`` is a categorical admission
+        gate over already-built seeds (level 0 = skip evaluator; levels 1 and 2
+        = admit). System One never invents candidates. Missing/stale/malformed
+        frames fail open to legacy evaluator-on-seeds behavior.
         """
         s = self._settings
         if not s.enable_endogenous_curiosity or s.endogenous_curiosity_kill_switch:
@@ -3386,6 +3427,7 @@ class BiometricsSubstrateWorker:
             EndogenousCuriosityConfig,
             endogenous_curiosity_candidates,
         )
+        from orion.substrate.system_one_access import decide_curiosity_admission
 
         config = EndogenousCuriosityConfig(
             enabled=True,
@@ -3442,7 +3484,10 @@ class BiometricsSubstrateWorker:
                 logger.exception("substrate_endogenous_curiosity_seed_source_log_failed")
         if not seeds:
             try:
-                self._store.save_endogenous_curiosity_candidates([])
+                self._store.save_endogenous_curiosity_candidates(
+                    [],
+                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                )
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_persist_failed")
             logger.info("substrate_endogenous_curiosity_tick_completed seeds=0 outcome=noop")
@@ -3454,6 +3499,68 @@ class BiometricsSubstrateWorker:
                 len(seeds),
             )
             return
+
+        # System One admission over existing seeds — never mint candidates.
+        frame = None
+        try:
+            frame = self._store.load_latest_system_one_appraisal()
+        except Exception:
+            logger.exception("substrate_endogenous_curiosity_system_one_load_failed")
+            frame = None
+
+        admission = decide_curiosity_admission(
+            frame,
+            kill_switch=bool(s.system_one_curiosity_gate_kill_switch),
+            max_age_sec=float(s.system_one_curiosity_max_age_sec),
+        )
+        gate_telemetry: dict[str, Any] = admission.to_telemetry()
+        gate_telemetry["seed_count"] = len(seeds)
+        gate_telemetry["evidence_refs"] = [
+            str(ref)
+            for sig in seeds
+            for ref in (getattr(sig, "focal_node_refs", None) or [])
+        ][:32]
+
+        if not admission.admit_evaluator:
+            gate_telemetry["evaluator_outcome"] = None
+            gate_telemetry["evaluator_task"] = None
+            gate_telemetry["decision_id"] = None
+            lineage_ok = False
+            try:
+                persist = self._store.save_endogenous_curiosity_candidates(
+                    list(seeds)[:8],
+                    gate=gate_telemetry,
+                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                    require_gate_lineage=True,
+                )
+                lineage_ok = bool(persist.gate_lineage_persisted)
+            except Exception:
+                logger.exception("substrate_endogenous_curiosity_persist_failed")
+                lineage_ok = False
+
+            if lineage_ok:
+                logger.info(
+                    "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=%s "
+                    "system_one_gate=%s frame_id=%s level=%s",
+                    len(seeds),
+                    admission.gate_result,
+                    admission.gate_result,
+                    admission.frame_id,
+                    admission.selected_level,
+                )
+                return
+
+            # Causal veto requires durable gate lineage. Missing migration /
+            # gate_json must not silently suppress the evaluator.
+            gate_telemetry["gate_result"] = "system_one_unavailable_fallback"
+            gate_telemetry["admit_evaluator"] = True
+            gate_telemetry["fallback_reason"] = "lineage_store_unavailable"
+            logger.warning(
+                "substrate_endogenous_curiosity_system_one_veto_without_lineage "
+                "falling_back_to_evaluator frame_id=%s",
+                admission.frame_id,
+            )
+            # Fall through to evaluator with updated telemetry.
 
         try:
             from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
@@ -3471,6 +3578,12 @@ class BiometricsSubstrateWorker:
             endogenous_count = sum(
                 1 for sig in result.signals if "endogenous_seed" in (sig.notes or [])
             )
+            gate_telemetry["evaluator_outcome"] = result.decision.outcome
+            gate_telemetry["evaluator_task"] = result.decision.chosen_task_type
+            gate_telemetry["decision_id"] = getattr(result.decision, "decision_id", None)
+            gate_telemetry["bounded_context_reason"] = getattr(
+                result.decision, "bounded_context_reason", None
+            )
             # Persist a bounded candidate set for the felt-state curiosity lane;
             # endogenous seeds first, then the rest, capped at 8. Best-effort:
             # the tick must never fail because persistence failed.
@@ -3482,17 +3595,23 @@ class BiometricsSubstrateWorker:
                     sig for sig in result.signals if "endogenous_seed" not in (sig.notes or [])
                 ]
                 persisted = (preferred + rest)[:8]
-                if persisted:
-                    self._store.save_endogenous_curiosity_candidates(persisted)
+                self._store.save_endogenous_curiosity_candidates(
+                    persisted,
+                    gate=gate_telemetry,
+                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                )
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_persist_failed")
             logger.info(
                 "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=%s "
-                "task=%s endogenous_signals=%d",
+                "task=%s endogenous_signals=%d system_one_gate=%s frame_id=%s level=%s",
                 len(seeds),
                 result.decision.outcome,
                 result.decision.chosen_task_type,
                 endogenous_count,
+                admission.gate_result,
+                admission.frame_id,
+                admission.selected_level,
             )
         except Exception:
             logger.exception("substrate_endogenous_curiosity_tick_failed")

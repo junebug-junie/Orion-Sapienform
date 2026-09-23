@@ -1,7 +1,9 @@
 # System One substrate appraisal — shadow design
 
 Date: 2026-09-23  
-Status: implemented on `feat/system-one-substrate-appraisal`; live runtime proof remains **UNVERIFIED** until deployed.
+Status: shadow collection shipped; **curiosity_pull promoted** in
+`docs/superpowers/specs/2026-09-23-system-one-curiosity-admission-design.md`.
+`reverie_fit`, `attention_interrupt`, and `deliberation_need` remain observational.
 
 ## Arsonist summary
 

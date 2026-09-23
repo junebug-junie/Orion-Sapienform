@@ -5,7 +5,14 @@ import json
 import logging
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class EndogenousCuriosityPersistResult(NamedTuple):
+    """Result of writing one endogenous curiosity candidate set."""
+
+    candidate_set_id: str
+    gate_lineage_persisted: bool
 
 logger = logging.getLogger("orion.substrate.store")
 
@@ -1004,44 +1011,109 @@ class BiometricsSubstrateStore:
                 ),
             )
 
-    def save_endogenous_curiosity_candidates(self, signals: list[Any]) -> None:
+    def save_endogenous_curiosity_candidates(
+        self,
+        signals: list[Any],
+        *,
+        gate: dict[str, Any] | None = None,
+        retention_hours: float = 720.0,
+        require_gate_lineage: bool = False,
+    ) -> EndogenousCuriosityPersistResult:
         """Persist one bounded candidate set for the felt-state curiosity lane.
 
         Inserts a single row whose ``candidates_json`` is the JSON array of the
-        provided signals, then prunes rows older than 24h so the table stays
-        bounded. Caller caps the list; this method is a plain writer.
+        provided signals, optionally with System One admission ``gate_json``,
+        then prunes rows older than ``retention_hours``. Caller caps the list;
+        this method is a plain writer.
+
+        When ``gate`` is provided but the ``gate_json`` column is unavailable,
+        falls back to a legacy INSERT and returns
+        ``gate_lineage_persisted=False`` so a causal noop veto can fail open.
+        When ``require_gate_lineage`` is True and lineage cannot be stored,
+        still performs the legacy candidates write (so Hub readers keep seeing
+        seeds) but reports ``gate_lineage_persisted=False``.
         """
         now = datetime.now(timezone.utc)
         candidates = [sig.model_dump(mode="json") for sig in signals]
         digest = hashlib.sha256(
             "|".join([now.isoformat()] + sorted(str(c.get("signal_id", "")) for c in candidates)).encode("utf-8")
         ).hexdigest()[:24]
-        with self._engine.begin() as conn:
+        candidate_set_id = f"curiosity-{digest}"
+        gate_payload = dict(gate) if gate is not None else None
+        if gate_payload is not None:
+            gate_payload.setdefault("candidate_set_id", candidate_set_id)
+        retention = max(1.0, float(retention_hours))
+
+        def _insert_and_prune(conn, *, with_gate: bool) -> None:
+            if with_gate:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_endogenous_curiosity_candidates (
+                            candidate_set_id, generated_at, candidates_json, gate_json, created_at
+                        ) VALUES (
+                            :candidate_set_id, :generated_at, :candidates_json, :gate_json, :created_at
+                        )
+                        ON CONFLICT (candidate_set_id) DO NOTHING
+                        """
+                    ),
+                    {
+                        "candidate_set_id": candidate_set_id,
+                        "generated_at": now,
+                        "candidates_json": Json(candidates),
+                        "gate_json": Json(gate_payload) if gate_payload is not None else None,
+                        "created_at": now,
+                    },
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_endogenous_curiosity_candidates (
+                            candidate_set_id, generated_at, candidates_json, created_at
+                        ) VALUES (
+                            :candidate_set_id, :generated_at, :candidates_json, :created_at
+                        )
+                        ON CONFLICT (candidate_set_id) DO NOTHING
+                        """
+                    ),
+                    {
+                        "candidate_set_id": candidate_set_id,
+                        "generated_at": now,
+                        "candidates_json": Json(candidates),
+                        "created_at": now,
+                    },
+                )
             conn.execute(
                 text(
-                    """
-                    INSERT INTO substrate_endogenous_curiosity_candidates (
-                        candidate_set_id, generated_at, candidates_json, created_at
-                    ) VALUES (
-                        :candidate_set_id, :generated_at, :candidates_json, :created_at
-                    )
-                    ON CONFLICT (candidate_set_id) DO NOTHING
-                    """
-                ),
-                {
-                    "candidate_set_id": f"curiosity-{digest}",
-                    "generated_at": now,
-                    "candidates_json": Json(candidates),
-                    "created_at": now,
-                },
-            )
-            conn.execute(
-                text(
-                    """
+                    f"""
                     DELETE FROM substrate_endogenous_curiosity_candidates
-                    WHERE generated_at < now() - interval '24 hours'
+                    WHERE generated_at < now() - interval '{retention} hours'
                     """
                 ),
+            )
+
+        try:
+            with self._engine.begin() as conn:
+                _insert_and_prune(conn, with_gate=True)
+            return EndogenousCuriosityPersistResult(
+                candidate_set_id=candidate_set_id,
+                gate_lineage_persisted=True,
+            )
+        except Exception as exc:
+            message = str(exc).lower().replace(" ", "")
+            if "gate_json" not in message and "undefinedcolumn" not in message:
+                raise
+            logger.warning(
+                "substrate_endogenous_curiosity_gate_json_unavailable fallback_legacy_insert "
+                "require_gate_lineage=%s",
+                require_gate_lineage,
+            )
+            with self._engine.begin() as conn:
+                _insert_and_prune(conn, with_gate=False)
+            return EndogenousCuriosityPersistResult(
+                candidate_set_id=candidate_set_id,
+                gate_lineage_persisted=False,
             )
 
     def save_coalition_dwell(self, projection: AttentionBroadcastProjectionV1) -> None:

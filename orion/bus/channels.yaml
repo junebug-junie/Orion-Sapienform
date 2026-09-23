@@ -2771,6 +2771,21 @@ channels:
     stability: "experimental"
     since: "2026-05-02"
 
+  - name: "orion:system_one:appraisal"
+    kind: "event"
+    schema_id: "SystemOneAppraisalFrameV1"
+    message_kind: "system_one.appraisal.frame.v1"
+    description: >
+      Typed operational System One appraisal frame. Grammar projection on
+      orion:grammar:event remains the causal shadow; this channel carries the
+      full probability surface for live consumers (curiosity admission) and
+      future cross-service caches. Do not treat GET /projections/system_one_appraisal
+      as a hidden runtime control dependency.
+    producer_services: ["orion-substrate-runtime"]
+    consumer_services: ["orion-substrate-runtime", "*"]
+    stability: "experimental"
+    since: "2026-09-23"
+
   - name: "orion:grammar:event"
     kind: "event"
     schema_id: "GrammarEventV1"

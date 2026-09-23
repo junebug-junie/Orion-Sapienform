@@ -40,6 +40,8 @@ def _make_worker(
     worker._store = MagicMock()
     worker._store.load_attention_broadcast.return_value = None
     worker._store.load_chat_session_projection.return_value = None
+    worker._store.load_latest_system_one_appraisal.return_value = None
+    worker._store.save_endogenous_curiosity_candidates.return_value = "curiosity-test"
     return worker
 
 
@@ -287,3 +289,211 @@ def test_seed_source_logging_failure_does_not_break_tick(monkeypatch):
     ) as evaluator_cls:
         evaluator_cls.return_value.evaluate.return_value = run_result
         worker._endogenous_curiosity_tick()  # must not raise
+
+
+def _curiosity_frame(level: str):
+    from datetime import datetime, timedelta, timezone
+    from orion.schemas.system_one_appraisal import (
+        SystemOneAnswerV1,
+        SystemOneAppraisalFrameV1,
+        SystemOneInputStateV1,
+    )
+    from orion.substrate.system_one_appraisal import QUESTION_SET_ID, SYSTEM_ONE_QUESTIONS
+
+    now = datetime.now(timezone.utc)
+    probs_by_level = {
+        "0": {"0": 0.7, "1": 0.2, "2": 0.1},
+        "1": {"0": 0.2, "1": 0.55, "2": 0.25},
+        "2": {"0": 0.1, "1": 0.2, "2": 0.7},
+    }
+    answers = {}
+    for qid, question in SYSTEM_ONE_QUESTIONS.items():
+        probs = probs_by_level[level] if qid == "curiosity_pull" else {"0": 0.7, "1": 0.2, "2": 0.1}
+        answers[qid] = SystemOneAnswerV1(
+            question_id=qid,
+            type="score",
+            score=sum(int(k) * float(v) for k, v in probs.items()),
+            confidence=0.6,
+            probabilities=probs,
+        )
+    return SystemOneAppraisalFrameV1(
+        frame_id=f"frame-level-{level}",
+        question_set_id=QUESTION_SET_ID,
+        generated_at=now,
+        expires_at=now + timedelta(seconds=90),
+        provider="kev",
+        model_id="kev-latest",
+        source_refs=["attention.broadcast:x"],
+        input_state=SystemOneInputStateV1(
+            source_broadcast_projection_id="broadcast-1",
+            source_broadcast_generated_at=now,
+            selected_action_type="reflect",
+            coalition_stability_score=0.5,
+        ),
+        questions=dict(SYSTEM_ONE_QUESTIONS),
+        answers=answers,
+    )
+
+
+def test_system_one_level_0_skips_evaluator_preserves_seeds(monkeypatch):
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed", "source:repair_pressure"],
+        focal_node_refs=["gev_1"],
+        signal_strength=0.85,
+        confidence=0.7,
+    )
+    worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame("0")
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        worker._endogenous_curiosity_tick()
+
+    evaluator_cls.assert_not_called()
+    worker._store.save_endogenous_curiosity_candidates.assert_called_once()
+    args, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
+    assert args[0] == [seed]
+    assert kwargs["gate"]["gate_result"] == "system_one_curiosity_noop"
+    assert kwargs["gate"]["selected_level"] == "0"
+    assert kwargs["gate"]["frame_id"] == "frame-level-0"
+
+
+def test_system_one_level_1_and_2_admit_evaluator(monkeypatch):
+    for level in ("1", "2"):
+        worker = _make_worker(monkeypatch, enabled=True)
+        fake_store = MagicMock()
+        fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+        seed = SimpleNamespace(
+            signal_type="curiosity_candidate",
+            notes=["endogenous_seed"],
+            signal_strength=0.85,
+            confidence=0.7,
+        )
+        decision = SimpleNamespace(
+            outcome="invoke",
+            chosen_task_type="evidence_gap_scan",
+            decision_id="dec-1",
+            bounded_context_reason="invoke based on curiosity_candidate",
+        )
+        run_result = SimpleNamespace(signals=[seed], decision=decision)
+        worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame(level)
+
+        with patch(
+            "orion.substrate.graphdb_store.build_substrate_store_from_env",
+            return_value=fake_store,
+        ), patch(
+            "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+            return_value=[seed],
+        ), patch(
+            "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+        ) as evaluator_cls:
+            evaluator_cls.return_value.evaluate.return_value = run_result
+            worker._endogenous_curiosity_tick()
+
+        evaluator_cls.return_value.evaluate.assert_called_once()
+        _, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
+        assert kwargs["gate"]["gate_result"] == "system_one_curiosity_admit"
+        assert kwargs["gate"]["selected_level"] == level
+        assert kwargs["gate"]["evaluator_outcome"] == "invoke"
+
+
+def test_system_one_missing_frame_falls_back_to_legacy(monkeypatch):
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed"],
+        signal_strength=0.85,
+        confidence=0.7,
+    )
+    decision = SimpleNamespace(outcome="noop", chosen_task_type=None, decision_id=None)
+    run_result = SimpleNamespace(signals=[seed], decision=decision)
+    worker._store.load_latest_system_one_appraisal.return_value = None
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        worker._endogenous_curiosity_tick()
+
+    evaluator_cls.return_value.evaluate.assert_called_once()
+    _, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
+    assert kwargs["gate"]["gate_result"] == "system_one_unavailable_fallback"
+    assert kwargs["gate"]["fallback_reason"] == "no_frame"
+
+
+def test_system_one_curiosity_gate_kill_switch_falls_back(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_SYSTEM_ONE_CURIOSITY_GATE_KILL_SWITCH", "true")
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    worker = _make_worker(monkeypatch, enabled=True)
+    worker._settings = settings_mod.get_settings()
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed"],
+        signal_strength=0.85,
+        confidence=0.7,
+    )
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="ontology_expand", decision_id="d")
+    run_result = SimpleNamespace(signals=[seed], decision=decision)
+    # Even with a level-0 frame, kill switch must admit evaluator.
+    worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame("0")
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        worker._endogenous_curiosity_tick()
+
+    evaluator_cls.return_value.evaluate.assert_called_once()
+    _, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
+    assert kwargs["gate"]["fallback_reason"] == "consumer_kill_switch"
+
+
+def test_system_one_cannot_mint_candidates(monkeypatch):
+    """Gate only sees seeds from endogenous_curiosity_candidates."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame("2")
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[],
+    ) as seeds_fn, patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        worker._endogenous_curiosity_tick()
+
+    seeds_fn.assert_called_once()
+    evaluator_cls.assert_not_called()
+    worker._store.save_endogenous_curiosity_candidates.assert_called_once_with([])

@@ -1004,37 +1004,69 @@ class BiometricsSubstrateStore:
                 ),
             )
 
-    def save_endogenous_curiosity_candidates(self, signals: list[Any]) -> None:
+    def save_endogenous_curiosity_candidates(
+        self,
+        signals: list[Any],
+        *,
+        gate: dict[str, Any] | None = None,
+    ) -> str:
         """Persist one bounded candidate set for the felt-state curiosity lane.
 
         Inserts a single row whose ``candidates_json`` is the JSON array of the
-        provided signals, then prunes rows older than 24h so the table stays
-        bounded. Caller caps the list; this method is a plain writer.
+        provided signals, optionally with System One admission ``gate_json``,
+        then prunes rows older than 24h so the table stays bounded. Caller caps
+        the list; this method is a plain writer. Returns ``candidate_set_id``.
         """
         now = datetime.now(timezone.utc)
         candidates = [sig.model_dump(mode="json") for sig in signals]
         digest = hashlib.sha256(
             "|".join([now.isoformat()] + sorted(str(c.get("signal_id", "")) for c in candidates)).encode("utf-8")
         ).hexdigest()[:24]
-        with self._engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_endogenous_curiosity_candidates (
-                        candidate_set_id, generated_at, candidates_json, created_at
-                    ) VALUES (
-                        :candidate_set_id, :generated_at, :candidates_json, :created_at
-                    )
-                    ON CONFLICT (candidate_set_id) DO NOTHING
-                    """
-                ),
-                {
-                    "candidate_set_id": f"curiosity-{digest}",
-                    "generated_at": now,
-                    "candidates_json": Json(candidates),
-                    "created_at": now,
-                },
-            )
+        candidate_set_id = f"curiosity-{digest}"
+        gate_payload = dict(gate) if gate is not None else None
+        if gate_payload is not None:
+            gate_payload.setdefault("candidate_set_id", candidate_set_id)
+
+        def _insert_and_prune(conn, *, with_gate: bool) -> None:
+            if with_gate:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_endogenous_curiosity_candidates (
+                            candidate_set_id, generated_at, candidates_json, gate_json, created_at
+                        ) VALUES (
+                            :candidate_set_id, :generated_at, :candidates_json, :gate_json, :created_at
+                        )
+                        ON CONFLICT (candidate_set_id) DO NOTHING
+                        """
+                    ),
+                    {
+                        "candidate_set_id": candidate_set_id,
+                        "generated_at": now,
+                        "candidates_json": Json(candidates),
+                        "gate_json": Json(gate_payload) if gate_payload is not None else None,
+                        "created_at": now,
+                    },
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_endogenous_curiosity_candidates (
+                            candidate_set_id, generated_at, candidates_json, created_at
+                        ) VALUES (
+                            :candidate_set_id, :generated_at, :candidates_json, :created_at
+                        )
+                        ON CONFLICT (candidate_set_id) DO NOTHING
+                        """
+                    ),
+                    {
+                        "candidate_set_id": candidate_set_id,
+                        "generated_at": now,
+                        "candidates_json": Json(candidates),
+                        "created_at": now,
+                    },
+                )
             conn.execute(
                 text(
                     """
@@ -1043,6 +1075,22 @@ class BiometricsSubstrateStore:
                     """
                 ),
             )
+
+        try:
+            with self._engine.begin() as conn:
+                _insert_and_prune(conn, with_gate=True)
+        except Exception as exc:
+            # Pre-migration hosts: fall back so felt-state curiosity does not
+            # go stale while gate_json is missing.
+            message = str(exc).lower().replace(" ", "")
+            if "gate_json" not in message and "undefinedcolumn" not in message:
+                raise
+            logger.warning(
+                "substrate_endogenous_curiosity_gate_json_unavailable fallback_legacy_insert"
+            )
+            with self._engine.begin() as conn:
+                _insert_and_prune(conn, with_gate=False)
+        return candidate_set_id
 
     def save_coalition_dwell(self, projection: AttentionBroadcastProjectionV1) -> None:
         """Append one dwell row per broadcast tick; prunes rows older than 24h."""

@@ -1,15 +1,16 @@
 # orion-kev
 
 Local [Kev](https://github.com/jaredpalmer/kev) server that speaks TypeSafe's
-`POST /v1/systemone` API. Orion's substrate shadow appraisal calls this as
+`POST /v1/systemone` API. Orion's substrate appraisal calls this as
 `http://orion-athena-kev:8009` (`SUBSTRATE_SYSTEM_ONE_BASE_URL`).
 
 ## What it does
 
 Runs a small decision model (default `jaredpalmer/kev-0.8b`) on a pinned GPU
-and answers typed score/choice/noul questions. Orion uses it for
-**behavior-inert** System One shadow frames only — no consumer reads those
-frames yet.
+and answers typed score/choice/noul questions. Orion uses it for System One
+appraisal frames. Per-question consumers are promoted independently:
+`curiosity_pull` is a live endogenous-curiosity admission gate; the other
+initial questions remain observational.
 
 ## Bring-up (Athena)
 

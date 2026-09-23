@@ -5,6 +5,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# Operational bus payload (typed frame). Grammar projection remains the causal
+# shadow on orion:grammar:event; this channel is for consumers that need the
+# probability surface without parsing GrammarAtom.summary JSON.
+SYSTEM_ONE_APPRAISAL_CHANNEL = "orion:system_one:appraisal"
+SYSTEM_ONE_APPRAISAL_KIND = "system_one.appraisal.frame.v1"
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -141,12 +147,11 @@ class SystemOneUsageV1(BaseModel):
 
 
 class SystemOneAppraisalFrameV1(BaseModel):
-    """Compiled, shadow-only System One appraisal.
+    """Compiled System One appraisal over existing substrate artifacts.
 
-    This is a typed frame derived from existing substrate artifacts. It does not
-    itself mutate field state, attention, autonomy, reverie, curiosity, memory,
-    or policy. Promotion into a behavioral consumer requires a separate
-    live-data/calibration gate.
+    Individual questions may be observational or live depending on consumer
+    wiring. The frame itself is not a state authority and does not replace
+    substrate grammar, FieldState, or downstream governance.
     """
 
     model_config = ConfigDict(extra="forbid")

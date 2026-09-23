@@ -61,6 +61,7 @@ def test_save_curiosity_candidates_inserts_json_array_and_prunes():
     assert insert_params["candidate_set_id"].startswith("curiosity-")
     candidates = insert_params["candidates_json"].adapted
     assert [c["signal_id"] for c in candidates] == ["sig-1", "sig-2"]
+    assert insert_params["gate_json"] is None
     prune_sql = str(conn.execute.call_args_list[1].args[0])
     assert "DELETE FROM substrate_endogenous_curiosity_candidates" in prune_sql
 
@@ -73,8 +74,29 @@ def test_save_curiosity_candidates_empty_persists_heartbeat():
     insert_params = conn.execute.call_args_list[0].args[1]
     assert insert_params["candidate_set_id"].startswith("curiosity-")
     assert insert_params["candidates_json"].adapted == []
+    assert insert_params["gate_json"] is None
     prune_sql = str(conn.execute.call_args_list[1].args[0])
     assert "DELETE FROM substrate_endogenous_curiosity_candidates" in prune_sql
+
+
+def test_save_curiosity_candidates_persists_gate_json():
+    store, conn = _store_with_conn()
+    gate = {
+        "gate_result": "system_one_curiosity_admit",
+        "selected_level": "1",
+        "frame_id": "frame-1",
+        "probabilities": {"0": 0.2, "1": 0.5, "2": 0.3},
+    }
+    candidate_set_id = store.save_endogenous_curiosity_candidates(
+        [_signal("sig-1")],
+        gate=gate,
+    )
+
+    assert candidate_set_id.startswith("curiosity-")
+    insert_params = conn.execute.call_args_list[0].args[1]
+    assert insert_params["gate_json"].adapted["gate_result"] == "system_one_curiosity_admit"
+    assert insert_params["gate_json"].adapted["candidate_set_id"] == candidate_set_id
+    assert "gate_json" in str(conn.execute.call_args_list[0].args[0])
 
 
 def test_save_coalition_dwell_row_shape_and_prune():

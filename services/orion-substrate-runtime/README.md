@@ -183,12 +183,13 @@ decay once persistence stops, since the stale stored value never moves. Fixed in
 that added the guard; if you touch this loop again, keep the dormancy decision reading fresh
 recency even though the stored copy may lag.
 
-## System One / Kev shadow appraisal
+## System One / Kev appraisal
 
 `orion/substrate/system_one_appraisal.py` is a provider-neutral System One reducer that currently
 speaks Kev's TypeSafe-compatible `POST /v1/systemone` API. It rides the existing attention-broadcast
-tick; there is no new timer, graph, or bus channel. The local Kev process is
-`services/orion-kev` (`orion-athena-kev` on `app-net`, restart `unless-stopped`).
+tick; there is no new timer or graph. The typed frame is published on
+`orion:system_one:appraisal`; the grammar projection on `orion:grammar:event` remains the causal
+shadow. The local Kev process is `services/orion-kev` (`orion-athena-kev` on `app-net`).
 
 Inputs are deliberately bounded existing artifacts:
 
@@ -196,12 +197,17 @@ Inputs are deliberately bounded existing artifacts:
 - the latest `FieldAttentionFrameV1`, only when it is fresher than
   `SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC`.
 
-The initial question set (`orion.system_one.shadow.v1`) asks four three-level score questions:
+The question set (`orion.system_one.shadow.v1`) asks four three-level score questions:
 `reverie_fit`, `curiosity_pull`, `deliberation_need`, and `attention_interrupt`. The full
 probability surface from Kev is persisted; the expected 0..2 score is **not** silently normalized
-into a 0..1 behavioral propensity.
+into a 0..1 behavioral propensity. Questions are promoted independently:
 
-Output is intentionally behavior-inert in this patch:
+| Question | Status |
+|----------|--------|
+| `curiosity_pull` | **Live** endogenous curiosity admission gate (`argmax` 0 = skip evaluator; 1 and 2 = admit). Levels 1 and 2 have the same admission effect. |
+| `reverie_fit` | Observational (initial live window was argmax-0 dominated; no honest discretionary reverie seam) |
+| `attention_interrupt` | Observational (post-broadcast feedback loop risk) |
+| `deliberation_need` | Observational (not task-scoped) |
 
 ```text
 attention broadcast + fresh field attention
@@ -209,14 +215,19 @@ attention broadcast + fresh field attention
         -> SystemOneAppraisalFrameV1
         -> substrate_system_one_appraisal
         -> GrammarProjectionV1(projection_type=system_one_shadow_appraisal)
+        -> bus orion:system_one:appraisal
+        -> (curiosity only) endogenous_curiosity admission gate
+        -> FrontierCuriosityEvaluator when admitted / fallback
 ```
 
-No `StateDeltaV1` is emitted and no attention, autonomy, reverie, curiosity, scheduler, or FCC
-consumer reads the frame. This is required by the metric-quality gate: learned appraisals must
-first accumulate real shadow data and pass a labeled/outcome-based calibration evaluation.
+No `StateDeltaV1` is emitted. Hard curiosity/governance/budget gates still win. Missing or stale
+System One frames fail open to legacy evaluator-on-seeds behavior. Immediate rollback:
 
-Enabled on Athena for live shadow collection once the migration is applied and Kev is
-reachable. Still no behavioral consumers — collect distributions before wiring any.
+```bash
+SUBSTRATE_SYSTEM_ONE_CURIOSITY_GATE_KILL_SWITCH=true
+```
+
+Default is live (`false`). Endogenous curiosity kill switch remains superior authority.
 
 ```bash
 # bring up Kev (GPU Docker; survives reboot via restart: unless-stopped)
@@ -231,6 +242,12 @@ The endpoint may be local Kev (`services/orion-kev`) or another TypeSafe-System-
 provider. The bounded state excludes raw chat bodies and raw graph snapshots, but it does include
 derived attention summaries that may originate from private conversation; pointing the URL at a
 hosted provider is therefore an explicit privacy-boundary change.
+
+Apply the additive gate lineage column once:
+
+```bash
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_endogenous_curiosity_gate_json_v1.sql
+```
 
 Post-deploy checks:
 

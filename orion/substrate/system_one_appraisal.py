@@ -31,9 +31,10 @@ QUESTION_SET_ID = "orion.system_one.shadow.v1"
 MAX_TEXT_CHARS = 512
 MAX_CHANNELS_PER_TARGET = 8
 
-# These are shadow appraisals, not behavior thresholds. Their point is to
-# collect a calibrated probability surface over real Orion state before any
-# consumer is allowed to act on it.
+# These appraisals start as calibrated probability surfaces over real Orion
+# state. Individual questions may be promoted into behavioral consumers only
+# after a live-data gate; curiosity_pull is the first live consumer
+# (endogenous curiosity admission). The others remain observational.
 SYSTEM_ONE_QUESTIONS: dict[str, SystemOneQuestionV1] = {
     "reverie_fit": SystemOneQuestionV1(
         type="score",

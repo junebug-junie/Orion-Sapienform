@@ -24,6 +24,9 @@ from orion.schemas.system_one_appraisal import (
     SystemOneUsageV1,
 )
 
+# Bump this id whenever instructions, criteria, or question membership changes.
+# It participates in frame identity, preventing a revised decision contract from
+# silently colliding with frames produced by an older one.
 QUESTION_SET_ID = "orion.system_one.shadow.v1"
 
 # These are shadow appraisals, not behavior thresholds. Their point is to
@@ -242,7 +245,9 @@ def run_system_one_appraisal(
         max_targets=max_targets,
     )
     endpoint = base_url.rstrip("/")
-    if not endpoint.endswith("/v1/systemone"):
+    if endpoint.endswith("/v1"):
+        endpoint += "/systemone"
+    elif not endpoint.endswith("/v1/systemone"):
         endpoint += "/v1/systemone"
 
     headers = {"content-type": "application/json"}

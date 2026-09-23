@@ -238,6 +238,12 @@ class Settings(BaseSettings):
     endogenous_curiosity_tick_interval_sec: float = Field(
         60.0, alias="ORION_ENDOGENOUS_CURIOSITY_TICK_INTERVAL_SEC"
     )
+    # Candidate-set retention. Felt-state / Hub readers only need the newest
+    # fresh row, but gate_json calibration lineage needs multi-week history.
+    # Live footprint ~3MB/day → ~90MB at 30d — acceptable on Athena SQL.
+    endogenous_curiosity_candidate_retention_hours: float = Field(
+        720.0, gt=0.0, alias="ORION_ENDOGENOUS_CURIOSITY_CANDIDATE_RETENTION_HOURS"
+    )
     # Self-tab brain-EKG frame producer. Enabled by default (operator directive).
     brain_frame_enabled: bool = Field(True, alias="SUBSTRATE_BRAIN_FRAME_ENABLED")
     brain_frame_interval_sec: float = Field(5.0, alias="BRAIN_FRAME_INTERVAL_SEC")

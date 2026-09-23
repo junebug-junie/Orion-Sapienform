@@ -13,6 +13,7 @@ from orion.schemas.system_one_appraisal import (
 from orion.substrate.system_one_access import (
     access_score_question,
     argmax_score_level,
+    curiosity_admission_level,
     decide_curiosity_admission,
 )
 from orion.substrate.system_one_appraisal import QUESTION_SET_ID, SYSTEM_ONE_QUESTIONS
@@ -61,6 +62,43 @@ def test_argmax_score_level():
     assert argmax_score_level({"0": 0.5, "1": 0.3, "2": 0.2}) == "0"
     assert argmax_score_level({"0": 0.1, "1": 0.6, "2": 0.3}) == "1"
     assert argmax_score_level({"0": 0.1, "1": 0.2, "2": 0.7}) == "2"
+
+
+def test_curiosity_admission_level_unique_zero_vetoes():
+    level, veto = curiosity_admission_level({"0": 0.5, "1": 0.3, "2": 0.2})
+    assert level == "0" and veto is True
+
+
+def test_curiosity_admission_level_exact_tie_0_1_admits():
+    level, veto = curiosity_admission_level({"0": 0.5, "1": 0.5, "2": 0.0})
+    assert veto is False
+    assert level == "1"
+
+
+def test_curiosity_admission_level_exact_tie_0_2_admits():
+    level, veto = curiosity_admission_level({"0": 0.4, "1": 0.2, "2": 0.4})
+    assert veto is False
+    assert level == "2"
+
+
+def test_decide_curiosity_admits_on_exact_0_1_tie():
+    decision = decide_curiosity_admission(
+        _frame(probabilities={"0": 0.5, "1": 0.5, "2": 0.0}),
+        now=NOW,
+    )
+    assert decision.gate_result == "system_one_curiosity_admit"
+    assert decision.admit_evaluator is True
+    assert decision.selected_level == "1"
+
+
+def test_decide_curiosity_admits_on_exact_0_2_tie():
+    decision = decide_curiosity_admission(
+        _frame(probabilities={"0": 0.45, "1": 0.1, "2": 0.45}),
+        now=NOW,
+    )
+    assert decision.gate_result == "system_one_curiosity_admit"
+    assert decision.admit_evaluator is True
+    assert decision.selected_level == "2"
 
 
 def test_access_rejects_expired_frame():

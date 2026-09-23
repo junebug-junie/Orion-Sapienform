@@ -15,6 +15,7 @@ if str(SUBSTRATE_ROOT) not in sys.path:
     sys.path.insert(0, str(SUBSTRATE_ROOT))
 
 from app.worker import BiometricsSubstrateWorker
+from app.store import EndogenousCuriosityPersistResult
 
 
 def _make_worker(
@@ -41,7 +42,12 @@ def _make_worker(
     worker._store.load_attention_broadcast.return_value = None
     worker._store.load_chat_session_projection.return_value = None
     worker._store.load_latest_system_one_appraisal.return_value = None
-    worker._store.save_endogenous_curiosity_candidates.return_value = "curiosity-test"
+    worker._store.save_endogenous_curiosity_candidates.return_value = (
+        EndogenousCuriosityPersistResult(
+            candidate_set_id="curiosity-test",
+            gate_lineage_persisted=True,
+        )
+    )
     return worker
 
 
@@ -135,7 +141,10 @@ def test_endogenous_curiosity_noop_tick_persists_empty_heartbeat(monkeypatch):
     ):
         worker._endogenous_curiosity_tick()
 
-    worker._store.save_endogenous_curiosity_candidates.assert_called_once_with([])
+    worker._store.save_endogenous_curiosity_candidates.assert_called_once()
+    args, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
+    assert args == ([],)
+    assert kwargs.get("retention_hours") == worker._settings.endogenous_curiosity_candidate_retention_hours
 
 
 def test_endogenous_curiosity_noop_persist_failure_does_not_break_tick(monkeypatch):
@@ -366,6 +375,58 @@ def test_system_one_level_0_skips_evaluator_preserves_seeds(monkeypatch):
     assert kwargs["gate"]["gate_result"] == "system_one_curiosity_noop"
     assert kwargs["gate"]["selected_level"] == "0"
     assert kwargs["gate"]["frame_id"] == "frame-level-0"
+    assert kwargs["require_gate_lineage"] is True
+    # Authority boundary: level-0 still persists endogenous seeds for Hub
+    # readers (curiosity_hint / endogenous_outreach); it only skips the evaluator.
+    assert seed in args[0]
+
+
+def test_system_one_level_0_without_lineage_fails_open_to_evaluator(monkeypatch):
+    """Causal veto requires durable gate_json; missing lineage → legacy admit."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed"],
+        signal_strength=0.85,
+        confidence=0.7,
+    )
+    decision = SimpleNamespace(
+        outcome="invoke",
+        chosen_task_type="evidence_gap_scan",
+        decision_id="dec-legacy",
+        bounded_context_reason="invoke based on curiosity_candidate",
+    )
+    run_result = SimpleNamespace(signals=[seed], decision=decision)
+    worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame("0")
+    worker._store.save_endogenous_curiosity_candidates.return_value = (
+        EndogenousCuriosityPersistResult(
+            candidate_set_id="curiosity-legacy",
+            gate_lineage_persisted=False,
+        )
+    )
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        worker._endogenous_curiosity_tick()
+
+    evaluator_cls.return_value.evaluate.assert_called_once()
+    # First persist attempted the noop with require_gate_lineage; second is admit path.
+    assert worker._store.save_endogenous_curiosity_candidates.call_count >= 2
+    first_kwargs = worker._store.save_endogenous_curiosity_candidates.call_args_list[0].kwargs
+    assert first_kwargs["require_gate_lineage"] is True
+    last_kwargs = worker._store.save_endogenous_curiosity_candidates.call_args_list[-1].kwargs
+    assert last_kwargs["gate"]["fallback_reason"] == "lineage_store_unavailable"
+    assert last_kwargs["gate"]["gate_result"] == "system_one_unavailable_fallback"
 
 
 def test_system_one_level_1_and_2_admit_evaluator(monkeypatch):
@@ -496,4 +557,7 @@ def test_system_one_cannot_mint_candidates(monkeypatch):
 
     seeds_fn.assert_called_once()
     evaluator_cls.assert_not_called()
-    worker._store.save_endogenous_curiosity_candidates.assert_called_once_with([])
+    worker._store.save_endogenous_curiosity_candidates.assert_called_once()
+    args, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
+    assert args == ([],)
+    assert "retention_hours" in kwargs

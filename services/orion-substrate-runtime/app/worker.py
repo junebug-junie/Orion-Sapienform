@@ -3484,7 +3484,10 @@ class BiometricsSubstrateWorker:
                 logger.exception("substrate_endogenous_curiosity_seed_source_log_failed")
         if not seeds:
             try:
-                self._store.save_endogenous_curiosity_candidates([])
+                self._store.save_endogenous_curiosity_candidates(
+                    [],
+                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                )
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_persist_failed")
             logger.info("substrate_endogenous_curiosity_tick_completed seeds=0 outcome=noop")
@@ -3522,23 +3525,42 @@ class BiometricsSubstrateWorker:
             gate_telemetry["evaluator_outcome"] = None
             gate_telemetry["evaluator_task"] = None
             gate_telemetry["decision_id"] = None
+            lineage_ok = False
             try:
-                self._store.save_endogenous_curiosity_candidates(
+                persist = self._store.save_endogenous_curiosity_candidates(
                     list(seeds)[:8],
                     gate=gate_telemetry,
+                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                    require_gate_lineage=True,
                 )
+                lineage_ok = bool(persist.gate_lineage_persisted)
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_persist_failed")
-            logger.info(
-                "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=%s "
-                "system_one_gate=%s frame_id=%s level=%s",
-                len(seeds),
-                admission.gate_result,
-                admission.gate_result,
+                lineage_ok = False
+
+            if lineage_ok:
+                logger.info(
+                    "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=%s "
+                    "system_one_gate=%s frame_id=%s level=%s",
+                    len(seeds),
+                    admission.gate_result,
+                    admission.gate_result,
+                    admission.frame_id,
+                    admission.selected_level,
+                )
+                return
+
+            # Causal veto requires durable gate lineage. Missing migration /
+            # gate_json must not silently suppress the evaluator.
+            gate_telemetry["gate_result"] = "system_one_unavailable_fallback"
+            gate_telemetry["admit_evaluator"] = True
+            gate_telemetry["fallback_reason"] = "lineage_store_unavailable"
+            logger.warning(
+                "substrate_endogenous_curiosity_system_one_veto_without_lineage "
+                "falling_back_to_evaluator frame_id=%s",
                 admission.frame_id,
-                admission.selected_level,
             )
-            return
+            # Fall through to evaluator with updated telemetry.
 
         try:
             from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
@@ -3576,6 +3598,7 @@ class BiometricsSubstrateWorker:
                 self._store.save_endogenous_curiosity_candidates(
                     persisted,
                     gate=gate_telemetry,
+                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
                 )
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_persist_failed")

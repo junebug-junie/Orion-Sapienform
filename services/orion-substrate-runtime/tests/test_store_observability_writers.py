@@ -54,8 +54,13 @@ def _projection() -> AttentionBroadcastProjectionV1:
 
 def test_save_curiosity_candidates_inserts_json_array_and_prunes():
     store, conn = _store_with_conn()
-    store.save_endogenous_curiosity_candidates([_signal("sig-1"), _signal("sig-2")])
+    result = store.save_endogenous_curiosity_candidates(
+        [_signal("sig-1"), _signal("sig-2")],
+        retention_hours=720.0,
+    )
 
+    assert result.candidate_set_id.startswith("curiosity-")
+    assert result.gate_lineage_persisted is True
     assert conn.execute.call_count == 2  # insert + prune
     insert_params = conn.execute.call_args_list[0].args[1]
     assert insert_params["candidate_set_id"].startswith("curiosity-")
@@ -64,12 +69,14 @@ def test_save_curiosity_candidates_inserts_json_array_and_prunes():
     assert insert_params["gate_json"] is None
     prune_sql = str(conn.execute.call_args_list[1].args[0])
     assert "DELETE FROM substrate_endogenous_curiosity_candidates" in prune_sql
+    assert "720.0 hours" in prune_sql
 
 
 def test_save_curiosity_candidates_empty_persists_heartbeat():
     store, conn = _store_with_conn()
-    store.save_endogenous_curiosity_candidates([])
+    result = store.save_endogenous_curiosity_candidates([], retention_hours=48.0)
 
+    assert result.gate_lineage_persisted is True
     assert conn.execute.call_count == 2  # insert + prune
     insert_params = conn.execute.call_args_list[0].args[1]
     assert insert_params["candidate_set_id"].startswith("curiosity-")
@@ -77,6 +84,7 @@ def test_save_curiosity_candidates_empty_persists_heartbeat():
     assert insert_params["gate_json"] is None
     prune_sql = str(conn.execute.call_args_list[1].args[0])
     assert "DELETE FROM substrate_endogenous_curiosity_candidates" in prune_sql
+    assert "48.0 hours" in prune_sql
 
 
 def test_save_curiosity_candidates_persists_gate_json():
@@ -87,16 +95,38 @@ def test_save_curiosity_candidates_persists_gate_json():
         "frame_id": "frame-1",
         "probabilities": {"0": 0.2, "1": 0.5, "2": 0.3},
     }
-    candidate_set_id = store.save_endogenous_curiosity_candidates(
+    result = store.save_endogenous_curiosity_candidates(
         [_signal("sig-1")],
         gate=gate,
+        retention_hours=720.0,
     )
 
-    assert candidate_set_id.startswith("curiosity-")
+    assert result.candidate_set_id.startswith("curiosity-")
+    assert result.gate_lineage_persisted is True
     insert_params = conn.execute.call_args_list[0].args[1]
     assert insert_params["gate_json"].adapted["gate_result"] == "system_one_curiosity_admit"
-    assert insert_params["gate_json"].adapted["candidate_set_id"] == candidate_set_id
+    assert insert_params["gate_json"].adapted["candidate_set_id"] == result.candidate_set_id
     assert "gate_json" in str(conn.execute.call_args_list[0].args[0])
+
+
+def test_save_curiosity_candidates_reports_lineage_unavailable_on_missing_column():
+    store, conn = _store_with_conn()
+
+    def execute(stmt, params=None):
+        sql = str(stmt)
+        if "gate_json" in sql and "INSERT" in sql:
+            raise RuntimeError('column "gate_json" of relation does not exist')
+        return MagicMock()
+
+    conn.execute.side_effect = execute
+    result = store.save_endogenous_curiosity_candidates(
+        [_signal("sig-1")],
+        gate={"gate_result": "system_one_curiosity_noop", "selected_level": "0"},
+        require_gate_lineage=True,
+        retention_hours=720.0,
+    )
+    assert result.gate_lineage_persisted is False
+    assert result.candidate_set_id.startswith("curiosity-")
 
 
 def test_save_coalition_dwell_row_shape_and_prune():

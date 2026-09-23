@@ -33,6 +33,7 @@ FallbackReason = Literal[
     "invalid_probabilities",
     "consumer_kill_switch",
     "load_failed",
+    "lineage_store_unavailable",
 ]
 
 
@@ -43,7 +44,11 @@ def _ensure_utc(value: datetime) -> datetime:
 
 
 def argmax_score_level(probabilities: Mapping[str, float]) -> str | None:
-    """Return the declared level key with the highest probability."""
+    """Return one declared level key with the highest probability.
+
+    Insertion order can break ties. Do **not** use this for a causal veto —
+    use :func:`curiosity_admission_level` instead.
+    """
     if not probabilities:
         return None
     try:
@@ -54,6 +59,37 @@ def argmax_score_level(probabilities: Mapping[str, float]) -> str | None:
     except (TypeError, ValueError):
         return None
 
+
+def curiosity_admission_level(
+    probabilities: Mapping[str, float],
+) -> tuple[str | None, bool]:
+    """Map ``curiosity_pull`` probabilities to (telemetry_level, unique_zero_veto).
+
+    Exact ties use float equality (no epsilon). Causal contract:
+
+    * ``"0"`` uniquely highest → veto/noop (``unique_zero_veto=True``)
+    * any max-tie that includes ``"1"`` or ``"2"`` → admit (``unique_zero_veto=False``)
+    * unique ``"1"`` or ``"2"`` max → admit
+
+    Ambiguity means System One has not earned a veto.
+    """
+    if not probabilities:
+        return None, False
+    try:
+        numeric = {str(k): float(v) for k, v in probabilities.items()}
+    except (TypeError, ValueError):
+        return None, False
+    if not numeric:
+        return None, False
+    max_p = max(numeric.values())
+    winners = {key for key, value in numeric.items() if value == max_p}
+    if winners == {"0"}:
+        return "0", True
+    # Admit. Telemetry level: unique winner, else highest admitting key among winners.
+    if len(winners) == 1:
+        return next(iter(winners)), False
+    admit_keys = sorted((winners - {"0"}) or winners, key=lambda k: int(k) if k.isdigit() else -1)
+    return admit_keys[-1], False
 
 @dataclass(frozen=True)
 class SystemOneQuestionView:
@@ -176,11 +212,11 @@ def decide_curiosity_admission(
     max_age_sec: float | None = None,
     expected_question_set_id: str = QUESTION_SET_ID,
 ) -> CuriosityAdmissionDecision:
-    """Categorical curiosity admission: level 0 noop; levels 1 and 2 admit.
+    """Categorical curiosity admission: unique level-0 noop; otherwise admit.
 
-    Levels 1 and 2 have the same admission effect. Distinction is retained in
-    telemetry only. Kill switch and invalid frames fail open to the legacy
-    evaluator path.
+    Levels 1 and 2 (and any max-tie that includes them) have the same admission
+    effect. Distinction is retained in telemetry. Kill switch, invalid frames,
+    and exact ambiguity fail open to the legacy evaluator path.
     """
     if kill_switch:
         return CuriosityAdmissionDecision(
@@ -204,12 +240,26 @@ def decide_curiosity_admission(
             fallback_reason=reason,
         )
 
-    level = accessed.selected_level
-    if level == "0":
+    level, unique_zero_veto = curiosity_admission_level(accessed.probabilities)
+    if level is None:
+        return CuriosityAdmissionDecision(
+            gate_result="system_one_unavailable_fallback",
+            admit_evaluator=True,
+            fallback_reason="invalid_probabilities",
+            frame_id=accessed.frame_id,
+            question_set_id=accessed.question_set_id,
+            provider=accessed.provider,
+            model_id=accessed.model_id,
+            appraisal_age_sec=accessed.appraisal_age_sec,
+            source_refs=accessed.source_refs,
+            probabilities=dict(accessed.probabilities),
+        )
+
+    if unique_zero_veto:
         gate: CuriosityGateResult = "system_one_curiosity_noop"
         admit = False
     else:
-        # Levels 1 and 2: identical admission. No priority bump for level 2.
+        # Levels 1 and 2 (and ties involving them): identical admission.
         gate = "system_one_curiosity_admit"
         admit = True
 

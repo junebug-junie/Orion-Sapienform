@@ -39,22 +39,41 @@ task-scope reasons; see original shadow spec promotion requirements).
 
 ## Operational contract for `curiosity_pull`
 
-Use `argmax(probabilities)` over declared levels `"0"|"1"|"2"`.
+Use the categorical distribution over declared levels `"0"|"1"|"2"`.
 Retain the full distribution in telemetry. Do **not** turn expected score into a
 0..1 propensity. Do **not** aggregate across System One questions.
 
-| Argmax | Meaning | Gate |
-|--------|---------|------|
-| 0 | Not worth additional cognition | `system_one_curiosity_noop` — preserve candidates + provenance; **skip** `FrontierCuriosityEvaluator` |
-| 1 | Worth evaluating | `system_one_curiosity_admit` — run existing evaluator |
-| 2 | Strongly worth evaluating | `system_one_curiosity_admit` — **same effect as 1**; no multiplier, priority bump, or bypass |
+Causal selection is **not** plain dict-order `argmax`:
+
+| Condition | Gate |
+|-----------|------|
+| `"0"` is the **unique** maximum | `system_one_curiosity_noop` — preserve candidates + provenance; **skip** `FrontierCuriosityEvaluator` |
+| Unique max is `"1"` or `"2"` | `system_one_curiosity_admit` — run existing evaluator |
+| Exact max-tie that includes `"1"` or `"2"` (including 0/1 or 0/2 ties) | `system_one_curiosity_admit` — ambiguity means System One has not earned a veto |
 
 Levels 1 and 2 are identical for admission in this PR. Distinction is retained
-for calibration.
+for calibration. No epsilon/margin coefficient.
 
 Fallback when frame missing / expired / wrong question set / malformed /
 incompatible: **`system_one_unavailable_fallback`** → legacy pre–System-One
 behavior (call evaluator). Kev outage must not kill curiosity.
+
+**Lineage invariant:** System One may causally suppress evaluator admission
+**only** when the gate decision can be durably recorded in `gate_json`. If the
+column/migration is unavailable, fail open with
+`fallback_reason=lineage_store_unavailable` and still run the evaluator.
+Missing migration must not kill the curiosity tick; candidates still persist
+via the legacy INSERT so Hub readers keep working.
+
+## Authority boundary (intentional)
+
+Level 0 means: **do not spend `FrontierCuriosityEvaluator` cognition on this
+candidate set.** It does **not** erase observations or globally prohibit other
+curiosity-adjacent consumers from seeing them.
+
+Hub readers of `candidates_json` (`curiosity_hint.py`, `endogenous_outreach.py`)
+still observe the persisted endogenous seeds after a level-0 tick. That is
+deliberate for this design.
 
 ## Pipeline
 
@@ -62,8 +81,8 @@ behavior (call evaluator). Kev outage must not kill curiosity.
 substrate evidence
 → endogenous_curiosity_candidates()
 → System One curiosity_pull admission (fresh frame)
-→ noop | admit
-→ FrontierCuriosityEvaluator (only if admitted or fallback)
+→ noop (only if unique-0 AND gate_json lineage persisted) | admit | lineage fail-open
+→ FrontierCuriosityEvaluator (when admitted or fallback)
 → existing governance / plans / outcomes
 ```
 
@@ -81,15 +100,23 @@ Hard authorities that System One never overrides:
 behavior immediately. **Default is live (kill switch false).**  
 Endogenous curiosity kill switch remains superior authority.
 
+## Candidate retention
+
+`ORION_ENDOGENOUS_CURIOSITY_CANDIDATE_RETENTION_HOURS` defaults to **720** (30 days)
+so gate lineage survives for calibration. Felt-state / Hub readers still query
+only the newest fresh row, so longer history does not change their semantics.
+Live footprint was ~3MB/day at promotion time (~90MB at 30d) — acceptable.
+
 ## Telemetry / lineage
 
-Every seeded curiosity tick records (logs + optional `gate_json` on the
-candidate-set row):
+Every seeded curiosity tick records (logs + `gate_json` on the candidate-set
+row when available):
 
 - candidate_set_id / evidence refs
 - System One `frame_id`, question_set, model/provider, appraisal age
-- full `curiosity_pull` probabilities + argmax level
+- full `curiosity_pull` probabilities + selected level
 - gate result: noop | admit | unavailable_fallback
+- fallback reason including `lineage_store_unavailable` when applicable
 - evaluator outcome when admitted
 - decision_id / task type when present
 - joinable later: investigation/run id and eventual outcome when those exist

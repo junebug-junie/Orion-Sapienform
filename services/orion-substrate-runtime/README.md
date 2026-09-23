@@ -214,7 +214,8 @@ No `StateDeltaV1` is emitted and no attention, autonomy, reverie, curiosity, sch
 consumer reads the frame. This is required by the metric-quality gate: learned appraisals must
 first accumulate real shadow data and pass a labeled/outcome-based calibration evaluation.
 
-Enable only after a compatible endpoint is deployed and the migration is applied:
+Enabled on Athena for live shadow collection once the migration is applied and Kev is
+reachable. Still no behavioral consumers — collect distributions before wiring any.
 
 ```bash
 SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED=true
@@ -225,7 +226,7 @@ SUBSTRATE_SYSTEM_ONE_MODEL=kev-latest
 The endpoint may be local Kev or another TypeSafe-System-One-compatible provider. The bounded
 state excludes raw chat bodies and raw graph snapshots, but it does include derived attention
 summaries that may originate from private conversation; pointing the URL at a hosted provider is
-therefore an explicit privacy-boundary change. Default is off.
+therefore an explicit privacy-boundary change.
 
 Post-deploy checks:
 

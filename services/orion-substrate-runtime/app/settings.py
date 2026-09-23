@@ -122,10 +122,11 @@ class Settings(BaseSettings):
     # System One / Kev shadow appraisal. This rides the existing attention
     # broadcast cadence and is behavior-inert: it persists a compiled frame and
     # emits a grammar projection trace, but no attention/autonomy/reverie
-    # consumer reads it. Promote individual appraisals only after live-data and
+    # consumer reads it. Default-on for Athena shadow collection; promote
+    # individual appraisals into consumers only after live-data and
     # calibration gates pass.
     enable_system_one_appraisal: bool = Field(
-        False, alias="SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED"
+        True, alias="SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED"
     )
     system_one_base_url: str = Field("", alias="SUBSTRATE_SYSTEM_ONE_BASE_URL")
     system_one_model: str = Field("kev-latest", alias="SUBSTRATE_SYSTEM_ONE_MODEL")

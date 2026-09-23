@@ -120,10 +120,16 @@ class SystemOneAnswerV1(BaseModel):
     def _answer_matches_type(self) -> "SystemOneAnswerV1":
         if self.type == "noul" and self.noul is None:
             raise ValueError("noul answer requires noul probability")
-        if self.type == "choice" and self.choice is None:
-            raise ValueError("choice answer requires selected choice")
-        if self.type == "score" and self.score is None:
-            raise ValueError("score answer requires score")
+        if self.type == "choice":
+            if self.choice is None:
+                raise ValueError("choice answer requires selected choice")
+            if not self.probabilities:
+                raise ValueError("choice answer requires option probabilities")
+        if self.type == "score":
+            if self.score is None:
+                raise ValueError("score answer requires score")
+            if not self.probabilities:
+                raise ValueError("score answer requires level probabilities")
         return self
 
 

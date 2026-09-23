@@ -143,6 +143,21 @@ def test_build_input_state_is_bounded_and_preserves_source_lineage() -> None:
     ]
 
 
+def test_input_state_clips_derived_text() -> None:
+    broadcast = _broadcast()
+    broadcast.frame.open_loops[0].description = "x" * 2000
+    broadcast.frame.live_unknowns = ["u" * 2000]
+    state = build_system_one_input_state(
+        broadcast=broadcast,
+        field_frame=None,
+        max_open_loops=1,
+        max_targets=1,
+    )
+
+    assert len(state.open_loops[0].description) == 512
+    assert len(state.live_unknowns[0]) == 512
+
+
 def test_run_system_one_appraisal_preserves_probability_surface() -> None:
     calls = []
 

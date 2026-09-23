@@ -204,7 +204,7 @@ into a 0..1 behavioral propensity. Questions are promoted independently:
 
 | Question | Status |
 |----------|--------|
-| `curiosity_pull` | **Live** endogenous curiosity admission gate (`argmax` 0 = skip evaluator; 1 and 2 = admit). Levels 1 and 2 have the same admission effect. |
+| `curiosity_pull` | **Live** endogenous curiosity admission gate (unique level-0 = skip evaluator **only if** `gate_json` lineage persists; levels 1 and 2, and exact max-ties involving them, admit). Levels 1 and 2 have the same admission effect. Level-0 still persists seeds for Hub readers. |
 | `reverie_fit` | Observational (initial live window was argmax-0 dominated; no honest discretionary reverie seam) |
 | `attention_interrupt` | Observational (post-broadcast feedback loop risk) |
 | `deliberation_need` | Observational (not task-scoped) |

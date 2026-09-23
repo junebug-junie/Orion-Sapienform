@@ -395,11 +395,6 @@ class BiometricsSubstrateWorker:
         # slot, overwritten each tick: a missed publish loses one ~30s row,
         # never queues up.
         self._pending_attention_schema: Any = None
-        # System One runs in the same sync attention tick. Grammar publication
-        # must happen back on the async loop, so use a bounded one-tick handoff
-        # just like _pending_attention_schema above. Each tick replaces the
-        # prior batch; no backlog can accumulate if the bus is unavailable.
-        self._pending_system_one_grammar_events: list[GrammarEventV1] = []
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
         # Perceptual health state, fed by _vision_artifact_listener_loop and
@@ -2745,13 +2740,6 @@ class BiometricsSubstrateWorker:
                     self._attention_self_model_tick(state=state, broadcast=projection)
                 except Exception:
                     logger.exception("substrate_attention_self_model_tick_failed")
-            if s.enable_system_one_appraisal:
-                try:
-                    self._system_one_appraisal_tick(broadcast=projection)
-                except Exception:
-                    # Shadow-only and fail-open: Kev unavailability must never
-                    # impair the existing workspace/attention tick.
-                    logger.exception("substrate_system_one_appraisal_tick_failed")
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
 
@@ -2880,86 +2868,6 @@ class BiometricsSubstrateWorker:
             self_model.predicted_shift,
         )
 
-    def _system_one_appraisal_tick(self, *, broadcast: Any) -> None:
-        """Compile current attention state, call System One, and persist shadow output.
-
-        This is intentionally a *compiled frame* over existing substrate
-        artifacts, not a state mutation. No StateDeltaV1 is emitted and no
-        behavioral consumer reads the result in this patch.
-        """
-        from orion.substrate.system_one_appraisal import (
-            build_system_one_grammar_events,
-            run_system_one_appraisal,
-        )
-
-        s = self._settings
-        field_frame = self._store.get_latest_field_attention_frame()
-        now = datetime.now(timezone.utc)
-        if field_frame is not None:
-            field_at = field_frame.generated_at
-            if field_at.tzinfo is None:
-                field_at = field_at.replace(tzinfo=timezone.utc)
-            age_sec = max(0.0, (now - field_at).total_seconds())
-            if age_sec > float(s.system_one_field_frame_max_age_sec):
-                logger.warning(
-                    "substrate_system_one_field_frame_stale age_sec=%.2f max_age_sec=%.2f",
-                    age_sec,
-                    float(s.system_one_field_frame_max_age_sec),
-                )
-                field_frame = None
-
-        frame = run_system_one_appraisal(
-            broadcast=broadcast,
-            field_frame=field_frame,
-            base_url=s.system_one_base_url,
-            model=s.system_one_model,
-            provider=s.system_one_provider,
-            api_key=s.system_one_api_key,
-            timeout_sec=s.system_one_timeout_sec,
-            ttl_sec=s.system_one_ttl_sec,
-            max_open_loops=s.system_one_max_open_loops,
-            max_targets=s.system_one_max_targets,
-            now=now,
-        )
-        self._store.save_system_one_appraisal(
-            frame,
-            retention_hours=s.system_one_retention_hours,
-        )
-        self._pending_system_one_grammar_events = build_system_one_grammar_events(frame)
-
-        score_log = {
-            key: answer.score
-            for key, answer in frame.answers.items()
-            if answer.type == "score"
-        }
-        logger.info(
-            "substrate_system_one_appraisal_completed frame_id=%s model=%s "
-            "latency_ms=%s scores=%s",
-            frame.frame_id,
-            frame.model_id,
-            frame.latency_ms,
-            score_log,
-        )
-
-    async def _publish_pending_system_one_grammar(self) -> None:
-        """Publish the causal shadow of the latest compiled System One frame."""
-        events = self._pending_system_one_grammar_events
-        self._pending_system_one_grammar_events = []
-        if not events or self._bus is None:
-            return
-        for event in events:
-            try:
-                await publish_grammar_event(
-                    self._bus,
-                    event,
-                    source_name=self._settings.service_name,
-                )
-            except Exception:
-                logger.exception(
-                    "substrate_system_one_grammar_publish_failed event_id=%s",
-                    event.event_id,
-                )
-
     async def _publish_pending_attention_schema(self) -> None:
         """Publish the AttentionSchemaV1 the last self-model tick projected.
 
@@ -3003,7 +2911,6 @@ class BiometricsSubstrateWorker:
             try:
                 await asyncio.to_thread(self._attention_broadcast_tick)
                 await self._publish_pending_attention_schema()
-                await self._publish_pending_system_one_grammar()
             except Exception:
                 logger.exception("substrate_attention_broadcast_loop_failed")
             try:

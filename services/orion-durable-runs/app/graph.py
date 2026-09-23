@@ -325,6 +325,12 @@ def finish_detail(state: CuriosityRunState) -> dict[str, Any]:
         "finding_text": text[:FINDING_TEXT_CAP],
         "journal_entry_id": state.get("journal_entry_id"),
         "attempts": int(state.get("attempt") or 0),
+        # Door-A: when finish deferred release, Hub composes under this grant.
+        **(
+            {"resource_lease": dict(state["lease"])}
+            if bool(outcome.get("reach_out")) and isinstance(state.get("lease"), dict) and state.get("lease")
+            else {}
+        ),
         **harness_meta_detail(state),
     }
 

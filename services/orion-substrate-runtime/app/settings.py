@@ -118,6 +118,37 @@ class Settings(BaseSettings):
     attention_broadcast_log_retention_hours: float = Field(
         168.0, alias="ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS"
     )
+
+    # System One / Kev shadow appraisal. This rides the existing attention
+    # broadcast cadence and is behavior-inert: it persists a compiled frame and
+    # emits a grammar projection trace, but no attention/autonomy/reverie
+    # consumer reads it. Promote individual appraisals only after live-data and
+    # calibration gates pass.
+    enable_system_one_appraisal: bool = Field(
+        False, alias="SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED"
+    )
+    system_one_base_url: str = Field("", alias="SUBSTRATE_SYSTEM_ONE_BASE_URL")
+    system_one_model: str = Field("kev-latest", alias="SUBSTRATE_SYSTEM_ONE_MODEL")
+    system_one_provider: str = Field("kev", alias="SUBSTRATE_SYSTEM_ONE_PROVIDER")
+    system_one_api_key: str = Field("", alias="SUBSTRATE_SYSTEM_ONE_API_KEY")
+    system_one_timeout_sec: float = Field(
+        3.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_TIMEOUT_SEC"
+    )
+    system_one_ttl_sec: float = Field(
+        90.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_TTL_SEC"
+    )
+    system_one_retention_hours: float = Field(
+        168.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_RETENTION_HOURS"
+    )
+    system_one_field_frame_max_age_sec: float = Field(
+        10.0, ge=0.0, alias="SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC"
+    )
+    system_one_max_open_loops: int = Field(
+        6, ge=1, le=32, alias="SUBSTRATE_SYSTEM_ONE_MAX_OPEN_LOOPS"
+    )
+    system_one_max_targets: int = Field(
+        5, ge=1, le=32, alias="SUBSTRATE_SYSTEM_ONE_MAX_TARGETS"
+    )
     # AST/HOT self-model live tick (docs/superpowers/specs/2026-07-29-ast-hot-
     # reducer-live-ticking-design.md). Appended to the tail of
     # _attention_broadcast_tick() -- no separate timer, rides that tick's own

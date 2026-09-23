@@ -88,6 +88,7 @@ from orion.schemas.execution_projection import (
     ExecutionTrajectoryProjectionV1,
 )
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.system_one_appraisal import SystemOneAppraisalFrameV1
 from orion.schemas.graph_write_intent import GraphWriteIntentV1
 from orion.schemas.memory_consolidation import (
     ChatHistorySparkMetaPatchV1,
@@ -789,6 +790,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
+    "SystemOneAppraisalFrameV1": SystemOneAppraisalFrameV1,
     "OrganEmissionV1": OrganEmissionV1,
     "ReductionReceiptV1": ReductionReceiptV1,
     "StateDeltaV1": StateDeltaV1,

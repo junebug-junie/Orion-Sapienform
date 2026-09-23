@@ -104,7 +104,7 @@ def _run(**over) -> dict:
         "prior_touched": {"prior_id": "p1", "claim": "who matters", "from": 0.6, "to": 0.68,
                           "from_status": "revised", "to_status": "supported"},
         "reach_out": {"wanted": False, "why": "", "decision": None, "gate": None, "decided_at": None,
-                      "sent_at": None, "composed_text": "", "reply": None},
+                      "sent_at": None, "composed_text": "", "reply": None, "can_reply": False},
         "journal_entry_id": "j", "finding_text": "f", "self_written": None, "self_sense": None,
         "harness": None, "outcome_kind": "finished",
     }
@@ -316,6 +316,55 @@ def test_a_not_recorded_decision_is_not_dressed_up_as_a_gate(tmp_path) -> None:
     out = _render({"story": {"available": True, "found": True, "run": run, "readings_available": False, "journal_body": "", "timeline": []}}, tmp_path)
     assert "not recorded — nothing wrote a decision" in out["story"]
     assert "blocked:" not in out["story"]
+
+
+# --- explicit reply box (design doc "Missing question 1, option (b)") ------
+
+
+def test_the_reply_box_shows_only_for_a_confirmed_sent_outreach(tmp_path) -> None:
+    sent_run = _run(outcome_kind="reached_out_sent",
+                     reach_out={"wanted": True, "why": "w", "decision": "sent", "gate": None,
+                                "decided_at": NOW_MS, "sent_at": NOW_MS, "composed_text": "hi Juniper",
+                                "reply": None, "can_reply": True})
+    story = {"available": True, "found": True, "run": sent_run, "readings_available": False,
+             "journal_body": "", "timeline": []}
+    out = _render({"story": story}, tmp_path)
+    s = out["story"]
+    assert 'class="reply-box"' in s
+    assert f'data-reply-run="{sent_run["run_id"]}"' in s
+    assert f'data-reply-send="{sent_run["run_id"]}"' in s
+    assert 'class="reply-text"' in s and "Send reply" in s
+
+
+def test_the_reply_box_is_absent_when_the_outreach_was_blocked(tmp_path) -> None:
+    blocked_run = _run(outcome_kind="reached_out_blocked",
+                        reach_out={"wanted": True, "why": "w", "decision": "blocked:daily_cap",
+                                   "gate": "daily_cap", "decided_at": NOW_MS, "sent_at": None,
+                                   "composed_text": "", "reply": None, "can_reply": False})
+    story = {"available": True, "found": True, "run": blocked_run, "readings_available": False,
+             "journal_body": "", "timeline": []}
+    out = _render({"story": story}, tmp_path)
+    assert "reply-box" not in out["story"]
+
+
+def test_the_reply_box_is_absent_when_no_reach_out_was_wanted(tmp_path) -> None:
+    run = _run()  # base fixture: reach_out.wanted is False
+    story = {"available": True, "found": True, "run": run, "readings_available": False,
+             "journal_body": "", "timeline": []}
+    out = _render({"story": story}, tmp_path)
+    assert "reply-box" not in out["story"]
+
+
+def test_the_page_wires_the_reply_post_and_does_not_render_the_reply_optimistically() -> None:
+    page = TEMPLATE.read_text(encoding="utf-8")
+    assert "/curiosity/api/run/${encodeURIComponent(runId)}/reply" in page
+    assert "data-reply-send" in page
+    assert "async function sendReply" in page
+    # The reply is only shown once the backend confirms and a later poll
+    # picks up the real chat_history_log row -- never rendered as delivered
+    # from the POST response itself.
+    assert 'ta.value = ""' in page
+    assert "openRun(runId)" in page
 
 
 def test_story_shows_summary_prior_outcome_and_lived_answer(tmp_path) -> None:

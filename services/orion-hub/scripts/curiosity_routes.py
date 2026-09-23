@@ -33,6 +33,11 @@ tab-redesign-design.md):
 - `/api/run/{id}` -- one run's story: a clock-ordered timeline joined across
                     lifecycle rows, Orion's graph, the journal, the outreach
                     decision and any reply.
+
+One write beyond `/api/run-now`: `POST /api/run/{id}/reply` lets Juniper
+answer a run's reach-out from the story itself with an EXPLICIT reply link
+(`client_meta.in_reply_to`, not the time-adjacency heuristic chat replies
+use), gated on a confirmed `sent` outreach decision for that exact run.
 """
 
 from __future__ import annotations
@@ -46,7 +51,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from orion.curiosity.atlas import read_atlas, to_payload
+from orion.curiosity.atlas import read_atlas, to_payload, valid_run_id
 from orion.curiosity.run_story import LINES
 from orion.curiosity.self_panel import read_self_panel
 from orion.curiosity.self_panel import to_payload as self_panel_to_payload
@@ -355,6 +360,140 @@ async def curiosity_run_api(run_id: str) -> JSONResponse:
         logger.warning("curiosity_run_api_failed run=%s err=%s", run_id[:64], exc)
         payload = {"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
     return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+_REPLY_TEXT_LIMIT = 4000
+
+
+async def _handle_chat_request(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Indirection so tests can patch `cr._handle_chat_request` directly,
+    the same pattern `_run_store()` uses for `curiosity_run_store` -- this
+    repo has two same-named `scripts` packages (root and this service's),
+    and a bare `from .api_routes import handle_chat_request` at call time can
+    resolve against whichever one a test's own import happened to load
+    first, silently missing a monkeypatch set on the other. Patching this
+    module-level name is safe because it is looked up in THIS module's own
+    globals, which is always the one object a test importing
+    `scripts.curiosity_routes` actually holds."""
+    from .api_routes import handle_chat_request
+
+    return await handle_chat_request(*args, **kwargs)
+
+
+@router.post("/api/run/{run_id}/reply")
+async def curiosity_run_reply_api(run_id: str, payload: dict) -> JSONResponse:
+    """Juniper answers a curiosity run's reach-out from the run story itself.
+
+    Missing question 1, option (b) in the redesign design doc: chat replies
+    (PR #2290) link by TIME ADJACENCY -- her next message in that session,
+    within 12h, is guessed to be the answer. This route instead carries an
+    EXPLICIT `client_meta.in_reply_to` because she clicked reply on this
+    exact run: no guessing.
+
+    Refuses a reply for any run whose Door-A outreach was not actually
+    delivered (`409`) rather than composing into a session nothing was ever
+    sent to. A downstream CHAT-turn failure never 500s -- that comes back as
+    `ok: false` with a 200, matching the never-500 contract every other route
+    on this page keeps for its own read. A bad request body, an unresolvable
+    outreach/session, or a DB failure on the lookup itself DO get a non-200
+    status (400/409/500): those are refusals or infra failures, not a turn
+    that ran and failed. Every status still carries the same
+    `{"ok": false, "reason": ...}` shape so a caller does not need two error
+    paths to check.
+    """
+    rid = valid_run_id(run_id)
+    if rid is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "invalid_run_id"}, status_code=400, headers=_NO_CACHE
+        )
+    text = str((payload or {}).get("text") or "").strip()
+    if not text:
+        return JSONResponse(
+            content={"ok": False, "reason": "empty_text"}, status_code=400, headers=_NO_CACHE
+        )
+    if len(text) > _REPLY_TEXT_LIMIT:
+        return JSONResponse(
+            content={"ok": False, "reason": "text_too_long"}, status_code=400, headers=_NO_CACHE
+        )
+
+    pool = _get_memory_pg_pool()
+    try:
+        sent, session_id = await _run_store().fetch_sent_outreach_session(pool, rid)
+    except Exception as exc:  # noqa: BLE001 -- a DB outage is ok:false, never a 500
+        logger.warning("curiosity_run_reply_lookup_failed run=%s err=%s", rid[:64], exc)
+        return JSONResponse(
+            content={"ok": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    if not sent:
+        return JSONResponse(
+            content={"ok": False, "reason": "no_sent_outreach_to_reply_to"},
+            status_code=409,
+            headers=_NO_CACHE,
+        )
+    if not session_id:
+        return JSONResponse(
+            content={"ok": False, "reason": "session_unresolvable"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+
+    try:
+        from . import main as hub_main
+        from orion.curiosity.run_story import outreach_key
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_reply_import_failed err=%s", exc)
+        return JSONResponse(
+            content={"ok": False, "reason": "chat_handler_unavailable"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    cortex_client = getattr(hub_main, "cortex_client", None)
+    if cortex_client is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "cortex_client_unavailable"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+
+    client_meta = {
+        "in_reply_to": outreach_key(rid),
+        "in_reply_to_source": "curiosity_outreach",
+        "in_reply_to_explicit": True,
+    }
+    try:
+        result = await _handle_chat_request(
+            cortex_client,
+            {"messages": [{"role": "user", "content": text}], "mode": "orion"},
+            session_id,
+            no_write=False,
+            client_meta=client_meta,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a downstream turn failure is ok:false
+        logger.warning("curiosity_run_reply_turn_failed run=%s err=%s", rid[:64], exc)
+        return JSONResponse(
+            content={"ok": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"},
+            headers=_NO_CACHE,
+        )
+
+    if not isinstance(result, dict) or result.get("type") == "turn_error" or result.get("error"):
+        reason = (
+            (result or {}).get("error")
+            or (result or {}).get("phase")
+            or (result or {}).get("reason")
+            or "turn_failed"
+        )
+        return JSONResponse(content={"ok": False, "reason": str(reason)[:200]}, headers=_NO_CACHE)
+
+    return JSONResponse(
+        content={
+            "ok": True,
+            "correlation_id": result.get("correlation_id"),
+            "session_id": session_id,
+        },
+        headers=_NO_CACHE,
+    )
 
 
 async def _read_self_panel_payload() -> dict[str, Any]:

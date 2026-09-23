@@ -3220,10 +3220,22 @@ async def handle_chat_request(
     *,
     http_request: Optional[Request] = None,
     no_write: bool,
+    client_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
     Delegate strict typed requests to orion-cortex-gateway via Bus.
+
+    ``client_meta`` (2026-09-23): threaded straight into `execute_unified_turn`
+    for the unified (`mode in ("orion", "agent")`) lane only -- the same
+    kwarg `websocket_handler.py` already computes a reply stamp into before
+    the lane split (`orion.hub.turn_orchestrator.run_unified_turn`). Lets a
+    caller mark an inbound turn as an EXPLICIT reply (e.g. the curiosity run
+    story's reply box, which knows exactly which outreach it is answering)
+    rather than relying on the time-adjacency heuristic
+    `outreach_provenance.reply_stamp_for_session` computes for ordinary chat.
+    Has no effect on the legacy (non-unified) chat path below -- that path
+    does not call `execute_unified_turn` at all.
     """
     user_messages = payload.get("messages", [])
 
@@ -3322,6 +3334,7 @@ async def handle_chat_request(
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
             utterance_origin="juniper",
+            client_meta=client_meta,
         )
         final_frame = frames[-1] if frames else {
             "type": "turn_error",

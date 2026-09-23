@@ -444,3 +444,47 @@ async def read_run_payload(
     payload = story_to_payload(story)
     payload.update({"available": True, "found": True, "stores": stores.payload()})
     return payload
+
+
+# --- explicit reply (POST /curiosity/api/run/{run_id}/reply) --------------
+
+# The one condition the write path trusts, independent of the read model's
+# own `can_reply` (which a caller could in principle stale-cache): a `sent`
+# decision row for THIS run's own Door-A outreach key, filed by the single
+# writer (`EndogenousOutreach._record`). A pre-check block, a composed-empty
+# turn, or no row at all must all refuse a reply -- there would be nothing
+# in Juniper's session for the reply to sit next to.
+REPLY_DECISION_SQL = (
+    "SELECT decision_id, decided_at, session_id FROM endogenous_outreach_decisions "
+    "WHERE correlation_id = $1 AND result_json->>'source' = 'curiosity_outreach' "
+    "AND reason = 'sent' ORDER BY decided_at DESC LIMIT 1"
+)
+# The session the message actually landed in, read from the delivered
+# chat_history_log row itself rather than the decision row's own `session_id`
+# column -- the row sql-writer persisted is the ground truth for "which
+# session shows this message to Juniper", and is the same column the run
+# story's own reply-matching already joins on.
+REPLY_SESSION_SQL = "SELECT session_id FROM chat_history_log WHERE correlation_id = $1 LIMIT 1"
+
+
+async def fetch_sent_outreach_session(pool: Any, run_id: str) -> tuple[bool, Optional[str]]:
+    """(outreach_was_sent, session_id_or_None) for one run's Door-A outreach.
+
+    Unlike every read above, this is consulted on a WRITE path
+    (`POST /curiosity/api/run/{run_id}/reply`): a DB failure here must not
+    silently read as "never sent" and let a reply through with a guessed
+    session, so this raises rather than degrading -- the route catches it and
+    reports `ok: false` (still a 500: this is an infra failure, not a
+    refusal -- only a downstream CHAT-turn failure gets the guaranteed
+    `ok: false` + 200 the rest of this route promises).
+    """
+    if pool is None:
+        raise RuntimeError("no_postgres_pool")
+    corr = outreach_key(run_id)
+    async with pool.acquire() as conn:
+        decision = await conn.fetchrow(REPLY_DECISION_SQL, corr)
+        if decision is None:
+            return False, None
+        session_row = await conn.fetchrow(REPLY_SESSION_SQL, corr)
+        session_id = str(session_row["session_id"]) if session_row and session_row["session_id"] else None
+        return True, session_id

@@ -28,6 +28,8 @@ from orion.schemas.system_one_appraisal import (
 # It participates in frame identity, preventing a revised decision contract from
 # silently colliding with frames produced by an older one.
 QUESTION_SET_ID = "orion.system_one.shadow.v1"
+MAX_TEXT_CHARS = 512
+MAX_CHANNELS_PER_TARGET = 8
 
 # These are shadow appraisals, not behavior thresholds. Their point is to
 # collect a calibrated probability surface over real Orion state before any
@@ -94,6 +96,22 @@ def _bounded(items: list[Any], limit: int) -> list[Any]:
     return list(items[: max(0, int(limit))])
 
 
+def _clip_text(value: Any, limit: int = MAX_TEXT_CHARS) -> str:
+    text = str(value or "")
+    return text[: max(0, int(limit))]
+
+
+def _bounded_text(items: list[Any], limit: int) -> list[str]:
+    return [_clip_text(item) for item in _bounded(items, limit)]
+
+
+def _bounded_mapping(values: dict[str, float], limit: int) -> dict[str, float]:
+    return {
+        str(key): float(value)
+        for key, value in list(values.items())[: max(0, int(limit))]
+    }
+
+
 def build_system_one_input_state(
     *,
     broadcast: AttentionBroadcastProjectionV1,
@@ -112,8 +130,8 @@ def build_system_one_input_state(
         SystemOneOpenLoopInputV1(
             loop_id=loop.id,
             target_type=loop.target_type,
-            description=loop.description,
-            why_it_matters=loop.why_it_matters,
+            description=_clip_text(loop.description),
+            why_it_matters=_clip_text(loop.why_it_matters),
             salience=loop.salience,
             combined_salience=loop.combined_salience,
             confidence=loop.confidence,
@@ -133,8 +151,10 @@ def build_system_one_input_state(
                 novelty_score=target.novelty_score,
                 urgency_score=target.urgency_score,
                 confidence_score=target.confidence_score,
-                dominant_channels=dict(target.dominant_channels),
-                reasons=_bounded(target.reasons, 6),
+                dominant_channels=_bounded_mapping(
+                    target.dominant_channels, MAX_CHANNELS_PER_TARGET
+                ),
+                reasons=_bounded_text(target.reasons, 6),
                 evidence_refs=_bounded(target.evidence_refs, 8),
             )
             for target in _bounded(field_frame.dominant_targets, max_targets)
@@ -147,14 +167,18 @@ def build_system_one_input_state(
         source_field_attention_generated_at=field_frame.generated_at if field_frame else None,
         selected_action_type=broadcast.selected_action_type,
         selected_open_loop_id=broadcast.selected_open_loop_id,
-        selected_description=broadcast.selected_description,
+        selected_description=(
+            _clip_text(broadcast.selected_description)
+            if broadcast.selected_description is not None
+            else None
+        ),
         attended_node_ids=_bounded(broadcast.attended_node_ids, 12),
         dwell_ticks=broadcast.dwell_ticks,
         coalition_stability_score=broadcast.coalition_stability_score,
         effort_budget_used=broadcast.frame.effort_budget_used,
         voluntary_override_present=broadcast.frame.voluntary_override is not None,
-        live_unknowns=_bounded(broadcast.frame.live_unknowns, 6),
-        deferred_items=_bounded(broadcast.frame.deferred_items, 6),
+        live_unknowns=_bounded_text(broadcast.frame.live_unknowns, 6),
+        deferred_items=_bounded_text(broadcast.frame.deferred_items, 6),
         open_loops=open_loops,
         field_overall_salience=field_frame.overall_salience if field_frame else None,
         field_dominant_targets=field_targets,
@@ -312,18 +336,20 @@ def run_system_one_appraisal(
     if state.source_field_attention_frame_id:
         source_refs.append(f"field.attention:{state.source_field_attention_frame_id}")
 
+    actual_model = str(payload.get("model") or model)
+
     request_id = None
     headers_obj = getattr(response, "headers", None)
     if headers_obj is not None:
         request_id = headers_obj.get("x-typesafe-request-id")
 
     return SystemOneAppraisalFrameV1(
-        frame_id=_frame_id(state, provider=provider, model=model),
+        frame_id=_frame_id(state, provider=provider, model=actual_model),
         question_set_id=QUESTION_SET_ID,
         generated_at=generated_at,
         expires_at=generated_at + timedelta(seconds=ttl),
         provider=provider,
-        model_id=str(payload.get("model") or model),
+        model_id=actual_model,
         request_id=request_id,
         source_refs=source_refs,
         input_state=state,

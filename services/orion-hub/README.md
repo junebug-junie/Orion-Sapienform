@@ -1191,6 +1191,31 @@ reach-out. Design doc:
   timeline joined across Postgres lifecycle rows, Orion's own FalkorDB graph,
   the journal, the outreach decision and any reply.
 
+**One write beyond `/api/run-now`: `POST /curiosity/api/run/{run_id}/reply`**
+(2026-09-23, design doc "Missing question 1, option (b)"). Chat replies
+(below) link Juniper's answer to an outreach by TIME ADJACENCY -- a guess,
+labelled as such. This route instead lets her answer from the run story
+itself with an EXPLICIT link: body `{"text": "..."}`, gated on a **confirmed
+`sent`** Door-A decision for that exact run
+(`endogenous_outreach_decisions` where `correlation_id = outreach_key(run_id)`
+and `reason = 'sent'`) -- `409 {"ok": false, "reason":
+"no_sent_outreach_to_reply_to"}` for anything else (blocked, not_recorded, or
+no row at all), never a guess into a session nothing was sent to. Resolves
+the delivery session from the matching `chat_history_log` row (not the
+decision row's own `session_id` column) and posts the reply as an ordinary
+inbound turn (`handle_chat_request(..., mode="orion", client_meta={
+"in_reply_to": <the same correlation id>, "in_reply_to_source":
+"curiosity_outreach", "in_reply_to_explicit": True})`) -- the same
+`execute_unified_turn(client_meta=...)` seam the WebSocket path's heuristic
+reply stamp already threads through (`handle_chat_request` now accepts
+`client_meta` for exactly this reason; the legacy non-unified chat path is
+unaffected). Writes nothing to Orion's graph and composes no message Orion
+did not write; Orion still authors everything the turn produces. Never 500s
+on a downstream chat failure -- `{"ok": false, "reason": ...}` with a 200
+instead. The run story's `reach_out.can_reply` field (true only for a `sent`
+decision) tells the page whether to show the box at all; the route
+re-checks the same condition against a live row rather than trusting it.
+
 **The run's lifecycle has two sources, and the newer one wins.** Since
 2026-09-14 curiosity runs go through the resource-admission path
 (PR #2288 root-caused this): every transition lands in
@@ -1214,15 +1239,16 @@ counted, not fetched row by row, and rendered as an anomaly badge rather than
 row for a decision that got far enough to compose a message -- a pre-check
 block (`daily_cap`, `quiet_hours`, `turn_in_flight`, ...) logs a line and
 writes nothing, so every historical reach-out reads `not_recorded`. PR #2290
-("record every curiosity outreach decision; stamp Juniper's reply", **open,
-not yet merged**) makes the pre-check block write a row too, and stamps
-Juniper's reply. This patch's read side is already written against that
+("record every curiosity outreach decision; stamp Juniper's reply", merged
+2026-09-22) makes the pre-check block write a row too, and stamps Juniper's
+reply. This patch's read side is written against that
 contract -- `endogenous_outreach_decisions` filtered to
 `result_json->>'source' = 'curiosity_outreach'` for the decision, and
 `chat_history_log` rows where `client_meta->>'in_reply_to'` equals that same
 correlation id for Juniper's reply, a time-adjacency heuristic (next message
 in that session, within 12h) labelled as such on the page, not passed off as
-an exact link -- so no change is needed here once #2290 merges. A wanted
+an exact link. The explicit reply route above exists specifically to replace
+that guess when Juniper answers from the run story itself. A wanted
 reach-out with no decision row reads
 `not_recorded`, never a guessed gate.
 

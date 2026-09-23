@@ -132,20 +132,22 @@ class Settings(BaseSettings):
     system_one_provider: str = Field("kev", alias="SUBSTRATE_SYSTEM_ONE_PROVIDER")
     system_one_api_key: str = Field("", alias="SUBSTRATE_SYSTEM_ONE_API_KEY")
     system_one_timeout_sec: float = Field(
-        3.0, alias="SUBSTRATE_SYSTEM_ONE_TIMEOUT_SEC"
+        3.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_TIMEOUT_SEC"
     )
-    system_one_ttl_sec: float = Field(90.0, alias="SUBSTRATE_SYSTEM_ONE_TTL_SEC")
+    system_one_ttl_sec: float = Field(
+        90.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_TTL_SEC"
+    )
     system_one_retention_hours: float = Field(
-        168.0, alias="SUBSTRATE_SYSTEM_ONE_RETENTION_HOURS"
+        168.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_RETENTION_HOURS"
     )
     system_one_field_frame_max_age_sec: float = Field(
-        10.0, alias="SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC"
+        10.0, ge=0.0, alias="SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC"
     )
     system_one_max_open_loops: int = Field(
-        6, alias="SUBSTRATE_SYSTEM_ONE_MAX_OPEN_LOOPS"
+        6, ge=1, le=32, alias="SUBSTRATE_SYSTEM_ONE_MAX_OPEN_LOOPS"
     )
     system_one_max_targets: int = Field(
-        5, alias="SUBSTRATE_SYSTEM_ONE_MAX_TARGETS"
+        5, ge=1, le=32, alias="SUBSTRATE_SYSTEM_ONE_MAX_TARGETS"
     )
     # AST/HOT self-model live tick (docs/superpowers/specs/2026-07-29-ast-hot-
     # reducer-live-ticking-design.md). Appended to the tail of

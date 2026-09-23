@@ -392,11 +392,14 @@ async def curiosity_run_reply_api(run_id: str, payload: dict) -> JSONResponse:
 
     Refuses a reply for any run whose Door-A outreach was not actually
     delivered (`409`) rather than composing into a session nothing was ever
-    sent to. Never 500s on a downstream chat failure -- that comes back as
-    `ok: false`, matching the never-500 contract every other route on this
-    page keeps; only a bad request body or an unresolvable outreach/session
-    get a non-200 status, and even those carry the same `{"ok": false,
-    "reason": ...}` shape so a caller does not need two error paths.
+    sent to. A downstream CHAT-turn failure never 500s -- that comes back as
+    `ok: false` with a 200, matching the never-500 contract every other route
+    on this page keeps for its own read. A bad request body, an unresolvable
+    outreach/session, or a DB failure on the lookup itself DO get a non-200
+    status (400/409/500): those are refusals or infra failures, not a turn
+    that ran and failed. Every status still carries the same
+    `{"ok": false, "reason": ...}` shape so a caller does not need two error
+    paths to check.
     """
     rid = valid_run_id(run_id)
     if rid is None:

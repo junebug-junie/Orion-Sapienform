@@ -474,7 +474,9 @@ async def fetch_sent_outreach_session(pool: Any, run_id: str) -> tuple[bool, Opt
     (`POST /curiosity/api/run/{run_id}/reply`): a DB failure here must not
     silently read as "never sent" and let a reply through with a guessed
     session, so this raises rather than degrading -- the route catches it and
-    reports a clean `ok: false`, never a 500.
+    reports `ok: false` (still a 500: this is an infra failure, not a
+    refusal -- only a downstream CHAT-turn failure gets the guaranteed
+    `ok: false` + 200 the rest of this route promises).
     """
     if pool is None:
         raise RuntimeError("no_postgres_pool")

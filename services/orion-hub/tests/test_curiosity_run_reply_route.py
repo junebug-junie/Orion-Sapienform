@@ -171,7 +171,11 @@ def test_reply_route_500s_cleanly_when_session_unresolvable(monkeypatch) -> None
     assert json.loads(resp.body) == {"ok": False, "reason": "session_unresolvable"}
 
 
-def test_reply_route_surfaces_a_lookup_failure_as_ok_false_never_a_bare_500(monkeypatch) -> None:
+def test_reply_route_surfaces_a_lookup_failure_as_ok_false_with_a_500(monkeypatch) -> None:
+    """A DB failure on the outreach lookup is an infra failure, not a chat-
+    turn refusal -- it still gets a 500, unlike a downstream chat failure
+    (see the accepted-path tests below), but always the same `ok: false`
+    shape so a caller checks one thing regardless of status code."""
     pool = _Pool(decision=None, fail_on="decision")
     _install_fake_main(monkeypatch, pool=pool)
     resp = asyncio.run(cr.curiosity_run_reply_api("r1", {"text": "hi"}))

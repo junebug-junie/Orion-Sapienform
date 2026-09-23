@@ -175,19 +175,34 @@ h2 {
 
 /* --- sittings strip ---------------------------------------------------- */
 .strip-controls {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
-  gap: 8px 16px; margin: 0 0 8px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 0 10px;
 }
-.line-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.line-chips {
+  display: inline-flex; flex-wrap: wrap; gap: 0;
+  border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden;
+  background: var(--surface); box-shadow: var(--shadow);
+}
 .line-chips button {
-  font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.01em;
-  border: 1px solid var(--hairline); background: var(--plane); color: var(--ink-2);
-  border-radius: 999px; padding: 4px 11px; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 620; letter-spacing: 0.01em;
+  border: 0; border-right: 1px solid var(--hairline); background: transparent;
+  color: var(--ink-2); padding: 8px 14px; cursor: pointer; margin: 0;
+  border-radius: 0;
 }
-.line-chips button.is-on { color: var(--ink); border-color: var(--ink-muted); background: var(--surface); }
-.line-chips button.line-investigate.is-on { border-color: var(--series-1); color: var(--series-1); }
-.line-chips button.line-self_inquiry.is-on { border-color: var(--series-2); color: var(--series-2); }
-.line-chips button.line-self_sense_eval.is-on { border-color: var(--series-3); color: var(--series-3); }
+.line-chips button:last-child { border-right: 0; }
+.line-chips button .n {
+  font-weight: 500; color: var(--ink-muted); margin-left: 6px; font-variant-numeric: tabular-nums;
+}
+.line-chips button.is-on {
+  color: var(--ink); background: var(--plane);
+}
+.line-chips button.line-investigate.is-on { color: var(--series-1); background: color-mix(in srgb, var(--series-1) 12%, var(--surface)); }
+.line-chips button.line-self_inquiry.is-on { color: var(--series-5); background: color-mix(in srgb, var(--series-5) 12%, var(--surface)); }
+.line-chips button.line-self_sense_eval.is-on { color: var(--series-3); background: color-mix(in srgb, var(--series-3) 12%, var(--surface)); }
+.line-chips button:hover:not(.is-on) { color: var(--ink); background: var(--plane); }
+.line-filter-label {
+  font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-muted); margin: 0 0 6px;
+}
 .pager { display: flex; gap: 6px; }
 .pager button:disabled { opacity: 0.4; cursor: default; }
 .strip { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 4px; padding: 12px 12px 8px; }
@@ -370,7 +385,10 @@ tr:last-child td { border-bottom: none; }
     </div>
     <p class="section-note" id="strip-note"></p>
     <div class="strip-controls">
-      <div class="line-chips" id="line-chips" role="tablist" aria-label="Curiosity line"></div>
+      <div>
+        <div class="line-filter-label">Show sittings of type</div>
+        <div class="line-chips" id="line-chips" role="tablist" aria-label="Curiosity line"></div>
+      </div>
     </div>
     <div class="card">
       <div class="strip" id="strip"></div>
@@ -600,10 +618,19 @@ function runOneLiner(r) {
   return bits.join(" · ");
 }
 function renderLineChips() {
-  $("line-chips").innerHTML = LINE_FILTERS.map((f) => {
+  const el = $("line-chips");
+  if (!el) return;
+  const totals = ((state.runs || {}).totals) || {};
+  const allN = LINE_FILTERS.filter((f) => f.id !== "all").reduce(
+    (sum, f) => sum + (Number(totals[f.id]) || 0), 0
+  );
+  el.innerHTML = LINE_FILTERS.map((f) => {
     const on = state.line === f.id ? " is-on" : "";
     const cls = f.id === "all" ? "" : ` line-${f.id}`;
-    return `<button type="button" class="${cls}${on}" data-line="${f.id}" role="tab" aria-selected="${state.line === f.id}">${esc(f.label)}</button>`;
+    const n = f.id === "all" ? allN : (Number(totals[f.id]) || 0);
+    const count = Number.isFinite(n) && (state.runs && state.runs.available !== false)
+      ? `<span class="n">${n}</span>` : "";
+    return `<button type="button" class="${cls}${on}" data-line="${f.id}" role="tab" aria-selected="${state.line === f.id}">${esc(f.label)}${count}</button>`;
   }).join("");
 }
 function fmtWindowRange(d) {
@@ -653,7 +680,7 @@ function renderStrip(d, now) {
   }).join("");
   $("strip-range").textContent = fmtWindowRange(d);
   const notes = [`${runs.length} sitting${runs.length === 1 ? "" : "s"} in this fortnight`];
-  if (state.line !== "all") notes.push(LINE_LABEL[state.line] || state.line);
+  if (state.line !== "all") notes.push(`showing ${LINE_LABEL[state.line] || state.line} only — tap All to see every type`);
   if (undated) notes.push(`${undated} with no clock, not shown`);
   if (offWindow) notes.push(`${offWindow} outside this fortnight`);
   if (d && d.has_older) notes.push("use ← Older fortnight for earlier sittings");

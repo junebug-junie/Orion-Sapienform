@@ -245,6 +245,10 @@ SYNC_PREFIXES = (
     # reverie-visual-chain-design.md, default-off)
     "ORION_VISUAL_CHAIN_",
     "SUBSTRATE_FELT_STATE_",
+    # System One / Kev shadow appraisal (orion-substrate-runtime). Without this
+    # prefix the default sync silently skips every SUBSTRATE_SYSTEM_ONE_* key
+    # and reports "no changes" -- same failure shape as HUB_CURIOSITY_ above.
+    "SUBSTRATE_SYSTEM_ONE_",
     # Drive attribution + substrate act (PR drive-attribution-substrate-act)
     "ORION_SUBSTRATE_",
     "ORION_AUTONOMY_",

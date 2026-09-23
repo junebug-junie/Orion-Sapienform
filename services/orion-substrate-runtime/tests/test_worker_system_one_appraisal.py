@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,7 @@ from app.worker import BiometricsSubstrateWorker
 def _worker(monkeypatch, *, enabled: bool = True) -> BiometricsSubstrateWorker:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv("ORION_ATTENTION_BROADCAST_ENABLED", "true")
+    monkeypatch.setenv("SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED", "false")
     monkeypatch.setenv(
         "SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED",
         "true" if enabled else "false",
@@ -93,9 +95,7 @@ def test_disabled_system_one_is_not_called(monkeypatch) -> None:
 def test_system_one_tick_omits_stale_field_frame(monkeypatch) -> None:
     worker = _worker(monkeypatch, enabled=True)
     stale = MagicMock()
-    stale.generated_at = __import__("datetime").datetime(
-        2020, 1, 1, tzinfo=__import__("datetime").timezone.utc
-    )
+    stale.generated_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
     worker._store.get_latest_field_attention_frame.return_value = stale
     worker._store.save_system_one_appraisal = MagicMock()
 

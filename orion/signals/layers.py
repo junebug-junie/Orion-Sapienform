@@ -38,7 +38,6 @@ ORGAN_LAYER: Dict[str, str] = {
     "biometrics": "infra",
     "equilibrium": "infra",
     "power_guard": "infra",
-    "security_watcher": "infra",
     # Social
     "social_memory": "social",
     "social_room_bridge": "social",

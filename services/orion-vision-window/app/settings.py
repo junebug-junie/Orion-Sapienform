@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     WINDOW_SCENE_INVENTORY_ENABLED: bool = True
     CHANNEL_SCENE_INVENTORY_PUB: str = "orion:vision:inventory:sql-write"
 
+    # Walkway individuals (docs/superpowers/specs/2026-09-22-walkway-camera-
+    # busy-world-design.md idea 1): one VisionCropObservationV1 per host
+    # artifact that carries zoned/embedded tracked-label boxes ->
+    # orion-sql-writer's individuals reducer. Silent for streams that never
+    # request crop embeddings. See app/crops.py.
+    WINDOW_CROP_OBSERVATIONS_ENABLED: bool = True
+    CHANNEL_CROP_OBSERVATIONS_PUB: str = "orion:vision:crops:sql-write"
+
     # HTTP
     HTTP_HOST: str = "0.0.0.0"
     HTTP_PORT: int = 8000

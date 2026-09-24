@@ -7,7 +7,7 @@ It adheres to the "Pointer" architecture:
 1. Capture frame -> Save to shared storage -> Publish `VisionFramePointer`.
 2. Consume pointer -> Run detectors -> Publish rate-limited **activity triggers** and optional slim **edge-detection artifacts** (no VLM caption).
 
-When YOLO or motion fires on `person` / `motion`, the detector publishes compact `VisionEdgeActivityPayload` envelopes on `orion:vision:edge:activity` for **edge-local consumers** (e.g. security watcher). The host vision pipe does **not** subscribe to this channel.
+When YOLO or motion fires on `person` / `motion`, the detector publishes compact `VisionEdgeActivityPayload` envelopes on `orion:vision:edge:activity` for **edge-local consumers** (none subscribe today; `orion-security-watcher` was retired 2026-09-24). The host vision pipe does **not** subscribe to this channel.
 
 ---
 
@@ -20,7 +20,6 @@ sequenceDiagram
     participant Detect as DetectorWorker
     participant Bus as Orion Bus (Redis)
     participant Router as Frame Router
-    participant Guard as Security Watcher
 
     Cam->>Capture: Get Frame
     Capture->>Disk: Save Frame (Shared Volume)
@@ -31,8 +30,6 @@ sequenceDiagram
     Detect->>Detect: Run YOLO / Motion
     Detect->>Bus: Publish VisionEdgeActivity (orion:vision:edge:activity)
     Detect->>Bus: Publish VisionEdgeArtifact (orion:vision:artifacts, optional)
-
-    Bus->>Guard: Consume VisionEdgeArtifact (optional, edge-local)
 ```
 
 Edge activity on `orion:vision:edge:activity` is for edge-local subscribers only; the host pipe (frame router → host → window → council) is independent.
@@ -76,6 +73,29 @@ Activity is published on every frame where YOLO/motion yields trigger labels, in
 | `FRAME_STORAGE_DIR` | `/mnt/frames` | Shared volume path for frames |
 | `EDGE_DEBUG_SAVE_FRAMES` | `False` | Save annotated debug frames |
 | `EDGE_DEBUG_DIR` | `/mnt/debug` | Path for debug frames |
+
+### Camera identity (credentials never published)
+
+`SOURCE` (from `REOLINK_URL` / `WALKWAY_RTSP_URL`) may carry the camera password and
+is used only to open the stream. Every published `camera_id` is the camera name
+(`STREAM_ID`), `/health` reports a redacted `source`, and capture logs redact it too.
+Until 2026-09-24 `camera_id` was the raw URL, which leaked the password into
+`substrate_perception_embedding_baseline.stream_id`.
+
+### Walkway instance
+
+A second capture instance for the outdoor walkway camera (`docker-compose.yml`
+service `vision-edge-walkway`, profile `walkway`, `STREAM_ID=walkway`, host port
+`WALKWAY_EDGE_PORT`, default 7101). Set `WALKWAY_RTSP_URL` in the local service
+`.env` (empty in `.env_example`; an empty value is refused at boot), then:
+
+```bash
+scripts/safe_docker_build.sh orion-vision-edge --profile walkway up -d --build vision-edge-walkway
+```
+
+Each instance only detects frames whose `stream_id` matches its own
+(`app/stream_filter.py`). Router policy: `config/vision_frame_router.yaml`
+`streams.walkway`; zones: `config/vision_zones.yaml`.
 
 ---
 

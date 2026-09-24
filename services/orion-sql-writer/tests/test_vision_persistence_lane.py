@@ -42,5 +42,6 @@ def test_vision_artifacts_catalog_lists_vision_window_consumer():
     )
     consumers = entry.get("consumer_services") or []
     assert "orion-vision-window" in consumers
-    assert "orion-security-watcher" in consumers
     assert "orion-vision-council" in consumers
+    # orion-security-watcher was retired 2026-09-24 (walkway spec idea 6).
+    assert "orion-security-watcher" not in consumers

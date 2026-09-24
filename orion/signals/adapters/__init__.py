@@ -24,7 +24,6 @@ from .concept_induction import ConceptInductionAdapter
 from .graph_cognition import GraphCognitionAdapter
 from .journaler import JournalerAdapter
 from .power_guard import PowerGuardAdapter
-from .security_watcher import SecurityWatcherAdapter
 
 from orion.signals.adapters.base import OrionSignalAdapter
 from typing import List
@@ -50,7 +49,6 @@ ADAPTERS: List[OrionSignalAdapter] = [
     GraphCognitionAdapter(),
     JournalerAdapter(),
     PowerGuardAdapter(),
-    SecurityWatcherAdapter(),
     SqlWriterAdapter(),
     RdfWriterAdapter(),
     VectorWriterAdapter(),
@@ -82,6 +80,5 @@ __all__ = [
     "GraphCognitionAdapter",
     "JournalerAdapter",
     "PowerGuardAdapter",
-    "SecurityWatcherAdapter",
     "ADAPTERS",
 ]

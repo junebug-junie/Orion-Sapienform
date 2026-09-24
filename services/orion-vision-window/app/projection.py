@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionArtifactPayload, VisionWindowPayload
 from orion.vision.caption_echo import is_caption_prompt_echo
+from orion.vision.stream_ids import is_url_like
 
 SNAPSHOT_SCHEMA_V1 = "vision_window_snapshot.v1"
 MAX_URIS_PER_ENVELOPE = 32
@@ -28,7 +29,8 @@ def stream_key_from_artifact(art: VisionArtifactPayload) -> str:
     inp = art.inputs or {}
     for key in ("stream_id", "camera_id", "clip_id"):
         v = inp.get(key)
-        if v is not None and str(v).strip():
+        # Never key a stream by a source URL (it can carry the camera password).
+        if v is not None and str(v).strip() and not is_url_like(str(v)):
             return str(v).strip()
     if art.device and str(art.device).strip():
         return str(art.device).strip()
@@ -36,9 +38,12 @@ def stream_key_from_artifact(art: VisionArtifactPayload) -> str:
 
 
 def camera_id_from_artifact(art: VisionArtifactPayload) -> str | None:
+    """Camera name, or None. A URL-shaped camera_id (orion-vision-edge used to
+    publish its RTSP source, password included) is dropped: it reached
+    vision_scene_inventory.camera_id in ~316k rows before 2026-09-24."""
     inp = art.inputs or {}
     v = inp.get("camera_id")
-    if v is not None and str(v).strip():
+    if v is not None and str(v).strip() and not is_url_like(str(v)):
         return str(v).strip()
     return None
 

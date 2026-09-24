@@ -444,30 +444,6 @@ class VisionScribeAckPayload(BaseModel):
     error: Optional[str] = None
 
 
-class VisionGuardSignal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    camera_id: str
-    window_start: float
-    window_end: float
-    decision: Literal["presence", "unknown", "absent", "alert"]
-    confidence: float
-    summary: Dict[str, Any]
-    evidence_refs: List[str]  # List of artifact_ids
-    salience: float = 0.0
-
-
-class VisionGuardAlert(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    camera_id: str
-    ts: float
-    alert_type: str
-    severity: Literal["low", "medium", "high"]
-    summary: str
-    evidence_refs: List[str]
-    snapshot_path: Optional[str] = None
-    meta: Optional[Dict[str, Any]] = None
-
-
 class VisionEdgeHealth(BaseModel):
     model_config = ConfigDict(extra="forbid")
     camera_id: str

@@ -80,6 +80,48 @@ services:
     networks:
       - app-net
 
+  # Second capture instance: the walkway camera (docs/superpowers/specs/
+  # 2026-09-22-walkway-camera-busy-world-design.md Patch 0). Same image and
+  # the same service .env as cam0 (env_file), with only the camera URL, the
+  # camera name and the host port overridden. Behind the `walkway` profile so
+  # a plain `up` never starts it with an empty WALKWAY_RTSP_URL:
+  #   scripts/safe_docker_build.sh orion-vision-edge --profile walkway up -d vision-edge-walkway
+  # Each instance detects only frames whose stream_id matches its own
+  # STREAM_ID (app/detector_worker.py), so the two do not double-process.
+  vision-edge-walkway:
+    profiles: ["walkway"]
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-edge/Dockerfile
+    container_name: ${PROJECT:-orion}-vision-edge-walkway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Empty is refused at boot (app/settings.py) rather than via ${VAR:?},
+      # which would break interpolation of the cam0 service too.
+      - SOURCE=${WALKWAY_RTSP_URL:-}
+      - STREAM_ID=walkway
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR}
+      - EDGE_PUBLISH_ARTIFACTS=${EDGE_PUBLISH_ARTIFACTS:-false}
+    volumes:
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      - /tmp/orion-debug:/mnt/debug
+    ports:
+      - "${WALKWAY_EDGE_PORT:-7101}:7100"
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    networks:
+      - app-net
+
 networks:
   app-net:
     external: true

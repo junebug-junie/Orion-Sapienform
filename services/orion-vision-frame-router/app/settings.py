@@ -42,3 +42,11 @@ class Settings(BaseSettings):
     DRY_RUN: bool = False
 
     HEALTH_INTERVAL_SECONDS: float = 10.0
+
+    # Expectation steers attention (walkway spec idea 8, app/expectation.py).
+    # While Redis key orion:vision:expect:<stream_id> exists (set by the rhythm
+    # loop with TTL = open expectation window), that stream gets the triggered
+    # tier. Read from a background cache every REFRESH_SEC; a Redis failure
+    # reads as "no expectation".
+    ROUTER_EXPECTATION_STEERING_ENABLED: bool = True
+    ROUTER_EXPECTATION_REFRESH_SEC: float = 5.0

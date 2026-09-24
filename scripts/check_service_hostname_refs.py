@@ -18,7 +18,7 @@ by the declared logical service name, never by an instance/container name). That
 compose service key is the only portable hostname; this script catches the specific,
 now-recurring mistake of using the services/<dirname> directory name instead (found in
 5 places across this repo as of 2026-07-28: orion-notify-digest, orion-execution-
-dispatch-runtime, orion-security-watcher, orion-world-pulse x2).
+dispatch-runtime, orion-security-watcher [service retired 2026-09-24], orion-world-pulse x2).
 
 Usage:
     python scripts/check_service_hostname_refs.py

@@ -11,6 +11,37 @@ patch is that later, undefined thing: service scaffolding, schema/channel
 contract, and GPU scheduling. It is not the reverie visual chain itself and
 does not touch `orion-vision-host` or `orion-diffusion-host` internals.
 
+## Status: PARKED (2026-09-24) -- do not deploy
+
+Parked by the walkway camera design,
+`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md` idea 10.
+Nothing requests a prediction and nothing consumes one; every response says
+`model_untrained=true`. An untrained transformer is not a world model -- a
+histogram that is right about when the dog walks by is.
+
+**First real training set.** The walkway camera produces the first data this
+service could ever learn from, all timestamped, per camera, and graded against
+what actually happened:
+
+- **Sightings** -- `vision_individual_sighting` (one row per appearance of a
+  clustered individual: time, zone, dwell, box), fed by
+  `orion:vision:crops:sql-write` (`VisionCropObservationV1`) from
+  orion-vision-window.
+- **Expectations** -- `vision_percept_expectation` (`PerceptExpectationV1`:
+  "this subject, this window, this confidence"), written by the rhythm loop in
+  orion-sql-writer.
+- **Verdicts** -- each expectation scored `met` / `missed` / `unscorable`, and
+  `vision_events` rows `arrived_as_expected` / `expected_absent`.
+
+**Contract kept.** `WorldModelTrajectoryStepV1`'s `temporal` and
+`vision_embedding` feature groups stay as the shape the rhythm loop should
+eventually emit, so a future trainer can read sightings without a schema
+change.
+
+**Unpark condition.** Only when it can be graded against the counting
+(rhythm) model on the same held-out days and beats it. Until then: no
+deploy, no new requester, no new consumer.
+
 ## Status: untrained inference-capable scaffolding
 
 **This service does a real forward pass through real, randomly-initialized

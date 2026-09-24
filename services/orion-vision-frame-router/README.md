@@ -53,7 +53,38 @@ The router maintains per-`stream_id` trigger TTL from **host task replies** (per
 | **baseline** | No active trigger labels within TTL | `want_caption: false`, `want_embeddings: false` | Detect-only `retina_fast` without VLM on every frame |
 | **triggered** | Host recently detected configured `trigger_labels` (default: `person`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Caption + embed when a person was detected on the host pipe |
 
-Task meta includes `dispatch_tier` (`baseline` or `triggered`) for observability.
+Task meta includes `dispatch_tier` (`baseline` or `triggered`) for observability, and
+`triggered_by` (`labels` or `expectation`) on the triggered tier.
+
+Trigger labels recorded from host replies are the defaults' plus the stream's own
+(`policy.trigger_labels_for`), so a stream that adds a label (walkway's `dog`) can
+actually trigger on it.
+
+### Expectation steering (Redis key contract)
+
+Walkway spec idea 8 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`).
+
+| Key | Writer | Reader | Meaning |
+|-----|--------|--------|---------|
+| `orion:vision:expect:<stream_id>` (bus Redis, `ORION_BUS_URL`) | orion-sql-writer rhythm loop | this router (`app/expectation.py`) | Exists while an expectation window for that camera is open; TTL = the window. Value is informational; only presence is read. |
+
+While the key exists, a stream that has trigger labels gets its **triggered** tier
+(`triggered_by=expectation`), so Orion spends GPU where it predicts something will
+happen. `decide()` never touches Redis: a background task refreshes the set of open
+streams every `ROUTER_EXPECTATION_REFRESH_SEC` (default 5s) for streams the router has
+seen. Any Redis error clears the set (reads as "no expectation", never stuck
+triggered). Disable with `ROUTER_EXPECTATION_STEERING_ENABLED=false`. `/healthz` shows
+`expectation_open_streams` and `expectation_refresh_failures`.
+
+Manual check: `redis-cli -u $ORION_BUS_URL SET orion:vision:expect:walkway 1 EX 60`,
+then the next walkway host task's meta carries `triggered_by: expectation`.
+
+### Walkway stream
+
+`streams.walkway` (second orion-vision-edge instance, `STREAM_ID=walkway`): prompts
+`person, dog, bicycle, stroller, vehicle, package, mail truck`, `trigger_labels:
+[person, dog]`, and `want_crop_embeddings: true` on both tiers (host zones + embeds
+tracked boxes; the patio is never embedded). No identity dispatch.
 
 Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 

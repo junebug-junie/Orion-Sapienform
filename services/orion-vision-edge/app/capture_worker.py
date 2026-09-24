@@ -81,7 +81,7 @@ async def capture_loop():
         # 4. Publish Pointer
         payload = VisionFramePointerPayload(
             image_path=filepath,
-            camera_id=settings.SOURCE, 
+            camera_id=settings.camera_id,  # name, never the SOURCE URL (it carries credentials)
             stream_id=settings.STREAM_ID,
             frame_ts=ts,
             width=frame.shape[1],

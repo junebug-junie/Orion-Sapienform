@@ -1,6 +1,8 @@
 import cv2, threading, time
 import logging
 from typing import Optional
+from orion.vision.stream_ids import strip_userinfo
+
 from .settings import get_settings
 
 settings = get_settings()
@@ -9,6 +11,8 @@ logger = logging.getLogger("orion-vision-edge.capture_source")
 class CameraSource:
     def __init__(self, source: str):
         self.source = source
+        # Log-safe form: the RTSP URL carries the camera password.
+        self._source_for_log = strip_userinfo(source) if "://" in source else source
         self.cap = None
         self.last_frame = None
         self._stop = threading.Event()
@@ -18,10 +22,10 @@ class CameraSource:
         self.fps = settings.FPS
 
     def start(self):
-        logger.info(f"Opening camera source: {self.source}")
+        logger.info(f"Opening camera source: {self._source_for_log}")
         self.cap = cv2.VideoCapture(self.source)
         if not self.cap.isOpened():
-            logger.error(f"Failed to open camera source: {self.source}")
+            logger.error(f"Failed to open camera source: {self._source_for_log}")
         else:
             logger.info("Camera source opened successfully.")
             

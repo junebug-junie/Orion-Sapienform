@@ -54,6 +54,8 @@ def test_gpu_pool_panel_browser_smoke():
     script = (HUB / "static" / "js" / "gpu_pool.js").read_text()
     posted: list[dict] = []
     history_minutes: list[str] = []
+    csrf_headers: list[str | None] = []
+    state_calls = {"n": 0}
 
     def handle(route):
         url = route.request.url
@@ -66,6 +68,9 @@ def test_gpu_pool_panel_browser_smoke():
                     f"event: event\ndata: {json.dumps({'version': 2, 'kind': 'event', 'event': EVENT})}\n\n")
             return route.fulfill(body=body, content_type="text/event-stream")
         if "/api/gpu-pool/state" in url:
+            state_calls["n"] += 1
+            if state_calls["n"] == 1:                     # the pool is down when the page first loads
+                return route.fulfill(status=504, body=json.dumps({"detail": "gpu_pool_rpc_timeout"}))
             data = dict(STATE, history=HISTORY, history_lease_id="L1abcdef") if "history_for=" in url else STATE
             return route.fulfill(body=json.dumps(data), content_type="application/json")
         if "/api/gpu-pool/history" in url:
@@ -76,6 +81,7 @@ def test_gpu_pool_panel_browser_smoke():
                                  content_type="application/json")
         if "/api/gpu-pool/control" in url:
             posted.append(json.loads(route.request.post_data))
+            csrf_headers.append(route.request.headers.get("x-requested-with"))
             return route.fulfill(body=json.dumps({"ok": True, "reason": None, "detail": {}}),
                                  content_type="application/json")
         return route.fulfill(status=404, body="")
@@ -86,9 +92,20 @@ def test_gpu_pool_panel_browser_smoke():
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.route("http://hub.test/**", handle)
+        # The fake stream ends at once (a real one stays open), so the status text flips between
+        # "STALE" and "disconnected, retrying"; record every value it takes instead of sampling one.
+        page.add_init_script("""document.addEventListener('DOMContentLoaded', () => {
+            window.__liveTexts = [];
+            const el = document.getElementById('liveText');
+            new MutationObserver(() => window.__liveTexts.push(el.textContent))
+              .observe(el, {childList: true, characterData: true, subtree: true});
+        });""")
         page.goto("http://hub.test/gpu-pool")
 
+        # recovers by itself: the first SSE state frame triggers a config reload after the 504
         page.wait_for_selector('[data-role="chat"]')
+        assert state_calls["n"] >= 2
+        page.wait_for_function("(window.__liveTexts || []).some(t => t.includes('STALE'))")  # fixture state is old
         chat = page.inner_text('[data-role="chat"]')
         assert "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" in chat and "1/1 slots in use" in chat
         assert "profile expects X" in page.inner_text('[data-role="metacog"]')          # mismatch explained
@@ -106,6 +123,7 @@ def test_gpu_pool_panel_browser_smoke():
         page.click('button[data-verb="lend"][data-card="gpu0"]')
         page.wait_for_function("document.getElementById('controlStatus').textContent.includes('lend: ok')")
         assert posted == [{"verb": "lend", "card": "gpu0"}]
+        assert csrf_headers == ["orion-hub"]
 
         page.select_option("#range", "60")
         page.wait_for_function("document.getElementById('byRole').textContent.includes('80 ms')")

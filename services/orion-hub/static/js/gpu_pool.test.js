@@ -91,3 +91,19 @@ test("fmtAt shows a clean UTC timestamp with milliseconds", () => {
   assert.equal(gp.fmtAt("2026-09-24T12:00:01+00:00"), "2026-09-24 12:00:01.000");
   assert.equal(gp.fmtAt(null), "");
 });
+
+test("stateAgeSec reads staleness from the pool's own timestamp", () => {
+  assert.equal(gp.stateAgeSec({ generated_at: "2026-09-24T12:00:00Z" }, Date.parse("2026-09-24T12:00:30Z")), 30);
+  assert.equal(gp.stateAgeSec(null, 0), null);
+});
+
+test("holdClassFor finds the class that lists the role, not the role's own name", () => {
+  const cfg = { classes: { soak: { roles: ["experiment"] }, chat: { roles: ["chat"] } } };
+  assert.equal(gp.holdClassFor(cfg, "experiment"), "soak");
+  assert.equal(gp.holdClassFor(cfg, "nowhere"), null);
+});
+
+test("backfillLabel says N+ at the pool's cap", () => {
+  assert.equal(gp.backfillLabel(12), "12");
+  assert.equal(gp.backfillLabel(gp.BACKFILL_LIMIT), "1000+");
+});

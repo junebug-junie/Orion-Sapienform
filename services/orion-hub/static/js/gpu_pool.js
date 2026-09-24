@@ -145,7 +145,24 @@
     return Object.values(byT).sort((a, b) => a.t - b.t);
   }
 
-  const api = { EDGES, NODES, pct, fmtMs, fmtAt, cardModel, liveByRole, liveByClass, walkerPath, seriesModel };
+  /** Seconds since the pool last published state, or null if unknown. */
+  function stateAgeSec(state, nowMs) {
+    const t = state && state.generated_at ? Date.parse(state.generated_at) : NaN;
+    return isFinite(t) ? Math.max(0, (nowMs - t) / 1000) : null;
+  }
+
+  /** The class an operator hold must request for a role (never assume class name == role name). */
+  function holdClassFor(config, role) {
+    const hit = Object.entries((config && config.classes) || {}).find(([, c]) => (c.roles || []).includes(role));
+    return hit ? hit[0] : null;
+  }
+
+  const BACKFILL_LIMIT = 1000;  // the pool's own cap
+  function backfillLabel(n) {
+    return n >= BACKFILL_LIMIT ? `${BACKFILL_LIMIT}+` : String(n);
+  }
+
+  const api = { EDGES, NODES, pct, fmtMs, fmtAt, stateAgeSec, holdClassFor, backfillLabel, BACKFILL_LIMIT, cardModel, liveByRole, liveByClass, walkerPath, seriesModel };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OrionGpuPool = api;
   if (typeof document === "undefined") return;
@@ -154,7 +171,9 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s === null || s === undefined ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const view = { config: null, configYaml: "", state: null, events: [], range: "live", history: null };
+  const view = { config: null, configYaml: "", state: null, events: [], range: "live", history: null,
+                 streamUp: false, previewedBackfill: null, configLoading: false };
+  const STALE_AFTER_SEC = 20;  // the pool publishes every ~5 s
 
   function renderCards() {
     const m = cardModel(view.config, view.state);
@@ -188,18 +207,26 @@
       `<button type="button" data-verb="${c.lent ? "unlend" : "lend"}" data-card="${esc(c.card)}">${c.lent ? `Take ${esc(c.card)} back (unlend)` : `Lend ${esc(c.card)}`}</button>
        <span class="muted">${c.lent ? "borrowers may use it; its owner still claws back" : "owner only"}</span>`).join("")
       || '<span class="muted">No lendable cards in the YAML.</span>';
+    const classesCfg = (view.config && view.config.classes) || {};
     const holdable = m.spanning.concat(...m.cards.map((c) => c.roles)).filter((r) => r.operatorOnly);
     const holds = ((view.state && view.state.leases) || []).filter((l) => l.holder && l.holder.startsWith("operator:"));
     $("holdControls").innerHTML = holdable.map((r) => {
-      const held = holds.find((l) => (l.work_class === r.name || (view.config.classes[l.work_class] || {}).roles?.includes(r.name)));
-      return held
-        ? `<button type="button" data-verb="release" data-lease="${esc(held.lease_id)}">Release ${esc(r.name)} (${esc(held.status)})</button>`
-        : `<button type="button" data-verb="hold" data-class="${esc(r.name)}">Hold ${esc(r.name)} (drains ${esc(r.cards.join(", "))})</button>`;
+      const cls = holdClassFor(view.config, r.name);
+      const held = holds.find((l) => ((classesCfg[l.work_class] || {}).roles || []).includes(r.name));
+      if (held) return `<button type="button" data-verb="release" data-lease="${esc(held.lease_id)}">Release ${esc(r.name)} (${esc(held.status)})</button>`;
+      return cls ? `<button type="button" data-verb="hold" data-class="${esc(cls)}">Hold ${esc(r.name)} (drains ${esc(r.cards.join(", "))})</button>`
+                 : `<span class="muted">${esc(r.name)}: no class lists this role</span>`;
     }).join("");
-    const classes = Object.keys(view.config.classes || {});
+    const classes = Object.keys(classesCfg);
     const opts = classes.map((c) => `<option>${esc(c)}</option>`).join("");
-    if ($("bfClass").options.length !== classes.length) $("bfClass").innerHTML = opts;
-    if ($("filterClass").options.length !== classes.length + 1) $("filterClass").innerHTML = `<option value="">all classes</option>${opts}`;
+    const sig = classes.join("|");
+    if ($("bfClass").dataset.sig !== sig) { $("bfClass").innerHTML = `<option value="">any class</option>${opts}`; $("bfClass").dataset.sig = sig; }
+    if ($("filterClass").dataset.sig !== sig) {
+      const keep = $("filterClass").value;
+      $("filterClass").innerHTML = `<option value="">all classes</option>${opts}`;
+      $("filterClass").dataset.sig = sig;
+      if (classes.includes(keep)) $("filterClass").value = keep;
+    }
   }
 
   const ROLE_COLS = [["role", "role"], ["status", "status"], ["slots", "in use"], ["grants", "grants"], ["failures", "failures"],
@@ -309,9 +336,17 @@
 
   async function control(body) {
     $("controlStatus").textContent = `${body.verb}…`;
-    const res = await fetch("/api/gpu-pool/control", { method: "POST", headers: { "Content-Type": "application/json" },
-                                                       body: JSON.stringify(body), credentials: "same-origin" });
-    const out = await res.json().catch(() => ({}));
+    let res, out = {};
+    try {
+      // X-Requested-With: the server refuses control requests without it (cross-site request forgery guard).
+      res = await fetch("/api/gpu-pool/control", { method: "POST", credentials: "same-origin",
+                                                   headers: { "Content-Type": "application/json", "X-Requested-With": "orion-hub" },
+                                                   body: JSON.stringify(body) });
+      out = await res.json().catch(() => ({}));
+    } catch (err) {
+      $("controlStatus").textContent = `${body.verb} failed: ${err}`;
+      return {};
+    }
     $("controlStatus").textContent = res.ok
       ? `${body.verb}: ${out.ok ? "ok" : "refused"}${out.reason ? ` (${out.reason})` : ""}`
       : `${body.verb} failed: HTTP ${res.status} ${out.detail || ""}`;
@@ -321,7 +356,14 @@
   function backfillSpec(preview) {
     const iso = (el) => (el.value ? new Date(el.value).toISOString() : undefined);
     return { work_class: $("bfClass").value || undefined, holder: $("bfHolder").value.trim() || undefined,
-             status: $("bfStatus").value || undefined, since: iso($("bfSince")), until: iso($("bfUntil")), preview };
+             status: $("bfStatus").value || undefined, since: iso($("bfSince")), until: iso($("bfUntil")),
+             limit: BACKFILL_LIMIT, preview };
+  }
+
+  function resetBackfill() {
+    view.previewedBackfill = null;
+    $("bfRun").disabled = true;
+    $("bfRun").textContent = "Replay";
   }
 
   async function loadHistory() {
@@ -340,6 +382,7 @@
     const applyState = (s) => {
       if (!s) return;
       view.state = s;
+      if (!view.config) { loadConfig(); return; }   // pool was unreachable at page load: try again now
       $("poolMode").textContent = `mode: ${s.mode}`;
       if (view.config && s.config_digest && view.configDigest && s.config_digest !== view.configDigest) loadConfig();
       renderCards();
@@ -349,25 +392,46 @@
       const d = JSON.parse(e.data);
       view.events = (d.events || []).slice().reverse().slice(0, LIVE_WINDOW);
       applyState(d.state);
-      live(true, "live");
+      view.streamUp = true;
       backoff = 2000;
+      freshness();
     });
-    es.addEventListener("state", (e) => { applyState(JSON.parse(e.data).state); live(true, `live · ${new Date().toLocaleTimeString()}`); });
+    es.addEventListener("state", (e) => { applyState(JSON.parse(e.data).state); freshness(); });
     es.addEventListener("event", (e) => {
       view.events.unshift(JSON.parse(e.data).event);
       view.events.length = Math.min(view.events.length, LIVE_WINDOW);
       if (view.range === "live") renderTraffic();
     });
     es.onerror = () => {
+      view.streamUp = false;
       live(false, "disconnected, retrying");
       es.close();
       setTimeout(() => connect(Math.min((backoff || 2000) * 2, 30000)), backoff || 2000);
     };
   }
 
+  function freshness() {
+    const live = (on, text) => { $("liveDot").classList.toggle("on", on); $("liveText").textContent = text; };
+    if (!view.streamUp) return;
+    const age = stateAgeSec(view.state, Date.now());
+    if (age === null) live(false, "connected, no pool state yet");
+    else if (age > STALE_AFTER_SEC) live(false, `STALE: last pool state ${Math.round(age)} s ago -- pool may be down`);
+    else live(true, `live · state ${Math.round(age)} s old`);
+  }
+
   async function loadConfig() {
-    const res = await fetch("/api/gpu-pool/state?config=1");
-    if (!res.ok) { $("cardsHint").textContent = `Pool unreachable: HTTP ${res.status}`; return; }
+    if (view.configLoading) return;
+    view.configLoading = true;
+    let res;
+    try {
+      res = await fetch("/api/gpu-pool/state?config=1");
+    } catch (err) {
+      $("cardsHint").textContent = `Pool unreachable: ${err}`;
+      return;
+    } finally {
+      view.configLoading = false;
+    }
+    if (!res.ok) { $("cardsHint").textContent = `Pool unreachable: HTTP ${res.status} (retrying when it publishes again)`; return; }
     const s = await res.json();
     view.config = s.config; view.configYaml = s.config_yaml; view.configDigest = s.config_digest; view.state = s;
     $("poolDigest").textContent = `config ${s.config_digest}`;
@@ -379,12 +443,14 @@
   document.addEventListener("click", async (ev) => {
     const btn = ev.target.closest("button[data-verb]");
     if (btn) {
+      if (btn.disabled) return;
       const body = { verb: btn.dataset.verb };
       if (btn.dataset.card) body.card = btn.dataset.card;
       if (btn.dataset.lease) body.lease_id = btn.dataset.lease;
       if (btn.dataset.class) body.work_class = btn.dataset.class;
       if (body.verb === "hold" && !confirm(`Hold ${body.work_class}? Every card it spans is drained first.`)) return;
-      await control(body);
+      btn.disabled = true;   // no double-submit before the next state frame redraws the controls
+      try { await control(body); } finally { btn.disabled = false; }
       return;
     }
     const row = ev.target.closest("tr[data-lease]");
@@ -400,16 +466,24 @@
     $("walkReplay").addEventListener("click", async () => { await control({ verb: "replay", lease_id: $("walkReplay").dataset.lease }); walk($("walkReplay").dataset.lease); });
     $("walkCancel").addEventListener("click", async () => { await control({ verb: "cancel", lease_id: $("walkCancel").dataset.lease }); walk($("walkCancel").dataset.lease); });
     $("bfPreview").addEventListener("click", async () => {
-      const out = await control({ verb: "backfill", backfill: backfillSpec(true) });
+      const spec = backfillSpec(true);
+      const out = await control({ verb: "backfill", backfill: spec });
       const n = out && out.detail ? out.detail.would_replay : undefined;
+      view.previewedBackfill = n ? { ...spec, preview: false } : null;   // Run sends exactly what was previewed
       $("bfRun").disabled = !n;
-      $("bfRun").textContent = n ? `Replay ${n} lease(s)` : "Replay";
+      $("bfRun").textContent = n ? `Replay ${backfillLabel(n)} lease(s)` : "Replay";
+    });
+    ["bfClass", "bfHolder", "bfStatus", "bfSince", "bfUntil"].forEach((id) => {
+      $(id).addEventListener("input", resetBackfill);
+      $(id).addEventListener("change", resetBackfill);
     });
     $("bfRun").addEventListener("click", async () => {
-      if (!confirm($("bfRun").textContent + "?")) return;
-      await control({ verb: "backfill", backfill: backfillSpec(false) });
-      $("bfRun").disabled = true;
+      if (!view.previewedBackfill || !confirm($("bfRun").textContent + "?")) return;
+      const spec = view.previewedBackfill;
+      resetBackfill();
+      await control({ verb: "backfill", backfill: spec });
     });
-    loadConfig().then(() => connect(2000));
+    setInterval(freshness, 5000);
+    loadConfig().finally(() => connect(2000));
   });
 })(typeof window !== "undefined" ? window : globalThis);

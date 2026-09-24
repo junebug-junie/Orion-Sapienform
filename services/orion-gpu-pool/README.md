@@ -45,7 +45,7 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 | `orion:gpu_pool:lease:request` | acquire / heartbeat / release / cancel (RPC; answers at once) |
 | `orion:gpu_pool:event` | lease facts; callers wake on `granted` |
 | `orion:gpu_pool:state` (+ `:state:request`) | whole-pool snapshot |
-| `orion:gpu_pool:control:request` | operator: lend, unlend, replay, cancel, backfill (needs `GPU_POOL_OPERATOR_TOKEN`) |
+| `orion:gpu_pool:control:request` | operator: lend, unlend, hold, release, replay, cancel, backfill. Signed with `GPU_POOL_OPERATOR_TOKEN` (HMAC + timestamp + one-time nonce, `orion/gpu_pool/control_auth.py`); the secret itself never travels, so bus-mirror/bus-tap copies are useless to replay. |
 | `orion:llm:worker:announce` | worker → pool discovery |
 
 HTTP is only `/health`, the read-only `GET /v1/pool` debug mirror, and

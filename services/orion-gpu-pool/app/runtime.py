@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.gpu_pool.client import WAIT_HOP_LABEL
 from orion.gpu_pool.config import PoolConfig
+from orion.gpu_pool.control_auth import NonceLedger, verify
 from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
@@ -80,6 +81,7 @@ class PoolRuntime:
         self._last_probe: datetime | None = None
         self._last_state: datetime | None = None
         self._swap_requested: set[tuple[str, str]] = set()
+        self._nonces = NonceLedger()
 
     # --- lifecycle --------------------------------------------------------------------
     async def start(self) -> None:
@@ -181,8 +183,10 @@ class PoolRuntime:
         return await self.release(lease_id, "cancelled", "cancelled")
 
     async def control(self, ctl: GpuPoolControlV1) -> GpuPoolControlReplyV1:
-        if not self.operator_token or ctl.operator_token != self.operator_token:
-            return GpuPoolControlReplyV1(ok=False, reason="operator_token_rejected")
+        refused = verify(ctl, self.operator_token, self.now(), self._nonces)
+        if refused:
+            logger.warning("gpu_pool_control_refused verb=%s actor=%s reason=%s", ctl.verb, ctl.actor, refused)
+            return GpuPoolControlReplyV1(ok=False, reason=refused)
         if ctl.verb in ("lend", "unlend"):
             async with self.lock:
                 card = self.cards.get(ctl.card or "")

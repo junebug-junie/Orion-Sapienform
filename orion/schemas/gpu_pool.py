@@ -204,17 +204,22 @@ class GpuPoolStateRequestV1(BaseModel):
 
 
 class GpuPoolControlV1(BaseModel):
-    """Operator verbs. ``operator_token`` is checked by the pool; never logged."""
+    """Operator verbs, signed -- the operator secret itself never rides the bus.
+
+    Built with ``orion.gpu_pool.control_auth.signed_control``; verified by the pool against its
+    ``GPU_POOL_OPERATOR_TOKEN`` (HMAC over this message, 60 s freshness, single-use nonce)."""
 
     model_config = ConfigDict(extra="forbid")
 
     verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release"]
-    operator_token: str = Field(min_length=1, repr=False)
     card: str | None = None
     lease_id: str | None = None
-    work_class: str | None = None   # verb=hold: an operator hold (e.g. the multi-card experiment seat)
     backfill: dict[str, Any] | None = None
     actor: str = "operator"
+    work_class: str | None = None   # verb=hold: an operator hold (e.g. the multi-card experiment seat)
+    issued_at: datetime
+    nonce: str = Field(min_length=16, max_length=64)
+    signature: str = Field(min_length=64, max_length=64, repr=False)
 
 
 class GpuPoolControlReplyV1(BaseModel):

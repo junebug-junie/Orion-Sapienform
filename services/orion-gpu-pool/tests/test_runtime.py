@@ -12,6 +12,7 @@ from app.store import MemoryStore
 from orion.gpu_pool.config import load_pool_config
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
+from orion.gpu_pool.control_auth import signed_control
 from orion.schemas.gpu_pool import GpuLeaseRequestV1, GpuPoolControlV1, LlmWorkerAnnounceV1
 
 CFG = load_pool_config()
@@ -166,9 +167,9 @@ def test_failures_retry_then_dead_letter_then_operator_replay():
             await later(rt, clock, CFG.defaults.retry.max_sec + 1)
         row = await rt.store.lease(r.lease_id)
         assert row["status"] == "dead_letter" and rt.bus.events("dead_lettered")
-        bad = await rt.control(GpuPoolControlV1(verb="replay", operator_token="nope", lease_id=r.lease_id))
-        assert not bad.ok and bad.reason == "operator_token_rejected"
-        ok = await rt.control(GpuPoolControlV1(verb="replay", operator_token=TOKEN, lease_id=r.lease_id))
+        bad = await rt.control(signed_control("nope", now=rt.now(), verb="replay", lease_id=r.lease_id))
+        assert not bad.ok and bad.reason == "operator_signature_rejected"
+        ok = await rt.control(signed_control(TOKEN, now=rt.now(), verb="replay", lease_id=r.lease_id))
         assert ok.ok and (await rt.store.lease(r.lease_id))["status"] == "granted"
         path = [h["event"] for h in await rt.history(r.lease_id)]
         assert path[:3] == ["admit", "grant", "release_failed"] and "replay" in path
@@ -196,7 +197,7 @@ def test_gpu0_lend_lets_agent_borrow_and_chat_recalls_it():
         await rt.acquire(acq("agent"))                     # takes gpu1's only slot
         waiting = await rt.acquire(acq("agent"))
         assert waiting.status == "queued"
-        await rt.control(GpuPoolControlV1(verb="lend", operator_token=TOKEN, card="gpu0"))
+        await rt.control(signed_control(TOKEN, now=rt.now(), verb="lend", card="gpu0"))
         borrowed = await rt.store.lease(waiting.lease_id)
         assert borrowed["status"] == "granted" and borrowed["role"] == "chat"
         chat = await rt.acquire(acq("chat", priority="interactive"))
@@ -279,9 +280,9 @@ def test_backfill_preview_then_linked_children():
             r = await rt.acquire(acq("fast"))
             await rt.release(r.lease_id, "ok")
         spec = {"work_class": "fast", "status": "released"}
-        prev = await rt.control(GpuPoolControlV1(verb="backfill", operator_token=TOKEN, backfill=spec))
+        prev = await rt.control(signed_control(TOKEN, now=rt.now(), verb="backfill", backfill=spec))
         assert prev.detail == {"would_replay": 3}
-        done = await rt.control(GpuPoolControlV1(verb="backfill", operator_token=TOKEN,
+        done = await rt.control(signed_control(TOKEN, now=rt.now(), verb="backfill",
                                                  backfill={**spec, "preview": False}))
         children = done.detail["children"]
         assert len(children) == 3
@@ -321,7 +322,7 @@ def test_release_ok_after_abort_ends_the_lease():
         await boot(rt)
         await rt.acquire(acq("agent"))
         waiting = await rt.acquire(acq_r("agent"))
-        await rt.control(GpuPoolControlV1(verb="lend", operator_token=TOKEN, card="gpu0"))
+        await rt.control(signed_control(TOKEN, now=rt.now(), verb="lend", card="gpu0"))
         await rt.acquire(acq("chat", priority="interactive"))
         await later(rt, clock, CFG.defaults.clawback_grace_sec)
         assert (await rt.store.lease(waiting.lease_id))["status"] == "retry_wait"
@@ -390,11 +391,11 @@ def test_operator_hold_via_control_and_release():
     async def go():
         rt, _ = make()
         await boot(rt)
-        bad = await rt.control(GpuPoolControlV1(verb="hold", operator_token="x", work_class="experiment"))
+        bad = await rt.control(signed_control("x", now=rt.now(), verb="hold", work_class="experiment"))
         assert not bad.ok
-        held = await rt.control(GpuPoolControlV1(verb="hold", operator_token=TOKEN, work_class="experiment"))
+        held = await rt.control(signed_control(TOKEN, now=rt.now(), verb="hold", work_class="experiment"))
         assert held.ok and held.detail["status"] == "queued"      # it drains every card first
-        rel = await rt.control(GpuPoolControlV1(verb="release", operator_token=TOKEN,
+        rel = await rt.control(signed_control(TOKEN, now=rt.now(), verb="release",
                                                 lease_id=held.detail["lease_id"]))
         assert rel.ok
     run(go())
@@ -412,4 +413,19 @@ def test_state_request_can_carry_config_and_a_lease_history():
         assert set(full.config["roles"]) == set(CFG.roles) and "cards:" in full.config_yaml
         assert full.config["routes"]["metacog"]["class"] == "metacog"
         assert [h["event"] for h in full.history] == ["admit", "grant", "release_ok"]
+    run(go())
+
+
+def test_control_signature_freshness_and_single_use():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        ctl = signed_control(TOKEN, now=rt.now(), verb="lend", card="gpu0")
+        assert TOKEN not in ctl.model_dump_json()                         # the secret never rides the bus
+        assert (await rt.control(ctl)).ok
+        assert (await rt.control(ctl)).reason == "operator_nonce_replayed"  # copied off the bus: refused
+        forged = ctl.model_copy(update={"verb": "unlend", "nonce": "f" * 32})
+        assert (await rt.control(forged)).reason == "operator_signature_rejected"
+        stale = signed_control(TOKEN, now=rt.now() - timedelta(seconds=120), verb="unlend", card="gpu0")
+        assert (await rt.control(stale)).reason == "operator_signature_stale"
     run(go())

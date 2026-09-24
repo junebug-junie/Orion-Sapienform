@@ -83,32 +83,61 @@ def test_state_route_asks_the_pool_over_the_bus(client, monkeypatch):
     assert payload["include_config"] is True and payload["history_for"] == "L1"
 
 
+HUB_PAGE = {"x-requested-with": "orion-hub"}
+
+
 def test_control_requires_the_operator_cookie_then_the_pool_token(client, monkeypatch):
     bus = RpcBus({"ok": True, "reason": None, "detail": {"card": "gpu0", "lent": True}})
     _use_bus(monkeypatch, bus)
     monkeypatch.delenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", raising=False)
-    assert client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"}).status_code == 503
+    assert client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"}, headers=HUB_PAGE).status_code == 503
 
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "hub-op")
     assert client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"},
-                       headers={"x-orion-operator-token": "wrong"}).status_code == 403
+                       headers={**HUB_PAGE, "x-orion-operator-token": "wrong"}).status_code == 403
 
     monkeypatch.setattr(mod.settings, "GPU_POOL_OPERATOR_TOKEN", "", raising=False)
-    res = client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"}, cookies={"orion_operator_token": "hub-op"})
+    res = client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"}, cookies={"orion_operator_token": "hub-op"},
+                      headers=HUB_PAGE)
     assert res.status_code == 503 and res.json()["detail"] == "gpu_pool_operator_token_not_configured"
 
     monkeypatch.setattr(mod.settings, "GPU_POOL_OPERATOR_TOKEN", "pool-secret", raising=False)
-    res = client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"}, cookies={"orion_operator_token": "hub-op"})
+    res = client.post("/api/gpu-pool/control", json={"verb": "lend", "card": "gpu0"}, cookies={"orion_operator_token": "hub-op"},
+                      headers=HUB_PAGE)
     assert res.status_code == 200 and res.json()["ok"] is True
     [(channel, payload, _)] = bus.calls
     assert channel == GPU_POOL_CONTROL_REQUEST_CHANNEL
-    assert payload["operator_token"] == "pool-secret" and payload["verb"] == "lend" and payload["actor"] == "hub-operator"
-    assert "pool-secret" not in res.text
+    assert payload["verb"] == "lend" and payload["actor"] == "hub-operator"
+    assert "pool-secret" not in json.dumps(payload) and "pool-secret" not in res.text   # never on the bus
+    from orion.gpu_pool.control_auth import NonceLedger, verify
+    from orion.schemas.gpu_pool import GpuPoolControlV1
+    ctl = GpuPoolControlV1.model_validate(payload)
+    assert verify(ctl, "pool-secret", ctl.issued_at, NonceLedger()) is None           # the pool accepts it
+
+
+def test_control_refuses_cross_site_shaped_requests(client, monkeypatch):
+    """No custom header, or a typeless body: what a cross-site no-cors fetch can send. Refused before auth."""
+    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "hub-op")
+    body = json.dumps({"verb": "hold", "work_class": "experiment"})
+    no_header = client.post("/api/gpu-pool/control", content=body, cookies={"orion_operator_token": "hub-op"},
+                            headers={"content-type": "application/json"})
+    typeless = client.post("/api/gpu-pool/control", content=body, cookies={"orion_operator_token": "hub-op"},
+                           headers={**HUB_PAGE, "content-type": ""})
+    assert no_header.status_code == 403 and typeless.status_code == 403
 
 
 def test_control_rejects_unknown_verbs(client, monkeypatch):
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "hub-op")
-    assert client.post("/api/gpu-pool/control", json={"verb": "rm -rf"}, cookies={"orion_operator_token": "hub-op"}).status_code == 422
+    assert client.post("/api/gpu-pool/control", json={"verb": "rm -rf"}, cookies={"orion_operator_token": "hub-op"},
+                       headers=HUB_PAGE).status_code == 422
+
+
+def test_state_route_sends_only_non_default_fields_and_caps_lease_id(client, monkeypatch):
+    bus = RpcBus({"config_digest": "abc", "cards": [], "roles": []})
+    _use_bus(monkeypatch, bus)
+    client.get("/api/gpu-pool/state")
+    assert bus.calls[0][1] == {}                              # an older pool accepts this unchanged
+    assert client.get("/api/gpu-pool/state?history_for=" + "x" * 200).status_code == 422
 
 
 def test_disabled_panel_answers_404(monkeypatch):

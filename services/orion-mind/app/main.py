@@ -6,16 +6,22 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
 
 from .engine import run_mind
+from .llm_client import RPC_HEALTH_SINK
 from .settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 logger = logging.getLogger("orion-mind")
 
 heartbeat_chassis: HeartbeatOnly | None = None
+rpc_health_bus: OrionBusAsync | None = None
+rpc_health_publisher: RpcHealthPublisher | None = None
 
 
 def build_heartbeat_chassis() -> HeartbeatOnly:
@@ -36,6 +42,50 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
     )
 
 
+def build_rpc_health_publisher(bus: OrionBusAsync) -> RpcHealthPublisher:
+    """Publishes RpcHealthSnapshotV1 from ``bus`` (long-lived, publish-only) after draining
+    RPC_HEALTH_SINK, where every per-call LLM-gateway bus folds its rpc_request() outcome
+    (app/llm_client.py). Without the sink those per-call stats were discarded."""
+    return RpcHealthPublisher(
+        enabled=settings.RPC_HEALTH_PUBLISH_ENABLED and settings.ORION_BUS_ENABLED,
+        bus_getter=lambda: bus,
+        service=settings.SERVICE_NAME,
+        node=settings.NODE_NAME,
+        instance="main",
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        interval_sec=settings.RPC_HEALTH_PUBLISH_INTERVAL_SEC,
+        include_channel_latency=settings.RPC_HEALTH_CHANNEL_LATENCY_ENABLED,
+        sinks=[RPC_HEALTH_SINK],
+    )
+
+
+async def _start_rpc_health() -> None:
+    global rpc_health_bus, rpc_health_publisher
+    if not (settings.RPC_HEALTH_PUBLISH_ENABLED and settings.ORION_BUS_ENABLED):
+        return
+    try:
+        bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+        await bus.connect()
+        rpc_health_bus = bus
+        rpc_health_publisher = build_rpc_health_publisher(bus)
+        rpc_health_publisher.start()
+    except Exception as exc:
+        logger.warning("rpc_health_publish_start_failed error=%s", exc)
+
+
+async def _stop_rpc_health() -> None:
+    global rpc_health_bus, rpc_health_publisher
+    if rpc_health_publisher is not None:
+        await rpc_health_publisher.stop()
+        rpc_health_publisher = None
+    if rpc_health_bus is not None:
+        try:
+            await rpc_health_bus.close()
+        except Exception as exc:
+            logger.warning("rpc_health_bus_close_error error=%s", exc)
+        rpc_health_bus = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global heartbeat_chassis
@@ -50,7 +100,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("system_health_heartbeat_start_failed error=%s", exc)
         heartbeat_chassis = None
-    yield
+    await _start_rpc_health()
+    try:
+        yield
+    finally:
+        await _stop_rpc_health()
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()

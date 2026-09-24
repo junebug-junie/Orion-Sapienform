@@ -105,6 +105,14 @@ class Settings(BaseSettings):
     # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
+    # Periodic RpcHealthSnapshotV1 publish to orion:rpc_health:snapshot (mesh transport
+    # coverage, docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-
+    # baseline-design.md). Per-call LLM-gateway buses fold into
+    # app.llm_client.RPC_HEALTH_SINK; a long-lived lifespan bus publishes it.
+    # Defaults match .env_example.
+    RPC_HEALTH_PUBLISH_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    RPC_HEALTH_PUBLISH_INTERVAL_SEC: float = Field(default=30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    RPC_HEALTH_CHANNEL_LATENCY_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
     MIND_LLM_INTAKE_CHANNEL: str = Field(
         default="orion:exec:request:LLMGatewayService",
         alias="MIND_LLM_INTAKE_CHANNEL",

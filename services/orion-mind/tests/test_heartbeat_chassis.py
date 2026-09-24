@@ -64,6 +64,9 @@ async def test_lifespan_starts_and_stops_heartbeat_chassis(monkeypatch) -> None:
     mind_main = _mind_prep()
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     monkeypatch.setattr(mind_main, "build_heartbeat_chassis", lambda: fake_chassis)
+    # Never open a real RPC-health publisher bus to the live mesh from a unit test.
+    monkeypatch.setattr(mind_main, "_start_rpc_health", AsyncMock())
+    monkeypatch.setattr(mind_main, "_stop_rpc_health", AsyncMock())
 
     app = FastAPI()
     async with mind_main.lifespan(app):
@@ -83,6 +86,9 @@ async def test_lifespan_survives_heartbeat_start_failure(monkeypatch) -> None:
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     fake_chassis.start_background.side_effect = RuntimeError("bus unreachable")
     monkeypatch.setattr(mind_main, "build_heartbeat_chassis", lambda: fake_chassis)
+    # Never open a real RPC-health publisher bus to the live mesh from a unit test.
+    monkeypatch.setattr(mind_main, "_start_rpc_health", AsyncMock())
+    monkeypatch.setattr(mind_main, "_stop_rpc_health", AsyncMock())
 
     app = FastAPI()
     async with mind_main.lifespan(app):

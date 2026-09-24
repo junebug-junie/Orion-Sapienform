@@ -13,11 +13,19 @@ from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
+from orion.core.bus.rpc_health import SharedRpcHealthSink
 
 from .llm_context import MindLLMRequestContext
 from .settings import settings
 
 logger = logging.getLogger("orion-mind.llm")
+
+# Process-wide landing spot for RPC-health stats. _bus_chat opens a short-lived
+# OrionBusAsync per LLM call (inside asyncio.run, often on a helper Thread because
+# run_mind blocks the request's event loop); without this, each call's
+# orion:exec:request:LLMGatewayService outcome was discarded with its bus. app.main's
+# RpcHealthPublisher drains this sink into a long-lived bus.
+RPC_HEALTH_SINK = SharedRpcHealthSink()
 
 
 def _run_blocking(coro):
@@ -267,6 +275,9 @@ class MindLLMClient:
                 result_meta = dict(result.meta or {})
                 return str(result.content or result.text or ""), usage, result.model_used, result_meta
             finally:
+                # Before close, even on timeout/error: fold this call's outcome into the
+                # process sink so the published window sees it.
+                RPC_HEALTH_SINK.absorb_bus(bus)
                 await bus.close()
 
         return _run_blocking(_call())

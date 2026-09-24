@@ -30,7 +30,6 @@ TARGET_NAME=".env"
 # --- Default hardcoded excludes (edit these) ---
 DEFAULT_EXCLUDES=(
   orion-vision-edge
-  orion-security-watcher
 )
 
 # --- Locate repo root (script is expected at root/mesh_utilities/common) ---

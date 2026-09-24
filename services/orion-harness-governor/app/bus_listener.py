@@ -47,6 +47,10 @@ _SUBSTRATE_UNAVAILABLE_USER_REASON = "substrate appraisal unavailable (RPC timeo
 _FCC_TIMEOUT_CODES = frozenset({"fcc_timeout", "fcc_stream_stalled"})
 # Codes raised before any subprocess round trip happened -- not transport latency.
 _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_small", "fcc_spawn_failed"})
+# The motor's own output guards killing a still-working stream (orion/harness/fcc_motor.py):
+# the elapsed time is truncated by a content limit, neither a round trip nor a
+# deadline -- recording it either way would bias the baseline.
+_FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
 
 
 def fcc_hop_key(served_model: str | None) -> str:
@@ -58,22 +62,33 @@ def fcc_hop_key(served_model: str | None) -> str:
 
 
 def record_fcc_hop(bus: Any, motor: Any) -> None:
-    """Record the FCC subprocess leg of one motor run on ``bus`` (the dispatch bus the
-    RPC-health publisher drains): success with ``fcc_elapsed_sec`` on a normal exit,
-    timeout on the motor's own timeout-kill. Skips runs with no subprocess round trip
-    (pre-spawn refusal, MCP preflight failure, no elapsed time) and externally killed
-    runs (negative exit code = SIGKILL from a Hub cancel). Never raises."""
+    """Record the FCC motor leg of one run on ``bus`` (the dispatch bus the RPC-health
+    publisher drains) as hop ``fcc:<served_model>``.
+
+    Measures ``fcc_elapsed_sec`` -- the motor leg's wall time (served-model probe, prior
+    tool-fetch read, the claude subprocess, lifecycle grammar publish), not the bare
+    subprocess. Success on a normal exit (any exit code >= 0, the round trip completed),
+    timeout on the motor's own timeout-kill. Skipped: no elapsed time, pre-spawn refusal,
+    MCP preflight failure, the motor's own output-limit kills, and signal kills
+    (negative exit code, e.g. a Hub cancel's SIGKILL -- the runner carries that exit code
+    from the fcc_nonzero_exit error event).
+
+    Model: the CLI-echoed ``fcc_served_model``, else the gateway model probed before the
+    run (``probed_served_model``) -- a run that stalls before its first assistant event
+    would otherwise land in ``fcc:unknown``, split from its model's successes. Never raises."""
     try:
         elapsed_sec = getattr(motor, "fcc_elapsed_sec", None)
         if elapsed_sec is None:
             return
         code = str(getattr(motor, "grounding_status", "") or "")
-        hop = fcc_hop_key(getattr(motor, "fcc_served_model", None))
+        hop = fcc_hop_key(
+            getattr(motor, "fcc_served_model", None) or getattr(motor, "probed_served_model", None)
+        )
         elapsed_ms = float(elapsed_sec) * 1000.0
         if code in _FCC_TIMEOUT_CODES:
             bus.record_hop_timeout(hop, elapsed_ms)
             return
-        if code in _FCC_PRESPAWN_CODES or code.startswith("fcc_mcp_"):
+        if code in _FCC_PRESPAWN_CODES or code in _FCC_SELF_KILL_CODES or code.startswith("fcc_mcp_"):
             return
         exit_code = getattr(motor, "exit_code", None)
         if isinstance(exit_code, int) and exit_code < 0:

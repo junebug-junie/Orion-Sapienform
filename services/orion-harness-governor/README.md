@@ -45,7 +45,7 @@ With `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` the snapshot carries per-hop stat
 |---------|---------|
 | `orion:cortex:exec:request:background` | finalize reflect / response repair RPC to cortex-exec (`rpc_request`) |
 | `orion:substrate:finalize_appraisal:request` | 5a draft-molecule appraisal RPC |
-| `fcc:<served_model>` | FCC motor `claude -p` subprocess wall time (`HarnessRunV1.fcc_elapsed_sec`); `fcc:unknown` when no model was discovered |
+| `fcc:<served_model>` | FCC motor leg wall time (`HarnessRunV1.fcc_elapsed_sec`: served-model probe + `claude -p` subprocess + lifecycle publish). Success on exit code >= 0, timeout on `fcc_timeout`/`fcc_stream_stalled`; Hub cancels (negative exit), pre-spawn refusals and output-limit kills are skipped. Model = CLI-echoed served model, else the gateway model probed before the run; `fcc:unknown` only when both are missing |
 
 `fcc:*` outcome mapping: `fcc_timeout` / `fcc_stream_stalled` (the motor's own timeout-kill)
 -> timeout; any other run that spawned the subprocess -> success with its wall time; a

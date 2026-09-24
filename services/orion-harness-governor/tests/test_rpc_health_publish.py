@@ -220,3 +220,68 @@ async def test_publisher_built_from_settings_publishes_dispatch_bus_window() -> 
     assert payload["service"] == "orion-harness-governor"
     assert payload["instance"] == "main"
     assert payload["channel_latency"]["fcc:m1"]["success_count"] == 1
+
+
+def test_fcc_hop_timeout_before_first_assistant_event_keys_by_probed_model() -> None:
+    """A stall before the CLI echoes a model leaves fcc_served_model None; the timeout
+    must still land under the model's key (probed pre-run), not fcc:unknown."""
+    from app.bus_listener import record_fcc_hop
+
+    bus = _bus()
+    record_fcc_hop(
+        bus,
+        _motor(grounding_status="fcc_stream_stalled", fcc_served_model=None, probed_served_model="qwen3.5-27b"),
+    )
+    hops = _hops(bus)
+    assert "fcc:unknown" not in hops
+    assert hops["fcc:qwen3.5-27b"].timeout_count == 1
+
+
+@pytest.mark.parametrize("code", ["fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"])
+def test_fcc_hop_skips_motor_output_limit_kills(code: str) -> None:
+    from app.bus_listener import record_fcc_hop
+
+    bus = _bus()
+    record_fcc_hop(bus, _motor(grounding_status=code))
+    assert _hops(bus) == {}
+
+
+@pytest.mark.asyncio
+async def test_hub_cancel_through_real_runner_is_not_recorded_as_success() -> None:
+    """Drive the real HarnessRunner with the event fcc_motor emits after a Hub cancel's
+    SIGKILL (fcc_nonzero_exit, metadata.exit_code=-9). Before the runner read exit_code
+    from error events, motor.exit_code stayed None and the cancel was recorded as a
+    successful (truncated) round trip."""
+    from typing import Any, AsyncIterator
+
+    from app.bus_listener import record_fcc_hop
+    from orion.harness.runner import HarnessRunner
+    from orion.harness.tests.fixtures import make_thought
+    from orion.schemas.cognition.answer_contract import AnswerContract
+    from orion.schemas.context_exec import ContextExecPermissionV1
+    from orion.schemas.harness_finalize import HarnessRunRequestV1
+
+    async def _cancelled(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "error",
+            "error": "claude exited with code -9",
+            "error_code": "fcc_nonzero_exit",
+            "metadata": {"exit_code": -9, "fcc_served_model": None},
+            "llm_response": "",
+        }
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-cancel",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    probe = AsyncMock(return_value="qwen3.5-27b")
+    motor = await HarnessRunner(AsyncMock(), fcc_runner=_cancelled, served_model_probe=probe).run(request)
+    assert motor.exit_code == -9
+    assert motor.probed_served_model == "qwen3.5-27b"
+
+    bus = _bus()
+    record_fcc_hop(bus, motor)
+    assert _hops(bus) == {}

@@ -1,0 +1,60 @@
+# GPU pool — the only place that says which roles live on which cards and who may borrow what.
+# Spec: docs/superpowers/specs/2026-09-24-gpu-pool-design.md
+#
+# NO MODEL NAMES HERE. Which model fills a role is discovered live: each llama.cpp worker
+# announces its config/llm_profiles.yaml profile on orion:llm:worker:announce, and the pool
+# confirms it against the server's own /props. Swap a model file -> no edit here.
+#
+# Adding a card: add it under cards, then add or extend the roles that live on it.
+# Adding a service: add a role (kind: service needs slots + vram_gb) and a class that uses it.
+version: 1
+host: {name: circe, address: 100.112.254.99}
+
+defaults:
+  clawback_grace_sec: 60        # a recalled borrower finishes its current request, capped here
+  request_lease_ttl_sec: 30     # heartbeat window, one-inference leases
+  hold_lease_ttl_sec: 90        # heartbeat window, held leases (durable runs, operator)
+  swap_cooldown_sec: 600        # after a swap seat is unloaded, don't reload it for this long
+  swap_after_wait_sec: 30       # a lease must wait this long before it justifies loading a swap seat
+  swap_idle_unload_sec: 300     # an idle swap seat is unloaded and residents restored after this
+  backlog_max_age_sec: 86400    # backlogged work older than this is dead-lettered
+  retry: {max_attempts: 3, base_sec: 5, max_sec: 300}
+
+priorities: [interactive, system, background]   # highest first
+
+cards:
+  gpu0: {vram_gb: 32, lendable: true}   # chat's card; others only while Juniper has it lent
+  gpu1: {vram_gb: 32}
+  gpu2: {vram_gb: 32}                   # PG500-216 (a V100)
+  gpu3: {vram_gb: 32}
+
+roles:
+  chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
+  agent:      {kind: llm, cards: [gpu1], owner: agent, port: 8015}
+  agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
+               swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore}}
+  metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
+  fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
+  world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1}
+  diffusion:  {kind: service, cards: [gpu2], owner: diffusion, port: 8014, slots: 1, vram_gb: 24}
+  experiment: {kind: llm, cards: [gpu0, gpu1, gpu2, gpu3], owner: experiment, port: 8099,
+               operator_only: true, max_hold_sec: 14400,
+               swap: {evicts: all, load: circe/experiment, unload: circe/restore}}
+
+classes:   # roles that may serve a class, in preference order; nothing big spills down to gpu3
+  chat:       {roles: [chat], on_unavailable: wait}
+  agent:      {roles: [agent, agent-gpu2, chat], on_unavailable: backlog}
+  metacog:    {roles: [metacog, fast, agent, agent-gpu2, chat], on_unavailable: backlog}
+  fast:       {roles: [fast, metacog, agent, agent-gpu2, chat], on_unavailable: wait}
+  world:      {roles: [world], on_unavailable: backlog}
+  diffusion:  {roles: [diffusion], on_unavailable: backlog}
+  experiment: {roles: [experiment], on_unavailable: fail}
+
+routes:    # what llm-gateway callers say -> class (+ priority)
+  chat: {class: chat, priority: interactive}
+  harness: {class: chat, priority: interactive}
+  agent: agent
+  metacog: {class: metacog, priority: system}
+  metacog_background: {class: metacog, priority: background}
+  quick: fast
+  quick_background: {class: fast, priority: background}

@@ -48,6 +48,24 @@ from orion.schemas.cognition.answer_contract import AnswerContract
 
 logger = logging.getLogger("orion.cortex.orch")
 
+# RPC-health hop label for metacog's own dispatch (orion/core/bus/rpc_health.py hop keys).
+# orion-equilibrium-service's transport gate excludes keys carrying this label
+# (EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS) so metacog's load cannot fire transport metacog.
+METACOG_HEALTH_LABEL = "log_orion_metacognition"
+
+
+def _record_verb_hop(bus: Any, verb_name: str, elapsed_ms: float, *, timed_out: bool) -> None:
+    """Record the chat-lane hand-rolled orion:verb:request round trip as hop
+    ``verb:<verb_name>`` on the bus the RPC-health publish loop drains. Never raises."""
+    hop = f"verb:{verb_name or 'unknown'}"
+    try:
+        if timed_out:
+            bus.record_hop_timeout(hop, elapsed_ms)
+        else:
+            bus.record_hop_success(hop, elapsed_ms)
+    except Exception:
+        logger.debug("verb_hop_record_failed hop=%s", hop, exc_info=True)
+
 _DIRECT_VERB_TRIGGERS = {
     "skills.system.time_now.v1",
     "skills.gpu.nvidia_smi_snapshot.v1",
@@ -803,9 +821,13 @@ async def call_verb_runtime(
                 )
         raise RuntimeError("Verb result subscription closed without a match.")
 
+    verb_hop_started = time.perf_counter()
     try:
-        return await asyncio.wait_for(_wait_for_result(), timeout=timeout_sec)
+        verb_result = await asyncio.wait_for(_wait_for_result(), timeout=timeout_sec)
+        _record_verb_hop(bus, verb_s, (time.perf_counter() - verb_hop_started) * 1000.0, timed_out=False)
+        return verb_result
     except asyncio.TimeoutError as exc:
+        _record_verb_hop(bus, verb_s, (time.perf_counter() - verb_hop_started) * 1000.0, timed_out=True)
         raise TimeoutError(
             f"RPC timeout waiting on {envelope.reply_to or 'orion:verb:result'} ({verb_request.request_id})"
         ) from exc
@@ -905,6 +927,9 @@ async def dispatch_metacog_trigger(
             parent_event_id=parent_event_id,
             source_service=source.name,
         ),
+        # Hop key "<background channel>#log_orion_metacognition": lets the transport
+        # gate measure metacog's own traffic but exclude it from firing (spec A3.3).
+        health_label=METACOG_HEALTH_LABEL,
     )
     logger.info(
         "Dispatched log_orion_metacognition trace_id=%s parent_event_id=%s timeout=%.1fs",

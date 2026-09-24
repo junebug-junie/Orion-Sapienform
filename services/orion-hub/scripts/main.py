@@ -284,6 +284,56 @@ app = FastAPI(
 # These are populated on startup and imported by other modules:
 bus: Optional[OrionBusAsync] = None
 rpc_bus: Optional[OrionBusAsync] = None
+# RPC-health snapshot publish loop (RPC_HEALTH_PUBLISH_ENABLED); see _start_rpc_health_publish.
+_rpc_health_task: Optional[asyncio.Task] = None
+_rpc_health_stop: asyncio.Event = asyncio.Event()
+
+
+def _start_rpc_health_publish() -> None:
+    """Drain Hub's forked RPC bus (where hub->harness-governor `governor:<mode>` hops and
+    Hub's rpc_request() calls are recorded) onto orion:rpc_health:snapshot. The main
+    `bus` is folded in hop-only (per-hop stats, pooled untouched) because some callers
+    fall back to it (`harness_rpc_bus=rpc_bus or bus`)."""
+    global _rpc_health_task
+    if not settings.RPC_HEALTH_PUBLISH_ENABLED or rpc_bus is None or _rpc_health_task is not None:
+        return
+    from orion.core.bus.bus_schemas import ServiceRef as _ServiceRef
+    from orion.core.bus.rpc_health_publish import rpc_health_publish_loop
+
+    _rpc_health_stop.clear()
+    _rpc_health_task = asyncio.create_task(
+        rpc_health_publish_loop(
+            bus_getter=lambda: rpc_bus,
+            service=settings.SERVICE_NAME,
+            node=settings.NODE_NAME,
+            instance="main",
+            source=_ServiceRef(
+                name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME
+            ),
+            interval_sec=float(settings.RPC_HEALTH_PUBLISH_INTERVAL_SEC),
+            stop_event=_rpc_health_stop,
+            include_channel_latency=bool(settings.RPC_HEALTH_CHANNEL_LATENCY_ENABLED),
+            hop_only_bus_getters=[lambda: bus],
+        ),
+        name="rpc-health-publish",
+    )
+    logger.info(
+        "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot channel_latency=%s",
+        settings.RPC_HEALTH_PUBLISH_INTERVAL_SEC,
+        settings.RPC_HEALTH_CHANNEL_LATENCY_ENABLED,
+    )
+
+
+async def _stop_rpc_health_publish() -> None:
+    global _rpc_health_task
+    if _rpc_health_task is None:
+        return
+    _rpc_health_stop.set()
+    try:
+        await asyncio.wait_for(_rpc_health_task, timeout=5.0)
+    except Exception:
+        _rpc_health_task.cancel()
+    _rpc_health_task = None
 cortex_client: Optional[CortexGatewayClient] = None
 tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
@@ -454,6 +504,7 @@ async def startup_event():
             cortex_client = CortexGatewayClient(rpc_bus)
             tts_client = TTSClient(rpc_bus)
             logger.info("Bus Clients initialized (Hub RPC on forked bus).")
+            _start_rpc_health_publish()
 
             # Biometrics cache (singleton)
             biometrics_cache = BiometricsCache(
@@ -1462,6 +1513,7 @@ async def shutdown_event() -> None:
             await embodiment_outcome_cache.stop()
         except Exception:
             pass
+    await _stop_rpc_health_publish()
     if rpc_bus is not None:
         try:
             await rpc_bus.close()

@@ -1,12 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 663,
+  "metric_count": 660,
   "_last_change": {
-    "base": "merge base a888f57b9 (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base 2aa783b9b (origin/main)",
+    "change_count": 4,
+    "high_severity_count": 4,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   removed metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#confidence",
+      "high   removed metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#latency_level",
+      "high   removed metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#level",
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:rpc_health:snapshot (all_producers: ['orion-cortex-exec', 'orion-cortex-orch'] -> ['orion-cortex-exec', 'orion-cortex-orch', 'orion-hub'])"
     ]
   },
   "definitions": {
@@ -978,7 +981,8 @@
       "schema_id": "RpcHealthSnapshotV1",
       "all_producers": [
         "orion-cortex-exec",
-        "orion-cortex-orch"
+        "orion-cortex-orch",
+        "orion-hub"
       ],
       "declared_consumers": [
         "orion-equilibrium-service",
@@ -5439,18 +5443,6 @@
         "social_memory"
       ],
       "notes": "organ=recall class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#confidence": {
-      "notes": "organ=rpc_health_cortex_exec class=exogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#latency_level": {
-      "notes": "organ=rpc_health_cortex_exec class=exogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#level": {
-      "notes": "organ=rpc_health_cortex_exec class=exogenous",
       "registry_source": "orion/signals/registry.py"
     },
     "metric://organ_signal/rpc_health_cortex_orch/rpc_transport_health#confidence": {

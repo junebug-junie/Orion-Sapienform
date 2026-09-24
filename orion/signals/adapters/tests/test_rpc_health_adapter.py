@@ -149,13 +149,62 @@ def test_adapt_normalizes_orion_prefixed_service_name(
     assert signal.organ_id == "rpc_health_cortex_exec"
 
 
-def test_adapt_unknown_service_degrades_to_none(
+def test_adapt_unknown_service_passes_through_not_dropped(
     adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
 ) -> None:
+    """2026-09-24: the two-service whitelist is gone. A new producer (hub, durable-runs,
+    ...) gets its own organ_id and an exogenous signal instead of being silently dropped."""
     signal = adapter.adapt(
         "orion:rpc_health:snapshot", _payload(service="some-future-service"), ORGAN_REGISTRY, {}, norm_ctx
     )
-    assert signal is None
+    assert signal is not None
+    assert signal.organ_id == "rpc_health_some_future_service"
+    assert signal.organ_class == OrganClass.exogenous
+
+
+def test_adapt_missing_service_degrades_to_none(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    assert adapter.adapt("orion:rpc_health:snapshot", _payload(service=""), ORGAN_REGISTRY, {}, norm_ctx) is None
+
+
+def test_adapt_keys_by_service_and_instance(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    """All four cortex-exec lane containers publish service='cortex-exec'; the instance
+    (their EXEC_LANE) must split them into distinct organ_ids so SignalWindow keeps all
+    four instead of whichever published last."""
+    ids = set()
+    for lane in ("legacy", "chat", "spark", "background"):
+        sig = adapter.adapt(
+            "orion:rpc_health:snapshot", _payload(instance=lane), ORGAN_REGISTRY, {}, norm_ctx
+        )
+        assert sig is not None
+        assert sig.organ_id == f"rpc_health_cortex_exec__{lane}"
+        assert sig.organ_class == OrganClass.exogenous
+        ids.add(sig.organ_id)
+    assert len(ids) == 4
+
+
+def test_adapt_primary_instance_keeps_unsuffixed_organ_id(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    sig = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(service="cortex-orch", instance="main"), ORGAN_REGISTRY, {}, norm_ctx
+    )
+    assert sig is not None and sig.organ_id == "rpc_health_cortex_orch"
+
+
+def test_adapt_tolerates_channel_latency_field(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    payload = _payload(
+        instance="chat",
+        channel_latency={
+            "verb:x": {"success_count": 1, "timeout_count": 0, "log_ms_sum": 1.0, "log_ms_sumsq": 1.0, "max_ms": 2.7}
+        },
+    )
+    assert adapter.adapt("orion:rpc_health:snapshot", payload, ORGAN_REGISTRY, {}, norm_ctx) is not None
 
 
 def test_adapt_is_deterministic_for_same_source_event(
@@ -169,7 +218,8 @@ def test_adapt_is_deterministic_for_same_source_event(
 
 
 def test_registry_entry_shape() -> None:
-    for organ_id in ("rpc_health_cortex_exec", "rpc_health_cortex_orch"):
+    assert "rpc_health_cortex_exec" not in ORGAN_REGISTRY  # retired 2026-09-24 (lanes pass through)
+    for organ_id in ("rpc_health_cortex_orch",):
         entry = ORGAN_REGISTRY[organ_id]
         assert entry.organ_class == OrganClass.exogenous
         assert "orion:rpc_health:snapshot" in entry.bus_channels

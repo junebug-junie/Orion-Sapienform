@@ -326,7 +326,7 @@ When the executor computes `turn_effect` / `turn_effect_evidence`, they are incl
 
 **Stack verification (after deploy):** subscribe to the Hub chat turn channel (see Hub `chat_history_turn_channel`) and confirm envelope payloads include `spark_meta.turn_effect` on turns where phi telemetry ran. Confirm `orion-spark-concept-induction` logs `handle_envelope` for that channel and `orion-rdf-writer` logs RDF for `memory.drives.audit.v1`. In GraphDB, query the latest `DriveAudit` for your subject and check `orion:derivedFromTension` / `orion:tensionKind` bindings.
 
-### RPC-health snapshot publish (default off)
+### RPC-health snapshot publish (on in `.env_example`, live since 2026-07-24)
 
 Step 3 of `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md`.
 `OrionBusAsync.rpc_request()` already keeps a bounded in-memory tally of this process's
@@ -345,7 +345,17 @@ spec's "Resolved (2026-07-24)" section for the full trace.
 
 Off by default until live-verified per the spec's acceptance checks (real nonzero
 `success_count`/`timeout_count` after real traffic, observable on
-`orion-signal-gateway`'s `orion:rpc_health:*` subscription).
+`orion-signal-gateway`'s `orion:rpc_health:*` subscription). Live-verified and enabled.
+
+**Per-lane identity and per-hop breakdown (2026-09-24).** Each lane container publishes
+`instance=<EXEC_LANE>` (`legacy`/`chat`/`spark`/`background`), so the signal gateway keeps four
+organs (`rpc_health_cortex_exec__<lane>`) instead of one slot the four overwrote. With
+`RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` (default false; flip only after
+`orion-signal-gateway` and `orion-equilibrium-service` are rebuilt, the model is
+`extra="forbid"`) each snapshot also carries `channel_latency`: per-hop success/timeout counts
+and sufficient statistics of `ln(ms)`, keyed by request channel (or `<channel>#<health_label>`).
+Hop key conventions and the `record_hop_success`/`record_hop_timeout` API for non-`rpc_request`
+paths: `orion/core/bus/rpc_health.py` module docstring.
 
 ### Collapse mirror verbs and φ-gated causal density
 

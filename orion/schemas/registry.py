@@ -489,7 +489,7 @@ from orion.schemas.telemetry.system_health import (
     BusConsumerReadinessV1,
     ServiceLivenessV1,
 )
-from orion.schemas.telemetry.rpc_health import RpcHealthSnapshotV1
+from orion.schemas.telemetry.rpc_health import RpcChannelLatencyV1, RpcHealthSnapshotV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
@@ -847,6 +847,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
+    "RpcChannelLatencyV1": RpcChannelLatencyV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,
     "ServiceLivenessV1": ServiceLivenessV1,
     "EquilibriumSnapshotV1": EquilibriumSnapshotV1,

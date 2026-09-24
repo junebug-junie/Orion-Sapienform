@@ -26,8 +26,13 @@ class Settings(BaseSettings):
     # RPC-health snapshot publish (Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-
     # signal-gateway-wiring-design.md). Off by default until live-verified per that spec's
     # acceptance checks; draining is free (in-memory) but this gates the new periodic publish.
-    rpc_health_publish_enabled: bool = Field(False, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
     rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    # Per-hop `channel_latency` in RpcHealthSnapshotV1 (A0 of docs/superpowers/specs/
+    # 2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md). The model is
+    # extra="forbid": keep false until every consumer (orion-signal-gateway,
+    # orion-equilibrium-service) runs a build that knows the field.
+    rpc_health_channel_latency_enabled: bool = Field(False, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     # Intake channel (hub or orch -> exec)
     channel_exec_request: str = Field("orion:cortex:exec:request", alias="CHANNEL_EXEC_REQUEST")

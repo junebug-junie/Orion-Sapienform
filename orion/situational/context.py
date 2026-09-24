@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from .perception_reader import (
     coarse_duration,
     fetch_latest_percept,
     fetch_presence_resolved,
+    fetch_street_summary,
     percept_age_seconds,
     presence_fragment,
     presence_row_age_seconds,
@@ -188,6 +190,8 @@ class SituationSettings:
     # perception_stream_id stays the single-camera fallback and the tiebreak
     # default; this is the resolution set. See fetch_presence_resolved.
     perception_stream_ids: list[str]
+    # Walkway (street) cameras whose summary joins the brief. Empty disables.
+    street_stream_ids: list[str]
     identity_ask_cooldown_seconds: int
     identity_ask_unconfirmed_cooldown_seconds: int
     identity_ask_max_presence_age_seconds: int
@@ -278,6 +282,14 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_perception_stream_ids", None)
         )
         or [str(getattr(settings, "orion_situation_perception_stream_id", "cam0"))],
+        # Comma-separated walkway camera stream ids. Unlike the room camera,
+        # an explicit empty string DISABLES the street line (the default is
+        # used only when a caller supplies no value at all).
+        street_stream_ids=_split_stream_ids(
+            getattr(settings, "orion_situation_street_stream_ids", None)
+            if getattr(settings, "orion_situation_street_stream_ids", None) is not None
+            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "walkway")
+        ),
         # 1200s (20min): see identity_ask_cooldown.py's module docstring for
         # the reasoning -- long enough that "ask once per sit-down" is the
         # felt experience, short enough that a fixed lighting/angle issue
@@ -1392,7 +1404,47 @@ async def _resolve_presence_and_identity_ask(
     )
 
 
+async def _build_street_fields(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> dict[str, Any]:
+    """`street_summary`/`street_stream_id` for PerceptionContextV1, or {}.
+
+    Walkway spec ideas 5 and 9. First configured stream that has anything to
+    say wins; streams are cheap reads and there is normally one. Fail-open:
+    any failure is a missing line, recorded in diagnostics, never an error.
+    """
+    for stream_id in cfg.street_stream_ids:
+        try:
+            street = await asyncio.to_thread(
+                fetch_street_summary, stream_id, tz_name=cfg.timezone
+            )
+        except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+            diagnostics.provider_status["perception_street"] = "error"
+            diagnostics.provider_errors["perception_street"] = str(exc)
+            return {}
+        if not street.read_ok:
+            diagnostics.provider_status["perception_street"] = "unread"
+            continue
+        if street.lines:
+            diagnostics.provider_status["perception_street"] = "ok"
+            return {"street_summary": " ".join(street.lines), "street_stream_id": stream_id}
+        diagnostics.provider_status.setdefault("perception_street", "quiet")
+    return {}
+
+
 async def _build_perception_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> PerceptionContextV1:
+    """Room percept (below) plus the street summary, which is a different
+    camera and so rides on every return path of the room read, stale or not."""
+    room = await _build_room_perception_context(cfg, diagnostics)
+    if not cfg.perception_enabled or not cfg.street_stream_ids:
+        return room
+    street = await _build_street_fields(cfg, diagnostics)
+    return room.model_copy(update=street) if street else room
+
+
+async def _build_room_perception_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> PerceptionContextV1:
     """Most recent camera percept, gated hard on age.
@@ -1919,6 +1971,10 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
+    # The street outside (walkway camera). No line at all when there is
+    # nothing to say -- a quiet or unread street is not narrated.
+    if brief.perception.street_summary:
+        lines.append(f"Street (walkway camera): {brief.perception.street_summary}")
     if brief.affect.available and brief.affect.summary:
         seen = _recency_phrase(brief.affect.observation_age_seconds)
         if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":

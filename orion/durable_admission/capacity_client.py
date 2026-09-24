@@ -175,9 +175,20 @@ class GpuCapacityPermit:
                 budget_sec=self.budget_sec,
             ).model_dump(mode="json")
             try:
-                async with asyncio.timeout(self.remaining):
-                    result = await self._post("acquire", payload)
-            except TimeoutError as exc:
+                # asyncio.wait_for, not `async with asyncio.timeout(...)`
+                # (3.11+ only) -- this module is shared by orion-thought
+                # (Python 3.12) and orion-world-model (Python 3.10, per its
+                # Dockerfile's nvidia/cuda:...-ubuntu22.04 base), confirmed
+                # live: the timeout-context form crashed world-model with
+                # `AttributeError: module 'asyncio' has no attribute
+                # 'timeout'` the first time this actually ran there.
+                # `asyncio.TimeoutError` (not the bare builtin) is caught
+                # deliberately -- on 3.10 it is a distinct class from
+                # builtin `TimeoutError`; only on 3.11+ are they unified.
+                result = await asyncio.wait_for(
+                    self._post("acquire", payload), timeout=self.remaining
+                )
+            except asyncio.TimeoutError as exc:
                 raise CapacityRejected("capacity_wait_budget_exhausted") from exc
             except CapacityUnavailable:
                 await asyncio.sleep(min(self.poll_interval_sec, self.remaining))

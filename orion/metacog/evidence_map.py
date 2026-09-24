@@ -42,6 +42,11 @@ Severity = Literal["nominal", "degraded", "critical"]
 DEGRADED_FLOOR = 0.3
 CRITICAL_FLOOR = 0.6
 
+# Stamped on every row (tags) so queries spanning the 2026-09-24 cut-over can
+# separate event-derived severity/density from the old writer-derived ones:
+# the columns are the same, the meaning is not.
+DEFINITION_TAG = "severity_def:event_v1"
+
 _EVIDENCE_MAX_CHARS = 160
 _MAX_EVIDENCE_ITEMS = 8
 
@@ -291,6 +296,8 @@ def _map_transport_rpc_health(reason: str, up: dict[str, Any]) -> EvidenceMappin
     if p95 is None and timeouts <= 0:
         return _no_evidence("transport", reason, "rpc_health_snapshot without p95 or timeouts")
 
+    if timeouts <= 0 and not (threshold and threshold > 0):
+        return _no_evidence("transport", reason, "latency row without latency_p95_threshold_ms")
     t_band = _timeout_band(timeouts)
     ratio = (p95 / threshold) if (p95 is not None and threshold and threshold > 0) else 0.0
     l_band = banded(
@@ -486,7 +493,7 @@ def _map_transport_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
 
 def map_transport(reason: str, upstream: dict[str, Any]) -> EvidenceMapping:
     source = str(upstream.get("evidence_source") or "").strip()
-    if source == "transport_baseline" or "condition" in upstream:
+    if source == "transport_baseline":
         return _map_transport_baseline(reason, upstream)
     if source == "rpc_health_snapshot":
         return _map_transport_rpc_health(reason, upstream)
@@ -761,33 +768,67 @@ def map_flow(reason: str, up: dict[str, Any]) -> EvidenceMapping:
 # llm_surface_instability / baseline / manual
 # --------------------------------------------------------------------------
 
+# orion-mind's gate (services/orion-mind/app/uncertainty_metacog.py::
+# should_emit_llm_surface_instability) fires on ANY of three conditions; each
+# is banded as "how far past its own firing line".
 LLM_UNSTABLE_SPANS_DEGRADED = 2.0
 LLM_UNSTABLE_SPANS_CRITICAL = 3.0
 LLM_UNSTABLE_SPANS_SATURATE = 6.0
+LLM_MARGIN_FIRE_AT = 0.75  # gate: mean_top1_margin < 0.75
+LLM_MARGIN_X_DEGRADED = 2.0  # margin below 0.375
+LLM_MARGIN_X_CRITICAL = 4.0  # margin below 0.19
+LLM_MARGIN_X_SATURATE = 10.0
+LLM_LOW_LOGPROB_FIRE_AT = 0.15  # gate: low_logprob_token_count / tokens > 0.15
+LLM_LOW_LOGPROB_X_DEGRADED = 2.0
+LLM_LOW_LOGPROB_X_CRITICAL = 3.0
+LLM_LOW_LOGPROB_X_SATURATE = 6.0
 
 
 def map_llm_surface_instability(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     unc = up.get("llm_uncertainty") if isinstance(up.get("llm_uncertainty"), dict) else {}
     spans = _num(unc.get("unstable_span_count"))
-    if spans is None:
-        return _no_evidence("llm_surface_instability", reason, "missing unstable_span_count")
-    severity, magnitude = banded(
-        spans, LLM_UNSTABLE_SPANS_DEGRADED, LLM_UNSTABLE_SPANS_CRITICAL, LLM_UNSTABLE_SPANS_SATURATE
-    )
-    low_margin = _int(unc.get("low_margin_token_count"))
+    margin = _num(unc.get("mean_top1_margin"))
     tokens = _int(unc.get("token_count_observed"))
+    low_lp = _int(unc.get("low_logprob_token_count"))
     phase = str(up.get("phase") or "unknown")
-    evidence = [f"{int(spans)} unstable span(s) in {phase}"]
-    if low_margin is not None and tokens:
-        evidence.append(f"low-margin tokens {low_margin}/{tokens}")
+    detail = str(up.get("instability_detail") or "")
+
+    bands: list[tuple[Severity, float]] = []
+    evidence: list[str] = []
+    basis: list[str] = []
+    if spans is not None and spans >= 1:
+        bands.append(banded(spans, LLM_UNSTABLE_SPANS_DEGRADED, LLM_UNSTABLE_SPANS_CRITICAL, LLM_UNSTABLE_SPANS_SATURATE))
+        evidence.append(f"{int(spans)} unstable span(s) in {phase}")
+        basis.append(f"unstable_spans={spans:.0f}")
+    if margin is not None and margin < LLM_MARGIN_FIRE_AT:
+        x = LLM_MARGIN_FIRE_AT / max(margin, 1e-6)
+        bands.append(banded(x, LLM_MARGIN_X_DEGRADED, LLM_MARGIN_X_CRITICAL, LLM_MARGIN_X_SATURATE))
+        evidence.append(f"mean top-1 margin {margin:.3f} (fires below {LLM_MARGIN_FIRE_AT})")
+        basis.append(f"margin_x={x:.2f}")
+    if low_lp is not None and tokens:
+        ratio = low_lp / tokens
+        evidence.append(f"low-logprob tokens {low_lp}/{tokens} ({ratio:.0%})")
+        if ratio > LLM_LOW_LOGPROB_FIRE_AT:
+            x = ratio / LLM_LOW_LOGPROB_FIRE_AT
+            bands.append(
+                banded(x, LLM_LOW_LOGPROB_X_DEGRADED, LLM_LOW_LOGPROB_X_CRITICAL, LLM_LOW_LOGPROB_X_SATURATE)
+            )
+            basis.append(f"low_logprob_x={x:.2f}")
+    if not bands:
+        return _no_evidence(
+            "llm_surface_instability", reason, f"no fired condition (instability_detail={detail or 'missing'})"
+        )
+    severity, magnitude = _worst(*bands)
+    if detail:
+        evidence.append(f"fired as {detail}")
     return _build(
         kind="llm_surface_instability",
         severity=severity,
         magnitude=magnitude,
-        basis=f"unstable_spans={spans:.0f}",
+        basis=", ".join(basis),
         evidence=evidence,
         touches=["orion-mind", f"phase:{phase}"],
-        headline=f"{int(spans)} unstable language span(s) during {phase}",
+        headline=f"unstable language surface during {phase} ({', '.join(basis)})",
     )
 
 
@@ -816,19 +857,19 @@ def map_manual(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     )
 
 
-def map_substrate(reason: str, up: dict[str, Any]) -> EvidenceMapping:
+def map_substrate(reason: str, up: dict[str, Any], *, kind: str = "dense") -> EvidenceMapping:
     """dense / pulse (substrate_metacog_gate.py). Never fired in the live
     table as of 2026-09-24, but the producer exists, so it is mapped rather
     than left to fall through to no_evidence. substrate_score is already a
     0..1 eventfulness score; it is used as the magnitude directly."""
     score = _num(up.get("substrate_score"))
     if score is None:
-        return _no_evidence("substrate", reason, "missing substrate_score")
+        return _no_evidence(kind, reason, "missing substrate_score")
     severity, magnitude = banded(_clip01(score), DEGRADED_FLOOR, CRITICAL_FLOOR, 1.0)
     reasons = [str(r) for r in (up.get("reasons") or []) if r][:4]
     evidence = [f"substrate eventfulness {score:.2f}"] + [f"reason {r}" for r in reasons]
     return _build(
-        kind="substrate",
+        kind=kind,
         severity=severity,
         magnitude=magnitude,
         basis=f"substrate_score={score:.3f}",
@@ -839,8 +880,8 @@ def map_substrate(reason: str, up: dict[str, Any]) -> EvidenceMapping:
 
 
 _MAPPERS: dict[str, Callable[[str, dict[str, Any]], EvidenceMapping]] = {
-    "dense": map_substrate,
-    "pulse": map_substrate,
+    "dense": lambda r, u: map_substrate(r, u, kind="dense"),
+    "pulse": lambda r, u: map_substrate(r, u, kind="pulse"),
     "transport": map_transport,
     "telemetry_anomaly": map_telemetry_anomaly,
     "chat_turn": map_chat_turn,

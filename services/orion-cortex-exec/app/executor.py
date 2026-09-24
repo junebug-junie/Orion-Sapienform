@@ -67,6 +67,7 @@ from orion.metacog.service import (
     compute_causal_density,
     compute_provenance,
 )
+from orion.metacog.evidence_map import DEFINITION_TAG as METACOG_DEFINITION_TAG
 from orion.metacog.evidence_map import EvidenceMapping, map_trigger as map_metacog_trigger
 from orion.schemas.platform import CoreEventV1
 
@@ -3771,7 +3772,7 @@ async def call_step_services(
                         is_causally_dense=is_causally_dense,
                         snapshot_kind="confirmed_dense" if is_causally_dense else "baseline",
                         provenance=provenance,
-                        tags=list(entry.tags or []),
+                        tags=_merge_system_tags(list(entry.tags or []), [METACOG_DEFINITION_TAG]),
                         source_service=entry.source_service or "metacog",
                         source_node=entry.source_node,
                     )

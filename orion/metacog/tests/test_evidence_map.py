@@ -340,14 +340,31 @@ def test_insight_and_flow_are_nominal_but_graded():
 def test_llm_surface_instability():
     up = {
         "phase": "semantic_synthesis",
-        "llm_uncertainty": {"unstable_span_count": 1, "low_margin_token_count": 5, "token_count_observed": 97},
+        "llm_uncertainty": {"unstable_span_count": 1, "low_logprob_token_count": 5, "token_count_observed": 97},
     }
     m = map_trigger("llm_surface_instability", "language_surface_unstable", up)
     assert m.severity == "nominal"
-    assert "low-margin tokens 5/97" in m.evidence
+    assert "low-logprob tokens 5/97 (5%)" in m.evidence
     assert "orion-mind" in m.touches
     up["llm_uncertainty"]["unstable_span_count"] = 3
     assert map_trigger("llm_surface_instability", "r", up).severity == "critical"
+    # margin far below the gate's 0.75 line is critical on its own
+    low_margin = {"llm_uncertainty": {"unstable_span_count": 0, "mean_top1_margin": 0.1, "token_count_observed": 50}}
+    assert map_trigger("llm_surface_instability", "r", low_margin).severity == "critical"
+    # nothing past any firing line -> no_evidence, never a fake zero event
+    calm = {"llm_uncertainty": {"unstable_span_count": 0, "mean_top1_margin": 9.0, "low_logprob_token_count": 0,
+                                "token_count_observed": 50}}
+    assert map_trigger("llm_surface_instability", "r", calm).density_rationale.startswith("no_evidence")
+
+
+def test_transport_routes_on_evidence_source_not_condition_key():
+    m = map_trigger("transport", "r", _rpc(condition="something_new"))
+    assert not m.density_rationale.startswith("no_evidence")
+
+
+def test_transport_latency_row_without_threshold_is_no_evidence_not_fake_nominal():
+    m = map_trigger("transport", "r", _rpc(latency_p95_threshold_ms=None))
+    assert m.density_rationale.startswith("no_evidence")
 
 
 def test_baseline_is_nominal_zero():

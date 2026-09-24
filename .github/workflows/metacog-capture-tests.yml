@@ -13,6 +13,10 @@ on:
       - "services/orion-cortex-exec/app/executor.py"
       - "services/orion-cortex-exec/tests/test_metacog_*.py"
       - "scripts/analysis/replay_metacog_capture.py"
+      - "services/orion-equilibrium-service/app/*metacog_gate*.py"
+      - "services/orion-equilibrium-service/app/repair_pressure_trend_gate.py"
+      - "services/orion-mind/app/uncertainty_metacog.py"
+      - "orion/substrate/metacog_trigger_signals.py"
       - ".github/workflows/metacog-capture-tests.yml"
   push:
     branches: [main]
@@ -23,6 +27,10 @@ on:
       - "services/orion-cortex-exec/app/executor.py"
       - "services/orion-cortex-exec/tests/test_metacog_*.py"
       - "scripts/analysis/replay_metacog_capture.py"
+      - "services/orion-equilibrium-service/app/*metacog_gate*.py"
+      - "services/orion-equilibrium-service/app/repair_pressure_trend_gate.py"
+      - "services/orion-mind/app/uncertainty_metacog.py"
+      - "orion/substrate/metacog_trigger_signals.py"
       - ".github/workflows/metacog-capture-tests.yml"
 
 jobs:
@@ -45,8 +53,9 @@ jobs:
             orion/metacog/tests/test_evidence_map.py \
             orion/metacog/tests/test_service.py \
             orion/metacog/tests/test_capture_replay.py \
+            orion/metacog/tests/test_evidence_map_producer_contract.py \
             orion/schemas/tests/test_metacog_entry.py
-      - name: Acceptance-check eval (spec checks 4-6 on real fixture)
+      - name: Capture eval (checks 4-6 regression guard on real fixture)
         run: PYTHONPATH=. python orion/metacog/evals/run_capture_eval.py
       - name: cortex-exec metacog lanes
         working-directory: services/orion-cortex-exec

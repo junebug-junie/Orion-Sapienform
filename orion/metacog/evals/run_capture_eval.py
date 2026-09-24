@@ -19,7 +19,11 @@ evidence source / timeout count, private free text truncated, IPs scrubbed)
 6. no deterministic summary mentions zen, and the draft prompt no longer
    carries zen_state / pressure.
 
-Check 6 for LLM-authored summaries needs live rows after deploy: UNVERIFIED here.
+What this does NOT prove: the check-4 proxies are the same upstream numbers the
+mapper bands, so checks 4a/4b pass by construction for a monotone mapper. They
+are a REGRESSION GUARD (the mapper still reads and orders these fields), not
+independent validation that the severity bands are "right". Check 6 for
+LLM-authored summaries needs live rows after deploy: UNVERIFIED here.
 
 Deterministic, no DB, no bus, no LLM.
 Run: python orion/metacog/evals/run_capture_eval.py

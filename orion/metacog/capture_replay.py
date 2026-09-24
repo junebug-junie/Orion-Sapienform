@@ -89,7 +89,9 @@ CEILING_FRACTION = 0.95
 
 
 # ---------------------------------------------------------------------------
-# raw magnitude proxies (independent of evidence_map's own magnitude)
+# raw magnitude proxies: the same upstream numbers the mapper bands, read
+# directly (NOT independent of the mapper -- check 4 is a regression guard that
+# the mapper reads and orders these fields, not independent validation)
 # ---------------------------------------------------------------------------
 
 

@@ -509,7 +509,7 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
     # the TRIGGER's own upstream (orion.metacog.evidence_map), not from the
     # global state blend or the pipeline step log.
     assert payload["causal_density"]["score"] == pytest.approx(0.6)
-    assert payload["causal_density"]["rationale"].startswith("event_magnitude[substrate]")
+    assert payload["causal_density"]["rationale"].startswith("event_magnitude[dense]")
     assert payload["is_causally_dense"] is True
     assert payload["snapshot_kind"] == "confirmed_dense"
     assert payload["severity"] == "critical"
@@ -816,3 +816,47 @@ def test_publish_uses_deterministic_summary_when_draft_fell_back():
     assert "zen" not in payload["summary"].lower()
     assert "cortex-exec: timeouts 2/5 calls" in payload["what_changed"]["evidence"]
     assert payload["touches"] == ["cortex-exec", "orion:state:request"]
+    assert "severity_def:event_v1" in payload["tags"]
+
+
+def test_context_service_populates_measured_event_evidence_for_the_prompt():
+    """The MEASURED EVENT block must be filled by MetacogContextService itself,
+    not by a test: if that wiring is dropped the draft prompt would silently
+    render an empty block (default Jinja undefined)."""
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.rpc_request = AsyncMock(side_effect=TimeoutError("no state service in unit test"))
+    mock_bus.publish = AsyncMock()
+    ctx = {
+        "trigger": {
+            "trigger_kind": "telemetry_anomaly",
+            "reason": "telemetry_anomaly:elevated",
+            "zen_state": "zen",
+            "pressure": 0.9,
+            "upstream": {
+                "threshold": 0.01,
+                "recon_loss": 0.03,
+                "top_channels": ["failure_pressure=0.35"],
+                "deviation_direction": "elevated",
+            },
+        },
+    }
+    step = ExecutionStep(
+        step_name="context", verb_name="log_orion_metacognition", services=["MetacogContextService"], order=0
+    )
+    asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=ServiceRef(name="test", node="test", version="1.0"),
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+    cue = ctx.get("metacog_event_evidence") or ""
+    assert cue.startswith("severity=critical magnitude=")
+    assert "recon_loss 0.0300 vs threshold 0.0100 (3.00x), elevated" in cue
+    assert "Pressure:" not in ctx.get("context_summary", "")
+    prompt = executor_module._render_prompt(_load_template("log_orion_metacognition_draft.j2"), ctx)
+    assert "severity=critical" in prompt
+    assert "zen" not in prompt.lower()

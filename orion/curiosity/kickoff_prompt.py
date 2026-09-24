@@ -840,6 +840,18 @@ def _review_role_section(*, run_id: str) -> list[str]:
     Any queue-contention line already shown above (role-teach disclosure,
     same live FieldState reading the hire decision uses) applies here too --
     not recomputed, not repeated.
+
+    Live-caught 2026-09-23: this node's `choice` has no server-side
+    validation (same as :InvestigationRole -- Orion authors free text, and
+    nothing here polices the vocabulary), and a real run wrote
+    `choice: "local_crawl"` into a :ReviewRole -- the vocabulary from the
+    OTHER MERGE template above, whose `choice: "a|b"` placeholder is the
+    same shape as this one's. Harmless in practice (the dispatch code only
+    matches an exact "hire_cursor_review" string, so a stray value silently
+    falls back to self_review), but it is noise in the record and a sign
+    the two templates read as interchangeable. Fixed by naming the two
+    fields' vocabularies apart explicitly, right next to the second
+    template, rather than trusting the header alone to keep them separate.
     """
     return [
         "WHO GRADES THIS SITTING'S HOPS (optional, separate from your role "
@@ -851,12 +863,17 @@ def _review_role_section(*, run_id: str) -> list[str]:
         "prefer hire_cursor_review (offload grading off the local agent GPU), "
         "not a reason to insist on self_review.",
         "",
+        "This is a DIFFERENT field from the role you wrote above. Valid "
+        "values here are ONLY self_review or hire_cursor_review -- never "
+        "local_crawl or hire_cursor (those belong on :InvestigationRole, not "
+        "here).",
+        "",
         "Writing nothing is fine and means self_review. You may revise "
         "mid-run; the newest written_at is the one that counts.",
         "",
         "    MERGE (r:ReviewRole {",
         f'      run_id: "{run_id}",',
-        '      choice: "self_review|hire_cursor_review",',
+        '      choice: "<self_review OR hire_cursor_review -- NOT local_crawl / hire_cursor>",',
         '      why: "<one sentence: why this choice now>",',
         "      written_at: timestamp()",
         "    })",

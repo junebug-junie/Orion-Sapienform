@@ -137,6 +137,32 @@ class Settings(BaseSettings):
     llm_allow_background_to_chat_fallback: bool = Field(False, alias="LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK")
     llm_lane_default: str = Field("chat", alias="LLM_LANE_DEFAULT")
     llm_lane_routing_enabled: bool = Field(True, alias="LLM_LANE_ROUTING_ENABLED")
+    # Real traffic (cortex-exec/orion-actions/Hub) never reaches decide_lane() --
+    # only curiosity/self-study runs submitted through orion-durable-runs do. This
+    # is the only swap behavior real metacog/quick chat traffic gets today. See
+    # lane_contention.py's module docstring for why the trigger uses a per-route
+    # real-capacity map instead of LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT, and why
+    # "agent": ["agent-burst"] is deliberately NOT in the default map below --
+    # agent-burst requires a durable capacity lease ordinary traffic never has,
+    # and lane_contention.py refuses that pairing outright regardless of config.
+    llm_lane_contention_fallback_enabled: bool = Field(
+        True, alias="LLM_LANE_CONTENTION_FALLBACK_ENABLED"
+    )
+    llm_lane_contention_fallback_json: str = Field(
+        default=(
+            '{"metacog": ["quick"], "metacog_background": ["quick_background"], '
+            '"quick": ["metacog"], "quick_background": ["metacog_background"]}'
+        ),
+        alias="LLM_LANE_CONTENTION_FALLBACK_JSON",
+    )
+    # Each backend's real llama.cpp `--parallel` slot count, not the gateway's
+    # own shared per-upstream cap. A route missing here falls back to
+    # LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT (rarely the right trigger point for a
+    # 1- or 4-slot worker, but a safe default for any route not listed).
+    llm_lane_real_capacity_json: str = Field(
+        default='{"metacog": 1, "metacog_background": 1, "quick": 4, "quick_background": 4}',
+        alias="LLM_LANE_REAL_CAPACITY_JSON",
+    )
     llm_route_metacog_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_SERVED_BY")
     llm_route_latents_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_SERVED_BY")
     llm_route_specialist_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_SERVED_BY")

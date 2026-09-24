@@ -22,9 +22,10 @@ from orion.core.bus.async_service import OrionBusAsync
 from . import ctx_overflow
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
 from .settings import settings
-from .upstream_admission import LEGACY_UPSTREAM
+from .upstream_admission import LEGACY_UPSTREAM, get_upstream_admission
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
+from .lane_contention import _parse_capacity_map, _parse_fallback_map, resolve_contention_fallback
 from .structured_output import apply_structured_output_to_payload
 from .llm_uncertainty import (
     extract_llm_uncertainty_from_native_completion,
@@ -1432,6 +1433,42 @@ class ChatDispatchPlan:
         return self.route_target.url if self.route_target else LEGACY_UPSTREAM
 
 
+def _apply_lane_contention_fallback(body: ChatBody, route_table: Dict[str, RouteTarget]) -> ChatBody:
+    """metacog<->quick swap, agent->agent-burst burst: real traffic never reaches
+    `decide_lane()` (see lane_contention.py's module docstring), so this is the
+    only place either behavior exists for non-broker requests. No-op for any
+    route not explicitly listed in LLM_LANE_CONTENTION_FALLBACK_JSON -- chat/
+    harness/chat-burst are never in that map and are therefore untouched."""
+    candidate = str(body.route or "").strip()
+    if not candidate or candidate not in route_table:
+        return body
+    fallback_map = _parse_fallback_map(str(getattr(settings, "llm_lane_contention_fallback_json", "") or ""))
+    if candidate not in fallback_map:
+        return body
+    route_urls = {k: t.url for k, t in route_table.items()}
+    capacity_map = _parse_capacity_map(str(getattr(settings, "llm_lane_real_capacity_json", "") or ""))
+    chosen, swapped = resolve_contention_fallback(
+        candidate,
+        route_urls,
+        enabled=bool(getattr(settings, "llm_lane_contention_fallback_enabled", False)),
+        fallback_map=fallback_map,
+        real_capacity_map=capacity_map,
+        default_capacity=int(getattr(settings, "llm_gateway_upstream_max_inflight", 8)),
+        gate=get_upstream_admission(),
+    )
+    if not swapped:
+        return body
+    corr = getattr(body, "trace_id", None)
+    logger.info(
+        "llm_gateway_lane_contention_swap corr=%s trace_id=%s from=%s to=%s",
+        corr,
+        corr,
+        candidate,
+        chosen,
+    )
+    return body.model_copy(update={"route": chosen})
+
+
 def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
     """Lane routing (when enabled) plus route-table resolution. Cheap, no I/O."""
     route_table = get_route_targets()
@@ -1502,6 +1539,7 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
             })
         body = body.model_copy(update={"route": decision.route_table_key})
 
+    body = _apply_lane_contention_fallback(body, route_table)
     route, route_target, has_route_table, route_source = _resolve_route(body)
     return ChatDispatchPlan(
         body=body,

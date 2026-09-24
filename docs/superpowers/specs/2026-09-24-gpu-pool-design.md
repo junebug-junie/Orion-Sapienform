@@ -216,6 +216,24 @@ Every caller uses this. There is no second client.
 | Hub | "Lend chat lane" button → gateway Redis gate; hold-and-email logic | the button → `PUT /v1/cards/gpu0/lend`. A new pool panel reads `GET /v1/pool`. Chat traffic is never "held" any more: chat is the owner and claws back. |
 | gpu-lane-controller (circe) | GPU1 affect flip, GPU2 transitions with its own lock | becomes the pool's **actuator**: `POST /v1/actuate {card, action}`, taking orders only from the pool (bearer token). The GPU1 flip is deleted (affect is out of scope). |
 
+## Downstream readers of the things being deleted (must move to the pool in the same stage)
+
+These read the gateway's `/admission` snapshot or the durable-admission tables today. Deleting
+the source without moving these would not error: each is fail-open, so each would quietly read
+"calm" or empty.
+
+| reader | what it reads today | what it means | moves to |
+| --- | --- | --- | --- |
+| `orion-field-digester/app/digestion/queue_contention.py` → `FieldStateV1.queue_contention_score` | `count_durable_demand_pending()` (SQL on `durable_resource_demands`) and the gateway's `/admission` waiting sum | Orion's "am I backed up" field signal. Curiosity hire decisions read it (#2263/#2281). **It is a locked metric** (`config/metrics/metric_definitions.lock.json`). | pool queue depth per class. Changing a locked metric's producer needs Juniper's approval, so stage 2 either re-points the two sources as a like-for-like count (same meaning: "requests waiting for GPU") under the metric gate, or retires it for a pool-native successor. **Decision needed at stage 2.** |
+| `orion-cortex-exec/app/admission_cue.py` | gateway `/admission` ledger (background requests made to wait) | Orion's own metacog cue "was my background thinking made to wait" (scarcity roadmap A5) | pool lease events for `priority=background`: waited / waited-how-long / recalled. Same four states (observed-zero, waited-N, no-requests, unknown). |
+| `orion/hub/runtime_activity.py` + `scripts/runtime_activity_routes.py` | gateway `/admission` per-upstream inflight and waiting | Hub runtime activity panel | `GET /v1/pool` |
+| `orion/curiosity/run_story.py`, `hire_progress.py`, `hub/scripts/curiosity_run_store.py`, `curiosity_atlas.html` | `durable_admission_runs` and `durable_resource_events` (waiting for lane, granted, lease released or expired) | the curiosity run story and the "reach-out truth" tab | pool lease events via sql-writer, keyed by `run_id` as `holder`, keeping the same event names where the meaning is the same |
+| `orion/hub/turn_orchestrator.py`, gateway passthroughs | lease fencing and `lane_gate` refusals | chat hold-while-lent, burst refusals | the lease from the pool; hold-while-lent goes away because chat is the owner |
+| `orion/inner_state_registry.py`, `orion/schemas/field_state.py` | documentation of `queue_contention_*` sources | registry of inner-state fields | updated with the new source |
+
+Transport telemetry (bus RPC health, substrate grammar, signals, field nodes, runtime metrics)
+is being traced separately; a section follows once the live path is confirmed.
+
 ## Delete list (in the same stage that replaces each piece)
 
 - `orion/durable_admission/{broker,policy,capacity,capacity_client,elastic,store}.py`,

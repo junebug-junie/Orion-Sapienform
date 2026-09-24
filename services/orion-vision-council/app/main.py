@@ -54,6 +54,7 @@ from .interpretation import (
     project_interpretation_to_events,
 )
 from .llm_reply import extract_chat_result_text as _extract_chat_result_text
+from .unresolved import UnresolvedRateLimiter, build_unresolved
 
 _MAX_DEBUG_INTERPRETATIONS = 20
 from .settings import Settings
@@ -72,6 +73,7 @@ class CouncilService:
         self._llm_semaphore = asyncio.Semaphore(1)
         self._evidence_transition = EvidenceTransitionTracker()
         self._evidence_transition_lock = asyncio.Lock()
+        self._unresolved_limiter = UnresolvedRateLimiter(settings.COUNCIL_UNRESOLVED_MIN_INTERVAL_SEC)
 
     def _record_interpretation(
         self,
@@ -205,11 +207,15 @@ class CouncilService:
                 f"reason={parse_outcome.salvage_warnings[0] if parse_outcome.salvage_warnings else 'stable_scene'} "
                 f"window_id={payload.window_id}"
             )
+            # A stable scene of unnameable boxes never changes the label set,
+            # so the gate would hide it forever; no_label is checked anyway.
+            await self._maybe_publish_unresolved(payload, None, env)
             return
 
         interpretation, parse_outcome = self._finalize_interpretation(
             interpretation, parse_outcome, payload
         )
+        await self._maybe_publish_unresolved(payload, interpretation, env)
 
         if interpretation is not None:
             self._record_interpretation(interpretation, parse_outcome)
@@ -230,6 +236,53 @@ class CouncilService:
 
         await self.bus.publish(settings.CHANNEL_COUNCIL_PUB, out_env)
         logger.info(f"[COUNCIL] Published {len(event_payload.events)} events")
+
+    async def _maybe_publish_unresolved(
+        self,
+        window: VisionWindowPayload,
+        interpretation: VisionSceneInterpretationV1 | None,
+        source_env: BaseEnvelope,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Publish a VisionUnresolvedV1 if this window left something unnamed.
+
+        Fail-open: never raises into the window pipeline. Returns True only
+        when a message was actually published.
+        """
+        if not settings.COUNCIL_UNRESOLVED_ENABLED:
+            return False
+        try:
+            item = build_unresolved(
+                window,
+                interpretation,
+                council_model=settings.COUNCIL_MODEL,
+                council_route=settings.COUNCIL_LLM_ROUTE,
+            )
+            if item is None:
+                return False
+            stream_key = stream_key_from_window(window)
+            ts = time.time() if now is None else now
+            if not self._unresolved_limiter.allow(stream_key, ts):
+                logger.debug(
+                    f"[COUNCIL] unresolved rate_limited stream={stream_key} reason={item.reason}"
+                )
+                return False
+            out_env = source_env.derive_child(
+                kind="vision.unresolved.v1",
+                source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                payload=item.model_dump(mode="json"),
+            )
+            await self.bus.publish(settings.CHANNEL_VISION_UNRESOLVED, out_env)
+            self._unresolved_limiter.mark(stream_key, ts)
+            logger.info(
+                f"[COUNCIL] unresolved published stream={stream_key} reason={item.reason} "
+                f"unresolved_id={item.unresolved_id} window_id={window.window_id}"
+            )
+            return True
+        except Exception as exc:
+            logger.warning(f"[COUNCIL] unresolved publish failed window_id={window.window_id} error={exc}")
+            return False
 
     def _finalize_interpretation(
         self,

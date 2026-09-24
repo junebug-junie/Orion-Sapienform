@@ -245,6 +245,16 @@ def schedule(
             # An operator is taking the cards: everything the seat evicts drains.
             ctx.draining.update(cfg.evicted_by(seat))
 
+    # Backlogged work that something can serve again rejoins the queue in its original place.
+    still_backlogged: list[LeaseView] = []
+    for lease in backlogged:
+        if any(ctx.placeable(lease, r) for r in cfg.classes[lease.work_class].roles):
+            out.append(Requeue(lease.lease_id, "role_available"))
+            queued.append(lease)
+        else:
+            still_backlogged.append(lease)
+    backlogged = still_backlogged
+
     # --- 3. grants: owners on their own roles first, then everyone else -------------
     order = _order(cfg, queued)
     granted: set[str] = set()
@@ -320,10 +330,6 @@ def schedule(
             out.append(Backlog(lease.lease_id, "no_serviceable_role"))
         elif policy == "fail":
             out.append(Unavailable(lease.lease_id, "no_serviceable_role"))
-
-    for lease in backlogged:
-        if any(ctx.placeable(lease, r) for r in cfg.classes[lease.work_class].roles):
-            out.append(Requeue(lease.lease_id, "role_available"))
 
     # --- 6. swap seats ----------------------------------------------------------------
     waiting = [q for q in order if q.lease_id not in granted] + backlogged

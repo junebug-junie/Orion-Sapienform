@@ -436,7 +436,7 @@ class Settings(BaseSettings):
 
     # Walkway ask card pictures (scripts/ask_routes.py GET /api/vision/crop-
     # thumbs/{sha256}). orion-vision-host writes one small JPEG per EMBEDDED
-    # crop here (never a no-embed-zone/patio box) and prunes them after 14
+    # crop here (never a no-embed-zone/patio box) and prunes them after 10
     # days; docker-compose mounts it read-only at the same path.
     HUB_VISION_CROP_THUMB_DIR: str = Field(
         default="/mnt/telemetry/orion-vision-host/crop_thumbs", alias="HUB_VISION_CROP_THUMB_DIR"

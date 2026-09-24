@@ -311,6 +311,30 @@ explicitly rather than a side effect of a retention patch.
 
 ## Walkway camera reducers
 
+### Deploy checklist (walkway camera)
+
+The one place the vision-host, vision-council and this README point to.
+
+1. **Apply the migration first:**
+   `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_walkway_camera_v1.sql`.
+   It is idempotent and upgrades tables made from an earlier draft. It also
+   adds `vision_events.stream_id`; this writer re-tries that at boot in its
+   own transaction, and until the column exists it writes vision events
+   without it (logged at ERROR) -- room readers then ignore those rows.
+2. **Rebuild together** (they share `orion/schemas/vision.py`): orion-vision-
+   host, orion-vision-window, orion-vision-council, **orion-vision-scribe**,
+   orion-sql-writer, orion-hub, orion-thought, orion-cortex-exec. A scribe on
+   old code re-parses `VisionEventPayload` and drops `stream_id`; the room
+   readers refuse NULL-stream rows written after
+   `ORION_VISION_EVENTS_LEGACY_CUTOFF` (default 2026-09-24T00:00:00Z), so that
+   fails closed (no percept) rather than leaking the walkway.
+3. **Changing `config/vision_zones.yaml` requires rebuilding all three images
+   that bake it in:** orion-vision-host (which boxes may be embedded and
+   thumbnailed), orion-vision-council (what an unresolved percept may say),
+   and orion-sql-writer (defense-in-depth recompute, `zone_no_embed`, presence
+   rows). A partial rebuild leaves them disagreeing about where the patio is.
+4. orion-hub mounts `/mnt/telemetry/orion-vision-host/crop_thumbs` read-only.
+
 Spec: `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
 (ideas 1, 2, 3-opener, 6-score, 8-writer, 9). Tables come from
 `services/orion-sql-db/manual_migration_walkway_camera_v1.sql`, which must be
@@ -389,7 +413,7 @@ redacted; if the zones file cannot load, every embedding is stripped (fail
 closed); ask images are crop thumbnails (`thumb:<sha256>`, written by
 orion-vision-host for embedded crops only and served by the Hub), never whole
 frames, and only from a sighting recent enough that the thumbnail outlives the
-ask (host keeps them 14 days, asks expire after 7); an
+ask (host keeps them `VISION_CROP_THUMB_RETENTION_DAYS`, 10, asks expire after 7; the same key is read here); an
 unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
 is `missed` only if census coverage (5 s windows bridged across gaps up to
 30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is

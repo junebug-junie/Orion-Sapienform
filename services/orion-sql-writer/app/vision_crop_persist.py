@@ -25,7 +25,7 @@ import logging
 from typing import Any, Dict, List, Optional, Sequence
 
 from orion.schemas.vision import VisionCropObservationV1
-from orion.vision.zones import Zone, load_zones, zone_for_box
+from orion.vision.zones import Zone, intersects_no_embed, load_zones, zone_for_box
 
 logger = logging.getLogger("sql-writer.vision_crop_persist")
 
@@ -101,7 +101,14 @@ def build_crop_rows(
         embedding_ref = crop.embedding_ref
         thumb_ref = crop.thumb_ref
         zone_no_embed = zone in forbidden
-        if zone_no_embed or fail_closed:
+        # A box placed outside the patio by its bottom-center can still hold
+        # patio pixels: any overlap with a no-embed zone strips the vector and
+        # thumbnail too (without frame size it cannot be checked -> strip).
+        # zone_no_embed stays "placed in the zone", so presence counts do not
+        # pick up passers-by at the patio's edge.
+        touches = bool(forbidden) and intersects_no_embed(
+            zones, crop.box_xyxy, obs.frame_width or 0, obs.frame_height or 0)
+        if zone_no_embed or fail_closed or touches:
             if embedding is not None or embedding_ref is not None or thumb_ref is not None:
                 logger.warning(
                     "vision_crop_embedding_dropped observation_id=%s index=%s zone=%s "

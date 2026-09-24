@@ -58,6 +58,24 @@ def _get_engine():
     return _ENGINE
 
 
+# Rows with no stream_id are accepted as room rows only if written before
+# this instant -- the day vision_events learned which camera a row is about.
+# After it, a NULL stream_id means a producer (e.g. a not-yet-rebuilt
+# orion-vision-scribe) dropped the camera, and it could be the walkway: fail
+# closed. Override with ORION_VISION_EVENTS_LEGACY_CUTOFF (ISO-8601).
+DEFAULT_VISION_EVENTS_LEGACY_CUTOFF = "2026-09-24T00:00:00+00:00"
+
+
+def vision_events_legacy_cutoff() -> datetime:
+    raw = (os.getenv("ORION_VISION_EVENTS_LEGACY_CUTOFF") or "").strip() or DEFAULT_VISION_EVENTS_LEGACY_CUTOFF
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("bad ORION_VISION_EVENTS_LEGACY_CUTOFF=%r; using default", raw)
+        ts = datetime.fromisoformat(DEFAULT_VISION_EVENTS_LEGACY_CUTOFF)
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def _room_percept_stmt():
     """Newest narrated row from a ROOM camera.
 
@@ -66,8 +84,9 @@ def _room_percept_stmt():
     `arrived_as_expected` / `expected_absent` / `attention_worthy` rows. The
     room percept must never be one of those, so the read is restricted to the
     configured room streams. Rows written before `stream_id` existed carry
-    NULL and are still accepted -- they all came from the room cameras, the
-    only ones that existed then.
+    NULL and are still accepted, but only if older than the legacy cutoff
+    (`vision_events_legacy_cutoff`) -- they all came from the room cameras,
+    the only ones that existed then. A NULL row after the cutoff is refused.
 
     Expanding IN (not `= ANY`) so the same statement runs on SQLite in tests.
     """
@@ -77,7 +96,8 @@ def _room_percept_stmt():
         text(
             "SELECT narrative, created_at FROM vision_events "
             "WHERE narrative IS NOT NULL AND narrative <> '' "
-            "AND (stream_id IS NULL OR stream_id IN :stream_ids) "
+            "AND (stream_id IN :stream_ids "
+            "     OR (stream_id IS NULL AND created_at < :legacy_cutoff)) "
             "ORDER BY created_at DESC LIMIT 1"
         )
         .bindparams(bindparam("stream_ids", expanding=True))
@@ -85,7 +105,9 @@ def _room_percept_stmt():
     )
 
 
-def fetch_latest_percept(*, stream_ids: Sequence[str]) -> dict[str, Any] | None:
+def fetch_latest_percept(
+    *, stream_ids: Sequence[str], legacy_cutoff: datetime | None = None
+) -> dict[str, Any] | None:
     """Return the newest vision percept, or None if there is none / on any error.
 
     Only rows from `stream_ids` (the room cameras) or legacy rows with no
@@ -105,7 +127,10 @@ def fetch_latest_percept(*, stream_ids: Sequence[str]) -> dict[str, Any] | None:
             # A sentinel keeps the expanding IN valid when no stream is
             # configured: legacy rows only, never "every camera".
             ids = [str(s) for s in stream_ids if str(s).strip()] or ["\x00none"]
-            row = conn.execute(_room_percept_stmt(), {"stream_ids": ids}).first()
+            cutoff = legacy_cutoff or vision_events_legacy_cutoff()
+            row = conn.execute(
+                _room_percept_stmt(), {"stream_ids": ids, "legacy_cutoff": cutoff}
+            ).first()
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_perception_read_failed err=%s", exc)
         return None

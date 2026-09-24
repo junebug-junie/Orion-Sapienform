@@ -133,6 +133,22 @@ def test_ask_image_ref_skips_thumbs_that_would_be_pruned_before_the_ask_expires(
                             thumb_retention_days=14, ask_expiry_days=7) == THUMB
 
 
+def test_ask_image_ref_is_off_when_retention_does_not_outlive_the_ask() -> None:
+    assert vi.ask_image_ref([(THUMB, T0, False)], now=T0, thumb_retention_days=7, ask_expiry_days=7) is None
+    assert vi.ask_image_ref([(THUMB, T0, False)], now=T0, thumb_retention_days=5, ask_expiry_days=7) is None
+
+
+def test_thumb_retention_is_read_from_the_same_env_key_as_the_host() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import individuals_config
+
+    f = Settings.model_fields["vision_crop_thumb_retention_days"]
+    assert f.alias == "VISION_CROP_THUMB_RETENTION_DAYS" and f.default == 10.0
+    assert "thumb_retention_days=float(settings.vision_crop_thumb_retention_days)" in \
+        (Path(__file__).resolve().parents[1] / "app" / "vision_individuals_loop.py").read_text()
+    assert callable(individuals_config)
+
+
 def test_ask_image_ref_never_uses_a_no_embed_sighting() -> None:
     assert vi.ask_image_ref([(THUMB, T0, True)], now=T0, thumb_retention_days=14, ask_expiry_days=7) is None
 
@@ -265,3 +281,52 @@ def test_row_with_old_observed_at_but_new_created_at_is_processed(monkeypatch) -
     assert s.started_at == now - timedelta(hours=1)
     # Cursor advances on landing time: now - settle.
     assert conn.cursor_writes == [now - timedelta(seconds=30)]
+
+
+def test_a_burst_of_late_crops_from_one_passing_is_one_sighting() -> None:
+    # Review repro: 5 crops observed 20 min before the latest sighting, 1 s
+    # apart, used to open 5 sightings (each compared only to "latest").
+    ind = vi.Individual("i1", "walkway", "person", [1.0, 0.0], 5, T0 - timedelta(days=3), T0, 3, 2)
+    latest = {"i1": vi.Sighting(sighting_id="s1", individual_id="i1", stream_id="walkway",
+                                started_at=T0 - timedelta(seconds=30), ended_at=T0, observation_count=5,
+                                zone_counts={"walkway": 5})}
+    crops = [vi.CropRow(crop_id=f"c{k}", observation_id=f"o{k}", stream_id="walkway",
+                        observed_at=T0 - timedelta(minutes=20) + timedelta(seconds=k), label="person",
+                        box_xyxy=(0, 0, 50, 50), zone="walkway", embedding=(1.0, 0.0), embedding_ref="r",
+                        artifact_id="a") for k in range(5)]
+    b = vi.apply_batch(crops, individuals={"i1": ind}, latest_sightings=latest, no_embed_zones={"patio"},
+                       match_threshold=0.8, merge_gap_sec=120, tz=TZ)
+    assert len(b.sightings) == 1
+    assert b.individuals["i1"].sighting_count == 4
+    (s,) = b.sightings.values()
+    assert s.observation_count == 5
+
+
+def test_late_crop_rejoins_an_older_db_sighting_it_falls_inside() -> None:
+    ind = vi.Individual("i1", "walkway", "person", [1.0, 0.0], 5, T0 - timedelta(days=3), T0, 3, 2)
+    older = vi.Sighting(sighting_id="s-old", individual_id="i1", stream_id="walkway",
+                        started_at=T0 - timedelta(minutes=21), ended_at=T0 - timedelta(minutes=19),
+                        zone_counts={"walkway": 3})
+    newer = vi.Sighting(sighting_id="s-new", individual_id="i1", stream_id="walkway",
+                        started_at=T0 - timedelta(seconds=30), ended_at=T0, zone_counts={"walkway": 5})
+    crop = vi.CropRow(crop_id="c", observation_id="o", stream_id="walkway",
+                      observed_at=T0 - timedelta(minutes=20), label="person", box_xyxy=(0, 0, 1, 1),
+                      zone="walkway", embedding=(1.0, 0.0), embedding_ref="r", artifact_id="a")
+    b = vi.apply_batch([crop], individuals={"i1": ind}, latest_sightings={},
+                       nearby_sightings={"i1": [older, newer]}, no_embed_zones=set(),
+                       match_threshold=0.8, merge_gap_sec=60, tz=TZ)
+    assert set(b.sightings) == {"s-old"} and b.individuals["i1"].sighting_count == 3
+
+
+def test_patio_last_seen_never_moves_backwards_on_late_crops() -> None:
+    prev = vi.patio_snapshot(prev=None, batch_last_seen_at=T0, batch_count=3, now=T0,
+                             present_sec=120, grace_sec=600)
+    later = T0 + timedelta(seconds=30)
+    snap = vi.patio_snapshot(prev=prev, batch_last_seen_at=T0 - timedelta(minutes=5), batch_count=1,
+                             now=later, present_sec=120, grace_sec=600)
+    assert snap["last_seen_at"] == T0.isoformat()
+    assert snap["subject"] == {"count": 3}
+    assert snap["state"] == "present"
+    newer = vi.patio_snapshot(prev=prev, batch_last_seen_at=later, batch_count=2, now=later,
+                              present_sec=120, grace_sec=600)
+    assert newer["last_seen_at"] == later.isoformat() and newer["subject"] == {"count": 2}

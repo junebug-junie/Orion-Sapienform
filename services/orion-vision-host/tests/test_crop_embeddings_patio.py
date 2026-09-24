@@ -159,3 +159,9 @@ def test_runner_copies_stream_id_from_meta_into_request() -> None:
     req = VisionRunner._request_with_stream_id(task)
     assert req["stream_id"] == "walkway"
     assert "stream_id" not in task.request
+
+
+def test_runner_copies_dispatch_tier_from_meta_into_request() -> None:
+    task = VisionTask(corr_id="c", reply_channel="r", task_type="retina_fast",
+                      request={"image_path": "/x.jpg"}, meta={"stream_id": "walkway", "dispatch_tier": "triggered"})
+    assert VisionRunner._request_with_stream_id(task)["dispatch_tier"] == "triggered"

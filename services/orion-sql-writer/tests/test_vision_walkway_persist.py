@@ -76,11 +76,23 @@ def test_declared_patio_zone_wins_over_computed_zone() -> None:
     assert rows[0]["zone"] == "patio" and rows[0]["embedding"] is None
 
 
-def test_no_frame_size_falls_back_to_declared_zone() -> None:
+def test_no_frame_size_keeps_declared_zone_but_strips_the_vector() -> None:
+    # Without a frame size the patio-overlap check cannot run: fail closed.
     rows = build_crop_rows(_obs([
         {"label": "person", "score": 0.9, "box_xyxy": [50, 700, 150, 950], "zone": "walkway", "embedding": [1.0]},
     ], w=None, h=None), ZONES)
-    assert rows[0]["zone"] == "walkway" and rows[0]["embedding"] == [1.0]
+    assert rows[0]["zone"] == "walkway" and rows[0]["embedding"] is None
+    assert rows[0]["zone_no_embed"] is False
+
+
+def test_box_overlapping_the_patio_edge_is_stripped_but_not_counted_as_patio() -> None:
+    # Bottom-center (400, 950) is walkway; the box reaches x=300, inside the patio.
+    rows = build_crop_rows(_obs([
+        {"label": "person", "score": 0.9, "box_xyxy": [300, 700, 500, 950], "embedding": [1.0],
+         "embedding_ref": "e", "thumb_ref": "thumb:" + "ab" * 32},
+    ]), ZONES)
+    assert rows[0]["zone"] == "walkway" and rows[0]["zone_no_embed"] is False
+    assert rows[0]["embedding"] is None and rows[0]["embedding_ref"] is None and rows[0]["thumb_ref"] is None
 
 
 def test_zones_unavailable_fails_closed_and_strips_every_embedding() -> None:

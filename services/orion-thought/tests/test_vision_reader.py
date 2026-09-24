@@ -67,6 +67,7 @@ def test_query_filters_empty_narrative_and_staleness_before_limit():
     assert query_text.index("narrative IS NOT NULL") < query_text.index("LIMIT")
     assert params["limit"] == 3
     assert params["stream_ids"] == ["cam0"]
+    assert params["legacy_cutoff"] == datetime(2026, 9, 24, tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - params["cutoff"]).total_seconds()
     assert 179 <= age <= 185
 
@@ -142,7 +143,8 @@ def test_walkway_row_newer_than_room_row_is_not_a_room_percept():
         ("legacy room narrative", None, now - timedelta(seconds=90)),
     ])
     with patch.object(vision_reader, "_get_engine", return_value=engine):
-        out = vision_reader.read_recent_vision_events(max_age_sec=180, limit=5, stream_ids=["carbon", "cam0"])
+        out = vision_reader.read_recent_vision_events(max_age_sec=180, limit=5, stream_ids=["carbon", "cam0"],
+                                                      legacy_cutoff=now - timedelta(seconds=60))
     assert [r["narrative"] for r in out] == ["a mug on the desk", "legacy room narrative"]
 
 
@@ -157,5 +159,32 @@ def test_empty_stream_list_reads_legacy_rows_only():
         ("legacy", None, now - timedelta(seconds=9)),
     ])
     with patch.object(vision_reader, "_get_engine", return_value=engine):
-        out = vision_reader.read_recent_vision_events(max_age_sec=180, limit=5, stream_ids=[])
+        out = vision_reader.read_recent_vision_events(max_age_sec=180, limit=5, stream_ids=[],
+                                                      legacy_cutoff=now)
     assert [r["narrative"] for r in out] == ["legacy"]
+
+
+def test_null_stream_row_after_the_legacy_cutoff_is_refused():
+    """A scribe that was not rebuilt drops stream_id: its walkway narratives
+    land as NULL. After the cutoff a NULL row is not a room row."""
+    from datetime import timedelta
+
+    from app import vision_reader
+
+    now = datetime.now(timezone.utc)
+    engine = _sqlite_engine_with_rows([
+        ("two people on the patio (scribe dropped the camera)", None, now - timedelta(seconds=5)),
+        ("a mug on the desk", "cam0", now - timedelta(seconds=60)),
+    ])
+    with patch.object(vision_reader, "_get_engine", return_value=engine):
+        out = vision_reader.read_recent_vision_events(max_age_sec=180, limit=5, stream_ids=["cam0"])
+    assert [r["narrative"] for r in out] == ["a mug on the desk"]
+
+
+def test_default_legacy_cutoff_is_ship_day_and_overridable(monkeypatch):
+    from app import vision_reader
+
+    monkeypatch.delenv("ORION_VISION_EVENTS_LEGACY_CUTOFF", raising=False)
+    assert vision_reader._legacy_cutoff() == datetime(2026, 9, 24, tzinfo=timezone.utc)
+    monkeypatch.setenv("ORION_VISION_EVENTS_LEGACY_CUTOFF", "2026-10-01T00:00:00Z")
+    assert vision_reader._legacy_cutoff() == datetime(2026, 10, 1, tzinfo=timezone.utc)

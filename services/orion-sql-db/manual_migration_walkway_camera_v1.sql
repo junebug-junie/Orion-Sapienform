@@ -112,6 +112,37 @@ CREATE TABLE IF NOT EXISTS vision_individuals_cursor (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Upgrade a database created from an earlier draft of this file (the name-
+-- based `*_patio_no_embedding` CHECKs, no thumb_ref/zone_no_embed, cursor on
+-- last_observed_at). Every step is idempotent.
+ALTER TABLE vision_crop_observation ADD COLUMN IF NOT EXISTS thumb_ref TEXT;
+ALTER TABLE vision_crop_observation ADD COLUMN IF NOT EXISTS zone_no_embed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE vision_individual_sighting ADD COLUMN IF NOT EXISTS thumb_ref TEXT;
+ALTER TABLE vision_individual_sighting ADD COLUMN IF NOT EXISTS zone_no_embed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE vision_crop_observation DROP CONSTRAINT IF EXISTS vision_crop_observation_patio_no_embedding;
+ALTER TABLE vision_individual_sighting DROP CONSTRAINT IF EXISTS vision_individual_sighting_patio_no_embedding;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'vision_crop_observation_no_embed_zone_keeps_nothing') THEN
+        ALTER TABLE vision_crop_observation ADD CONSTRAINT vision_crop_observation_no_embed_zone_keeps_nothing
+            CHECK (NOT zone_no_embed OR (embedding IS NULL AND embedding_ref IS NULL AND thumb_ref IS NULL));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'vision_individual_sighting_no_embed_zone_keeps_nothing') THEN
+        ALTER TABLE vision_individual_sighting ADD CONSTRAINT vision_individual_sighting_no_embed_zone_keeps_nothing
+            CHECK (NOT zone_no_embed OR (embedding_ref IS NULL AND thumb_ref IS NULL));
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'vision_individuals_cursor' AND column_name = 'last_observed_at')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'vision_individuals_cursor' AND column_name = 'last_created_at') THEN
+        -- The old value is an observed_at, not a landing time; it only ever
+        -- trails landing time, so keeping it re-reads a little, never skips.
+        ALTER TABLE vision_individuals_cursor RENAME COLUMN last_observed_at TO last_created_at;
+    END IF;
+END $$;
+
 -- Predictions about the street, and their grades (PerceptExpectationV1).
 CREATE TABLE IF NOT EXISTS vision_percept_expectation (
     expectation_id    TEXT PRIMARY KEY,

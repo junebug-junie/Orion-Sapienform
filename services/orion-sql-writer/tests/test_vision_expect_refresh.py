@@ -107,3 +107,5 @@ def test_refresh_interval_defaults_to_a_minute_and_is_wired_at_boot() -> None:
 
     main = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
     assert "vision_expect_refresh_loop(settings)" in main
+    # Started only when the rhythm loop is.
+    assert "if vision_rhythm_task is not None and float(" in main

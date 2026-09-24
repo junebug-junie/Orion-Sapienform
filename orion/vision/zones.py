@@ -86,3 +86,55 @@ def zone_for_box(
 
 def may_embed(zone: Optional[Zone]) -> bool:
     return zone is None or zone.embed
+
+
+def _segments_cross(a, b, c, d) -> bool:
+    def orient(p, q, r):
+        v = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(v) < 1e-12 else (1 if v > 0 else -1)
+
+    def on_seg(p, q, r):
+        return min(p[0], r[0]) - 1e-12 <= q[0] <= max(p[0], r[0]) + 1e-12 and \
+            min(p[1], r[1]) - 1e-12 <= q[1] <= max(p[1], r[1]) + 1e-12
+
+    o1, o2, o3, o4 = orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
+    if o1 != o2 and o3 != o4:
+        return True
+    return (o1 == 0 and on_seg(a, c, b)) or (o2 == 0 and on_seg(a, d, b)) or \
+        (o3 == 0 and on_seg(c, a, d)) or (o4 == 0 and on_seg(c, b, d))
+
+
+def _rect_intersects_polygon(rect: Tuple[float, float, float, float], poly: Sequence[Tuple[float, float]]) -> bool:
+    x1, y1, x2, y2 = rect
+    corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    if any(x1 <= px <= x2 and y1 <= py <= y2 for px, py in poly):
+        return True
+    if any(_point_in_polygon(cx, cy, poly) for cx, cy in corners):
+        return True
+    rect_edges = list(zip(corners, corners[1:] + corners[:1]))
+    poly_edges = list(zip(poly, list(poly[1:]) + [poly[0]]))
+    return any(_segments_cross(a, b, c, d) for a, b in rect_edges for c, d in poly_edges)
+
+
+def intersects_no_embed(
+    zones: Sequence[Zone], box_xyxy: Sequence[float], width: float, height: float
+) -> bool:
+    """Does any part of the box overlap a no-embed zone (the patio)?
+
+    Stricter than ``zone_for_box``, which places a box by its bottom-center
+    only: a person standing just outside the patio can still have patio
+    pixels in their crop. Anything that would store those pixels (a crop
+    embedding, a thumbnail) must check this. Unplaceable boxes (bad frame
+    size or shape) answer True -- fail closed.
+    """
+    no_embed = [z for z in zones if not z.embed]
+    if not no_embed:
+        return False
+    if width <= 0 or height <= 0 or len(box_xyxy) != 4:
+        return True
+    x1, y1, x2, y2 = (float(v) for v in box_xyxy)
+    rect = (
+        min(max(min(x1, x2) / width, 0.0), 1.0), min(max(min(y1, y2) / height, 0.0), 1.0),
+        min(max(max(x1, x2) / width, 0.0), 1.0), min(max(max(y1, y2) / height, 0.0), 1.0),
+    )
+    return any(_rect_intersects_polygon(rect, z.polygon) for z in no_embed)

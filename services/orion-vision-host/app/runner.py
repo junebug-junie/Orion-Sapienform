@@ -16,7 +16,7 @@ from orion.vision.caption_echo import strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
 from .caption_sanitize import CAPTION_PROMPT, sanitize_answer, sanitize_caption
-from .crop_embeddings import ThumbStore, attach_crop_embeddings, load_zones_fail_closed
+from .crop_embeddings import ThumbRateLimiter, ThumbStore, attach_crop_embeddings, load_zones_fail_closed
 from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
@@ -30,6 +30,7 @@ settings = Settings()
 _safe_when = safe_when
 
 _THUMB_STORE: ThumbStore | None = None
+_THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
 
 
 def _thumb_store() -> ThumbStore | None:
@@ -41,7 +42,9 @@ def _thumb_store() -> ThumbStore | None:
         return None
     if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
         _THUMB_STORE = ThumbStore(
-            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 14.0)))
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 10.0)))
+        # Retention runs on its own daemon thread, never on the detect path.
+        _THUMB_STORE.start_pruner()
     return _THUMB_STORE
 
 
@@ -419,6 +422,10 @@ class VisionRunner:
         meta_stream = (task.meta or {}).get("stream_id")
         if meta_stream:
             request["stream_id"] = str(meta_stream)
+        # The router's tier (baseline | triggered) gates crop thumbnails.
+        meta_tier = (task.meta or {}).get("dispatch_tier")
+        if meta_tier and not request.get("dispatch_tier"):
+            request["dispatch_tier"] = str(meta_tier)
         return request
 
     def _run_pipeline(
@@ -887,6 +894,7 @@ class VisionRunner:
             embed_profile=embed_profile_name,
             min_score=min_score,
             thumb_fn=thumb_store.put if thumb_store is not None else None,
+            thumb_limiter=_THUMB_LIMITER,
         )
 
     # ------------------------

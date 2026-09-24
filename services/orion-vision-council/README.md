@@ -29,6 +29,11 @@ Bus intake honors the transition gate; **RPC requests always run interpretation*
 
 ## Unresolved percepts (things Orion could not name)
 
+Deploy steps and rebuild set (including: editing `config/vision_zones.yaml`
+means rebuilding vision-host, vision-council AND sql-writer; orion-vision-scribe
+must be rebuilt with this service): `services/orion-sql-writer/README.md`
+"Deploy checklist (walkway camera)".
+
 Walkway camera idea 4 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). After each intake window the council checks whether something went unnamed and, if so, publishes `VisionUnresolvedV1` on `orion:vision:unresolved:sql-write` (`CHANNEL_VISION_UNRESOLVED`); `orion-sql-writer` stores it in `vision_unresolved` as study material for curiosity. Not an alert.
 
 - `reason=no_label`: `summary.object_counts` has a box with an empty label (GroundingDINO's answer when no prompt word clears `text_threshold`) or the host runner's `"object"` fallback -- the detector drew a box but could not name it. Deliberately *not* "no box cleared the score threshold": the host already drops boxes under 0.25 before the window service's own 0.25 cut, so that condition is unreachable. Checked even on `stable_scene` windows, because an unchanging scene never changes its label set and the gate would otherwise hide it forever. How often it fires live is UNVERIFIED (walkway stream not up yet).

@@ -153,6 +153,12 @@ class ThoughtSettings(BaseSettings):
         "carbon,cam0", alias="ORION_REVERIE_PERCEPTION_STREAM_IDS"
     )
 
+    # Read by app/vision_reader.py via the environment (same key as
+    # orion/situational/perception_reader.py); declared here so it is visible.
+    vision_events_legacy_cutoff: str = Field(
+        "2026-09-24T00:00:00Z", alias="ORION_VISION_EVENTS_LEGACY_CUTOFF"
+    )
+
     @property
     def reverie_perception_stream_id_list(self) -> list[str]:
         return [p.strip() for p in (self.reverie_perception_stream_ids or "").split(",") if p.strip()]

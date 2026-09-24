@@ -323,3 +323,33 @@ def test_thumb_route_404s_a_missing_or_tampered_thumb(tmp_path, monkeypatch) -> 
 def test_hub_mounts_the_thumb_dir_read_only() -> None:
     compose = (HUB_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro" in compose
+
+
+def test_thumb_route_refuses_symlinks_fifos_dirs_and_oversize(tmp_path, monkeypatch) -> None:
+    import hashlib
+    import os
+
+    client = _thumb_client(tmp_path, monkeypatch)
+    secret = tmp_path.parent / "outside.jpg"
+    secret.write_bytes(b"secret")
+    link_id = hashlib.sha256(b"secret").hexdigest()
+    (tmp_path / f"{link_id}.jpg").symlink_to(secret)
+    assert client.get(f"/api/vision/crop-thumbs/{link_id}").status_code == 404
+
+    fifo_id = "d" * 64
+    os.mkfifo(tmp_path / f"{fifo_id}.jpg")
+    assert client.get(f"/api/vision/crop-thumbs/{fifo_id}").status_code == 404  # and did not hang
+
+    dir_id = "e" * 64
+    (tmp_path / f"{dir_id}.jpg").mkdir()
+    assert client.get(f"/api/vision/crop-thumbs/{dir_id}").status_code == 404
+
+    big = b"x" * (ask_routes.MAX_THUMB_BYTES + 1)
+    big_id = hashlib.sha256(big).hexdigest()
+    (tmp_path / f"{big_id}.jpg").write_bytes(big)
+    assert client.get(f"/api/vision/crop-thumbs/{big_id}").status_code == 404
+
+
+def test_thumb_route_permission_error_is_404(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ask_routes.os, "open", lambda *a, **k: (_ for _ in ()).throw(PermissionError("no")))
+    assert _thumb_client(tmp_path, monkeypatch).get(f"/api/vision/crop-thumbs/{'f' * 64}").status_code == 404

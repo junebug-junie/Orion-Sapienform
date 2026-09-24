@@ -323,6 +323,11 @@ chat special tokens.
 
 ## Crop embeddings (walkway individuals)
 
+Deploy steps, rebuild set, and the rule that editing `config/vision_zones.yaml`
+means rebuilding vision-host, vision-council AND sql-writer:
+`services/orion-sql-writer/README.md` "Deploy checklist (walkway camera)".
+Any box that merely overlaps a no-embed zone gets no embedding and no thumbnail.
+
 Spec: `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
 idea 1. When a detect request sets `want_crop_embeddings: true` (only the
 router's `walkway` stream policy does), `_run_detect_grounding_dino` zones
@@ -347,7 +352,7 @@ L2-normalized inline `embedding`; the detect artifact also carries
   a <=160 px JPEG (quality 70) named by its sha256 under
   `VISION_CROP_THUMB_DIR` (default `/mnt/telemetry/orion-vision-host/crop_thumbs`),
   and the object gains `thumb_ref = "thumb:<sha256>"`. The host prunes files
-  not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (14, longer than an
+  not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (10, longer than an
   ask's 7-day life). orion-hub mounts the directory read-only and serves one
   thumbnail by hash at `/api/vision/crop-thumbs/<sha256>`. Empty dir disables.
 - Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py` (embedder mocked).

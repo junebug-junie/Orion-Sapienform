@@ -1581,11 +1581,25 @@ def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
     return out
 
 
+# Set at boot by main.py after checking information_schema. Until the
+# vision_events.stream_id column exists, the key is stripped from writes
+# (VisionEventSQL.stream_id is deferred, so no SELECT/INSERT names it) rather
+# than every vision event failing on UndefinedColumn.
+_VISION_EVENTS_STREAM_ID_READY = True
+
+
+def set_vision_events_stream_id_ready(ready: bool) -> None:
+    global _VISION_EVENTS_STREAM_ID_READY
+    _VISION_EVENTS_STREAM_ID_READY = bool(ready)
+
+
 def _write_row(sql_model_cls, data: dict) -> bool:
     sess = get_session()
     try:
         mapper = inspect(sql_model_cls)
         write_data = dict(data)
+        if sql_model_cls is VisionEventSQL and not _VISION_EVENTS_STREAM_ID_READY:
+            write_data.pop("stream_id", None)
         if sql_model_cls is NotificationRequestDB:
             write_data = _normalize_notification_request_payload(write_data)
         if sql_model_cls is BiometricsClusterSQL:

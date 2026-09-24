@@ -176,9 +176,12 @@ class Settings(BaseSettings):
     # JPEG per EMBEDDED crop (never a no-embed-zone box), named by content
     # hash, for the Hub's ask card. The Hub mounts this directory read-only.
     # Pruned here after VISION_CROP_THUMB_RETENTION_DAYS without a rewrite --
-    # longer than an ask stays open (7 days). Empty disables thumbnails.
+    # longer than an ask stays open (7 days); orion-sql-writer reads the same
+    # key to pick an ask picture that outlives the ask. Empty disables.
     VISION_CROP_THUMB_DIR: str = "/mnt/telemetry/orion-vision-host/crop_thumbs"
-    VISION_CROP_THUMB_RETENTION_DAYS: float = 14.0
+    VISION_CROP_THUMB_RETENTION_DAYS: float = 10.0
+    # At most one thumbnail per stream per this many seconds.
+    VISION_CROP_THUMB_MIN_INTERVAL_SEC: float = 10.0
 
     @property
     def enabled_profiles(self) -> List[str]:

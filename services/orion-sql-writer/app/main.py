@@ -47,17 +47,6 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"
             )
-            # Walkway camera (2026-09-24): VisionEventSQL now declares
-            # stream_id, so the key enters every vision_events INSERT -- same
-            # UndefinedColumn hazard as `measurements` above. Nullable,
-            # additive; NULL means "written before cameras were told apart".
-            conn.exec_driver_sql(
-                "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx "
-                "ON vision_events (stream_id, created_at);"
-            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )
@@ -808,6 +797,43 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 
+    # Walkway camera (2026-09-24): vision_events.stream_id. Its own
+    # transaction, NOT the long bootstrap block above -- that block has been
+    # seen rolling back whole on a LockNotAvailable, and its single handler
+    # only warns. Verified after, not assumed: until the column exists the
+    # worker strips stream_id from vision_events writes (the column is
+    # deferred on the ORM, so nothing else touches it) and room readers treat
+    # those NULL rows as not-room after the legacy cutoff -- fail closed.
+    # The manual migration (manual_migration_walkway_camera_v1.sql) is the
+    # required deploy step; this is the safety net.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '10s';")
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx "
+                "ON vision_events (stream_id, created_at);"
+            )
+    except Exception as e:
+        logger.error("vision_events.stream_id migration failed: %s -- apply "
+                     "services/orion-sql-db/manual_migration_walkway_camera_v1.sql", e)
+    try:
+        from app import worker as _worker
+
+        with engine.connect() as conn:
+            has_col = conn.exec_driver_sql(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'vision_events' AND column_name = 'stream_id';"
+            ).first() is not None
+        _worker.set_vision_events_stream_id_ready(has_col)
+        if not has_col:
+            logger.error("vision_events.stream_id MISSING -- vision events are written without a camera "
+                         "and room readers will ignore them; apply manual_migration_walkway_camera_v1.sql")
+    except Exception as e:
+        logger.error("vision_events.stream_id check failed: %s", e)
+
     # Deliberately NOT inside the long bootstrap transaction above, and
     # verified rather than assumed. Backs
     # orion/substrate/metacog_trend_signals.py::latest_biometrics_induction_by_node,
@@ -1019,7 +1045,10 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("vision rhythm learner DISABLED (VISION_RHYTHM_INTERVAL_SEC=0)")
     vision_expect_task: asyncio.Task | None = None
-    if float(getattr(settings, "vision_expect_refresh_interval_sec", 0.0) or 0.0) > 0:
+    # Only alongside the rhythm loop: with the learner off, nothing grades or
+    # emits expectations, and a refresh would steer on stale open windows.
+    if vision_rhythm_task is not None and float(
+            getattr(settings, "vision_expect_refresh_interval_sec", 0.0) or 0.0) > 0:
         from app.vision_rhythm_loop import vision_expect_refresh_loop
 
         vision_expect_task = asyncio.create_task(vision_expect_refresh_loop(settings))

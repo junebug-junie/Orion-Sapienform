@@ -185,3 +185,12 @@ test('a thumb ask renders an <img> pointing at the Hub thumbnail route', () => {
   assert.ok(img, 'expected an img node');
   assert.equal(img.attrs.src, '/api/vision/crop-thumbs/' + h);
 });
+
+test('a thumbnail that fails to load is hidden, not shown broken', () => {
+  const doc = fakeDoc();
+  const card = asks.renderAsk(doc, { ask_id: 'a8', question: 'Who?', image_ref: 'thumb:' + '1a'.repeat(32) }, () => {});
+  const img = find(card, (n) => n.tagName === 'img');
+  assert.ok(img.listeners.error, 'expected an error handler');
+  img.listeners.error();
+  assert.equal(img.hidden, true);
+});

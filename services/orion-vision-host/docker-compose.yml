@@ -81,7 +81,8 @@ services:
       - IDENTITY_ENROLLED_SUBJECT=${IDENTITY_ENROLLED_SUBJECT:-juniper}
 
       - VISION_CROP_THUMB_DIR=${VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
-      - VISION_CROP_THUMB_RETENTION_DAYS=${VISION_CROP_THUMB_RETENTION_DAYS:-14}
+      - VISION_CROP_THUMB_RETENTION_DAYS=${VISION_CROP_THUMB_RETENTION_DAYS:-10}
+      - VISION_CROP_THUMB_MIN_INTERVAL_SEC=${VISION_CROP_THUMB_MIN_INTERVAL_SEC:-10}
 
     volumes:
       - /mnt/telemetry/orion-vision-host:/mnt/telemetry/orion-vision-host

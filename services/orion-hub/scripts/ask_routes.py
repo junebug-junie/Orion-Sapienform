@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -275,18 +276,37 @@ def _crop_thumb_dir() -> Path:
 
 
 def _read_thumb(path: Path) -> Optional[bytes]:
+    """Regular files only, no symlink following, never blocks on a FIFO,
+    size-capped. Any OS error is "not found", never a 500."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        if path.stat().st_size > MAX_THUMB_BYTES:
-            return None
-        return path.read_bytes()
-    except (FileNotFoundError, NotADirectoryError):
+        fd = os.open(str(path), flags)
+    except OSError:
         return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_THUMB_BYTES:
+            return None
+        chunks = []
+        remaining = MAX_THUMB_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        return None if len(data) > MAX_THUMB_BYTES else data
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 @router.get("/api/vision/crop-thumbs/{thumb_id}")
 async def get_crop_thumb(thumb_id: str) -> Response:
     """One crop thumbnail by content hash. 400 for anything that is not a
-    64-char lowercase hex id; 404 when absent or pruned (kept 14 days)."""
+    64-char lowercase hex id; 404 when absent or pruned (vision-host keeps them 10 days)."""
     if not _THUMB_ID_RE.fullmatch(thumb_id or ""):
         raise HTTPException(status_code=400, detail="bad_thumb_id")
     path = _crop_thumb_dir() / f"{thumb_id}.jpg"

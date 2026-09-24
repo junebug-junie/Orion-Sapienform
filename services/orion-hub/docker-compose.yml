@@ -56,7 +56,7 @@ services:
       - ${REVERIE_VISUAL_STORAGE_DIR:-/mnt/storage-lukewarm/orion/reverie-visual}:${REVERIE_VISUAL_STORAGE_DIR:-/mnt/storage-lukewarm/orion/reverie-visual}:ro
       # Walkway ask card pictures (read-only): orion-vision-host writes one
       # small JPEG per embedded crop here (never a patio box) and prunes it
-      # after 14 days. Served only by content hash (scripts/ask_routes.py).
+      # after 10 days. Served only by content hash (scripts/ask_routes.py).
       - ${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro
       # Reuse the operator's existing host-level git/gh auth read-only, same pattern
       # as the claude-binary mount below -- no credentials are stored

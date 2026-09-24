@@ -70,6 +70,10 @@
       const img = el(doc, "img", "max-h-48 rounded border border-gray-700");
       img.setAttribute("src", vm.image.ref);
       img.setAttribute("alt", "What Orion is asking about");
+      // A pruned or missing thumbnail must not leave a broken-image icon.
+      img.addEventListener("error", function () {
+        img.hidden = true;
+      });
       card.appendChild(img);
     } else if (vm.image.kind === "text") {
       card.appendChild(el(doc, "div", "text-[11px] text-gray-500 break-all", "Picture: " + vm.image.ref));

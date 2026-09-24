@@ -239,6 +239,20 @@ class _CentroidIndex:
         return None, -2.0
 
 
+def _nearest_sighting(cands: Sequence[Sighting], t: datetime, gap_sec: float) -> Optional[Sighting]:
+    """The candidate sighting ``t`` falls inside (+- gap), nearest first."""
+    best: Optional[Tuple[float, Sighting]] = None
+    for sg in cands:
+        before = (sg.started_at - t).total_seconds()
+        after = (t - sg.ended_at).total_seconds()
+        if before > gap_sec or after > gap_sec:
+            continue
+        dist = max(0.0, before, after)
+        if best is None or dist < best[0]:
+            best = (dist, sg)
+    return best[1] if best else None
+
+
 @dataclass
 class BatchResult:
     individuals: Dict[str, Individual]
@@ -259,6 +273,7 @@ def apply_batch(
     merge_gap_sec: float,
     tz: ZoneInfo,
     new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
+    nearby_sightings: Optional[Dict[str, List[Sighting]]] = None,
 ) -> BatchResult:
     """Cluster crops into individuals and group them into sightings.
 
@@ -268,14 +283,24 @@ def apply_batch(
     its row says so (``zone_no_embed``) OR its zone name is in
     ``no_embed_zones`` -- either is enough.
 
-    A late crop (observed before the individual's latest sighting ended, e.g.
-    it landed after the cursor passed its time) joins that sighting only if it
-    falls inside it (+- ``merge_gap_sec``); otherwise it is its own, older
-    sighting and does not displace the latest one.
+    A crop joins whichever of the individual's candidate sightings it falls
+    inside (+- ``merge_gap_sec``), nearest first. Candidates are the latest
+    sighting, any older ones in ``nearby_sightings`` (individual_id -> the
+    sightings overlapping this batch's time span, loaded from the DB), and
+    every sighting this batch has already opened -- so a burst of late crops
+    from one passing becomes one sighting, not one per crop.
     """
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid)) for k, v in individuals.items()}
-    latest = {k: replace(v, zone_counts=dict(v.zone_counts)) for k, v in latest_sightings.items()}
+    cands: Dict[str, List[Sighting]] = {}
+    seen_ids: set = set()
+    for src in (latest_sightings, *(() if nearby_sightings is None else (nearby_sightings,))):
+        for iid, val in src.items():
+            for sg in (val if isinstance(val, list) else [val]):
+                if sg.sighting_id in seen_ids:
+                    continue
+                seen_ids.add(sg.sighting_id)
+                cands.setdefault(iid, []).append(replace(sg, zone_counts=dict(sg.zone_counts)))
     touched: Dict[str, Sighting] = {}
     new_ids: List[str] = []
     patio: List[CropRow] = []
@@ -316,12 +341,8 @@ def apply_batch(
         assigned += 1
 
         zone_key = crop.zone or _NO_ZONE
-        prev = latest.get(ind.individual_id)
-        within = prev is not None and (
-            (prev.started_at - crop.observed_at).total_seconds() <= merge_gap_sec
-            and (crop.observed_at - prev.ended_at).total_seconds() <= merge_gap_sec
-        )
-        if within:
+        prev = _nearest_sighting(cands.get(ind.individual_id, []), crop.observed_at, merge_gap_sec)
+        if prev is not None:
             newest = crop.observed_at >= prev.ended_at
             prev.started_at = min(prev.started_at, crop.observed_at)
             prev.ended_at = max(prev.ended_at, crop.observed_at)
@@ -343,10 +364,7 @@ def apply_batch(
                 evidence_ref=f"crop:{crop.crop_id}",
                 thumb_ref=crop.thumb_ref,
             )
-            # A late crop older than the latest sighting is its own, earlier
-            # sighting; it must not become "latest" and swallow newer crops.
-            if prev is None or s.ended_at >= prev.ended_at:
-                latest[ind.individual_id] = s
+            cands.setdefault(ind.individual_id, []).append(s)
             ind.sighting_count += 1
         touched[s.sighting_id] = s
 
@@ -390,8 +408,12 @@ def patio_snapshot(
     prev = prev or {}
     last_seen_at = batch_last_seen_at
     count = batch_count
-    if last_seen_at is None and prev.get("last_seen_at"):
-        last_seen_at = datetime.fromisoformat(prev["last_seen_at"])
+    prev_seen = datetime.fromisoformat(prev["last_seen_at"]) if prev.get("last_seen_at") else None
+    # Late crops can land in a batch whose newest patio box is OLDER than what
+    # the row already says: last-seen never moves backwards, and the count
+    # stays the one that goes with the newer sighting.
+    if prev_seen is not None and (last_seen_at is None or last_seen_at < prev_seen):
+        last_seen_at = prev_seen
         count = int((prev.get("subject") or {}).get("count") or 0)
     last_seen_sec = (now - last_seen_at).total_seconds() if last_seen_at is not None else None
     if last_seen_sec is not None and last_seen_sec <= present_sec:
@@ -487,7 +509,12 @@ def ask_image_ref(
     ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
     ended within the difference is offered. None -> the card shows no picture.
     """
-    horizon = now - timedelta(days=max(0.0, thumb_retention_days - ask_expiry_days))
+    if thumb_retention_days <= ask_expiry_days:
+        # Any thumbnail could be pruned while the ask is still open.
+        logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
+                       thumb_retention_days, ask_expiry_days)
+        return None
+    horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
     best: Optional[Tuple[datetime, str]] = None
     for thumb_ref, ended_at, no_embed in sightings:
         if no_embed or not thumb_ref or not str(thumb_ref).startswith(THUMB_REF_PREFIX):
@@ -537,7 +564,7 @@ class IndividualsConfig:
     # orion-vision-host keeps crop thumbnails this long (its own prune, by
     # file age). An ask only shows a thumbnail young enough to outlive the
     # ask itself: taken within (thumb_retention_days - ask_expiry_days).
-    thumb_retention_days: float = 14.0
+    thumb_retention_days: float = 10.0
 
 
 # Two sql-writer instances must never run the same cycle at once: cursors,
@@ -690,22 +717,30 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 centroid=list(r.centroid), centroid_n=r.centroid_n, first_seen_at=r.first_seen_at,
                 last_seen_at=r.last_seen_at, sighting_count=r.sighting_count,
                 distinct_days=r.distinct_days, label=r.label) for r in ind_rows}
+            # Every sighting overlapping this batch's span (+- gap), not just
+            # each individual's latest: a late crop must be able to rejoin the
+            # older sighting it belongs to.
+            newest_seen = max(c.observed_at for c in crops)
+            gap = timedelta(seconds=cfg.merge_gap_sec)
             s_rows = conn.execute(text(
-                "SELECT DISTINCT ON (individual_id) sighting_id, individual_id, stream_id, started_at, ended_at, "
+                "SELECT sighting_id, individual_id, stream_id, started_at, ended_at, "
                 "observation_count, zone_counts, last_box_xyxy, embedding_ref, evidence_ref, thumb_ref "
                 "FROM vision_individual_sighting WHERE stream_id=:s AND ended_at >= :after "
-                "ORDER BY individual_id, ended_at DESC"),
-                {"s": stream_id, "after": oldest_seen - timedelta(seconds=cfg.merge_gap_sec)}).fetchall()
-            latest = {r.individual_id: Sighting(
-                sighting_id=r.sighting_id, individual_id=r.individual_id, stream_id=r.stream_id,
-                started_at=r.started_at, ended_at=r.ended_at, observation_count=r.observation_count,
-                zone_counts=dict(r.zone_counts or {}), last_box_xyxy=list(r.last_box_xyxy or []) or None,
-                embedding_ref=r.embedding_ref, evidence_ref=r.evidence_ref,
-                thumb_ref=r.thumb_ref) for r in s_rows}
+                "AND started_at <= :before"),
+                {"s": stream_id, "after": oldest_seen - gap, "before": newest_seen + gap}).fetchall()
+            nearby: Dict[str, List[Sighting]] = {}
+            for r in s_rows:
+                nearby.setdefault(r.individual_id, []).append(Sighting(
+                    sighting_id=r.sighting_id, individual_id=r.individual_id, stream_id=r.stream_id,
+                    started_at=r.started_at, ended_at=r.ended_at, observation_count=r.observation_count,
+                    zone_counts=dict(r.zone_counts or {}), last_box_xyxy=list(r.last_box_xyxy or []) or None,
+                    embedding_ref=r.embedding_ref, evidence_ref=r.evidence_ref,
+                    thumb_ref=r.thumb_ref))
 
             batch = apply_batch(
-                crops, individuals=individuals, latest_sightings=latest, no_embed_zones=forbidden,
-                match_threshold=cfg.match_threshold, merge_gap_sec=cfg.merge_gap_sec, tz=tz,
+                crops, individuals=individuals, latest_sightings={}, nearby_sightings=nearby,
+                no_embed_zones=forbidden, match_threshold=cfg.match_threshold,
+                merge_gap_sec=cfg.merge_gap_sec, tz=tz,
             )
             summary["assigned"] += batch.assigned
             summary["new_individuals"] += len(batch.new_individual_ids)

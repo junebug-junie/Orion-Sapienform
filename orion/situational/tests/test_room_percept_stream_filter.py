@@ -48,7 +48,27 @@ def test_legacy_rows_without_stream_are_still_read(monkeypatch):
         ("Patio.", "walkway", now - timedelta(seconds=1)),
     ])
     monkeypatch.setattr(perception_reader, "_get_engine", lambda: engine)
-    assert perception_reader.fetch_latest_percept(stream_ids=["cam0"])["scene_summary"] == "Legacy room narrative."
+    got = perception_reader.fetch_latest_percept(stream_ids=["cam0"], legacy_cutoff=now)
+    assert got["scene_summary"] == "Legacy room narrative."
+
+
+def test_null_stream_row_after_the_legacy_cutoff_is_refused(monkeypatch):
+    # A not-rebuilt scribe drops stream_id, so a walkway narrative lands NULL.
+    now = datetime.now(timezone.utc)
+    engine = _engine([
+        ("A mug on the desk.", "cam0", now - timedelta(minutes=3)),
+        ("Two people sit on the patio.", None, now - timedelta(seconds=5)),
+    ])
+    monkeypatch.setattr(perception_reader, "_get_engine", lambda: engine)
+    monkeypatch.delenv("ORION_VISION_EVENTS_LEGACY_CUTOFF", raising=False)
+    assert perception_reader.fetch_latest_percept(stream_ids=["cam0"])["scene_summary"] == "A mug on the desk."
+
+
+def test_legacy_cutoff_default_and_override(monkeypatch):
+    monkeypatch.delenv("ORION_VISION_EVENTS_LEGACY_CUTOFF", raising=False)
+    assert perception_reader.vision_events_legacy_cutoff() == datetime(2026, 9, 24, tzinfo=timezone.utc)
+    monkeypatch.setenv("ORION_VISION_EVENTS_LEGACY_CUTOFF", "2026-10-01T00:00:00Z")
+    assert perception_reader.vision_events_legacy_cutoff() == datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 
 def test_only_walkway_rows_means_no_percept(monkeypatch):

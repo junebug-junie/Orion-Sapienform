@@ -48,6 +48,7 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         settle_sec=float(settings.vision_individuals_settle_sec),
         candidate_days=float(settings.vision_individuals_candidate_days),
         ask_cooldown_days=float(settings.vision_ask_cooldown_days),
+        thumb_retention_days=float(settings.vision_crop_thumb_retention_days),
     )
 
 

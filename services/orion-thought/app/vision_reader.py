@@ -74,11 +74,26 @@ def _get_engine():
     return _engine
 
 
+DEFAULT_VISION_EVENTS_LEGACY_CUTOFF = "2026-09-24T00:00:00+00:00"
+
+
+def _legacy_cutoff() -> datetime:
+    """Same rule and same env key as orion/situational/perception_reader.py."""
+    raw = (os.getenv("ORION_VISION_EVENTS_LEGACY_CUTOFF") or "").strip() or DEFAULT_VISION_EVENTS_LEGACY_CUTOFF
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("bad ORION_VISION_EVENTS_LEGACY_CUTOFF=%r; using default", raw)
+        ts = datetime.fromisoformat(DEFAULT_VISION_EVENTS_LEGACY_CUTOFF)
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def read_recent_vision_events(
     *,
     max_age_sec: float,
     limit: int,
     stream_ids: Sequence[str],
+    legacy_cutoff: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Most recent fresh, narrated vision events, newest first. Never raises.
 
@@ -87,7 +102,9 @@ def read_recent_vision_events(
     or aged-out row must not crowd out an older, real, still-fresh one.
 
     Only rows from ``stream_ids`` (the ROOM cameras) or legacy rows with a
-    NULL ``stream_id`` are read. ``vision_events`` also carries the walkway
+    NULL ``stream_id`` written before ``legacy_cutoff`` (default: setting
+    ``ORION_VISION_EVENTS_LEGACY_CUTOFF``, 2026-09-24T00:00:00Z) are read -- a
+    NULL row after that means a producer dropped the camera, so it is refused. ``vision_events`` also carries the walkway
     camera's narratives (street and patio) and its reducers' rows; reverie is
     about the room. An empty ``stream_ids`` reads legacy rows only, never
     every camera. Same rule as ``orion/situational/perception_reader.py``.
@@ -104,7 +121,8 @@ def read_recent_vision_events(
             "SELECT narrative, created_at FROM vision_events "
             "WHERE narrative IS NOT NULL AND narrative <> '' "
             "AND created_at >= :cutoff "
-            "AND (stream_id IS NULL OR stream_id IN :stream_ids) "
+            "AND (stream_id IN :stream_ids "
+            "     OR (stream_id IS NULL AND created_at < :legacy_cutoff)) "
             "ORDER BY created_at DESC "
             "LIMIT :limit"
         ).bindparams(bindparam("stream_ids", expanding=True))
@@ -112,7 +130,8 @@ def read_recent_vision_events(
             rows = (
                 conn.execute(
                     stmt,
-                    {"limit": limit, "cutoff": cutoff, "stream_ids": ids},
+                    {"limit": limit, "cutoff": cutoff, "stream_ids": ids,
+                     "legacy_cutoff": legacy_cutoff or _legacy_cutoff()},
                 )
                 .mappings()
                 .all()

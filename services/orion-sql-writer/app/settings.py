@@ -505,6 +505,10 @@ class Settings(BaseSettings):
     vision_ask_min_sightings: int = Field(10, alias="VISION_ASK_MIN_SIGHTINGS")
     vision_ask_min_days: int = Field(5, alias="VISION_ASK_MIN_DAYS")
     vision_ask_expiry_days: float = Field(7.0, alias="VISION_ASK_EXPIRY_DAYS")
+    # Same key as orion-vision-host, which prunes crop thumbnails after this
+    # many days. An ask only shows a thumbnail young enough to outlive it; if
+    # this is not longer than VISION_ASK_EXPIRY_DAYS asks carry no picture.
+    vision_crop_thumb_retention_days: float = Field(10.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
     # An ask that expired unanswered is not repeated for this long.
     vision_ask_cooldown_days: float = Field(30.0, alias="VISION_ASK_COOLDOWN_DAYS")
     # Orion's whole daily ask budget (every source_kind), counted from

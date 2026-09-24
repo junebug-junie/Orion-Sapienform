@@ -21,11 +21,18 @@ those; the thumbnail is made from the exact same crop list the embedder is
 handed, so a no-embed-zone box structurally cannot get one -- the host writes
 a small JPEG (``THUMB_MAX_SIDE`` px, quality ``THUMB_QUALITY``) named by the
 sha256 of its bytes under ``VISION_CROP_THUMB_DIR`` and returns
-``thumb_ref="thumb:<sha256>"`` on the object. Retention: ``ThumbStore``
+``thumb_ref="thumb:<sha256>"`` on the object. At most one thumbnail per
+stream per ``VISION_CROP_THUMB_MIN_INTERVAL_SEC`` (``ThumbRateLimiter``), and
+only on the router's triggered tier when the request says which tier it is.
+Retention: a background thread in ``ThumbStore`` (never the detect path)
 deletes thumbnails not written for ``VISION_CROP_THUMB_RETENTION_DAYS``
-(default 14, longer than an ask's 7-day life); re-writing the same bytes
-refreshes the age. The Hub serves them read-only by hash
-(``/api/vision/crop-thumbs/<sha256>``).
+(default 10, longer than an ask's 7-day life). The Hub serves them read-only
+by hash (``/api/vision/crop-thumbs/<sha256>``).
+
+A box whose bottom-center is outside the patio can still contain patio
+pixels, so any box that INTERSECTS a no-embed zone
+(``orion.vision.zones.intersects_no_embed``) gets neither an embedding nor a
+thumbnail.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -41,7 +49,14 @@ import numpy as np
 from loguru import logger
 from PIL import Image
 
-from orion.vision.zones import DEFAULT_ZONES_PATH, Zone, load_zones, may_embed, zone_for_box
+from orion.vision.zones import (
+    DEFAULT_ZONES_PATH,
+    Zone,
+    intersects_no_embed,
+    load_zones,
+    may_embed,
+    zone_for_box,
+)
 
 DEFAULT_CROP_EMBEDDING_LABELS = ("person", "dog", "bicycle", "stroller", "vehicle")
 DEFAULT_MAX_CROPS_PER_FRAME = 8
@@ -54,7 +69,28 @@ ThumbFn = Callable[[Image.Image], Optional[str]]
 THUMB_REF_PREFIX = "thumb:"
 THUMB_MAX_SIDE = 160
 THUMB_QUALITY = 70
-DEFAULT_THUMB_RETENTION_DAYS = 14.0
+DEFAULT_THUMB_RETENTION_DAYS = 10.0
+DEFAULT_THUMB_MIN_INTERVAL_SEC = 10.0
+
+
+class ThumbRateLimiter:
+    """At most one thumbnail per stream per ``min_interval_sec``. A parked car
+    embedded every frame must not write ~30k files a day."""
+
+    def __init__(self, min_interval_sec: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.min_interval_sec = max(0.0, float(min_interval_sec))
+        self._clock = clock
+        self._last: Dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def take(self, stream_id: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            last = self._last.get(stream_id)
+            if last is not None and now - last < self.min_interval_sec:
+                return False
+            self._last[stream_id] = now
+            return True
 
 
 def encode_thumb(crop: Image.Image, *, max_side: int = THUMB_MAX_SIDE, quality: int = THUMB_QUALITY) -> bytes:
@@ -71,8 +107,9 @@ class ThumbStore:
     ``put`` writes ``<root>/<sha256>.jpg`` atomically (temp file + rename) and
     returns ``thumb:<sha256>``. A second put of identical bytes just refreshes
     the file's mtime, so a thumbnail still being produced is not pruned. The
-    prune runs at most once per ``prune_interval_sec``, inline on put -- the
-    writer owns its retention, no separate job to forget.
+    prune runs on a daemon thread every ``prune_interval_sec``
+    (``start_pruner``), never on the detect path -- the writer owns its
+    retention, no separate job to forget.
     """
 
     def __init__(
@@ -87,7 +124,26 @@ class ThumbStore:
         self.retention_sec = max(0.0, float(retention_days)) * 86400.0
         self.prune_interval_sec = float(prune_interval_sec)
         self._clock = clock
-        self._last_prune: Optional[float] = None
+        self._pruner: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start_pruner(self) -> None:
+        if self._pruner is not None and self._pruner.is_alive():
+            return
+
+        def _loop() -> None:
+            while not self._stop.is_set():
+                try:
+                    self.prune()
+                except Exception as exc:
+                    logger.warning(f"[CROP] thumbnail prune failed: {exc}")
+                self._stop.wait(self.prune_interval_sec)
+
+        self._pruner = threading.Thread(target=_loop, name="crop-thumb-prune", daemon=True)
+        self._pruner.start()
+
+    def stop_pruner(self) -> None:
+        self._stop.set()
 
     def put(self, crop: Image.Image) -> Optional[str]:
         data = encode_thumb(crop)
@@ -102,15 +158,7 @@ class ThumbStore:
             tmp.write_bytes(data)
             os.utime(tmp, (now, now))
             os.replace(tmp, path)
-        self.maybe_prune(now)
         return f"{THUMB_REF_PREFIX}{digest}"
-
-    def maybe_prune(self, now: Optional[float] = None) -> int:
-        now = self._clock() if now is None else now
-        if self._last_prune is not None and now - self._last_prune < self.prune_interval_sec:
-            return 0
-        self._last_prune = now
-        return self.prune(now)
 
     def prune(self, now: Optional[float] = None) -> int:
         now = self._clock() if now is None else now
@@ -213,6 +261,7 @@ def attach_crop_embeddings(
     embed_profile: str,
     min_score: float,
     thumb_fn: Optional[ThumbFn] = None,
+    thumb_limiter: Optional[ThumbRateLimiter] = None,
 ) -> Dict[str, int]:
     """Mutates ``objects`` in place: sets ``zone`` on every tracked-label box and
     ``embedding``/``embedding_ref`` (and ``thumb_ref``, when ``thumb_fn`` is
@@ -245,13 +294,15 @@ def attach_crop_embeddings(
         box = obj.get("box_xyxy") or []
         zone = zone_for_box(stream_zones, _clamp_box(box, width, height), width, height) if stream_zones else None
         obj["zone"] = zone.name if zone is not None else None
-        if not zones_known or zone is None or not may_embed(zone):
+        touches_no_embed = zones_known and intersects_no_embed(
+            stream_zones, _clamp_box(box, width, height), width, height)
+        if not zones_known or zone is None or not may_embed(zone) or touches_no_embed:
             # Patio, outside every zone, or zones unknown for this camera: no
             # crop, no vector. Presence only.
             obj["embedding"] = None
             obj["embedding_ref"] = None
             obj["thumb_ref"] = None
-            if zone is not None and not may_embed(zone):
+            if (zone is not None and not may_embed(zone)) or touches_no_embed:
                 stats["withheld_no_embed_zone"] += 1
             else:
                 stats["withheld_other"] += 1
@@ -288,6 +339,11 @@ def attach_crop_embeddings(
     norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12
     vecs = vecs / norms
 
+    # Thumbnails only on the router's triggered tier when the request names
+    # its tier (a request with no tier -- e.g. a direct RPC -- is not gated).
+    tier = str(request.get("dispatch_tier") or "").strip()
+    thumb_allowed = not tier or tier == "triggered"
+
     for row, i in enumerate(to_embed):
         obj = objects[i]
         obj["embedding"] = [float(x) for x in vecs[row].tolist()]
@@ -296,7 +352,8 @@ def attach_crop_embeddings(
         # Same crop the embedder saw -- the only pixels a thumbnail is ever
         # made from. A thumbnail failure costs the picture, not the vector.
         obj["thumb_ref"] = None
-        if thumb_fn is not None:
+        if thumb_fn is not None and thumb_allowed and (
+                thumb_limiter is None or thumb_limiter.take(stream_id)):
             try:
                 obj["thumb_ref"] = thumb_fn(crops[row])
             except Exception as exc:

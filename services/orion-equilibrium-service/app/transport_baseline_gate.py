@@ -60,6 +60,7 @@ def config_from_settings(settings: Any) -> TransportBaselineConfig:
         min_calls=int(settings.transport_baseline_min_calls),
         n_warm=int(settings.transport_baseline_n_warm),
         spike_z=float(settings.transport_baseline_spike_z),
+        min_excess_ms=float(settings.transport_baseline_min_excess_ms),
         saturation_ratio=float(settings.transport_baseline_saturation_ratio),
         regime_after_s=float(settings.transport_baseline_regime_after_sec),
     )

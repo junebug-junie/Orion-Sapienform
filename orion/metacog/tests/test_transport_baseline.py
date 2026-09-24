@@ -555,3 +555,40 @@ def test_spike_sustain_does_not_bridge_a_long_gap():
     ev1, _ = _run(state, [(40, {HOP: _stats([9000.0] * 10)})])
     ev2, _ = _run(state, [(400, {HOP: _stats([9000.0] * 10)})])
     assert not [e for e in ev1 + ev2 if e.condition == "spike"]
+
+
+# ---------------------------------------------------------------- materiality
+
+
+def test_fast_status_poll_step_is_immaterial_and_is_learned():
+    # Live 2026-09-24: a ~10 ms GPU-slot poll reading ~14 ms opened a "spike".
+    # z is scale-free; a few ms of excess must not open anything, and the
+    # baseline must learn the new level rather than freeze on it.
+    rng = random.Random(7)
+    state = new_state(CFG)
+    _warm(state, rng, center=10.0, n_windows=40)
+    events, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 30.0, sigma=0.05))}) for i in range(40, 1000)))
+    assert [e for e in events if e.condition in ("spike", "saturation", "regime_shift")] == []
+    ks = next(iter(state.keys.values()))
+    assert math.exp(ks.fast_mean) > 20.0  # learned, not frozen at ~10 ms
+
+
+def test_fast_hop_material_step_still_spikes():
+    rng = random.Random(8)
+    state = new_state(CFG)
+    _warm(state, rng, center=10.0, n_windows=40)
+    events, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 600.0, sigma=0.05))}) for i in range(40, 44)))
+    assert any(e.condition == "spike" and e.phase == "open" for e in events)
+
+
+def test_open_saturation_keeps_hysteresis_on_the_materiality_term():
+    # Review finding: with open/close sharing the 250 ms absolute test, a fast
+    # hop sitting ~200 ms over a ~200 ms floor would close an open saturation
+    # even though ratio (2.0) is still above the 1.5 close band.
+    rng = random.Random(9)
+    state = new_state(CFG)
+    _warm(state, rng, center=200.0, n_windows=120)
+    ev_open, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 700.0, sigma=0.02))}) for i in range(120, 300)))
+    assert any(e.condition == "saturation" and e.phase == "open" for e in ev_open)
+    ev_hold, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 400.0, sigma=0.02))}) for i in range(300, 500)))
+    assert not [e for e in ev_hold if e.condition == "saturation" and e.phase == "close"]

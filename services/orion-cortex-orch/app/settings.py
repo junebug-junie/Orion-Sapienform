@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # 2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md). The model is
     # extra="forbid": keep false until every consumer (orion-signal-gateway,
     # orion-equilibrium-service) runs a build that knows the field.
-    rpc_health_channel_latency_enabled: bool = Field(False, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
+    rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     # orion-notify HTTP client (workflow-completion notifications). Not a bus channel --
     # orion-notify's own /notify endpoint is the only registered way to submit a

@@ -134,11 +134,13 @@ async def test_reply_records_governor_hop_success_no_grammar() -> None:
 
 
 @pytest.mark.asyncio
-async def test_timeout_records_hop_but_no_grammar_atom_when_publish_off(monkeypatch) -> None:
+async def test_timeout_records_hop_but_no_grammar_atom_when_flag_off(monkeypatch) -> None:
     # Patch the settings object run() actually reads: conftest re-imports hub modules,
     # so `scripts.harness_governor_client` in sys.modules can differ from the module
     # this file imported HarnessGovernorClient from.
-    monkeypatch.setattr(_client_settings(), "RPC_HEALTH_PUBLISH_ENABLED", False)
+    # Publishing on must NOT arm the atom: only its own flag does.
+    monkeypatch.setattr(_client_settings(), "RPC_HEALTH_PUBLISH_ENABLED", True)
+    monkeypatch.setattr(_client_settings(), "HUB_GOVERNOR_TIMEOUT_GRAMMAR_ENABLED", False)
     bus = _Bus(None)
     result = await HarnessGovernorClient(bus).run(
         _request("orion"), correlation_id=_CORR, timeout_sec=0.05, liveness_check=lambda _s: False
@@ -153,7 +155,7 @@ async def test_timeout_records_governor_hop_timeout_and_emits_grammar_atom(monke
     # Patch the settings object run() actually reads: conftest re-imports hub modules,
     # so `scripts.harness_governor_client` in sys.modules can differ from the module
     # this file imported HarnessGovernorClient from.
-    monkeypatch.setattr(_client_settings(), "RPC_HEALTH_PUBLISH_ENABLED", True)
+    monkeypatch.setattr(_client_settings(), "HUB_GOVERNOR_TIMEOUT_GRAMMAR_ENABLED", True)
     bus = _Bus(None)
     result = await HarnessGovernorClient(bus).run(
         _request("orion"), correlation_id=_CORR, timeout_sec=0.05, liveness_check=lambda _s: False

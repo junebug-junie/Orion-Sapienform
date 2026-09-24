@@ -253,6 +253,9 @@ class Settings(BaseSettings):
     transport_baseline_spike_z: float = Field(
         3.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_SPIKE_Z"
     )
+    transport_baseline_min_excess_ms: float = Field(
+        250.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_MIN_EXCESS_MS"
+    )
     transport_baseline_saturation_ratio: float = Field(
         2.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_SATURATION_RATIO"
     )

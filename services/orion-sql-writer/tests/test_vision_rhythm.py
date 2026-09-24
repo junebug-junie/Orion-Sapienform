@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from app.vision_rhythm import (
     arrivals_from_windows,
+    coverage_fraction,
     circular_distance,
     circular_kde,
     expect_key_ttl,
@@ -114,9 +115,25 @@ def test_any_model_is_not_applied_to_a_kind_of_day_that_breaks_it() -> None:
 
 
 def test_scoring_met_missed_unscorable() -> None:
-    assert score_window(occurred=True, census_frames=0) == "met"
-    assert score_window(occurred=False, census_frames=120) == "missed"
-    assert score_window(occurred=False, census_frames=0) == "unscorable"
+    assert score_window(occurred=True, coverage=0.0) == "met"
+    assert score_window(occurred=False, coverage=0.95) == "missed"
+    assert score_window(occurred=False, coverage=0.0) == "unscorable"
+    # One frame in a long window is not "the camera was watching".
+    assert score_window(occurred=False, coverage=0.3) == "unscorable"
+
+
+def test_coverage_bridges_the_live_census_cadence_but_not_outages() -> None:
+    start = datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
+    t0 = start.timestamp()
+    # Live shape: 5 s windows every 10 s.
+    live = [(t0 + i * 10, t0 + i * 10 + 5) for i in range(180)]
+    assert coverage_fraction(live, start, end) == 1.0
+    # Same cadence but only the first 10 minutes (camera died).
+    assert 0.3 < coverage_fraction(live[:60], start, end) < 0.4
+    assert coverage_fraction([], start, end) == 0.0
+    # A single census row.
+    assert coverage_fraction([(t0 + 60, t0 + 65)], start, end) < 0.05
 
 
 def test_arrivals_are_debounced() -> None:
@@ -150,8 +167,8 @@ def test_narratives_are_plain() -> None:
     ws = _local(date(2026, 9, 1), 7, 30)
     we = _local(date(2026, 9, 1), 7, 55)
     miss = outcome_narrative(status="missed", subject_label="dog #a1b2c3", stream_id="walkway", window_start=ws,
-                             window_end=we, confidence=0.8, support_days=9, tz=TZ, census_frames=300)
-    assert "07:30-07:55" in miss and "did not come" in miss
+                             window_end=we, confidence=0.8, support_days=9, tz=TZ, coverage=0.93)
+    assert "07:30-07:55" in miss and "did not come" in miss and "93% of that window" in miss
     met = outcome_narrative(status="met", subject_label="mail truck", stream_id="walkway", window_start=ws,
                             window_end=we, confidence=0.8, support_days=9, tz=TZ,
                             arrived_at=_local(date(2026, 9, 1), 7, 41))

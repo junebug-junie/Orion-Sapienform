@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS vision_individual_sighting (
     CONSTRAINT vision_individual_sighting_patio_no_embedding
         CHECK (zone IS DISTINCT FROM 'patio' OR embedding_ref IS NULL)
 );
+-- For a table created from an earlier draft of this file.
+ALTER TABLE vision_individual_sighting
+    ADD COLUMN IF NOT EXISTS zone_counts JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS vision_individual_sighting_stream_time_idx
     ON vision_individual_sighting (stream_id, started_at);
 CREATE INDEX IF NOT EXISTS vision_individual_sighting_individual_idx

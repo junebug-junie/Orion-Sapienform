@@ -39,6 +39,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
 from orion.vision.zones import Zone
 
 logger = logging.getLogger("sql-writer.vision_individuals")
@@ -155,6 +157,67 @@ def local_date(ts: datetime, tz: ZoneInfo) -> date:
     return ts.astimezone(tz).date()
 
 
+class _CentroidIndex:
+    """Per-(stream, kind) matrix of unit centroids, so a match is one matmul,
+    not a Python loop over every individual. Rows are updated in place as
+    centroids move; new individuals append a row."""
+
+    def __init__(self, individuals: Iterable[Individual]) -> None:
+        self._ids: Dict[Tuple[str, str], List[str]] = {}
+        self._rows: Dict[Tuple[str, str], List[np.ndarray]] = {}
+        self._mat: Dict[Tuple[str, str], Optional[np.ndarray]] = {}
+        for ind in individuals:
+            self.add(ind)
+
+    @staticmethod
+    def _unit(v: Sequence[float]) -> np.ndarray:
+        a = np.asarray(v, dtype=np.float32)
+        n = float(np.linalg.norm(a))
+        return a / n if n > 0 else a
+
+    def add(self, ind: Individual) -> None:
+        key = (ind.stream_id, ind.kind)
+        self._ids.setdefault(key, []).append(ind.individual_id)
+        self._rows.setdefault(key, []).append(self._unit(ind.centroid))
+        self._mat[key] = None
+
+    def update(self, ind: Individual) -> None:
+        key = (ind.stream_id, ind.kind)
+        i = self._ids[key].index(ind.individual_id)
+        self._rows[key][i] = self._unit(ind.centroid)
+        m = self._mat.get(key)
+        if m is not None:
+            m[i] = self._rows[key][i]
+
+    def nearest(self, crop: "CropRow", exclude: set) -> Tuple[Optional[str], float]:
+        key = (crop.stream_id, crop.label)
+        ids = self._ids.get(key)
+        if not ids:
+            return None, -2.0
+        dims = {r.shape[0] for r in self._rows[key]}
+        e = self._unit(crop.embedding or ())
+        if dims != {e.shape[0]}:
+            # Mixed embedding sizes (a model change): compare only same-size rows.
+            best = (None, -2.0)
+            for iid, row in zip(ids, self._rows[key]):
+                if iid in exclude or row.shape[0] != e.shape[0]:
+                    continue
+                sim = float(row @ e)
+                if sim > best[1]:
+                    best = (iid, sim)
+            return best
+        m = self._mat.get(key)
+        if m is None:
+            m = np.vstack(self._rows[key])
+            self._mat[key] = m
+        sims = m @ e
+        order = np.argsort(-sims)
+        for j in order:
+            if ids[int(j)] not in exclude:
+                return ids[int(j)], float(sims[int(j)])
+        return None, -2.0
+
+
 @dataclass
 class BatchResult:
     individuals: Dict[str, Individual]
@@ -191,6 +254,7 @@ def apply_batch(
     skipped = 0
     assigned = 0
     used_in_observation: Dict[str, set] = {}
+    index = _CentroidIndex(inds.values())
 
     for crop in sorted(crops, key=lambda c: (c.observed_at, c.crop_id)):
         if crop.zone in forbidden:
@@ -200,13 +264,7 @@ def apply_batch(
             skipped += 1
             continue
         taken = used_in_observation.setdefault(crop.observation_id, set())
-        best_id, best_sim = None, -2.0
-        for ind in inds.values():
-            if ind.kind != crop.label or ind.stream_id != crop.stream_id or ind.individual_id in taken:
-                continue
-            sim = cosine(ind.centroid, crop.embedding)
-            if sim > best_sim:
-                best_id, best_sim = ind.individual_id, sim
+        best_id, best_sim = index.nearest(crop, taken)
 
         if best_id is not None and best_sim >= match_threshold:
             ind = inds[best_id]
@@ -214,6 +272,7 @@ def apply_batch(
                 ind.distinct_days += 1
             ind.centroid = update_centroid(ind.centroid, ind.centroid_n, crop.embedding)
             ind.centroid_n += 1
+            index.update(ind)
             ind.last_seen_at = max(ind.last_seen_at, crop.observed_at)
         else:
             ind = Individual(
@@ -224,6 +283,7 @@ def apply_batch(
             )
             inds[ind.individual_id] = ind
             new_ids.append(ind.individual_id)
+            index.add(ind)
         taken.add(ind.individual_id)
         assigned += 1
 
@@ -235,7 +295,7 @@ def apply_batch(
             prev.zone_counts[zone_key] = prev.zone_counts.get(zone_key, 0) + 1
             prev.last_box_xyxy = list(crop.box_xyxy)
             prev.embedding_ref = crop.embedding_ref
-            prev.evidence_ref = crop.artifact_id or f"crop:{crop.crop_id}"
+            prev.evidence_ref = f"crop:{crop.crop_id}"
             s = prev
         else:
             s = Sighting(
@@ -243,7 +303,7 @@ def apply_batch(
                 started_at=crop.observed_at, ended_at=crop.observed_at, observation_count=1,
                 zone_counts={zone_key: 1}, last_box_xyxy=list(crop.box_xyxy),
                 embedding_ref=crop.embedding_ref,
-                evidence_ref=crop.artifact_id or f"crop:{crop.crop_id}",
+                evidence_ref=f"crop:{crop.crop_id}",
             )
             latest[ind.individual_id] = s
             ind.sighting_count += 1
@@ -388,6 +448,20 @@ class IndividualsConfig:
     ask_daily_cap: int = 2
     local_tz: str = "America/Denver"
     camera_alive_sec: float = 300.0
+    # Crops newer than this are left for the next tick: bus/threaded writes
+    # commit out of observed_at order, and the cursor must not pass a crop
+    # that has not landed yet.
+    settle_sec: float = 30.0
+    # Only individuals seen this recently (plus every labeled one) are match
+    # candidates. Bounds per-tick cost as passers-by accumulate.
+    candidate_days: float = 30.0
+    # After an ask expires unanswered, do not re-ask about that individual for this long.
+    ask_cooldown_days: float = 30.0
+
+
+# Two sql-writer instances must never run the same cycle at once: cursors,
+# counts and the ask cap all assume a single writer.
+INDIVIDUALS_LOCK_KEY = 0x0A1C_0001
 
 
 def _check_tables(conn) -> None:
@@ -422,7 +496,13 @@ def run_one_individuals_cycle(
     }
     opened: List[dict] = []
     engine = create_engine(postgres_uri, pool_pre_ping=True)
+    lock_conn = None
     try:
+        lock_conn = engine.connect()
+        if not lock_conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": INDIVIDUALS_LOCK_KEY}).scalar():
+            summary["skipped"] = "another instance holds the individuals lock"
+            return summary, []
+        lock_conn.commit()  # the session-level lock outlives this; do not sit idle in a transaction
         with engine.begin() as conn:
             _check_tables(conn)
             streams = {r[0] for r in conn.execute(text(
@@ -459,6 +539,12 @@ def run_one_individuals_cycle(
             raise MigrationMissing(str(exc)) from exc
         raise
     finally:
+        if lock_conn is not None:
+            try:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": INDIVIDUALS_LOCK_KEY})
+                lock_conn.close()
+            except Exception:
+                pass
         engine.dispose()
     return summary, opened
 
@@ -482,16 +568,18 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
         cur = conn.execute(text(
             "SELECT last_observed_at FROM vision_individuals_cursor WHERE stream_id=:s"), {"s": stream_id}).fetchone()
         since = cur[0] if cur else now - timedelta(seconds=cfg.lookback_ceiling_sec)
+        upto = now - timedelta(seconds=cfg.settle_sec)
         rows = conn.execute(text(
             "SELECT crop_id, observation_id, stream_id, observed_at, label, box_xyxy, zone, "
             "embedding, embedding_ref, artifact_id FROM vision_crop_observation "
-            "WHERE stream_id=:s AND observed_at > :since AND observed_at <= :now "
+            "WHERE stream_id=:s AND observed_at > :since AND observed_at <= :upto "
             "ORDER BY observed_at, crop_id LIMIT :lim"),
-            {"s": stream_id, "since": since, "now": now, "lim": cfg.batch_rows}).fetchall()
+            {"s": stream_id, "since": since, "upto": upto, "lim": cfg.batch_rows}).fetchall()
         crops = [_row_to_crop(r) for r in rows]
+        full = len(crops) >= cfg.batch_rows
         # A full batch may have cut an observation in half; leave the rows at
         # the last timestamp for the next tick (unless that is all there is).
-        if len(crops) >= cfg.batch_rows:
+        if full:
             last_ts = crops[-1].observed_at
             trimmed = [c for c in crops if c.observed_at < last_ts]
             if trimmed:
@@ -504,7 +592,9 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             ind_rows = conn.execute(text(
                 "SELECT individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, last_seen_at, "
                 "sighting_count, distinct_days, label FROM vision_individual "
-                "WHERE stream_id=:s AND kind = ANY(:k)"), {"s": stream_id, "k": kinds}).fetchall()
+                "WHERE stream_id=:s AND kind = ANY(:k) AND (label IS NOT NULL OR last_seen_at > :recent)"),
+                {"s": stream_id, "k": kinds,
+                 "recent": crops[0].observed_at - timedelta(days=cfg.candidate_days)}).fetchall()
             individuals = {r.individual_id: Individual(
                 individual_id=r.individual_id, stream_id=r.stream_id, kind=r.kind,
                 centroid=list(r.centroid), centroid_n=r.centroid_n, first_seen_at=r.first_seen_at,
@@ -539,14 +629,28 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 if _score_and_maybe_event(conn, s, batch.individuals[s.individual_id], zone_rare, tz, cfg):
                     summary["attention_events"] += 1
 
-            conn.execute(text(
-                "INSERT INTO vision_individuals_cursor (stream_id, last_observed_at, updated_at) "
-                "VALUES (:s, :t, now()) ON CONFLICT (stream_id) DO UPDATE SET "
-                "last_observed_at = EXCLUDED.last_observed_at, updated_at = now()"),
-                {"s": stream_id, "t": crops[-1].observed_at})
+        # Everything up to `upto` has been read (unless the batch was full),
+        # so the cursor can advance on a quiet street too -- the rhythm loop
+        # reads it as "individuals are processed through here".
+        new_cursor = crops[-1].observed_at if (crops and full) else max(upto, since)
+        conn.execute(text(
+            "INSERT INTO vision_individuals_cursor (stream_id, last_observed_at, updated_at) "
+            "VALUES (:s, :t, now()) ON CONFLICT (stream_id) DO UPDATE SET "
+            "last_observed_at = GREATEST(vision_individuals_cursor.last_observed_at, EXCLUDED.last_observed_at), "
+            "updated_at = now()"),
+            {"s": stream_id, "t": new_cursor})
 
-        if forbidden and _write_patio_presence(conn, stream_id, batch.patio_crops if batch else [], now, cfg):
-            summary["patio_writes"] += 1
+        if forbidden:
+            # Its own savepoint: a missing presence table (a different
+            # migration) must not abort clustering, asks, or pruning.
+            try:
+                with conn.begin_nested():
+                    if _write_patio_presence(conn, stream_id, batch.patio_crops if batch else [], now, cfg):
+                        summary["patio_writes"] += 1
+            except Exception as exc:
+                logger.warning("patio_presence_write_failed stream=%s error=%s "
+                               "(substrate_embodied_presence: manual_migration_embodied_presence_v1.sql)",
+                               stream_id, exc)
 
 
 def _upsert_individual(conn, ind: Individual) -> None:
@@ -691,9 +795,12 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
         SELECT i.individual_id, i.kind, i.sighting_count, i.distinct_days, i.label FROM vision_individual i
         WHERE i.label IS NULL AND i.sighting_count >= :n AND i.distinct_days >= :d
           AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind='vision_individual'
-                          AND a.source_ref=i.individual_id AND a.status IN ('open','answered','dismissed'))
+                          AND a.source_ref=i.individual_id
+                          AND (a.status IN ('open','answered','dismissed')
+                               OR (a.status = 'expired' AND a.created_at > :cool)))
         ORDER BY i.sighting_count DESC, i.individual_id LIMIT :b
-    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget}).fetchall()
+    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget,
+           "cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
     out: List[dict] = []
     for iid, kind, sc, dd, label in cands:
         if not should_ask(label=label, sighting_count=sc, distinct_days=dd,
@@ -704,7 +811,9 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
             "WHERE individual_id=:i ORDER BY started_at DESC"), {"i": iid}).fetchall()
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
-        image_ref = next((r_[2] for r_ in srows if r_[2] and not str(r_[2]).startswith("crop:")), None)
+        # A crop ref (vision_crop_observation row: artifact + box), never the
+        # whole frame, so an ask cannot show Juniper the patio.
+        image_ref = next((r_[2] for r_ in srows if r_[2] and str(r_[2]).startswith("crop:")), None)
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=ask_question(kind=kind, sighting_count=sc, distinct_days=dd, mean_minute=mean, r=r),

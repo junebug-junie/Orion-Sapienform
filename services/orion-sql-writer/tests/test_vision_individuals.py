@@ -255,3 +255,22 @@ def test_backoff_doubles_and_caps() -> None:
     assert next_backoff(60, None) == 120
     assert next_backoff(60, 120) == 240
     assert next_backoff(60, 3000) == 3600
+
+
+def test_many_candidates_still_pick_the_true_match() -> None:
+    import random
+
+    rng = random.Random(3)
+    others = {}
+    for i in range(500):
+        v = [rng.gauss(0, 1) for _ in range(64)]
+        others[f"x{i}"] = Individual(f"x{i}", "walkway", "person", v, 1, T0, T0, 1, 1)
+    target = [1.0] + [0.0] * 63
+    others["T"] = Individual("T", "walkway", "person", target, 5, T0, T0, 1, 1)
+    r = _run([_crop(1, T0 + timedelta(seconds=5), [0.98, 0.05] + [0.0] * 62)], individuals=others)
+    assert r.new_individual_ids == [] and r.individuals["T"].centroid_n == 6
+
+
+def test_sighting_evidence_is_a_crop_ref_never_a_whole_frame() -> None:
+    (s,) = _run([_crop(1, T0, [1.0, 0.0])]).sightings.values()
+    assert s.evidence_ref == "crop:c1"

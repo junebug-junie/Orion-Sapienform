@@ -36,6 +36,7 @@ def rhythm_config(settings: Settings) -> RhythmConfig:
         label_streams=_csv(settings.vision_rhythm_label_streams),
         arrival_gap_sec=float(settings.vision_rhythm_arrival_gap_sec),
         local_tz=str(settings.vision_local_tz),
+        min_coverage=float(settings.vision_rhythm_min_coverage),
     )
 
 

@@ -44,6 +44,9 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         ask_expiry_days=float(settings.vision_ask_expiry_days),
         ask_daily_cap=int(settings.orion_ask_daily_cap),
         local_tz=str(settings.vision_local_tz),
+        settle_sec=float(settings.vision_individuals_settle_sec),
+        candidate_days=float(settings.vision_individuals_candidate_days),
+        ask_cooldown_days=float(settings.vision_ask_cooldown_days),
     )
 
 

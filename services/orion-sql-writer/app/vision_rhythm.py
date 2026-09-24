@@ -230,10 +230,42 @@ def overlaps(a_start: datetime, a_end: datetime, spans: Iterable[Tuple[datetime,
     return any(a_start < e and s < a_end for s, e in spans)
 
 
-def score_window(*, occurred: bool, census_frames: int) -> str:
+# Census windows are ~5 s long and ~5 s apart (live p99 gap 5.1 s, measured
+# 2026-09-24 on cam0). The camera counts as watching across a gap up to this.
+CENSUS_GAP_TOLERANCE_SEC = 30.0
+
+
+def coverage_fraction(
+    spans: Sequence[Tuple[float, float]], start: datetime, end: datetime,
+    *, gap_tolerance_sec: float = CENSUS_GAP_TOLERANCE_SEC,
+) -> float:
+    """Fraction of [start, end] the camera was watching: union of census spans,
+    each extended by the gap tolerance, clipped to the window."""
+    a, b = start.timestamp(), end.timestamp()
+    if b <= a:
+        return 0.0
+    ivs = sorted((max(a, s0), min(b, s1 + gap_tolerance_sec)) for s0, s1 in spans)
+    covered, cur_s, cur_e = 0.0, None, None
+    for s0, s1 in ivs:
+        if s1 <= s0:
+            continue
+        if cur_e is None or s0 > cur_e:
+            if cur_e is not None:
+                covered += cur_e - cur_s
+            cur_s, cur_e = s0, s1
+        else:
+            cur_e = max(cur_e, s1)
+    if cur_e is not None:
+        covered += cur_e - cur_s
+    return min(1.0, covered / (b - a))
+
+
+def score_window(*, occurred: bool, coverage: float, min_coverage: float = 0.8) -> str:
+    """met if it happened; missed only if the camera watched enough of the
+    window to have seen it; otherwise unscorable."""
     if occurred:
         return "met"
-    if census_frames <= 0:
+    if coverage < min_coverage:
         return "unscorable"
     return "missed"
 
@@ -270,7 +302,7 @@ def _hhmm(ts: datetime, tz: ZoneInfo) -> str:
 def outcome_narrative(
     *, status: str, subject_label: str, stream_id: str, window_start: datetime, window_end: datetime,
     confidence: float, support_days: int, tz: ZoneInfo, arrived_at: Optional[datetime] = None,
-    census_frames: int = 0,
+    coverage: float = 0.0,
 ) -> str:
     win = f"{_hhmm(window_start, tz)}-{_hhmm(window_end, tz)}"
     if status == "met":
@@ -279,7 +311,7 @@ def outcome_narrative(
                 f"({confidence:.0%} sure, from {support_days} days of watching).")
     return (f"I expected {subject_label} on the {stream_id} camera between {win} "
             f"({confidence:.0%} sure, from {support_days} days of watching), and it did not come. "
-            f"The camera was watching the whole window ({census_frames} frames).")
+            f"The camera was watching for {coverage:.0%} of that window.")
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +332,10 @@ class RhythmConfig:
     label_streams: Tuple[str, ...] = ("walkway",)
     arrival_gap_sec: float = 300.0
     local_tz: str = "America/Denver"
+    min_coverage: float = 0.8
+
+
+RHYTHM_LOCK_KEY = 0x0A1C_0002
 
 
 @dataclass(frozen=True)
@@ -388,13 +424,27 @@ def _occurred(conn, stream_id: str, subject_key: str, start: datetime, end: date
     return row[0] if row and row[0] else None
 
 
-def _census_frames(conn, stream_id: str, start: datetime, end: datetime) -> int:
+def _census_coverage(conn, stream_id: str, start: datetime, end: datetime) -> float:
     from sqlalchemy import text
 
-    row = conn.execute(text(
-        "SELECT COALESCE(sum(frame_count), 0) FROM vision_scene_inventory WHERE stream_id=:s "
-        "AND observed_at >= :a AND observed_at <= :b"), {"s": stream_id, "a": start, "b": end}).fetchone()
-    return int(row[0] or 0)
+    rows = conn.execute(text(
+        "SELECT COALESCE(window_start_ts, extract(epoch FROM observed_at)), "
+        "COALESCE(window_end_ts, extract(epoch FROM observed_at)) FROM vision_scene_inventory "
+        "WHERE stream_id=:s AND frame_count > 0 AND observed_at >= :a AND observed_at <= :b"),
+        {"s": stream_id, "a": start - timedelta(seconds=CENSUS_GAP_TOLERANCE_SEC),
+         "b": end + timedelta(seconds=CENSUS_GAP_TOLERANCE_SEC)}).fetchall()
+    return coverage_fraction([(float(r[0]), float(r[1])) for r in rows], start, end)
+
+
+def _individuals_caught_up(conn, stream_id: str, through: datetime) -> bool:
+    """An individual can only be graded once the individuals reducer has
+    processed every crop through the window end -- a lagging or backed-off
+    reducer must not turn into a false "missed"."""
+    from sqlalchemy import text
+
+    row = conn.execute(text("SELECT last_observed_at FROM vision_individuals_cursor WHERE stream_id=:s"),
+                       {"s": stream_id}).fetchone()
+    return bool(row and row[0] >= through)
 
 
 def run_one_rhythm_cycle(
@@ -409,7 +459,15 @@ def run_one_rhythm_cycle(
     summary = {"subjects": 0, "fitted": 0, "emitted": 0, "met": 0, "missed": 0, "unscorable": 0,
                "expect_keys": 0}
     engine = create_engine(postgres_uri, pool_pre_ping=True)
+    lock_conn = None
+    per_stream: Dict[str, List[Tuple[datetime, datetime, bool]]] = {}
+    per_stream_ids: Dict[str, List[str]] = {}
     try:
+        lock_conn = engine.connect()
+        if not lock_conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": RHYTHM_LOCK_KEY}).scalar():
+            summary["skipped"] = "another instance holds the rhythm lock"
+            return summary
+        lock_conn.commit()
         # 1. Score closed windows first, so a fresh expectation never gets
         #    graded in the same pass that would also emit its successor.
         with engine.begin() as conn:
@@ -420,8 +478,13 @@ def run_one_rhythm_cycle(
                 {"t": ts - timedelta(seconds=cfg.score_lag_sec)}).fetchall()
             for r in due:
                 arrived = _occurred(conn, r.stream_id, r.subject_key, r.window_start, r.window_end)
-                frames = _census_frames(conn, r.stream_id, r.window_start, r.window_end)
-                status = score_window(occurred=arrived is not None, census_frames=frames)
+                if (arrived is None and r.subject_key.startswith("individual:")
+                        and not _individuals_caught_up(conn, r.stream_id, r.window_end)):
+                    summary["deferred"] = summary.get("deferred", 0) + 1
+                    continue
+                coverage = _census_coverage(conn, r.stream_id, r.window_start, r.window_end)
+                status = score_window(occurred=arrived is not None, coverage=coverage,
+                                      min_coverage=cfg.min_coverage)
                 summary[status] += 1
                 event_id = None
                 if status in ("met", "missed"):
@@ -429,7 +492,7 @@ def run_one_rhythm_cycle(
                     narrative = outcome_narrative(
                         status=status, subject_label=r.subject_label, stream_id=r.stream_id,
                         window_start=r.window_start, window_end=r.window_end, confidence=r.confidence,
-                        support_days=r.support_days, tz=tz, arrived_at=arrived, census_frames=frames)
+                        support_days=r.support_days, tz=tz, arrived_at=arrived, coverage=coverage)
                     conn.execute(text(
                         "INSERT INTO vision_events (event_id, event_type, narrative, entities, tags, confidence, "
                         "salience, evidence_refs, created_at) VALUES (:id, :et, :n, CAST(:e AS jsonb), "
@@ -488,8 +551,6 @@ def run_one_rhythm_cycle(
                 "SELECT expectation_id, stream_id, subject_key, window_start, window_end FROM "
                 "vision_percept_expectation WHERE status='open' AND window_start <= :t AND window_end > :t"),
                 {"t": ts}).fetchall()
-            per_stream: Dict[str, List[Tuple[datetime, datetime, bool]]] = {}
-            per_stream_ids: Dict[str, List[str]] = {}
             for r in open_now:
                 met = _occurred(conn, r.stream_id, r.subject_key, r.window_start, ts) is not None
                 per_stream.setdefault(r.stream_id, []).append((r.window_start, r.window_end, met))
@@ -506,6 +567,12 @@ def run_one_rhythm_cycle(
             raise MigrationMissing(str(exc)) from exc
         raise
     finally:
+        if lock_conn is not None:
+            try:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": RHYTHM_LOCK_KEY})
+                lock_conn.close()
+            except Exception:
+                pass
         engine.dispose()
     return summary
 
@@ -523,6 +590,9 @@ def _set_expect_keys(redis_url: Optional[str], per_stream: Dict[str, List[Tuple[
             for stream_id, windows in per_stream.items():
                 ttl = expect_key_ttl(windows, now)
                 if ttl is None:
+                    # Everything open on this stream has already arrived:
+                    # stop steering attention toward it now, not at the old TTL.
+                    client.delete(f"{EXPECT_KEY_PREFIX}{stream_id}")
                     continue
                 client.set(f"{EXPECT_KEY_PREFIX}{stream_id}",
                            json.dumps({"expectation_ids": per_stream_ids.get(stream_id, []),

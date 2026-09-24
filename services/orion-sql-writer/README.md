@@ -367,6 +367,24 @@ window is open and unmet it sets Redis `orion:vision:expect:<stream>` (on
 this table; it is not wired to the substrate graph until live data passes the
 metric gate.
 
+Safety rails added after review: each cycle holds a Postgres advisory lock
+(a second instance skips the tick); crops newer than
+`VISION_INDIVIDUALS_SETTLE_SEC` wait a tick so out-of-order writes are not
+skipped by the cursor; match candidates are individuals seen in
+`VISION_INDIVIDUALS_CANDIDATE_DAYS` plus every labeled one (numpy matmul);
+a failed crop write logs to `bus_fallback_log` with embeddings and boxes
+redacted; if the zones file cannot load, every embedding is stripped (fail
+closed); ask images are crop refs (`crop:<crop_id>`), never whole frames; an
+unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
+is `missed` only if census coverage (5 s windows bridged across gaps up to
+30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is
+not graded until the individuals cursor has passed its end; the Redis expect
+key is deleted as soon as everything open on the stream has arrived.
+
+Every knob (all `VISION_*`, `ORION_ASK_*` keys) is listed with a comment in
+`.env_example`. The zones file path can be overridden with `VISION_ZONES_PATH`
+(read by `orion/vision/zones.py`, not Settings).
+
 Report: `python3 scripts/report_vision_individuals.py [--stream walkway] [--json]`.
 
 ## Running & Testing

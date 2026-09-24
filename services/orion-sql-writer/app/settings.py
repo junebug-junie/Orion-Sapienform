@@ -487,6 +487,10 @@ class Settings(BaseSettings):
     vision_individuals_batch_rows: int = Field(5000, alias="VISION_INDIVIDUALS_BATCH_ROWS")
     # A stream's first-ever tick looks back at most this far.
     vision_individuals_lookback_ceiling_sec: float = Field(3600.0, alias="VISION_INDIVIDUALS_LOOKBACK_CEILING_SEC")
+    # Leave crops newer than this for the next tick (writes land out of order).
+    vision_individuals_settle_sec: float = Field(30.0, alias="VISION_INDIVIDUALS_SETTLE_SEC")
+    # Match candidates: individuals seen within this many days, plus all labeled ones.
+    vision_individuals_candidate_days: float = Field(30.0, alias="VISION_INDIVIDUALS_CANDIDATE_DAYS")
     vision_crop_retention_days: float = Field(7.0, alias="VISION_CROP_RETENTION_DAYS")
     vision_sighting_retention_days: float = Field(90.0, alias="VISION_SIGHTING_RETENTION_DAYS")
     # Patio presence (no individuals, no embeddings): "present" if a patio box
@@ -501,6 +505,8 @@ class Settings(BaseSettings):
     vision_ask_min_sightings: int = Field(10, alias="VISION_ASK_MIN_SIGHTINGS")
     vision_ask_min_days: int = Field(5, alias="VISION_ASK_MIN_DAYS")
     vision_ask_expiry_days: float = Field(7.0, alias="VISION_ASK_EXPIRY_DAYS")
+    # An ask that expired unanswered is not repeated for this long.
+    vision_ask_cooldown_days: float = Field(30.0, alias="VISION_ASK_COOLDOWN_DAYS")
     # Orion's whole daily ask budget (every source_kind), counted from
     # orion_ask.created_at since local midnight, so a restart cannot reset it.
     orion_ask_daily_cap: int = Field(2, alias="ORION_ASK_DAILY_CAP")
@@ -522,6 +528,9 @@ class Settings(BaseSettings):
     # Wait this long after a window closes before grading it, so the
     # individuals reducer has caught up on that window's crops.
     vision_rhythm_score_lag_sec: float = Field(600.0, alias="VISION_RHYTHM_SCORE_LAG_SEC")
+    # A window the camera watched for less than this fraction of is graded
+    # unscorable, not missed.
+    vision_rhythm_min_coverage: float = Field(0.8, alias="VISION_RHYTHM_MIN_COVERAGE")
     # Label subjects (from vision_scene_inventory counts). An arrival is the
     # first window with count > 0 after at least VISION_RHYTHM_ARRIVAL_GAP_SEC
     # without one -- a debounced 0 -> >0, so detector flicker is not an arrival.

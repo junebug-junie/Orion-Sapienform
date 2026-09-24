@@ -2334,9 +2334,13 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 "(is services/orion-sql-db/manual_migration_walkway_camera_v1.sql applied?)",
                 getattr(env, "correlation_id", None), exc,
             )
+            from app.vision_crop_persist import redact_crop_payload
+
+            # Never the raw payload: it carries embeddings, possibly of the
+            # patio. The fallback row records that a write was lost, not what.
             await asyncio.to_thread(
                 _write_fallback, env.kind, str(getattr(env, "correlation_id", "") or ""),
-                env.payload, f"vision_crop_observation write failed: {exc}",
+                redact_crop_payload(env.payload), f"vision_crop_observation write failed: {exc}",
             )
         return
 

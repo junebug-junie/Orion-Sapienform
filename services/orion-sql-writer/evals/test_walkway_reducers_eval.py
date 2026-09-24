@@ -116,7 +116,7 @@ def test_walkway_reducers_eval() -> None:
         now = datetime(d.year, d.month, d.day, 1, 0, tzinfo=TZ).astimezone(timezone.utc)
         for p in plan_expectations(fits, now=now, tz=TZ, horizon_h=20):
             hit = any(p.window_start <= t <= p.window_end for t in dog_times)
-            outcomes.append(score_window(occurred=hit, census_frames=100))
+            outcomes.append(score_window(occurred=hit, coverage=1.0))
     met = outcomes.count("met") / len(outcomes)
     print(f"held-out outcomes={outcomes} met_rate={met:.2f}")
     assert len(outcomes) == 5 and met >= 0.8

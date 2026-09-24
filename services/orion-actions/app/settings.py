@@ -10,6 +10,8 @@ from pydantic_settings import BaseSettings
 _BLANK_ENV_BOOL_FIELDS = (
     "orion_bus_enabled",
     "orion_bus_enforce_catalog",
+    "rpc_health_publish_enabled",
+    "rpc_health_channel_latency_enabled",
     "actions_daily_run_on_startup",
     "actions_daily_pulse_enabled",
     "actions_daily_metacog_enabled",
@@ -46,6 +48,13 @@ class Settings(BaseSettings):
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_enforce_catalog: bool = Field(True, alias="ORION_BUS_ENFORCE_CATALOG")
+    # RPC-health snapshot publish (orion:rpc_health:snapshot) from the long-lived RPC
+    # bus fork every rpc_request here goes through. channel_latency needs
+    # orion-signal-gateway + orion-equilibrium-service on a build that knows the field
+    # (RpcHealthSnapshotV1 is extra="forbid") -- rebuild those first.
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     actions_subscribe_channel: str = Field("orion:collapse:triage", alias="ACTIONS_SUBSCRIBE_CHANNEL")
     actions_subscribe_channels: str = Field(

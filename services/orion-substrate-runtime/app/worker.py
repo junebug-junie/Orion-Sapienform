@@ -28,6 +28,7 @@ from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.world_model import WorldModelTaskRequestPayload
 from orion.structural_mass.git_delta import GitChurnDelta
+from orion.vision.stream_ids import safe_camera_name
 from orion.structural_mass.graph_delta import GraphStructuralDelta
 from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 from orion.substrate.biometrics_loop.constants import (
@@ -1456,7 +1457,13 @@ class BiometricsSubstrateWorker:
 
         inputs = payload.get("inputs")
         inputs = inputs if isinstance(inputs, dict) else {}
-        stream_id = str(inputs.get("camera_id") or inputs.get("stream_id") or "unknown")
+        # Camera NAME, never a source URL. orion-vision-edge used to publish
+        # its RTSP URL (password included) as camera_id, and this line keyed
+        # on camera_id first, so ~480k baseline rows carry the password
+        # (walkway spec, 2026-09-22). camera_id still wins when it is a plain
+        # name (carbon's "carbon-webcam" keeps its warm baseline); a URL-shaped
+        # camera_id falls through to stream_id ("cam0").
+        stream_id = safe_camera_name(inputs.get("camera_id"), inputs.get("stream_id"))
 
         baseline = self._store.get_latest_perception_embedding_baseline(stream_id)
         result = perception_prediction_error(embedding_vec, baseline)

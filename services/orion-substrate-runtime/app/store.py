@@ -33,6 +33,7 @@ from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.substrate.prediction_error import CodebaseMassBaseline, PerceptionEmbeddingBaseline
+from orion.vision.stream_ids import is_url_like, strip_userinfo
 from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
@@ -82,6 +83,19 @@ from orion.substrate.receipts.retention import (
     primary_reducer_name,
     retention_expires_at,
 )
+
+
+def _refuse_url_stream_id(stream_id: str) -> str:
+    """Last line of defense for substrate_perception_embedding_baseline:
+    a stream_id is a camera name, never a source URL. The caller already
+    resolves a name (orion.vision.stream_ids.safe_camera_name); if a URL
+    still arrives, its userinfo (the camera password) is stripped before it
+    can be written or queried. Walkway spec 2026-09-22: ~480k rows were
+    written with the full RTSP URL, password included."""
+    if is_url_like(stream_id):
+        logger.warning("substrate_perception_baseline_url_stream_id_sanitized")
+        return strip_userinfo(stream_id)
+    return stream_id
 
 
 def _retention_settings_from_app(settings: Settings) -> ReceiptRetentionSettings:
@@ -877,6 +891,7 @@ class BiometricsSubstrateStore:
         independent; mixing two streams' visual content into one baseline
         would produce a meaningless average vector.
         """
+        stream_id = _refuse_url_stream_id(stream_id)
         try:
             with self._engine.connect() as conn:
                 row = conn.execute(
@@ -927,6 +942,7 @@ class BiometricsSubstrateStore:
         silently deleted by an unrelated busy stream's tick, forcing an
         unnecessary cold-start reseed).
         """
+        stream_id = _refuse_url_stream_id(stream_id)
         generated_at = datetime.now(timezone.utc)
         digest = hashlib.sha256(
             f"{stream_id}|{generated_at.isoformat()}|{json.dumps(baseline.to_json_dict(), sort_keys=True)}".encode(

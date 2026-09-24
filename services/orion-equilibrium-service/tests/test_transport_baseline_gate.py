@@ -288,3 +288,16 @@ def test_skipped_snapshots_are_logged_rate_limited(caplog):
         "transport_baseline_skip reason=no_channel_latency count=100 service=cortex-orch",
         "transport_baseline_skip reason=no_channel_latency count=200 service=cortex-orch",
     ]
+
+
+@pytest.mark.asyncio
+async def test_legacy_timeout_branch_ignores_new_publishers(monkeypatch):
+    monkeypatch.setattr(settings, "transport_baseline_enable", False)
+    monkeypatch.setattr(settings, "metacog_transport_trigger_enable", True)
+    svc = EquilibriumService()
+    svc.bus = MagicMock()
+    svc.bus.publish = AsyncMock()
+    snap = _snap(0, None, timeouts=3)
+    snap["service"] = "orion-durable-runs"
+    await svc._handle_rpc_health_snapshot(snap, zen=0.9, distress=0.1)
+    assert _published(svc) == []

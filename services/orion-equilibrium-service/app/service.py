@@ -87,6 +87,13 @@ def _node_age_sec(observed_at: str | None) -> float | None:
     return (datetime.now(timezone.utc) - parsed).total_seconds()
 
 
+# The legacy pooled-timeout branch keeps exactly the coverage it had before
+# the per-hop rollout (PR #2312 and its stacked coverage PR add many new
+# publishers). New publishers feed only the log-only baseline gate until EMIT
+# flips, so the log-only week does not add a flood of legacy timeout rows.
+LEGACY_TIMEOUT_SERVICES = frozenset({"cortex-exec", "cortex-orch"})
+
+
 class EquilibriumService(BaseChassis):
     def __init__(self) -> None:
         super().__init__(
@@ -305,7 +312,11 @@ class EquilibriumService(BaseChassis):
                         continue
                     await self._publish_metacog_trigger(trigger, bypass_cooldown=True)
 
-        if settings.metacog_transport_trigger_enable and not emit:
+        if (
+            settings.metacog_transport_trigger_enable
+            and not emit
+            and payload_dict.get("service") in LEGACY_TIMEOUT_SERVICES
+        ):
             trigger = build_transport_metacog_trigger_from_snapshot(
                 payload_dict,
                 zen_state=zen_state,

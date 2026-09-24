@@ -112,6 +112,23 @@ classes:                         # which models may serve a class, in preference
   diffusion: [diffusion]
 ```
 
+```yaml
+routes:                          # what the gateway's callers say -> work class
+  chat: chat
+  harness: chat
+  agent: agent
+  metacog: {class: metacog, priority: system}
+  metacog_background: {class: metacog, priority: background}
+  quick: fast
+  quick_background: {class: fast, priority: background}
+```
+
+The gateway reads `routes:` and `models:` from this file. Its `.env` loses
+`LLM_GATEWAY_ROUTE_TABLE_JSON`, `LLM_ROUTE_*_SERVED_BY`, `LLM_LANE_*`,
+`LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT`, `LLM_GATEWAY_CAPACITY_*`, `LLM_GATEWAY_BACKGROUND_*` and
+`LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK`. Every URL, slot count and fallback lives in exactly one
+place.
+
 A class is served on a card only if the card owns that class, or the card allows borrowing
 (gpu0 only while lent). Rule 3's "no spill down to gpu3" is structural: no big-model class
 lists an 8B model. Validation runs at boot and in CI: every class resolves to known models,

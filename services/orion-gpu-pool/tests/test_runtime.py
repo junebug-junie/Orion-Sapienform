@@ -139,6 +139,8 @@ def test_queue_then_release_hands_the_slot_on_and_records_wait_outside_transport
         assert g["waited_ms"] == 4000 and g["detail"]["grant"]["role"] == "chat"
         assert ("ok", "gpu_pool:chat#gpu_pool_wait", 4000) in rt.bus.hops
         assert all(g["atom"]["layer"] == "capacity" for g in rt.bus.grammar())
+        roles = {g["atom"]["semantic_role"] for g in rt.bus.grammar()}
+        assert "gpu_lease_granted" not in roles        # routine grants stay out of grammar
     run(go())
 
 

@@ -40,7 +40,10 @@ _EVENT_FOR = {Grant: "grant", Recall: "recall", Abort: "abort", Expire: "expire"
 _PUBLIC = {"granted": "granted", "recalling": "recalled", "backlogged": "backlogged",
            "unavailable": "unavailable", "dead_letter": "dead_lettered", "released": "released",
            "retry_wait": "retried", "queued": "queued"}
-_GRAMMAR_EVENTS = {"granted", "recalled", "aborted", "expired", "backlogged", "unavailable",
+# Grammar carries the EXCEPTIONS only. Routine grants would add one grammar row per LLM call once
+# the gateway leases (stage 3) to a ~475k/day, 3-day-retention table, for a fact gpu_pool_events
+# already holds. Every event still goes to gpu_pool_events via orion:gpu_pool:event.
+_GRAMMAR_EVENTS = {"recalled", "aborted", "expired", "backlogged", "unavailable",
                    "dead_lettered", "swap_requested", "discovery_mismatch"}
 
 

@@ -439,10 +439,15 @@ def _census_coverage(conn, stream_id: str, start: datetime, end: datetime) -> fl
 def _individuals_caught_up(conn, stream_id: str, through: datetime) -> bool:
     """An individual can only be graded once the individuals reducer has
     processed every crop through the window end -- a lagging or backed-off
-    reducer must not turn into a false "missed"."""
+    reducer must not turn into a false "missed".
+
+    The cursor is landing time (created_at). A crop observed before
+    ``through`` lands at or after its observation, so "landed-through >=
+    through" covers every crop that arrived with ordinary lag; score_lag_sec
+    is the slack for the rest."""
     from sqlalchemy import text
 
-    row = conn.execute(text("SELECT last_observed_at FROM vision_individuals_cursor WHERE stream_id=:s"),
+    row = conn.execute(text("SELECT last_created_at FROM vision_individuals_cursor WHERE stream_id=:s"),
                        {"s": stream_id}).fetchone()
     return bool(row and row[0] >= through)
 
@@ -548,15 +553,8 @@ def run_one_rhythm_cycle(
                         existing.append((p.window_start, p.window_end))
 
             # 3. Idea 8: open, not-yet-met windows raise the camera's attention.
-            open_now = conn.execute(text(
-                "SELECT expectation_id, stream_id, subject_key, window_start, window_end FROM "
-                "vision_percept_expectation WHERE status='open' AND window_start <= :t AND window_end > :t"),
-                {"t": ts}).fetchall()
-            for r in open_now:
-                met = _occurred(conn, r.stream_id, r.subject_key, r.window_start, ts) is not None
-                per_stream.setdefault(r.stream_id, []).append((r.window_start, r.window_end, met))
-                if not met:
-                    per_stream_ids.setdefault(r.stream_id, []).append(r.expectation_id)
+            #    Also refreshed every minute by run_one_expect_refresh.
+            per_stream, per_stream_ids = _open_windows(conn, ts)
             for stream_id in {s.stream_id for s in subjects} | set(per_stream):
                 conn.execute(text(
                     "INSERT INTO vision_rhythm_cursor (stream_id, last_run_at, updated_at) VALUES (:s, :t, now()) "
@@ -576,6 +574,49 @@ def run_one_rhythm_cycle(
                 pass
         engine.dispose()
     return summary
+
+
+def _open_windows(conn, now: datetime) -> Tuple[Dict[str, List[Tuple[datetime, datetime, bool]]],
+                                                Dict[str, List[str]]]:
+    """Every open expectation window at ``now`` and whether it has already
+    been met, per stream. Read-only; one indexed query plus one per open window."""
+    from sqlalchemy import text
+
+    per_stream: Dict[str, List[Tuple[datetime, datetime, bool]]] = {}
+    per_stream_ids: Dict[str, List[str]] = {}
+    open_now = conn.execute(text(
+        "SELECT expectation_id, stream_id, subject_key, window_start, window_end FROM "
+        "vision_percept_expectation WHERE status='open' AND window_start <= :t AND window_end > :t"),
+        {"t": now}).fetchall()
+    for r in open_now:
+        met = _occurred(conn, r.stream_id, r.subject_key, r.window_start, now) is not None
+        per_stream.setdefault(r.stream_id, []).append((r.window_start, r.window_end, met))
+        if not met:
+            per_stream_ids.setdefault(r.stream_id, []).append(r.expectation_id)
+    return per_stream, per_stream_ids
+
+
+def run_one_expect_refresh(*, engine, redis_url: Optional[str], now: Optional[datetime] = None) -> dict:
+    """The cheap half of idea 8, on its own clock: SET/DEL
+    ``orion:vision:expect:<stream>`` from the windows open right now.
+
+    The rhythm cycle (fit + grade) runs every 15 minutes; without this a
+    window that opened just after a tick would steer nothing for up to 15
+    minutes. No fitting, no writes to Postgres, no advisory lock -- it only
+    reads ``vision_percept_expectation`` and census/sightings for "met".
+    """
+    from app.vision_individuals import MigrationMissing, is_missing_relation
+
+    ts = now or datetime.now(timezone.utc)
+    try:
+        with engine.connect() as conn:
+            per_stream, per_stream_ids = _open_windows(conn, ts)
+    except Exception as exc:
+        if is_missing_relation(exc):
+            raise MigrationMissing(str(exc)) from exc
+        raise
+    return {"open_streams": len(per_stream),
+            "expect_keys": _set_expect_keys(redis_url, per_stream, per_stream_ids, ts)}
 
 
 def _set_expect_keys(redis_url: Optional[str], per_stream: Dict[str, List[Tuple[datetime, datetime, bool]]],

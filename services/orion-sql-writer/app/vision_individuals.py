@@ -16,10 +16,18 @@ since ``vision_individuals_cursor`` and:
    = the zone with the most observations; dwell = ended - started.
 3. **Scores attention** on every touched sighting (app/vision_attention_score.py)
    and writes at most one ``vision_events`` row ``attention_worthy`` per sighting.
-4. **Patio.** Boxes in a no-embed zone never become individuals. They only
-   drive ``substrate_embodied_presence`` row ``<stream>:patio`` (count +
-   state), and only while the camera is producing census rows -- a dead
-   camera leaves the row to go stale rather than writing a false "absent".
+4. **No-embed zones (the patio).** Boxes in a no-embed zone
+   (``vision_crop_observation.zone_no_embed``, set by the writer from
+   ``config/vision_zones.yaml``) never become individuals. They only drive
+   one ``substrate_embodied_presence`` row per no-embed zone,
+   ``<stream>:<zone name>`` (count + state, ``no_embed_zone: true``), and
+   only while the camera is producing census rows -- a dead camera leaves
+   the row to go stale rather than writing a false "absent".
+
+The cursor is LANDING time (``vision_crop_observation.created_at``), not
+``observed_at``: a crop that arrives late (bus backlog, a slow host) still
+lands after the cursor and is processed; within a batch crops are still
+clustered in ``observed_at`` order.
 
 Then, across streams: apply Juniper's answers (label individuals), expire
 old asks, open new asks under a DB-counted daily cap, prune retention.
@@ -45,7 +53,13 @@ from orion.vision.zones import Zone
 
 logger = logging.getLogger("sql-writer.vision_individuals")
 
-PATIO_PRESENCE_SUFFIX = ":patio"
+
+
+def no_embed_presence_id(stream_id: str, zone_name: str) -> str:
+    """``<stream>:<zone>`` -- e.g. ``walkway:patio``. Derived from the zone's
+    own name in config/vision_zones.yaml, so a second no-embed zone gets its
+    own row rather than being folded into (or missed by) a hardcoded one."""
+    return f"{stream_id}:{zone_name}"
 
 
 class MigrationMissing(RuntimeError):
@@ -105,6 +119,10 @@ class CropRow:
     embedding: Optional[Tuple[float, ...]]
     embedding_ref: Optional[str]
     artifact_id: Optional[str]
+    # Set by the writer (app/vision_crop_persist.py) from the zones config.
+    # The DB CHECK forbids any embedding or thumbnail on such a row.
+    zone_no_embed: bool = False
+    thumb_ref: Optional[str] = None
 
 
 @dataclass
@@ -133,6 +151,9 @@ class Sighting:
     last_box_xyxy: Optional[List[float]] = None
     embedding_ref: Optional[str] = None
     evidence_ref: Optional[str] = None
+    # Thumbnail of the most recent crop in this sighting that has one
+    # (orion-vision-host writes one per EMBEDDED crop only). The ask card shows it.
+    thumb_ref: Optional[str] = None
 
     @property
     def zone(self) -> Optional[str]:
@@ -243,7 +264,14 @@ def apply_batch(
 
     ``individuals`` and ``latest_sightings`` (individual_id -> most recent
     sighting) are the prior state; copies are returned, inputs untouched.
-    Crops are processed in ``observed_at`` order.
+    Crops are processed in ``observed_at`` order. A crop is a no-embed crop if
+    its row says so (``zone_no_embed``) OR its zone name is in
+    ``no_embed_zones`` -- either is enough.
+
+    A late crop (observed before the individual's latest sighting ended, e.g.
+    it landed after the cursor passed its time) joins that sighting only if it
+    falls inside it (+- ``merge_gap_sec``); otherwise it is its own, older
+    sighting and does not displace the latest one.
     """
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid)) for k, v in individuals.items()}
@@ -257,7 +285,7 @@ def apply_batch(
     index = _CentroidIndex(inds.values())
 
     for crop in sorted(crops, key=lambda c: (c.observed_at, c.crop_id)):
-        if crop.zone in forbidden:
+        if crop.zone_no_embed or crop.zone in forbidden:
             patio.append(crop)       # never an individual, never an embedding
             continue
         if not crop.embedding:
@@ -289,13 +317,22 @@ def apply_batch(
 
         zone_key = crop.zone or _NO_ZONE
         prev = latest.get(ind.individual_id)
-        if prev is not None and (crop.observed_at - prev.ended_at).total_seconds() <= merge_gap_sec:
+        within = prev is not None and (
+            (prev.started_at - crop.observed_at).total_seconds() <= merge_gap_sec
+            and (crop.observed_at - prev.ended_at).total_seconds() <= merge_gap_sec
+        )
+        if within:
+            newest = crop.observed_at >= prev.ended_at
+            prev.started_at = min(prev.started_at, crop.observed_at)
             prev.ended_at = max(prev.ended_at, crop.observed_at)
             prev.observation_count += 1
             prev.zone_counts[zone_key] = prev.zone_counts.get(zone_key, 0) + 1
-            prev.last_box_xyxy = list(crop.box_xyxy)
-            prev.embedding_ref = crop.embedding_ref
-            prev.evidence_ref = f"crop:{crop.crop_id}"
+            if newest:
+                prev.last_box_xyxy = list(crop.box_xyxy)
+                prev.embedding_ref = crop.embedding_ref
+                prev.evidence_ref = f"crop:{crop.crop_id}"
+            if crop.thumb_ref and (newest or not prev.thumb_ref):
+                prev.thumb_ref = crop.thumb_ref
             s = prev
         else:
             s = Sighting(
@@ -304,8 +341,12 @@ def apply_batch(
                 zone_counts={zone_key: 1}, last_box_xyxy=list(crop.box_xyxy),
                 embedding_ref=crop.embedding_ref,
                 evidence_ref=f"crop:{crop.crop_id}",
+                thumb_ref=crop.thumb_ref,
             )
-            latest[ind.individual_id] = s
+            # A late crop older than the latest sighting is its own, earlier
+            # sighting; it must not become "latest" and swallow newer crops.
+            if prev is None or s.ended_at >= prev.ended_at:
+                latest[ind.individual_id] = s
             ind.sighting_count += 1
         touched[s.sighting_id] = s
 
@@ -340,6 +381,7 @@ def patio_snapshot(
     now: datetime,
     present_sec: float,
     grace_sec: float,
+    zone: str = "patio",
 ) -> Dict[str, Any]:
     """Same keys as orion-vision-window's presence snapshot, plus the patio count.
 
@@ -369,7 +411,9 @@ def patio_snapshot(
         "subject": {"count": count},
         "identity_uncertain": False,
         "identity_confirmed": False,
-        "zone": "patio",
+        "zone": zone,
+        # Readers find these rows by this flag, not by the zone's name.
+        "no_embed_zone": True,
         "state_since": state_since.isoformat(),
         "last_seen_at": last_seen_at.isoformat() if last_seen_at is not None else None,
     }
@@ -407,6 +451,10 @@ def circular_mean_minute(minutes: Sequence[float]) -> Tuple[Optional[int], float
     return int(round(mean)) % 1440, r
 
 
+# orion-vision-host's crop thumbnail ref: "thumb:<sha256 of the JPEG bytes>".
+# The Hub serves it at /api/vision/crop-thumbs/<sha256>.
+THUMB_REF_PREFIX = "thumb:"
+
 _PEOPLE_KINDS = {"person", "man", "woman", "child", "kid"}
 
 
@@ -420,6 +468,35 @@ def ask_question(*, kind: str, sighting_count: int, distinct_days: int, mean_min
         when = "at different times of day"
     tail = "Do you know who this is?" if kind in _PEOPLE_KINDS else f"Do you know whose {kind} this is?"
     return f"I have seen {who} {sighting_count} times over {distinct_days} days, {when}. {tail}"
+
+
+def ask_image_ref(
+    sightings: Sequence[Tuple[Optional[str], datetime, bool]],
+    *,
+    now: datetime,
+    thumb_retention_days: float,
+    ask_expiry_days: float,
+) -> Optional[str]:
+    """The thumbnail for an ask: the individual's most recent crop thumbnail.
+
+    ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed)``, any order. A
+    thumbnail is a crop of ONE embedded box (orion-vision-host never writes
+    one for a no-embed zone), never the whole frame, so an ask cannot show
+    Juniper the patio. It must also outlive the ask: the host prunes
+    thumbnails ``thumb_retention_days`` after they were last written, and the
+    ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
+    ended within the difference is offered. None -> the card shows no picture.
+    """
+    horizon = now - timedelta(days=max(0.0, thumb_retention_days - ask_expiry_days))
+    best: Optional[Tuple[datetime, str]] = None
+    for thumb_ref, ended_at, no_embed in sightings:
+        if no_embed or not thumb_ref or not str(thumb_ref).startswith(THUMB_REF_PREFIX):
+            continue
+        if ended_at is None or ended_at < horizon:
+            continue
+        if best is None or ended_at > best[0]:
+            best = (ended_at, str(thumb_ref))
+    return best[1] if best else None
 
 
 def individual_display_label(ind_label: Optional[str], kind: str, individual_id: str) -> str:
@@ -457,6 +534,10 @@ class IndividualsConfig:
     candidate_days: float = 30.0
     # After an ask expires unanswered, do not re-ask about that individual for this long.
     ask_cooldown_days: float = 30.0
+    # orion-vision-host keeps crop thumbnails this long (its own prune, by
+    # file age). An ask only shows a thumbnail young enough to outlive the
+    # ask itself: taken within (thumb_retention_days - ask_expiry_days).
+    thumb_retention_days: float = 14.0
 
 
 # Two sql-writer instances must never run the same cycle at once: cursors,
@@ -507,7 +588,7 @@ def run_one_individuals_cycle(
             _check_tables(conn)
             streams = {r[0] for r in conn.execute(text(
                 "SELECT DISTINCT stream_id FROM vision_crop_observation "
-                "WHERE observed_at > :since"), {"since": ts - timedelta(seconds=cfg.lookback_ceiling_sec)}).fetchall()}
+                "WHERE created_at > :since"), {"since": ts - timedelta(seconds=cfg.lookback_ceiling_sec)}).fetchall()}
             streams |= {r[0] for r in conn.execute(text("SELECT stream_id FROM vision_individuals_cursor")).fetchall()}
             # Patio presence must be able to decay to "absent" on a quiet street.
             streams |= {s for s, zs in zones_by_stream.items() if any(not z.embed for z in zs)}
@@ -556,6 +637,7 @@ def _row_to_crop(r) -> CropRow:
         observed_at=r.observed_at, label=r.label, box_xyxy=tuple(r.box_xyxy or ()),
         zone=r.zone, embedding=tuple(emb) if emb else None,
         embedding_ref=r.embedding_ref, artifact_id=r.artifact_id,
+        zone_no_embed=bool(r.zone_no_embed), thumb_ref=r.thumb_ref,
     )
 
 
@@ -566,35 +648,43 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
     forbidden = {z.name for z in zones if not z.embed}
     with engine.begin() as conn:
         cur = conn.execute(text(
-            "SELECT last_observed_at FROM vision_individuals_cursor WHERE stream_id=:s"), {"s": stream_id}).fetchone()
+            "SELECT last_created_at FROM vision_individuals_cursor WHERE stream_id=:s"), {"s": stream_id}).fetchone()
         since = cur[0] if cur else now - timedelta(seconds=cfg.lookback_ceiling_sec)
+        # The cursor is LANDING time (created_at, the DB clock), not the edge
+        # frame time: a crop observed long ago that lands now is still read.
+        # settle_sec covers insert transactions that began before `upto` but
+        # had not committed yet.
         upto = now - timedelta(seconds=cfg.settle_sec)
         rows = conn.execute(text(
             "SELECT crop_id, observation_id, stream_id, observed_at, label, box_xyxy, zone, "
-            "embedding, embedding_ref, artifact_id FROM vision_crop_observation "
-            "WHERE stream_id=:s AND observed_at > :since AND observed_at <= :upto "
-            "ORDER BY observed_at, crop_id LIMIT :lim"),
+            "embedding, embedding_ref, artifact_id, zone_no_embed, thumb_ref, created_at "
+            "FROM vision_crop_observation "
+            "WHERE stream_id=:s AND created_at > :since AND created_at <= :upto "
+            "ORDER BY created_at, crop_id LIMIT :lim"),
             {"s": stream_id, "since": since, "upto": upto, "lim": cfg.batch_rows}).fetchall()
-        crops = [_row_to_crop(r) for r in rows]
-        full = len(crops) >= cfg.batch_rows
-        # A full batch may have cut an observation in half; leave the rows at
-        # the last timestamp for the next tick (unless that is all there is).
+        landed = [(r.created_at, _row_to_crop(r)) for r in rows]
+        full = len(landed) >= cfg.batch_rows
+        # A full batch may have cut one landing instant in half; leave the
+        # rows at the last created_at for the next tick (unless that is all
+        # there is).
         if full:
-            last_ts = crops[-1].observed_at
-            trimmed = [c for c in crops if c.observed_at < last_ts]
+            last_ts = landed[-1][0]
+            trimmed = [lc for lc in landed if lc[0] < last_ts]
             if trimmed:
-                crops = trimmed
+                landed = trimmed
+        crops = [c for _, c in landed]
         summary["crops_read"] += len(crops)
 
         batch = None
         if crops:
+            oldest_seen = min(c.observed_at for c in crops)
             kinds = sorted({c.label for c in crops})
             ind_rows = conn.execute(text(
                 "SELECT individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, last_seen_at, "
                 "sighting_count, distinct_days, label FROM vision_individual "
                 "WHERE stream_id=:s AND kind = ANY(:k) AND (label IS NOT NULL OR last_seen_at > :recent)"),
                 {"s": stream_id, "k": kinds,
-                 "recent": crops[0].observed_at - timedelta(days=cfg.candidate_days)}).fetchall()
+                 "recent": oldest_seen - timedelta(days=cfg.candidate_days)}).fetchall()
             individuals = {r.individual_id: Individual(
                 individual_id=r.individual_id, stream_id=r.stream_id, kind=r.kind,
                 centroid=list(r.centroid), centroid_n=r.centroid_n, first_seen_at=r.first_seen_at,
@@ -602,15 +692,16 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 distinct_days=r.distinct_days, label=r.label) for r in ind_rows}
             s_rows = conn.execute(text(
                 "SELECT DISTINCT ON (individual_id) sighting_id, individual_id, stream_id, started_at, ended_at, "
-                "observation_count, zone_counts, last_box_xyxy, embedding_ref, evidence_ref "
+                "observation_count, zone_counts, last_box_xyxy, embedding_ref, evidence_ref, thumb_ref "
                 "FROM vision_individual_sighting WHERE stream_id=:s AND ended_at >= :after "
                 "ORDER BY individual_id, ended_at DESC"),
-                {"s": stream_id, "after": crops[0].observed_at - timedelta(seconds=cfg.merge_gap_sec)}).fetchall()
+                {"s": stream_id, "after": oldest_seen - timedelta(seconds=cfg.merge_gap_sec)}).fetchall()
             latest = {r.individual_id: Sighting(
                 sighting_id=r.sighting_id, individual_id=r.individual_id, stream_id=r.stream_id,
                 started_at=r.started_at, ended_at=r.ended_at, observation_count=r.observation_count,
                 zone_counts=dict(r.zone_counts or {}), last_box_xyxy=list(r.last_box_xyxy or []) or None,
-                embedding_ref=r.embedding_ref, evidence_ref=r.evidence_ref) for r in s_rows}
+                embedding_ref=r.embedding_ref, evidence_ref=r.evidence_ref,
+                thumb_ref=r.thumb_ref) for r in s_rows}
 
             batch = apply_batch(
                 crops, individuals=individuals, latest_sightings=latest, no_embed_zones=forbidden,
@@ -623,34 +714,39 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             for iid in changed_ids:
                 _upsert_individual(conn, batch.individuals[iid])
             for s in batch.sightings.values():
-                _upsert_sighting(conn, s)
+                _upsert_sighting(conn, s, forbidden)
             zone_rare = {z.name: z.dwell_rare_sec for z in zones}
             for s in batch.sightings.values():
                 if _score_and_maybe_event(conn, s, batch.individuals[s.individual_id], zone_rare, tz, cfg):
                     summary["attention_events"] += 1
 
-        # Everything up to `upto` has been read (unless the batch was full),
-        # so the cursor can advance on a quiet street too -- the rhythm loop
-        # reads it as "individuals are processed through here".
-        new_cursor = crops[-1].observed_at if (crops and full) else max(upto, since)
+        # Everything that landed up to `upto` has been read (unless the batch
+        # was full), so the cursor can advance on a quiet street too -- the
+        # rhythm loop reads it as "individuals are processed through here".
+        new_cursor = landed[-1][0] if (landed and full) else max(upto, since)
         conn.execute(text(
-            "INSERT INTO vision_individuals_cursor (stream_id, last_observed_at, updated_at) "
+            "INSERT INTO vision_individuals_cursor (stream_id, last_created_at, updated_at) "
             "VALUES (:s, :t, now()) ON CONFLICT (stream_id) DO UPDATE SET "
-            "last_observed_at = GREATEST(vision_individuals_cursor.last_observed_at, EXCLUDED.last_observed_at), "
+            "last_created_at = GREATEST(vision_individuals_cursor.last_created_at, EXCLUDED.last_created_at), "
             "updated_at = now()"),
             {"s": stream_id, "t": new_cursor})
 
-        if forbidden:
+        no_embed_crops = batch.patio_crops if batch else []
+        # One presence row per no-embed zone: every zone the config names (so
+        # a quiet one can decay to absent) plus any a flagged row names.
+        zone_names = set(forbidden) | {c.zone for c in no_embed_crops if c.zone}
+        for zone_name in sorted(zone_names):
             # Its own savepoint: a missing presence table (a different
             # migration) must not abort clustering, asks, or pruning.
             try:
                 with conn.begin_nested():
-                    if _write_patio_presence(conn, stream_id, batch.patio_crops if batch else [], now, cfg):
+                    in_zone = [c for c in no_embed_crops if c.zone == zone_name]
+                    if _write_patio_presence(conn, stream_id, zone_name, in_zone, now, cfg):
                         summary["patio_writes"] += 1
             except Exception as exc:
-                logger.warning("patio_presence_write_failed stream=%s error=%s "
+                logger.warning("no_embed_presence_write_failed stream=%s zone=%s error=%s "
                                "(substrate_embodied_presence: manual_migration_embodied_presence_v1.sql)",
-                               stream_id, exc)
+                               stream_id, zone_name, exc)
 
 
 def _upsert_individual(conn, ind: Individual) -> None:
@@ -668,21 +764,33 @@ def _upsert_individual(conn, ind: Individual) -> None:
            "sc": ind.sighting_count, "dd": ind.distinct_days})
 
 
-def _upsert_sighting(conn, s: Sighting) -> None:
+def sighting_row(s: Sighting, no_embed_zones: Iterable[str]) -> Dict[str, Any]:
+    """Pure: the upsert parameters. A sighting whose dominant zone is a
+    no-embed zone (cannot happen from apply_batch, which never clusters those
+    crops -- this is the belt to the DB CHECK's braces) carries no refs."""
+    no_embed = s.zone in set(no_embed_zones)
+    return {"id": s.sighting_id, "iid": s.individual_id, "s": s.stream_id, "z": s.zone,
+            "st": s.started_at, "en": s.ended_at, "dw": s.dwell_sec, "oc": s.observation_count,
+            "box": s.last_box_xyxy, "er": None if no_embed else s.embedding_ref, "ev": s.evidence_ref,
+            "th": None if no_embed else s.thumb_ref, "ne": no_embed,
+            "zc": json.dumps(s.zone_counts)}
+
+
+def _upsert_sighting(conn, s: Sighting, no_embed_zones: Iterable[str] = ()) -> None:
     from sqlalchemy import text
 
     conn.execute(text("""
         INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, zone, started_at, ended_at,
-            dwell_sec, observation_count, last_box_xyxy, embedding_ref, evidence_ref, zone_counts, updated_at)
-        VALUES (:id, :iid, :s, :z, :st, :en, :dw, :oc, :box, :er, :ev, CAST(:zc AS jsonb), now())
-        ON CONFLICT (sighting_id) DO UPDATE SET zone=EXCLUDED.zone, ended_at=EXCLUDED.ended_at,
+            dwell_sec, observation_count, last_box_xyxy, embedding_ref, evidence_ref, thumb_ref, zone_no_embed,
+            zone_counts, updated_at)
+        VALUES (:id, :iid, :s, :z, :st, :en, :dw, :oc, :box, :er, :ev, :th, :ne, CAST(:zc AS jsonb), now())
+        ON CONFLICT (sighting_id) DO UPDATE SET zone=EXCLUDED.zone, started_at=EXCLUDED.started_at,
+            ended_at=EXCLUDED.ended_at,
             dwell_sec=EXCLUDED.dwell_sec, observation_count=EXCLUDED.observation_count,
             last_box_xyxy=EXCLUDED.last_box_xyxy, embedding_ref=EXCLUDED.embedding_ref,
-            evidence_ref=EXCLUDED.evidence_ref, zone_counts=EXCLUDED.zone_counts, updated_at=now()
-    """), {"id": s.sighting_id, "iid": s.individual_id, "s": s.stream_id, "z": s.zone,
-           "st": s.started_at, "en": s.ended_at, "dw": s.dwell_sec, "oc": s.observation_count,
-           "box": s.last_box_xyxy, "er": s.embedding_ref, "ev": s.evidence_ref,
-           "zc": json.dumps(s.zone_counts)})
+            evidence_ref=EXCLUDED.evidence_ref, thumb_ref=EXCLUDED.thumb_ref,
+            zone_no_embed=EXCLUDED.zone_no_embed, zone_counts=EXCLUDED.zone_counts, updated_at=now()
+    """), sighting_row(s, no_embed_zones))
 
 
 def _history(conn, sql: str, params: dict, tz: ZoneInfo, basis: str):
@@ -736,8 +844,8 @@ def _score_and_maybe_event(conn, s: Sighting, ind: Individual, zone_rare: Dict[s
     return bool(res.rowcount)
 
 
-def _write_patio_presence(conn, stream_id: str, patio_crops: Sequence[CropRow], now: datetime,
-                          cfg: IndividualsConfig) -> bool:
+def _write_patio_presence(conn, stream_id: str, zone_name: str, patio_crops: Sequence[CropRow],
+                          now: datetime, cfg: IndividualsConfig) -> bool:
     from sqlalchemy import text
 
     alive = conn.execute(text(
@@ -745,7 +853,7 @@ def _write_patio_presence(conn, stream_id: str, patio_crops: Sequence[CropRow], 
         {"s": stream_id, "t": now - timedelta(seconds=cfg.camera_alive_sec)}).fetchone()
     if not alive and not patio_crops:
         return False  # camera silent: let the row go stale, do not assert "absent"
-    pid = f"{stream_id}{PATIO_PRESENCE_SUFFIX}"
+    pid = no_embed_presence_id(stream_id, zone_name)
     prev_row = conn.execute(text(
         "SELECT presence_json FROM substrate_embodied_presence WHERE presence_id=:p"), {"p": pid}).fetchone()
     prev = prev_row[0] if prev_row else None
@@ -753,7 +861,7 @@ def _write_patio_presence(conn, stream_id: str, patio_crops: Sequence[CropRow], 
         prev = json.loads(prev)
     last, count = patio_count(patio_crops)
     snap = patio_snapshot(prev=prev, batch_last_seen_at=last, batch_count=count, now=now,
-                          present_sec=cfg.patio_present_sec, grace_sec=cfg.patio_grace_sec)
+                          present_sec=cfg.patio_present_sec, grace_sec=cfg.patio_grace_sec, zone=zone_name)
     conn.execute(text("""
         INSERT INTO substrate_embodied_presence (presence_id, generated_at, presence_json, updated_at)
         VALUES (:p, now(), CAST(:j AS jsonb), now())
@@ -807,13 +915,13 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
         srows = conn.execute(text(
-            "SELECT sighting_id, started_at, evidence_ref FROM vision_individual_sighting "
+            "SELECT sighting_id, started_at, thumb_ref, ended_at, zone_no_embed FROM vision_individual_sighting "
             "WHERE individual_id=:i ORDER BY started_at DESC"), {"i": iid}).fetchall()
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
-        # A crop ref (vision_crop_observation row: artifact + box), never the
-        # whole frame, so an ask cannot show Juniper the patio.
-        image_ref = next((r_[2] for r_ in srows if r_[2] and str(r_[2]).startswith("crop:")), None)
+        image_ref = ask_image_ref(
+            [(row[2], row[3], bool(row[4])) for row in srows], now=now,
+            thumb_retention_days=cfg.thumb_retention_days, ask_expiry_days=cfg.ask_expiry_days)
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=ask_question(kind=kind, sighting_count=sc, distinct_days=dd, mean_minute=mean, r=r),

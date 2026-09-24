@@ -19,6 +19,13 @@ logged. It does lose the substrate entity for that answer: nothing replays
 There is no "ask opened" bus event: the Hub has no push channel for panels,
 so the card polls ``GET /api/asks`` and Postgres stays the only truth.
 
+``GET /api/vision/crop-thumbs/{sha256}`` serves the ask card's picture: a
+small JPEG of one embedded crop, written by orion-vision-host (never for a
+no-embed-zone box) into a directory this Hub mounts read-only
+(``HUB_VISION_CROP_THUMB_DIR``). The only caller-supplied component is a
+64-char lowercase hex digest -- no path to traverse, nothing to enumerate --
+and the bytes are re-hashed before they are served.
+
 Uses the Hub's asyncpg pool (``app.state.memory_pg_pool``, same ``conjourney``
 database sql-writer writes to). All DB calls are awaited, so nothing blocks the
 event loop (``scripts/check_async_routes_not_blocking.py``).
@@ -26,12 +33,17 @@ event loop (``scripts/check_async_routes_not_blocking.py``).
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
+import os
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -62,6 +74,11 @@ CHANNEL_ASK_ANSWERED = "orion:ask:answered"
 ASK_ANSWERED_KIND = "orion.ask.answered.v1"
 MAX_ANSWER_CHARS = 500
 MAX_LIST = 50
+
+DEFAULT_CROP_THUMB_DIR = "/mnt/telemetry/orion-vision-host/crop_thumbs"
+_THUMB_ID_RE = re.compile(r"[0-9a-f]{64}")
+# Thumbnails are tiny (<= 160 px); anything larger is not one of ours.
+MAX_THUMB_BYTES = 256 * 1024
 
 _SELECT_COLUMNS = (
     "ask_id, asked_of, question, evidence_refs, image_ref, status, answer, "
@@ -245,3 +262,42 @@ async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict
 @router.post("/api/asks/{ask_id}/dismiss")
 async def dismiss_ask(request: Request, ask_id: str) -> dict[str, Any]:
     return await _close_ask(request, ask_id, new_status="dismissed", answer=None)
+
+
+def _crop_thumb_dir() -> Path:
+    try:
+        from scripts.settings import settings
+
+        raw = str(getattr(settings, "HUB_VISION_CROP_THUMB_DIR", "") or "")
+    except Exception:  # settings env not loaded (bare test process)
+        raw = os.getenv("HUB_VISION_CROP_THUMB_DIR", "")
+    return Path(raw.strip() or DEFAULT_CROP_THUMB_DIR)
+
+
+def _read_thumb(path: Path) -> Optional[bytes]:
+    try:
+        if path.stat().st_size > MAX_THUMB_BYTES:
+            return None
+        return path.read_bytes()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+@router.get("/api/vision/crop-thumbs/{thumb_id}")
+async def get_crop_thumb(thumb_id: str) -> Response:
+    """One crop thumbnail by content hash. 400 for anything that is not a
+    64-char lowercase hex id; 404 when absent or pruned (kept 14 days)."""
+    if not _THUMB_ID_RE.fullmatch(thumb_id or ""):
+        raise HTTPException(status_code=400, detail="bad_thumb_id")
+    path = _crop_thumb_dir() / f"{thumb_id}.jpg"
+    data = await asyncio.to_thread(_read_thumb, path)
+    if data is None:
+        raise HTTPException(status_code=404, detail="thumb_not_found")
+    if hashlib.sha256(data).hexdigest() != thumb_id:
+        logger.error("crop_thumb_hash_mismatch id=%s", thumb_id[:12])
+        raise HTTPException(status_code=404, detail="thumb_not_found")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )

@@ -100,7 +100,8 @@ def test_unresolved_last_hour() -> None:
 
 
 def test_patio_is_a_count_never_a_name_and_only_when_fresh() -> None:
-    fresh = {"state": "present", "count": 3, "subject": "Juniper", "row_updated_at": datetime.now(timezone.utc)}
+    fresh = {"state": "present", "count": 3, "subject": "Juniper", "zone": "patio",
+             "row_updated_at": datetime.now(timezone.utc)}
     (line,) = _street(patio=fresh)
     assert line == "3 people are on the patio."
     assert "Juniper" not in line
@@ -183,12 +184,44 @@ def test_patio_row_is_read_by_stream_and_stripped_of_identity() -> None:
             return super().execute(stmt, params)
 
     conn = _PatioConn({"substrate_embodied_presence": [
-        {"presence_json": '{"state": "present", "count": 1, "subject": "Juniper"}',
+        {"presence_id": "walkway:patio",
+         "presence_json": '{"state": "present", "count": 1, "subject": "Juniper", "no_embed_zone": true}',
+         "updated_at": datetime.now(timezone.utc)},
+        # Not flagged as a no-embed zone: never read as one.
+        {"presence_id": "walkway:other",
+         "presence_json": '{"state": "present", "count": 4}',
          "updated_at": datetime.now(timezone.utc)},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
-    assert seen["presence_id"] == "walkway:patio"
+    assert seen["prefix"] == "walkway:%"
     assert got.lines == ["Someone is on the patio."]
+
+
+def test_a_second_no_embed_zone_gets_its_own_line_named_from_its_row() -> None:
+    now = datetime.now(timezone.utc)
+    conn = _Conn({"substrate_embodied_presence": [
+        {"presence_id": "walkway:garden",
+         "presence_json": '{"state": "present", "subject": {"count": 2}, "no_embed_zone": true}',
+         "updated_at": now},
+        {"presence_id": "walkway:patio",
+         "presence_json": '{"state": "present", "zone": "patio", "subject": {"count": 1}, "no_embed_zone": true}',
+         "updated_at": now},
+    ]})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
+    assert got.lines == ["2 people are on the garden.", "Someone is on the patio."]
+
+
+def test_like_prefix_escapes_wildcards() -> None:
+    from orion.situational.perception_reader import _like_prefix
+
+    assert _like_prefix("walk_way%") == "walk\\_way\\%:%"
+
+
+def test_unresolved_line_names_the_camera_it_came_from() -> None:
+    rows = [{"observed_at": NOW - timedelta(minutes=3), "description": "a shape"}]
+    (line,) = summarize_street(sightings=[], expectations=[], unresolved=rows, patio=None,
+                               now=NOW, tz=TZ, camera="driveway")
+    assert "on the driveway" in line and "walkway" not in line
 
 
 # --- fold into PerceptionContextV1 -------------------------------------------
@@ -290,7 +323,7 @@ def test_window_older_than_the_sightings_lookback_makes_no_absence_claim() -> No
 
 
 def test_patio_count_zero_says_nothing() -> None:
-    fresh = {"state": "present", "count": 0, "row_updated_at": datetime.now(timezone.utc)}
+    fresh = {"state": "present", "count": 0, "zone": "patio", "row_updated_at": datetime.now(timezone.utc)}
     assert _street(patio=fresh) == []
 
 
@@ -307,7 +340,9 @@ def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
     # (services/orion-sql-writer/app/vision_individuals.py); the count must
     # survive the identity strip, not collapse to "People are on the patio."
     conn = _Conn({"substrate_embodied_presence": [
-        {"presence_json": '{"state": "present", "since_sec": 30, "last_seen_sec": 1, "subject": {"count": 3}}',
+        {"presence_id": "walkway:patio",
+         "presence_json": '{"state": "present", "since_sec": 30, "last_seen_sec": 1, "subject": {"count": 3}, '
+                          '"zone": "patio", "no_embed_zone": true}',
          "updated_at": datetime.now(timezone.utc)},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)

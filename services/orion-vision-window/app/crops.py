@@ -45,6 +45,7 @@ def build_crop_observation(art: VisionArtifactPayload) -> Optional[VisionCropObs
             # stripping silently would hide a host bug instead of failing it.
             embedding_ref=o.embedding_ref,
             embedding=o.embedding,
+            thumb_ref=o.thumb_ref,
         )
         for o in objects
         if _is_tracked(o)

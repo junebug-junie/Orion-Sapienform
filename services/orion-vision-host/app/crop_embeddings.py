@@ -15,12 +15,25 @@ known" must not silently mean "the patio is fair game".
 
 Pure functions over plain dicts plus an injected ``embed_fn`` so the privacy
 rule is testable without a GPU.
+
+**Thumbnails (the ask card's picture).** For every crop it embeds -- and only
+those; the thumbnail is made from the exact same crop list the embedder is
+handed, so a no-embed-zone box structurally cannot get one -- the host writes
+a small JPEG (``THUMB_MAX_SIDE`` px, quality ``THUMB_QUALITY``) named by the
+sha256 of its bytes under ``VISION_CROP_THUMB_DIR`` and returns
+``thumb_ref="thumb:<sha256>"`` on the object. Retention: ``ThumbStore``
+deletes thumbnails not written for ``VISION_CROP_THUMB_RETENTION_DAYS``
+(default 14, longer than an ask's 7-day life); re-writing the same bytes
+refreshes the age. The Hub serves them read-only by hash
+(``/api/vision/crop-thumbs/<sha256>``).
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -35,6 +48,87 @@ DEFAULT_MAX_CROPS_PER_FRAME = 8
 DEFAULT_MIN_SIDE_PX = 16
 
 EmbedFn = Callable[[List[Image.Image]], np.ndarray]
+# A crop in, "thumb:<sha256>" (or None) out.
+ThumbFn = Callable[[Image.Image], Optional[str]]
+
+THUMB_REF_PREFIX = "thumb:"
+THUMB_MAX_SIDE = 160
+THUMB_QUALITY = 70
+DEFAULT_THUMB_RETENTION_DAYS = 14.0
+
+
+def encode_thumb(crop: Image.Image, *, max_side: int = THUMB_MAX_SIDE, quality: int = THUMB_QUALITY) -> bytes:
+    img = crop.convert("RGB")
+    img.thumbnail((max_side, max_side))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+class ThumbStore:
+    """Content-addressed crop thumbnails on local disk, pruned by age.
+
+    ``put`` writes ``<root>/<sha256>.jpg`` atomically (temp file + rename) and
+    returns ``thumb:<sha256>``. A second put of identical bytes just refreshes
+    the file's mtime, so a thumbnail still being produced is not pruned. The
+    prune runs at most once per ``prune_interval_sec``, inline on put -- the
+    writer owns its retention, no separate job to forget.
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        retention_days: float = DEFAULT_THUMB_RETENTION_DAYS,
+        prune_interval_sec: float = 3600.0,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.root = Path(root)
+        self.retention_sec = max(0.0, float(retention_days)) * 86400.0
+        self.prune_interval_sec = float(prune_interval_sec)
+        self._clock = clock
+        self._last_prune: Optional[float] = None
+
+    def put(self, crop: Image.Image) -> Optional[str]:
+        data = encode_thumb(crop)
+        digest = hashlib.sha256(data).hexdigest()
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{digest}.jpg"
+        now = self._clock()
+        if path.exists():
+            os.utime(path, (now, now))
+        else:
+            tmp = self.root / f".{digest}.{os.getpid()}.tmp"
+            tmp.write_bytes(data)
+            os.utime(tmp, (now, now))
+            os.replace(tmp, path)
+        self.maybe_prune(now)
+        return f"{THUMB_REF_PREFIX}{digest}"
+
+    def maybe_prune(self, now: Optional[float] = None) -> int:
+        now = self._clock() if now is None else now
+        if self._last_prune is not None and now - self._last_prune < self.prune_interval_sec:
+            return 0
+        self._last_prune = now
+        return self.prune(now)
+
+    def prune(self, now: Optional[float] = None) -> int:
+        now = self._clock() if now is None else now
+        if not self.root.is_dir():
+            return 0
+        removed = 0
+        for p in self.root.iterdir():
+            if not (p.name.endswith(".jpg") or p.name.endswith(".tmp")):
+                continue
+            try:
+                if now - p.stat().st_mtime > self.retention_sec:
+                    p.unlink()
+                    removed += 1
+            except FileNotFoundError:
+                continue
+        if removed:
+            logger.info(f"[CROP] pruned {removed} crop thumbnail(s) older than {self.retention_sec / 86400:.0f}d")
+        return removed
 
 _ZONES_CACHE: Dict[str, Optional[Dict[str, List[Zone]]]] = {}
 
@@ -118,14 +212,16 @@ def attach_crop_embeddings(
     model_id: str,
     embed_profile: str,
     min_score: float,
+    thumb_fn: Optional[ThumbFn] = None,
 ) -> Dict[str, int]:
     """Mutates ``objects`` in place: sets ``zone`` on every tracked-label box and
-    ``embedding``/``embedding_ref`` on the ones allowed to be embedded.
+    ``embedding``/``embedding_ref`` (and ``thumb_ref``, when ``thumb_fn`` is
+    given) on the ones allowed to be embedded.
 
     Returns counters for the detect artifact (``crop_embeddings`` block) so a
     live check can see how many boxes were tracked, embedded, and withheld.
     """
-    stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0}
+    stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0, "thumbs": 0}
     labels = resolve_labels(request, params)
     stream_id = str(request.get("stream_id") or "").strip()
     width, height = image.width, image.height
@@ -154,6 +250,7 @@ def attach_crop_embeddings(
             # crop, no vector. Presence only.
             obj["embedding"] = None
             obj["embedding_ref"] = None
+            obj["thumb_ref"] = None
             if zone is not None and not may_embed(zone):
                 stats["withheld_no_embed_zone"] += 1
             else:
@@ -196,4 +293,14 @@ def attach_crop_embeddings(
         obj["embedding"] = [float(x) for x in vecs[row].tolist()]
         obj["embedding_ref"] = _crop_ref(frame_key, obj["box_xyxy"], model_id, embed_profile)
         stats["embedded"] += 1
+        # Same crop the embedder saw -- the only pixels a thumbnail is ever
+        # made from. A thumbnail failure costs the picture, not the vector.
+        obj["thumb_ref"] = None
+        if thumb_fn is not None:
+            try:
+                obj["thumb_ref"] = thumb_fn(crops[row])
+            except Exception as exc:
+                logger.warning(f"[CROP] thumbnail write failed: {exc}")
+            if obj["thumb_ref"]:
+                stats["thumbs"] += 1
     return stats

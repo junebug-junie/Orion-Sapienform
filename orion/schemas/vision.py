@@ -21,6 +21,10 @@ class VisionObject(BaseModel):
     zone: Optional[str] = None
     embedding_ref: Optional[str] = None
     embedding: Optional[List[float]] = None
+    # Additive (2026-09-24). "thumb:<sha256>" -- a small JPEG of this box's
+    # crop, written by orion-vision-host ONLY for a crop it embedded (never a
+    # no-embed-zone box). The Hub serves it for the ask card.
+    thumb_ref: Optional[str] = None
 
 
 # Alias for explicit requirement
@@ -519,6 +523,9 @@ class VisionCropV1(BaseModel):
     zone: Optional[str] = None
     embedding_ref: Optional[str] = None
     embedding: Optional[List[float]] = None
+    # Additive (2026-09-24): see VisionObject.thumb_ref. Same rule as the
+    # embedding: None for any no-embed-zone box (DB CHECK enforces it too).
+    thumb_ref: Optional[str] = None
 
 
 class VisionCropObservationV1(BaseModel):

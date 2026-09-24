@@ -9,6 +9,14 @@ test('image ref: web URL renders as a picture, a disk path as text, empty as not
   assert.deepEqual(asks.askImageView(null), { kind: 'none', ref: '' });
 });
 
+test('thumb ref maps to the Hub thumbnail route; a malformed one is text', () => {
+  const h = 'ab'.repeat(32);
+  assert.deepEqual(asks.askImageView('thumb:' + h), { kind: 'img', ref: '/api/vision/crop-thumbs/' + h });
+  assert.equal(asks.askImageView('thumb:../../etc/passwd').kind, 'text');
+  assert.equal(asks.askImageView('thumb:' + h.toUpperCase()).kind, 'text');
+  assert.equal(asks.askImageView('crop:cropobs:art:0').kind, 'text');
+});
+
 test('status line is plain English and counts', () => {
   assert.equal(asks.statusLine([]), 'Orion has no open questions for you.');
   assert.equal(asks.statusLine([{}]), 'Orion has 1 question for you.');
@@ -167,4 +175,13 @@ test('buttons are disabled while the request is in flight', async () => {
 
 test('a non-string error detail (FastAPI 422 list) is not shown as [object Object]', () => {
   assert.equal(asks.errorLine(422, [{ msg: 'x' }]), 'Something went wrong.');
+});
+
+test('a thumb ask renders an <img> pointing at the Hub thumbnail route', () => {
+  const doc = fakeDoc();
+  const h = '0f'.repeat(32);
+  const card = asks.renderAsk(doc, { ask_id: 'a9', question: 'Who?', image_ref: 'thumb:' + h }, () => {});
+  const img = find(card, (n) => n.tagName === 'img');
+  assert.ok(img, 'expected an img node');
+  assert.equal(img.attrs.src, '/api/vision/crop-thumbs/' + h);
 });

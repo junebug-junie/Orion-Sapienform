@@ -536,6 +536,11 @@ class Settings(BaseSettings):
     vision_rhythm_labels: str = Field("vehicle,package,mail truck", alias="VISION_RHYTHM_LABELS")
     vision_rhythm_label_streams: str = Field("walkway", alias="VISION_RHYTHM_LABEL_STREAMS")
     vision_rhythm_arrival_gap_sec: float = Field(300.0, alias="VISION_RHYTHM_ARRIVAL_GAP_SEC")
+    # The expect key (orion:vision:expect:<stream>) is refreshed on its own,
+    # cheap clock -- the open-window query and SET/DEL only, no fitting -- so
+    # steering starts within this many seconds of a window opening rather
+    # than up to one rhythm tick late. 0 disables (the rhythm tick still sets it).
+    vision_expect_refresh_interval_sec: float = Field(60.0, alias="VISION_EXPECT_REFRESH_INTERVAL_SEC")
 
     grammar_retention_interval_sec: float = Field(
         60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"

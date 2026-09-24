@@ -15,8 +15,11 @@ CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx
 
 -- Raw tracked-label boxes, one row per box, written by sql-writer from
 -- orion:vision:crops:sql-write. Kept 7 days (pruned by the individuals
--- reducer). The CHECK is the privacy boundary as code: a box in the patio
--- zone can never carry an embedding, whatever a producer sends.
+-- reducer). The CHECK is the privacy boundary as code: a box in a no-embed
+-- zone (the patio; config/vision_zones.yaml `embed: false`) can never carry
+-- an embedding or a thumbnail, whatever a producer sends. The writer sets
+-- zone_no_embed from the config, so a second no-embed zone is covered by the
+-- same constraint without editing it.
 CREATE TABLE IF NOT EXISTS vision_crop_observation (
     crop_id         TEXT PRIMARY KEY,
     observation_id  TEXT NOT NULL,
@@ -30,12 +33,18 @@ CREATE TABLE IF NOT EXISTS vision_crop_observation (
     zone            TEXT,
     embedding_ref   TEXT,
     embedding       REAL[],
+    -- orion-vision-host's crop thumbnail, "thumb:<sha256>" (embedded crops only).
+    thumb_ref       TEXT,
+    zone_no_embed   BOOLEAN NOT NULL DEFAULT false,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT vision_crop_observation_patio_no_embedding
-        CHECK (zone IS DISTINCT FROM 'patio' OR (embedding IS NULL AND embedding_ref IS NULL))
+    CONSTRAINT vision_crop_observation_no_embed_zone_keeps_nothing
+        CHECK (NOT zone_no_embed OR (embedding IS NULL AND embedding_ref IS NULL AND thumb_ref IS NULL))
 );
 CREATE INDEX IF NOT EXISTS vision_crop_observation_stream_time_idx
     ON vision_crop_observation (stream_id, observed_at);
+-- The individuals reducer's cursor is landing time, so a late crop is not skipped.
+CREATE INDEX IF NOT EXISTS vision_crop_observation_stream_created_idx
+    ON vision_crop_observation (stream_id, created_at);
 
 -- An appearance cluster: "the same one again". Never a face. Only Juniper
 -- names one (via orion_ask). Deleting an individual deletes its sightings.
@@ -71,14 +80,17 @@ CREATE TABLE IF NOT EXISTS vision_individual_sighting (
     last_box_xyxy        REAL[],
     embedding_ref        TEXT,
     evidence_ref         TEXT,
+    -- Thumbnail of the latest embedded crop; the ask card shows it.
+    thumb_ref            TEXT,
+    zone_no_embed        BOOLEAN NOT NULL DEFAULT false,
     attention_score      REAL,
     attention_components JSONB,
     -- {zone: observation count}; a sighting spans reducer ticks, so "the zone
     -- it spent most observations in" needs the running tally, not just the last zone.
     zone_counts          JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT vision_individual_sighting_patio_no_embedding
-        CHECK (zone IS DISTINCT FROM 'patio' OR embedding_ref IS NULL)
+    CONSTRAINT vision_individual_sighting_no_embed_zone_keeps_nothing
+        CHECK (NOT zone_no_embed OR (embedding_ref IS NULL AND thumb_ref IS NULL))
 );
 -- For a table created from an earlier draft of this file.
 ALTER TABLE vision_individual_sighting
@@ -88,9 +100,10 @@ CREATE INDEX IF NOT EXISTS vision_individual_sighting_stream_time_idx
 CREATE INDEX IF NOT EXISTS vision_individual_sighting_individual_idx
     ON vision_individual_sighting (individual_id, started_at);
 
+-- Landing time (vision_crop_observation.created_at) processed through.
 CREATE TABLE IF NOT EXISTS vision_individuals_cursor (
     stream_id        TEXT PRIMARY KEY,
-    last_observed_at TIMESTAMPTZ NOT NULL,
+    last_created_at  TIMESTAMPTZ NOT NULL,
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

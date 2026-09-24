@@ -1018,13 +1018,20 @@ async def lifespan(app: FastAPI):
         vision_rhythm_task = asyncio.create_task(vision_rhythm_loop(settings))
     else:
         logger.info("vision rhythm learner DISABLED (VISION_RHYTHM_INTERVAL_SEC=0)")
+    vision_expect_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_expect_refresh_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_rhythm_loop import vision_expect_refresh_loop
+
+        vision_expect_task = asyncio.create_task(vision_expect_refresh_loop(settings))
+    else:
+        logger.info("vision expect-key refresh DISABLED (VISION_EXPECT_REFRESH_INTERVAL_SEC=0)")
 
     try:
         yield
     finally:
         pending = [
             t for t in (task, watch_task, retention_task, vision_permanence_task,
-                        vision_individuals_task, vision_rhythm_task)
+                        vision_individuals_task, vision_rhythm_task, vision_expect_task)
             if t is not None
         ]
         for background in pending:

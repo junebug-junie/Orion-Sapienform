@@ -62,6 +62,7 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
                 zone=obj.get("zone"),
                 embedding_ref=obj.get("embedding_ref"),
                 embedding=obj.get("embedding"),
+                thumb_ref=obj.get("thumb_ref"),
             ))
 
     if "caption" in artifacts and isinstance(artifacts["caption"], dict):

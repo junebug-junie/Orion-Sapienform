@@ -272,3 +272,54 @@ def test_connection_errors_map_to_503():
         app.state.memory_pg_pool = _BoomPool(exc)
         r = TestClient(app).get("/api/asks")
         assert r.status_code == 503 and r.json()["detail"] == "ask_store_unavailable"
+
+
+# --- crop thumbnails (the ask card's picture) --------------------------------
+
+
+def _thumb_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(ask_routes, "_crop_thumb_dir", lambda: tmp_path)
+    app = FastAPI()
+    app.include_router(ask_routes.router)
+    return TestClient(app)
+
+
+def test_thumb_route_serves_a_stored_thumb_by_hash(tmp_path, monkeypatch) -> None:
+    import hashlib
+
+    data = b"\xff\xd8\xff\xe0fake-jpeg"
+    digest = hashlib.sha256(data).hexdigest()
+    (tmp_path / f"{digest}.jpg").write_bytes(data)
+    r = _thumb_client(tmp_path, monkeypatch).get(f"/api/vision/crop-thumbs/{digest}")
+    assert r.status_code == 200
+    assert r.content == data
+    assert r.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.parametrize("bad", [
+    "..%2F..%2Fetc%2Fpasswd",
+    "a" * 63,
+    "a" * 65,
+    "A" * 64,
+    "g" * 64,
+    ("a" * 64) + ".jpg",
+])
+def test_thumb_route_rejects_bad_ids(tmp_path, monkeypatch, bad) -> None:
+    # A file that WOULD be served if validation were skipped.
+    (tmp_path / "secret.jpg").write_bytes(b"x")
+    r = _thumb_client(tmp_path, monkeypatch).get(f"/api/vision/crop-thumbs/{bad}")
+    assert r.status_code in (400, 404)
+    assert r.content != b"x"
+
+
+def test_thumb_route_404s_a_missing_or_tampered_thumb(tmp_path, monkeypatch) -> None:
+    client = _thumb_client(tmp_path, monkeypatch)
+    missing = "c" * 64
+    assert client.get(f"/api/vision/crop-thumbs/{missing}").status_code == 404
+    (tmp_path / f"{missing}.jpg").write_bytes(b"not the bytes that hash to the name")
+    assert client.get(f"/api/vision/crop-thumbs/{missing}").status_code == 404
+
+
+def test_hub_mounts_the_thumb_dir_read_only() -> None:
+    compose = (HUB_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro" in compose

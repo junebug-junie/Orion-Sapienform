@@ -12,12 +12,18 @@
 
   const POLL_MS = 60000;
 
+  // "thumb:<sha256>" is orion-vision-host's crop thumbnail (one embedded box,
+  // never the patio). The Hub serves it by hash from a read-only mount.
+  const THUMB_REF = /^thumb:([0-9a-f]{64})$/;
+
   function askImageView(imageRef) {
     const ref = typeof imageRef === "string" ? imageRef.trim() : "";
     if (!ref) return { kind: "none", ref: "" };
-    // Only a real web URL can be shown as a picture. Anything else (a path on
-    // the vision host's disk, an embedding ref) is not something this Hub can
-    // serve, so it is shown as text rather than a broken image.
+    const thumb = THUMB_REF.exec(ref);
+    if (thumb) return { kind: "img", ref: "/api/vision/crop-thumbs/" + thumb[1] };
+    // Otherwise only a real web URL can be shown as a picture. Anything else
+    // (a path on the vision host's disk, an embedding ref) is not something
+    // this Hub can serve, so it is shown as text rather than a broken image.
     if (/^https?:\/\//i.test(ref)) return { kind: "img", ref: ref };
     return { kind: "text", ref: ref };
   }

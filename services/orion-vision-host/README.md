@@ -342,7 +342,15 @@ L2-normalized inline `embedding`; the detect artifact also carries
 - Knobs live in the `retina_detect_open_vocab` profile params
   (`config/vision_profiles.yaml`): `crop_embed_profile`,
   `crop_embedding_labels`, `crop_embedding_max_per_frame`, `crop_min_side_px`.
-- Test: `tests/test_crop_embeddings_patio.py` (embedder mocked).
+- **Thumbnails (ask card):** each EMBEDDED crop -- the exact crop list the
+  embedder receives, so a no-embed-zone box cannot get one -- is also saved as
+  a <=160 px JPEG (quality 70) named by its sha256 under
+  `VISION_CROP_THUMB_DIR` (default `/mnt/telemetry/orion-vision-host/crop_thumbs`),
+  and the object gains `thumb_ref = "thumb:<sha256>"`. The host prunes files
+  not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (14, longer than an
+  ask's 7-day life). orion-hub mounts the directory read-only and serves one
+  thumbnail by hash at `/api/vision/crop-thumbs/<sha256>`. Empty dir disables.
+- Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py` (embedder mocked).
 
 ## Observability (logs-first)
 

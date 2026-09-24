@@ -374,10 +374,12 @@ def percept_age_seconds(observed_at: datetime | None, now: datetime | None = Non
 # yet, and a missing table must cost that one line, never the rest.
 #
 # PRIVACY. Names appear only when Juniper gave them (`vision_individual.label`,
-# set through the ask flow). The patio is family space: it is read ONLY from
-# `substrate_embodied_presence` and yields a count, never a name, and patio
-# sightings are excluded from the "who is around" line even if a reducer ever
-# wrote one.
+# set through the ask flow). A no-embed zone (the patio; config/vision_zones.yaml
+# `embed: false`) is family space: it is read ONLY from
+# `substrate_embodied_presence` rows flagged `no_embed_zone` and yields a
+# count, never a name, and sightings flagged `zone_no_embed` are excluded from
+# the "who is around" line even if a reducer ever wrote one. Both are found
+# by the flag the writer sets from the zones config, never by a zone's name.
 # ---------------------------------------------------------------------------
 
 STREET_RECENT_MINUTES = 15
@@ -393,7 +395,7 @@ _STREET_SIGHTINGS_SQL = text(
     "JOIN vision_individual i ON i.individual_id = s.individual_id "
     "WHERE s.stream_id = :stream_id "
     "  AND s.ended_at > now() - make_interval(mins => :lookback) "
-    "  AND s.zone IS DISTINCT FROM 'patio' "
+    "  AND NOT s.zone_no_embed "
     "GROUP BY s.individual_id, i.kind, i.label, i.distinct_days "
     "ORDER BY max(s.ended_at) DESC LIMIT 50"
 )
@@ -415,10 +417,20 @@ _STREET_UNRESOLVED_SQL = text(
     "ORDER BY observed_at DESC LIMIT 20"
 )
 
+# One row per no-embed zone, `<stream>:<zone>` (orion-sql-writer's
+# vision_individuals.no_embed_presence_id), recognised by the flag in the
+# snapshot rather than by a hardcoded zone name.
 _PATIO_PRESENCE_SQL = text(
-    "SELECT presence_json, updated_at FROM substrate_embodied_presence "
-    "WHERE presence_id = :presence_id"
+    "SELECT presence_id, presence_json, updated_at FROM substrate_embodied_presence "
+    "WHERE presence_id LIKE :prefix ESCAPE '\\' "
+    "  AND presence_json->>'no_embed_zone' = 'true' "
+    "ORDER BY presence_id"
 )
+
+
+def _like_prefix(stream_id: str) -> str:
+    escaped = stream_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}:%"
 
 
 class StreetSummary(NamedTuple):
@@ -484,16 +496,20 @@ def summarize_street(
     sightings: list[dict[str, Any]] | None,
     expectations: list[dict[str, Any]] | None,
     unresolved: list[dict[str, Any]] | None,
-    patio: dict[str, Any] | None,
+    patio: dict[str, Any] | list[dict[str, Any]] | None,
     now: datetime,
     tz: Any,
+    camera: str = "walkway",
 ) -> list[str]:
-    """Pure: rows in, at most four short plain-English lines out.
+    """Pure: rows in, a few short plain-English lines out.
 
     `None` for any input means that read failed and contributes nothing --
-    never a sentence claiming the street was empty.
+    never a sentence claiming the street was empty. `patio` is one presence
+    snapshot per no-embed zone (a single dict is accepted too); each names its
+    own zone under `zone`. `camera` is the stream the rows came from.
     """
     lines: list[str] = []
+    camera = (camera or "").strip() or "camera"
 
     # 1. Who is around (last 15 minutes).
     recent_cut = now - timedelta(minutes=STREET_RECENT_MINUTES)
@@ -516,7 +532,7 @@ def summarize_street(
         shown = who[:_MAX_WHO_PHRASES]
         extra = len(who) - len(shown)
         text_ = ", ".join(shown) + (f", and {extra} more" if extra > 0 else "")
-        lines.append(f"On the walkway in the last {STREET_RECENT_MINUTES} minutes: {text_}.")
+        lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {text_}.")
 
     # 2. What was expected, and did it happen.
     outcomes: list[str] = []
@@ -563,7 +579,7 @@ def summarize_street(
             else:
                 outcomes.append(f"{label} usually comes{at}")
     if outcomes:
-        lines.append("Walkway rhythm: " + "; ".join(outcomes[:4]) + ".")
+        lines.append(f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + ".")
 
     # 3. Things I could not name (last hour).
     names = [r for r in unresolved or [] if str(r.get("description") or "").strip()]
@@ -573,29 +589,36 @@ def summarize_street(
         when = f" at {ts.astimezone(tz):%H:%M}" if ts else ""
         desc = " ".join(str(latest["description"]).split())[:100]
         if len(names) == 1:
-            lines.append(f"In the last hour I saw one thing on the walkway I could not name{when}: {desc}.")
+            lines.append(f"In the last hour I saw one thing on the {camera} I could not name{when}: {desc}.")
         else:
             lines.append(
-                f"In the last hour I saw {len(names)} things on the walkway I could not name; "
+                f"In the last hour I saw {len(names)} things on the {camera} I could not name; "
                 f"the latest{when}: {desc}."
             )
 
-    # 4. The patio: counts only, never names, only when fresh.
-    if patio:
-        age = presence_row_age_seconds(patio)
-        if age is not None and age <= PATIO_MAX_AGE_SECONDS and patio.get("state") == "present":
-            count = patio.get("count")
-            try:
-                count = int(count) if count is not None else None
-            except (TypeError, ValueError):
-                count = None
-            if count is not None and count >= 2:
-                lines.append(f"{count} people are on the patio.")
-            elif count == 1:
-                lines.append("Someone is on the patio.")
-            elif count is None:
-                lines.append("People are on the patio.")
-            # count == 0 with state present contradicts itself: say nothing.
+    # 4. No-embed zones (the patio): counts only, never names, only when fresh.
+    zones = [patio] if isinstance(patio, dict) else list(patio or [])
+    for snap in zones:
+        if not isinstance(snap, dict):
+            continue
+        zone = str(snap.get("zone") or "").strip()
+        if not zone:
+            continue  # cannot say where; say nothing rather than guess
+        age = presence_row_age_seconds(snap)
+        if age is None or age > PATIO_MAX_AGE_SECONDS or snap.get("state") != "present":
+            continue
+        count = snap.get("count")
+        try:
+            count = int(count) if count is not None else None
+        except (TypeError, ValueError):
+            count = None
+        if count is not None and count >= 2:
+            lines.append(f"{count} people are on the {zone}.")
+        elif count == 1:
+            lines.append(f"Someone is on the {zone}.")
+        elif count is None:
+            lines.append(f"People are on the {zone}.")
+        # count == 0 with state present contradicts itself: say nothing.
     return lines
 
 
@@ -659,7 +682,7 @@ def fetch_street_summary(
                 "unresolved",
             )
             patio_rows = _street_rows(
-                conn, _PATIO_PRESENCE_SQL, {"presence_id": f"{stream_id}:patio"}, "patio"
+                conn, _PATIO_PRESENCE_SQL, {"prefix": _like_prefix(stream_id)}, "no_embed_zones"
             )
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
@@ -669,26 +692,32 @@ def fetch_street_summary(
         # Every read failed: that is "unread", not a quiet street.
         return StreetSummary(stream_id, [], False)
 
-    patio = None
-    if patio_rows:
+    patio: list[dict[str, Any]] = []
+    prefix = f"{stream_id}:"
+    for prow in patio_rows or []:
         try:
-            raw = patio_rows[0].get("presence_json")
+            raw = prow.get("presence_json")
             if isinstance(raw, str):
                 raw = json.loads(raw)
-            if isinstance(raw, dict):
-                patio = _presence_row_to_dict(raw, patio_rows[0].get("updated_at"))
-                # The sql-writer patio reducer writes the head count as
-                # subject={"count": n}; lift it out before subject is dropped.
-                subj = patio.get("subject")
-                if patio.get("count") is None and isinstance(subj, dict):
-                    patio["count"] = subj.get("count")
-                # Belt and braces for the privacy rule: nothing identity-shaped
-                # from the patio row survives past this point.
-                for key in ("subject", "identity_confirmed", "identity_uncertain", "identity_confidence"):
-                    patio.pop(key, None)
+            if not isinstance(raw, dict) or raw.get("no_embed_zone") is not True:
+                continue
+            snap = _presence_row_to_dict(raw, prow.get("updated_at"))
+            # The zone's own name from the snapshot, else from the row id.
+            pid = str(prow.get("presence_id") or "")
+            if not snap.get("zone") and pid.startswith(prefix):
+                snap["zone"] = pid[len(prefix):]
+            # The sql-writer reducer writes the head count as
+            # subject={"count": n}; lift it out before subject is dropped.
+            subj = snap.get("subject")
+            if snap.get("count") is None and isinstance(subj, dict):
+                snap["count"] = subj.get("count")
+            # Belt and braces for the privacy rule: nothing identity-shaped
+            # from a no-embed zone row survives past this point.
+            for key in ("subject", "identity_confirmed", "identity_uncertain", "identity_confidence"):
+                snap.pop(key, None)
+            patio.append(snap)
         except Exception as exc:  # noqa: BLE001
             logger.info("situation_street_patio_decode_failed err=%s", exc)
-            patio = None
 
     try:
         lines = summarize_street(
@@ -698,6 +727,7 @@ def fetch_street_summary(
             patio=patio,
             now=now,
             tz=tz,
+            camera=stream_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

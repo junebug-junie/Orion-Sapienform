@@ -16,7 +16,7 @@ from orion.vision.caption_echo import strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
 from .caption_sanitize import CAPTION_PROMPT, sanitize_answer, sanitize_caption
-from .crop_embeddings import attach_crop_embeddings, load_zones_fail_closed
+from .crop_embeddings import ThumbStore, attach_crop_embeddings, load_zones_fail_closed
 from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
@@ -28,6 +28,21 @@ from .when_guard import safe_when
 settings = Settings()
 
 _safe_when = safe_when
+
+_THUMB_STORE: ThumbStore | None = None
+
+
+def _thumb_store() -> ThumbStore | None:
+    """Crop thumbnails for the ask card (app/crop_embeddings.py). Empty
+    VISION_CROP_THUMB_DIR disables them."""
+    global _THUMB_STORE
+    root = str(getattr(settings, "VISION_CROP_THUMB_DIR", "") or "").strip()
+    if not root:
+        return None
+    if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
+        _THUMB_STORE = ThumbStore(
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 14.0)))
+    return _THUMB_STORE
 
 
 def _resolve_latest_frame_path() -> Path:
@@ -788,6 +803,7 @@ class VisionRunner:
                 for o in objects:
                     o.pop("embedding", None)
                     o.pop("embedding_ref", None)
+                    o.pop("thumb_ref", None)
                 crop_stats = {"error": 1, "error_detail": str(exc)[:200]}
 
         # Store as JSON artifact
@@ -859,6 +875,7 @@ class VisionRunner:
         if min_score is None:
             min_score = p.params.get("crop_embedding_min_score")
         min_score = float(box_th if min_score is None else min_score)
+        thumb_store = _thumb_store()
         return attach_crop_embeddings(
             objects,
             img,
@@ -869,6 +886,7 @@ class VisionRunner:
             model_id=embed_model_id,
             embed_profile=embed_profile_name,
             min_score=min_score,
+            thumb_fn=thumb_store.put if thumb_store is not None else None,
         )
 
     # ------------------------

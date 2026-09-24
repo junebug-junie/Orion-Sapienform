@@ -35,7 +35,8 @@ def _artifact(objects, *, inputs=None, extra=None) -> VisionArtifactPayload:
 
 def _objs():
     return [
-        VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4], zone="walkway", embedding_ref="crop:x", embedding=VEC),
+        VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4], zone="walkway", embedding_ref="crop:x", embedding=VEC,
+                     thumb_ref="thumb:" + "ab" * 32),
         VisionObject(label="person", score=0.8, box_xyxy=[5, 6, 7, 8], zone="patio"),
         VisionObject(label="chair", score=0.9, box_xyxy=[1, 1, 2, 2]),
     ]
@@ -52,6 +53,8 @@ def test_tracked_boxes_become_crops_patio_without_vector() -> None:
     assert set(zones) == {"walkway", "patio"}  # chair not tracked
     assert zones["patio"].embedding is None
     assert zones["walkway"].embedding == VEC
+    assert zones["walkway"].thumb_ref == "thumb:" + "ab" * 32  # the ask card's picture rides along
+    assert zones["patio"].thumb_ref is None
     # round-trips through the registered contract
     VisionCropObservationV1.model_validate(obs.model_dump(mode="json"))
 

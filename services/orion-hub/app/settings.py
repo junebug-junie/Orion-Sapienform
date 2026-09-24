@@ -434,6 +434,14 @@ class Settings(BaseSettings):
     PERCEPT_STORE_TIMEOUT_SEC: float = Field(default=10.0, alias="PERCEPT_STORE_TIMEOUT_SEC")
     PERCEPT_STORE_TOKEN: str = Field(default="", alias="PERCEPT_STORE_TOKEN")
 
+    # Walkway ask card pictures (scripts/ask_routes.py GET /api/vision/crop-
+    # thumbs/{sha256}). orion-vision-host writes one small JPEG per EMBEDDED
+    # crop here (never a no-embed-zone/patio box) and prunes them after 14
+    # days; docker-compose mounts it read-only at the same path.
+    HUB_VISION_CROP_THUMB_DIR: str = Field(
+        default="/mnt/telemetry/orion-vision-host/crop_thumbs", alias="HUB_VISION_CROP_THUMB_DIR"
+    )
+
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")

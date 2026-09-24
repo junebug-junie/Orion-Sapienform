@@ -172,6 +172,14 @@ class Settings(BaseSettings):
     IDENTITY_GALLERY_DIR: str = "/mnt/telemetry/orion-vision-host/identity_gallery"
     IDENTITY_ENROLLED_SUBJECT: str = "juniper"
 
+    # Walkway crop thumbnails (app/crop_embeddings.py ThumbStore): a small
+    # JPEG per EMBEDDED crop (never a no-embed-zone box), named by content
+    # hash, for the Hub's ask card. The Hub mounts this directory read-only.
+    # Pruned here after VISION_CROP_THUMB_RETENTION_DAYS without a rewrite --
+    # longer than an ask stays open (7 days). Empty disables thumbnails.
+    VISION_CROP_THUMB_DIR: str = "/mnt/telemetry/orion-vision-host/crop_thumbs"
+    VISION_CROP_THUMB_RETENTION_DAYS: float = 14.0
+
     @property
     def enabled_profiles(self) -> List[str]:
         return _split_csv(self.VISION_ENABLED_PROFILES)

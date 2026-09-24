@@ -324,12 +324,19 @@ without the migration's constraints.
 `vision_crop_observation` row per crop (`crop_id = <observation_id>:<index>`,
 idempotent). Before insert, each box's zone is recomputed from
 `config/vision_zones.yaml` (copied into the image), and any box whose declared
-OR recomputed zone is a no-embed zone (the patio) loses its embedding. The
-table's CHECK constraint is the last layer.
+OR recomputed zone is a no-embed zone (the patio) loses its embedding and its
+thumbnail ref, and the row gets `zone_no_embed = true` (from the config, never
+from the zone's name). The table's CHECK constraint (`zone_no_embed` => no
+embedding, embedding_ref, or thumb_ref) is the last layer, so a second
+`embed: false` zone is covered without editing SQL.
 
 **Individuals loop** (`app/vision_individuals.py`, every
 `VISION_INDIVIDUALS_INTERVAL_SEC`, default 60 s). Reads new crops per stream
-since `vision_individuals_cursor`; joins each embedded crop to the nearest
+since `vision_individuals_cursor`, which tracks LANDING time
+(`vision_crop_observation.created_at`), so a crop that arrives late (old
+`observed_at`) is still processed; within a batch crops are clustered in
+`observed_at` order, and a late crop outside the latest sighting becomes its
+own earlier sighting; joins each embedded crop to the nearest
 same-kind centroid at cosine >= `VISION_INDIVIDUALS_MATCH_THRESHOLD`, else opens
 a new `vision_individual` (centroid = renormalized running mean; two crops
 from one frame never join the same individual). Observations no more than
@@ -339,10 +346,12 @@ Every touched sighting is scored (`app/vision_attention_score.py`: unknown,
 unusual time from its own hour history, long dwell vs the zone's
 `dwell_rare_sec`, few prior sightings; weights in one dict; null components
 count 0 and are stored as null). At or above `VISION_ATTENTION_THRESHOLD` it
-writes one `vision_events` row `attention_worthy` per sighting. Patio boxes
-never become individuals; they only update `substrate_embodied_presence` row
-`<stream>:patio` (`subject = {"count": n}`), and only while the camera is
-producing census rows. Then: Juniper's answers are applied (`orion_ask`
+writes one `vision_events` row `attention_worthy` per sighting. No-embed-zone
+boxes never become individuals; they only update one
+`substrate_embodied_presence` row per no-embed zone, `<stream>:<zone name>`
+(e.g. `walkway:patio`; `subject = {"count": n}`, `no_embed_zone: true`), and
+only while the camera is producing census rows. The situation brief finds
+these rows by that flag. Then: Juniper's answers are applied (`orion_ask`
 answered -> `vision_individual.label`, `applied_at` set), open asks past
 `expires_at` expire, and new asks open for unlabeled individuals with
 >= `VISION_ASK_MIN_SIGHTINGS` sightings over >= `VISION_ASK_MIN_DAYS` local
@@ -363,7 +372,10 @@ hit on >= 5 days. Closed windows are graded `met` / `missed` / `unscorable`
 (no census frames in the window) and `met`/`missed` write `vision_events`
 `arrived_as_expected` / `expected_absent` citing `expectation:<id>`. While a
 window is open and unmet it sets Redis `orion:vision:expect:<stream>` (on
-`ORION_BUS_URL`) with TTL = seconds to window end. Rhythm surprise stays in
+`ORION_BUS_URL`) with TTL = seconds to window end. That key is refreshed by
+its own cheap loop every `VISION_EXPECT_REFRESH_INTERVAL_SEC` (default 60 s;
+only the open-window query, no fitting), so steering starts within a minute
+of a window opening rather than up to one rhythm tick late. Rhythm surprise stays in
 this table; it is not wired to the substrate graph until live data passes the
 metric gate.
 
@@ -374,7 +386,10 @@ skipped by the cursor; match candidates are individuals seen in
 `VISION_INDIVIDUALS_CANDIDATE_DAYS` plus every labeled one (numpy matmul);
 a failed crop write logs to `bus_fallback_log` with embeddings and boxes
 redacted; if the zones file cannot load, every embedding is stripped (fail
-closed); ask images are crop refs (`crop:<crop_id>`), never whole frames; an
+closed); ask images are crop thumbnails (`thumb:<sha256>`, written by
+orion-vision-host for embedded crops only and served by the Hub), never whole
+frames, and only from a sighting recent enough that the thumbnail outlives the
+ask (host keeps them 14 days, asks expire after 7); an
 unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
 is `missed` only if census coverage (5 s windows bridged across gaps up to
 30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is

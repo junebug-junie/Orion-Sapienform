@@ -9,8 +9,11 @@ observation fans out to N rows in ``vision_crop_observation`` (crop_id =
 is supposed to skip embeddings for boxes in a no-embed zone. This module
 does not trust that: it recomputes each box's zone from
 ``config/vision_zones.yaml`` and drops ``embedding``/``embedding_ref`` if
-EITHER the producer-declared zone or the recomputed zone is a no-embed zone.
-The DB CHECK constraint on the table is the third layer.
+EITHER the producer-declared zone or the recomputed zone is a no-embed zone,
+and it sets ``zone_no_embed`` from the config -- never from the zone's name.
+The same goes for ``thumb_ref`` (orion-vision-host's crop thumbnail). The DB
+CHECK constraint on the table (``zone_no_embed`` => no embedding, no
+embedding_ref, no thumb_ref) is the third layer.
 
 ``build_crop_rows`` is pure (zones passed in); ``persist_crop_observation``
 is the blocking DB write, called from a worker thread.
@@ -96,8 +99,10 @@ def build_crop_rows(
             zone = computed.name if computed is not None else declared
         embedding = crop.embedding
         embedding_ref = crop.embedding_ref
-        if zone in forbidden or fail_closed:
-            if embedding is not None or embedding_ref is not None:
+        thumb_ref = crop.thumb_ref
+        zone_no_embed = zone in forbidden
+        if zone_no_embed or fail_closed:
+            if embedding is not None or embedding_ref is not None or thumb_ref is not None:
                 logger.warning(
                     "vision_crop_embedding_dropped observation_id=%s index=%s zone=%s "
                     "(producer sent an embedding for a no-embed zone)",
@@ -105,6 +110,7 @@ def build_crop_rows(
                 )
             embedding = None
             embedding_ref = None
+            thumb_ref = None
         rows.append({
             "crop_id": f"{obs.observation_id}:{idx}",
             "observation_id": obs.observation_id,
@@ -118,6 +124,8 @@ def build_crop_rows(
             "zone": zone,
             "embedding_ref": embedding_ref,
             "embedding": [float(v) for v in embedding] if embedding is not None else None,
+            "thumb_ref": thumb_ref,
+            "zone_no_embed": zone_no_embed,
         })
     return rows
 
@@ -125,10 +133,10 @@ def build_crop_rows(
 _INSERT_SQL = """
     INSERT INTO vision_crop_observation
         (crop_id, observation_id, stream_id, camera_id, artifact_id, observed_at,
-         label, score, box_xyxy, zone, embedding_ref, embedding)
+         label, score, box_xyxy, zone, embedding_ref, embedding, thumb_ref, zone_no_embed)
     VALUES
         (:crop_id, :observation_id, :stream_id, :camera_id, :artifact_id, :observed_at,
-         :label, :score, :box_xyxy, :zone, :embedding_ref, :embedding)
+         :label, :score, :box_xyxy, :zone, :embedding_ref, :embedding, :thumb_ref, :zone_no_embed)
     ON CONFLICT (crop_id) DO NOTHING
 """
 

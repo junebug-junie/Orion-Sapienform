@@ -22,6 +22,8 @@ services:
       - WINDOW_BELIEF_VOTE_N=${WINDOW_BELIEF_VOTE_N:-3}
       - WINDOW_BELIEF_ENTER_VOTES=${WINDOW_BELIEF_ENTER_VOTES:-3}
       - WINDOW_BELIEF_EXIT_VOTES=${WINDOW_BELIEF_EXIT_VOTES:-0}
+      - WINDOW_CROP_OBSERVATIONS_ENABLED=${WINDOW_CROP_OBSERVATIONS_ENABLED:-true}
+      - CHANNEL_CROP_OBSERVATIONS_PUB=${CHANNEL_CROP_OBSERVATIONS_PUB:-orion:vision:crops:sql-write}
 
       # Presence writes go straight to Postgres (not via the bus + sql-writer,
       # unlike every other write this service makes) -- see app/presence.py.

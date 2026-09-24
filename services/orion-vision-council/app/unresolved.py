@@ -3,10 +3,15 @@
 docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 4.
 Study material for curiosity, not an alert. Two deterministic triggers:
 
-- ``no_label``: the host detector fired on the window (``detection_count > 0``)
-  but no box cleared the window service's naming threshold, so
-  ``summary.evidence.hard_labels`` is empty. Something was there; nothing
-  could be named.
+- ``no_label``: the detector drew a box but gave it no name -- an empty label
+  (GroundingDINO returns "" when no prompt token clears ``text_threshold``) or
+  the host runner's ``"object"`` fallback (services/orion-vision-host/app/
+  runner.py). Read from ``summary.object_counts`` (per-frame max).
+
+  Not "no box cleared the score threshold": the host already drops boxes
+  below 0.25 (config/vision_profiles.yaml ``score_threshold``) before the
+  window service applies its own 0.25 ``HARD_SCORE_THRESHOLD``, so every box
+  that arrives is a hard label and that condition can never be true.
 - ``council_uncertainty``: the council's own interpretation returned a
   non-empty ``uncertainties`` list.
 
@@ -42,15 +47,28 @@ def _detection_count(window: VisionWindowPayload) -> int:
         return 0
 
 
-def _hard_labels(window: VisionWindowPayload) -> list[str]:
-    return [str(x) for x in (_evidence(window).get("hard_labels") or []) if str(x).strip()]
+UNNAMED_LABELS = frozenset({"", "object"})
 
 
-def _guess_labels(window: VisionWindowPayload) -> list[str]:
+def _object_counts(window: VisionWindowPayload) -> dict:
     counts = (window.summary or {}).get("object_counts") or {}
-    if not isinstance(counts, dict):
-        return []
-    return sorted(str(k) for k in counts.keys())[:MAX_GUESS_LABELS]
+    return counts if isinstance(counts, dict) else {}
+
+
+def _unnamed_count(window: VisionWindowPayload) -> int:
+    total = 0
+    for label, n in _object_counts(window).items():
+        if str(label).strip().lower() in UNNAMED_LABELS:
+            try:
+                total += int(n)
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def _named_labels(window: VisionWindowPayload) -> list[str]:
+    names = [str(k) for k in _object_counts(window) if str(k).strip().lower() not in UNNAMED_LABELS]
+    return sorted(names)[:MAX_GUESS_LABELS]
 
 
 def _where(window: VisionWindowPayload) -> str:
@@ -91,20 +109,21 @@ def build_unresolved(
     """
     uncertainties = list(interpretation.uncertainties) if interpretation is not None else []
     detections = _detection_count(window)
-    no_label = detections > 0 and not _hard_labels(window)
+    unnamed = _unnamed_count(window)
+    no_label = unnamed > 0
     if not uncertainties and not no_label:
         return None
 
     where = _where(window)
-    guesses = _guess_labels(window)
+    named = _named_labels(window)
     captions = [str(c) for c in ((window.summary or {}).get("captions") or []) if str(c).strip()]
 
     tried: list[str] = []
     if detections > 0:
         tried.append(
             f"object detector on the vision host: {detections} detection(s)"
-            + (f", best guesses {', '.join(guesses)}" if guesses else "")
-            + (", none confident enough to name" if no_label else "")
+            + (f", named: {', '.join(named)}" if named else "")
+            + (f", {unnamed} box(es) it could not put a name to" if no_label else "")
         )
     if captions:
         tried.append(f"caption model said: {captions[0][:200]!r}")
@@ -126,8 +145,8 @@ def build_unresolved(
         reason = "no_label"
         description = (
             f"Something showed up on {where} that I could not name. "
-            f"The detector fired {detections} time(s) but nothing was confident enough to call it anything"
-            + (f" (closest guesses: {', '.join(guesses)})" if guesses else "")
+            f"The detector drew a box around {unnamed} thing(s) but could not say what they were"
+            + (f" (things I could name in the same view: {', '.join(named)})" if named else "")
             + "."
         )
 

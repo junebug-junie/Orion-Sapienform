@@ -88,9 +88,30 @@ def test_same_answer_twice_is_idempotent():
     store = InMemorySubstrateGraphStore()
     _apply(_event(), store)
     out = _apply(_event(ask_id="ask-2"), store)
-    assert out["outcome"] == "merged"
+    assert out["outcome"] == "updated"
     entities = [n for n in store.snapshot().nodes.values() if n.node_kind == "entity"]
     assert len(entities) == 1
+    # Newest ask wins, not the first one (merge_node would have kept ask-1).
+    assert entities[0].metadata["label_ask_id"] == "ask-2"
+    assert entities[0].aliases == []
+
+
+def test_capitalization_only_rename_is_kept():
+    store = InMemorySubstrateGraphStore()
+    _apply(_event(answer="rex"), store)
+    out = _apply(_event(answer="Rex", ask_id="ask-2"), store)
+    assert out["outcome"] == "relabelled"
+    node = store.get_node_by_id(entity_node_id_for_individual("ind-1"))
+    assert node.label == "Rex" and node.aliases == ["rex"]
+
+
+def test_late_kind_fills_in_type_and_stream():
+    store = InMemorySubstrateGraphStore()
+    _apply_with_kind(_event(), store, (None, None))
+    _apply_with_kind(_event(ask_id="ask-2"), store, ("dog", "walkway"))
+    node = store.get_node_by_id(entity_node_id_for_individual("ind-1"))
+    assert node.entity_type == "animal"
+    assert node.metadata["stream_id"] == "walkway"
 
 
 def test_rename_updates_label_and_keeps_old_as_alias():

@@ -1,7 +1,7 @@
 """Orion's open questions to Juniper, and her answers (OrionAskV1).
 
 docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 3.
-``orion-sql-writer`` opens asks (inserts ``orion_ask`` rows, publishes
+``orion-sql-writer`` (sibling walkway patch) opens asks (inserts ``orion_ask`` rows, publishes
 ``orion:ask:opened``). This module lists open asks for the Vision panel card
 and records Juniper's answer or dismissal:
 
@@ -11,10 +11,12 @@ and records Juniper's answer or dismissal:
 2. Publish ``OrionAskAnsweredV1`` on ``orion:ask:answered`` (consumed by
    ``orion-substrate-runtime``, which writes the substrate entity).
 
-The row is the source of truth. ``orion-sql-writer`` applies answers to
-``vision_individual.label`` by reading ``status='answered' AND applied_at IS
-NULL`` on its own clock, so a failed publish does not lose the answer -- it
-is reported as ``published: false`` in the response and logged.
+The row is the source of truth. ``orion-sql-writer`` (sibling walkway patch,
+not in this branch) applies answers to ``vision_individual.label`` by reading
+``status='answered' AND applied_at IS NULL`` on its own clock, so a failed
+publish does not lose the label -- it is reported as ``published: false`` and
+logged. It does lose the substrate entity for that answer: nothing replays
+``orion:ask:answered`` today (known gap).
 
 The Hub does not subscribe to ``orion:ask:opened``: it has no push channel for
 panels, so the card polls ``GET /api/asks`` and Postgres stays the only truth.
@@ -38,9 +40,21 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.ask import OrionAskAnsweredV1
 
 try:
-    from asyncpg.exceptions import UndefinedTableError as _AsyncpgUndefinedTableError
+    from asyncpg.exceptions import (
+        InterfaceError as _AsyncpgInterfaceError,
+        PostgresConnectionError as _AsyncpgConnectionError,
+        UndefinedTableError as _AsyncpgUndefinedTableError,
+    )
+
+    _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+        TimeoutError,
+        OSError,
+        _AsyncpgConnectionError,
+        _AsyncpgInterfaceError,
+    )
 except ImportError:  # pragma: no cover - optional in minimal dev envs
     _AsyncpgUndefinedTableError = None  # type: ignore[misc, assignment]
+    _TRANSPORT_ERRORS = (TimeoutError, OSError)
 
 logger = logging.getLogger("orion-hub.asks")
 
@@ -72,7 +86,7 @@ def _raise_store_http(exc: BaseException) -> None:
     if _AsyncpgUndefinedTableError is not None and isinstance(exc, _AsyncpgUndefinedTableError):
         logger.warning("ask_schema_missing error=%s", exc)
         raise HTTPException(status_code=503, detail="ask_schema_missing") from exc
-    if isinstance(exc, (TimeoutError, OSError)):
+    if isinstance(exc, _TRANSPORT_ERRORS):
         logger.warning("ask_store_transport error=%s", exc)
         raise HTTPException(status_code=503, detail="ask_store_unavailable") from exc
     raise exc

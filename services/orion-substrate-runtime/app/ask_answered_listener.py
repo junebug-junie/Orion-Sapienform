@@ -8,7 +8,7 @@ graph store the worker already uses, through the same
 ``SubstrateGraphMaterializer`` path topic-foundry ingestion uses.
 
 Not handled here, on purpose:
-- ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` from
+- ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` (sibling walkway patch) from
   the ``orion_ask`` row on its own clock (the row is the truth, not this event).
 - Dismissed asks and other ``source_kind`` values are ignored.
 
@@ -101,16 +101,22 @@ def apply_answer_to_substrate(
 
     node = record.nodes[0]
     existing = store.get_node_by_id(node.node_id)
-    if isinstance(existing, EntityNodeV1) and existing.label.strip().lower() != node.label.strip().lower():
-        # A rename. merge_node() keeps the existing label by design, so the
-        # materializer cannot express this; write the new label directly and
-        # keep the old one as an alias so recall by the old name still works.
+    if isinstance(existing, EntityNodeV1):
+        # Explicit update, not the materializer: merge_node() keeps the
+        # existing label and lets existing metadata win, so a rename (even a
+        # capitalization-only one) and the newest label_ask_id would both be
+        # silently dropped. The old name is kept as an alias so recall by it
+        # still works.
+        renamed = existing.label != node.label
         aliases: list[str] = []
         for alias in [*existing.aliases, existing.label]:
-            key = (alias or "").lower()
-            if key and key != node.label.lower() and key not in {a.lower() for a in aliases}:
+            if alias and alias != node.label and alias not in aliases:
                 aliases.append(alias)
         aliases = aliases[-_MAX_ALIASES:]
+        metadata = {**existing.metadata}
+        for key, value in node.metadata.items():
+            if value is not None:
+                metadata[key] = value
         updated = existing.model_copy(
             update={
                 "label": node.label,
@@ -122,12 +128,15 @@ def apply_answer_to_substrate(
                 "temporal": existing.temporal.model_copy(
                     update={"observed_at": max(existing.temporal.observed_at, node.temporal.observed_at)}
                 ),
-                "metadata": {**existing.metadata, "label_ask_id": event.ask_id},
+                "signals": existing.signals.model_copy(
+                    update={"confidence": max(existing.signals.confidence, node.signals.confidence)}
+                ),
+                "metadata": metadata,
             }
         )
         identity_key = SubstrateIdentityResolver().canonical_node_key(updated)
         store.upsert_node(identity_key=identity_key, node=updated, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
-        outcome = "relabelled"
+        outcome = "relabelled" if renamed else "updated"
     else:
         materializer = SubstrateGraphMaterializer(
             store=store,

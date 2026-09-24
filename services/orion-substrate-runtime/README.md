@@ -55,6 +55,8 @@ Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-wo
 - One node per individual (`node_id` derived from `individual_id`, `subject_ref=vision_individual:<id>`), so two individuals named "Bob" stay two nodes, and a later rename updates the label and keeps the old name in `aliases`.
 - Dismissals and other `source_kind`s are ignored. `vision_individual.label` itself is set by `orion-sql-writer` from the `orion_ask` row, not here.
 
+Known gap: this is plain pub/sub. If the Hub's publish fails or this service is down when Juniper answers, the `orion_ask` row is still answered (and sql-writer still labels the individual) but no entity node is written, and nothing replays it yet.
+
 Log line to look for: `ask_answered entity_created ask_id=... individual_id=... node_id=entity:vision_individual:...`.
 
 ## Health monitoring -> hub pending-attention box

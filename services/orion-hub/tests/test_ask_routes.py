@@ -233,3 +233,42 @@ def test_rendered_index_includes_card_and_script():
     assert 'id="visionAsksCard"' in html
     assert "/static/js/vision-asks.js?v=" in html
     assert "{{HUB_UI_ASSET_VERSION}}" not in html
+
+
+def test_update_sql_guards_open_and_unexpired(env):
+    """The fake re-implements the WHERE in Python; pin the real SQL text too."""
+    client, _rows, _pub = env
+    client.post("/api/asks/a1/dismiss")
+    pool = client.app.state.memory_pg_pool
+    update = next(q for q in pool.conn.sql if q.lstrip().startswith("UPDATE"))
+    norm = " ".join(update.split())
+    assert "WHERE ask_id = $1 AND status = 'open' AND (expires_at IS NULL OR expires_at > now())" in norm
+    assert "answered_at = now()" in norm
+    assert "RETURNING ask_id, status, answer, answered_at, source_kind, source_ref" in norm
+
+
+def test_connection_errors_map_to_503():
+    from asyncpg.exceptions import ConnectionDoesNotExistError, InterfaceError
+
+    class _BoomPool:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def acquire(self):
+            exc = self.exc
+
+            class _Ctx:
+                async def __aenter__(self_inner):
+                    raise exc
+
+                async def __aexit__(self_inner, *a):
+                    return False
+
+            return _Ctx()
+
+    for exc in (ConnectionDoesNotExistError("gone"), InterfaceError("closed")):
+        app = FastAPI()
+        app.include_router(ask_routes.router)
+        app.state.memory_pg_pool = _BoomPool(exc)
+        r = TestClient(app).get("/api/asks")
+        assert r.status_code == 503 and r.json()["detail"] == "ask_store_unavailable"

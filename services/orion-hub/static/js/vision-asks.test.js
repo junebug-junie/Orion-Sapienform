@@ -49,10 +49,11 @@ function fakeDoc() {
   const byId = {};
   function mk(tag) {
     const node = {
-      tagName: tag, className: '', textContent: '', children: [], attrs: {}, listeners: {},
+      tagName: tag, className: '', textContent: '', children: [], attrs: {}, listeners: {}, disabled: false,
       classList: { remove() {}, add() {} },
       value: '',
       setAttribute(k, v) { this.attrs[k] = v; },
+      getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       appendChild(c) { this.children.push(c); return c; },
       removeChild(c) { this.children = this.children.filter((x) => x !== c); },
       get firstChild() { return this.children[0] || null; },
@@ -62,7 +63,7 @@ function fakeDoc() {
   }
   byId.visionAsksList = mk('div');
   byId.visionAsksStatus = mk('div');
-  return { hidden: false, createElement: mk, getElementById: (id) => byId[id] || null, byId };
+  return { hidden: false, activeElement: null, createElement: mk, getElementById: (id) => byId[id] || null, byId };
 }
 
 function find(node, pred) {
@@ -121,4 +122,49 @@ test('Answer with an empty box does not POST', async () => {
   assert.equal(posted, false);
   assert.match(note.textContent, /Type an answer/);
   handle.stop();
+});
+
+test('poll is suppressed while an answer is being typed', async () => {
+  const doc = fakeDoc();
+  const fetchFn = async () => ({ ok: true, status: 200, json: async () => ({ asks: [{ ask_id: 'a1', question: 'q' }] }) });
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  assert.equal(handle.isTyping(), false);
+  const card = doc.byId.visionAsksList.children[0];
+  const input = find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'a1');
+  input.value = 'half-typ';
+  assert.equal(handle.isTyping(), true);
+  input.value = '';
+  doc.activeElement = input;
+  assert.equal(handle.isTyping(), true);
+  handle.stop();
+});
+
+test('buttons are disabled while the request is in flight', async () => {
+  const doc = fakeDoc();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') {
+      await gate;
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    return { ok: true, status: 200, json: async () => ({ asks: [{ ask_id: 'a1', question: 'q' }] }) };
+  };
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  const dismissBtn = find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'dismiss');
+  const answerBtn = find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer');
+  const pending = dismissBtn.listeners.click();
+  assert.equal(dismissBtn.disabled, true);
+  assert.equal(answerBtn.disabled, true);
+  release();
+  await pending;
+  assert.equal(dismissBtn.disabled, false);
+  handle.stop();
+});
+
+test('a non-string error detail (FastAPI 422 list) is not shown as [object Object]', () => {
+  assert.equal(asks.errorLine(422, [{ msg: 'x' }]), 'Something went wrong.');
 });

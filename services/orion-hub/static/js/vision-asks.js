@@ -44,7 +44,8 @@
     if (status === 409) return "Someone already answered this one, or it expired.";
     if (status === 404) return "That question no longer exists.";
     if (status === 503) return "Can't reach the question store right now.";
-    return "Something went wrong" + (detail ? ": " + detail : ".");
+    const text = typeof detail === "string" ? detail : "";
+    return "Something went wrong" + (text ? ": " + text : ".");
   }
 
   function el(doc, tag, cls, text) {
@@ -81,11 +82,20 @@
     dismissBtn.setAttribute("type", "button");
     dismissBtn.setAttribute("data-ask-action", "dismiss");
     const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
+    // Both buttons are locked while a request is in flight, so a double
+    // click cannot send a second POST and flash a spurious 409.
+    const buttons = [answerBtn, dismissBtn];
+    function run(action, text) {
+      buttons.forEach(function (b) { b.disabled = true; });
+      return Promise.resolve(onAction(vm.askId, action, text, note)).finally(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+    }
     answerBtn.addEventListener("click", function () {
-      onAction(vm.askId, "answer", input.value, note);
+      return run("answer", input.value);
     });
     dismissBtn.addEventListener("click", function () {
-      onAction(vm.askId, "dismiss", "", note);
+      return run("dismiss", "");
     });
     row.appendChild(input);
     row.appendChild(answerBtn);
@@ -113,6 +123,23 @@
     const list = doc.getElementById("visionAsksList");
     const status = doc.getElementById("visionAsksStatus");
     if (!list || !status) return null;
+
+    // True while Juniper is mid-answer: a box has focus or unsent text. The
+    // timed poll skips then, because refresh() rebuilds every card and would
+    // wipe what she is typing.
+    function isTyping() {
+      const active = doc.activeElement;
+      if (active && active.getAttribute && active.getAttribute("data-ask-input")) return true;
+      return hasText(list);
+    }
+
+    function hasText(node) {
+      if (!node) return false;
+      if (node.getAttribute && node.getAttribute("data-ask-input") && String(node.value || "").trim()) return true;
+      const kids = node.children || [];
+      for (let i = 0; i < kids.length; i++) if (hasText(kids[i])) return true;
+      return false;
+    }
 
     async function refresh() {
       try {
@@ -156,9 +183,9 @@
 
     refresh();
     const timer = global.setInterval(function () {
-      if (!doc.hidden) refresh();
+      if (!doc.hidden && !isTyping()) refresh();
     }, POLL_MS);
-    return { refresh: refresh, onAction: onAction, stop: function () { global.clearInterval(timer); } };
+    return { refresh: refresh, onAction: onAction, isTyping: isTyping, stop: function () { global.clearInterval(timer); } };
   }
 
   const api = {

@@ -482,6 +482,7 @@ async def _maybe_score_pending_expectation(
             read_recent_vision_events,
             max_age_sec=settings.reverie_perception_max_age_sec,
             limit=1,
+            stream_ids=settings.reverie_perception_stream_id_list,
         )
     except Exception as exc:
         logger.warning(
@@ -607,6 +608,7 @@ async def run_reverie_once(
                 read_recent_vision_events,
                 max_age_sec=settings.reverie_perception_max_age_sec,
                 limit=settings.reverie_perception_max_events,
+                stream_ids=settings.reverie_perception_stream_id_list,
             )
 
         loop_outcomes, recent_percepts = await asyncio.gather(

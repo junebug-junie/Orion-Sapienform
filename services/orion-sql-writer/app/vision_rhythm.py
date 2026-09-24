@@ -495,9 +495,10 @@ def run_one_rhythm_cycle(
                         support_days=r.support_days, tz=tz, arrived_at=arrived, coverage=coverage)
                     conn.execute(text(
                         "INSERT INTO vision_events (event_id, event_type, narrative, entities, tags, confidence, "
-                        "salience, evidence_refs, created_at) VALUES (:id, :et, :n, CAST(:e AS jsonb), "
-                        "CAST(:tg AS jsonb), :c, :sal, CAST(:ev AS jsonb), now()) ON CONFLICT (event_id) DO NOTHING"),
-                        {"id": event_id, "et": "arrived_as_expected" if status == "met" else "expected_absent",
+                        "salience, evidence_refs, stream_id, created_at) VALUES (:id, :et, :n, CAST(:e AS jsonb), "
+                        "CAST(:tg AS jsonb), :c, :sal, CAST(:ev AS jsonb), :sid, now()) "
+                        "ON CONFLICT (event_id) DO NOTHING"),
+                        {"id": event_id, "sid": r.stream_id, "et": "arrived_as_expected" if status == "met" else "expected_absent",
                          "n": narrative, "e": json.dumps([r.subject_label]),
                          "tg": json.dumps([r.stream_id, "rhythm", r.subject_key]), "c": r.confidence,
                          # a confident miss is more worth noticing than a confident hit

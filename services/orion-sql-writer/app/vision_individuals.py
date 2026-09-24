@@ -728,9 +728,9 @@ def _score_and_maybe_event(conn, s: Sighting, ind: Individual, zone_rare: Dict[s
     tags = [s.stream_id, "walkway_camera", ind.kind] + ([s.zone] if s.zone else [])
     res = conn.execute(text(
         "INSERT INTO vision_events (event_id, event_type, narrative, entities, tags, confidence, salience, "
-        "evidence_refs, created_at) VALUES (:id, 'attention_worthy', :n, CAST(:e AS jsonb), CAST(:t AS jsonb), "
-        ":sc, :sc, CAST(:ev AS jsonb), now()) ON CONFLICT (event_id) DO NOTHING"),
-        {"id": f"attention-{s.sighting_id}", "n": narrative, "e": json.dumps([ind.kind]),
+        "evidence_refs, stream_id, created_at) VALUES (:id, 'attention_worthy', :n, CAST(:e AS jsonb), "
+        "CAST(:t AS jsonb), :sc, :sc, CAST(:ev AS jsonb), :sid, now()) ON CONFLICT (event_id) DO NOTHING"),
+        {"id": f"attention-{s.sighting_id}", "sid": s.stream_id, "n": narrative, "e": json.dumps([ind.kind]),
          "t": json.dumps(tags), "sc": result.score,
          "ev": json.dumps([f"sighting:{s.sighting_id}", f"individual:{ind.individual_id}"])})
     return bool(res.rowcount)

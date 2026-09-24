@@ -299,6 +299,12 @@ class VisionEventBundleItem(BaseModel):
     confidence: float
     salience: float
     evidence_refs: List[str]
+    # Additive (2026-09-24, walkway camera). Which camera this narrative is
+    # about. vision_events is shared by every camera; room readers
+    # (orion/situational/perception_reader.py, orion-thought's
+    # vision_reader.py) filter on it so a walkway (street/patio) narrative is
+    # never read as the room. None on legacy producers.
+    stream_id: Optional[str] = None
 
 
 class VisionEventPayload(BaseModel):

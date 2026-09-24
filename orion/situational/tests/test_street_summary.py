@@ -204,7 +204,7 @@ def _cfg(**over):
 def _stub_room(monkeypatch, percept=None):
     from orion.situational.perception_reader import PresenceResolution
 
-    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: percept)
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: percept)
     monkeypatch.setattr(
         situation_mod, "fetch_presence_resolved",
         lambda stream_ids, *, max_age_seconds: PresenceResolution(None, None, True),

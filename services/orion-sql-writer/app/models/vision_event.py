@@ -17,4 +17,8 @@ class VisionEventSQL(Base):
     salience = Column(Float, nullable=True)
     evidence_refs = Column(JSONB, default=list)
     correlation_id = Column(String, nullable=True, index=True)
+    # Which camera (2026-09-24, walkway camera). NULL on rows written before
+    # the column existed -- all room-camera rows. Added at boot by main.py
+    # (ALTER ... ADD COLUMN IF NOT EXISTS) and by the walkway migration.
+    stream_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

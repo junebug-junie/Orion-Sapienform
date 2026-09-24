@@ -47,6 +47,17 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"
             )
+            # Walkway camera (2026-09-24): VisionEventSQL now declares
+            # stream_id, so the key enters every vision_events INSERT -- same
+            # UndefinedColumn hazard as `measurements` above. Nullable,
+            # additive; NULL means "written before cameras were told apart".
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx "
+                "ON vision_events (stream_id, created_at);"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )

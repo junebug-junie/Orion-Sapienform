@@ -773,6 +773,9 @@ def project_interpretation_to_events(
 ) -> VisionEventPayload:
     fallback_refs = list(window.artifact_ids or [])
     bundle_items: list[VisionEventBundleItem] = []
+    # Carried onto every row so room readers can tell a walkway narrative
+    # (street + patio) from a room one. None when the window has no stream.
+    stream_id = (window.stream_id or "").strip() or None
 
     for candidate in interpretation.event_candidates:
         evidence_refs = list(candidate.evidence_refs) if candidate.evidence_refs else fallback_refs
@@ -786,6 +789,7 @@ def project_interpretation_to_events(
                 confidence=candidate.confidence,
                 salience=candidate.salience,
                 evidence_refs=evidence_refs,
+                stream_id=stream_id,
             )
         )
 

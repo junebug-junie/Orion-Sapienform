@@ -81,7 +81,7 @@ def _diag():
 @pytest.fixture(autouse=True)
 def _no_real_db(monkeypatch):
     """Never touch a database from these tests."""
-    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: None)
     # Every existing test that reaches the "ok" path now also calls
     # the resolved presence read -- without this default, they would attempt
     # a real Postgres connection the moment presence fusion was added.
@@ -117,7 +117,7 @@ def test_disabled_yields_unavailable_not_an_error() -> None:
 
 
 def test_no_percept_is_unavailable(monkeypatch) -> None:
-    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: None)
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
     assert ctx.source == "unavailable"
@@ -128,7 +128,7 @@ def test_fresh_percept_is_available(monkeypatch) -> None:
     monkeypatch.setattr(
         situation_mod,
         "fetch_latest_percept",
-        lambda: {"scene_summary": "Three chairs and a door are visible.", "observed_at": NOW},
+        lambda **_: {"scene_summary": "Three chairs and a door are visible.", "observed_at": NOW},
     )
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is True
@@ -147,7 +147,7 @@ def test_stale_percept_is_withheld_entirely(monkeypatch) -> None:
     monkeypatch.setattr(
         situation_mod,
         "fetch_latest_percept",
-        lambda: {"scene_summary": "A person is at the desk.", "observed_at": old},
+        lambda **_: {"scene_summary": "A person is at the desk.", "observed_at": old},
     )
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True, perception_max_age_seconds=900), _diag()))
     assert ctx.available is False
@@ -161,14 +161,14 @@ def test_age_boundary_is_inclusive_of_the_threshold(monkeypatch) -> None:
     monkeypatch.setattr(
         situation_mod,
         "fetch_latest_percept",
-        lambda: {"scene_summary": "A door.", "observed_at": at_limit},
+        lambda **_: {"scene_summary": "A door.", "observed_at": at_limit},
     )
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True, perception_max_age_seconds=900), _diag()))
     assert ctx.available is True, "exactly at the threshold is still fresh"
 
 
 def test_reader_exception_fails_open(monkeypatch) -> None:
-    def _boom():
+    def _boom(**_):
         raise RuntimeError("db gone")
 
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", _boom)
@@ -181,7 +181,7 @@ def test_reader_exception_fails_open(monkeypatch) -> None:
 
 def test_empty_narrative_is_not_a_percept(monkeypatch) -> None:
     monkeypatch.setattr(
-        situation_mod, "fetch_latest_percept", lambda: {"scene_summary": "", "observed_at": NOW}
+        situation_mod, "fetch_latest_percept", lambda **_: {"scene_summary": "", "observed_at": NOW}
     )
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
@@ -286,7 +286,7 @@ def test_extra_fields_are_rejected() -> None:
 def _with_percept(monkeypatch, text: str = "Three chairs and a door are visible."):
     monkeypatch.setattr(
         situation_mod, "fetch_latest_percept",
-        lambda: {"scene_summary": text, "observed_at": NOW},
+        lambda **_: {"scene_summary": text, "observed_at": NOW},
     )
 
 
@@ -405,7 +405,7 @@ def test_presence_prose_never_enriches_a_stale_or_unavailable_percept(monkeypatc
         )
 
     monkeypatch.setattr(situation_mod, "fetch_presence_resolved", _spy)
-    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)  # unavailable
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: None)  # unavailable
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
     assert ctx.scene_summary is None, "no percept means no narrative, presence or not"
@@ -609,7 +609,7 @@ def test_ask_survives_the_stale_percept_early_return(monkeypatch) -> None:
     monkeypatch.setattr(
         situation_mod,
         "fetch_latest_percept",
-        lambda: {
+        lambda **_: {
             "scene_summary": "An empty room.",
             "observed_at": NOW - timedelta(seconds=100000),
         },

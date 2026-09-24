@@ -76,3 +76,32 @@ def test_vision_event_bundle_item_data_constructs_vision_event_sql_without_raisi
     assert row.confidence == evt.confidence
     assert row.salience == evt.salience
     assert row.evidence_refs == evt.evidence_refs
+
+
+def test_stream_id_rides_from_bundle_item_onto_the_row() -> None:
+    """Room readers filter vision_events on stream_id; a walkway narrative
+    that lost it on the way would read as a legacy room row."""
+    row = VisionEventSQL(**_make_event(stream_id="walkway").model_dump())
+    assert row.stream_id == "walkway"
+
+
+def test_every_raw_vision_events_insert_writes_stream_id() -> None:
+    """The walkway reducers write vision_events with raw SQL, not the ORM.
+    Every such INSERT must name the camera, or its rows would pass the room
+    readers' legacy (stream_id IS NULL) branch."""
+    import re
+
+    app_dir = SERVICE_ROOT / "app"
+    found = 0
+    for path in sorted(app_dir.glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"INSERT INTO vision_events \(([^)]*)\)", src):
+            found += 1
+            cols = {c.strip() for c in m.group(1).replace('"', " ").split(",")}
+            assert "stream_id" in cols, f"{path.name}: vision_events INSERT without stream_id"
+    assert found >= 2  # vision_rhythm + vision_individuals
+
+
+def test_boot_ddl_adds_vision_events_stream_id() -> None:
+    src = (SERVICE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    assert "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT" in src

@@ -2,7 +2,16 @@
 -- docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md
 --
 -- Apply: psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_walkway_camera_v1.sql
--- Rollback: drop the tables below (nothing else depends on them).
+-- Rollback: drop the tables below (nothing else depends on them), and
+--   ALTER TABLE vision_events DROP COLUMN stream_id;  (additive, nullable)
+
+-- vision_events is shared by every camera. Which camera a narrative is about,
+-- so room readers never read a walkway (street/patio) narrative as the room.
+-- NULL = written before this column existed (room cameras only). orion-sql-
+-- writer also applies this at boot, since its ORM now writes the column.
+ALTER TABLE vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;
+CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx
+    ON vision_events (stream_id, created_at);
 
 -- Raw tracked-label boxes, one row per box, written by sql-writer from
 -- orion:vision:crops:sql-write. Kept 7 days (pruned by the individuals

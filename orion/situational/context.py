@@ -1473,7 +1473,9 @@ async def _build_room_perception_context(
     reading = await _resolve_presence_and_identity_ask(cfg, diagnostics)
 
     try:
-        percept = fetch_latest_percept()
+        percept = fetch_latest_percept(
+            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id]
+        )
     except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
         diagnostics.provider_status["perception"] = "error"
         diagnostics.provider_errors["perception"] = str(exc)

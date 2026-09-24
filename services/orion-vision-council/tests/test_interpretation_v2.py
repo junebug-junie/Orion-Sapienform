@@ -418,6 +418,16 @@ def test_project_event_candidates_to_vision_event_payload():
     assert event.salience == pytest.approx(0.7)
     assert event.evidence_refs == ["art-1"]
     assert event.event_id
+    # Room readers filter vision_events on this; a walkway narrative must
+    # carry its camera or it would read as a legacy room row.
+    assert event.stream_id == "stream-1"
+
+
+def test_projected_event_stream_id_is_none_without_a_window_stream():
+    window = _window(stream_id=None)
+    outcome = _parse(_valid_interpretation_json(window), window)
+    payload = project_interpretation_to_events(outcome.interpretation, window)
+    assert payload.events[0].stream_id is None
 
 
 def test_parse_interpretation_wrapper():

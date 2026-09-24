@@ -724,3 +724,95 @@ def test_log_orion_metacognition_recall_disabled_by_verb_default():
     decision = delivery_safe_recall_decision(recall_cfg, plan.steps, plan_verb_name=plan.verb_name)
     assert str(plan.metadata.get("recall_enabled_default") or "").lower() == "false"
     assert decision["run_recall"] is False
+
+
+def test_draft_prompt_has_no_zen_or_pressure_and_renders_event_evidence():
+    """2026-09-24: zen_state/pressure are flat (zen_score 0.965 +/- 0.01) and
+    drove "zen persists" narration in 57-97% of rows; the prompt now carries
+    the trigger's own deterministic evidence instead."""
+    executor_module = _load_executor_module()
+    raw = _load_template("log_orion_metacognition_draft.j2")
+    assert "zen_state" not in raw
+    assert "trigger.pressure" not in raw
+    assert "{{ metacog_event_evidence }}" in raw
+
+    ctx = _draft_ctx()
+    upstream = {
+        "threshold": 0.01,
+        "recon_loss": 0.03,
+        "top_channels": ["failure_pressure=0.35"],
+        "deviation_direction": "elevated",
+    }
+    ctx["trigger"] = {
+        "trigger_kind": "telemetry_anomaly",
+        "reason": "telemetry_anomaly:elevated",
+        "pressure": 0.9,
+        "zen_state": "zen",
+        "upstream": upstream,
+    }
+    ctx["metacog_event_evidence"] = executor_module._metacog_event_evidence_cue(
+        executor_module.map_metacog_trigger("telemetry_anomaly", "r", upstream)
+    )
+    prompt = executor_module._render_prompt(raw, ctx)
+    assert "zen" not in prompt.lower()
+    assert "Pressure:" not in prompt
+    assert "severity=critical" in prompt
+    assert "recon_loss 0.0300 vs threshold 0.0100 (3.00x), elevated" in prompt
+
+
+def test_publish_uses_deterministic_summary_when_draft_fell_back():
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+    scratch = CollapseMirrorEntryV2(
+        event_id="evt-fb",
+        id="evt-fb",
+        trigger="transport",
+        observer="orion",
+        observer_state=["metacog"],
+        type="idle",
+        emergent_entity="Fallback Baseline",
+        summary="Fallback mirror draft. Trigger=transport (x); zen=zen.",
+        mantra="Compress truth; keep the imprint.",
+        field_resonance="x",
+        resonance_signature="x",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    scratch["state_snapshot"] = {
+        "telemetry": {"metacog_draft_mode": "fallback", "metacog_draft_fallback_reason": "no_json"}
+    }
+    ctx = {
+        "trigger": {
+            "trigger_kind": "transport",
+            "reason": "transport:cortex-exec:timeout_count=2",
+            "upstream": {
+                "service": "cortex-exec",
+                "success_count": 3,
+                "timeout_count": 2,
+                "channel_counts": {"orion:state:request": 5},
+                "evidence_source": "rpc_health_snapshot",
+                "success_latency_ms_p95": 800.0,
+                "latency_p95_threshold_ms": 5000.0,
+            },
+        },
+        "collapse_entry": scratch,
+    }
+    step = ExecutionStep(
+        step_name="publish", verb_name="log_orion_metacognition", services=["MetacogPublishService"], order=1
+    )
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=ServiceRef(name="test", node="test", version="1.0"),
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+    assert result.status == "success"
+    payload = mock_bus.publish.call_args[0][1].payload
+    assert payload["severity"] == "critical"
+    assert payload["summary"].startswith("transport (critical): cortex-exec: 2 RPC timeout(s)")
+    assert "zen" not in payload["summary"].lower()
+    assert "cortex-exec: timeouts 2/5 calls" in payload["what_changed"]["evidence"]
+    assert payload["touches"] == ["cortex-exec", "orion:state:request"]

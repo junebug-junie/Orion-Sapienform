@@ -1,0 +1,58 @@
+name: metacog-capture-tests
+
+# Deterministic gate for the metacog row mapping (spec 2026-09-24, section B/C):
+# evidence_map unit tests, the acceptance-check eval on real stored triggers,
+# and the cortex-exec publish/draft lanes that consume them. No DB, bus or LLM.
+
+on:
+  pull_request:
+    paths:
+      - "orion/metacog/**"
+      - "orion/schemas/metacog_entry.py"
+      - "orion/cognition/prompts/log_orion_metacognition_draft.j2"
+      - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/tests/test_metacog_*.py"
+      - "scripts/analysis/replay_metacog_capture.py"
+      - ".github/workflows/metacog-capture-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/metacog/**"
+      - "orion/schemas/metacog_entry.py"
+      - "orion/cognition/prompts/log_orion_metacognition_draft.j2"
+      - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/tests/test_metacog_*.py"
+      - "scripts/analysis/replay_metacog_capture.py"
+      - ".github/workflows/metacog-capture-tests.yml"
+
+jobs:
+  unit:
+    name: Metacog capture — evidence_map, eval, publish lane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-cortex-exec/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: evidence_map + capture replay + schema tests
+        run: |
+          PYTHONPATH=. python -m pytest -q \
+            orion/metacog/tests/test_evidence_map.py \
+            orion/metacog/tests/test_service.py \
+            orion/metacog/tests/test_capture_replay.py \
+            orion/schemas/tests/test_metacog_entry.py
+      - name: Acceptance-check eval (spec checks 4-6 on real fixture)
+        run: PYTHONPATH=. python orion/metacog/evals/run_capture_eval.py
+      - name: cortex-exec metacog lanes
+        working-directory: services/orion-cortex-exec
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q \
+            tests/test_metacog_publish_lane.py \
+            tests/test_metacog_two_pass_draft.py \
+            tests/test_metacog_trend_cue_prompt_render.py \
+            tests/test_metacog_draft_trigger_kind_type_mapping.py

@@ -384,3 +384,27 @@ def test_floor_is_frozen_upward_while_saturation_is_open():
     assert sat and sat[0].phase == "open"
     assert not [e for e in sat if e.phase == "close"]
     assert len([e for e in events if e.condition == "regime_shift"]) == 1
+
+
+def _ratio_median_after(state, rng, *, center, n_calls, windows, start=0):
+    _, obs = _run(state, ((i, {HOP: _stats(_noisy(rng, center, n=n_calls))}) for i in range(start, start + windows)))
+    rs = sorted(o.saturation_ratio for o in obs if o.evaluated)
+    return rs[len(rs) // 2]
+
+
+def test_sparse_calm_key_ratio_rests_at_one():
+    """Regression (mesh eval, 2026-09-24): a floor following raw window means
+    tracked the noise's lower envelope, so a calm pooled 1-call/window key read
+    ratio ~1.4 forever. Floor-follows-level must rest near 1."""
+    state = new_state(CFG)
+    r = _ratio_median_after(state, random.Random(21), center=300.0, n_calls=1, windows=1500)
+    assert 0.95 <= r <= 1.1
+
+
+def test_unlucky_first_window_does_not_seed_the_floor():
+    """Regression (mesh eval): a low first draw seeded floor and level; the level
+    recovered, the slow-up floor did not (ratio stuck at 1.31)."""
+    state = new_state(CFG)
+    _run(state, [(0, {HOP: _stats([150.0] * 5)})])  # ~0.6x the true center
+    r = _ratio_median_after(state, random.Random(22), center=250.0, n_calls=5, windows=600, start=1)
+    assert 0.95 <= r <= 1.1

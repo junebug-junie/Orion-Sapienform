@@ -29,10 +29,16 @@ producer) is skipped entirely -- nothing is guessed from the pooled p95.
   a single sample.
 - ``level``: the same window log-mean folded *without* guard 1. See
   "Deviation from the spec" below.
-- ``floor``: asymmetric EWMA of the window log-mean. Time-based half-lives,
+- ``floor``: asymmetric EWMA of ``level`` (see "Deviation"). Time-based half-lives,
   fast down / very slow up, and frozen upward while a saturation episode is
   open.
 - ``calls``: EWMA of calls-per-minute on this key, evidence only (guard 4).
+
+Warm-up: ``fast`` and ``level`` fold with ``alpha = max(alpha, 1/n)`` (a running
+mean for the first ~1/alpha windows), and ``floor`` simply equals ``level``
+until ``n_warm`` evaluations -- otherwise one unlucky first window would seed
+a floor that its slow-up half-life keeps for days (measured in the mesh eval:
+a calm hop stuck at ratio 1.31 from a single low first draw).
 
 Sparse keys: a key that has fewer than ``min_calls`` successes in one window
 accumulates sufficient statistics across consecutive windows (up to
@@ -66,6 +72,14 @@ reported as a regime shift -- the spike episode would simply stay open
 indefinitely. ``level`` (the unguarded window-mean EWMA) tracks both creep and
 steps, so the ratio uses it instead. ``fast`` is still the only thing ``z`` is
 measured against, so guard 1 still protects the spike detector.
+
+The spec defines the floor as an asymmetric EWMA of the *window* log-mean.
+Measured in the mesh eval, that cannot rest at 1: with a fast-down / slow-up
+filter over raw window means, the floor tracks the lower envelope of window
+noise, so a perfectly calm hop read ``saturation_ratio`` 1.22-1.41 (sparse
+hops worst) -- a structural floor under "calm", the same failure class as the
+``sqrt(2/pi)`` floor in CLAUDE.md's metric gate. **Floor follows level:** it is
+an asymmetric EWMA of ``level`` (already smoothed), so calm reads ~1.0.
 
 The spec also quotes ``alpha_up ~= 0.002`` per 30 s window as "a half-life of
 about 3 days". Those disagree: 0.002 per window is a ~2.9 h half-life, which
@@ -569,7 +583,8 @@ def fold_snapshot(
                     prev_variance=ks.fast_var,
                     prev_count=ks.fast_count,
                     value=fold_value,
-                    alpha=config.fast_alpha,
+                    # running-mean warm-up: no single first window dominates
+                    alpha=max(config.fast_alpha, 1.0 / (ks.fast_count + 1)),
                     min_variance=config.min_variance,
                 )
                 ks.fast_mean, ks.fast_var = upd.ewma, upd.variance
@@ -579,21 +594,27 @@ def fold_snapshot(
             if ks.level_count == 0:
                 ks.level_mean = m
             else:
-                ks.level_mean = config.level_alpha * m + (1 - config.level_alpha) * ks.level_mean
+                la = max(config.level_alpha, 1.0 / (ks.level_count + 1))
+                ks.level_mean = la * m + (1 - la) * ks.level_mean
             ks.level_count += 1
 
             # floor: asymmetric, time-based, frozen upward while saturated.
-            if ks.floor is None:
-                ks.floor, ks.floor_ts = m, now
+            # It follows the smoothed *level*, not the raw window mean -- see
+            # "floor follows level" in the module docstring.
+            lv = ks.level_mean
+            if ks.floor is None or ks.level_count <= config.n_warm:
+                # Until warm, the floor is the level: an asymmetric filter
+                # seeded from one early draw would keep that draw for days.
+                ks.floor, ks.floor_ts = lv, now
             else:
                 dt = now - (ks.floor_ts or now)
-                if m < ks.floor:
+                if lv < ks.floor:
                     a = _half_life_alpha(dt, config.floor_half_life_down_s)
                 elif "saturation" in ks.episodes:
                     a = 0.0
                 else:
                     a = _half_life_alpha(dt, config.floor_half_life_up_s)
-                ks.floor = a * m + (1 - a) * ks.floor
+                ks.floor = a * lv + (1 - a) * ks.floor
                 ks.floor_ts = now
 
             ratio = math.exp(ks.level_mean - ks.floor)

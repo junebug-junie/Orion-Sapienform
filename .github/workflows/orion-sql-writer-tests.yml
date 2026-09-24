@@ -60,6 +60,9 @@ jobs:
             services/orion-sql-writer/tests/test_vision_walkway_persist.py \
             services/orion-sql-writer/tests/test_vision_individuals.py \
             services/orion-sql-writer/tests/test_vision_rhythm.py \
+            services/orion-sql-writer/tests/test_vision_walkway_zones_thumbs_cursor.py \
+            services/orion-sql-writer/tests/test_vision_expect_refresh.py \
+            services/orion-sql-writer/tests/test_vision_event_sql_shape.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py
 
   sql-writer-integration:

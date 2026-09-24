@@ -9,9 +9,14 @@
 -- so room readers never read a walkway (street/patio) narrative as the room.
 -- NULL = written before this column existed (room cameras only). orion-sql-
 -- writer also applies this at boot, since its ORM now writes the column.
-ALTER TABLE vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;
-CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx
-    ON vision_events (stream_id, created_at);
+DO $$
+BEGIN
+    IF to_regclass('vision_events') IS NOT NULL THEN
+        ALTER TABLE vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;
+        CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx
+            ON vision_events (stream_id, created_at);
+    END IF;
+END $$;
 
 -- Raw tracked-label boxes, one row per box, written by sql-writer from
 -- orion:vision:crops:sql-write. Kept 7 days (pruned by the individuals

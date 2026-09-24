@@ -52,6 +52,18 @@ services:
       - WM_VRAM_SOFT_FLOOR_MB=${WM_VRAM_SOFT_FLOOR_MB}
       - WM_VRAM_HARD_FLOOR_MB=${WM_VRAM_HARD_FLOOR_MB}
 
+      # Scopes what torch's CUDA runtime can see -- NOT a full hardware
+      # lockdown: `gpus: all` below still hands this container raw driver
+      # access, and pynvml/NVML (app/gpu.py's own VRAM inspection) keeps
+      # enumerating every physical GPU regardless of this variable (that
+      # mismatch is exactly why app/gpu.py::physical_to_visible_cuda_index
+      # exists -- see its docstring). A first attempt at even this
+      # torch-level scoping broke device selection outright (pynvml/torch
+      # index mismatch) and was reverted (PR #2313); that translation
+      # function fixes it. Review finding, worded precisely after an
+      # earlier draft overclaimed this as a complete isolation fix.
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
+
       - WM_GPU2_CAPACITY_ENABLED=${WM_GPU2_CAPACITY_ENABLED}
       - WM_GPU2_CAPACITY_URL=${WM_GPU2_CAPACITY_URL}
       - WM_GPU2_CAPACITY_BACKEND_KEY=${WM_GPU2_CAPACITY_BACKEND_KEY}

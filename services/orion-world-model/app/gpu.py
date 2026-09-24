@@ -11,6 +11,7 @@ module docstring).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -20,6 +21,44 @@ try:
     import pynvml  # provided by nvidia-ml-py
 except Exception:  # pragma: no cover - absent on non-GPU dev/test hosts
     pynvml = None
+
+
+def physical_to_visible_cuda_index(
+    physical_idx: int, *, cuda_visible_devices: Optional[str] = None
+) -> Optional[int]:
+    """Translate a PHYSICAL GPU index (what pynvml/NVML reports, and what
+    operator-facing config like WM_DEFAULT_DEVICE/WM_DEVICES names -- same
+    convention as orion-diffusion-host's DIFFUSION_POWER_INTENT_GPU_INDEX,
+    "the PHYSICAL nvidia-smi index...NOT the container's cuda:N") into the
+    index torch's CUDA runtime will actually see for it.
+
+    Without this, `f"cuda:{physical_idx}"` is only correct when
+    CUDA_VISIBLE_DEVICES is unset. Confirmed live 2026-09-24: locking this
+    container to one physical GPU (CUDA_VISIBLE_DEVICES=2) broke device
+    selection with `RuntimeError: CUDA error: invalid device ordinal` --
+    pynvml keeps enumerating every physical GPU regardless of
+    CUDA_VISIBLE_DEVICES (confirmed live: nvmlDeviceGetCount() still
+    reported 4, and index 0 was a different physical card entirely, a
+    V100-PCIE-32GB, not the PG500-216 this service targets), while torch's
+    CUDA runtime only sees the remapped subset. `pick_best_gpu` below picks
+    correctly using physical indices (NVML-consistent); this function is
+    the missing translation step before that pick becomes a torch device
+    string.
+
+    Returns the unchanged index when CUDA_VISIBLE_DEVICES is unset (today's
+    behavior, unaffected). Returns None when it IS set but does not list
+    this physical index at all -- a real misconfiguration to surface, not
+    a case to silently guess through.
+    """
+    raw = (cuda_visible_devices if cuda_visible_devices is not None
+           else os.environ.get("CUDA_VISIBLE_DEVICES", "")).strip()
+    if not raw:
+        return physical_idx
+    visible = [v.strip() for v in raw.split(",") if v.strip()]
+    try:
+        return visible.index(str(physical_idx))
+    except ValueError:
+        return None
 
 
 @dataclass

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from app.gpu import GpuInfo, GpuInspector
+from app.gpu import GpuInfo, GpuInspector, physical_to_visible_cuda_index
 
 
 def _fake_gpus():
@@ -71,6 +71,35 @@ def test_list_gpus_returns_empty_without_pynvml():
     gpu = GpuInspector()
     with patch("app.gpu.pynvml", None):
         assert gpu.list_gpus() == []
+
+
+def test_physical_to_visible_cuda_index_unset_is_identity():
+    """No CUDA_VISIBLE_DEVICES -- today's behavior, physical index IS the
+    torch index. Passing the env var explicitly (not monkeypatching
+    os.environ) keeps this test independent of the real process env."""
+    assert physical_to_visible_cuda_index(2, cuda_visible_devices="") == 2
+    assert physical_to_visible_cuda_index(0, cuda_visible_devices=None) == 0
+
+
+def test_physical_to_visible_cuda_index_translates_scoped_container():
+    """Regression: live-caught 2026-09-24. CUDA_VISIBLE_DEVICES=2 means
+    torch's cuda:0 IS physical GPU 2 -- pick_best_gpu (NVML-based) correctly
+    returns the physical index 2, and this must translate it to 0, the only
+    index torch's CUDA runtime actually sees."""
+    assert physical_to_visible_cuda_index(2, cuda_visible_devices="2") == 0
+
+
+def test_physical_to_visible_cuda_index_multi_gpu_container():
+    assert physical_to_visible_cuda_index(1, cuda_visible_devices="0,1,3") == 1
+    assert physical_to_visible_cuda_index(3, cuda_visible_devices="0,1,3") == 2
+    assert physical_to_visible_cuda_index(0, cuda_visible_devices="0,1,3") == 0
+
+
+def test_physical_to_visible_cuda_index_not_visible_returns_none():
+    """A real misconfiguration (asking for a physical index the container
+    was never given) must surface as None, not silently return a wrong
+    index or the raw physical one."""
+    assert physical_to_visible_cuda_index(2, cuda_visible_devices="0,1") is None
 
 
 def test_list_gpus_uses_pynvml_when_available():

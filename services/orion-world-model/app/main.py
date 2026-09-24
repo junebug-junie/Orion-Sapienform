@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -21,7 +22,7 @@ from orion.schemas.world_model import (
     WorldModelTrajectoryStepV1,
 )
 
-from .gpu import GpuInspector
+from .gpu import GpuInspector, physical_to_visible_cuda_index
 from .model import FEATURE_GROUP_NAMES, FeatureGroupDims, WorldModel
 from .settings import Settings
 
@@ -75,7 +76,21 @@ def _select_device(gpu: GpuInspector, s: Settings) -> Optional[str]:
     if picked is None:
         return None
     idx, _info = picked
-    return f"cuda:{idx}"
+    # idx is the PHYSICAL index (pynvml-consistent, matches WM_DEFAULT_DEVICE/
+    # WM_DEVICES config) -- translate to whatever index torch's CUDA runtime
+    # actually sees for it before building the device string (gpu.py's
+    # physical_to_visible_cuda_index docstring has the live-caught bug this
+    # fixes).
+    visible_idx = physical_to_visible_cuda_index(idx)
+    if visible_idx is None:
+        logger.error(
+            "[GPU] physical index {} not present in CUDA_VISIBLE_DEVICES={!r} "
+            "-- real misconfiguration, falling back to cpu",
+            idx,
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+        )
+        return None
+    return f"cuda:{visible_idx}"
 
 
 _DTYPE_MAP = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}

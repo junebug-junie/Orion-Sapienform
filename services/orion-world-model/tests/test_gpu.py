@@ -74,11 +74,22 @@ def test_list_gpus_returns_empty_without_pynvml():
 
 
 def test_physical_to_visible_cuda_index_unset_is_identity():
-    """No CUDA_VISIBLE_DEVICES -- today's behavior, physical index IS the
-    torch index. Passing the env var explicitly (not monkeypatching
-    os.environ) keeps this test independent of the real process env."""
-    assert physical_to_visible_cuda_index(2, cuda_visible_devices="") == 2
+    """The variable genuinely ABSENT (None) -- today's unlocked-container
+    behavior, physical index IS the torch index."""
     assert physical_to_visible_cuda_index(0, cuda_visible_devices=None) == 0
+    assert physical_to_visible_cuda_index(2, cuda_visible_devices=None) == 2
+
+
+def test_physical_to_visible_cuda_index_explicit_empty_is_zero_devices_not_unset():
+    """Regression (review finding, caught before this shipped): an
+    operator's .env defining `CUDA_VISIBLE_DEVICES=` with no value makes
+    docker-compose set the container's env var to an EXPLICIT empty string
+    -- real CUDA/nvidia-container-toolkit semantics for "no GPUs visible",
+    NOT the same as the variable being absent. Conflating the two would
+    silently pass an unavailable index straight to torch on any fresh
+    operator host using .env_example's own generic default."""
+    assert physical_to_visible_cuda_index(0, cuda_visible_devices="") is None
+    assert physical_to_visible_cuda_index(2, cuda_visible_devices="") is None
 
 
 def test_physical_to_visible_cuda_index_translates_scoped_container():
@@ -100,6 +111,41 @@ def test_physical_to_visible_cuda_index_not_visible_returns_none():
     was never given) must surface as None, not silently return a wrong
     index or the raw physical one."""
     assert physical_to_visible_cuda_index(2, cuda_visible_devices="0,1") is None
+
+
+def test_physical_to_visible_cuda_index_falls_back_to_real_env_when_not_passed(monkeypatch):
+    """Default call site behavior (app/main.py doesn't pass the kwarg) --
+    must read the real process environment, distinguishing a missing key
+    (os.environ.get returns None) from one present but blank."""
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert physical_to_visible_cuda_index(2) == 2
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    assert physical_to_visible_cuda_index(2) == 0
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert physical_to_visible_cuda_index(2) is None
+
+
+def test_physical_to_visible_cuda_index_resolves_gpu_uuid_form():
+    """CUDA_VISIBLE_DEVICES may list GPU UUIDs instead of bare indices --
+    also documented-valid, and must not be misreported as 'not visible.'"""
+    fake_pynvml = MagicMock()
+    fake_handle = object()
+    fake_pynvml.nvmlDeviceGetHandleByIndex.return_value = fake_handle
+    fake_pynvml.nvmlDeviceGetUUID.return_value = "GPU-00e3b626-de2a-e344-796e-017b7a1b3f40"
+    with patch("app.gpu.pynvml", fake_pynvml):
+        result = physical_to_visible_cuda_index(
+            2, cuda_visible_devices="GPU-00e3b626-de2a-e344-796e-017b7a1b3f40"
+        )
+    assert result == 0
+    fake_pynvml.nvmlDeviceGetHandleByIndex.assert_called_once_with(2)
+
+
+def test_physical_to_visible_cuda_index_uuid_form_no_pynvml_returns_none():
+    """Without pynvml available at all, a UUID-form CUDA_VISIBLE_DEVICES
+    can't be resolved -- must fail closed (None), not guess."""
+    with patch("app.gpu.pynvml", None):
+        result = physical_to_visible_cuda_index(2, cuda_visible_devices="GPU-xxxx")
+    assert result is None
 
 
 def test_list_gpus_uses_pynvml_when_available():

@@ -52,12 +52,16 @@ services:
       - WM_VRAM_SOFT_FLOOR_MB=${WM_VRAM_SOFT_FLOOR_MB}
       - WM_VRAM_HARD_FLOOR_MB=${WM_VRAM_HARD_FLOOR_MB}
 
-      # Real hardening gap, closed 2026-09-24: this container had `gpus: all`
-      # with no lock, unlike orion-diffusion-host's own properly-scoped
-      # setup. A first attempt at this broke app/gpu.py's pynvml-based device
-      # selection (pynvml doesn't respect CUDA_VISIBLE_DEVICES) and was
-      # reverted (PR #2313); app/gpu.py::physical_to_visible_cuda_index now
-      # translates correctly, so this is safe.
+      # Scopes what torch's CUDA runtime can see -- NOT a full hardware
+      # lockdown: `gpus: all` below still hands this container raw driver
+      # access, and pynvml/NVML (app/gpu.py's own VRAM inspection) keeps
+      # enumerating every physical GPU regardless of this variable (that
+      # mismatch is exactly why app/gpu.py::physical_to_visible_cuda_index
+      # exists -- see its docstring). A first attempt at even this
+      # torch-level scoping broke device selection outright (pynvml/torch
+      # index mismatch) and was reverted (PR #2313); that translation
+      # function fixes it. Review finding, worded precisely after an
+      # earlier draft overclaimed this as a complete isolation fix.
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 
       - WM_GPU2_CAPACITY_ENABLED=${WM_GPU2_CAPACITY_ENABLED}

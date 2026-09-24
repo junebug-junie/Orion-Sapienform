@@ -23,8 +23,11 @@ except Exception:  # pragma: no cover - absent on non-GPU dev/test hosts
     pynvml = None
 
 
+_UNSET = object()
+
+
 def physical_to_visible_cuda_index(
-    physical_idx: int, *, cuda_visible_devices: Optional[str] = None
+    physical_idx: int, *, cuda_visible_devices=_UNSET
 ) -> Optional[int]:
     """Translate a PHYSICAL GPU index (what pynvml/NVML reports, and what
     operator-facing config like WM_DEFAULT_DEVICE/WM_DEVICES names -- same
@@ -45,20 +48,49 @@ def physical_to_visible_cuda_index(
     the missing translation step before that pick becomes a torch device
     string.
 
-    Returns the unchanged index when CUDA_VISIBLE_DEVICES is unset (today's
-    behavior, unaffected). Returns None when it IS set but does not list
-    this physical index at all -- a real misconfiguration to surface, not
-    a case to silently guess through.
+    `cuda_visible_devices=None` vs `""` are deliberately NOT the same thing
+    (review finding, caught before this shipped): the variable being
+    genuinely ABSENT from the environment means "no restriction" (today's
+    behavior when this service isn't locked to a card at all), but a
+    container that explicitly sets `CUDA_VISIBLE_DEVICES=` to an empty
+    string -- which docker-compose's `${VAR}` interpolation produces
+    whenever an operator's `.env` defines the key with no value, exactly
+    what `.env_example` ships by default for a non-circe host -- is real
+    CUDA/nvidia-container-toolkit behavior for "zero GPUs visible", not
+    "unrestricted". Conflating the two would silently pass an unavailable
+    physical index straight to torch as if nothing were scoped.
+
+    Entries may be plain physical indices (this repo's only live usage
+    today) or GPU UUIDs (`GPU-...`/`MIG-...`), both documented-valid
+    CUDA_VISIBLE_DEVICES forms -- resolved via NVML when present, so a
+    UUID-based operator config doesn't get misreported as "not visible."
+
+    Returns the unchanged index when CUDA_VISIBLE_DEVICES is genuinely
+    unset. Returns None when it IS set (even to empty) but does not make
+    this physical index visible -- a real condition to surface, not a case
+    to silently guess through.
     """
-    raw = (cuda_visible_devices if cuda_visible_devices is not None
-           else os.environ.get("CUDA_VISIBLE_DEVICES", "")).strip()
-    if not raw:
+    if cuda_visible_devices is _UNSET:
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible_devices is None:
         return physical_idx
+    raw = cuda_visible_devices.strip()
+    if not raw:
+        return None
     visible = [v.strip() for v in raw.split(",") if v.strip()]
     try:
         return visible.index(str(physical_idx))
     except ValueError:
-        return None
+        pass
+    if pynvml is not None and any(v.upper().startswith(("GPU-", "MIG-")) for v in visible):
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(physical_idx)
+            uuid = pynvml.nvmlDeviceGetUUID(handle)
+            uuid = uuid.decode() if isinstance(uuid, bytes) else uuid
+            return visible.index(uuid)
+        except Exception:
+            return None
+    return None
 
 
 @dataclass

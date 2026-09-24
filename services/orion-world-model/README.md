@@ -176,9 +176,17 @@ request is `scripts/publish_test_task.py`. Wiring a real upstream caller
    configured), the service falls back to CPU -- untrained-scaffolding
    forward passes still work there, just slower.
    **Index parity is not automatic**: `app/gpu.py::GpuInspector` picks a
-   candidate index via NVML (always PCI-bus-id order, same as `nvidia-smi`),
-   then `app/main.py::_select_device` hands that same integer straight to
-   torch as `cuda:{idx}`. On a heterogeneous multi-GPU host, CUDA's default
+   candidate index via NVML (always PCI-bus-id order, same as `nvidia-smi`).
+   Since 2026-09-24, `app/main.py::_select_device` no longer hands that
+   integer straight to torch -- it passes it through
+   `app/gpu.py::physical_to_visible_cuda_index` first, which translates the
+   PHYSICAL index into whatever index torch's CUDA runtime actually sees
+   for it under `CUDA_VISIBLE_DEVICES` scoping (NVML enumerates every
+   physical GPU regardless of that variable; torch only sees the scoped
+   subset). Before that translation existed, a `CUDA_VISIBLE_DEVICES`-locked
+   container crashed with `CUDA error: invalid device ordinal`. The
+   enumeration-order gap described below is a separate, still-real risk
+   independent of that translation. On a heterogeneous multi-GPU host, CUDA's default
    enumeration is *not* PCI-bus-id order (a "fastest first" heuristic), so
    the two index spaces can silently disagree -- NVML's `cuda:2` and torch's
    `cuda:2` can be two different physical cards. Confirmed live on circe

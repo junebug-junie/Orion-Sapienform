@@ -160,6 +160,6 @@ done
 
 ## PR link
 
-(filled in on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2314 (base `feat/rpc-health-per-hop`; merge #2312 first, then retarget to `main`).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

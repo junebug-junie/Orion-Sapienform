@@ -197,9 +197,9 @@ class FrameDispatcher:
             self.metrics.host_errors_total += 1
             return
 
-        allowed = set(self.policy.default_trigger_labels())
-        labels = extract_host_trigger_labels(result, allowed=allowed)
         stream_id = stream_id_from_host_result(result, fallback_stream_id=cleared.stream_id)
+        allowed = set(self.policy.trigger_labels_for(cleared.camera_id, stream_id))
+        labels = extract_host_trigger_labels(result, allowed=allowed)
         if labels and stream_id:
             async with self._state_lock:
                 self.state.record_activity(stream_id, labels, now=time.time())

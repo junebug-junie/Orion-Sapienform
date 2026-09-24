@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskRequestPayload
 
+from .expectation import ExpectationCache
 from .settings import Settings
 from .state import RouterState
 
@@ -38,6 +39,11 @@ class FrameDispatchDecision(BaseModel):
     # decide_identity() can be a small, pure function operating on already-
     # computed data instead of re-walking policy internals.
     identity_dispatch_cfg: dict[str, Any] = Field(default_factory=dict)
+    # Why the triggered tier was chosen: "labels" (a trigger label was seen
+    # recently) or "expectation" (orion:vision:expect:<stream_id> is set, spec
+    # idea 8). None on the baseline tier. Forwarded in task meta so the
+    # artifact itself records whether prediction or detection raised the tier.
+    triggered_by: str | None = None
 
 
 def load_policy_file(path: str | Path) -> dict[str, Any]:
@@ -68,23 +74,43 @@ def _normalize_tiers(policy: dict[str, Any]) -> dict[str, Any]:
 
 
 class FrameDispatchPolicy:
-    def __init__(self, *, settings: Settings, raw: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        raw: dict[str, Any],
+        expectation: ExpectationCache | None = None,
+    ) -> None:
         self.settings = settings
         self.raw = raw
+        self.expectation = expectation
         self.defaults: dict[str, Any] = dict(raw.get("defaults") or {})
         self.global_cfg: dict[str, Any] = dict(raw.get("global") or {})
         self.cameras_cfg: dict[str, Any] = dict(raw.get("cameras") or {})
         self.streams_cfg: dict[str, Any] = dict(raw.get("streams") or {})
 
     @classmethod
-    def load(cls, settings: Settings) -> FrameDispatchPolicy:
+    def load(cls, settings: Settings, *, expectation: ExpectationCache | None = None) -> FrameDispatchPolicy:
         raw = load_policy_file(settings.ROUTER_POLICY_PATH)
-        return cls(settings=settings, raw=raw)
+        return cls(settings=settings, raw=raw, expectation=expectation)
 
     def default_trigger_labels(self) -> list[str]:
         normalized = _normalize_tiers(dict(self.defaults))
         triggered = dict(normalized.get("triggered") or {})
         return list(triggered.get("trigger_labels") or [])
+
+    def trigger_labels_for(self, camera_id: str | None, stream_id: str | None) -> list[str]:
+        """This stream's own trigger labels plus the defaults'. The host-reply
+        path records only labels in this set, so a stream that adds its own
+        trigger label (walkway's ``dog``) must widen it or that label can
+        never raise the tier."""
+        merged, _ = self.resolve_stream_policy(camera_id or "", stream_id)
+        triggered = dict(_normalize_tiers(merged).get("triggered") or {})
+        labels = list(self.default_trigger_labels())
+        for lab in triggered.get("trigger_labels") or []:
+            if lab not in labels:
+                labels.append(lab)
+        return labels
 
     def resolve_camera_policy(self, camera_id: str) -> tuple[dict[str, Any], str]:
         merged, name = self.resolve_stream_policy(camera_id, None)
@@ -108,13 +134,15 @@ class FrameDispatchPolicy:
 
     def _tier_config(
         self, merged_policy: dict[str, Any], state: RouterState, stream_id: str | None, *, now: float
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any], str | None]:
         normalized = _normalize_tiers(merged_policy)
         baseline_cfg = dict(normalized.get("baseline") or {})
         triggered_cfg = dict(normalized.get("triggered") or {})
 
         trigger_labels = list(triggered_cfg.get("trigger_labels") or [])
         ttl_s = float(triggered_cfg.get("trigger_ttl_seconds") or 0)
+        if self.expectation is not None and stream_id:
+            self.expectation.note_stream(stream_id)
 
         if (
             stream_id
@@ -122,9 +150,17 @@ class FrameDispatchPolicy:
             and state.active_labels(stream_id, trigger_labels, ttl_s, now=now)
         ):
             tier_cfg = _shallow_merge(baseline_cfg, triggered_cfg)
-            return "triggered", tier_cfg
+            return "triggered", tier_cfg, "labels"
 
-        return "baseline", baseline_cfg
+        # Expectation steering (spec idea 8): an open expectation window for
+        # this stream raises it to the triggered tier even with nothing seen
+        # yet. Only for streams that have trigger labels at all -- one with
+        # an explicit empty list (porch_eye) has opted out of the tier.
+        if trigger_labels and self.expectation is not None and self.expectation.is_open(stream_id):
+            tier_cfg = _shallow_merge(baseline_cfg, triggered_cfg)
+            return "triggered", tier_cfg, "expectation"
+
+        return "baseline", baseline_cfg, None
 
     def require_image_path_exists(self, camera_id: str) -> bool:
         cam_policy, _ = self.resolve_camera_policy(camera_id)
@@ -154,7 +190,7 @@ class FrameDispatchPolicy:
         stream_id = frame.stream_id
         cam_state = state.mark_seen(camera_id)
         merged_policy, policy_name = self.resolve_stream_policy(camera_id, stream_id)
-        dispatch_tier, tier_cfg = self._tier_config(merged_policy, state, stream_id, now=now)
+        dispatch_tier, tier_cfg, triggered_by = self._tier_config(merged_policy, state, stream_id, now=now)
 
         if not merged_policy.get("enabled", True):
             cam_state.last_skip_reason = "camera_disabled"
@@ -256,6 +292,7 @@ class FrameDispatchPolicy:
             dispatch_tier=dispatch_tier,
             reason="dispatch",
             identity_dispatch_cfg=dict(tier_cfg.get("identity_dispatch") or {}),
+            triggered_by=triggered_by,
         )
 
     def decide_identity(
@@ -334,6 +371,8 @@ class FrameDispatchPolicy:
             "router_policy": decision.policy_name,
             "dispatch_tier": decision.dispatch_tier,
         }
+        if decision.triggered_by:
+            meta["triggered_by"] = decision.triggered_by
         return VisionTaskRequestPayload(
             task_type=decision.task_type or "retina_fast",
             request=base_request,

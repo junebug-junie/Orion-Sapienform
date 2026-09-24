@@ -109,6 +109,55 @@ streams:
         enabled: true
         min_seconds_between_dispatch: 60
 
+  walkway:
+    enabled: true
+    # Outdoor camera on the community walkway, partial patio view (2026-09-24,
+    # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md
+    # Patch 0 + idea 1 + idea 8). Adapted from porch_eye (below), which never
+    # had a camera and whose `trigger_labels: []` meant it never reached the
+    # captioned tier. Captured by the second orion-vision-edge instance
+    # (STREAM_ID=walkway).
+    #
+    # - retina_fast on both tiers so detection, the whole-frame embedding
+    #   (perception prediction error) and crop embeddings all run; captions
+    #   only on the triggered tier.
+    # - want_crop_embeddings: the host zones every box in crop_embedding_labels
+    #   (config/vision_zones.yaml) and embeds its crop unless the zone is the
+    #   patio. Feeds orion-vision-window -> orion:vision:crops:sql-write ->
+    #   the individuals reducer.
+    # - trigger_labels [person, dog]: people and dogs get captions. The
+    #   triggered tier is ALSO selected while Redis key
+    #   orion:vision:expect:walkway exists (expectation steering, idea 8; see
+    #   services/orion-vision-frame-router/app/expectation.py).
+    # - No identity_dispatch: faces are never computed on this camera.
+    #
+    # Both tiers are spelled out in full: resolve_stream_policy's shallow merge
+    # replaces the whole `baseline`/`triggered` key, and the triggered tier
+    # replaces `request` wholesale.
+    baseline:
+      task_type: retina_fast
+      every_n_frames: 5
+      min_seconds_between_tasks_per_camera: 3
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person, dog]
+      trigger_ttl_seconds: 8
+      min_seconds_between_tasks_per_camera: 2
+      max_inflight_per_camera: 1
+      request:
+        want_caption: true
+        want_embeddings: true
+        want_crop_embeddings: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+
 cameras:
   mock-cam-01:
     enabled: true

@@ -72,7 +72,9 @@ class FrameRouterService:
             # a message.
             import redis.asyncio as aioredis
 
-            self._expectation_redis = aioredis.from_url(self.settings.ORION_BUS_URL)
+            self._expectation_redis = aioredis.from_url(
+                self.settings.ORION_BUS_URL, socket_timeout=2.0, socket_connect_timeout=2.0
+            )
             self._expectation_task = asyncio.create_task(
                 self.expectation.run(self._expectation_redis, self._shutdown)
             )

@@ -66,6 +66,16 @@ class _FakeRedis:
         return _FakePipe(self.keys, self.fail)
 
 
+class _HangingPipe(_FakePipe):
+    async def execute(self):
+        await asyncio.sleep(3600)
+
+
+class _HangingRedis(_FakeRedis):
+    def pipeline(self) -> _FakePipe:
+        return _HangingPipe(self.keys)
+
+
 def test_walkway_baseline_requests_crop_embeddings_and_prompts() -> None:
     d = _decide(_policy(), RouterState())
     assert d.should_dispatch and d.policy_name == "walkway" and d.dispatch_tier == "baseline"
@@ -126,3 +136,12 @@ def test_expectation_ignored_for_stream_with_empty_trigger_labels() -> None:
     merged, _ = policy.resolve_stream_policy("porch_eye", "porch_eye")
     tier, _cfg, why = policy._tier_config(merged, RouterState(), "porch_eye", now=1.0)
     assert tier == "baseline" and why is None
+
+
+def test_hung_redis_clears_open_expectations() -> None:
+    cache = ExpectationCache(refresh_sec=0.5)
+    cache.note_stream("walkway")
+    asyncio.run(cache.refresh_once(_FakeRedis({expect_key("walkway")})))
+    assert cache.is_open("walkway")
+    asyncio.run(cache.refresh_once(_HangingRedis({expect_key("walkway")})))
+    assert not cache.is_open("walkway") and cache.refresh_failures == 1

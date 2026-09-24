@@ -99,11 +99,40 @@ def test_missing_zones_file_fails_closed(tmp_path: Path) -> None:
     assert all(o.get("embedding") is None for o in objs)
 
 
-def test_stream_without_zones_embeds_tracked_boxes() -> None:
-    objs = _objects()
-    stats, spy = _run(objs, stream_id="cam0")
-    assert objs[0]["zone"] is None and objs[0]["embedding"] is not None
-    assert len(spy.calls) == 1 and len(spy.calls[0]) == 2  # one batched pass
+def test_stream_without_zones_on_file_fails_closed() -> None:
+    # Empty or drifted stream_id must not mean "no patio, embed everything".
+    for sid in ("cam0", ""):
+        objs = _objects()
+        stats, spy = _run(objs, stream_id=sid)
+        assert spy.calls == []
+        assert all(o.get("embedding") is None for o in objs)
+
+
+def test_patio_box_touching_or_past_bottom_edge_is_still_patio() -> None:
+    # Review finding: y2 == H put the bottom-center exactly on the polygon's
+    # bottom edge, which ray casting counts as outside every zone, and a
+    # zoneless box used to be embedded. GroundingDINO boxes can also exceed H.
+    for y2 in (float(H), H + 25.0):
+        objs = [{"label": "person", "score": 0.9, "box_xyxy": [100.0, 700.0, 200.0, y2]}]
+        _stats, spy = _run(objs)
+        assert objs[0]["zone"] == "patio", y2
+        assert objs[0]["embedding"] is None and spy.calls == []
+
+
+def test_box_outside_every_zone_is_not_embedded() -> None:
+    objs = [{"label": "person", "score": 0.9, "box_xyxy": [400.0, 50.0, 500.0, 200.0]}]  # sky, y<0.35
+    stats, spy = _run(objs)
+    assert objs[0]["zone"] is None and objs[0]["embedding"] is None and spy.calls == []
+
+
+def test_batched_single_forward_pass_for_multiple_walkway_boxes() -> None:
+    objs = [
+        {"label": "person", "score": 0.9, "box_xyxy": [600.0, 600.0, 700.0, 900.0]},
+        {"label": "dog", "score": 0.8, "box_xyxy": [800.0, 700.0, 900.0, 800.0]},
+    ]
+    stats, spy = _run(objs)
+    assert len(spy.calls) == 1 and len(spy.calls[0]) == 2
+    assert stats["embedded"] == 2
 
 
 def test_repo_zones_config_marks_patio_no_embed() -> None:

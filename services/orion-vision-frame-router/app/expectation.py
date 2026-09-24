@@ -58,7 +58,9 @@ class ExpectationCache:
             pipe = redis.pipeline()
             for s in names:
                 pipe.exists(expect_key(s))
-            results = await pipe.execute()
+            # A hung Redis must not freeze the last answer (a stream stuck on
+            # the triggered tier): bound the round trip by the refresh period.
+            results = await asyncio.wait_for(pipe.execute(), timeout=self.refresh_sec)
             self._open = frozenset(s for s, r in zip(names, results) if int(r or 0) > 0)
             self.last_error = None
         except Exception as exc:

@@ -85,7 +85,7 @@ from orion.substrate.receipts.retention import (
 )
 
 
-def _refuse_url_stream_id(stream_id: str) -> str:
+def _sanitize_url_stream_id(stream_id: str) -> str:
     """Last line of defense for substrate_perception_embedding_baseline:
     a stream_id is a camera name, never a source URL. The caller already
     resolves a name (orion.vision.stream_ids.safe_camera_name); if a URL
@@ -891,7 +891,7 @@ class BiometricsSubstrateStore:
         independent; mixing two streams' visual content into one baseline
         would produce a meaningless average vector.
         """
-        stream_id = _refuse_url_stream_id(stream_id)
+        stream_id = _sanitize_url_stream_id(stream_id)
         try:
             with self._engine.connect() as conn:
                 row = conn.execute(
@@ -942,7 +942,7 @@ class BiometricsSubstrateStore:
         silently deleted by an unrelated busy stream's tick, forcing an
         unnecessary cold-start reseed).
         """
-        stream_id = _refuse_url_stream_id(stream_id)
+        stream_id = _sanitize_url_stream_id(stream_id)
         generated_at = datetime.now(timezone.utc)
         digest = hashlib.sha256(
             f"{stream_id}|{generated_at.isoformat()}|{json.dumps(baseline.to_json_dict(), sort_keys=True)}".encode(

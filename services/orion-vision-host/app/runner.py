@@ -779,7 +779,16 @@ class VisionRunner:
 
         crop_stats = None
         if request.get("want_crop_embeddings") is True and objects:
-            crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, box_th)
+            try:
+                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, box_th)
+            except Exception as exc:
+                # A crop-embedding failure must not cost the detection or the
+                # whole-frame embedding. Strip any partial vectors.
+                logger.warning(f"[CROP] crop embeddings failed, detections kept: {exc}")
+                for o in objects:
+                    o.pop("embedding", None)
+                    o.pop("embedding_ref", None)
+                crop_stats = {"error": 1, "error_detail": str(exc)[:200]}
 
         # Store as JSON artifact
         seed = f"{request.get('image_path') or request.get('frame_path')}|{model_id}|{text}"
@@ -834,6 +843,8 @@ class VisionRunner:
         See app/crop_embeddings.py for the privacy rule."""
         embed_profile_name = str(p.params.get("crop_embed_profile") or "embed_image")
         embed_profile = self.profiles.get_profile(embed_profile_name)
+        if not embed_profile.enabled or not self._is_enabled(embed_profile_name):
+            raise RuntimeError(f"crop embed profile disabled: {embed_profile_name}")
 
         def _embed(crops: List[Image.Image]) -> np.ndarray:
             model, processor, _model_id = self._load_embedder(embed_profile, device)
@@ -844,7 +855,10 @@ class VisionRunner:
             if embed_profile.model_id and not embed_profile.model_id.startswith("REPLACE_ME")
             else self.DEFAULT_EMBED_MODEL
         )
-        min_score = float(request.get("crop_embedding_min_score") or p.params.get("crop_embedding_min_score") or box_th)
+        min_score = request.get("crop_embedding_min_score")
+        if min_score is None:
+            min_score = p.params.get("crop_embedding_min_score")
+        min_score = float(box_th if min_score is None else min_score)
         return attach_crop_embeddings(
             objects,
             img,

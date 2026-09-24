@@ -81,6 +81,27 @@ def resolve_labels(request: Dict[str, Any], params: Dict[str, Any]) -> set[str]:
     return {_norm_label(x) for x in raw if _norm_label(x)}
 
 
+def _clamp_box(box: Sequence[float], width: int, height: int) -> List[float]:
+    """Clip a box into the frame, keeping its bottom edge strictly inside.
+
+    GroundingDINO boxes are not clipped, and the point-in-polygon test treats
+    a point exactly on a polygon's bottom edge (y == 1.0) as outside every
+    zone. A person standing close to the camera has y2 == height (or more),
+    which used to escape the patio. Nudging the bottom-center just inside
+    the frame puts it back in the zone it visibly stands in.
+    """
+    if len(box) != 4:
+        return list(box)
+    x1, y1, x2, y2 = (float(v) for v in box)
+    eps_x, eps_y = width * 1e-6, height * 1e-6
+    return [
+        min(max(x1, 0.0), width - eps_x),
+        min(max(y1, 0.0), height - eps_y),
+        min(max(x2, 0.0), width - eps_x),
+        min(max(y2, 0.0), height - eps_y),
+    ]
+
+
 def _crop_ref(frame_key: str, box: Sequence[float], model_id: str, embed_profile: str) -> str:
     seed = f"{frame_key}|{','.join(f'{float(v):.1f}' for v in box)}|{model_id}"
     return f"crop:{embed_profile}:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
@@ -108,8 +129,11 @@ def attach_crop_embeddings(
     labels = resolve_labels(request, params)
     stream_id = str(request.get("stream_id") or "").strip()
     width, height = image.width, image.height
+    # Fail closed unless this camera has zones on file: an empty or drifted
+    # stream_id must not turn into "no patio, embed everything".
     stream_zones: List[Zone] = []
-    if zones_by_stream is not None and stream_id:
+    zones_known = zones_by_stream is not None and bool(stream_id) and stream_id in zones_by_stream
+    if zones_known:
         stream_zones = list(zones_by_stream.get(stream_id) or [])
     max_n = int(params.get("crop_embedding_max_per_frame", DEFAULT_MAX_CROPS_PER_FRAME))
     min_side = float(params.get("crop_min_side_px", DEFAULT_MIN_SIDE_PX))
@@ -123,13 +147,14 @@ def attach_crop_embeddings(
             continue
         stats["tracked"] += 1
         box = obj.get("box_xyxy") or []
-        zone = zone_for_box(stream_zones, box, width, height) if stream_zones else None
+        zone = zone_for_box(stream_zones, _clamp_box(box, width, height), width, height) if stream_zones else None
         obj["zone"] = zone.name if zone is not None else None
-        if zones_by_stream is None or not may_embed(zone):
-            # Patio (or zones unknown): no crop, no vector. Presence only.
+        if not zones_known or zone is None or not may_embed(zone):
+            # Patio, outside every zone, or zones unknown for this camera: no
+            # crop, no vector. Presence only.
             obj["embedding"] = None
             obj["embedding_ref"] = None
-            if zones_by_stream is not None:
+            if zone is not None and not may_embed(zone):
                 stats["withheld_no_embed_zone"] += 1
             else:
                 stats["withheld_other"] += 1

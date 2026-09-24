@@ -21,3 +21,13 @@ def test_safe_camera_name_prefers_plain_name() -> None:
 
 def test_is_url_like() -> None:
     assert is_url_like("rtsp://h") and not is_url_like("walkway") and not is_url_like(None)
+
+
+def test_query_string_credentials_dropped() -> None:
+    out = strip_userinfo("http://10.0.0.2/flv?port=1935&user=admin&password=pw")
+    assert "pw" not in out and "admin" not in out
+
+
+def test_malformed_url_still_url_like() -> None:
+    assert is_url_like("rtsp:/admin:pw@10.0.0.2/x")
+    assert safe_camera_name("rtsp:/admin:pw@10.0.0.2/x", "cam0") == "cam0"

@@ -52,4 +52,5 @@ def test_no_module_publishes_settings_source() -> None:
 def test_instance_detects_only_its_own_stream() -> None:
     assert is_own_frame("walkway", "walkway")
     assert not is_own_frame("cam0", "walkway")
-    assert is_own_frame(None, "walkway")
+    assert not is_own_frame(None, "walkway")
+    assert is_own_frame(None, "cam0")

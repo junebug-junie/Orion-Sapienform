@@ -16,11 +16,17 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 def is_url_like(value: Any) -> bool:
-    return isinstance(value, str) and "://" in value
+    """Anything that could be a source URL: a scheme separator, or an ``@``
+    (userinfo in a malformed ``rtsp:/user:pass@host``). Camera names have
+    neither."""
+    return isinstance(value, str) and ("://" in value or ":/" in value or "@" in value)
 
 
 def strip_userinfo(value: str) -> str:
-    """``rtsp://user:pass@host:554/path`` -> ``rtsp://host:554/path``.
+    """``rtsp://user:pass@host:554/path?user=u&password=p`` -> ``rtsp://host:554/path``.
+
+    Drops the query string and fragment too: Reolink/HTTP-FLV URLs carry
+    credentials as query parameters.
 
     Falls back to dropping everything up to the last ``@`` before the path if
     the URL does not parse, so a malformed URL still cannot leak a password.
@@ -28,10 +34,10 @@ def strip_userinfo(value: str) -> str:
     try:
         parts = urlsplit(value)
         netloc = parts.netloc.rsplit("@", 1)[-1]
-        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
     except Exception:
         scheme, _, rest = value.partition("://")
-        host_and_path = rest.rsplit("@", 1)[-1]
+        host_and_path = rest.rsplit("@", 1)[-1].split("?", 1)[0]
         return f"{scheme}://{host_and_path}"
 
 

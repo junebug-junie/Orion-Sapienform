@@ -31,9 +31,13 @@ class CortexExecClient:
         timeout_sec: float,
         *,
         trace: dict | None = None,
+        health_label: str | None = None,
     ) -> Dict[str, Any]:
         """
         Sends a typed PlanExecutionRequest, returns the raw result dict from Exec.
+
+        `health_label` is forwarded to rpc_request() so the call's RPC-health hop key
+        becomes "<request_channel>#<health_label>" (see orion/core/bus/rpc_health.py).
         """
         reply_channel = f"{self.result_prefix}:{uuid4()}"
 
@@ -60,12 +64,10 @@ class CortexExecClient:
         )
 
         # 2. TRANSPORT
-        msg = await self.bus.rpc_request(
-            self.request_channel,
-            env,
-            reply_channel=reply_channel,
-            timeout_sec=timeout_sec
-        )
+        rpc_kwargs: Dict[str, Any] = {"reply_channel": reply_channel, "timeout_sec": timeout_sec}
+        if health_label:
+            rpc_kwargs["health_label"] = health_label
+        msg = await self.bus.rpc_request(self.request_channel, env, **rpc_kwargs)
 
         # 3. DECODE
         decoded = self.bus.codec.decode(msg.get("data"))

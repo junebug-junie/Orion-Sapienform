@@ -399,8 +399,8 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         bus_channels=["orion:evidence:index:upsert"],
         notes=["Milestone B: vector index persist presence."],
     ),
-    "rpc_health_cortex_exec": OrionOrganRegistryEntry(
-        organ_id="rpc_health_cortex_exec",
+    "rpc_health_cortex_exec_legacy": OrionOrganRegistryEntry(
+        organ_id="rpc_health_cortex_exec_legacy",
         organ_class=OrganClass.exogenous,
         service="orion-cortex-exec",
         signal_kinds=["rpc_transport_health"],
@@ -408,12 +408,55 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         causal_parent_organs=[],
         bus_channels=["orion:rpc_health:snapshot"],
         notes=[
-            "Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md: "
-            "drains OrionBusAsync.get_rpc_health_snapshot() on a periodic publish loop. Per-service "
-            "organ_id (not one shared 'rpc_health' id) -- review of this step's first cut found a "
-            "shared organ_id makes every producer overwrite the same SignalWindow slot, so only one "
-            "service's snapshot is ever visible in the gateway's current-state view. See sibling "
-            "'rpc_health_cortex_orch' entry.",
+            "cortex-exec EXEC_LANE=legacy container's own RPC-health snapshot (instance='legacy'). "
+            "Replaces the single 'rpc_health_cortex_exec' organ (retired 2026-09-24), which all four "
+            "lane containers overwrote with instance=None, so a :background backlog was "
+            "indistinguishable from :chat. See orion/signals/adapters/rpc_health.py::_organ_id_for.",
+        ],
+    ),
+    "rpc_health_cortex_exec_chat": OrionOrganRegistryEntry(
+        organ_id="rpc_health_cortex_exec_chat",
+        organ_class=OrganClass.exogenous,
+        service="orion-cortex-exec",
+        signal_kinds=["rpc_transport_health"],
+        canonical_dimensions=["level", "confidence", "latency_level"],
+        causal_parent_organs=[],
+        bus_channels=["orion:rpc_health:snapshot"],
+        notes=[
+            "cortex-exec EXEC_LANE=chat container's own RPC-health snapshot (instance='chat'). "
+            "Replaces the single 'rpc_health_cortex_exec' organ (retired 2026-09-24), which all four "
+            "lane containers overwrote with instance=None, so a :background backlog was "
+            "indistinguishable from :chat. See orion/signals/adapters/rpc_health.py::_organ_id_for.",
+        ],
+    ),
+    "rpc_health_cortex_exec_spark": OrionOrganRegistryEntry(
+        organ_id="rpc_health_cortex_exec_spark",
+        organ_class=OrganClass.exogenous,
+        service="orion-cortex-exec",
+        signal_kinds=["rpc_transport_health"],
+        canonical_dimensions=["level", "confidence", "latency_level"],
+        causal_parent_organs=[],
+        bus_channels=["orion:rpc_health:snapshot"],
+        notes=[
+            "cortex-exec EXEC_LANE=spark container's own RPC-health snapshot (instance='spark'). "
+            "Replaces the single 'rpc_health_cortex_exec' organ (retired 2026-09-24), which all four "
+            "lane containers overwrote with instance=None, so a :background backlog was "
+            "indistinguishable from :chat. See orion/signals/adapters/rpc_health.py::_organ_id_for.",
+        ],
+    ),
+    "rpc_health_cortex_exec_background": OrionOrganRegistryEntry(
+        organ_id="rpc_health_cortex_exec_background",
+        organ_class=OrganClass.exogenous,
+        service="orion-cortex-exec",
+        signal_kinds=["rpc_transport_health"],
+        canonical_dimensions=["level", "confidence", "latency_level"],
+        causal_parent_organs=[],
+        bus_channels=["orion:rpc_health:snapshot"],
+        notes=[
+            "cortex-exec EXEC_LANE=background container's own RPC-health snapshot (instance='background'). "
+            "Replaces the single 'rpc_health_cortex_exec' organ (retired 2026-09-24), which all four "
+            "lane containers overwrote with instance=None, so a :background backlog was "
+            "indistinguishable from :chat. See orion/signals/adapters/rpc_health.py::_organ_id_for.",
         ],
     ),
     "rpc_health_cortex_orch": OrionOrganRegistryEntry(
@@ -427,7 +470,8 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         notes=[
             "Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md: "
             "drains OrionBusAsync.get_rpc_health_snapshot() on a periodic publish loop. Per-service "
-            "organ_id -- see sibling 'rpc_health_cortex_exec' entry for why.",
+            "organ_id -- see the 'rpc_health_cortex_exec_<lane>' entries for why. Publishes "
+            "instance='main' (its sole instance), which maps to this unsuffixed id.",
         ],
     ),
 }

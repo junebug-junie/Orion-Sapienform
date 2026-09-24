@@ -725,16 +725,27 @@ async def main() -> None:
                 bus_getter=_bus_for_rpc,
                 service=s.service_name,
                 node=s.node_name,
-                instance=None,
+                # Single-instance service: "main" maps to the unsuffixed organ_id
+                # (rpc_health_cortex_orch) in orion/signals/adapters/rpc_health.py.
+                instance="main",
                 source=_source(),
                 interval_sec=s.rpc_health_publish_interval_sec,
                 stop_event=_rpc_health_stop,
+                include_channel_latency=s.rpc_health_channel_latency_enabled,
+                # Metacog dispatch (orchestrator.dispatch_metacog_trigger) runs its
+                # rpc_request on the equilibrium Hunter's own bus, not _rpc_bus. Fold its
+                # per-hop stats (keyed "<channel>#log_orion_metacognition") into the
+                # snapshot WITHOUT touching the pooled fields, so metacog's own load stays
+                # visible per-hop but never shifts the pooled p95 the current transport
+                # gate reads.
+                hop_only_bus_getters=[lambda: equilibrium_hunter.bus],
             ),
             name="rpc-health-publish",
         )
         logger.info(
-            "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot",
+            "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot channel_latency=%s",
             s.rpc_health_publish_interval_sec,
+            s.rpc_health_channel_latency_enabled,
         )
     try:
         await asyncio.gather(

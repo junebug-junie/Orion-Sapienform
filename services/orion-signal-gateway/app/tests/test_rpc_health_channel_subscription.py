@@ -110,3 +110,37 @@ async def test_gateway_signal_window_does_not_collide_across_producer_services()
     assert exec_signal is not None
     assert orch_signal is not None
     assert exec_signal.organ_id != orch_signal.organ_id
+
+
+@pytest.mark.asyncio
+async def test_gateway_signal_window_keeps_each_exec_lane_instance() -> None:
+    """2026-09-24: four cortex-exec lane containers share service='cortex-exec'. Keyed by
+    (service, instance), all four survive in SignalWindow."""
+    from app.normalization_state import NormalizationStateRegistry
+    from app.processor import SignalProcessor
+    from app.signal_window import SignalWindow
+
+    bus = AsyncMock()
+    window = SignalWindow(30.0)
+    proc = SignalProcessor(
+        bus=bus,
+        signal_window=window,
+        norm_state=NormalizationStateRegistry(),
+        output_channel_prefix="orion:signals",
+        passthrough_pattern="orion:signals:*",
+        service_ref=ServiceRef(name="orion-signal-gateway", version="0.1.0", node="n"),
+    )
+    lanes = ("legacy", "chat", "spark", "background")
+    for i, lane in enumerate(lanes):
+        payload = _rpc_health_payload("cortex-exec")
+        payload["instance"] = lane
+        env = BaseEnvelope(
+            kind="rpc_health.snapshot.v1",
+            source=ServiceRef(name="cortex-exec", version="0.1.1", node="athena"),
+            correlation_id=UUID(f"00000000-0000-4000-8000-0000000000c{i}"),
+            payload=payload,
+        )
+        await proc.handle_envelope(env)
+
+    for lane in lanes:
+        assert window.get(f"rpc_health_cortex_exec_{lane}") is not None

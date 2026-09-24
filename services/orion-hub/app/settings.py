@@ -119,6 +119,13 @@ class Settings(BaseSettings):
         alias="HUB_LLM_GATEWAY_TIMEOUT_SEC",
     )
 
+    # --- GPU pool operator panel (orion-gpu-pool; docs/superpowers/specs/2026-09-24-gpu-pool-design.md) ---
+    HUB_GPU_POOL_ENABLED: bool = Field(default=True, alias="HUB_GPU_POOL_ENABLED")
+    HUB_GPU_POOL_RPC_TIMEOUT_SEC: float = Field(default=5.0, alias="HUB_GPU_POOL_RPC_TIMEOUT_SEC")
+    # Hub's credential for the pool's control verbs. Never sent to the browser: the browser is
+    # checked with the orion_operator_token cookie, then Hub signs the pool request with this.
+    GPU_POOL_OPERATOR_TOKEN: str = Field(default="", alias="GPU_POOL_OPERATOR_TOKEN", repr=False)
+
     # --- Runtime activity (header marquee + "what's running" modal) ---
     # Folds facts Hub already sees (curiosity durable-run transitions, harness
     # turn handoffs + steps) with the LLM gateway's /admission + /routes into

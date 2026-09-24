@@ -35,6 +35,7 @@ from scripts.chat_attachments import router as chat_attachments_router
 from scripts.hub_surface_routes import router as hub_surface_router, page_router as hub_surface_page_router
 from scripts.hub_surface_routes import _engine as hub_surface_engine
 from scripts.runtime_activity_routes import RuntimeActivityFeeds, router as runtime_activity_router
+from scripts.gpu_pool_routes import feed as gpu_pool_feed, page_router as gpu_pool_page_router, router as gpu_pool_router
 from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
@@ -832,6 +833,12 @@ async def startup_event():
                         pass
                 embodiment_outcome_cache = None
 
+            if settings.HUB_GPU_POOL_ENABLED:
+                try:
+                    await gpu_pool_feed.start(bus)
+                except Exception as exc:
+                    logger.warning("gpu_pool_feed_start_failed error=%s", exc)
+
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
             bus = None
@@ -1514,6 +1521,10 @@ async def shutdown_event() -> None:
             await embodiment_outcome_cache.stop()
         except Exception:
             pass
+    try:
+        await gpu_pool_feed.stop()
+    except Exception:
+        pass
     await _stop_rpc_health_publish()
     if rpc_bus is not None:
         try:
@@ -1552,6 +1563,8 @@ app.include_router(chat_attachments_router)
 app.include_router(hub_surface_router)
 app.include_router(hub_surface_page_router)
 app.include_router(runtime_activity_router)
+app.include_router(gpu_pool_router)
+app.include_router(gpu_pool_page_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

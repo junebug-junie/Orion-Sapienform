@@ -97,7 +97,8 @@ async def _on_lease(env: BaseEnvelope) -> BaseEnvelope | None:
 
 async def _on_state(env: BaseEnvelope) -> BaseEnvelope | None:
     req = GpuPoolStateRequestV1.model_validate(env.payload or {})
-    return _reply(env, GPU_POOL_STATE_KIND, await runtime.snapshot(include_leases=req.include_leases))
+    return _reply(env, GPU_POOL_STATE_KIND, await runtime.snapshot(
+        include_leases=req.include_leases, include_config=req.include_config, history_for=req.history_for))
 
 
 async def _on_control(env: BaseEnvelope) -> BaseEnvelope | None:

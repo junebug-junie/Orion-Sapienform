@@ -438,7 +438,8 @@ class PoolRuntime:
                        and (rank(r["priority"]), r["created_at"]) < mine)
 
     # --- state + events ---------------------------------------------------------------
-    async def snapshot(self, include_leases: bool = True) -> GpuPoolStateV1:
+    async def snapshot(self, include_leases: bool = True, include_config: bool = False,
+                       history_for: str | None = None) -> GpuPoolStateV1:
         rows = await self.store.live_leases()
         queue: dict[str, int] = {}
         backlog: dict[str, int] = {}
@@ -460,7 +461,11 @@ class PoolRuntime:
                 role=r.get("role"), attempt=r.get("attempt", 1), created_at=r["created_at"],
                 granted_at=r.get("granted_at"), recall_by=r.get("recall_by"),
                 turn_correlation_id=r.get("turn_correlation_id")) for r in rows] if include_leases else [],
-            queue_depth=queue, backlog_depth=backlog)
+            queue_depth=queue, backlog_depth=backlog,
+            config=self.cfg.model_dump(mode="json", by_alias=True, exclude={"digest"}) if include_config else None,
+            config_yaml=self.cfg.source_text if include_config else None,
+            history_lease_id=history_for,
+            history=await self.history(history_for) if history_for else None)
 
     async def publish_state(self) -> None:
         self._last_state = self.now()

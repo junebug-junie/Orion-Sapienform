@@ -106,6 +106,7 @@ class PoolConfig(BaseModel):
     classes: dict[str, ClassSpec]
     routes: dict[str, RouteSpec] = Field(default_factory=dict)
     digest: str = ""
+    source_text: str = Field("", exclude=True, repr=False)
 
     @field_validator("routes", mode="before")
     @classmethod
@@ -185,6 +186,7 @@ def load_pool_config(path: str | Path | None = None) -> PoolConfig:
     data = yaml.safe_load(raw_bytes) or {}
     cfg = PoolConfig.model_validate(data)
     cfg.digest = hashlib.sha256(raw_bytes).hexdigest()[:16]
+    cfg.source_text = raw_bytes.decode("utf-8", "replace")
     return cfg
 
 

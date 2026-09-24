@@ -398,3 +398,18 @@ def test_operator_hold_via_control_and_release():
                                                 lease_id=held.detail["lease_id"]))
         assert rel.ok
     run(go())
+
+
+def test_state_request_can_carry_config_and_a_lease_history():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("fast"))
+        await rt.release(r.lease_id, "ok")
+        plain = await rt.snapshot()
+        assert plain.config is None and plain.history is None      # broadcasts stay small
+        full = await rt.snapshot(include_config=True, history_for=r.lease_id)
+        assert set(full.config["roles"]) == set(CFG.roles) and "cards:" in full.config_yaml
+        assert full.config["routes"]["metacog"]["class"] == "metacog"
+        assert [h["event"] for h in full.history] == ["admit", "grant", "release_ok"]
+    run(go())

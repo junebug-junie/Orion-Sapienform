@@ -188,12 +188,19 @@ class GpuPoolStateV1(BaseModel):
     leases: list[GpuLeaseRowV1] = Field(default_factory=list)
     queue_depth: dict[str, int] = Field(default_factory=dict)
     backlog_depth: dict[str, int] = Field(default_factory=dict)
+    # Filled only on request (GpuPoolStateRequestV1), never on the periodic broadcast:
+    config: dict[str, Any] | None = None          # parsed config/gpu_pool.yaml (the Hub picture)
+    config_yaml: str | None = None                # the file as written (the Hub "raw YAML" view)
+    history_lease_id: str | None = None
+    history: list[dict[str, Any]] | None = None   # that lease's path through the lease graph
 
 
 class GpuPoolStateRequestV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     include_leases: bool = True
+    include_config: bool = False
+    history_for: str | None = Field(None, max_length=128)
 
 
 class GpuPoolControlV1(BaseModel):

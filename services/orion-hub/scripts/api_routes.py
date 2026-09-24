@@ -4754,20 +4754,7 @@ def _mutation_manual_apply_policy_allows() -> bool:
     }
 
 
-def _require_mutation_operator_guard(token: str | None) -> None:
-    expected = str(os.getenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "")).strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="mutation_operator_token_not_configured")
-    if not token or token.strip() != expected:
-        raise HTTPException(status_code=403, detail="operator_guard_rejected")
-
-
-def _resolve_operator_token(request: Request | None, token: str | None) -> str | None:
-    header_token = str(token or "").strip()
-    if header_token:
-        return header_token
-    cookie_token = str((request.cookies.get("orion_operator_token") if request is not None else "") or "").strip()
-    return cookie_token or None
+from .operator_guard import _require_mutation_operator_guard, _resolve_operator_token  # noqa: E402,F401
 
 
 class _ManualCyclePatchApplier(PatchApplier):

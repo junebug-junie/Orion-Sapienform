@@ -159,6 +159,6 @@ scripts/safe_docker_build.sh orion-sql-writer up -d --build
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2311
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

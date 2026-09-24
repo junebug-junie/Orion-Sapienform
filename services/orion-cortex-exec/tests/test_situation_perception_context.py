@@ -90,6 +90,14 @@ def _no_real_db(monkeypatch):
         "fetch_presence_resolved",
         lambda stream_ids, *, max_age_seconds: PresenceResolution(None, None, True),
     )
+    # The street line (walkway camera) reads Postgres too.
+    from orion.situational.perception_reader import StreetSummary
+
+    monkeypatch.setattr(
+        situation_mod,
+        "fetch_street_summary",
+        lambda stream_id, *, tz_name: StreetSummary(stream_id, [], True),
+    )
 
 
 # --- provider states -------------------------------------------------------

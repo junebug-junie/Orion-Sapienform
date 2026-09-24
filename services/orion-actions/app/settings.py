@@ -29,6 +29,8 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_journaling_enabled",
     "actions_journaling_daily_enabled",
     "actions_journal_capability_gaps_enabled",
+    "actions_journal_perception_gaps_enabled",
+    "actions_walkway_forecast_enabled",
     "actions_journaling_collapse_dense_only",
     "actions_journal_post_persist_notify_enabled",
     "actions_self_experiments_enabled",
@@ -154,6 +156,28 @@ class Settings(BaseSettings):
     actions_journal_capability_gaps_enabled: bool = Field(
         True, alias="ACTIONS_JOURNAL_CAPABILITY_GAPS_ENABLED"
     )
+    # Fold "things I could not name today" (vision_unresolved rows) into the
+    # daily journal seed. Same shape and omit-when-empty rule as capability
+    # gaps. Reads POSTGRES_URI; no DSN or no table means no block, never an
+    # error. See app/perception_gap_journal.py.
+    actions_journal_perception_gaps_enabled: bool = Field(
+        True, alias="ACTIONS_JOURNAL_PERCEPTION_GAPS_ENABLED"
+    )
+    # Walkway forecast + grade journal (walkway spec idea 7). Nightly: grade
+    # today's expectations, then forecast tomorrow's. Skips writing when there
+    # is nothing observed to talk about. See app/walkway_forecast.py.
+    actions_walkway_forecast_enabled: bool = Field(False, alias="ACTIONS_WALKWAY_FORECAST_ENABLED")
+    actions_walkway_forecast_hour_local: int = Field(22, alias="ACTIONS_WALKWAY_FORECAST_HOUR_LOCAL")
+    actions_walkway_forecast_minute_local: int = Field(30, alias="ACTIONS_WALKWAY_FORECAST_MINUTE_LOCAL")
+    actions_walkway_stream_id: str = Field("walkway", alias="ACTIONS_WALKWAY_STREAM_ID")
+    # An expectation needs this many distinct days of support before the
+    # forecast states it (the reducer's own minimum, spec idea 2).
+    actions_walkway_forecast_min_support_days: int = Field(
+        5, alias="ACTIONS_WALKWAY_FORECAST_MIN_SUPPORT_DAYS"
+    )
+    # Read-only DSN for the walkway tables above. Empty = those features read
+    # nothing and write nothing.
+    postgres_uri: str = Field("", alias="POSTGRES_URI")
     actions_journaling_cooldown_seconds: int = Field(21600, alias="ACTIONS_JOURNALING_COOLDOWN_SECONDS")
     actions_journaling_collapse_dense_only: bool = Field(True, alias="ACTIONS_JOURNALING_COLLAPSE_DENSE_ONLY")
     actions_journal_session_id: str = Field("orion_journal", alias="ACTIONS_JOURNAL_SESSION_ID")

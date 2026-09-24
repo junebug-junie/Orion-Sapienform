@@ -460,6 +460,21 @@ class PerceptionContextV1(BaseModel):
         Literal["unmatched_face", "identity_unread", "no_visual_confirmation"]
     ] = None
 
+    # The street outside the walkway camera (walkway spec ideas 5 and 9,
+    # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md),
+    # from `orion.situational.perception_reader.fetch_street_summary`. Plain
+    # sentences only: who is around (Juniper-given names, otherwise "an
+    # unfamiliar dog"), expectation outcomes, things Orion could not name,
+    # and the patio as a COUNT, never a name. None when nothing was read or
+    # nothing is worth saying -- never an empty sentence. Independent of
+    # `available` above: that is the room camera; this is a different one.
+    # Additive, 2026-09-24. The brief crosses services as a dict and is not
+    # re-validated against this model on the consumer side (checked:
+    # chat_stance.py and hub turn_orchestrator read it with .get()), so
+    # extra="forbid" does not make this a consumer-first migration.
+    street_summary: Optional[str] = None
+    street_stream_id: Optional[str] = None
+
 
 class AffectContextV1(BaseModel):
     """Juniper's most recent facial+vocal affect read, for the situation brief.

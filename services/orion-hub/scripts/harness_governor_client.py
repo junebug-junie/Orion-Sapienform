@@ -34,6 +34,50 @@ async def _get_message_within(pubsub, timeout: float) -> dict | None:
             return msg
 
 
+def governor_hop_key(request: HarnessRunRequestV1) -> str:
+    """RPC-health hop key ``governor:<mode>`` (orion/core/bus/rpc_health.py hop
+    conventions). ``mode`` is the Hub chat mode that initiated the run ("orion",
+    "agent"); ``unknown`` when unset."""
+    mode = str(getattr(request, "mode", None) or "").strip() or "unknown"
+    return f"governor:{mode}"
+
+
+def _record_governor_hop(bus: OrionBusAsync, hop: str, elapsed_ms: float, *, timed_out: bool) -> None:
+    """Never raises: telemetry must not change a turn's outcome."""
+    try:
+        if timed_out:
+            bus.record_hop_timeout(hop, elapsed_ms)
+        else:
+            bus.record_hop_success(hop, elapsed_ms)
+    except Exception:
+        logger.debug("governor_hop_record_failed hop=%s", hop, exc_info=True)
+
+
+async def _emit_governor_timeout_grammar(
+    bus: OrionBusAsync,
+    *,
+    request_channel: str,
+    reply_channel: str,
+    corr: str,
+    elapsed_ms: float,
+) -> None:
+    # timeout_sec is the REAL wait, not the configured ceiling: the governor wait can end
+    # early on a failed liveness check, well before HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC.
+    emit = getattr(bus, "emit_rpc_timeout_grammar", None)
+    if emit is None:
+        return
+    try:
+        await emit(
+            request_channel=request_channel,
+            reply_channel=reply_channel,
+            corr=corr,
+            timeout_sec=elapsed_ms / 1000.0,
+            timeout_elapsed_ms=elapsed_ms,
+        )
+    except Exception:
+        logger.debug("governor_timeout_grammar_failed corr=%s", corr, exc_info=True)
+
+
 class HarnessGovernorClient:
     def __init__(self, bus: OrionBusAsync):
         self.bus = bus
@@ -145,8 +189,24 @@ class HarnessGovernorClient:
                 correlation_id=correlation_id,
                 started=started,
             )
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        hop = governor_hop_key(request)
         if msg is None:
+            # Same two signals rpc_request() gives every other bus RPC on timeout: a
+            # per-hop timeout in this bus's RPC-health aggregator, and the mesh-wide
+            # rpc_transport_timeout grammar atom (equilibrium's transport trigger).
+            _record_governor_hop(self.bus, hop, elapsed_ms, timed_out=True)
+            await _emit_governor_timeout_grammar(
+                self.bus,
+                request_channel=request_channel,
+                reply_channel=reply_to,
+                corr=correlation_id,
+                elapsed_ms=elapsed_ms,
+            )
             return None
+        # A reply is a completed round trip even if its payload carries an error:
+        # transport health measures the hop, not the run's outcome.
+        _record_governor_hop(self.bus, hop, elapsed_ms, timed_out=False)
         logger.info(
             "[%s] harness governor reply received elapsed_sec=%.1f",
             correlation_id,

@@ -9,6 +9,7 @@ equilibrium-service settings/bus are needed.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,7 +43,15 @@ def _assert_mapped(trigger, *, severity=None):
 
 def test_transport_snapshot_gate():
     g = _gate("transport_metacog_gate")
-    t = g.build_transport_metacog_trigger_from_snapshot(
+    build = g.build_transport_metacog_trigger_from_snapshot
+    # PR #2310 removes the legacy p95 latency branch and its threshold kwarg;
+    # pass it only while the builder still accepts it so either merge order works.
+    extra = (
+        {"latency_p95_threshold_ms": 5000.0}
+        if "latency_p95_threshold_ms" in inspect.signature(build).parameters
+        else {}
+    )
+    t = build(
         {
             "service": "cortex-exec",
             "window_start": "2026-09-24T00:00:00Z",
@@ -54,7 +63,7 @@ def test_transport_snapshot_gate():
             "success_latency_ms_max": 1300.0,
             "channel_counts": {"orion:state:request": 5},
         },
-        latency_p95_threshold_ms=5000.0,
+        **extra,
         **COMMON,
     )
     _assert_mapped(t, severity="critical")

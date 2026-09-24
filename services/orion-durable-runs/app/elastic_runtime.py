@@ -8,6 +8,7 @@ import logging
 import math
 from datetime import timedelta
 import httpx
+from app.http_hops import hop_client_kwargs
 from orion.autonomy.thermal_gate import thermal_state
 from orion.durable_admission.elastic import ElasticStore, LANE, SLOT
 from orion.reverie.baseline import load_baseline_policy
@@ -25,13 +26,16 @@ class ElasticRuntime:
         self.initialized = False
         self.thermal = "hot"  # conservative rearm across restart
 
+    def _hop_kwargs(self):
+        return hop_client_kwargs(getattr(self.runtime, "hop_recorder_getter", None))
+
     async def environment(self):
         s = self.settings
         if not s.elastic_thermal_enabled:
             return {"eligible": False, "reason": "thermal_eligibility_disabled"}
         try:
             policy = load_baseline_policy()
-            async with httpx.AsyncClient(timeout=3) as client:
+            async with httpx.AsyncClient(timeout=3, **self._hop_kwargs()) as client:
                 cabinet = await client.get(s.elastic_cabinet_url)
                 cabinet.raise_for_status()
                 raw = cabinet.json()
@@ -133,7 +137,7 @@ class ElasticRuntime:
                 if row["run_id"]:
                     await self.store.store.record_event(row["run_id"],"resource.elastic_started",
                         {"operation_id":row["operation_id"]},event_id=row["operation_id"]+":started")
-                async with httpx.AsyncClient(timeout=1200) as client:
+                async with httpx.AsyncClient(timeout=1200, **self._hop_kwargs()) as client:
                     response = await client.post(self.settings.elastic_controller_url.rstrip("/")+"/v1/gpu-slots/activate",
                         json={"slot":SLOT,"target":row["desired_target"],"operation_id":row["operation_id"],"generation":row["generation"]})
                     result = response.json()

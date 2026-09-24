@@ -12,6 +12,7 @@ import httpx
 from langgraph.graph import START
 from langgraph.types import Command
 
+from app.http_hops import hop_client_kwargs
 from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, build_admitted_graph
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
@@ -30,8 +31,10 @@ SELF_SENSE_WORKFLOW = "self_sense_eval"
 
 
 class AdmissionRuntime:
-    def __init__(self, settings, runner, pool, *, store=None, broker=None, clock=None):
+    def __init__(self, settings, runner, pool, *, store=None, broker=None, clock=None, hop_recorder_getter=None):
         self.settings, self.runner, self.pool = settings, runner, pool
+        # RPC-health hop recording for outbound HTTP (app/http_hops.py); None = off.
+        self.hop_recorder_getter = hop_recorder_getter
         self.store = store or PostgresAdmissionStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.broker = broker or ResourceBroker(self.store, lanes={}, lease_seconds=settings.lease_seconds,
@@ -360,7 +363,7 @@ class AdmissionRuntime:
 
     async def refresh_lanes(self):
         policy = json.loads(self.settings.lane_policy_json or "{}")
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, **hop_client_kwargs(self.hop_recorder_getter)) as client:
             response = await client.get(self.settings.gateway_url.rstrip("/")+"/routes")
             response.raise_for_status()
             routes = response.json()["routes"]

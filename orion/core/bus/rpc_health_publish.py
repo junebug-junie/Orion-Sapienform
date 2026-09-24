@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Callable, Dict, Iterable, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.core.bus.rpc_health import HopLatency, RpcHealthSnapshot
+from orion.core.bus.rpc_health import HopLatency, RpcHealthAggregator, RpcHealthSnapshot, SharedRpcHealthSink
 from orion.schemas.telemetry.rpc_health import RpcChannelLatencyV1, RpcHealthSnapshotV1
 
 logger = logging.getLogger("orion.bus.rpc_health_publish")
@@ -107,11 +108,13 @@ async def rpc_health_publish_loop(
     stop_event: asyncio.Event,
     include_channel_latency: bool = False,
     hop_only_bus_getters: Iterable[Callable[[], Optional[OrionBusAsync]]] = (),
+    sinks: Iterable[SharedRpcHealthSink] = (),
 ) -> None:
     """Sleeps interval_sec, then drains bus_getter()'s current RPC-health snapshot and
     publishes it. Never raises past this loop -- a publish failure is logged and the loop
     continues, since this is telemetry, not a path any real turn depends on."""
     hop_only_getters = list(hop_only_bus_getters)
+    sink_list = list(sinks)
     # Discard whatever hop-only buses accumulated before the loop started, so the first
     # published window covers one interval, not "since process start".
     for extra_getter in hop_only_getters:
@@ -121,6 +124,10 @@ async def rpc_health_publish_loop(
                 extra.get_rpc_health_snapshot()
         except Exception:
             logger.warning("rpc_health_hop_only_initial_drain_failed service=%s", service, exc_info=True)
+    # Same for sinks: short-lived buses that folded in before the loop started must not
+    # make the first window span "since process start".
+    for sink in sink_list:
+        sink.drain_into(RpcHealthAggregator())
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_sec)
@@ -129,6 +136,8 @@ async def rpc_health_publish_loop(
             pass
         try:
             bus = bus_getter()
+            for sink in sink_list:
+                sink.drain_into(bus._rpc_health)
             snapshot = bus.get_rpc_health_snapshot()
             for extra_getter in hop_only_getters:
                 try:
@@ -151,3 +160,107 @@ async def rpc_health_publish_loop(
             await bus.publish(RPC_HEALTH_SNAPSHOT_CHANNEL, envelope)
         except Exception:
             logger.warning("rpc_health_publish_failed service=%s", service, exc_info=True)
+
+
+class RpcHealthPublisher:
+    """Start/stop wrapper around ``rpc_health_publish_loop`` so each service's wiring is
+    a few lines: construct it, ``start()`` once its long-lived bus is connected,
+    ``await stop()`` on shutdown. ``start()`` is a no-op when ``enabled`` is false.
+
+    ``bus_getter`` must return a long-lived bus (publish goes through it). Pass
+    ``connect_bus=True`` for a dedicated publish-only bus the service has not connected
+    itself: the task then retries ``connect()`` with backoff until it succeeds (or stop),
+    so a mesh blip at boot does not silently disable publishing for the process lifetime.
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        bus_getter: Callable[[], Optional[OrionBusAsync]],
+        service: str,
+        node: Optional[str],
+        instance: Optional[str],
+        source: ServiceRef,
+        interval_sec: float,
+        include_channel_latency: bool,
+        sinks: Iterable[SharedRpcHealthSink] = (),
+        hop_only_bus_getters: Iterable[Callable[[], Optional[OrionBusAsync]]] = (),
+        connect_bus: bool = False,
+        connect_retry_max_sec: float = 60.0,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self._connect_bus = bool(connect_bus)
+        self._connect_retry_max_sec = float(connect_retry_max_sec)
+        self._connect_retry_initial_sec = 1.0
+        self._bus_getter = bus_getter
+        self._kwargs = dict(
+            service=service,
+            node=node,
+            instance=instance,
+            source=source,
+            interval_sec=float(interval_sec),
+            include_channel_latency=bool(include_channel_latency),
+            sinks=tuple(sinks),
+            hop_only_bus_getters=tuple(hop_only_bus_getters),
+        )
+        self._stop = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self) -> Optional[asyncio.Task]:
+        if not self.enabled or self.running:
+            return self._task
+        self._stop = asyncio.Event()
+        self._task = asyncio.create_task(self._run(self._stop), name="rpc-health-publish")
+        logger.info(
+            "rpc_health_publish_started service=%s instance=%s interval=%ss channel=%s channel_latency=%s",
+            self._kwargs["service"],
+            self._kwargs["instance"],
+            self._kwargs["interval_sec"],
+            RPC_HEALTH_SNAPSHOT_CHANNEL,
+            self._kwargs["include_channel_latency"],
+        )
+        return self._task
+
+    async def _run(self, stop: asyncio.Event) -> None:
+        if self._connect_bus:
+            delay = self._connect_retry_initial_sec
+            while not stop.is_set():
+                try:
+                    bus = self._bus_getter()
+                    if bus is None:
+                        raise RuntimeError("bus_getter returned None")
+                    await bus.connect()
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        "rpc_health_publish_connect_failed service=%s retry_in=%.0fs error=%s",
+                        self._kwargs["service"],
+                        delay,
+                        exc,
+                    )
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=delay)
+                        return
+                    except asyncio.TimeoutError:
+                        pass
+                    delay = min(delay * 2.0, self._connect_retry_max_sec)
+            if stop.is_set():
+                return
+        await rpc_health_publish_loop(bus_getter=self._bus_getter, stop_event=stop, **self._kwargs)
+
+    async def stop(self, timeout_sec: float = 5.0) -> None:
+        task, self._task = self._task, None
+        if task is None:
+            return
+        self._stop.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout_sec)
+        except Exception:
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task

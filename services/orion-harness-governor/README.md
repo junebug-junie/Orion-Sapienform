@@ -33,6 +33,28 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 `GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
 silently is visible immediately rather than inferred later from turns going unanswered.
 
+## RPC-health publish (on by default)
+
+Every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30s) the governor drains the shared dispatch
+bus's RPC-health window and publishes `RpcHealthSnapshotV1` to `orion:rpc_health:snapshot`
+(`instance="main"`; `orion-signal-gateway` passes it through as `rpc_health_harness_governor`,
+`orion-equilibrium-service` folds `channel_latency` into its log-only EWMA baseline).
+With `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` the snapshot carries per-hop stats:
+
+| Hop key | Meaning |
+|---------|---------|
+| `orion:cortex:exec:request:background` | finalize reflect / response repair RPC to cortex-exec (`rpc_request`) |
+| `orion:substrate:finalize_appraisal:request` | 5a draft-molecule appraisal RPC |
+| `fcc:<served_model>` | FCC motor leg wall time (`HarnessRunV1.fcc_elapsed_sec`: served-model probe + `claude -p` subprocess + lifecycle publish). Success on exit code >= 0, timeout on `fcc_timeout`/`fcc_stream_stalled`; Hub cancels (negative exit), pre-spawn refusals and output-limit kills are skipped. Model = CLI-echoed served model, else the gateway model probed before the run; `fcc:unknown` only when both are missing |
+
+`fcc:*` outcome mapping: `fcc_timeout` / `fcc_stream_stalled` (the motor's own timeout-kill)
+-> timeout; any other run that spawned the subprocess -> success with its wall time; a
+pre-spawn refusal (bad model label, lane context too small, spawn/MCP preflight failure) or
+an externally killed run (negative exit code, i.e. Hub cancel) -> not recorded.
+Consumer-first rollout: `channel_latency` is a new field on an `extra="forbid"` model --
+rebuild `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build first.
+Hop key conventions: `orion/core/bus/rpc_health.py` module docstring.
+
 ## Flow
 
 ```text

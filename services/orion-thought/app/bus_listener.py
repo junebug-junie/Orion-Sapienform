@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
+
+from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.thought import (
@@ -55,6 +57,8 @@ async def _run_bus_message_handler(raw_msg: dict[str, Any]) -> None:
     except Exception:
         logger.exception("bus message handler failed")
     finally:
+        # Per-call bus: fold its RPC-health window before discarding it (app/rpc_health.py).
+        fold_bus(bus)
         with suppress(Exception):
             await bus.close()
 

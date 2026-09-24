@@ -44,6 +44,12 @@ A transport wrapper, not httpx ``event_hooks``: response hooks never fire on a t
 which is exactly the outcome transport health most needs. Recording never raises into
 the request path.
 
+Passing ``transport=`` to an httpx client disables httpx's env-proxy mounts
+(``HTTP(S)_PROXY`` with ``trust_env``); the wrapped hops in this repo are tailnet calls with
+no proxy configured (checked for orion-thought and orion-durable-runs 2026-09-24). Test code
+that injects its own ``transport=`` into a client built with these kwargs will collide --
+wire the recorder only where no test double already owns the transport.
+
 ``path_normalizer`` collapses high-cardinality paths (ids in the URL) to a stable key,
 e.g. ``lambda p: re.sub(r"/[0-9a-f-]{16,}", "/:id", p)``. Key cardinality is also capped
 by the aggregator (``MAX_DISTINCT_HOPS``, overflow folded into ``_overflow``).
@@ -51,6 +57,7 @@ by the aggregator (``MAX_DISTINCT_HOPS``, overflow folded into ``_overflow``).
 from __future__ import annotations
 
 import logging
+import re
 from time import perf_counter
 from typing import Callable, Optional, Protocol
 
@@ -67,6 +74,19 @@ class HopRecorder(Protocol):
 
 RecorderGetter = Callable[[], Optional[HopRecorder]]
 PathNormalizer = Callable[[str], str]
+
+
+_ID_SEGMENT_RE = re.compile(
+    r"^(?:\d+|[0-9a-fA-F]{16,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+)
+
+
+def normalize_id_path(path: str) -> str:
+    """Default ``path_normalizer``: collapse path segments that look like ids -- all
+    digits, a UUID, or 16+ hex chars -- to ``:id``, so ``/runs/<uuid>/cancel`` and
+    ``/runs/<other-uuid>/cancel`` share one hop key. Named segments (a lane or model name
+    like ``qwen3.5-27b``) are kept: they are bounded and the split is the point."""
+    return "/".join(":id" if seg and _ID_SEGMENT_RE.match(seg) else seg for seg in path.split("/"))
 
 
 def http_hop_key(url: httpx.URL | str, path_normalizer: Optional[PathNormalizer] = None) -> str:

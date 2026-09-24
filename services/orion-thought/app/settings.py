@@ -46,6 +46,13 @@ class ThoughtSettings(BaseSettings):
     # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+    # RPC-health snapshot publish (orion:rpc_health:snapshot) + per-hop channel_latency
+    # (A0 of docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
+    # Defaults match .env_example. channel_latency is extra="forbid" on the consumer side:
+    # rebuild orion-signal-gateway + orion-equilibrium-service on PR #2312's build first.
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     channel_thought_request: str = Field(
         "orion:thought:request",

@@ -50,6 +50,31 @@ docker compose \
 
 `GET http://localhost:7155/health`
 
+## RPC-health publish (mesh transport coverage)
+
+Every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (default 30) orion-thought publishes one
+`RpcHealthSnapshotV1` (`instance="main"`) on `orion:rpc_health:snapshot`, with the per-hop
+`channel_latency` breakdown when `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` (A0 of
+`docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md`).
+Both default `true`; `RPC_HEALTH_PUBLISH_ENABLED=false` turns it off.
+
+This service has no single RPC bus -- the per-request handler and `/visual-chain/run-once`
+open a bus per call, and the reverie / reverie-chain / visual-chain workers each hold their
+own. Each folds its window into a process-wide sink (`app/rpc_health.py`) -- per tick for
+the workers, in `finally` for per-call buses -- and one dedicated publisher bus drains it.
+
+Hop keys:
+
+| Hop key | Call |
+|---|---|
+| `CHANNEL_CORTEX_EXEC_REQUEST` (and lane channels) | `CortexExecClient.execute_plan` (reverie, stance, visual legacy exec) |
+| `CHANNEL_VISION_HOST_REQUEST` | `visual_chain.request_caption` (vision-host `caption_frame`) |
+| `http:<mind host[:port]>/v1/mind/run` | `mind_enrichment.run_mind_for_thought` (504 / httpx timeout = timeout) |
+
+Consumer-first rollout: `RpcHealthSnapshotV1` is `extra="forbid"`, so rebuild
+`orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before
+deploying this with channel latency on.
+
 ## Reverie semantic lift
 
 Set `ORION_REVERIE_SEMANTIC_LIFT_ENABLED=true` (default `false`) to lift coalition

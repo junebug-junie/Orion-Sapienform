@@ -40,6 +40,7 @@ from orion.schemas.reverie import (
 
 from .resonance_monitor import check_resonance_worsening
 from .reverie import _default_broadcast_reader, _source, run_reverie_once
+from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
     load_latest_no_coalition_streak,
@@ -433,6 +434,7 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
                 )
             except Exception:
                 logger.exception("unhandled reverie chain error")
+            fold_bus(bus)  # per chain run: this worker bus lives for the process (app/rpc_health.py)
             try:
                 if stop_event is not None:
                     await asyncio.wait_for(stop_event.wait(), timeout=settings.reverie_interval_sec)

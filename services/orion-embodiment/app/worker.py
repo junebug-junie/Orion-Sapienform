@@ -18,6 +18,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.resilience import publish_with_reconnect
+from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
 from orion.embodiment.intents import build_intent
@@ -97,6 +98,22 @@ class EmbodimentWorker:
         self._stop = asyncio.Event()
         self._bus = OrionBusAsync(
             self._settings.bus_url, enabled=self._settings.bus_enabled, codec=OrionCodec()
+        )
+        # RPC-health publish from this same long-lived bus: both town-speech RPCs
+        # (_request_utterance_cortex / _request_utterance_quick) run rpc_request on it.
+        self._rpc_health_publisher = RpcHealthPublisher(
+            enabled=self._settings.rpc_health_publish_enabled and self._settings.bus_enabled,
+            bus_getter=lambda: self._bus,
+            service=self._settings.service_name,
+            node=self._settings.node_name,
+            instance="main",
+            source=ServiceRef(
+                name=self._settings.service_name,
+                version=self._settings.service_version,
+                node=self._settings.node_name,
+            ),
+            interval_sec=self._settings.rpc_health_publish_interval_sec,
+            include_channel_latency=self._settings.rpc_health_channel_latency_enabled,
         )
         self._arbiter = ArbiterState()
         self._hold_sec = self._settings.deliberate_hold_sec
@@ -317,12 +334,14 @@ class EmbodimentWorker:
             logger.info("embodiment_worker_disabled ORION_EMBODIMENT_ENABLED=false")
             return
         await self._bus.connect()
+        self._rpc_health_publisher.start()
         asyncio.create_task(self._consume_loop(), name="embodiment-consume")
         if self._settings.perception_interval_sec > 0:
             asyncio.create_task(self._perception_loop(), name="embodiment-perception")
 
     async def stop(self) -> None:
         self._stop.set()
+        await self._rpc_health_publisher.stop()
         await self._bus.close()
 
     async def _consume_loop(self) -> None:

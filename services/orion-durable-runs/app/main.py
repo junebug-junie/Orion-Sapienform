@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
+from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DURABLE_RUN_RECEIPT_KIND, DurableRunRequestV1, DurableRunReceiptV1
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
 from orion.schemas.resource_admission import (
@@ -33,6 +34,28 @@ _checkpointer_cm: Any = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
 capacity: Any = None
+rpc_health_publisher: RpcHealthPublisher | None = None
+
+
+def _rpc_bus_getter() -> OrionBusAsync | None:
+    return rpc_bus
+
+
+def build_rpc_health_publisher() -> RpcHealthPublisher:
+    """Publishes the long-lived rpc_bus's RPC-health window: the runner's rpc_request
+    calls (harness turn, verb dispatch) plus every outbound HTTP hop timed by
+    app/http_hops.py. Single container -> instance="main"."""
+    s = _settings
+    return RpcHealthPublisher(
+        enabled=s.rpc_health_publish_enabled and s.orion_bus_enabled,
+        bus_getter=_rpc_bus_getter,
+        service=s.service_name,
+        node=s.node_name,
+        instance="main",
+        source=ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name),
+        interval_sec=s.rpc_health_publish_interval_sec,
+        include_channel_latency=s.rpc_health_channel_latency_enabled,
+    )
 
 
 def _chassis_cfg() -> ChassisConfig:
@@ -110,6 +133,7 @@ async def _open_checkpointer():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, capacity
+    global rpc_health_publisher
     from app.runner import DurableRunner
 
     try:
@@ -124,6 +148,8 @@ async def lifespan(app: FastAPI):
         if _settings.orion_bus_enabled:
             rpc_bus = OrionBusAsync(url=_settings.orion_bus_url)
             await rpc_bus.connect()
+            rpc_health_publisher = build_rpc_health_publisher()
+            rpc_health_publisher.start()
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
         if _settings.capacity_enabled:
             from orion.durable_admission.capacity import PostgresCapacityStore
@@ -134,7 +160,10 @@ async def lifespan(app: FastAPI):
             await capacity.snapshot()  # Additive migration must be applied first.
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
-            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
+            admission = AdmissionRuntime(
+                _settings, runner, _checkpointer_cm,
+                hop_recorder_getter=_rpc_bus_getter if rpc_bus is not None else None,
+            )
             # Admission migration is operator-managed, unlike saver migrations.
             # Fail startup if it has not been applied; never accept into memory.
             await admission.store.queue_snapshot()
@@ -174,6 +203,9 @@ async def lifespan(app: FastAPI):
                     await closer.stop()
                 except Exception:  # noqa: BLE001
                     pass
+        if rpc_health_publisher is not None:
+            await rpc_health_publisher.stop()
+            rpc_health_publisher = None
         if rpc_bus is not None:
             try:
                 await rpc_bus.close()

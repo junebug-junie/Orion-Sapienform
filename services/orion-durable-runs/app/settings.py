@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+    # RPC-health snapshot publish (orion:rpc_health:snapshot) of the long-lived rpc_bus:
+    # runner rpc_request calls + outbound HTTP hops (app/http_hops.py). Mesh transport
+    # coverage of docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-
+    # baseline-design.md. Defaults match .env_example.
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    # Per-hop channel_latency in each snapshot. RpcHealthSnapshotV1 is extra="forbid":
+    # orion-signal-gateway and orion-equilibrium-service must already run PR #2312's build.
+    rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

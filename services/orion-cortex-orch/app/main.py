@@ -738,7 +738,13 @@ async def main() -> None:
                 # snapshot WITHOUT touching the pooled fields, so metacog's own load stays
                 # visible per-hop but never shifts the pooled p95 the current transport
                 # gate reads.
-                hop_only_bus_getters=[lambda: equilibrium_hunter.bus],
+                # svc.bus too: _bus_for_rpc() falls back to it whenever _rpc_bus is None.
+                # The fork is created before this loop starts (and the loop's initial
+                # drain discards svc.bus's pre-start window), so today this only covers
+                # a hop recorded on svc.bus after _close_rpc_bus() -- a defensive drain
+                # so any future fallback use is published rather than silently kept.
+                # dream_hunter.bus is not listed: dispatch_dream_trigger only publishes.
+                hop_only_bus_getters=[lambda: equilibrium_hunter.bus, lambda: svc.bus],
             ),
             name="rpc-health-publish",
         )

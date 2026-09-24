@@ -220,6 +220,7 @@ from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualC
 from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
 from .cortex_client import CortexExecClient
+from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
     acknowledge_visual_production,
@@ -1291,6 +1292,7 @@ async def run_visual_chain_worker(stop_event: asyncio.Event | None = None) -> No
                 await run_visual_chain_once(bus)
             except Exception:
                 logger.exception("unhandled visual chain error")
+            fold_bus(bus)  # per run: this worker bus lives for the process (app/rpc_health.py)
             try:
                 if stop_event is not None:
                     await asyncio.wait_for(

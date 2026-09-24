@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+    # RPC-health snapshot publish (orion:rpc_health:snapshot) from the worker's bus
+    # (town-speech cortex RPCs). channel_latency needs orion-signal-gateway +
+    # orion-equilibrium-service on a build that knows the field (extra="forbid").
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     enabled: bool = Field(False, alias="ORION_EMBODIMENT_ENABLED")
     fcc_env_path: str = Field("/root/.fcc/.env", alias="EMBODIMENT_FCC_ENV_PATH")

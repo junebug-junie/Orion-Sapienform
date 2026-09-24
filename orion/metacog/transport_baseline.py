@@ -164,6 +164,11 @@ class TransportBaselineConfig:
     max_aggregate_windows: int = 20
     # Firing.
     spike_z: float = 3.0
+    # Materiality: a spike/saturation is only hot when the window is also at
+    # least this many ms above its reference, in absolute terms. z and ratio
+    # are scale-free, so without it a 10 ms status poll reading 14 ms opened a
+    # "spike" live (2026-09-24). Provisional; the log-only week tunes it.
+    min_excess_ms: float = 250.0
     borderline_z: float = 2.0
     spike_sustain: int = 2
     saturation_ratio: float = 2.0
@@ -691,13 +696,17 @@ def fold_snapshot(
             sigma = math.sqrt(max(ks.fast_var, config.min_variance))
             if ks.fast_count > 0:
                 z = (m - ks.fast_mean) / sigma
+            # Absolute excess over the pre-fold baseline (materiality gate).
+            spike_material = (
+                ks.fast_count > 0 and wmean_ms - math.exp(ks.fast_mean) >= config.min_excess_ms
+            )
 
             # guard 1: Phase I/II separation.
             if ks.fast_count == 0:
                 fold_value: float | None = m
-            elif tainted or (z is not None and z >= config.spike_z):
+            elif tainted or (z is not None and z >= config.spike_z and spike_material):
                 fold_value = None
-            elif z is not None and z >= config.borderline_z:
+            elif z is not None and z >= config.borderline_z and spike_material:
                 fold_value = ks.fast_mean + config.borderline_z * sigma
             else:
                 fold_value = m
@@ -745,7 +754,7 @@ def fold_snapshot(
 
             if warm:
                 # spike: z >= spike_z sustained spike_sustain evaluations.
-                spike_now = z is not None and z >= config.spike_z
+                spike_now = z is not None and z >= config.spike_z and spike_material
                 ks.hot_streak = ks.hot_streak + 1 if spike_now else 0
                 spike_hot = ks.hot_streak >= config.spike_sustain or (
                     spike_now and "spike" in ks.episodes
@@ -759,7 +768,9 @@ def fold_snapshot(
 
                 # saturation, with open/close hysteresis.
                 sat_open = "saturation" in ks.episodes
-                sat_hot = ratio >= (config.saturation_close_ratio if sat_open else config.saturation_ratio)
+                sat_hot = ratio >= (
+                    config.saturation_close_ratio if sat_open else config.saturation_ratio
+                ) and math.exp(ks.level_mean) - math.exp(ks.floor) >= config.min_excess_ms
                 step = _episode_step(
                     ks, "saturation", hot=sat_hot, magnitude=ratio, now=now,
                     peak_ms=peak, config=config,

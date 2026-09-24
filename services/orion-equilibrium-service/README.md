@@ -205,6 +205,7 @@ Log-only by default. Look for `transport_baseline_obs` (per-key z, ratio, calls,
 | `EQUILIBRIUM_TRANSPORT_BASELINE_MIN_CALLS` | `5` | Calls needed (pooled across windows if sparse) before latency is judged |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_N_WARM` | `10` | Judged windows before any latency condition may fire |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_SPIKE_Z` | `3.0` | Spike z, sustained 2 judged windows |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_MIN_EXCESS_MS` | `250` | Spike/saturation also need this absolute excess over normal (materiality) |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_SATURATION_RATIO` | `2.0` | Saturation opens at recent level / floor >= this (closes below 1.5) |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_REGIME_AFTER_SEC` | `21600` | Saturation or spike observed this long becomes one `regime_shift` |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_MAX_TRIGGERS_PER_HOUR` | `30` | Hourly publish budget for baseline triggers; over budget is logged `transport_baseline_suppressed`. `0` = no cap |

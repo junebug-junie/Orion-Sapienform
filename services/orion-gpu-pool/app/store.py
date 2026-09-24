@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 LEASE_COLUMNS = (
     "lease_id", "request_id", "holder", "work_class", "priority", "kind", "status", "role",
-    "attempt", "generation", "operator", "min_ctx_tokens", "needs_vision", "created_at",
+    "attempt", "generation", "operator", "min_ctx_tokens", "needs_vision", "retryable", "created_at",
     "queued_since", "granted_at", "recall_by", "not_before", "deadline_at", "expires_at",
     "turn_correlation_id", "parent_lease_id", "reason", "updated_at",
 )
@@ -24,6 +24,7 @@ ADVISORY_KEY = 0x6770755F706F6F6C  # "gpu_pool"
 
 
 class Store(Protocol):
+    async def leader_alive(self) -> bool: ...
     async def upsert_lease(self, row: dict[str, Any]) -> None: ...
     async def lease(self, lease_id: str) -> dict[str, Any] | None: ...
     async def lease_by_request(self, request_id: str) -> dict[str, Any] | None: ...
@@ -65,20 +66,32 @@ class MemoryStore:
     async def cards(self):
         return list(self._cards.values())
 
+    async def leader_alive(self):
+        return True
+
     async def upsert_card(self, row):
         self._cards[row["card"]] = {**self._cards.get(row["card"], {}), **row}
 
 
 class PostgresStore:
-    def __init__(self, pool: Any):
+    def __init__(self, pool: Any, conninfo: str | None = None):
         self.pool = pool
+        self.conninfo = conninfo
         self._leader_conn: Any = None
 
     async def leader(self) -> None:
-        """Block until this process is the only pool writer. Held until close()."""
+        """Block until this process is the only pool writer.
+
+        The advisory lock is a SESSION lock, so it lives on a dedicated connection outside the
+        pool (a pooled connection could be recycled and silently drop it). ``leader_alive()``
+        re-checks it; the service exits if it is ever lost, so two writers can never overlap."""
         import asyncio
 
-        self._leader_conn = await self.pool.getconn()
+        import psycopg
+        from psycopg.rows import dict_row
+
+        conninfo = self.conninfo or self.pool.conninfo
+        self._leader_conn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True, row_factory=dict_row)
         while True:
             row = await (await self._leader_conn.execute(
                 "SELECT pg_try_advisory_lock(%s) AS ok", (ADVISORY_KEY,))).fetchone()
@@ -86,12 +99,22 @@ class PostgresStore:
                 return
             await asyncio.sleep(5)
 
+    async def leader_alive(self) -> bool:
+        if self._leader_conn is None or self._leader_conn.closed:
+            return False
+        try:
+            row = await (await self._leader_conn.execute(
+                "SELECT count(*) AS n FROM pg_locks WHERE locktype='advisory' AND granted "
+                "AND pid=pg_backend_pid()")).fetchone()
+            return int(row["n"]) > 0
+        except Exception:  # noqa: BLE001
+            return False
+
     async def close(self) -> None:
         if self._leader_conn is not None:
             try:
-                await self._leader_conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_KEY,))
+                await self._leader_conn.close()  # ending the session releases the lock
             finally:
-                await self.pool.putconn(self._leader_conn)
                 self._leader_conn = None
 
     async def check_schema(self) -> None:

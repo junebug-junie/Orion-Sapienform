@@ -154,9 +154,9 @@ def test_queued_past_deadline_is_unavailable_not_silent():
 
 def test_backlog_when_no_role_can_serve_then_requeue_when_it_returns():
     down = live(world=RoleLive("world", False, 2))
-    q = lease("world", lease_id="w")
+    q = lease("world", lease_id="w", retryable=True)
     assert [b.lease_id for b in of(Backlog, run([q], roles=down))] == ["w"]
-    parked = lease("world", "backlogged", lease_id="w")
+    parked = lease("world", "backlogged", lease_id="w", retryable=True)
     assert of(Requeue, run([parked], roles=down)) == []
     assert [r.lease_id for r in of(Requeue, run([parked]))] == ["w"]
 
@@ -249,7 +249,7 @@ def test_experiment_drains_every_card_then_loads():
 def test_experiment_loaded_backlogs_background_and_chat_waits():
     all_cards = cards(**{c: CardLive(c, swapped_in={"experiment"}) for c in CFG.cards})
     holder = lease("experiment", "granted", "experiment", operator=True, granted_at=T0)
-    meta = lease("metacog", lease_id="m")
+    meta = lease("metacog", lease_id="m", retryable=True)
     chat = lease("chat", lease_id="c", deadline_at=T0 + timedelta(seconds=30))
     decisions = run([holder, meta, chat], crds=all_cards)
     assert [b.lease_id for b in of(Backlog, decisions)] == ["m"]
@@ -284,3 +284,37 @@ def test_lost_heartbeat_expires_and_frees_the_slot_this_tick():
     decisions = run([dead, q])
     assert [e.lease_id for e in of(Expire, decisions)] == ["dead"]
     assert grants(decisions) == {"c": "chat"}
+
+
+def test_one_waiting_owner_recalls_exactly_one_borrower_across_ticks():
+    two_slot_chat = live(chat=RoleLive("chat", True, 2, 65536))
+    lent = cards(gpu0=CardLive("gpu0", lent=True))
+    b1 = lease("agent", "granted", "chat", lease_id="b1", granted_at=T0 - timedelta(seconds=20))
+    b2 = lease("agent", "granted", "chat", lease_id="b2", granted_at=T0 - timedelta(seconds=10))
+    owner = lease("chat", lease_id="o", priority="interactive")
+    [r] = of(Recall, run([b1, b2, owner], roles=two_slot_chat, crds=lent))
+    assert r.lease_id == "b2"
+    b2r = lease("agent", "recalling", "chat", lease_id="b2", recall_by=T0 + timedelta(seconds=60))
+    assert of(Recall, run([b1, b2r, owner], roles=two_slot_chat, crds=lent, now=T0 + timedelta(seconds=1))) == []
+
+
+def test_retry_past_deadline_is_unavailable_not_regranted():
+    due = lease("metacog", "retry_wait", lease_id="r", not_before=T0, deadline_at=T0 - timedelta(seconds=1))
+    decisions = run([due])
+    assert [(u.lease_id, u.reason) for u in of(Unavailable, decisions)] == [("r", "deadline")]
+    assert not grants(decisions)
+
+
+def test_non_retryable_backlog_class_waits_instead_of_backlogging():
+    down = live(world=RoleLive("world", False, 2))
+    q = lease("world", lease_id="w")
+    decisions = run([q], roles=down)
+    assert not of(Backlog, decisions) and not of(Unavailable, decisions)
+
+
+def test_owner_reclaiming_gpu2_waits_instead_of_backlogging():
+    swapped = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}))
+    d = lease("diffusion", lease_id="d", retryable=True)
+    decisions = run([d], crds=swapped)
+    assert not of(Backlog, decisions)
+    assert [u.role for u in of(SwapUnload, decisions)] == ["agent-gpu2"]

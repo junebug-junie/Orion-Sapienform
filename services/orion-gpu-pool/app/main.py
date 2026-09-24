@@ -118,7 +118,17 @@ async def _on_announce(env: BaseEnvelope) -> None:
 
 
 async def _tick_forever() -> None:
+    import os
+
+    checked = 0.0
     while not _stop.is_set():
+        now = asyncio.get_running_loop().time()
+        if _store is not None and now - checked >= 10:
+            checked = now
+            if not await _store.leader_alive():
+                # Another replica may now hold the lock; writing on would risk double grants.
+                logger.critical("gpu_pool_leader_lock_lost -- exiting so the container restarts")
+                os._exit(3)
         try:
             await runtime.tick()
         except Exception:  # noqa: BLE001 -- one bad tick must not stop the pool
@@ -151,7 +161,7 @@ async def lifespan(app: FastAPI):
     await _pool.open()
     saver = AsyncPostgresSaver(_pool)
     await saver.setup()
-    _store = PostgresStore(_pool)
+    _store = PostgresStore(_pool, conninfo=_settings.postgres_uri)
     await _store.check_schema()
     logger.info("gpu_pool_waiting_for_leader_lock")
     await _store.leader()

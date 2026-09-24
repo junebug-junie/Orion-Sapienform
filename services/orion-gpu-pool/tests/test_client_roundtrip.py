@@ -113,7 +113,7 @@ def test_queued_caller_is_woken_by_the_grant_event():
     asyncio.run(go())
 
 
-def test_exception_in_block_releases_as_upstream_error_and_retries():
+def test_exception_in_block_releases_as_upstream_error():
     async def go():
         bus = WiredBus()
         rt, _ = await pool(bus)
@@ -122,7 +122,7 @@ def test_exception_in_block_releases_as_upstream_error_and_retries():
                 lease_id = lease.lease_id
                 raise RuntimeError("HTTP 500 from llama.cpp")
         row = await rt.store.lease(lease_id)
-        assert row["status"] == "retry_wait" and "HTTP 500" in row["reason"]
+        assert row["status"] == "released" and "HTTP 500" in row["reason"]   # not retryable: ends
     asyncio.run(go())
 
 
@@ -130,9 +130,13 @@ def test_backlogged_and_unavailable_are_typed_not_timeouts():
     async def go():
         bus = WiredBus()
         await pool(bus, down=("world",))
-        with pytest.raises(LeaseBacklogged):
-            async with gpu_lease(bus, work_class="world", holder="t"):
+        with pytest.raises(LeaseBacklogged):                  # opted in: the pool keeps it
+            async with gpu_lease(bus, work_class="world", holder="t", retryable=True):
                 pass
+        with pytest.raises(LeaseUnavailable) as waited:       # default: waits, then a typed deadline
+            async with gpu_lease(bus, work_class="world", holder="t", deadline_sec=0.2):
+                pass
+        assert waited.value.reason == "deadline" and not isinstance(waited.value, LeaseBacklogged)
         with pytest.raises(LeaseUnavailable) as err:
             async with gpu_lease(bus, work_class="experiment", holder="t"):
                 pass

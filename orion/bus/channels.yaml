@@ -2812,6 +2812,7 @@ channels:
     message_kind: "grammar.event.v1"
     description: "Canonical grammar ingress channel for sql-writer ledger persistence"
     producer_services:
+      - orion-gpu-pool
       - orion-vision-retina
       - orion-hub
       - orion-vision-edge
@@ -3116,7 +3117,7 @@ channels:
     consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Per-request reply channel for lease, state and control RPCs (orion.gpu_pool.client REPLY_PREFIX). Wildcard so bus-mirror collapses them to one channel node."
+    description: "Per-request reply channel for lease RPCs (orion.gpu_pool.client REPLY_PREFIX). Wildcard so bus-mirror collapses them to one channel node."
 
   - name: "orion:gpu_pool:event"
     kind: "event"
@@ -3127,6 +3128,26 @@ channels:
     stability: "experimental"
     since: "2026-09-24"
     description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch. Callers wake on 'granted'; sql-writer persists."
+
+  - name: "orion:gpu_pool:state:reply:*"
+    kind: "result"
+    schema_id: "GpuPoolStateV1"
+    message_kind: "gpu_pool.state.v1"
+    producer_services: ["orion-gpu-pool"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-09-24"
+    description: "Per-request reply to orion:gpu_pool:state:request (orion.schemas.gpu_pool.GPU_POOL_STATE_REPLY_PREFIX)."
+
+  - name: "orion:gpu_pool:control:reply:*"
+    kind: "result"
+    schema_id: "GpuPoolControlReplyV1"
+    message_kind: "gpu_pool.control.reply.v1"
+    producer_services: ["orion-gpu-pool"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-09-24"
+    description: "Per-request reply to orion:gpu_pool:control:request (orion.schemas.gpu_pool.GPU_POOL_CONTROL_REPLY_PREFIX)."
 
   - name: "orion:gpu_pool:state"
     kind: "event"
@@ -3146,7 +3167,7 @@ channels:
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "On-demand GpuPoolStateV1 read; reply on orion:gpu_pool:reply:*."
+    description: "On-demand GpuPoolStateV1 read; reply on orion:gpu_pool:state:reply:*."
 
   - name: "orion:gpu_pool:control:request"
     kind: "request"
@@ -3156,7 +3177,7 @@ channels:
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Operator verbs (lend, unlend, replay, cancel, backfill) checked against GPU_POOL_OPERATOR_TOKEN; fail closed when unset. Reply GpuPoolControlReplyV1 on orion:gpu_pool:reply:*."
+    description: "Operator verbs (lend, unlend, replay, cancel, backfill) checked against GPU_POOL_OPERATOR_TOKEN; fail closed when unset. Reply GpuPoolControlReplyV1 on orion:gpu_pool:control:reply:*."
 
   - name: "orion:llm:worker:announce"
     kind: "event"

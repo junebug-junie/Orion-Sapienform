@@ -25,8 +25,8 @@ def step(state, *events):
     return state
 
 
-def fresh(kind="request"):
-    return initial_state("L", {"work_class": "metacog", "kind": kind}, T0)
+def fresh(kind="request", retryable=True):
+    return initial_state("L", {"work_class": "metacog", "kind": kind, "retryable": retryable}, T0)
 
 
 def test_grant_then_release_ok_is_final():
@@ -63,7 +63,7 @@ def test_heartbeat_extends_by_kind_ttl():
 
 def test_illegal_transition_is_rejected():
     with pytest.raises(InvalidTransition):
-        transition(fresh(), ev("release_ok"), CFG)
+        transition(fresh(), ev("heartbeat"), CFG)
 
 
 def test_history_is_the_walker_path():
@@ -93,3 +93,24 @@ async def _restart_scenario():
     out = await rebuilt.ainvoke(Command(resume=ev("release_ok", 9)), cfg)
     assert out["status"] == "released"
     assert (await rebuilt.aget_state(cfg)).next == ()
+
+
+def test_non_retryable_failure_ends_instead_of_regranting_a_ghost():
+    for failure in ("release_failed", "expire"):
+        s = step(fresh(retryable=False), ev("grant", role="metacog"), ev(failure, 1, reason="x"))
+        assert s["status"] == "released" and s["reason"].startswith(failure)
+    s = step(fresh(retryable=False), ev("grant", role="chat"),
+             ev("recall", 1, recall_by=T0.isoformat()), ev("abort", 61))
+    assert s["status"] == "released"
+
+
+def test_caller_can_finish_a_lease_from_any_waiting_state():
+    for pre in ([], [ev("backlog")], [ev("grant", role="m"), ev("release_failed", 1)]):
+        s = step(fresh(), *pre, ev("release_ok", 5))
+        assert s["status"] == "released", pre
+
+
+def test_operator_hold_has_no_heartbeat_expiry():
+    st = initial_state("H", {"work_class": "experiment", "kind": "hold", "operator": True}, T0)
+    s = step(st, ev("grant", role="experiment"))
+    assert s["expires_at"] is None

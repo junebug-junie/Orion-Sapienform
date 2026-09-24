@@ -88,7 +88,10 @@ def simulate(seed: int = 7) -> dict:
             while next_arrival[i] <= sec:
                 n += 1
                 lid = f"L{n}"
-                req = {"work_class": cls, "kind": kind, "priority": prio, "request_id": lid}
+                # Durable/background work comes back for re-grants; interactive callers do not.
+                retryable = cls in ("agent", "world", "diffusion") or prio == "background"
+                req = {"work_class": cls, "kind": kind, "priority": prio, "request_id": lid,
+                       "retryable": retryable}
                 st = dict(initial_state(lid, req, now))
                 st["deadline_at"] = (now + timedelta(seconds=dl)).isoformat() if dl else None
                 leases[lid] = st
@@ -134,6 +137,7 @@ def simulate(seed: int = 7) -> dict:
             queued_since=datetime.fromisoformat(st["queued_since"]) if st.get("queued_since") else None,
             granted_at=datetime.fromisoformat(st["granted_at"]) if st.get("granted_at") else None,
             expires_at=datetime.fromisoformat(st["expires_at"]) if st.get("expires_at") else None,
+            retryable=bool(st["request"].get("retryable")),
         ) for lid, st in leases.items() if st["status"] not in ("released", "unavailable", "dead_letter")]
 
         # owner starvation: owner queued past grace while a borrower holds that role

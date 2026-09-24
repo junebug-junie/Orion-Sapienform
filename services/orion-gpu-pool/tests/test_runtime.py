@@ -102,6 +102,11 @@ def acq(cls, rid=None, **kw):
     return GpuLeaseRequestV1(verb="acquire", work_class=cls, holder="test", request_id=rid, **kw)
 
 
+def acq_r(cls, rid=None, **kw):
+    """A caller that will use a re-grant (durable run / gateway replay): retries and backlog apply."""
+    return acq(cls, rid, retryable=True, **kw)
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -151,7 +156,7 @@ def test_failures_retry_then_dead_letter_then_operator_replay():
     async def go():
         rt, clock = make()
         await boot(rt)
-        r = await rt.acquire(acq("metacog"))
+        r = await rt.acquire(acq_r("metacog"))
         for attempt in range(CFG.defaults.retry.max_attempts):
             row = await rt.store.lease(r.lease_id)
             assert row["status"] == "granted", (attempt, row["status"])
@@ -172,7 +177,7 @@ def test_lost_heartbeat_expires_and_retries():
     async def go():
         rt, clock = make()
         await boot(rt)
-        r = await rt.acquire(acq("agent"))
+        r = await rt.acquire(acq_r("agent"))
         clock.advance(CFG.defaults.request_lease_ttl_sec - 1)
         assert (await rt.heartbeat(r.lease_id)).status == "granted"
         clock.advance(CFG.defaults.request_lease_ttl_sec + 1)
@@ -207,7 +212,7 @@ def test_backlog_replays_when_the_role_returns():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
         rt, _ = make(down=("world",), store=store, saver=saver, clock=clock)
         await boot(rt)
-        r = await rt.acquire(acq("world"))
+        r = await rt.acquire(acq_r("world"))
         assert r.status == "backlogged"
         rt2, _ = make(store=store, saver=saver, clock=clock)   # restart, world is back
         await boot(rt2)
@@ -292,4 +297,102 @@ def test_state_snapshot_shows_cards_roles_and_queue():
         assert {c.card for c in state.cards} == set(CFG.cards)
         assert state.queue_depth == {"chat": 1} and state.mode == "observe"
         assert state.config_digest == CFG.digest
+    run(go())
+
+
+def test_non_retryable_failure_ends_and_is_never_regranted():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        r = await rt.acquire(acq("metacog"))
+        await rt.release(r.lease_id, "upstream_error", "HTTP 500")
+        row = await rt.store.lease(r.lease_id)
+        assert row["status"] == "released" and "HTTP 500" in row["reason"]
+        await later(rt, clock, 400)
+        assert (await rt.store.lease(r.lease_id))["status"] == "released"
+    run(go())
+
+
+def test_release_ok_after_abort_ends_the_lease():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        await rt.acquire(acq("agent"))
+        waiting = await rt.acquire(acq_r("agent"))
+        await rt.control(GpuPoolControlV1(verb="lend", operator_token=TOKEN, card="gpu0"))
+        await rt.acquire(acq("chat", priority="interactive"))
+        await later(rt, clock, CFG.defaults.clawback_grace_sec)
+        assert (await rt.store.lease(waiting.lease_id))["status"] == "retry_wait"
+        assert (await rt.release(waiting.lease_id, "ok")).status == "ok"
+        await later(rt, clock, 400)
+        assert (await rt.store.lease(waiting.lease_id))["status"] == "released"
+    run(go())
+
+
+def test_expiry_to_dead_letter_reports_both_facts():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        r = await rt.acquire(acq_r("metacog"))
+        for _ in range(CFG.defaults.retry.max_attempts):
+            await later(rt, clock, CFG.defaults.request_lease_ttl_sec + 1)   # heartbeat lost
+            await later(rt, clock, CFG.defaults.retry.max_sec + 1)           # retry due, regranted
+        assert (await rt.store.lease(r.lease_id))["status"] == "dead_letter"
+        assert rt.bus.events("expired") and rt.bus.events("dead_lettered")
+    run(go())
+
+
+def test_swap_request_is_reported_again_when_it_recurs():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        held = await rt.acquire(acq("agent", kind="hold"))
+        await rt.acquire(acq("agent", kind="hold", deadline_at=rt.now() + timedelta(seconds=40)))
+        await later(rt, clock, CFG.defaults.swap_after_wait_sec + 1)
+        assert len(rt.bus.events("swap_requested")) == 1
+        await later(rt, clock, 20)             # the waiter hits its deadline: demand gone
+        await rt.release(held.lease_id, "ok")
+        await rt.acquire(acq("agent", kind="hold"))
+        await rt.acquire(acq("agent", kind="hold"))
+        await later(rt, clock, CFG.defaults.swap_after_wait_sec + 1)
+        assert len(rt.bus.events("swap_requested")) == 2
+    run(go())
+
+
+def test_removed_class_in_live_rows_does_not_kill_the_tick():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("fast"))
+        rt.store.leases[r.lease_id]["work_class"] = "retired_class"
+        await rt.tick()
+        assert (await rt.store.lease(r.lease_id))["status"] == "released"
+        assert (await rt.acquire(acq("fast"))).status == "granted"
+    run(go())
+
+
+def test_projection_heals_from_checkpoint():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("fast"))
+        rt.store.leases[r.lease_id]["status"] = "queued"      # a crash before the row upsert
+        rt.store.leases[r.lease_id]["role"] = None
+        await rt.tick()                                       # Grant rejected by the graph -> heal
+        row = await rt.store.lease(r.lease_id)
+        assert row["status"] == "granted" and row["role"] == "fast"
+    run(go())
+
+
+def test_operator_hold_via_control_and_release():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        bad = await rt.control(GpuPoolControlV1(verb="hold", operator_token="x", work_class="experiment"))
+        assert not bad.ok
+        held = await rt.control(GpuPoolControlV1(verb="hold", operator_token=TOKEN, work_class="experiment"))
+        assert held.ok and held.detail["status"] == "queued"      # it drains every card first
+        rel = await rt.control(GpuPoolControlV1(verb="release", operator_token=TOKEN,
+                                                lease_id=held.detail["lease_id"]))
+        assert rel.ok
     run(go())

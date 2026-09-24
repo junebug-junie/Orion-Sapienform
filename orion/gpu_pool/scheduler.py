@@ -64,6 +64,7 @@ class LeaseView:
     granted_at: datetime | None = None
     expires_at: datetime | None = None
     operator: bool = False
+    retryable: bool = False   # someone will use a re-grant; otherwise "backlog" behaves like "wait"
 
 
 @dataclass(frozen=True)
@@ -213,7 +214,9 @@ def schedule(
     backlogged: list[LeaseView] = []
     for lease in leases:
         if lease.status == "retry_wait":
-            if lease.not_before is None or lease.not_before <= now:
+            if lease.deadline_at is not None and lease.deadline_at <= now:
+                out.append(Unavailable(lease.lease_id, "deadline"))
+            elif lease.not_before is None or lease.not_before <= now:
                 out.append(Requeue(lease.lease_id, "retry_due"))
                 queued.append(lease)
             continue
@@ -237,9 +240,10 @@ def schedule(
     for seat in swap_roles:
         spec = cfg.roles[seat]
         if ctx.loaded(seat):
-            # A resident owner wants its card back: the seat drains.
-            if any(ctx.cfg.owns(q.work_class, ev) for q in queued + backlogged
-                   for ev in cfg.evicted_by(seat)) and not spec.operator_only:
+            # A resident owner that could actually run there wants its card back: the seat drains.
+            if not spec.operator_only and any(
+                    ctx.cfg.owns(q.work_class, ev) and ctx.fits(q, ev)
+                    for q in queued + backlogged for ev in cfg.evicted_by(seat)):
                 ctx.draining.add(seat)
         elif spec.operator_only and any(q.work_class in spec.owner and q.operator for q in queued):
             # An operator is taking the cards: everything the seat evicts drains.
@@ -299,11 +303,18 @@ def schedule(
         starving = owners_waiting(role)
         if not starving:
             continue
+        # Borrowers already giving the slot back count toward the owners waiting for it; without
+        # this one waiting owner would recall one more borrower every tick of the grace period.
+        already = sum(1 for l in leases if l.status == "recalling" and l.role == role
+                      and not cfg.owns(l.work_class, role))
+        needed = len(starving) - already
+        if needed <= 0:
+            continue
         borrowers = sorted(
             (l for l in active if l.role == role and not cfg.owns(l.work_class, role)),
             key=lambda l: (l.granted_at or l.created_at), reverse=True,
         )
-        for lease in borrowers[: len(starving)]:
+        for lease in borrowers[:needed]:
             recall(lease, "owner_waiting")
 
     for lease in active:
@@ -314,18 +325,27 @@ def schedule(
             recall(lease, "draining")
 
     # --- 5. nothing can serve it: wait / backlog / fail ------------------------------
+    def reclaimable(role: str) -> bool:
+        """Evicted by a non-operator swap seat: the owner's own demand drains that seat."""
+        return any(cfg.roles[s].swap is not None and not cfg.roles[s].operator_only
+                   and ctx.loaded(s) and role in cfg.evicted_by(s) for s in cfg.roles)
+
     def serviceable(lease: LeaseView) -> bool:
         for role in cfg.classes[lease.work_class].roles:
             if ctx.fits(lease, role) and (ctx.usable(role) or _loadable(ctx, role)):
                 return True
             if role in ctx.draining and ctx.roles.get(role) and ctx.roles[role].healthy:
                 return True  # it comes back after the drain
+            if cfg.owns(lease.work_class, role) and reclaimable(role):
+                return True  # waiting for its card back is not "nothing can serve it"
         return False
 
     for lease in order:
         if lease.lease_id in granted or serviceable(lease):
             continue
         policy = cfg.classes[lease.work_class].on_unavailable
+        if policy == "backlog" and not lease.retryable:
+            policy = "wait"  # a backlog nobody comes back for would only hand slots to ghosts
         if policy == "backlog":
             out.append(Backlog(lease.lease_id, "no_serviceable_role"))
         elif policy == "fail":

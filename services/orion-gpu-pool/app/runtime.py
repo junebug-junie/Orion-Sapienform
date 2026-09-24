@@ -92,6 +92,8 @@ class PoolRuntime:
                 self.cards[card] = CardLive(card, bool(row["lent"]), set(row["swapped_in"] or []),
                                             row["swap_state"], _ts(row.get("cooldown_until")),
                                             _ts(row.get("last_active_at")))
+        for row in await self.store.live_leases():
+            await self._sync_row(row["lease_id"])
         self._resolve()
 
     def _thread(self, lease_id: str) -> dict:
@@ -160,9 +162,14 @@ class PoolRuntime:
             row = await self.store.lease(lease_id)
             if row is None:
                 return GpuLeaseReplyV1(status="unknown_lease", lease_id=lease_id)
-            kind = "release_ok" if outcome == "ok" else "cancel" if outcome == "cancelled" else "release_failed"
-            if row["status"] not in ("granted", "recalling") and kind != "cancel":
+            if row["status"] in ("released",):
                 return await self._reply_for(row)
+            if row["status"] in ("granted", "recalling"):
+                kind = "release_ok" if outcome == "ok" else "cancel" if outcome == "cancelled" else "release_failed"
+            else:
+                # The caller is done with it (finished after an abort, or gave up while it waited):
+                # end it, so it is never granted again to nobody.
+                kind = "release_ok" if outcome == "ok" else "cancel"
             row = await self._resume(lease_id, {"type": kind, "reason": detail or outcome}) or row
             await self._schedule_and_apply()
             return await self._reply_for(row)
@@ -198,6 +205,18 @@ class PoolRuntime:
                     await self._emit_row("replayed", new)
                 await self._schedule_and_apply()
             return GpuPoolControlReplyV1(ok=True, detail={"lease_id": row["lease_id"], "status": new["status"]})
+        if ctl.verb == "hold":
+            # Operator holds (e.g. the multi-card experiment seat): no heartbeat, bounded by the
+            # role's max_hold_sec, released with verb=release.
+            reply = await self.acquire(GpuLeaseRequestV1(
+                verb="acquire", work_class=ctl.work_class, holder=f"operator:{ctl.actor}",
+                priority="interactive", kind="hold"), operator=True)
+            return GpuPoolControlReplyV1(ok=reply.status in ("granted", "queued"), reason=reply.reason,
+                                         detail=reply.model_dump(mode="json"))
+        if ctl.verb == "release":
+            reply = await self.release(ctl.lease_id or "", "ok", f"operator:{ctl.actor}")
+            return GpuPoolControlReplyV1(ok=reply.status == "ok", reason=reply.reason,
+                                         detail=reply.model_dump(mode="json"))
         if ctl.verb == "backfill":
             return await self._backfill(ctl)
         return GpuPoolControlReplyV1(ok=False, reason="unknown_verb")
@@ -243,18 +262,31 @@ class PoolRuntime:
                 await self.publish_state()
 
     async def _schedule_and_apply(self) -> None:
-        rows = await self.store.live_leases()
-        decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now())
-        for d in decisions:
-            if isinstance(d, (SwapLoad, SwapUnload)):
-                await self._swap(d)
+        rows = []
+        for row in await self.store.live_leases():
+            if row["work_class"] not in self.cfg.classes or (row.get("role") and row["role"] not in self.cfg.roles):
+                # The YAML no longer knows this class/role: end the lease rather than crash every tick.
+                await self._resume(row["lease_id"], {"type": "cancel", "reason": "config_removed"})
                 continue
-            event: dict[str, Any] = {"type": _EVENT_FOR[type(d)], "reason": getattr(d, "reason", None)}
-            if isinstance(d, Grant):
-                event["role"] = d.role
-            if isinstance(d, Recall):
-                event["recall_by"] = d.recall_by.isoformat()
-            await self._resume(d.lease_id, event)
+            rows.append(row)
+        decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now())
+        swaps: set[tuple[str, str]] = set()
+        for d in decisions:
+            try:
+                if isinstance(d, (SwapLoad, SwapUnload)):
+                    swaps.add((type(d).__name__, d.role))
+                    await self._swap(d)
+                    continue
+                event: dict[str, Any] = {"type": _EVENT_FOR[type(d)], "reason": getattr(d, "reason", None)}
+                if isinstance(d, Grant):
+                    event["role"] = d.role
+                if isinstance(d, Recall):
+                    event["recall_by"] = d.recall_by.isoformat()
+                await self._resume(d.lease_id, event)
+            except Exception:  # noqa: BLE001 -- one bad decision must not block the rest
+                logger.exception("gpu_pool_decision_failed decision=%s", d)
+        # Edge-triggered: a swap decision is reported when it starts, and again if it recurs later.
+        self._swap_requested &= swaps
         await self._touch_swap_seats(rows)
 
     async def _swap(self, d: SwapLoad | SwapUnload) -> None:
@@ -295,28 +327,48 @@ class PoolRuntime:
         event = {**event, "at": self.now().isoformat()}
         try:
             values = await self.graph.ainvoke(Command(resume=event), cfg)
-        except InvalidTransition as exc:
-            logger.info("gpu_pool_transition_rejected lease=%s %s", lease_id, exc)
-            return None
-        except Exception as exc:  # noqa: BLE001 -- LangGraph wraps node errors
-            if isinstance(exc.__cause__, InvalidTransition) or "-/->" in str(exc):
+        except Exception as exc:  # noqa: BLE001 -- LangGraph may wrap node errors
+            if isinstance(exc, InvalidTransition) or isinstance(exc.__cause__, InvalidTransition) \
+                    or "-/->" in str(exc):
                 logger.info("gpu_pool_transition_rejected lease=%s %s", lease_id, exc)
+                await self._sync_row(lease_id)  # heal a projection that fell behind its checkpoint
                 return None
             raise
         prior = await self.store.lease(lease_id)
         row = self._row(values, values["request"], (prior or {}).get("parent_lease_id"))
         await self.store.upsert_lease(row)
-        public = _PUBLIC.get(row["status"])
+        # What happened (aborted / expired / cancelled), then where it ended up when that is a
+        # terminal outcome (dead_lettered / released), so neither fact hides the other.
+        names: list[str] = []
         if event["type"] == "abort":
-            public = "aborted"
+            names.append("aborted")
         elif event["type"] == "expire":
-            public = "expired"
+            names.append("expired")
         elif event["type"] == "cancel":
-            public = "cancelled"
-        elif event["type"] == "heartbeat":
-            public = None
-        if public:
-            await self._emit_row(public, row, prior=prior, reason=event.get("reason"))
+            names.append("cancelled")
+        if event["type"] != "heartbeat" and (not names or row["status"] == "dead_letter"
+                                             or (row["status"] == "released" and names != ["cancelled"])):
+            outcome = _PUBLIC.get(row["status"])
+            if outcome and outcome not in names:
+                names.append(outcome)
+        for name in names:
+            await self._emit_row(name, row, prior=prior, reason=row.get("reason") or event.get("reason"))
+        return row
+
+    async def _sync_row(self, lease_id: str) -> dict | None:
+        """The checkpoint is the truth; rewrite the projection row from it if they disagree
+        (e.g. a crash between the graph commit and the row upsert)."""
+        snap = await self.graph.aget_state(self._thread(lease_id))
+        values = snap.values or {}
+        if not values:
+            return None
+        prior = await self.store.lease(lease_id)
+        if prior is not None and prior["status"] == values["status"] and prior.get("role") == values.get("role"):
+            return prior
+        row = self._row(values, values["request"], (prior or {}).get("parent_lease_id"))
+        await self.store.upsert_lease(row)
+        logger.warning("gpu_pool_projection_healed lease=%s %s->%s", lease_id,
+                       (prior or {}).get("status"), row["status"])
         return row
 
     def _row(self, values: dict, request: dict, parent_lease_id: str | None) -> dict[str, Any]:
@@ -328,6 +380,7 @@ class PoolRuntime:
             "generation": values.get("generation", 0), "operator": bool(request.get("operator")),
             "min_ctx_tokens": int(request.get("min_ctx_tokens") or 0),
             "needs_vision": bool(request.get("needs_vision")),
+            "retryable": bool(request.get("retryable")),
             "created_at": _ts(values["created_at"]), "queued_since": _ts(values.get("queued_since")),
             "granted_at": _ts(values.get("granted_at")), "recall_by": _ts(values.get("recall_by")),
             "not_before": _ts(values.get("not_before")), "deadline_at": _ts(request.get("deadline_at")),
@@ -346,7 +399,7 @@ class PoolRuntime:
             deadline_at=row.get("deadline_at"), recall_by=row.get("recall_by"),
             not_before=row.get("not_before"), queued_since=row.get("queued_since"),
             granted_at=row.get("granted_at"), expires_at=row.get("expires_at"),
-            operator=bool(row.get("operator")),
+            operator=bool(row.get("operator")), retryable=bool(row.get("retryable")),
         )
 
     # --- replies ------------------------------------------------------------------------

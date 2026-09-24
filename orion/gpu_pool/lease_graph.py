@@ -25,9 +25,11 @@ _TABLE: dict[tuple[str, str], str] = {
     ("queued", "backlog"): "backlogged",
     ("queued", "unavailable"): "unavailable",
     ("queued", "cancel"): "released",
+    ("queued", "release_ok"): "released",
     ("backlogged", "requeue"): "queued",
     ("backlogged", "dead_letter"): "dead_letter",
     ("backlogged", "cancel"): "released",
+    ("backlogged", "release_ok"): "released",
     ("granted", "heartbeat"): "granted",
     ("granted", "release_ok"): "released",
     ("granted", "release_failed"): "retry_wait",
@@ -41,7 +43,9 @@ _TABLE: dict[tuple[str, str], str] = {
     ("recalling", "expire"): "retry_wait",
     ("recalling", "cancel"): "released",
     ("retry_wait", "requeue"): "queued",
+    ("retry_wait", "unavailable"): "unavailable",
     ("retry_wait", "cancel"): "released",
+    ("retry_wait", "release_ok"): "released",
     ("dead_letter", "replay"): "queued",
     ("dead_letter", "cancel"): "released",
     ("unavailable", "replay"): "queued",
@@ -96,12 +100,14 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
     ttl = cfg.defaults.hold_lease_ttl_sec if state["request"].get("kind") == "hold" \
         else cfg.defaults.request_lease_ttl_sec
 
+    # Operator holds (the Hub button, the experiment seat) have no heartbeat; max_hold_sec bounds them.
+    operator_hold = bool(state["request"].get("operator"))
+    expiry = None if operator_hold else (now + timedelta(seconds=ttl)).isoformat()
     if kind == "grant":
         upd.update(role=event["role"], generation=int(state.get("generation") or 0) + 1,
-                   granted_at=now.isoformat(), expires_at=(now + timedelta(seconds=ttl)).isoformat(),
-                   recall_by=None)
+                   granted_at=now.isoformat(), expires_at=expiry, recall_by=None)
     elif kind == "heartbeat":
-        upd.update(expires_at=(now + timedelta(seconds=ttl)).isoformat(), reason=state.get("reason"))
+        upd.update(expires_at=expiry, reason=state.get("reason"))
     elif kind == "recall":
         upd.update(recall_by=event["recall_by"])
     elif kind in ("requeue", "replay"):
@@ -109,9 +115,12 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
         if kind == "replay":
             upd.update(attempt=1, replays=int(state.get("replays") or 0) + 1)
 
-    if nxt == "retry_wait" and kind in _FAILURES | {"release_failed"}:
+    if nxt == "retry_wait" and kind in _FAILURES:
         attempt = int(state.get("attempt") or 1)
-        if attempt >= cfg.defaults.retry.max_attempts:
+        if not state["request"].get("retryable"):
+            # Nobody will use a re-grant: end here, keeping the cause.
+            upd.update(status="released", reason=f"{kind}:{event.get('reason') or kind}")
+        elif attempt >= cfg.defaults.retry.max_attempts:
             upd.update(status="dead_letter", role=None, reason=event.get("reason") or kind)
         else:
             delay = cfg.defaults.retry.delay(attempt)

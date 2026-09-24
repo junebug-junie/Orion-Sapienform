@@ -19,6 +19,9 @@ GPU_POOL_STATE_REQUEST_CHANNEL = "orion:gpu_pool:state:request"
 GPU_POOL_CONTROL_REQUEST_CHANNEL = "orion:gpu_pool:control:request"
 GPU_POOL_ACTUATE_REQUEST_CHANNEL = "orion:gpu_pool:actuate:request"
 LLM_WORKER_ANNOUNCE_CHANNEL = "orion:llm:worker:announce"
+GPU_POOL_LEASE_REPLY_PREFIX = "orion:gpu_pool:reply:"
+GPU_POOL_STATE_REPLY_PREFIX = "orion:gpu_pool:state:reply:"
+GPU_POOL_CONTROL_REPLY_PREFIX = "orion:gpu_pool:control:reply:"
 
 GPU_LEASE_REQUEST_KIND = "gpu_pool.lease.request.v1"
 GPU_LEASE_REPLY_KIND = "gpu_pool.lease.reply.v1"
@@ -65,6 +68,11 @@ class GpuLeaseRequestV1(BaseModel):
     turn_correlation_id: str | None = Field(None, max_length=128)
     outcome: ReleaseOutcome | None = None
     detail: str | None = Field(None, max_length=2000)
+    # True only when someone will actually use a re-grant: a durable run that resumes by
+    # lease_id, or (stage 3) the gateway re-dispatching ``replay_payload`` itself. Without it a
+    # failed/expired/aborted lease ends instead of retrying, and "backlog" behaves like "wait" --
+    # otherwise the pool would grant GPU slots to callers that have already gone away.
+    retryable: bool = False
     # Size-capped caller payload the pool may re-dispatch on backlog replay.
     replay_payload: dict[str, Any] | None = None
 
@@ -193,10 +201,11 @@ class GpuPoolControlV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    verb: Literal["lend", "unlend", "replay", "cancel", "backfill"]
+    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release"]
     operator_token: str = Field(min_length=1, repr=False)
     card: str | None = None
     lease_id: str | None = None
+    work_class: str | None = None   # verb=hold: an operator hold (e.g. the multi-card experiment seat)
     backfill: dict[str, Any] | None = None
     actor: str = "operator"
 

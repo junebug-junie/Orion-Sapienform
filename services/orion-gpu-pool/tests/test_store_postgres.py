@@ -69,11 +69,14 @@ def test_projection_roundtrip_and_single_writer_lock():
         assert (await store.cards())[0]["swapped_in"] == ["agent-gpu2"]
 
         await store.leader()
+        assert await store.leader_alive()
         second = PostgresStore(pool)
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(second.leader(), timeout=1.0)
         await store.close()
+        assert not await store.leader_alive()
         await asyncio.wait_for(second.leader(), timeout=10.0)
+        assert await second.leader_alive()
         await second.close()
     asyncio.run(go())
 

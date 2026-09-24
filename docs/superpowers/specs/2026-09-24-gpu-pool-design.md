@@ -250,7 +250,12 @@ backfill: operator selects a set of past leases (by class, holder, time range, o
           ─► each spawns a replay child thread (parent_lease_id) ─► place
 ```
 
-- **Timeouts and failures retry** with exponential backoff (YAML `retry`). The attempt number,
+- **Retry is opt-in (`retryable=True`), decided in stage 1 review.** A re-grant is only useful
+  if someone uses it: a durable run resuming by `lease_id` (stage 4) or the gateway re-dispatching
+  `replay_payload` (stage 3). Without the flag, a failed, expired or aborted lease ends as
+  `released` with its cause, and a `backlog` class behaves like `wait`. Otherwise the pool would
+  grant GPU slots to callers that had already gone away.
+- **Timeouts and failures retry** (for `retryable` leases) with exponential backoff (YAML `retry`). The attempt number,
   each failure reason and each placement are kept in the thread's history.
 - **Dead letter** is a terminal-but-replayable state. It is never deleted, and it shows in the
   panel with its whole history.

@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS gpu_pool_leases (
     operator boolean NOT NULL DEFAULT false,
     min_ctx_tokens integer NOT NULL DEFAULT 0,
     needs_vision boolean NOT NULL DEFAULT false,
+    retryable boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL,
     queued_since timestamptz,
     granted_at timestamptz,

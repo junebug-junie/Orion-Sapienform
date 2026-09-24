@@ -24,11 +24,11 @@ from typing import Any, AsyncIterator
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.gpu_pool import (
-    GPU_LEASE_REQUEST_KIND, GPU_POOL_EVENT_CHANNEL, GPU_POOL_LEASE_REQUEST_CHANNEL, GpuLeaseGrantV1,
+    GPU_LEASE_REQUEST_KIND, GPU_POOL_EVENT_CHANNEL, GPU_POOL_LEASE_REPLY_PREFIX, GPU_POOL_LEASE_REQUEST_CHANNEL, GpuLeaseGrantV1,
     GpuLeaseReplyV1, GpuLeaseRequestV1,
 )
 
-REPLY_PREFIX = "orion:gpu_pool:reply:"
+REPLY_PREFIX = GPU_POOL_LEASE_REPLY_PREFIX
 RPC_HEALTH_LABEL = "gpu_pool_lease"   # the RPC itself answers at once: real transport, not excluded
 # The pool records queue wait under this label; equilibrium excludes it (waiting is not transport).
 WAIT_HOP_LABEL = "gpu_pool_wait"
@@ -41,7 +41,8 @@ class LeaseUnavailable(RuntimeError):
 
 
 class LeaseBacklogged(LeaseUnavailable):
-    """Nothing can serve this class right now; the pool holds it durably and replays it."""
+    """Nothing can serve this class right now. Only raised for ``retryable=True`` callers: the pool
+    keeps the lease and re-grants it later, and the caller is expected to come back by lease_id."""
 
 
 @dataclass
@@ -50,6 +51,9 @@ class Lease:
     grant: GpuLeaseGrantV1
     recalled: asyncio.Event = field(default_factory=asyncio.Event)
     recall_by: datetime | None = None
+    # Set when the pool no longer considers this lease held (expired, aborted, gone): stop using
+    # the GPU now. ``recalled`` is set too, so callers watching only that still stop.
+    lost: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 async def lease_rpc(bus: Any, req: GpuLeaseRequestV1, *, source: str, timeout_sec: float = 10.0) -> GpuLeaseReplyV1:
@@ -66,27 +70,33 @@ async def lease_rpc(bus: Any, req: GpuLeaseRequestV1, *, source: str, timeout_se
 async def gpu_lease(
     bus: Any, *, work_class: str, holder: str, priority: str = "system", kind: str = "request",
     deadline_sec: float = 60.0, min_ctx_tokens: int = 0, turn_correlation_id: str | None = None,
-    request_id: str | None = None, heartbeat_sec: float | None = None,
+    request_id: str | None = None, heartbeat_sec: float | None = None, retryable: bool = False,
 ) -> AsyncIterator[Lease]:
     source = holder
     deadline = datetime.now(timezone.utc) + timedelta(seconds=deadline_sec)
     req = GpuLeaseRequestV1(verb="acquire", request_id=request_id or uuid.uuid4().hex, holder=holder,
                             work_class=work_class, priority=priority, kind=kind, min_ctx_tokens=min_ctx_tokens,
-                            deadline_at=deadline, turn_correlation_id=turn_correlation_id)
+                            deadline_at=deadline, turn_correlation_id=turn_correlation_id, retryable=retryable)
     lease: Lease | None = None
-    async with bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:  # before acquire: no missed grant
-        reply = await lease_rpc(bus, req, source=source)
-        if reply.status == "granted" and reply.grant:
-            lease = Lease(reply.lease_id, reply.grant)
-        elif reply.status == "queued":
-            lease = await _wait_for_grant(bus, pubsub, reply.lease_id, deadline)
-        if lease is None:
-            if reply.lease_id and reply.status in ("queued", "backlogged"):
-                await _quiet(lease_rpc(bus, GpuLeaseRequestV1(verb="cancel", lease_id=reply.lease_id), source=source))
-            if reply.status == "backlogged":
-                raise LeaseBacklogged(reply.reason or "backlogged", reply.lease_id)
-            raise LeaseUnavailable(reply.reason or ("deadline" if reply.status == "queued" else reply.status),
-                                   reply.lease_id)
+    reply: GpuLeaseReplyV1 | None = None
+    try:
+        async with bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:  # before acquire: no missed grant
+            reply = await lease_rpc(bus, req, source=source)
+            if reply.status == "granted" and reply.grant:
+                lease = Lease(reply.lease_id, reply.grant)
+            elif reply.status == "queued":
+                lease = await _wait_for_grant(bus, pubsub, reply.lease_id, deadline)
+    except BaseException:
+        # Cancelled or failed mid-acquire: withdraw by request_id (idempotent; works even if the
+        # acquire reply never arrived) so nothing is later granted to a caller that has left.
+        await _withdraw(bus, req, reply, source)
+        raise
+    if lease is None:
+        if reply.status == "backlogged" and retryable:
+            raise LeaseBacklogged(reply.reason or "backlogged", reply.lease_id)
+        await _withdraw(bus, req, reply, source)
+        raise LeaseUnavailable(reply.reason or ("deadline" if reply.status == "queued" else reply.status),
+                               reply.lease_id)
 
     beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if kind == "request" else 30.0)))
     outcome, detail = "ok", None
@@ -132,6 +142,23 @@ async def _heartbeat(bus: Any, lease: Lease, source: str, every: float) -> None:
         if reply.status == "recall":
             lease.recall_by = reply.recall_by
             lease.recalled.set()
+        elif reply.status != "granted":
+            lease.lost.set()
+            lease.recalled.set()
+            return
+
+
+async def _withdraw(bus: Any, req: GpuLeaseRequestV1, reply: GpuLeaseReplyV1 | None, source: str) -> None:
+    lease_id = reply.lease_id if reply is not None else None
+    if lease_id is None:
+        # The acquire may have landed without us seeing the reply: re-acquire is idempotent on
+        # request_id and returns the lease_id, which we then cancel.
+        try:
+            lease_id = (await lease_rpc(bus, req, source=source)).lease_id
+        except BaseException:  # noqa: BLE001
+            return
+    if lease_id:
+        await _quiet(asyncio.shield(lease_rpc(bus, GpuLeaseRequestV1(verb="cancel", lease_id=lease_id), source=source)))
 
 
 async def _quiet(coro) -> None:

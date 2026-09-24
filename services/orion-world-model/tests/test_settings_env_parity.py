@@ -56,7 +56,11 @@ def test_every_env_example_key_maps_to_a_settings_field_or_known_extra():
     # HOST_PORT is docker-compose's host-side port mapping (same convention
     # as orion-vision-host/.env_example) -- read by docker-compose.yml, not
     # by app/settings.py (the container's internal port is fixed in code).
-    allowed_extra: set[str] = {"HOST_PORT"}
+    # CUDA_VISIBLE_DEVICES (added 2026-09-24, GPU2 hardening fix) is a raw
+    # nvidia-container-toolkit variable read by the CUDA runtime itself, not
+    # by pydantic Settings -- same convention as orion-diffusion-host's own
+    # .env_example.
+    allowed_extra: set[str] = {"HOST_PORT", "CUDA_VISIBLE_DEVICES"}
     unmapped = sorted(env_keys - settings_fields - allowed_extra)
     assert not unmapped, f".env_example keys with no matching Settings field: {unmapped}"
 

@@ -3047,7 +3047,7 @@ another tab shows up without its own timer. `chat-burst` is a `system` route and
 appears in the Compute picker. Uses `HUB_LLM_GATEWAY_URL`, `NOTIFY_BASE_URL` and
 `NOTIFY_API_TOKEN`; no new env keys.
 
-## RPC-health snapshot publish (default off)
+## RPC-health snapshot publish (default on)
 
 `RPC_HEALTH_PUBLISH_ENABLED=true` starts `orion/core/bus/rpc_health_publish.py`'s loop on Hub's
 forked RPC bus, publishing `RpcHealthSnapshotV1` (`service="hub"`, `instance="main"`) on
@@ -3058,9 +3058,10 @@ a governor timeout also emits the same `rpc_transport_timeout` grammar atom `rpc
 emits (gated because that atom fires equilibrium's transport metacog trigger directly). Per-hop stats reach the
 snapshot only with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 
-Off by default on purpose: Hub's pooled p95 includes long hub->orch turns, and
-orion-equilibrium-service's current transport gate fires on pooled p95 >= 5 s. Enable after the
-per-hop EWMA transport gate ships (docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
+On by default since 2026-09-24: the fixed pooled-p95 >= 5 s gate is gone (PR #2310) and
+equilibrium's legacy pooled-timeout branch only covers cortex-exec/cortex-orch, so Hub's
+snapshots feed only the per-hop EWMA baseline gate
+(docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
 
 ## Orion is asking (open questions to Juniper)
 

@@ -350,9 +350,8 @@ Off by default until live-verified per the spec's acceptance checks (real nonzer
 **Per-lane identity and per-hop breakdown (2026-09-24).** Each lane container publishes
 `instance=<EXEC_LANE>` (`legacy`/`chat`/`spark`/`background`), so the signal gateway keeps four
 organs (`rpc_health_cortex_exec__<lane>`) instead of one slot the four overwrote. With
-`RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` (default false; flip only after
-`orion-signal-gateway` and `orion-equilibrium-service` are rebuilt, the model is
-`extra="forbid"`) each snapshot also carries `channel_latency`: per-hop success/timeout counts
+`RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` (default true since 2026-09-24, after
+`orion-signal-gateway` and `orion-equilibrium-service` shipped the field first) each snapshot also carries `channel_latency`: per-hop success/timeout counts
 and sufficient statistics of `ln(ms)`, keyed by request channel (or `<channel>#<health_label>`).
 Hop key conventions and the `record_hop_success`/`record_hop_timeout` API for non-`rpc_request`
 paths: `orion/core/bus/rpc_health.py` module docstring.

@@ -1514,11 +1514,11 @@ class Settings(BaseSettings):
     # p95 includes long hub->orch turns, and orion-equilibrium-service's current
     # transport gate fires on pooled p95 >= 5 s, so enabling this before the per-hop EWMA
     # gate lands would add transport metacog rows (2026-09-24 transport-EWMA spec).
-    RPC_HEALTH_PUBLISH_ENABLED: bool = Field(default=False, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    RPC_HEALTH_PUBLISH_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_PUBLISH_ENABLED")
     RPC_HEALTH_PUBLISH_INTERVAL_SEC: float = Field(default=30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
     # Per-hop `channel_latency` in each snapshot. RpcHealthSnapshotV1 is extra="forbid":
     # keep false until orion-signal-gateway and orion-equilibrium-service are rebuilt.
-    RPC_HEALTH_CHANNEL_LATENCY_ENABLED: bool = Field(default=False, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
+    RPC_HEALTH_CHANNEL_LATENCY_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC: float = Field(
         default=8300.0,

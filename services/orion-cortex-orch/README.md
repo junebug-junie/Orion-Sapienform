@@ -52,7 +52,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Channel used for the route-arbitration grammar trace above. |
 | `RPC_HEALTH_PUBLISH_ENABLED` | `true` | Periodically publish this process's real RPC-health snapshot. See "RPC-health snapshot publish" above. |
 | `RPC_HEALTH_PUBLISH_INTERVAL_SEC` | `30` | Publish cadence for the above. |
-| `RPC_HEALTH_CHANNEL_LATENCY_ENABLED` | `false` | Include per-hop `channel_latency` in each snapshot. Flip only after signal-gateway and equilibrium are rebuilt (consumer-first, `extra="forbid"`). |
+| `RPC_HEALTH_CHANNEL_LATENCY_ENABLED` | `true` | Include per-hop `channel_latency` in each snapshot. On since 2026-09-24, after signal-gateway and equilibrium shipped the field (consumer-first). |
 
 ## Compactor workflows
 

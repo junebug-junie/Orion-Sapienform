@@ -185,7 +185,7 @@ admit ──> enqueue ──> wait_grant ──(interrupt until scheduler resume
   writes (admit, enqueue, granted, released). If metacog/fast volume makes that the bottleneck,
   the eval will show it before the gateway cutover depends on it.
 
-**Bus RPC (callers) and HTTP (operators and panels only), `orion-gpu-pool` on athena.** The lease verbs below go over the bus: channel `orion:gpu_pool:lease:request` with verb field `acquire|heartbeat|release`. See the Transport section. HTTP keeps only `GET /v1/pool`, `PUT /v1/cards/{card}/lend` and `/health`. The shapes are listed as HTTP for readability:
+**Bus RPC (callers) and HTTP (operators and panels only), `orion-gpu-pool` on athena.** The lease verbs below go over the bus: channel `orion:gpu_pool:lease:request` with verb field `acquire|heartbeat|release`. See the Transport section. Snapshot, lend and actuation are also bus RPC (see Transport). HTTP keeps only the `GET /v1/pool` debug mirror and `/health`. The shapes are listed as HTTP for readability:
 - `POST /v1/leases`: `{request_id, holder, work_class, priority, kind, deadline_at?,
   correlation_id}` → `granted {lease_id, generation, model, url, card}` or `queued {position}`.
 - `GET /v1/leases/{id}?wait=25`: long-poll until granted or recalled. Interactive callers loop
@@ -279,6 +279,26 @@ stated:**
    in a single transaction. That exception is stated here on purpose.
 6. **equilibrium** keeps reading `rpc_transport_timeout` unchanged. A pool that cannot be reached
    surfaces there exactly like any other broken hop.
+
+**Everything else goes over the bus too (Juniper, 2026-09-24: "as much behind the bus as
+possible"):**
+
+| interaction | channel | why it's on the bus |
+| --- | --- | --- |
+| lease acquire, heartbeat, release | `orion:gpu_pool:lease:request` (RPC) | per-hop latency and timeouts in rpc_health, causal edges in bus-mirror |
+| lease lifecycle facts (granted, queued, recalled, aborted, expired, released) | `orion:gpu_pool:event` | durable-runs and callers wake on it; sql-writer persists it; bus-mirror links it to the turn |
+| pool snapshot (cards, loaded models, leases, queue) | `orion:gpu_pool:state` published every tick on change (at least every 5s), plus `orion:gpu_pool:state:request` (RPC) for an on-demand read | Hub panel, field-digester queue depth and cortex-exec's wait cue all read one bus shape instead of three HTTP polls |
+| GPU0 lend on/off | `orion:gpu_pool:control:request` (RPC, operator token in payload, checked by the pool) | the button press is a traced, persisted fact |
+| gpu2 swap orders to circe | `orion:gpu_pool:actuate:request` (RPC; gpu-lane-controller joins the bus as the actuator) and `orion:gpu_pool:actuate:result` | swap duration and failures become transport hops, not a private HTTP call |
+| model health as the pool sees it | carried inside `orion:gpu_pool:state` | one place to see "chat-35b down since 14:02" |
+
+**HTTP remains only where the far side cannot speak bus:**
+- gateway → llama.cpp inference calls (the model servers are third-party);
+- pool → llama.cpp `/health` and `/slots` probes (the results are republished on the bus as
+  above);
+- each service's `/health` for Docker healthchecks;
+- `GET /v1/pool` as a read-only debug mirror of the last `orion:gpu_pool:state`, for curl
+  from a shell.
 
 ## Delete list (in the same stage that replaces each piece)
 

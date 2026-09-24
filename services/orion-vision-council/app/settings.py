@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     # Channels
     CHANNEL_COUNCIL_INTAKE: str = "orion:vision:windows"
     CHANNEL_COUNCIL_PUB: str = "orion:vision:events"
+    # Things the council looked at and could not name (VisionUnresolvedV1,
+    # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md
+    # idea 4). Consumed by orion-sql-writer into vision_unresolved (sibling walkway patch).
+    CHANNEL_VISION_UNRESOLVED: str = "orion:vision:unresolved:sql-write"
+    COUNCIL_UNRESOLVED_ENABLED: bool = True
+    # At most one unresolved percept per stream per this many seconds, so a
+    # noisy scene cannot flood curiosity's study material.
+    COUNCIL_UNRESOLVED_MIN_INTERVAL_SEC: float = 600.0
 
     # Cortex Exec
     CHANNEL_COUNCIL_REQUEST: str = "orion:exec:request:VisionCouncilService"

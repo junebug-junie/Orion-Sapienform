@@ -27,6 +27,17 @@ VisionWindowPayload → evidence_transition (host label delta) → VisionSceneIn
 
 Bus intake honors the transition gate; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops). Concurrent windows on the same stream coalesce via `interpret_in_flight` so atlas metacog is not double-called on the same transition. Host pipe only — edge is out of scope.
 
+## Unresolved percepts (things Orion could not name)
+
+Walkway camera idea 4 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). After each intake window the council checks whether something went unnamed and, if so, publishes `VisionUnresolvedV1` on `orion:vision:unresolved:sql-write` (`CHANNEL_VISION_UNRESOLVED`); `orion-sql-writer` stores it in `vision_unresolved` as study material for curiosity. Not an alert.
+
+- `reason=no_label`: `summary.object_counts` has a box with an empty label (GroundingDINO's answer when no prompt word clears `text_threshold`) or the host runner's `"object"` fallback -- the detector drew a box but could not name it. Deliberately *not* "no box cleared the score threshold": the host already drops boxes under 0.25 before the window service's own 0.25 cut, so that condition is unreachable. Checked even on `stable_scene` windows, because an unchanging scene never changes its label set and the gate would otherwise hide it forever. How often it fires live is UNVERIFIED (walkway stream not up yet).
+- `reason=council_uncertainty`: the council's own interpretation returned non-empty `uncertainties` (wins over `no_label` when both apply).
+
+`description` is plain words, `what_was_tried` names the detector/caption/council model that looked, `evidence_refs` are the window's artifact ids. `unresolved_id` is derived from `window_id` + reason, so a redelivered window cannot create a second row. At most one per stream per `COUNCIL_UNRESOLVED_MIN_INTERVAL_SEC` (default 600); `COUNCIL_UNRESOLVED_ENABLED=false` turns it off. Code: `app/unresolved.py`, wired in `CouncilService._maybe_publish_unresolved`. Intake windows only; RPC requests do not produce unresolved rows.
+
+Live note (2026-09-24): the last 20 cam0 interpretations all had empty `uncertainties`, so on the office camera `council_uncertainty` is expected to be rare; `no_label` is the deterministic trigger.
+
 ## Evidence grounding rules
 
 | Condition | Action |

@@ -47,6 +47,18 @@ Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are pub
 
 `ENABLE_ROUTE_GRAMMAR_REDUCER` and orch's `PUBLISH_CORTEX_ORCH_GRAMMAR` both default `true` now (graduated out of shadow mode, matching the `chat_grammar`/`execution_trajectory` precedent in commit `044d5318`). **`manual_migration_route_substrate_loop.sql` must be applied before this reducer can write** -- it will error on every tick against a fresh DB until `substrate_route_arbitration_projection` exists. Projection (`active_route_arbitration`) is capped the same way `active_execution_trajectory` is (`ROUTE_ARBITRATION_MAX_RUNS=2000`, `ROUTE_ARBITRATION_MAX_AGE_SEC=86400`, LRU by `last_updated_at`) -- not settings-configurable yet, unlike execution's cap; revisit if this lane needs a different cap once it's run at real volume.
 
+## Answers to Orion's asks -> substrate entity
+
+Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). `app/ask_answered_listener.py` subscribes to `orion:ask:answered` (`CHANNEL_ASK_ANSWERED`, toggle `ENABLE_ASK_ANSWERED_LISTENER`, default on). When Juniper answers an ask with `source_kind='vision_individual'`, it writes one `EntityNodeV1` into the worker's substrate graph store through `SubstrateGraphMaterializer` (same path topic-foundry ingestion uses):
+
+- `label` = her answer; `entity_type` from `vision_individual.kind` (person / animal / vehicle, else the detector class, else `unknown` if the row cannot be read); `provenance.source_kind='vision_individual'`, `authority='user_asserted'`, individual id in `evidence_refs` and `metadata.individual_id`.
+- One node per individual (`node_id` derived from `individual_id`, `subject_ref=vision_individual:<id>`), so two individuals named "Bob" stay two nodes, and a later rename updates the label and keeps the old name in `aliases`.
+- Dismissals and other `source_kind`s are ignored. `vision_individual.label` itself is set by `orion-sql-writer` from the `orion_ask` row, not here.
+
+Known gap: this is plain pub/sub. If the Hub's publish fails or this service is down when Juniper answers, the `orion_ask` row is still answered (and sql-writer still labels the individual) but no entity node is written, and nothing replays it yet.
+
+Log line to look for: `ask_answered entity_created ask_id=... individual_id=... node_id=entity:vision_individual:...`.
+
 ## Health monitoring -> hub pending-attention box
 
 `GET /grammar/truth`'s `degraded`/`degraded_reasons` used to be manual-curl-only. `app/health_monitor.py::HealthMonitor` (mirrors `orion-self-state-runtime`'s pattern) polls it every `SUBSTRATE_RUNTIME_HEALTH_CHECK_INTERVAL_SEC` (default `900.0`) and fires an `orion-notify` attention request -- which surfaces as a card in orion-hub's pending-attention UI -- on a healthy->unhealthy transition only (not every tick), plus a recovery note on the way back. Requires `NOTIFY_BASE_URL` (default `http://orion-athena-notify:7140`) to actually reach `orion-notify`; fails open (logs and retries next tick) if unreachable.

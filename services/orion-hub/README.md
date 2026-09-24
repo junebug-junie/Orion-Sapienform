@@ -3046,3 +3046,13 @@ otherwise); the button re-renders from the existing 30 s catalog poll, so a flip
 another tab shows up without its own timer. `chat-burst` is a `system` route and never
 appears in the Compute picker. Uses `HUB_LLM_GATEWAY_URL`, `NOTIFY_BASE_URL` and
 `NOTIFY_API_TOKEN`; no new env keys.
+
+
+## Orion is asking (open questions to Juniper)
+
+Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). A card in the Vision panel ("Orion is asking", `#visionAsksCard`, `static/js/vision-asks.js`) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
+
+- `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
+- `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
+
+Asks are opened by `orion-sql-writer` (row insert + `orion:ask:opened`; sibling walkway patch, not in this branch). The Hub does not subscribe to `orion:ask:opened`; the card polls every 60s. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: an `image_ref` that is an http(s) URL is shown as an image; anything else (a path on the vision host) is shown as text, because the Hub has no route that serves it.

@@ -33,6 +33,10 @@ from .goal_context_listener import (
     start_goal_context_listener,
     stop_goal_context_listener,
 )
+from .ask_answered_listener import (
+    start_ask_answered_listener,
+    stop_ask_answered_listener,
+)
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
 from orion.substrate.chat_loop.constants import CHAT_SESSION_PROJECTION_ID
@@ -51,6 +55,7 @@ worker = BiometricsSubstrateWorker()
 _finalize_listener_task = None
 _closure_listener_task = None
 _goal_context_listener_task = None
+_ask_answered_listener_task = None
 heartbeat_chassis: HeartbeatOnly | None = None
 
 
@@ -75,7 +80,7 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task, heartbeat_chassis
+    global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task, _ask_answered_listener_task, heartbeat_chassis
     await worker.start()
     if worker.bus is not None:
         _finalize_listener_task = await start_finalize_appraisal_listener(
@@ -90,6 +95,12 @@ async def lifespan(app: FastAPI):
         _goal_context_listener_task = await start_goal_context_listener(
             worker.bus,
             worker.stop_event,
+        )
+        _ask_answered_listener_task = await start_ask_answered_listener(
+            worker.bus,
+            worker.stop_event,
+            get_store=lambda: worker._get_substrate_graph_store(log_label="ask_answered_store_init_failed"),
+            get_engine=worker._get_sql_engine,
         )
     try:
         heartbeat_chassis = build_heartbeat_chassis()
@@ -117,6 +128,8 @@ async def lifespan(app: FastAPI):
         _closure_listener_task = None
         await stop_goal_context_listener(_goal_context_listener_task)
         _goal_context_listener_task = None
+        await stop_ask_answered_listener(_ask_answered_listener_task)
+        _ask_answered_listener_task = None
         await worker.stop()
 
 

@@ -236,3 +236,55 @@ async def test_load_state_from_redis_on_boot(monkeypatch):
     svc.bus.redis.get = AsyncMock(return_value=other.dump().encode())
     await svc._load_transport_baseline_state()
     assert len(svc._transport_baseline_gate.state.keys) == 1
+
+
+# ------------------------------------------------------------ review fixes
+
+
+def test_admit_enforces_hourly_budget():
+    gate = TransportBaselineGate(TransportBaselineConfig(), (), max_triggers_per_hour=3)
+    assert [gate.admit(t) for t in (0, 1, 2, 3)] == [True, True, True, False]
+    assert gate.admit(3600.5)  # oldest aged out
+    assert TransportBaselineGate(TransportBaselineConfig(), (), max_triggers_per_hour=0).admit(0)
+
+
+@pytest.mark.asyncio
+async def test_mesh_wide_outage_is_capped_by_budget(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "transport_baseline_max_triggers_per_hour", 2)
+    svc = _service(monkeypatch, emit=True)
+    hops = {f"orion:hop:{n}": _stats([], timeouts=1) for n in range(6)}
+    with caplog.at_level(logging.WARNING):
+        await svc._handle_rpc_health_snapshot(_snap(0, hops, timeouts=6), zen=0.9, distress=0.1)
+    assert len(_published(svc)) == 2
+    assert caplog.text.count("transport_baseline_suppressed") == 4
+
+
+@pytest.mark.asyncio
+async def test_fold_exception_cold_starts_and_keeps_legacy_branch(monkeypatch, caplog):
+    svc = _service(monkeypatch, emit=False)
+    gate = svc._transport_baseline_gate
+    gate.process(_snap(0, {LLM_HOP: _stats([1000.0] * 5)}), zen_state="zen", pressure=0.0, recall_enabled=True)
+    assert gate.state.keys
+
+    def boom(*a, **k):
+        raise RuntimeError("fold bug")
+
+    monkeypatch.setattr("app.transport_baseline_gate.fold_snapshot", boom)
+    with caplog.at_level(logging.ERROR):
+        await svc._handle_rpc_health_snapshot(_snap(1, {}, timeouts=1), zen=0.9, distress=0.1)
+    assert gate.state.keys == {}
+    assert "cold_start reason=fold_failed:RuntimeError" in caplog.text
+    assert [p["upstream"]["evidence_source"] for p in _published(svc)] == ["rpc_health_snapshot"]
+
+
+def test_skipped_snapshots_are_logged_rate_limited(caplog):
+    gate = TransportBaselineGate(TransportBaselineConfig(), ())
+    with caplog.at_level(logging.INFO, logger="orion.equilibrium.transport_baseline_gate"):
+        for i in range(250):
+            gate.process(_snap(i, None), zen_state="zen", pressure=0.0, recall_enabled=True)
+    lines = [r.getMessage() for r in caplog.records if "transport_baseline_skip" in r.getMessage()]
+    assert lines == [
+        "transport_baseline_skip reason=no_channel_latency count=1 service=cortex-orch",
+        "transport_baseline_skip reason=no_channel_latency count=100 service=cortex-orch",
+        "transport_baseline_skip reason=no_channel_latency count=200 service=cortex-orch",
+    ]

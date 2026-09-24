@@ -313,6 +313,15 @@ def test_acceptance_7_busy_plateau_is_saturation_then_exactly_one_regime_shift()
     assert regime[0].duration_s < CFG.regime_after_s + 120
     assert regime[0].saturation_ratio >= CFG.saturation_close_ratio
     assert regime[0].floor_ms is not None and regime[0].floor_ms < 1300.0  # old normal stated
+    # never nominal during the plateau: every judged window from saturation
+    # open to the regime shift still reads saturated (>= close ratio)
+    sat_start = next(k for k, o in enumerate(obs) if "saturation" in o.open_conditions)
+    sat_end = next(k for k, o in enumerate(obs) if k > sat_start and "saturation" not in o.open_conditions)
+    assert all(
+        o.saturation_ratio >= CFG.saturation_close_ratio
+        for o in obs[sat_start:sat_end]
+        if o.evaluated
+    )
     # every observation between open and regime_shift shows saturation open
     open_ts_i = next(k for k, o in enumerate(obs) if "saturation" in o.open_conditions)
     regime_obs = [k for k, o in enumerate(obs) if "saturation" not in o.open_conditions and k > open_ts_i]
@@ -334,8 +343,9 @@ def test_step_change_is_not_hidden_by_guard_1():
     assert ("spike", "open") in conds
     assert ("saturation", "open") in conds
     assert conds.count(("regime_shift", "open")) == 1
-    # after the re-seed the spike closes too; nothing is left open
-    assert ("spike", "close") in conds
+    # the regime_shift explains and ends the latency episodes: no separate
+    # close row claiming the step "cleared"; nothing is left open
+    assert ("spike", "close") not in conds and ("saturation", "close") not in conds
     assert obs[-1].open_conditions == ()
 
 
@@ -408,3 +418,140 @@ def test_unlucky_first_window_does_not_seed_the_floor():
     _run(state, [(0, {HOP: _stats([150.0] * 5)})])  # ~0.6x the true center
     r = _ratio_median_after(state, random.Random(22), center=250.0, n_calls=5, windows=600, start=1)
     assert 0.95 <= r <= 1.1
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def _flat(state, center, start, n_windows, *, n=10, rng=None, cfg=CFG):
+    rng = rng or random.Random(start)
+    return _run(state, ((i, {HOP: _stats(_noisy(rng, center, n=n, sigma=0.1))}) for i in range(start, start + n_windows)), cfg=cfg)
+
+
+def test_moderate_step_below_saturation_ratio_still_becomes_regime_shift():
+    """Review finding 1: a 1.5x step freezes `fast` (z >= 3) but never reaches
+    saturation_ratio 2.0 -- the spike used to stay open forever while the floor
+    crept up silently. Sustained spike hot time must also state a regime shift."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 120)
+    events, obs = _flat(state, 1500.0, 120, int(9 * 3600 / WIN))
+    conds = [(e.condition, e.phase) for e in events]
+    assert ("spike", "open") in conds
+    assert ("saturation", "open") not in conds
+    assert conds.count(("regime_shift", "open")) == 1
+    rs = next(e for e in events if e.condition == "regime_shift")
+    assert CFG.regime_after_s <= rs.duration_s < CFG.regime_after_s + 300
+    assert obs[-1].open_conditions == ()
+    assert 1350.0 <= obs[-1].baseline_ms <= 1650.0
+
+
+def test_silence_does_not_count_toward_regime_shift_and_closes_saturation():
+    """Review finding 2: 30 min saturated, 7 h silent, then slow again must not
+    instantly declare a regime from ~30 min of evidence."""
+    cfg = replace(CFG, regime_after_s=3 * 3600.0)
+    state = new_state(cfg)
+    _flat(state, 1000.0, 0, 120, cfg=cfg)
+    ev1, _ = _flat(state, 4000.0, 120, 60, cfg=cfg)
+    assert ("saturation", "open") in [(e.condition, e.phase) for e in ev1]
+    quiet_start = 180
+    quiet_n = int(7 * 3600 / WIN)
+    ev2, _ = _run(state, ((i, {}) for i in range(quiet_start, quiet_start + quiet_n)), cfg=cfg)
+    assert ("saturation", "close") in [(e.condition, e.phase) for e in ev2]
+    ev3, _ = _flat(state, 4000.0, quiet_start + quiet_n, 20, cfg=cfg)
+    assert not [e for e in ev1 + ev2 + ev3 if e.condition == "regime_shift"]
+
+
+def test_duplicate_snapshot_is_not_folded_twice():
+    """Review finding 3: a redelivered window (same window_end) double-counted."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 20)
+    ks = state.keys[state_key("cortex-exec", "chat", HOP)]
+    payload = _snap(20, {HOP: _stats([9000.0] * 10)})
+    fold_snapshot(state, payload, config=CFG)
+    before = state_to_dict(state)
+    res = fold_snapshot(state, payload, config=CFG)
+    assert state_to_dict(state) == before
+    assert res.events == [] and res.observations == []
+    assert ks.hot_streak <= 1
+
+
+def test_timeout_only_window_taints_an_in_progress_pool():
+    """Review finding 4: a 0-success timeout window inside a sparse pool skipped
+    the taint, so the pooled mean was learned despite the timeout."""
+    state = new_state(CFG)
+    _run(state, [(0, {HOP: _stats([1000.0] * 2)}), (1, {HOP: _stats([], timeouts=1)})])
+    ks = state.keys[state_key("cortex-exec", "chat", HOP)]
+    assert ks.pend_tainted and ks.pend_n == 2
+
+
+def test_node_is_the_identity_fallback_when_instance_is_missing():
+    """Review finding 5: two processes of one service with instance=None
+    collapsed onto one key."""
+    state = new_state(CFG)
+    for node in ("athena", "circe"):
+        p = _snap(0, {HOP: _stats([100.0] * 5)}, instance=None)
+        p["node"] = node
+        fold_snapshot(state, p, config=CFG)
+    assert set(state.keys) == {
+        state_key("cortex-exec", "athena", HOP),
+        state_key("cortex-exec", "circe", HOP),
+    }
+
+
+def test_outage_is_one_zero_success_row_not_two():
+    """Review finding 6: every zero_success open came with a timeout open."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 10)
+    ev, _ = _run(state, ((i, {HOP: _stats([], timeouts=3)}) for i in range(10, 20)))
+    assert [(e.condition, e.phase) for e in ev] == [("zero_success", "open")]
+    # partial recovery with timeouts continuing: zero_success keeps quiet, and
+    # later timeouts with successes open `timeout` only after it closes
+    quiet = int(CFG.close_quiet_s // WIN) + 1
+    ev, _ = _run(state, ((i, {HOP: _stats([1000.0] * 5)}) for i in range(20, 20 + quiet)))
+    assert ("zero_success", "close") in [(e.condition, e.phase) for e in ev]
+
+
+def test_corrupt_state_values_cold_start_instead_of_crashing():
+    """Review finding 7: non-dict episodes raised past the never-raises
+    contract; wrong-typed numbers loaded and then crashed every fold."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 5)
+    good = state_to_dict(state)
+    k = next(iter(good["keys"]))
+    for mutate in (
+        lambda d: d["keys"][k].__setitem__("episodes", "x"),
+        lambda d: d["keys"][k].__setitem__("level_count", "7"),
+        lambda d: d["keys"][k].__setitem__("fast_mean", float("nan")),
+        lambda d: d["keys"][k].__setitem__("episodes", {"timeout": {"opened_ts": "a"}}),
+        lambda d: d["keys"].__setitem__(k, []),
+    ):
+        bad = json.loads(json.dumps(good))
+        mutate(bad)
+        st, reason = load_state(bad, CFG)
+        assert st.keys == {} and reason and reason.startswith("malformed_state")
+
+
+def test_eviction_closes_open_episodes():
+    """Review finding 8: eviction silently dropped open episodes."""
+    cfg = replace(CFG, max_idle_s=3600.0)
+    state = new_state(cfg)
+    _run(state, [(0, {HOP: _stats([], timeouts=1)})], cfg=cfg)
+    # a different producer drives the clock; this hop's own producer went
+    # silent, so nothing but eviction can end its episode
+    res = fold_snapshot(
+        state, _snap(200, {"orion:other": _stats([100.0] * 5)}, service="cortex-orch"), config=cfg
+    )
+    ev = res.events
+    closes = [e for e in ev if e.phase == "close"]
+    assert [(e.condition, e.key) for e in closes] == [("timeout", HOP)]
+    assert closes[0].duration_s >= 3600.0
+    assert state_key("cortex-exec", "chat", HOP) not in state.keys
+
+
+def test_spike_sustain_does_not_bridge_a_long_gap():
+    """Review finding 10: two spike windows hours apart counted as sustained."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 40)
+    ev1, _ = _run(state, [(40, {HOP: _stats([9000.0] * 10)})])
+    ev2, _ = _run(state, [(400, {HOP: _stats([9000.0] * 10)})])
+    assert not [e for e in ev1 + ev2 if e.condition == "spike"]

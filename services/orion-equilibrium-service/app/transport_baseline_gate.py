@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter, deque
 from dataclasses import asdict
 from typing import Any, Iterable
 
@@ -44,6 +45,14 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 logger = logging.getLogger("orion.equilibrium.transport_baseline_gate")
 
 EVIDENCE_SOURCE = "transport_baseline"
+
+
+def gate_from_settings(settings: Any) -> "TransportBaselineGate":
+    return TransportBaselineGate(
+        config_from_settings(settings),
+        settings.transport_exclude_labels(),
+        max_triggers_per_hour=int(settings.transport_baseline_max_triggers_per_hour),
+    )
 
 
 def config_from_settings(settings: Any) -> TransportBaselineConfig:
@@ -106,10 +115,35 @@ def build_transport_baseline_trigger(
 
 
 class TransportBaselineGate:
-    def __init__(self, config: TransportBaselineConfig, exclude_labels: Iterable[str]) -> None:
+    def __init__(
+        self,
+        config: TransportBaselineConfig,
+        exclude_labels: Iterable[str],
+        *,
+        max_triggers_per_hour: int = 30,
+    ) -> None:
         self.config = config
         self.exclude_labels = tuple(exclude_labels)
         self.state = new_state(config)
+        self.max_triggers_per_hour = int(max_triggers_per_hour)
+        self._published_ts: deque[float] = deque()
+        self._skip_counts: Counter[str] = Counter()
+
+    def admit(self, now_ts: float) -> bool:
+        """Global publish budget for baseline triggers. They bypass the 30 s
+        transport lane (episodes are self-limiting), so a mesh-wide outage
+        across many hops must still not become a burst of metacog drafts.
+        Over budget -> the caller logs and drops the trigger."""
+        while self._published_ts and now_ts - self._published_ts[0] >= 3600.0:
+            self._published_ts.popleft()
+        if self.max_triggers_per_hour > 0 and len(self._published_ts) >= self.max_triggers_per_hour:
+            return False
+        self._published_ts.append(now_ts)
+        return True
+
+    def reset(self, reason: str) -> None:
+        logger.error("transport_baseline cold_start reason=%s", reason)
+        self.state = new_state(self.config)
 
     def load(self, raw: str | bytes | None) -> str | None:
         """Restore from the persisted JSON string. Returns the cold-start reason
@@ -148,6 +182,18 @@ class TransportBaselineGate:
         result = fold_snapshot(
             self.state, payload, config=self.config, exclude_labels=self.exclude_labels
         )
+        if result.skipped_reason is not None:
+            # "No data" must stay distinguishable from "calm" in the log-only
+            # week: count skips and log the first and every 100th per reason.
+            self._skip_counts[result.skipped_reason] += 1
+            n = self._skip_counts[result.skipped_reason]
+            if n == 1 or n % 100 == 0:
+                logger.info(
+                    "transport_baseline_skip reason=%s count=%d service=%s",
+                    result.skipped_reason,
+                    n,
+                    payload.get("service") if isinstance(payload, dict) else None,
+                )
         triggers: list[MetacogTriggerV1] = []
         for ev in result.events:
             trig = build_transport_baseline_trigger(

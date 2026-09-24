@@ -52,16 +52,24 @@ and is what lets the ~1 call / 30 s background lane be measured at all.
    does not update ``fast``. ``borderline_z <= z < spike_z`` folds the value
    clipped at ``mean + borderline_z * sigma``.
 2. ``saturation_ratio = exp(level - floor)``, opens at ``>= saturation_ratio``.
-3. Saturation sustained ``>= regime_after_s`` emits exactly one
-   ``regime_shift`` and only then re-seeds ``floor`` (and ``fast``'s mean) to
-   the new level. The regime_shift event *ends* the saturation episode: no
-   separate saturation ``close`` is emitted, so a plateau is never reported
-   as cleared before its new normal has been stated.
+3. Saturation *or spike* observed hot for ``>= regime_after_s`` (hot time,
+   ``Episode.hot_s`` -- silence never counts) emits exactly one
+   ``regime_shift`` and only then re-seeds ``floor`` and ``fast``'s mean to
+   the new level. The spike path matters: a step too small for
+   ``saturation_ratio`` (e.g. 1.5x) but at z >= 3 freezes ``fast`` under
+   guard 1 for good, so without it the spike would stay open forever while
+   the floor crept up unannounced. The regime_shift *ends* the latency
+   episodes it explains: no separate close is emitted, so a plateau is never
+   reported as cleared before its new normal has been stated.
 4. Calls-per-minute is carried on every event and never gates anything.
 5. Latency conditions need ``fast.count >= n_warm`` qualifying evaluations.
    Spike needs ``z >= spike_z`` on ``spike_sustain`` consecutive evaluations.
-   Timeouts need no minimum. ``zero_success`` = the key has usual traffic
-   (``calls`` EWMA > 0) and this window has 0 successes and > 0 timeouts.
+   Timeouts need no minimum. ``zero_success`` = the key has succeeded before,
+   has usual traffic, and this window has 0 successes and > 0 timeouts. It
+   subsumes ``timeout`` for the same failure (one outage = one row).
+6. Identity is ``(service, instance or node, hop)``; a window whose
+   ``window_end`` is not newer than the key's last folded window (a
+   redelivery or replay) is ignored.
 
 ## Deviation from the spec, and why
 
@@ -92,9 +100,12 @@ Each (key, condition) is an open -> escalate* -> close state machine.
 - open: condition first observed (spike: after ``spike_sustain``).
 - escalate: magnitude reached ``escalate_factor`` x the last announced
   magnitude (spike: z; saturation: ratio; timeout: timeouts per window).
-- close: condition not observed for ``close_quiet_s`` (hysteresis, so a key
-  timing out every few minutes is one episode, not a flapping pair per
-  window). Carries ``duration_s`` and ``peak_ms``.
+- close: condition not observed for ``close_quiet_s`` (15 min; a key
+  faulting every few minutes is one episode, not a flapping pair per
+  window). Carries ``duration_s`` and ``peak_ms``. Latency episodes on a
+  hop with no latency evidence arriving at all also age out this way. A hop
+  evicted from state (idle > ``max_idle_s`` or over ``max_keys``) emits a
+  close for every open episode rather than dropping it silently.
 
 ## Config fingerprint
 
@@ -122,7 +133,7 @@ from typing import Any, Iterable
 
 from orion.bus.ewma import compute_ewma_update
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 
 CONDITIONS = ("timeout", "zero_success", "spike", "saturation", "regime_shift")
 
@@ -159,7 +170,9 @@ class TransportBaselineConfig:
     saturation_close_ratio: float = 1.5
     regime_after_s: float = 6 * 3600.0
     escalate_factor: float = 2.0
-    close_quiet_s: float = 300.0
+    # Quiet time before an episode closes. 15 min: a hop faulting every few
+    # minutes is one episode, not an open/close pair per fault.
+    close_quiet_s: float = 900.0
     # State bounds.
     max_idle_s: float = 7 * 24 * 3600.0
     max_keys: int = 512
@@ -176,6 +189,10 @@ class Episode:
     announced_magnitude: float
     peak_ms: float | None = None
     peak_magnitude: float = 0.0
+    # Time the condition was actually observed hot, gaps longer than
+    # close_quiet_s excluded -- regime_shift is judged on this, never on
+    # wall-clock since open (silence is not evidence of a sustained regime).
+    hot_s: float = 0.0
 
 
 @dataclass
@@ -184,6 +201,9 @@ class KeyState:
     instance: str | None
     hop: str
     last_seen_ts: float = 0.0
+    # window_end of the last window folded for this key (duplicate/replay guard)
+    last_window_end: float = 0.0
+    last_eval_ts: float = 0.0
     # fast (guarded)
     fast_mean: float = 0.0
     fast_var: float = 0.0
@@ -344,37 +364,91 @@ def state_to_dict(state: TransportBaselineState) -> dict[str, Any]:
     }
 
 
+_EPISODE_FLOATS = ("opened_ts", "last_hot_ts", "announced_magnitude", "peak_magnitude", "hot_s")
+_KEY_FLOATS = (
+    "last_seen_ts", "last_window_end", "last_eval_ts", "fast_mean", "fast_var",
+    "level_mean", "calls_ewma", "pend_sum", "pend_sumsq",
+)
+_KEY_OPT_FLOATS = ("floor", "floor_ts", "pend_max_ms")
+_KEY_INTS = ("fast_count", "level_count", "calls_count", "pend_n", "pend_windows", "hot_streak")
+
+
+def _finite(v: Any) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+        raise ValueError(f"not a finite number: {v!r}")
+    return float(v)
+
+
+def _strict_int(v: Any) -> int:
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise ValueError(f"not a non-negative int: {v!r}")
+    return v
+
+
+def _key_state_from_raw(raw: Any) -> KeyState:
+    """Type-checked rebuild; raises on any wrong-typed field so a corrupt
+    checkpoint is refused at load, not discovered by a crash on every fold."""
+    if not isinstance(raw, dict):
+        raise ValueError("key state is not a dict")
+    service, hop = raw.get("service"), raw.get("hop")
+    instance = raw.get("instance")
+    if not isinstance(service, str) or not isinstance(hop, str):
+        raise ValueError("service/hop must be strings")
+    if instance is not None and not isinstance(instance, str):
+        raise ValueError("instance must be a string or null")
+    ks = KeyState(service=service, instance=instance, hop=hop)
+    for name in _KEY_FLOATS:
+        setattr(ks, name, _finite(raw.get(name, 0.0)))
+    for name in _KEY_OPT_FLOATS:
+        v = raw.get(name)
+        setattr(ks, name, None if v is None else _finite(v))
+    for name in _KEY_INTS:
+        setattr(ks, name, _strict_int(raw.get(name, 0)))
+    if not isinstance(raw.get("pend_tainted", False), bool):
+        raise ValueError("pend_tainted must be bool")
+    ks.pend_tainted = raw.get("pend_tainted", False)
+    eps = raw.get("episodes") or {}
+    if not isinstance(eps, dict):
+        raise ValueError("episodes must be a dict")
+    for cond, ep in eps.items():
+        if cond not in CONDITIONS or not isinstance(ep, dict):
+            raise ValueError(f"bad episode {cond!r}")
+        pm = ep.get("peak_ms")
+        ks.episodes[cond] = Episode(
+            **{n: _finite(ep.get(n, 0.0)) for n in _EPISODE_FLOATS},
+            peak_ms=None if pm is None else _finite(pm),
+        )
+    return ks
+
+
 def load_state(
     data: Any, config: TransportBaselineConfig
 ) -> tuple[TransportBaselineState, str | None]:
     """Rebuild state from its JSON form. Never raises.
 
     Returns ``(state, cold_start_reason)``; the reason is ``None`` on a clean
-    resume. A fingerprint mismatch is refused (cold start), not merged.
+    resume. A fingerprint mismatch is refused (cold start), not merged; so is
+    any wrong-typed field.
     """
     fp = config.fingerprint()
-    if data is None:
-        return new_state(config), "no_saved_state"
-    if not isinstance(data, dict):
-        return new_state(config), "malformed_state"
-    if data.get("schema_version") != STATE_SCHEMA_VERSION:
-        return new_state(config), f"schema_version_mismatch:{data.get('schema_version')}"
-    if data.get("fingerprint") != fp:
-        return new_state(config), f"config_fingerprint_mismatch:{data.get('fingerprint')}!={fp}"
-    keys_raw = data.get("keys")
-    if not isinstance(keys_raw, dict):
-        return new_state(config), "malformed_state"
-    state = TransportBaselineState(fingerprint=fp)
     try:
+        if data is None:
+            return new_state(config), "no_saved_state"
+        if not isinstance(data, dict):
+            return new_state(config), "malformed_state"
+        if data.get("schema_version") != STATE_SCHEMA_VERSION:
+            return new_state(config), f"schema_version_mismatch:{data.get('schema_version')}"
+        if data.get("fingerprint") != fp:
+            return new_state(config), f"config_fingerprint_mismatch:{data.get('fingerprint')}!={fp}"
+        keys_raw = data.get("keys")
+        if not isinstance(keys_raw, dict):
+            return new_state(config), "malformed_state"
+        state = TransportBaselineState(fingerprint=fp)
         for k, raw in keys_raw.items():
-            raw = dict(raw)
-            eps = {
-                cond: Episode(**ep) for cond, ep in (raw.pop("episodes", None) or {}).items()
-            }
-            state.keys[str(k)] = KeyState(**raw, episodes=eps)
-    except (TypeError, ValueError):
-        return new_state(config), "malformed_state"
-    return state, None
+            state.keys[str(k)] = _key_state_from_raw(raw)
+        return state, None
+    except Exception as exc:  # noqa: BLE001 -- documented never-raises contract
+        return new_state(config), f"malformed_state:{type(exc).__name__}"
 
 
 # --------------------------------------------------------------------------
@@ -405,6 +479,9 @@ def _episode_step(
             )
             ks.episodes[cond] = ep
             return "open", ep
+        gap = now - ep.last_hot_ts
+        if 0 < gap <= config.close_quiet_s:
+            ep.hot_s += gap
         ep.last_hot_ts = now
         ep.peak_magnitude = max(ep.peak_magnitude, magnitude)
         if peak_ms is not None:
@@ -419,8 +496,55 @@ def _episode_step(
     return None
 
 
+def _keep_alive(ks: KeyState, cond: str, now: float, config: TransportBaselineConfig) -> None:
+    """Refresh an already-open episode without announcing anything (used when
+    a stronger condition subsumes it this window)."""
+    ep = ks.episodes.get(cond)
+    if ep is None:
+        return
+    gap = now - ep.last_hot_ts
+    if 0 < gap <= config.close_quiet_s:
+        ep.hot_s += gap
+    ep.last_hot_ts = now
+
+
 # --------------------------------------------------------------------------
 # fold
+
+
+def _event(
+    ks: KeyState,
+    cond: str,
+    phase: str,
+    ep: Episode,
+    *,
+    now: float,
+    excluded: bool,
+    calls_per_min: float,
+    usual: float | None,
+    timeouts: int,
+    z: float | None = None,
+    ratio: float | None = None,
+    wmean: float | None = None,
+) -> TransportConditionEvent:
+    return TransportConditionEvent(
+        condition=cond,
+        phase=phase,
+        service=ks.service,
+        instance=ks.instance,
+        key=ks.hop,
+        excluded=excluded,
+        z=z,
+        saturation_ratio=ratio,
+        baseline_ms=_exp(ks.fast_mean) if ks.fast_count else None,
+        floor_ms=_exp(ks.floor),
+        window_mean_ms=wmean,
+        calls_per_min=calls_per_min,
+        calls_per_min_usual=usual,
+        duration_s=(now - ep.opened_ts) if (phase != "open" or cond == "regime_shift") else None,
+        peak_ms=ep.peak_ms,
+        timeout_count=timeouts,
+    )
 
 
 def fold_snapshot(
@@ -438,8 +562,11 @@ def fold_snapshot(
         return FoldResult([], [], "no_channel_latency")
 
     service = str(payload.get("service") or "unknown")
-    instance_raw = payload.get("instance")
-    instance = str(instance_raw) if instance_raw not in (None, "") else None
+    # Producer identity: instance when set, else node. Two processes of one
+    # service must never share a key (their windows interleave and would read
+    # as duplicates / quiet windows for each other).
+    ident_raw = payload.get("instance") or payload.get("node")
+    instance = str(ident_raw) if ident_raw not in (None, "") else None
     now = _parse_ts(payload.get("window_end"))
     start = _parse_ts(payload.get("window_start"))
     if now is None:
@@ -451,13 +578,12 @@ def fold_snapshot(
     events: list[TransportConditionEvent] = []
     observations: list[KeyObservation] = []
 
-    # Every known key of this (service, instance) sees this window, even when it
-    # had no traffic -- so quiet windows close timeout episodes and count as 0
-    # calls in the usual-load EWMA.
+    # Every known key of this producer sees this window, even with no traffic,
+    # so quiet windows age episodes and count as 0 calls in the usual-load EWMA.
     prefix = state_key(service, instance, "")
     hops: dict[str, dict[str, Any]] = {}
     for sk, ks in state.keys.items():
-        if sk.startswith(prefix):
+        if sk.startswith(prefix) and ks.service == service and ks.instance == instance:
             hops[ks.hop] = {}
     for hop, stats in channel_latency.items():
         hops[str(hop)] = stats if isinstance(stats, dict) else {}
@@ -472,51 +598,33 @@ def fold_snapshot(
                 continue
             ks = KeyState(service=service, instance=instance, hop=hop)
             state.keys[sk] = ks
-        if now < ks.last_seen_ts:
-            # Out-of-order / replayed window: never fold time backwards.
+        if now <= ks.last_window_end:
+            # Duplicate (redelivered) or out-of-order window: never fold twice,
+            # never fold time backwards.
             continue
+        ks.last_window_end = now
         excluded = is_excluded(hop, exclude)
-        had_traffic = success > 0 or timeouts > 0
-        if had_traffic:
+        if success > 0 or timeouts > 0:
             ks.last_seen_ts = now
 
         calls = success + timeouts
         calls_per_min = calls / window_min if window_min > 0 else float(calls)
         usual = ks.calls_ewma if ks.calls_count > 0 else None
+        max_ms = _as_float(stats.get("max_ms"))
 
-        def emit(cond: str, phase: str, ep: Episode, *, z=None, ratio=None, wmean=None) -> None:
+        def emit(cond: str, phase: str, ep: Episode, **kw: Any) -> None:
             events.append(
-                TransportConditionEvent(
-                    condition=cond,
-                    phase=phase,
-                    service=service,
-                    instance=instance,
-                    key=hop,
-                    excluded=excluded,
-                    z=z,
-                    saturation_ratio=ratio,
-                    baseline_ms=_exp(ks.fast_mean) if ks.fast_count else None,
-                    floor_ms=_exp(ks.floor),
-                    window_mean_ms=wmean,
-                    calls_per_min=calls_per_min,
-                    calls_per_min_usual=usual,
-                    duration_s=(now - ep.opened_ts) if phase != "open" or cond == "regime_shift" else None,
-                    peak_ms=ep.peak_ms,
-                    timeout_count=timeouts,
+                _event(
+                    ks, cond, phase, ep, now=now, excluded=excluded,
+                    calls_per_min=calls_per_min, usual=usual, timeouts=timeouts, **kw,
                 )
             )
 
-        max_ms = _as_float(stats.get("max_ms"))
-
-        # --- timeout / zero_success: no minimum sample count -------------
-        step = _episode_step(
-            ks, "timeout", hot=timeouts > 0, magnitude=float(timeouts), now=now,
-            peak_ms=max_ms, config=config,
-        )
-        if step:
-            emit("timeout", step[0], step[1])
-        # "Had traffic" means it has really succeeded before (a key that has
-        # only ever timed out is a timeout episode, not a loss of service).
+        # --- zero_success, then timeout: no minimum sample count ----------
+        # zero_success = total loss on a hop that really succeeded before. It
+        # subsumes `timeout` for the same failure: while it is open, a timeout
+        # episode is not opened (one outage = one row), only kept alive if it
+        # was already open.
         had_successes = ks.level_count > 0 or ks.pend_n > 0
         zero_hot = (
             timeouts > 0 and success == 0 and had_successes and usual is not None and usual > 0
@@ -527,6 +635,15 @@ def fold_snapshot(
         )
         if step:
             emit("zero_success", step[0], step[1])
+        if "zero_success" in ks.episodes and timeouts > 0:
+            _keep_alive(ks, "timeout", now, config)
+        else:
+            step = _episode_step(
+                ks, "timeout", hot=timeouts > 0, magnitude=float(timeouts), now=now,
+                peak_ms=max_ms, config=config,
+            )
+            if step:
+                emit("timeout", step[0], step[1])
 
         # --- calls EWMA (evidence only) ----------------------------------
         if ks.calls_count == 0:
@@ -549,6 +666,9 @@ def fold_snapshot(
                 ks.pend_tainted = True
         elif ks.pend_windows:
             ks.pend_windows += 1
+            if timeouts > 0:
+                # a timeout-only window inside a pool still taints it (guard 1)
+                ks.pend_tainted = True
 
         evaluated = False
         z: float | None = None
@@ -563,6 +683,10 @@ def fold_snapshot(
             peak = ks.pend_max_ms if ks.pend_max_ms is not None else wmean_ms
             tainted = ks.pend_tainted
             _reset_pending(ks)
+            # Two hot evaluations hours apart are not "sustained".
+            if ks.last_eval_ts and (now - ks.last_eval_ts) > config.close_quiet_s:
+                ks.hot_streak = 0
+            ks.last_eval_ts = now
 
             sigma = math.sqrt(max(ks.fast_var, config.min_variance))
             if ks.fast_count > 0:
@@ -643,24 +767,37 @@ def fold_snapshot(
                 if step:
                     emit("saturation", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms)
 
-                # regime_shift: stated once, then (and only then) re-seed.
-                sat_ep = ks.episodes.get("saturation")
-                if sat_ep is not None and (now - sat_ep.opened_ts) >= config.regime_after_s:
-                    emit("regime_shift", "open", sat_ep, z=z, ratio=ratio, wmean=wmean_ms)
+                # regime_shift: a saturation OR a spike observed hot for
+                # regime_after_s (hot time, not wall time) is a new normal.
+                # The spike path covers steps too small for saturation_ratio
+                # but large enough that guard 1 freezes `fast` for good.
+                # Stated once; only then are floor and fast re-seeded, and the
+                # latency episodes it explains end with it (no separate close:
+                # the plateau is never reported as cleared).
+                long_eps = [
+                    ks.episodes[c] for c in ("saturation", "spike")
+                    if c in ks.episodes and ks.episodes[c].hot_s >= config.regime_after_s
+                ]
+                if long_eps:
+                    basis = min(long_eps, key=lambda e: e.opened_ts)
+                    emit("regime_shift", "open", basis, z=z, ratio=ratio, wmean=wmean_ms)
                     ks.floor = ks.level_mean
                     ks.floor_ts = now
                     ks.fast_mean = ks.level_mean
                     ks.hot_streak = 0
-                    del ks.episodes["saturation"]
+                    ks.episodes.pop("saturation", None)
+                    ks.episodes.pop("spike", None)
         elif ks.pend_windows >= config.max_aggregate_windows:
             # Too sparse to ever reach min_calls in a reasonable span: drop the
             # pool rather than evaluate an under-sampled mean.
             _reset_pending(ks)
 
-        if not evaluated:
-            # No latency evidence this window: spike/saturation stay as they
-            # are, except that a spike whose key went quiet can still age out.
-            for cond in ("spike",):
+        if not evaluated and ks.pend_windows == 0:
+            # No latency evidence arriving at all (not merely pooling): open
+            # latency episodes age out after close_quiet_s rather than stay
+            # open forever on a hop that went quiet -- and silence never adds
+            # hot time toward a regime_shift.
+            for cond in ("spike", "saturation"):
                 if cond in ks.episodes:
                     step = _episode_step(
                         ks, cond, hot=False, magnitude=0.0, now=now, peak_ms=None, config=config
@@ -689,7 +826,7 @@ def fold_snapshot(
             )
         )
 
-    _evict(state, now, config)
+    events.extend(_evict(state, now, config, exclude))
     return FoldResult(events, observations)
 
 
@@ -702,11 +839,32 @@ def _reset_pending(ks: KeyState) -> None:
     ks.pend_tainted = False
 
 
-def _evict(state: TransportBaselineState, now: float, config: TransportBaselineConfig) -> None:
-    stale = [k for k, ks in state.keys.items() if (now - ks.last_seen_ts) > config.max_idle_s]
-    for k in stale:
-        del state.keys[k]
-    if len(state.keys) > config.max_keys:
-        by_age = sorted(state.keys.items(), key=lambda kv: kv[1].last_seen_ts)
-        for k, _ in by_age[: len(state.keys) - config.max_keys]:
-            del state.keys[k]
+def _evict(
+    state: TransportBaselineState,
+    now: float,
+    config: TransportBaselineConfig,
+    exclude: tuple[str, ...],
+) -> list[TransportConditionEvent]:
+    """Bound state. A hop evicted with open episodes gets a close row for each
+    (duration measured to eviction), so no episode silently vanishes."""
+    victims = [k for k, ks in state.keys.items() if (now - ks.last_seen_ts) > config.max_idle_s]
+    overflow = len(state.keys) - len(victims) - config.max_keys
+    if overflow > 0:
+        rest = sorted(
+            ((k, ks) for k, ks in state.keys.items() if k not in victims),
+            key=lambda kv: kv[1].last_seen_ts,
+        )
+        victims.extend(k for k, _ in rest[:overflow])
+    closes: list[TransportConditionEvent] = []
+    for k in victims:
+        ks = state.keys.pop(k)
+        for cond, ep in sorted(ks.episodes.items()):
+            closes.append(
+                _event(
+                    ks, cond, "close", ep, now=now, excluded=is_excluded(ks.hop, exclude),
+                    calls_per_min=0.0,
+                    usual=ks.calls_ewma if ks.calls_count else None,
+                    timeouts=0,
+                )
+            )
+    return closes

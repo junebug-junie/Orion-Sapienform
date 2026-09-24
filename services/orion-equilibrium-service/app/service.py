@@ -29,7 +29,7 @@ from .insight_metacog_gate import build_insight_metacog_trigger
 from .flow_metacog_gate import build_flow_metacog_trigger
 from .transport_baseline_gate import (
     TransportBaselineGate,
-    config_from_settings as transport_baseline_config_from_settings,
+    gate_from_settings as transport_baseline_gate_from_settings,
     log_fold_result as log_transport_baseline_fold,
 )
 from .repair_pressure_trend_gate import (
@@ -167,10 +167,7 @@ class EquilibriumService(BaseChassis):
         # Per-hop transport baselines (app/transport_baseline_gate.py). State is
         # restored from Redis in _run(); a config change cold-starts it.
         self._transport_baseline_gate: TransportBaselineGate | None = (
-            TransportBaselineGate(
-                transport_baseline_config_from_settings(settings),
-                settings.transport_exclude_labels(),
-            )
+            transport_baseline_gate_from_settings(settings)
             if settings.transport_baseline_enable
             else None
         )
@@ -248,7 +245,10 @@ class EquilibriumService(BaseChassis):
         except Exception as e:
             logger.warning("Failed to load transport_baseline state: %s", e)
             raw = None
-        self._transport_baseline_gate.load(raw)
+        try:
+            self._transport_baseline_gate.load(raw)
+        except Exception as e:  # load() is never-raises; belt and braces at boot
+            self._transport_baseline_gate.reset(f"load_failed:{type(e).__name__}")
 
     async def _persist_transport_baseline_state(self) -> None:
         if self._transport_baseline_gate is None:
@@ -274,13 +274,20 @@ class EquilibriumService(BaseChassis):
         emit = settings.transport_baseline_emit_effective()
         gate = self._transport_baseline_gate
         if gate is not None:
-            result, triggers = gate.process(
-                payload_dict,
-                zen_state=zen_state,
-                pressure=distress,
-                recall_enabled=settings.metacog_recall_enabled,
-            )
-            if result.skipped_reason is None:
+            try:
+                result, triggers = gate.process(
+                    payload_dict,
+                    zen_state=zen_state,
+                    pressure=distress,
+                    recall_enabled=settings.metacog_recall_enabled,
+                )
+            except Exception as e:
+                # A fold bug must neither kill the legacy branch below nor
+                # wedge the gate on every later snapshot: cold-start it.
+                logger.exception("transport_baseline fold failed")
+                gate.reset(f"fold_failed:{type(e).__name__}")
+                result, triggers = None, []
+            if result is not None and result.skipped_reason is None:
                 log_transport_baseline_fold(result, emit=emit)
                 await self._persist_transport_baseline_state()
             if emit:
@@ -288,7 +295,14 @@ class EquilibriumService(BaseChassis):
                     # Episodes are rate-limited by construction (open/escalate/
                     # close with close_quiet_s hysteresis). The 30s transport lane
                     # would silently drop a close or escalate that lands inside
-                    # it, so these bypass it.
+                    # it, so these bypass it -- under their own hourly budget.
+                    if not gate.admit(datetime.now().timestamp()):
+                        logger.warning(
+                            "transport_baseline_suppressed budget=%d/h reason=%s",
+                            gate.max_triggers_per_hour,
+                            trigger.reason,
+                        )
+                        continue
                     await self._publish_metacog_trigger(trigger, bypass_cooldown=True)
 
         if settings.metacog_transport_trigger_enable and not emit:

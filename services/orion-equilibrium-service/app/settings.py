@@ -259,6 +259,12 @@ class Settings(BaseSettings):
     transport_baseline_regime_after_sec: float = Field(
         21600.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_REGIME_AFTER_SEC"
     )
+    # Global publish budget for baseline triggers (they bypass the 30s transport
+    # lane). Over budget -> logged as transport_baseline_suppressed and dropped.
+    # 0 disables the cap. Not part of the reducer fingerprint.
+    transport_baseline_max_triggers_per_hour: int = Field(
+        30, alias="EQUILIBRIUM_TRANSPORT_BASELINE_MAX_TRIGGERS_PER_HOUR"
+    )
     # Option (bus_synaptic): third transport evidence source, reads
     # node:substrate.bus_synaptic's prediction_error directly from FalkorDB
     # (orion_substrate graph, written by orion-substrate-runtime's

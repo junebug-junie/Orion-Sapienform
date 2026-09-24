@@ -192,7 +192,7 @@ What it does, plainly: every rpc_health window now carries per-hop latency sums 
 
 Guards against learning "busy" as normal: windows that look like incidents never teach the baseline; slow drift is measured against a floor that barely moves up and does not move up at all while saturated; the floor only jumps after a `regime_shift` row has said so. Load (calls per minute) is carried as evidence, never as a trigger.
 
-Old producers without `channel_latency` are skipped (nothing is guessed from the pooled p95). Hops labelled with anything in `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` (default metacog's own `log_orion_metacognition` dispatch) are measured and logged, never triggered. Episode triggers bypass the 30 s transport cooldown lane and do not consume it.
+Old producers without `channel_latency` are skipped (nothing is guessed from the pooled p95). Hops labelled with anything in `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` (default metacog's own `log_orion_metacognition` dispatch) are measured and logged, never triggered. Episode triggers bypass the 30 s transport cooldown lane and do not consume it; they have their own hourly budget instead. One outage on a hop is one `zero_success` row (it subsumes `timeout`). Episodes close after 15 minutes quiet. Hop identity is `instance`, falling back to `node`. Snapshots skipped for lack of `channel_latency` are logged as `transport_baseline_skip` (first and every 100th), so 'no data' never reads as 'calm'.
 
 Log-only by default. Look for `transport_baseline_obs` (per-key z, ratio, calls, open conditions) and `transport_baseline_event emit=False` lines; acceptance check 1 in the spec is judged on those.
 
@@ -206,7 +206,8 @@ Log-only by default. Look for `transport_baseline_obs` (per-key z, ratio, calls,
 | `EQUILIBRIUM_TRANSPORT_BASELINE_N_WARM` | `10` | Judged windows before any latency condition may fire |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_SPIKE_Z` | `3.0` | Spike z, sustained 2 judged windows |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_SATURATION_RATIO` | `2.0` | Saturation opens at recent level / floor >= this (closes below 1.5) |
-| `EQUILIBRIUM_TRANSPORT_BASELINE_REGIME_AFTER_SEC` | `21600` | Saturation this long becomes one `regime_shift` |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_REGIME_AFTER_SEC` | `21600` | Saturation or spike observed this long becomes one `regime_shift` |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_MAX_TRIGGERS_PER_HOUR` | `30` | Hourly publish budget for baseline triggers; over budget is logged `transport_baseline_suppressed`. `0` = no cap |
 
 Changing any tunable changes the state fingerprint: the next boot logs `transport_baseline cold_start reason=config_fingerprint_mismatch` and re-learns. Rollback: set `EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE=false` and delete the Redis key.
 

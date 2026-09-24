@@ -11,20 +11,26 @@ def build_transport_metacog_trigger_from_snapshot(
     zen_state: str,
     pressure: float,
     recall_enabled: bool,
-    latency_p95_threshold_ms: float,
 ) -> MetacogTriggerV1 | None:
-    """Option A: a real RpcHealthSnapshotV1 window from orion:rpc_health:snapshot
-    (docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md, PR #1313/
-    #1315, live-verified real success/timeout/latency data).
+    """Option A (legacy): a real RpcHealthSnapshotV1 window from
+    orion:rpc_health:snapshot (docs/superpowers/specs/2026-07-24-transport-metacog-
+    trigger-design.md, PR #1313/#1315).
 
-    Two real, independently-grounded gate conditions, no invented thresholds beyond
-    the one unavoidable latency default (same calibration caveat as
-    telemetry_anomaly's threshold_multiplier -- ships with a starting value, needs
-    real data to validate):
-    - timeout_count > 0: unambiguous evidence real RPC calls failed this window. No
-      threshold needed -- any real timeout is real evidence.
-    - success_latency_ms_p95 above a configured ceiling: a real number already
-      computed by RpcHealthAggregator, not derived/guessed here.
+    **Timeouts only.** Fires when timeout_count > 0: unambiguous evidence real RPC
+    calls failed this window, no threshold needed.
+
+    The pooled-p95 latency branch (``success_latency_ms_p95 >= 5000``) was killed
+    outright on 2026-09-24 (spec 2026-09-24-metacog-capture-and-transport-ewma-
+    baseline-design.md). Verified live: cortex-orch windows averaged 2.1 calls with
+    0 timeouts, and the slow call was metacog's own background LLM draft -- so the
+    branch fired transport, which dispatched a draft, which tripped the branch
+    again (~2,000 junk rows/day). Per-hop latency now lives in
+    ``app/transport_baseline_gate.py``. Do not re-add a pooled latency ceiling.
+
+    This whole function is retired too once EQUILIBRIUM_TRANSPORT_BASELINE_EMIT is
+    on: the baseline gate's timeout/zero_success episodes replace it, and the
+    service stops calling this so the same timeout never fires twice.
+
     An empty window (no calls at all) does not fire -- absence of traffic is not
     evidence of transport trouble, same "healthy-by-absence" rule the rpc_health
     organ adapter already applies (orion/signals/adapters/rpc_health.py).
@@ -37,8 +43,6 @@ def build_transport_metacog_trigger_from_snapshot(
     fired_conditions: list[str] = []
     if timeout_count > 0:
         fired_conditions.append(f"timeout_count={timeout_count}")
-    if isinstance(p95, (int, float)) and float(p95) >= latency_p95_threshold_ms:
-        fired_conditions.append(f"success_latency_ms_p95={float(p95):.1f}")
 
     if not fired_conditions:
         return None
@@ -66,7 +70,6 @@ def build_transport_metacog_trigger_from_snapshot(
             "window_start": payload.get("window_start"),
             "window_end": payload.get("window_end"),
             "truncated": payload.get("truncated"),
-            "latency_p95_threshold_ms": latency_p95_threshold_ms,
         },
     )
 

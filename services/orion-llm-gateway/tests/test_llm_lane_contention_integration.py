@@ -27,12 +27,12 @@ def _configure(monkeypatch, route_table: dict[str, RouteTarget]):
     monkeypatch.setattr(
         lb.settings,
         "llm_lane_contention_fallback_json",
-        '{"metacog": ["quick"], "quick": ["metacog"]}',
+        '{"metacog": ["quick", "agent"], "quick": ["metacog", "agent"]}',
     )
     monkeypatch.setattr(
         lb.settings,
         "llm_lane_real_capacity_json",
-        '{"metacog": 1, "quick": 4}',
+        '{"metacog": 1, "quick": 4, "agent": 1}',
     )
     lb._parse_fallback_map.cache_clear()
     lb._parse_capacity_map.cache_clear()
@@ -55,6 +55,14 @@ def test_metacog_swaps_to_quick_when_its_single_slot_is_busy(route_table: dict[s
     gate.lane(route_table["metacog"].url).inflight = 1
     plan = plan_llm_chat(_body("metacog"))
     assert plan.route == "quick"
+
+
+def test_metacog_falls_through_to_agent_when_quick_is_also_busy(route_table: dict[str, RouteTarget]) -> None:
+    gate = lb.get_upstream_admission()
+    gate.lane(route_table["metacog"].url).inflight = 1
+    gate.lane(route_table["quick"].url).inflight = 4
+    plan = plan_llm_chat(_body("metacog"))
+    assert plan.route == "agent"
 
 
 def test_agent_never_swaps_even_when_configured_to_burst(route_table: dict[str, RouteTarget], monkeypatch) -> None:

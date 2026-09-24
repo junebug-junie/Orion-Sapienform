@@ -8,8 +8,8 @@ from app.lane_contention import (
 )
 from app.upstream_admission import UpstreamAdmission
 
-FALLBACK_MAP = _parse_fallback_map('{"metacog": ["quick"], "quick": ["metacog"]}')
-CAPACITY_MAP = _parse_capacity_map('{"metacog": 1, "quick": 4}')
+FALLBACK_MAP = _parse_fallback_map('{"metacog": ["quick", "agent"], "quick": ["metacog", "agent"]}')
+CAPACITY_MAP = _parse_capacity_map('{"metacog": 1, "quick": 4, "agent": 1}')
 ROUTE_URLS = {
     "metacog": "http://circe-worker-2:8080",
     "quick": "http://circe-worker-fast-1:8080",
@@ -67,10 +67,19 @@ def test_quick_at_three_of_four_is_not_contended() -> None:
     assert (chosen, swapped) == ("quick", False)
 
 
-def test_both_contended_keeps_preferred() -> None:
+def test_sibling_and_own_lane_contended_falls_through_to_agent() -> None:
     gate = _gate()
     _occupy(gate, ROUTE_URLS["metacog"], 1)
     _occupy(gate, ROUTE_URLS["quick"], 4)
+    chosen, swapped = _resolve("metacog", gate)
+    assert (chosen, swapped) == ("agent", True)
+
+
+def test_all_three_contended_keeps_preferred() -> None:
+    gate = _gate()
+    _occupy(gate, ROUTE_URLS["metacog"], 1)
+    _occupy(gate, ROUTE_URLS["quick"], 4)
+    _occupy(gate, ROUTE_URLS["agent"], 1)
     chosen, swapped = _resolve("metacog", gate)
     assert (chosen, swapped) == ("metacog", False)
 
@@ -89,13 +98,30 @@ def test_chat_is_never_in_the_fallback_map() -> None:
     assert (chosen, swapped) == ("chat", False)
 
 
-def test_missing_partner_url_is_skipped() -> None:
+def test_missing_partner_url_is_skipped_tries_the_next_one() -> None:
     gate = _gate()
     _occupy(gate, ROUTE_URLS["metacog"], 1)
     urls_without_quick = {k: v for k, v in ROUTE_URLS.items() if k != "quick"}
     chosen, swapped = resolve_contention_fallback(
         "metacog",
         urls_without_quick,
+        enabled=True,
+        fallback_map=FALLBACK_MAP,
+        real_capacity_map=CAPACITY_MAP,
+        default_capacity=8,
+        gate=gate,
+    )
+    # quick's URL is unresolvable (skipped), agent's is fine and uncontended
+    assert (chosen, swapped) == ("agent", True)
+
+
+def test_all_partner_urls_missing_is_a_noop() -> None:
+    gate = _gate()
+    _occupy(gate, ROUTE_URLS["metacog"], 1)
+    urls_metacog_only = {"metacog": ROUTE_URLS["metacog"]}
+    chosen, swapped = resolve_contention_fallback(
+        "metacog",
+        urls_metacog_only,
         enabled=True,
         fallback_map=FALLBACK_MAP,
         real_capacity_map=CAPACITY_MAP,

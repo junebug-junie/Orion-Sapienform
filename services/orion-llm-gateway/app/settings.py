@@ -139,19 +139,29 @@ class Settings(BaseSettings):
     llm_lane_routing_enabled: bool = Field(True, alias="LLM_LANE_ROUTING_ENABLED")
     # Real traffic (cortex-exec/orion-actions/Hub) never reaches decide_lane() --
     # only curiosity/self-study runs submitted through orion-durable-runs do. This
-    # is the only swap behavior real metacog/quick chat traffic gets today. See
-    # lane_contention.py's module docstring for why the trigger uses a per-route
-    # real-capacity map instead of LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT, and why
-    # "agent": ["agent-burst"] is deliberately NOT in the default map below --
-    # agent-burst requires a durable capacity lease ordinary traffic never has,
-    # and lane_contention.py refuses that pairing outright regardless of config.
+    # is the only swap/fallback behavior real metacog/quick chat traffic gets
+    # today. See lane_contention.py's module docstring for why the trigger uses
+    # a per-route real-capacity map instead of LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT.
+    #
+    # metacog/quick each try their sibling first (their existing mutual swap),
+    # then `agent` (GPU1, a plain V100, not lease-gated) as a second-choice
+    # fallback -- Juniper: "it can fall back to either of the 2 v100s that are
+    # not chat." `agent-burst`/`chat-burst` are deliberately NOT in this map --
+    # both are in orion.llm.routes.BURST_LLM_ROUTES and require a durable
+    # capacity lease ordinary traffic never has; lane_contention.py refuses
+    # either outright regardless of config (see _never_a_swap_target()).
+    # Falling back to `chat`'s V100 only when Juniper has authorized it via her
+    # Hub "lend chat lane" button is a separate, larger piece: today that gate
+    # (lane_gate.py) is an async, Redis-backed check with no way for ordinary
+    # traffic to also obtain the durable lease chat-burst's own capacity check
+    # requires -- not implemented here, needs a real design decision first.
     llm_lane_contention_fallback_enabled: bool = Field(
         True, alias="LLM_LANE_CONTENTION_FALLBACK_ENABLED"
     )
     llm_lane_contention_fallback_json: str = Field(
         default=(
-            '{"metacog": ["quick"], "metacog_background": ["quick_background"], '
-            '"quick": ["metacog"], "quick_background": ["metacog_background"]}'
+            '{"metacog": ["quick", "agent"], "metacog_background": ["quick_background", "agent"], '
+            '"quick": ["metacog", "agent"], "quick_background": ["metacog_background", "agent"]}'
         ),
         alias="LLM_LANE_CONTENTION_FALLBACK_JSON",
     )
@@ -160,7 +170,9 @@ class Settings(BaseSettings):
     # LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT (rarely the right trigger point for a
     # 1- or 4-slot worker, but a safe default for any route not listed).
     llm_lane_real_capacity_json: str = Field(
-        default='{"metacog": 1, "metacog_background": 1, "quick": 4, "quick_background": 4}',
+        default=(
+            '{"metacog": 1, "metacog_background": 1, "quick": 4, "quick_background": 4, "agent": 1}'
+        ),
         alias="LLM_LANE_REAL_CAPACITY_JSON",
     )
     llm_route_metacog_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_SERVED_BY")

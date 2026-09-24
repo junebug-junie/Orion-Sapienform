@@ -118,6 +118,19 @@ class OrionBusAsync:
         module docstring for why that's a separate, deliberately deferred decision."""
         return self._rpc_health.snapshot_and_reset()
 
+    def take_rpc_health_aggregator(self) -> RpcHealthAggregator:
+        """Hand over this bus's raw accumulated window and start a fresh one. For
+        short-lived buses folding into a process-wide ``SharedRpcHealthSink`` (see
+        rpc_health.py) before being discarded; the publish loop's own bus uses
+        ``get_rpc_health_snapshot()`` instead."""
+        taken, self._rpc_health = self._rpc_health, RpcHealthAggregator()
+        return taken
+
+    def absorb_rpc_health(self, other: RpcHealthAggregator) -> None:
+        """Fold another aggregator's raw window into this bus's (see
+        ``RpcHealthAggregator.absorb``). Call on this bus's event-loop thread."""
+        self._rpc_health.absorb(other)
+
     def record_hop_success(self, hop: str, elapsed_ms: float) -> None:
         """Record a successful round trip for a hop that does NOT go through
         rpc_request() -- hand-rolled bus RPC, HTTP, a subprocess -- into this bus's

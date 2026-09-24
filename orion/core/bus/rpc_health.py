@@ -39,10 +39,17 @@ same thing everywhere:
   ``log_orion_metacognition`` so a transport gate can exclude it
 - hand-rolled bus RPC: ``verb:<verb_name>`` (cortex-orch chat lane),
   ``governor:<mode>`` (hub -> harness-governor)
-- HTTP: ``http:<host><path>`` (``orion.core.bus.http_health``; helper built, no service
-  wired yet -- follow-up applies it to thought->mind, durable-runs/fcc proxy->gateway)
-- FCC motor subprocess wall time: ``fcc:<served_model>`` -- RESERVED, no producer yet
-  (a follow-up instruments orion-harness-governor)
+- HTTP: ``http:<host><path>`` (``orion.core.bus.http_health``; ids in the path collapsed
+  to ``:id`` by ``normalize_id_path``) -- orion-durable-runs (gateway/cabinet/elastic
+  controller), orion-thought (thought -> mind)
+- FCC motor subprocess wall time: ``fcc:<served_model>`` -- orion-harness-governor
+  (success on normal exit, timeout on timeout-kill)
+
+Short-lived buses (a new ``OrionBusAsync`` per tick or per call, often on another
+thread's event loop -- orion-execution-dispatch-runtime, orion-mind) fold their
+aggregator into a process-wide, lock-guarded ``SharedRpcHealthSink`` before they are
+discarded; the publish loop drains the sink into its long-lived bus's aggregator each
+tick (``RpcHealthAggregator.absorb``: exact for counts/hops, sample lists stay capped).
 
 Hand-rolled paths call ``record_hop_success()``/``record_hop_timeout()``. Those record
 into ``channel_latency`` ONLY -- the pooled fields keep their original, documented
@@ -54,6 +61,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -250,6 +258,43 @@ class RpcHealthAggregator:
         self._hops[key] = stats
         return stats
 
+    def absorb(self, other: "RpcHealthAggregator") -> None:
+        """Fold ``other``'s raw, not-yet-drained window into this one (``other`` is left
+        untouched -- callers hand over an aggregator they no longer record into). Counts and
+        per-hop sufficient statistics add exactly; the pooled sample lists stay capped at
+        ``MAX_SAMPLES_PER_BUCKET`` (overflow sets ``truncated``, same as live recording).
+        This window's ``window_start`` is kept. Never raises."""
+        try:
+            self._success_count += other._success_count
+            self._timeout_count += other._timeout_count
+            for bucket, extra in (
+                (self._success_latencies_ms, other._success_latencies_ms),
+                (self._timeout_elapsed_ms, other._timeout_elapsed_ms),
+            ):
+                room = MAX_SAMPLES_PER_BUCKET - len(bucket)
+                if len(extra) > room:
+                    self._truncated = True
+                bucket.extend(extra[: max(room, 0)])
+            if other._truncated:
+                self._truncated = True
+            for channel, count in other._channel_counts.items():
+                if channel in self._channel_counts:
+                    self._channel_counts[channel] += count
+                elif len(self._channel_counts) < MAX_DISTINCT_CHANNELS:
+                    self._channel_counts[channel] = count
+                else:
+                    self._truncated = True
+            for key, stats in other._hops.items():
+                cur = self._hop(key)
+                cur.success_count += stats.success_count
+                cur.timeout_count += stats.timeout_count
+                cur.log_ms_sum += stats.log_ms_sum
+                cur.log_ms_sumsq += stats.log_ms_sumsq
+                if stats.max_ms is not None and (cur.max_ms is None or stats.max_ms > cur.max_ms):
+                    cur.max_ms = stats.max_ms
+        except Exception:
+            logger.warning("failed to absorb RPC health aggregator", exc_info=True)
+
     def _bump_channel(self, request_channel: str) -> None:
         if not request_channel:
             return
@@ -286,3 +331,56 @@ class RpcHealthAggregator:
         self._truncated = False
         self._hops = {}
         return snapshot
+
+
+class SharedRpcHealthSink:
+    """Process-wide, lock-guarded landing spot for RPC-health stats that are produced
+    OUTSIDE the long-lived bus the publish loop drains:
+
+    - short-lived buses (a new ``OrionBusAsync`` per tick / per call, often inside
+      ``asyncio.run`` on a worker thread): ``absorb_bus(bus)`` before discarding it, so a
+      tick's stats are not thrown away with the bus;
+    - hops timed on another thread (e.g. a sync httpx client in a threadpool): it is a
+      ``HopRecorder`` (``record_hop_success``/``record_hop_timeout``), safe from any thread.
+
+    ``rpc_health_publish_loop(..., sinks=[sink])`` calls ``drain_into(bus)`` right before
+    each snapshot, so everything lands in the one published window. Folded ``rpc_request``
+    outcomes keep their pooled meaning (they ARE this process's rpc_request outcomes).
+    Never raises."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._agg = RpcHealthAggregator()
+
+    def absorb_aggregator(self, other: RpcHealthAggregator) -> None:
+        with self._lock:
+            self._agg.absorb(other)
+
+    def absorb_bus(self, bus: object) -> None:
+        """Take over ``bus``'s accumulated window (the bus's aggregator is reset). Call
+        from the thread/event loop that owns ``bus``, after its last RPC. Never raises."""
+        try:
+            take = getattr(bus, "take_rpc_health_aggregator", None)
+            if take is None:
+                return
+            self.absorb_aggregator(take())
+        except Exception:
+            logger.warning("rpc_health sink failed to absorb bus", exc_info=True)
+
+    def record_hop_success(self, hop: str, elapsed_ms: float) -> None:
+        with self._lock:
+            self._agg.record_hop_success(hop, elapsed_ms)
+
+    def record_hop_timeout(self, hop: str, elapsed_ms: Optional[float] = None) -> None:
+        with self._lock:
+            self._agg.record_hop_timeout(hop, elapsed_ms)
+
+    def drain_into(self, target: RpcHealthAggregator) -> None:
+        """Move everything accumulated so far into ``target`` (the publishing bus's own
+        aggregator, owned by the publish loop's event-loop thread). Never raises."""
+        try:
+            with self._lock:
+                taken, self._agg = self._agg, RpcHealthAggregator()
+            target.absorb(taken)
+        except Exception:
+            logger.warning("rpc_health sink failed to drain", exc_info=True)

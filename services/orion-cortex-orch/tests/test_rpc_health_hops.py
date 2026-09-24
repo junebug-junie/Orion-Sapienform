@@ -234,5 +234,6 @@ def test_main_publish_loop_wiring_folds_metacog_bus_and_sets_instance() -> None:
     kw = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}
     assert kw["instance"] == "'main'"
     assert kw["include_channel_latency"] == "s.rpc_health_channel_latency_enabled"
-    assert kw["hop_only_bus_getters"] == "[lambda: equilibrium_hunter.bus]"
+    # svc.bus: verb:* hops recorded via _bus_for_rpc() before the fork is ready.
+    assert kw["hop_only_bus_getters"] == "[lambda: equilibrium_hunter.bus, lambda: svc.bus]"
     assert kw["bus_getter"] == "_bus_for_rpc"

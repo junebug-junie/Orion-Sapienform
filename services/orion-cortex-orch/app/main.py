@@ -738,7 +738,10 @@ async def main() -> None:
                 # snapshot WITHOUT touching the pooled fields, so metacog's own load stays
                 # visible per-hop but never shifts the pooled p95 the current transport
                 # gate reads.
-                hop_only_bus_getters=[lambda: equilibrium_hunter.bus],
+                # svc.bus too: _bus_for_rpc() falls back to it until the fork is ready,
+                # so any verb:* hop recorded in that window would otherwise sit on a bus
+                # nobody drains (the loop skips a getter that returns the primary bus).
+                hop_only_bus_getters=[lambda: equilibrium_hunter.bus, lambda: svc.bus],
             ),
             name="rpc-health-publish",
         )

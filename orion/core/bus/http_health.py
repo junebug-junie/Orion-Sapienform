@@ -51,6 +51,7 @@ by the aggregator (``MAX_DISTINCT_HOPS``, overflow folded into ``_overflow``).
 from __future__ import annotations
 
 import logging
+import re
 from time import perf_counter
 from typing import Callable, Optional, Protocol
 
@@ -67,6 +68,19 @@ class HopRecorder(Protocol):
 
 RecorderGetter = Callable[[], Optional[HopRecorder]]
 PathNormalizer = Callable[[str], str]
+
+
+_ID_SEGMENT_RE = re.compile(
+    r"^(?:\d+|[0-9a-fA-F]{16,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+)
+
+
+def normalize_id_path(path: str) -> str:
+    """Default ``path_normalizer``: collapse path segments that look like ids -- all
+    digits, a UUID, or 16+ hex chars -- to ``:id``, so ``/runs/<uuid>/cancel`` and
+    ``/runs/<other-uuid>/cancel`` share one hop key. Named segments (a lane or model name
+    like ``qwen3.5-27b``) are kept: they are bounded and the split is the point."""
+    return "/".join(":id" if seg and _ID_SEGMENT_RE.match(seg) else seg for seg in path.split("/"))
 
 
 def http_hop_key(url: httpx.URL | str, path_normalizer: Optional[PathNormalizer] = None) -> str:

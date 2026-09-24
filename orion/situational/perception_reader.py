@@ -434,6 +434,23 @@ def _utc(ts: Any) -> datetime | None:
     return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
 
 
+def _past_peak(peak_minute: Any, window_start: datetime | None, *, now: datetime, tz: Any) -> bool:
+    """Is `now` past the expected peak? Peak is minute-of-day local; anchor
+    it on the window's own local date, rolled forward a day when it falls
+    before the window start (a window that crosses midnight)."""
+    try:
+        minute = int(peak_minute)
+    except (TypeError, ValueError):
+        return False
+    if window_start is None or not 0 <= minute < 1440:
+        return False
+    local_start = window_start.astimezone(tz)
+    peak = local_start.replace(hour=minute // 60, minute=minute % 60, second=0, microsecond=0)
+    if peak < local_start:
+        peak += timedelta(days=1)
+    return now > peak
+
+
 def summarize_street(
     *,
     sightings: list[dict[str, Any]] | None,
@@ -449,7 +466,6 @@ def summarize_street(
     never a sentence claiming the street was empty.
     """
     lines: list[str] = []
-    local_now = now.astimezone(tz)
 
     # 1. Who is around (last 15 minutes).
     recent_cut = now - timedelta(minutes=STREET_RECENT_MINUTES)
@@ -503,9 +519,11 @@ def summarize_street(
                     str(r.get("kind")) == ref and (_utc(r.get("last_at")) or now) >= (window_start or now)
                     for r in sightings or []
                 )
-            try:
-                past_peak = peak is not None and local_now.hour * 60 + local_now.minute > int(row.get("peak_minute"))
-            except (TypeError, ValueError):
+            past_peak = _past_peak(row.get("peak_minute"), window_start, now=now, tz=tz)
+            # The sightings read only looks back STREET_OUTCOME_LOOKBACK_MINUTES;
+            # a window that opened earlier could have been met before that, so
+            # it cannot support an absence claim.
+            if window_start is None or window_start < now - timedelta(minutes=STREET_OUTCOME_LOOKBACK_MINUTES):
                 past_peak = False
             # "Usually here by now" is an absence claim, so it needs a
             # sightings read that answered AND an individual subject: label
@@ -547,8 +565,9 @@ def summarize_street(
                 lines.append(f"{count} people are on the patio.")
             elif count == 1:
                 lines.append("Someone is on the patio.")
-            else:
+            elif count is None:
                 lines.append("People are on the patio.")
+            # count == 0 with state present contradicts itself: say nothing.
     return lines
 
 
@@ -616,6 +635,10 @@ def fetch_street_summary(
             )
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
+        return StreetSummary(stream_id, [], False)
+
+    if all(r is None for r in (sightings, expectations, unresolved, patio_rows)):
+        # Every read failed: that is "unread", not a quiet street.
         return StreetSummary(stream_id, [], False)
 
     patio = None

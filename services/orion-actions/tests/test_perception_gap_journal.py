@@ -125,3 +125,18 @@ def test_bad_dsn_is_none_not_raise() -> None:
 
     got = asyncio.run(fetch_rows("postgresql://nobody@127.0.0.1:1/none", "SELECT 1", {}, label="t"))
     assert got is None
+
+
+def test_omitted_uses_window_total_and_ignores_hollow_rows(monkeypatch) -> None:
+    rows = [dict(_row(f"u{i}", i), window_total=500) for i in range(20)]
+    rows.append(dict(_row("h", 30, description=""), window_total=500))
+
+    async def _rows(dsn, sql, params, *, label):
+        return rows
+
+    monkeypatch.setattr(pgj, "fetch_rows", _rows)
+    gaps, total = asyncio.run(collect_perception_gaps(
+        dsn="x", window_start_utc="2026-09-23T06:00:00Z", window_end_utc="2026-09-24T06:00:00Z",
+    ))
+    assert len(gaps) == MAX_GAPS_IN_SEED
+    assert total == 499  # 500 in the window, one of the read rows was hollow

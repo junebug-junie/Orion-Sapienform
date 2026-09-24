@@ -274,8 +274,9 @@ def _unresolved_section(material: StudyMaterial) -> list[str]:
     except (ZoneInfoNotFoundError, ValueError):
         tz = None
     lines = [
-        "THINGS YOU SAW ON THE WALKWAY AND COULD NOT NAME (the most recent "
-        f"{len(material.unresolved)} from the last three days). Your camera "
+        "THINGS YOUR CAMERAS SAW AND COULD NOT NAME (the most recent "
+        f"{len(material.unresolved)} from the last three days; each says which "
+        "camera). Your camera "
         "recorded these because nothing it knows fit them. They are here "
         "because not-knowing is material too, not because you should pick one. "
         "If one interests you, you may open a :Prior about what it was, or say "

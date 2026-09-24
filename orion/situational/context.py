@@ -1428,7 +1428,7 @@ async def _build_street_fields(
         if street.lines:
             diagnostics.provider_status["perception_street"] = "ok"
             return {"street_summary": " ".join(street.lines), "street_stream_id": stream_id}
-        diagnostics.provider_status.setdefault("perception_street", "quiet")
+        diagnostics.provider_status["perception_street"] = "quiet"
     return {}
 
 

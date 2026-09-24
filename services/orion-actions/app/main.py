@@ -48,7 +48,7 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.world_pulse import WorldPulseRunResultV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
-from .walkway_forecast import collect_walkway_jobs, jobs_summary
+from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
 from .world_pulse_journal import handle_world_pulse_run_result_journal
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -87,7 +87,7 @@ ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
 ACTION_DAILY_METACOG_V1 = "daily_metacog_v1"
 ACTION_DAILY_GOAL_ARCHIVE = "autonomy_goal_archive"
 SCHEDULER_CURSOR_JOURNAL_KEY = "daily_journal"
-SCHEDULER_CURSOR_WALKWAY_KEY = "walkway_forecast"
+SCHEDULER_CURSOR_WALKWAY_KEY = "walkway_journal"
 ACTION_WORKFLOW_SCHEDULE_V1 = "workflow.schedule.v1"
 ACTION_WORKFLOW_MANAGE_V1 = "workflow.manage.v1"
 WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
@@ -1094,9 +1094,9 @@ async def lifespan(app: FastAPI):
     notify = NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10)
     src = _source_ref()
     last_daily_run: dict[str, str] = {}
-    # Walkway journal dedupe keys already written, so a partial night (grade
-    # written, forecast failed) retries only the one that failed.
-    walkway_dispatched: set[str] = set()
+    # Read-failure attempts per local date for the walkway journal (bounded
+    # retry; see walkway_forecast.run_walkway_tick).
+    walkway_read_attempts: dict[str, int] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
     workflow_schedule_store = WorkflowScheduleStore(
@@ -2147,9 +2147,9 @@ async def lifespan(app: FastAPI):
                     # entries -- never one about nothing. Own try so a read
                     # failure cannot cost the daily journal below it.
                     walkway_corr = str(uuid4())
-                    walkway_ok = True
-                    try:
-                        walkway_jobs, walkway_skips = await collect_walkway_jobs(
+
+                    async def _walkway_collect():
+                        return await collect_walkway_jobs(
                             dsn=settings.postgres_uri,
                             stream_id=settings.actions_walkway_stream_id,
                             tz_name=settings.actions_daily_timezone,
@@ -2157,37 +2157,39 @@ async def lifespan(app: FastAPI):
                             min_support_days=settings.actions_walkway_forecast_min_support_days,
                             node=settings.node_name,
                         )
-                    except Exception:
-                        logger.exception("walkway_journal_collect_failed")
-                        walkway_jobs, walkway_skips = [], ["collect_failed"]
-                    logger.info(
-                        "walkway_journal_tick date=%s jobs=%s skips=%s",
-                        walkway_local_date,
-                        jobs_summary(walkway_jobs),
-                        ",".join(walkway_skips) or "none",
-                    )
-                    for job in walkway_jobs:
-                        if job.dedupe_key in walkway_dispatched:
-                            continue
+
+                    async def _walkway_dispatch(job) -> bool:
                         walkway_env = BaseEnvelope(
                             kind="orion.actions.trigger.journal.v1",
                             source=src,
                             correlation_id=walkway_corr,
                             payload=job.trigger.model_dump(mode="json"),
                         )
-                        if await _dispatch_journal(
+                        return await _dispatch_journal(
                             walkway_env,
                             trigger=job.trigger,
                             audit_action=job.audit_action,
                             dedupe_key=job.dedupe_key,
-                        ):
-                            walkway_dispatched.add(job.dedupe_key)
-                        else:
-                            walkway_ok = False
-                    # Skips (nothing to say, table missing) complete the night:
-                    # retrying every 45s would not make the street say more.
-                    # A failed dispatch does not, so it retries next tick
-                    # (the dedupe key keeps a written entry from repeating).
+                        )
+
+                    def _walkway_mark(kind: str, local_date: str) -> None:
+                        last_daily_run[kind] = local_date
+                        scheduler_cursor_store.set_last_completed(kind, local_date)
+
+                    walkway_ok, walkway_skips = await run_walkway_tick(
+                        collect=_walkway_collect,
+                        dispatch=_walkway_dispatch,
+                        job_done_on=last_daily_run.get,
+                        mark_job_done=_walkway_mark,
+                        local_date=walkway_local_date,
+                        read_attempts=walkway_read_attempts,
+                    )
+                    logger.info(
+                        "walkway_journal_tick date=%s complete=%s skips=%s",
+                        walkway_local_date,
+                        walkway_ok,
+                        ",".join(walkway_skips) or "none",
+                    )
                     if walkway_ok:
                         last_daily_run[SCHEDULER_CURSOR_WALKWAY_KEY] = walkway_local_date
                         scheduler_cursor_store.set_last_completed(SCHEDULER_CURSOR_WALKWAY_KEY, walkway_local_date)

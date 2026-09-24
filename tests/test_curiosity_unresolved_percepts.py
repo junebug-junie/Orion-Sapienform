@@ -69,7 +69,7 @@ def test_sql_is_bounded_by_time_and_count_and_ordered_newest_first() -> None:
 
 def test_prompt_has_no_walkway_section_when_there_is_nothing() -> None:
     prompt = build_kickoff_prompt(StudyMaterial(generated_at=NOW), graph_enabled=False)
-    assert "WALKWAY" not in prompt
+    assert "COULD NOT NAME" not in prompt
     assert "could not name" not in prompt
 
 
@@ -77,7 +77,7 @@ def test_prompt_offers_them_without_choosing() -> None:
     material = StudyMaterial(generated_at=NOW)
     material.unresolved = build_unresolved_cards([_row("u1", 5), _row("u2", 30)])
     prompt = build_kickoff_prompt(material, graph_enabled=False)
-    assert "THINGS YOU SAW ON THE WALKWAY AND COULD NOT NAME" in prompt
+    assert "THINGS YOUR CAMERAS SAW AND COULD NOT NAME" in prompt
     assert "unresolved_id: u1" in prompt and "unresolved_id: u2" in prompt
     assert ":Prior" in prompt and "Juniper" in prompt
     assert "not because you should pick one" in prompt
@@ -91,3 +91,8 @@ def test_unresolved_does_not_change_the_run_gate() -> None:
     material.unresolved = build_unresolved_cards([_row("u1", 5)])
     assert material.has_material is False
     assert "u1" in material.shown_ids()
+
+
+def test_image_ref_never_reaches_the_prompt() -> None:
+    card = build_unresolved_cards([_row("u1", 0, image_ref="/crops/patio/1.jpg")])[0]
+    assert "patio" not in card.preview()

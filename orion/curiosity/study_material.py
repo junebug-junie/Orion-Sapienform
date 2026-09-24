@@ -458,10 +458,9 @@ class UnresolvedPerceptCard:
             f"At {when:%H:%M} on {when:%a %d %b} {place} I saw something I could "
             f"not name; here is what I know: {'; '.join(known) or 'nothing more was recorded'}."
         )
-        ref = f"\n      unresolved_id: {self.unresolved_id}"
-        if self.image_ref:
-            ref += f"\n      image_ref: {self.image_ref}"
-        return text + ref
+        # image_ref deliberately NOT printed: vision_unresolved has no zone
+        # column, so a ref could point at a patio crop (family space).
+        return text + f"\n      unresolved_id: {self.unresolved_id}"
 
 
 def build_unresolved_card(row: Any) -> UnresolvedPerceptCard | None:

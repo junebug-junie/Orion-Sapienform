@@ -271,3 +271,32 @@ def test_prompt_line_only_when_there_is_a_summary() -> None:
     assert f"Street (walkway camera): {street}" in text
     quiet = situation_mod._build_prompt_fragment(_brief(PerceptionContextV1()), 4000).compact_text
     assert "Street" not in quiet
+
+
+def test_midnight_window_is_not_past_peak_before_midnight() -> None:
+    # Window opens 23:40 local, peak 00:10; now is 23:50 local.
+    now = datetime(2026, 9, 25, 5, 50, tzinfo=timezone.utc)  # 23:50 MDT on the 24th
+    exp = [{"subject_key": "individual:o1", "subject_label": "the owl", "status": "open",
+            "peak_minute": 10, "window_start": datetime(2026, 9, 25, 5, 40, tzinfo=timezone.utc)}]
+    (line,) = summarize_street(sightings=[], expectations=exp, unresolved=[], patio=None, now=now, tz=TZ)
+    assert "usually comes around 00:10" in line
+
+
+def test_window_older_than_the_sightings_lookback_makes_no_absence_claim() -> None:
+    exp = [{"subject_key": "individual:d2", "subject_label": "the grey dog", "status": "open",
+            "peak_minute": 400, "window_start": NOW - timedelta(minutes=90)}]
+    (line,) = _street(expectations=exp)
+    assert "usually here by now" not in line
+
+
+def test_patio_count_zero_says_nothing() -> None:
+    fresh = {"state": "present", "count": 0, "row_updated_at": datetime.now(timezone.utc)}
+    assert _street(patio=fresh) == []
+
+
+def test_every_read_failing_is_unread() -> None:
+    boom = RuntimeError("timeout")
+    conn = _Conn({"vision_individual_sighting": boom, "vision_percept_expectation": boom,
+                  "vision_unresolved": boom, "substrate_embodied_presence": boom})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
+    assert got.read_ok is False

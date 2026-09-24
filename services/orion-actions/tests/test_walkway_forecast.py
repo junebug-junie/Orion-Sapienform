@@ -63,8 +63,7 @@ def test_forecast_lists_supported_expectations_first_person_by_time() -> None:
     )
     assert seed["least_sure"] == "the mail truck"
     assert "I am least sure about the mail truck" in seed["lines"][1]
-    # window times rendered in local time: 13:30Z = 07:30 MDT
-    assert seed["forecasts"][0]["window_from"] == "07:30"
+    assert "window_from" not in seed["forecasts"][0]  # past-date window, DST-unsafe
 
 
 def test_forecast_ignores_the_wrong_kind_of_day() -> None:
@@ -174,3 +173,70 @@ def test_collect_builds_both_with_distinct_dedupe_keys(monkeypatch) -> None:
     # grade is for local today (Thu 24), forecast for tomorrow (Fri 25)
     assert jobs[0].dedupe_key == "actions:journal:walkway_grade:walkway:2026-09-24:athena"
     assert jobs[1].dedupe_key == "actions:journal:walkway_forecast:walkway:2026-09-25:athena"
+
+
+def test_malformed_rows_alone_do_not_produce_not_enough_days() -> None:
+    rows = [_exp("individual:d1", "", 460)]
+    assert build_forecast_seed(rows, tomorrow=FRI, tz=TZ, min_support_days=5, days_watched=9) is None
+
+
+# --- scheduler tick ----------------------------------------------------------
+
+def _job(kind):
+    return wf.WalkwayJournalJob(
+        trigger=wf.build_walkway_trigger(kind, {"for_date": "2026-09-24"}, stream_id="walkway"),
+        audit_action=f"journal.{kind}", dedupe_key=f"k:{kind}",
+    )
+
+
+def _tick(jobs, skips, dispatch_ok, store, attempts):
+    async def collect():
+        return list(jobs), list(skips)
+
+    sent = []
+
+    async def dispatch(job):
+        sent.append(job.trigger.trigger_kind)
+        return dispatch_ok.get(job.trigger.trigger_kind, True)
+
+    done, _ = asyncio.run(wf.run_walkway_tick(
+        collect=collect, dispatch=dispatch, job_done_on=store.get,
+        mark_job_done=store.__setitem__, local_date="2026-09-24", read_attempts=attempts,
+    ))
+    return done, sent
+
+
+def test_tick_skips_complete_the_night() -> None:
+    done, sent = _tick([], ["grade_no_expectations_today", "forecast_no_sightings"], {}, {}, {})
+    assert done is True and sent == []
+
+
+def test_tick_partial_failure_retries_only_the_failed_job_even_after_restart() -> None:
+    store: dict = {}
+    jobs = [_job("walkway_grade"), _job("walkway_forecast")]
+    done, sent = _tick(jobs, [], {"walkway_forecast": False}, store, {})
+    assert done is False and sent == ["walkway_grade", "walkway_forecast"]
+    assert store == {"walkway_grade": "2026-09-24"}
+    # "restart": a fresh attempts dict, same durable store
+    done, sent = _tick(jobs, [], {}, store, {})
+    assert done is True and sent == ["walkway_forecast"]
+
+
+def test_tick_read_failure_is_retried_a_bounded_number_of_times() -> None:
+    attempts: dict = {}
+    results = [_tick([], ["expectations_unreadable"], {}, {}, attempts)[0] for _ in range(wf.MAX_READ_ATTEMPTS)]
+    assert results == [False] * (wf.MAX_READ_ATTEMPTS - 1) + [True]
+
+
+def test_tick_collect_exception_is_a_bounded_read_failure() -> None:
+    async def collect():
+        raise RuntimeError("boom")
+
+    async def dispatch(job):
+        raise AssertionError
+
+    done, skips = asyncio.run(wf.run_walkway_tick(
+        collect=collect, dispatch=dispatch, job_done_on={}.get, mark_job_done=lambda k, v: None,
+        local_date="d", read_attempts={},
+    ))
+    assert done is False and skips == ["collect_failed"]

@@ -33,7 +33,7 @@ _READ_LIMIT = 200
 
 UNRESOLVED_WINDOW_SQL = """
 SELECT unresolved_id, stream_id, camera_id, observed_at, reason, description,
-       what_was_tried
+       what_was_tried, count(*) OVER () AS window_total
 FROM vision_unresolved
 WHERE observed_at >= %(start)s AND observed_at < %(end)s
 ORDER BY observed_at DESC
@@ -68,7 +68,9 @@ def _ts(raw: Any) -> datetime | None:
     return None
 
 
-def summarize_perception_gaps(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def summarize_perception_gaps(
+    rows: Iterable[dict[str, Any]], *, cap: int | None = MAX_GAPS_IN_SEED
+) -> list[dict[str, Any]]:
     """Pure: `vision_unresolved` rows in, seed dicts out.
 
     Keeps the NEWEST `MAX_GAPS_IN_SEED`, displayed chronologically. A row with
@@ -98,7 +100,7 @@ def summarize_perception_gaps(rows: Iterable[dict[str, Any]]) -> list[dict[str, 
             )
         )
     items.sort(key=lambda it: it[0], reverse=True)
-    kept = items[:MAX_GAPS_IN_SEED]
+    kept = items if cap is None else items[:cap]
     kept.sort(key=lambda it: it[0])
     return [d for _, d in kept]
 
@@ -121,4 +123,12 @@ async def collect_perception_gaps(
     )
     if not rows:
         return [], 0
-    return summarize_perception_gaps(rows), len(rows)
+    gaps = summarize_perception_gaps(rows)
+    # True window total (not capped at _READ_LIMIT) minus hollow rows we
+    # read but could not render, so `perception_gaps_omitted` is honest.
+    try:
+        total = int(rows[0].get("window_total") or len(rows))
+    except (TypeError, ValueError):
+        total = len(rows)
+    hollow = len(rows) - len(summarize_perception_gaps(rows, cap=None))
+    return gaps, max(len(gaps), total - hollow)

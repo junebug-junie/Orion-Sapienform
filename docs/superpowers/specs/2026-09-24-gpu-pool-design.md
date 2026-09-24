@@ -363,7 +363,119 @@ not as an error.
 | curiosity `run_story`, `hire_progress`, `curiosity_run_store`, atlas | `durable_admission_runs` / `durable_resource_events` | pool events via sql-writer, keyed by holder = run_id, same event names where the meaning is unchanged |
 | `turn_orchestrator`, gateway passthroughs | lane gate, lease fencing | pool lease; hold-while-lent is deleted |
 | `inner_state_registry`, `field_state` docs | queue_contention sources | updated |
-| *(pending: second sweep in progress; results are appended before sign-off)* | | |
+
+## Transport-metric and reader impacts (second sweep, 2026-09-24)
+
+Principle: **waiting in line is not transport.** Queue wait is a capacity fact measured by the
+pool. It must not leak into the latency baselines that Orion reads as "my nervous system is
+slow". Everything below follows from that.
+
+**Silent-wrong unless handled (each is handled in the stage named):**
+
+1. **Bus-synaptic baselines** (`orion-bus-mirror/app/graph_writer.py:285-321,497,528`; EWMA
+   keyed by organ pair).
+   - The problem: reusing the turn's `correlation_id` on the lease RPC would insert
+     exec→pool→exec→gateway into the causal chain. The new edge carries heavy-tailed queue wait,
+     which reads as permanently "anomalous". Chains older than 120s are evicted, so long waits
+     are censored.
+   - The anomaly fans out to equilibrium, execution-dispatch's surprise gate, world-pulse
+     curiosity, concept induction, the attention self-model, endogenous curiosity and recall's
+     `causal_latency_zscore` fragments into Mind.
+   - **Handling:** the lease RPC uses a **child correlation_id** (`<turn_corr>:lease:<n>`), with
+     the turn's id carried in `causality_chain` and stored on the lease. bus-mirror never sees the
+     pool inside a turn's chain, yet the panel and the lease row still join to the turn.
+   - The exec→gateway edge still loses the queue wait that used to sit inside the gateway, so its
+     latency steps down once. Stage 3 captures that edge's EWMA before cutover and resets it at
+     cutover (a documented step, with before/after numbers in the PR). The alternative, letting a
+     false "sudden speed-up" anomaly ripple into curiosity and Mind, is not acceptable.
+2. **Transport-baseline reducer** (`orion/metacog/transport_baseline.py:296`, keyed by
+   service+hop, "cannot learn busy").
+   - **Handling:** the pool's `gpu_pool:*#grant` hops go into
+     `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` (stage 1, before the pool emits anything).
+   - harness-governor's `fcc:<served_model>` hop keys would multiply under spill. They are
+     re-keyed to `fcc:<role>` in stage 3.
+3. **`served_by` → `reasoning_load` node attribution** (`cortex-exec/app/executor.py:2885-2914`
+   → `field-digester/app/ingest/state_deltas.py:309-325`).
+   - **Handling:** the gateway sets `served_by` from the **granted role's card and node**,
+     never from the route default (stage 3). A test asserts that a metacog call spilled to
+     `agent` attributes load to gpu1's node.
+4. **Context budgets per route, not per served card** (FCC `fcc_motor.py:451-531,875-990`,
+   `orion/fcc/context_budget.py`, gateway `ctx_overflow.py`, durable-runs `refresh_lanes`).
+   - **Handling:** lease requests carry `min_ctx_tokens`. The pool never places below it, using
+     the discovered per-slot ctx (rule 2).
+   - FCC's pre-turn check and ceiling read ctx from the **lease grant**, not `/routes`.
+   - The gateway's overflow ladder keys on the granted role (stage 3).
+   - The memory-graph fixed 4096 budget is safe for upward spill and is listed as such.
+5. **Orion's self-knowledge of which model is serving** (`orion/situational/context.py:
+   1203-1231`, `orion/harness/prefix.py:176-190`).
+   - Today both report the route default. Under spill that would be a false statement about
+     itself.
+   - **Handling:** both read the granted role and discovered profile from the lease or reply
+     (stage 3).
+6. **Chat-route poacher invariant** (`scripts/check_chat_route_poachers.py`, caller-side only).
+   - **Handling:** it stays, and is joined by a config gate: CI asserts that `chat` has no
+     borrower classes except through the lend flag (stage 1). The pool enforces this at runtime
+     via rule 9.
+7. **`quick_background` yielding** relied solely on `priority_admission.py`'s reserved slots.
+   - **Handling:** rule 6's priority ordering replaces it before `priority_admission.py` is
+     deleted. The eval asserts that background never takes the last free slot while
+     system/interactive work is queued (stage 3).
+8. **world-model and visual-chain GPU2 permits.** Removing durable-runs `/capacity` or
+   `capacity_client.py` makes world-model answer `gpu_contended` forever, visual chain end
+   `resource_deferred` forever, or both fail on import.
+   - **Handling:** they move onto pool leases **before** anything they import is deleted. This
+     is why the build order below deletes `orion/durable_admission` only in stage 5, after
+     world and diffusion are moved.
+   - Unrelated finding: `resource_deferred` is missing from
+     `services/orion-analytics/models/marts/dim_reverie_outcomes.sql` today. It is fixed
+     alongside.
+
+**Loud breaks (fixed in the stage that deletes the source):**
+- `orion.schemas.resource_admission` is imported by `thought.py`, `harness_finalize.py`,
+  `durable_run.py`, `registry.py`, `orion/harness/finalize.py` (about 9 `resource_lease=`
+  params), `orion/llm/resource_lease.py`, cortex-exec `self_study.py`, Hub
+  `curiosity_investigation.py`, and cortex-orch `main.py` / `durable_runs.py`. `ResourceLeaseV1`
+  is replaced by `GpuLeaseRefV1` everywhere in one change, with registry entries updated.
+- thought's stance agent→chat fallback retries on a fresh correlation_id
+  (`orion-thought/app/bus_listener.py:330-420`). It is deleted, because spill is the pool's job.
+  Its tests asserting `gateway_capacity_rejected:*` literals go with it.
+- The Hub lend button's routes, gateway client and JS are rewired to the `control` RPC.
+- `GET /routes` consumers (context-exec `llm_profile_resolver.py`, durable-runs
+  `refresh_lanes`, Hub `_normalize_routes_payload`, fcc_motor, situational context):
+  - `/routes` is kept as a compatibility view **generated from the pool's discovered role
+    table** (id, status, n_ctx, model, served_by), so these do not break in stage 3;
+  - each is then moved to `orion:gpu_pool:state`;
+  - `/routes` is removed in stage 6.
+- Scripts reading `LLM_GATEWAY_ROUTE_TABLE_JSON` (`scripts/analysis/record_lane_occupancy.py`,
+  `scripts/smoke_llm_gateway_routes.py`, `orion-mind/scripts/verify_mind_llm_e2e.sh`) are
+  repointed to `gpu_pool.yaml` and state.
+
+**CI and contracts:**
+- `orion/bus/channels.yaml` entries for every `orion:gpu_pool:*` channel, **including a
+  reply-channel wildcard**. Without it `normalize_channel_name` cannot collapse per-request
+  reply channels, and bus-mirror would create one Channel node per lease.
+- `config/metrics/metric_definitions.lock.json`: remove
+  `bus_channel/orion-durable-runs/orion:durable:resource:event`, add the pool channels, and
+  re-check `reasoning_load`, `gpu_pressure` and `queue_contention_score` through the metric gate
+  in the stage that touches them.
+- The signals registry gets an `rpc_health_gpu_pool` organ with its causal parents, so
+  `causal_dag_empirical_verification.py` does not report an unregistered organ.
+- Workflows `orion-durable-runs-tests.yml` (admission/gateway-capacity/elastic evals, SQL path
+  filters) and `gpu2-elastic-tests.yml` are replaced by `orion-gpu-pool-tests.yml`. The poacher
+  gate's ALLOW keys are updated as the listed functions are deleted.
+- Affected test files are listed in the sweep. Each is deleted or rewritten in the stage that
+  removes what it tests, never left skipped.
+
+**Cosmetic but misleading, fixed in stage 5:**
+- Hub biometrics GPU labels come from static `GPU_LANE_MAP_{ATHENA,CIRCE}_JSON`. They are derived
+  from `orion:gpu_pool:state` instead, and the env keys are deleted.
+- `DIFFUSION_POWER_INTENT_GPU_INDEX=2` and `orion/schemas/gpu_slot.py`'s fixed ownership are
+  replaced by pool role → card.
+
+**Confirmed not affected:** `route_prediction_error` (`node:substrate.route`). It compares
+orch's own chat/spark/background lane decisions, made before dispatch, and never reads the served
+model. Model labels that start varying per turn (Mind `model_used`, context-exec `route_used`,
+self-inquiry `fcc_served_model`) become *more* truthful, and are called out in the stage 3 PR.
 
 ## Delete list (in the stage that replaces each piece)
 
@@ -433,16 +545,38 @@ not as an error.
 ## Build order (each stage stops for Juniper's review)
 
 0. **Pre-launch:** roll back the #2317 pollution (with Juniper's go); close #2317.
-1. **Pool core:** YAML + validation, discovery bridge (llamacpp-host announce plus the `/props`
-   poller), schemas and channels, migration, lease graph, scheduler, backlog and replay, client
-   library, tests, eval. Deployed in observe mode: it discovers, answers and shows, but nobody
-   depends on it.
+1. **Pool core:**
+   - YAML + validation + config CI gates;
+   - discovery bridge (llamacpp-host announce plus the `/props` poller);
+   - schemas and channels (with the reply wildcard), migration, lease graph, scheduler, backlog
+     and replay, client library;
+   - `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` and the signals registry entry;
+   - tests and eval.
+
+   Deployed in observe mode: it discovers, answers and shows, but nobody depends on it.
 2. **Operator panel** in Hub: config picture, traffic at three zoom levels live and historical,
    graph walker, controls.
-3. **Gateway cutover:** all LLM traffic leases; the lend button moves; the gateway deciders are
-   deleted; readers move (the `queue_contention` decision happens here).
-4. **Durable-runs cutover:** hold leases; `orion/durable_admission` is deleted.
-5. **gpu2, world, diffusion and experiment seat:** the actuator becomes the swap executor; the
-   elastic code is deleted.
-6. **Gateway per-call telemetry and grammar reducers** (after the metric gate), then
-   **lockdown:** port gate, old env keys and old tables removed.
+3. **Gateway cutover:**
+   - all LLM traffic leases, with `min_ctx`, and `served_by` comes from the grant;
+   - FCC ctx and Orion's self-knowledge read the grant, and harness-governor hop keys move to
+     roles;
+   - `/routes` becomes a generated compatibility view;
+   - the exec→gateway bus-synaptic edge is captured and reset;
+   - the lend button moves;
+   - the gateway deciders, the stance fallback and `priority_admission` are deleted;
+   - `admission_cue`, runtime_activity and queue_contention move (the queue_contention
+     decision happens here).
+4. **Durable-runs cutover:** hold leases; `ResourceLeaseV1` → `GpuLeaseRefV1` across every
+   importer; the curiosity story readers move to pool events.
+5. **gpu2, world, diffusion, experiment seat and labels:**
+   - world and visual chain lease;
+   - the actuator becomes the swap executor;
+   - GPU lane maps and `gpu_slot` are derived from the pool;
+   - **only then** are `orion/durable_admission`, the elastic runtime, `/capacity` and their
+     tables deleted.
+6. **Gateway per-call telemetry and grammar reducers** (after the metric gate for each new
+   metric), then **lockdown:**
+   - the port gate;
+   - `/routes` compatibility removed;
+   - old env keys and tables removed;
+   - old workflows removed.

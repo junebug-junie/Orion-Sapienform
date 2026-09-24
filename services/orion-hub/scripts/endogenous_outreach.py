@@ -1327,6 +1327,13 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
                 "2. Say why you are bringing that thread to her now — why share "
                 "it with Juniper, not only that you noticed it.",
                 "",
+                "Say it plainly. State the observation and the reason as facts, "
+                "not as a metaphor, a mood-image, or a poetic parallel to "
+                "something in the conversation history above. Do not compare "
+                "what you found to what Juniper is going through -- if the "
+                "connection is real, say what it is directly instead of "
+                "implying it through shared imagery.",
+                "",
                 "She has not asked you anything. Say the thing itself rather "
                 "than announcing that you have something to say. Two or three "
                 "sentences at most.",

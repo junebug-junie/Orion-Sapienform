@@ -109,6 +109,11 @@ def build_outreach_composition_prompt(
         "2. Say why you are bringing that thread to her now — why share it "
         "with Juniper, not only that you found it.",
         "",
+        "Say it plainly. State the finding and the reason as facts, not as a "
+        "metaphor or a poetic image. If there is a real connection to "
+        "something else, say what it is directly instead of implying it "
+        "through shared imagery.",
+        "",
         "She has not asked you anything, so this arrives out of nowhere. "
         "Say the thing itself rather than announcing that you have something "
         "to say. Keep it short enough to be worth an unprompted interrupt.",

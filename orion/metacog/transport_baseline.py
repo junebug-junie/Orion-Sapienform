@@ -1,0 +1,691 @@
+"""Transport baseline reducer -- per-hop log-latency EWMA that cannot learn "busy"
+as normal.
+
+Spec: ``docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-
+baseline-design.md`` sections A1-A4. Pure and deterministic: no I/O, no clock
+reads (every timestamp comes from the snapshot's own ``window_end``), fully
+JSON-serializable state. The equilibrium service owns Redis persistence and
+trigger publishing; this module only folds snapshots and names conditions.
+
+## What it reads
+
+One ``RpcHealthSnapshotV1`` payload (plain dict, so this module does not depend
+on the schema model) carrying ``channel_latency: {hop: {success_count,
+timeout_count, log_ms_sum, log_ms_sumsq, max_ms}}``. State is keyed
+``(service, instance, hop)``. A snapshot without ``channel_latency`` (an old
+producer) is skipped entirely -- nothing is guessed from the pooled p95.
+
+## Per-key state (A1)
+
+- ``fast``: EWMA mean/variance of the window log-mean, via
+  ``orion/bus/ewma.py::compute_ewma_update`` with ``min_variance`` passed
+  explicitly (log-ms scale; see ``TransportBaselineConfig.min_variance``).
+  **Folding choice, disclosed:** each evaluated window folds its *mean*
+  (``log_ms_sum / success_count``) once with a fixed alpha. It is not folded
+  per-sample, so a busy window does not teach the baseline faster than a quiet
+  one -- per-sample folding would make "busy" normalize itself exactly when it
+  is most suspicious. ``z`` is therefore a window-level chart ("this window's
+  mean vs typical window means"); ``min_calls`` keeps a window mean from being
+  a single sample.
+- ``level``: the same window log-mean folded *without* guard 1. See
+  "Deviation from the spec" below.
+- ``floor``: asymmetric EWMA of the window log-mean. Time-based half-lives,
+  fast down / very slow up, and frozen upward while a saturation episode is
+  open.
+- ``calls``: EWMA of calls-per-minute on this key, evidence only (guard 4).
+
+Sparse keys: a key that has fewer than ``min_calls`` successes in one window
+accumulates sufficient statistics across consecutive windows (up to
+``max_aggregate_windows``) and is evaluated once the pool reaches
+``min_calls``. This is the spec's "or across aggregated consecutive windows"
+and is what lets the ~1 call / 30 s background lane be measured at all.
+
+## Anti-normalization guards (A2)
+
+1. A window with ``z >= spike_z``, or one whose pooled windows saw a timeout,
+   does not update ``fast``. ``borderline_z <= z < spike_z`` folds the value
+   clipped at ``mean + borderline_z * sigma``.
+2. ``saturation_ratio = exp(level - floor)``, opens at ``>= saturation_ratio``.
+3. Saturation sustained ``>= regime_after_s`` emits exactly one
+   ``regime_shift`` and only then re-seeds ``floor`` (and ``fast``'s mean) to
+   the new level. The regime_shift event *ends* the saturation episode: no
+   separate saturation ``close`` is emitted, so a plateau is never reported
+   as cleared before its new normal has been stated.
+4. Calls-per-minute is carried on every event and never gates anything.
+5. Latency conditions need ``fast.count >= n_warm`` qualifying evaluations.
+   Spike needs ``z >= spike_z`` on ``spike_sustain`` consecutive evaluations.
+   Timeouts need no minimum. ``zero_success`` = the key has usual traffic
+   (``calls`` EWMA > 0) and this window has 0 successes and > 0 timeouts.
+
+## Deviation from the spec, and why
+
+The spec defines ``saturation_ratio = exp(fast.mean - floor)``. That only
+works for slow creep. For a *step* change (every window at z >= 3), guard 1
+freezes ``fast`` entirely, the ratio stays ~1 forever, and the step is never
+reported as a regime shift -- the spike episode would simply stay open
+indefinitely. ``level`` (the unguarded window-mean EWMA) tracks both creep and
+steps, so the ratio uses it instead. ``fast`` is still the only thing ``z`` is
+measured against, so guard 1 still protects the spike detector.
+
+The spec also quotes ``alpha_up ~= 0.002`` per 30 s window as "a half-life of
+about 3 days". Those disagree: 0.002 per window is a ~2.9 h half-life, which
+would absorb a 2.5x plateau before the 6 h regime check. The floor here is
+time-based and uses the stated intent (3 day up / ~90 s down half-lives).
+
+## Episodes (A4)
+
+Each (key, condition) is an open -> escalate* -> close state machine.
+- open: condition first observed (spike: after ``spike_sustain``).
+- escalate: magnitude reached ``escalate_factor`` x the last announced
+  magnitude (spike: z; saturation: ratio; timeout: timeouts per window).
+- close: condition not observed for ``close_quiet_s`` (hysteresis, so a key
+  timing out every few minutes is one episode, not a flapping pair per
+  window). Carries ``duration_s`` and ``peak_ms``.
+
+## Config fingerprint
+
+The config is hashed into the state. Resuming a state produced under a
+different config cold-starts (``load_state`` returns ``cold_start_reason``)
+rather than silently mixing baselines calibrated with different constants --
+the caveat ``trend_reducer`` disclosed and left open.
+
+## Import cost
+
+``import orion.metacog.transport_baseline`` executes ``orion/metacog/
+__init__.py`` which pulls pydantic (same disclosed caveat as
+``trend_reducer``). The consumer (orion-equilibrium-service) already depends
+on pydantic, so this is accepted rather than restructured.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Iterable
+
+from orion.bus.ewma import compute_ewma_update
+
+STATE_SCHEMA_VERSION = 1
+
+CONDITIONS = ("timeout", "zero_success", "spike", "saturation", "regime_shift")
+
+
+@dataclass(frozen=True)
+class TransportBaselineConfig:
+    """All reducer constants. Every field is part of the fingerprint.
+
+    Defaults are the spec's proposals; the log-only week (acceptance check 1)
+    is what sets them for real.
+    """
+
+    # fast / level EWMA, per evaluated window.
+    fast_alpha: float = 0.05
+    level_alpha: float = 0.05
+    # Log-ms variance floor. Real per-window log-mean variance for LLM hops is
+    # ~0.05-0.5; 0.01 (sigma 0.1, ~10% relative) only binds for very tight
+    # hops, where it stops a near-constant key from z-spiking on jitter.
+    min_variance: float = 0.01
+    # calls-per-minute EWMA, per raw window (including windows with no traffic).
+    calls_alpha: float = 0.05
+    # floor half-lives (seconds of window time).
+    floor_half_life_down_s: float = 90.0
+    floor_half_life_up_s: float = 3 * 24 * 3600.0
+    # Warm-up / sample minimums.
+    min_calls: int = 5
+    n_warm: int = 10
+    max_aggregate_windows: int = 20
+    # Firing.
+    spike_z: float = 3.0
+    borderline_z: float = 2.0
+    spike_sustain: int = 2
+    saturation_ratio: float = 2.0
+    saturation_close_ratio: float = 1.5
+    regime_after_s: float = 6 * 3600.0
+    escalate_factor: float = 2.0
+    close_quiet_s: float = 300.0
+    # State bounds.
+    max_idle_s: float = 7 * 24 * 3600.0
+    max_keys: int = 512
+
+    def fingerprint(self) -> str:
+        blob = json.dumps(asdict(self), sort_keys=True).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()[:16]
+
+
+@dataclass
+class Episode:
+    opened_ts: float
+    last_hot_ts: float
+    announced_magnitude: float
+    peak_ms: float | None = None
+    peak_magnitude: float = 0.0
+
+
+@dataclass
+class KeyState:
+    service: str
+    instance: str | None
+    hop: str
+    last_seen_ts: float = 0.0
+    # fast (guarded)
+    fast_mean: float = 0.0
+    fast_var: float = 0.0
+    fast_count: int = 0
+    # level (unguarded)
+    level_mean: float = 0.0
+    level_count: int = 0
+    # floor
+    floor: float | None = None
+    floor_ts: float | None = None
+    # calls per minute
+    calls_ewma: float = 0.0
+    calls_count: int = 0
+    # sparse-key pooling
+    pend_n: int = 0
+    pend_sum: float = 0.0
+    pend_sumsq: float = 0.0
+    pend_max_ms: float | None = None
+    pend_windows: int = 0
+    pend_tainted: bool = False
+    # spike sustain counter
+    hot_streak: int = 0
+    episodes: dict[str, Episode] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TransportConditionEvent:
+    condition: str
+    phase: str
+    service: str
+    instance: str | None
+    key: str
+    excluded: bool
+    z: float | None
+    saturation_ratio: float | None
+    baseline_ms: float | None
+    floor_ms: float | None
+    window_mean_ms: float | None
+    calls_per_min: float
+    calls_per_min_usual: float | None
+    duration_s: float | None
+    peak_ms: float | None
+    timeout_count: int
+
+
+@dataclass(frozen=True)
+class KeyObservation:
+    """One per (key, snapshot) -- the log-only phase's per-key line."""
+
+    service: str
+    instance: str | None
+    key: str
+    excluded: bool
+    evaluated: bool
+    warm: bool
+    z: float | None
+    saturation_ratio: float | None
+    window_mean_ms: float | None
+    baseline_ms: float | None
+    floor_ms: float | None
+    calls_per_min: float
+    calls_per_min_usual: float | None
+    success_count: int
+    timeout_count: int
+    open_conditions: tuple[str, ...]
+
+
+@dataclass
+class TransportBaselineState:
+    fingerprint: str
+    keys: dict[str, KeyState] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FoldResult:
+    events: list[TransportConditionEvent]
+    observations: list[KeyObservation]
+    skipped_reason: str | None = None
+
+
+# --------------------------------------------------------------------------
+# helpers
+
+
+def state_key(service: str, instance: str | None, hop: str) -> str:
+    return f"{service}|{instance or ''}|{hop}"
+
+
+def is_excluded(hop: str, exclude_labels: Iterable[str]) -> bool:
+    """A hop is excluded if its health label (after ``#``), its ``verb:`` name,
+    or the whole key equals one of ``exclude_labels``."""
+    labels = {str(x).strip() for x in exclude_labels if str(x).strip()}
+    if not labels:
+        return False
+    if hop in labels:
+        return True
+    if "#" in hop and hop.rsplit("#", 1)[1] in labels:
+        return True
+    if hop.startswith("verb:") and hop[len("verb:"):] in labels:
+        return True
+    return False
+
+
+def _parse_ts(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _as_int(v: Any) -> int:
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(v: Any) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if math.isfinite(f) else None
+
+
+def _half_life_alpha(dt: float, half_life: float) -> float:
+    if dt <= 0 or half_life <= 0:
+        return 0.0
+    return 1.0 - 0.5 ** (dt / half_life)
+
+
+def _exp(v: float | None) -> float | None:
+    return math.exp(v) if v is not None else None
+
+
+# --------------------------------------------------------------------------
+# persistence
+
+
+def new_state(config: TransportBaselineConfig) -> TransportBaselineState:
+    return TransportBaselineState(fingerprint=config.fingerprint())
+
+
+def state_to_dict(state: TransportBaselineState) -> dict[str, Any]:
+    return {
+        "schema_version": STATE_SCHEMA_VERSION,
+        "fingerprint": state.fingerprint,
+        "keys": {k: asdict(v) for k, v in state.keys.items()},
+    }
+
+
+def load_state(
+    data: Any, config: TransportBaselineConfig
+) -> tuple[TransportBaselineState, str | None]:
+    """Rebuild state from its JSON form. Never raises.
+
+    Returns ``(state, cold_start_reason)``; the reason is ``None`` on a clean
+    resume. A fingerprint mismatch is refused (cold start), not merged.
+    """
+    fp = config.fingerprint()
+    if data is None:
+        return new_state(config), "no_saved_state"
+    if not isinstance(data, dict):
+        return new_state(config), "malformed_state"
+    if data.get("schema_version") != STATE_SCHEMA_VERSION:
+        return new_state(config), f"schema_version_mismatch:{data.get('schema_version')}"
+    if data.get("fingerprint") != fp:
+        return new_state(config), f"config_fingerprint_mismatch:{data.get('fingerprint')}!={fp}"
+    keys_raw = data.get("keys")
+    if not isinstance(keys_raw, dict):
+        return new_state(config), "malformed_state"
+    state = TransportBaselineState(fingerprint=fp)
+    try:
+        for k, raw in keys_raw.items():
+            raw = dict(raw)
+            eps = {
+                cond: Episode(**ep) for cond, ep in (raw.pop("episodes", None) or {}).items()
+            }
+            state.keys[str(k)] = KeyState(**raw, episodes=eps)
+    except (TypeError, ValueError):
+        return new_state(config), "malformed_state"
+    return state, None
+
+
+# --------------------------------------------------------------------------
+# episode machinery
+
+
+def _episode_step(
+    ks: KeyState,
+    cond: str,
+    *,
+    hot: bool,
+    magnitude: float,
+    now: float,
+    peak_ms: float | None,
+    config: TransportBaselineConfig,
+) -> tuple[str, Episode] | None:
+    """Advance one condition's state machine. Returns (phase, episode) when a
+    phase transition must be announced, else None."""
+    ep = ks.episodes.get(cond)
+    if hot:
+        if ep is None:
+            ep = Episode(
+                opened_ts=now,
+                last_hot_ts=now,
+                announced_magnitude=magnitude,
+                peak_ms=peak_ms,
+                peak_magnitude=magnitude,
+            )
+            ks.episodes[cond] = ep
+            return "open", ep
+        ep.last_hot_ts = now
+        ep.peak_magnitude = max(ep.peak_magnitude, magnitude)
+        if peak_ms is not None:
+            ep.peak_ms = peak_ms if ep.peak_ms is None else max(ep.peak_ms, peak_ms)
+        if ep.announced_magnitude > 0 and magnitude >= config.escalate_factor * ep.announced_magnitude:
+            ep.announced_magnitude = magnitude
+            return "escalate", ep
+        return None
+    if ep is not None and (now - ep.last_hot_ts) >= config.close_quiet_s:
+        del ks.episodes[cond]
+        return "close", ep
+    return None
+
+
+# --------------------------------------------------------------------------
+# fold
+
+
+def fold_snapshot(
+    state: TransportBaselineState,
+    payload: dict[str, Any],
+    *,
+    config: TransportBaselineConfig,
+    exclude_labels: Iterable[str] = (),
+) -> FoldResult:
+    """Fold one rpc_health snapshot into ``state`` (mutated in place)."""
+    if not isinstance(payload, dict):
+        return FoldResult([], [], "not_a_dict")
+    channel_latency = payload.get("channel_latency")
+    if not isinstance(channel_latency, dict):
+        return FoldResult([], [], "no_channel_latency")
+
+    service = str(payload.get("service") or "unknown")
+    instance_raw = payload.get("instance")
+    instance = str(instance_raw) if instance_raw not in (None, "") else None
+    now = _parse_ts(payload.get("window_end"))
+    start = _parse_ts(payload.get("window_start"))
+    if now is None:
+        return FoldResult([], [], "no_window_end")
+    window_s = (now - start) if (start is not None and now > start) else 30.0
+    window_min = window_s / 60.0
+    exclude = tuple(exclude_labels)
+
+    events: list[TransportConditionEvent] = []
+    observations: list[KeyObservation] = []
+
+    # Every known key of this (service, instance) sees this window, even when it
+    # had no traffic -- so quiet windows close timeout episodes and count as 0
+    # calls in the usual-load EWMA.
+    prefix = state_key(service, instance, "")
+    hops: dict[str, dict[str, Any]] = {}
+    for sk, ks in state.keys.items():
+        if sk.startswith(prefix):
+            hops[ks.hop] = {}
+    for hop, stats in channel_latency.items():
+        hops[str(hop)] = stats if isinstance(stats, dict) else {}
+
+    for hop, stats in hops.items():
+        sk = state_key(service, instance, hop)
+        ks = state.keys.get(sk)
+        success = _as_int(stats.get("success_count"))
+        timeouts = _as_int(stats.get("timeout_count"))
+        if ks is None:
+            if success == 0 and timeouts == 0:
+                continue
+            ks = KeyState(service=service, instance=instance, hop=hop)
+            state.keys[sk] = ks
+        if now < ks.last_seen_ts:
+            # Out-of-order / replayed window: never fold time backwards.
+            continue
+        excluded = is_excluded(hop, exclude)
+        had_traffic = success > 0 or timeouts > 0
+        if had_traffic:
+            ks.last_seen_ts = now
+
+        calls = success + timeouts
+        calls_per_min = calls / window_min if window_min > 0 else float(calls)
+        usual = ks.calls_ewma if ks.calls_count > 0 else None
+
+        def emit(cond: str, phase: str, ep: Episode, *, z=None, ratio=None, wmean=None) -> None:
+            events.append(
+                TransportConditionEvent(
+                    condition=cond,
+                    phase=phase,
+                    service=service,
+                    instance=instance,
+                    key=hop,
+                    excluded=excluded,
+                    z=z,
+                    saturation_ratio=ratio,
+                    baseline_ms=_exp(ks.fast_mean) if ks.fast_count else None,
+                    floor_ms=_exp(ks.floor),
+                    window_mean_ms=wmean,
+                    calls_per_min=calls_per_min,
+                    calls_per_min_usual=usual,
+                    duration_s=(now - ep.opened_ts) if phase != "open" or cond == "regime_shift" else None,
+                    peak_ms=ep.peak_ms,
+                    timeout_count=timeouts,
+                )
+            )
+
+        max_ms = _as_float(stats.get("max_ms"))
+
+        # --- timeout / zero_success: no minimum sample count -------------
+        step = _episode_step(
+            ks, "timeout", hot=timeouts > 0, magnitude=float(timeouts), now=now,
+            peak_ms=max_ms, config=config,
+        )
+        if step:
+            emit("timeout", step[0], step[1])
+        # "Had traffic" means it has really succeeded before (a key that has
+        # only ever timed out is a timeout episode, not a loss of service).
+        had_successes = ks.level_count > 0 or ks.pend_n > 0
+        zero_hot = (
+            timeouts > 0 and success == 0 and had_successes and usual is not None and usual > 0
+        )
+        step = _episode_step(
+            ks, "zero_success", hot=zero_hot, magnitude=float(timeouts), now=now,
+            peak_ms=None, config=config,
+        )
+        if step:
+            emit("zero_success", step[0], step[1])
+
+        # --- calls EWMA (evidence only) ----------------------------------
+        if ks.calls_count == 0:
+            ks.calls_ewma = calls_per_min
+        else:
+            ks.calls_ewma = config.calls_alpha * calls_per_min + (1 - config.calls_alpha) * ks.calls_ewma
+        ks.calls_count += 1
+
+        # --- latency pooling ---------------------------------------------
+        log_sum = _as_float(stats.get("log_ms_sum"))
+        log_sumsq = _as_float(stats.get("log_ms_sumsq"))
+        if success > 0 and log_sum is not None:
+            ks.pend_n += success
+            ks.pend_sum += log_sum
+            ks.pend_sumsq += log_sumsq or 0.0
+            if max_ms is not None:
+                ks.pend_max_ms = max_ms if ks.pend_max_ms is None else max(ks.pend_max_ms, max_ms)
+            ks.pend_windows += 1
+            if timeouts > 0:
+                ks.pend_tainted = True
+        elif ks.pend_windows:
+            ks.pend_windows += 1
+
+        evaluated = False
+        z: float | None = None
+        ratio: float | None = None
+        wmean_ms: float | None = None
+        warm = ks.fast_count >= config.n_warm
+
+        if ks.pend_n >= config.min_calls:
+            evaluated = True
+            m = ks.pend_sum / ks.pend_n
+            wmean_ms = math.exp(m)
+            peak = ks.pend_max_ms if ks.pend_max_ms is not None else wmean_ms
+            tainted = ks.pend_tainted
+            _reset_pending(ks)
+
+            sigma = math.sqrt(max(ks.fast_var, config.min_variance))
+            if ks.fast_count > 0:
+                z = (m - ks.fast_mean) / sigma
+
+            # guard 1: Phase I/II separation.
+            if ks.fast_count == 0:
+                fold_value: float | None = m
+            elif tainted or (z is not None and z >= config.spike_z):
+                fold_value = None
+            elif z is not None and z >= config.borderline_z:
+                fold_value = ks.fast_mean + config.borderline_z * sigma
+            else:
+                fold_value = m
+            if fold_value is not None:
+                upd = compute_ewma_update(
+                    prev_ewma=ks.fast_mean,
+                    prev_variance=ks.fast_var,
+                    prev_count=ks.fast_count,
+                    value=fold_value,
+                    alpha=config.fast_alpha,
+                    min_variance=config.min_variance,
+                )
+                ks.fast_mean, ks.fast_var = upd.ewma, upd.variance
+                ks.fast_count += 1
+
+            # level: unguarded.
+            if ks.level_count == 0:
+                ks.level_mean = m
+            else:
+                ks.level_mean = config.level_alpha * m + (1 - config.level_alpha) * ks.level_mean
+            ks.level_count += 1
+
+            # floor: asymmetric, time-based, frozen upward while saturated.
+            if ks.floor is None:
+                ks.floor, ks.floor_ts = m, now
+            else:
+                dt = now - (ks.floor_ts or now)
+                if m < ks.floor:
+                    a = _half_life_alpha(dt, config.floor_half_life_down_s)
+                elif "saturation" in ks.episodes:
+                    a = 0.0
+                else:
+                    a = _half_life_alpha(dt, config.floor_half_life_up_s)
+                ks.floor = a * m + (1 - a) * ks.floor
+                ks.floor_ts = now
+
+            ratio = math.exp(ks.level_mean - ks.floor)
+
+            if warm:
+                # spike: z >= spike_z sustained spike_sustain evaluations.
+                spike_now = z is not None and z >= config.spike_z
+                ks.hot_streak = ks.hot_streak + 1 if spike_now else 0
+                spike_hot = ks.hot_streak >= config.spike_sustain or (
+                    spike_now and "spike" in ks.episodes
+                )
+                step = _episode_step(
+                    ks, "spike", hot=spike_hot, magnitude=max(z or 0.0, 0.0), now=now,
+                    peak_ms=peak, config=config,
+                )
+                if step:
+                    emit("spike", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms)
+
+                # saturation, with open/close hysteresis.
+                sat_open = "saturation" in ks.episodes
+                sat_hot = ratio >= (config.saturation_close_ratio if sat_open else config.saturation_ratio)
+                step = _episode_step(
+                    ks, "saturation", hot=sat_hot, magnitude=ratio, now=now,
+                    peak_ms=peak, config=config,
+                )
+                if step:
+                    emit("saturation", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms)
+
+                # regime_shift: stated once, then (and only then) re-seed.
+                sat_ep = ks.episodes.get("saturation")
+                if sat_ep is not None and (now - sat_ep.opened_ts) >= config.regime_after_s:
+                    emit("regime_shift", "open", sat_ep, z=z, ratio=ratio, wmean=wmean_ms)
+                    ks.floor = ks.level_mean
+                    ks.floor_ts = now
+                    ks.fast_mean = ks.level_mean
+                    ks.hot_streak = 0
+                    del ks.episodes["saturation"]
+        elif ks.pend_windows >= config.max_aggregate_windows:
+            # Too sparse to ever reach min_calls in a reasonable span: drop the
+            # pool rather than evaluate an under-sampled mean.
+            _reset_pending(ks)
+
+        if not evaluated:
+            # No latency evidence this window: spike/saturation stay as they
+            # are, except that a spike whose key went quiet can still age out.
+            for cond in ("spike",):
+                if cond in ks.episodes:
+                    step = _episode_step(
+                        ks, cond, hot=False, magnitude=0.0, now=now, peak_ms=None, config=config
+                    )
+                    if step:
+                        emit(cond, step[0], step[1])
+
+        observations.append(
+            KeyObservation(
+                service=service,
+                instance=instance,
+                key=hop,
+                excluded=excluded,
+                evaluated=evaluated,
+                warm=ks.fast_count >= config.n_warm,
+                z=z,
+                saturation_ratio=ratio,
+                window_mean_ms=wmean_ms,
+                baseline_ms=_exp(ks.fast_mean) if ks.fast_count else None,
+                floor_ms=_exp(ks.floor),
+                calls_per_min=calls_per_min,
+                calls_per_min_usual=usual,
+                success_count=success,
+                timeout_count=timeouts,
+                open_conditions=tuple(sorted(ks.episodes)),
+            )
+        )
+
+    _evict(state, now, config)
+    return FoldResult(events, observations)
+
+
+def _reset_pending(ks: KeyState) -> None:
+    ks.pend_n = 0
+    ks.pend_sum = 0.0
+    ks.pend_sumsq = 0.0
+    ks.pend_max_ms = None
+    ks.pend_windows = 0
+    ks.pend_tainted = False
+
+
+def _evict(state: TransportBaselineState, now: float, config: TransportBaselineConfig) -> None:
+    stale = [k for k, ks in state.keys.items() if (now - ks.last_seen_ts) > config.max_idle_s]
+    for k in stale:
+        del state.keys[k]
+    if len(state.keys) > config.max_keys:
+        by_age = sorted(state.keys.items(), key=lambda kv: kv[1].last_seen_ts)
+        for k, _ in by_age[: len(state.keys) - config.max_keys]:
+            del state.keys[k]

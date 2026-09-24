@@ -118,6 +118,53 @@ failed to boot entirely the moment this workflow was registered, not just failed
 tick. Verified with a real `docker build` + import + `DurableRunner()` construction
 inside the built image, not just a scratch-container copy.
 
+## Finish detail fields (`orion:durable:run:state`, `detail`)
+
+`DurableRunStateV1.detail` is a free dict (no schema change when a key is added). What
+each workflow's `completed` event carries, and what every `failed` event carries:
+
+**`curiosity.investigate`** (`app/graph.py::finish_detail`): `line`, `self_definition`,
+`lived_answer`, `self_question_family`, `reach_out`, `reach_out_why`, `continue_line`,
+`finding_text` (<= 8000 chars), `journal_entry_id`, `attempts`, plus -- when the runner
+recorded them (2026-09-22) -- `turn_correlation_id`, `harness_elapsed_sec`,
+`harness_started_at`, `harness_finished_at`.
+
+- `turn_correlation_id`: the correlation the harness turn actually ran under -- the
+  per-lease derived id when admitted (`turn_correlation_id()`), else the run's own.
+  This is the PK of `harness_turn_trace`, so a run's harness row is now joinable
+  structurally instead of by text-searching `final_text`.
+- `harness_elapsed_sec`: wall seconds the runner itself measured around the Hub RPC
+  (monotonic clock; includes bus transit and reply decode). Hub's own
+  `debug.elapsed_sec` is a different, in-Hub measurement and still goes to the journal.
+- `harness_started_at` / `harness_finished_at`: ISO-8601 UTC stamps from the same
+  measurement.
+
+All four are additive and optional. They come from the `harness_turn_meta` state key
+`harness_turn` writes; a thread checkpointed before that key existed (turn already
+done, resumed after deploy) finishes with them absent -- not null, not an error. A
+leased pre-key checkpoint still yields `turn_correlation_id` from the older
+`debug.turn_correlation_id` breadcrumb.
+
+**`self_sense_eval`** (`app/self_sense_graph.py::finish_detail`): `line`, `published`,
+`failed`, `empty`, `attempts`, `turns` -- a `{question_key: {turn_correlation_id,
+harness_elapsed_sec, harness_started_at, harness_finished_at}}` map, one entry per
+answered question, same field meanings as above (one self-sense run is several turns).
+
+**`self_study.reflect`** (`app/reflect_graph.py::finish_detail`): unchanged.
+
+**`failed`** (any workflow, `DurableRunner._failed_detail`): `error`, `node`, and
+`turn_correlation_id` when the workflow can name it (curiosity only: the recorded value
+if the turn had completed, else the identity the raising `harness_turn` derived from the
+same state). The admitted path's terminal projection (`AdmissionRuntime._terminal`,
+which serves `failed` and `cancelled`) carries `error` plus `turn_correlation_id` only
+when the graph recorded it -- never re-derived there, because the lease is already
+cleared by then and a fresh derivation would name the run's lineage instead of the turn
+that failed. On that path the recorded id is the one the last attempt was issued, or
+would have been issued, under: if admission raised before the RPC left (lease lost), the
+id names an attempt no turn ran for, so the join returns no row -- never a wrong row.
+The worker-recovery fence stashes the same id before clearing an in-flight attempt's
+lease, so a later deadline/cancel terminal names the fenced generation, not an older one.
+
 ## Deploy order
 
 The operator templates select admitted Curiosity. Before restarting, apply both
@@ -219,6 +266,17 @@ is released, the partial FCC turn is lost, and the run waits on the closed lane 
 attempt (up to `DURABLE_RUNS_RETRY_MAX_ATTEMPTS`, then `failed`). Prefer closing the gate when
 no chat-burst lease is active (`GET /admission` shows active leases). Follow-up: exempt
 `route_operator_closed` from the attempt count.
+
+
+## Alternatives are policy-additive
+
+A demand's `alternatives` are frozen at submission (a duplicate receipt can never shrink a
+demand). On every broker tick they are additionally unioned with whatever the current
+`DURABLE_RUNS_LANE_POLICY_JSON` declares `compatible_with` the run's preferred lane
+(`orion/durable_admission/policy.py::widen_alternatives`), so a lane declared after a run was
+queued still reaches it. The stored row is not rewritten; the wider list shows in the run's
+per-tick `admission.eligible_lanes`. Live 2026-09-22: 7 runs (oldest 14 h) sat with only
+`agent-burst` while the newly opened `chat-burst` lane idled, which is what this closes.
 
 
 ## Optional GPU2 elastic admission

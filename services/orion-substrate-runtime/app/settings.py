@@ -118,6 +118,49 @@ class Settings(BaseSettings):
     attention_broadcast_log_retention_hours: float = Field(
         168.0, alias="ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS"
     )
+
+    # System One / Kev appraisal. Rides the attention-broadcast cadence,
+    # persists a compiled frame, emits a grammar shadow, and publishes the
+    # typed frame on orion:system_one:appraisal. Per-question consumers are
+    # promoted independently: curiosity_pull is an endogenous-curiosity
+    # admission gate; reverie_fit / attention_interrupt / deliberation_need
+    # remain observational until separately justified.
+    enable_system_one_appraisal: bool = Field(
+        True, alias="SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED"
+    )
+    system_one_base_url: str = Field("", alias="SUBSTRATE_SYSTEM_ONE_BASE_URL")
+    system_one_model: str = Field("kev-latest", alias="SUBSTRATE_SYSTEM_ONE_MODEL")
+    system_one_provider: str = Field("kev", alias="SUBSTRATE_SYSTEM_ONE_PROVIDER")
+    system_one_api_key: str = Field("", alias="SUBSTRATE_SYSTEM_ONE_API_KEY")
+    system_one_timeout_sec: float = Field(
+        3.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_TIMEOUT_SEC"
+    )
+    system_one_ttl_sec: float = Field(
+        90.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_TTL_SEC"
+    )
+    system_one_retention_hours: float = Field(
+        168.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_RETENTION_HOURS"
+    )
+    system_one_field_frame_max_age_sec: float = Field(
+        10.0, ge=0.0, alias="SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC"
+    )
+    system_one_max_open_loops: int = Field(
+        6, ge=1, le=32, alias="SUBSTRATE_SYSTEM_ONE_MAX_OPEN_LOOPS"
+    )
+    system_one_max_targets: int = Field(
+        5, ge=1, le=32, alias="SUBSTRATE_SYSTEM_ONE_MAX_TARGETS"
+    )
+    # When true, endogenous curiosity skips the System One admission gate and
+    # uses legacy evaluator-on-seeds behavior. Default false = gate is live.
+    system_one_curiosity_gate_kill_switch: bool = Field(
+        False, alias="SUBSTRATE_SYSTEM_ONE_CURIOSITY_GATE_KILL_SWITCH"
+    )
+    # Max age of a System One frame for the curiosity consumer. Frames older
+    # than this fail open to legacy evaluator behavior even if expires_at
+    # has not yet elapsed.
+    system_one_curiosity_max_age_sec: float = Field(
+        120.0, gt=0.0, alias="SUBSTRATE_SYSTEM_ONE_CURIOSITY_MAX_AGE_SEC"
+    )
     # AST/HOT self-model live tick (docs/superpowers/specs/2026-07-29-ast-hot-
     # reducer-live-ticking-design.md). Appended to the tail of
     # _attention_broadcast_tick() -- no separate timer, rides that tick's own
@@ -194,6 +237,12 @@ class Settings(BaseSettings):
     )
     endogenous_curiosity_tick_interval_sec: float = Field(
         60.0, alias="ORION_ENDOGENOUS_CURIOSITY_TICK_INTERVAL_SEC"
+    )
+    # Candidate-set retention. Felt-state / Hub readers only need the newest
+    # fresh row, but gate_json calibration lineage needs multi-week history.
+    # Live footprint ~3MB/day → ~90MB at 30d — acceptable on Athena SQL.
+    endogenous_curiosity_candidate_retention_hours: float = Field(
+        720.0, gt=0.0, alias="ORION_ENDOGENOUS_CURIOSITY_CANDIDATE_RETENTION_HOURS"
     )
     # Self-tab brain-EKG frame producer. Enabled by default (operator directive).
     brain_frame_enabled: bool = Field(True, alias="SUBSTRATE_BRAIN_FRAME_ENABLED")

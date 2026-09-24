@@ -106,7 +106,6 @@ def test_review_role_section_teaches_the_merge_template():
     text = "\n".join(lines)
     assert 'MERGE (r:ReviewRole {' in text
     assert 'run_id: "abc123"' in text
-    assert '"self_review|hire_cursor_review"' in text
     assert "self_review" in text and "hire_cursor_review" in text
     # writing nothing must be explicitly framed as fine, same as InvestigationRole
     assert "self_review" in text.split("Writing nothing is fine")[-1]
@@ -115,6 +114,32 @@ def test_review_role_section_teaches_the_merge_template():
     assert "prefer hire_cursor_review" in lower or "prefer hire_cursor_review (" in lower
     assert "prefer self_review, not hire_cursor_review" not in lower
     assert "reason to prefer self_review" not in lower
+
+
+def test_review_role_section_warns_against_the_investigation_vocabulary():
+    # Live-caught 2026-09-23: a real run wrote choice: "local_crawl" (the
+    # OTHER MERGE template's vocabulary) into a :ReviewRole node -- the two
+    # templates' identical "choice: a|b" placeholder shape reads as
+    # interchangeable. This asserts the disambiguating line exists, and
+    # that the two vocabularies never appear as valid options for each other.
+    lines = _review_role_section(run_id="abc123")
+    text = "\n".join(lines)
+    assert "DIFFERENT field from the role you wrote above" in text
+    assert "never local_crawl or hire_cursor" in text
+    # the ambiguous placeholder shape ("choice: \"a|b\"") the InvestigationRole
+    # template also uses must be gone from this one -- that shared shape is
+    # what caused the cross-echo in the first place.
+    assert 'choice: "self_review|hire_cursor_review"' not in text
+    # Caught in review: an earlier version of this fix replaced it with
+    # `choice: "self_review" or "hire_cursor_review"` -- not valid Cypher if
+    # copied the way every other literal line in this template is meant to
+    # be (a boolean-OR of two strings, not a single string, as a map value).
+    # The `choice` line must stay exactly one quoted string -- same shape as
+    # the `why` placeholder right below it -- so copying it verbatim parses.
+    choice_line = next(line for line in lines if "choice:" in line).strip()
+    assert choice_line.count('"') == 2, f"choice line must be one quoted string: {choice_line!r}"
+    assert choice_line.startswith('choice: "')
+    assert choice_line.rstrip(",").endswith('"')
 
 
 def _material() -> StudyMaterial:

@@ -808,12 +808,28 @@ class _FakeOutreach:
         self.blocked = blocked
         self.result = result or {"outreach": True, "reason": "sent"}
         self.offered: list[dict] = []
+        self.recorded: list[dict] = []
 
-    def blocked_reason(self):
+    def blocked_reason(self, *, skip_schedule_gates=False):
         return self.blocked
 
-    async def offer_message(self, *, text, correlation_id, tag, model=None):
-        self.offered.append({"text": text, "tag": tag, "correlation_id": correlation_id})
+    def record_blocked(self, reason, *, correlation_id, source, extra=None):
+        row = {**dict(extra or {}), "outreach": False, "reason": reason,
+               "source": source, "correlation_id": correlation_id}
+        self.recorded.append(row)
+        return row
+
+    async def offer_message(self, *, text, correlation_id, tag, model=None, meta=None,
+                            skip_schedule_gates=False):
+        self.offered.append(
+            {
+                "text": text,
+                "tag": tag,
+                "correlation_id": correlation_id,
+                "meta": dict(meta or {}),
+                "skip_schedule_gates": skip_schedule_gates,
+            }
+        )
         return self.result
 
 
@@ -844,7 +860,7 @@ def test_a_finding_orion_wants_to_share_goes_through_a_second_turn() -> None:
     )
     prompts: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         prompts.append(prompt)
         return "here is what I found", {"harness_step_count": 9}
 
@@ -868,7 +884,7 @@ def test_outreach_off_means_the_second_turn_never_runs() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -878,12 +894,11 @@ def test_outreach_off_means_the_second_turn_never_runs() -> None:
     assert outreach.offered == []
 
 
-def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
-    """The gates protect Juniper's sleep. Spending a full unified turn to
-    compose a message that cannot be delivered for another six hours is a waste
-    of Orion's own compute."""
+def test_turn_in_flight_is_checked_before_a_turn_is_spent_composing() -> None:
+    """Door-A skips quiet hours / daily cap, but not a live Hub turn --
+    composing while Juniper is mid-message still wastes the second turn."""
     bus = _FakeBus()
-    outreach = _FakeOutreach(blocked="quiet_hours")
+    outreach = _FakeOutreach(blocked="turn_in_flight")
     loop = _graph_loop(
         bus,
         reader=_reach_out_reader(None),
@@ -892,7 +907,7 @@ def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -905,7 +920,7 @@ def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
 def test_the_journal_is_written_even_when_the_second_turn_is_blocked() -> None:
     """The finding is Orion's regardless of whether it gets to say it."""
     bus = _FakeBus()
-    outreach = _FakeOutreach(blocked="daily_cap")
+    outreach = _FakeOutreach(blocked="turn_in_flight")
     loop = _graph_loop(
         bus,
         reader=_reach_out_reader(None),
@@ -926,6 +941,163 @@ def test_no_outreach_loop_is_reported_rather_than_swallowed() -> None:
     )
     assert asyncio.run(loop.tick()) is None
     assert len(bus.journal) == 1
+
+
+# --- every Door-A decision gets a row (2026-09-22) -------------------------
+#
+# Live 2026-09-22: six runs since 09-19 set reach_out=true and NONE has a
+# decision row -- `blocked_reason()` returned early with only a log line,
+# and a log line does not survive a container restart. The run story's
+# outreach line was "not recorded" for every one of them. These pin that
+# every exit of `_maybe_reach_out` leaves a row keyed by the same uuid5
+# and carrying run_id + line in result_json.
+
+
+def _expected_corr(run_id: str) -> str:
+    from uuid import NAMESPACE_URL, uuid5
+
+    return str(uuid5(NAMESPACE_URL, f"curiosity_outreach:{run_id}"))
+
+
+def _reach_out_outcome(run_id: str):
+    from orion.curiosity.worldview import TurnOutcome
+
+    return TurnOutcome(
+        run_id=run_id, continue_line=False, continue_note="",
+        reach_out=True, reach_out_why="she should know",
+    )
+
+
+def test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line() -> None:
+    outreach = _FakeOutreach(blocked="turn_in_flight")
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+    got = asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("run-blk"), finding_text="f",
+            run_id="run-blk", hop_notes=[], line="self_inquiry",
+        )
+    )
+    assert got == "turn_in_flight"
+    assert outreach.offered == [], "a pre-check block must not spend a composition turn"
+    assert outreach.recorded == [
+        {
+            "run_id": "run-blk",
+            "line": "self_inquiry",
+            "outreach": False,
+            "reason": "turn_in_flight",
+            "source": "curiosity_outreach",
+            "correlation_id": _expected_corr("run-blk"),
+        }
+    ]
+
+
+def test_the_sent_path_threads_run_id_and_line_into_offer_message() -> None:
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+
+    async def _gen(prompt, correlation_id, **kw):
+        return "worth saying", {"fcc_model_label": "M"}
+
+    loop._generate = _gen  # type: ignore[assignment]
+    got = asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("run-sent"), finding_text="f",
+            run_id="run-sent", hop_notes=[],
+        )
+    )
+    assert got is None
+    assert outreach.recorded == []
+    assert outreach.offered[0]["correlation_id"] == _expected_corr("run-sent")
+    assert outreach.offered[0]["meta"] == {"run_id": "run-sent", "line": "investigate"}
+    assert outreach.offered[0]["skip_schedule_gates"] is True
+
+
+def test_an_empty_composition_writes_a_row_instead_of_only_logging() -> None:
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+
+    async def _gen(prompt, correlation_id, **kw):
+        return "", {"raw_len": 0}
+
+    loop._generate = _gen  # type: ignore[assignment]
+    got = asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("run-empty"), finding_text="f",
+            run_id="run-empty", hop_notes=[],
+        )
+    )
+    assert got == "empty_generation"
+    assert outreach.offered == []
+    assert [r["reason"] for r in outreach.recorded] == ["empty_generation"]
+    assert outreach.recorded[0]["run_id"] == "run-empty"
+
+
+def test_disabled_and_no_loop_still_leave_a_row_via_the_decision_module(monkeypatch) -> None:
+    """With no loop object to route through, the skip goes straight to the
+    decision-log module -- the same table, the same source key."""
+    import scripts.endogenous_outreach_decisions as decisions_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(
+        decisions_mod, "record_decision",
+        lambda result, *, tension_reason=None, forced=False: rows.append(dict(result)),
+    )
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: None,
+    )
+    assert asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("r1"), finding_text="f", run_id="r1", hop_notes=[]
+        )
+    ) == "no_outreach_loop"
+    loop_off = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=False, outreach_provider=None,
+    )
+    assert asyncio.run(
+        loop_off._maybe_reach_out(
+            outcome=_reach_out_outcome("r2"), finding_text="f", run_id="r2", hop_notes=[]
+        )
+    ) == "disabled"
+    assert [(r["reason"], r["run_id"], r["source"]) for r in rows] == [
+        ("no_outreach_loop", "r1", "curiosity_outreach"),
+        ("disabled", "r2", "curiosity_outreach"),
+    ]
+    assert rows[0]["correlation_id"] == _expected_corr("r1")
+
+
+def test_a_failing_decision_write_never_reaches_the_investigation(monkeypatch) -> None:
+    import scripts.endogenous_outreach_decisions as decisions_mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(decisions_mod, "record_decision", _boom)
+
+    class _Boom(_FakeOutreach):
+        def record_blocked(self, *a, **k):
+            raise RuntimeError("db down")
+
+    outreach = _Boom(blocked="turn_in_flight")
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+    assert asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("r3"), finding_text="f", run_id="r3", hop_notes=[]
+        )
+    ) == "turn_in_flight"
 
 
 def test_an_unreadable_footprint_is_not_reported_as_writing_nothing() -> None:
@@ -992,7 +1164,7 @@ def test_the_composition_turn_is_not_held_to_the_lookup_gate() -> None:
     )
     seen: list[bool] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
         seen.append(require_lookup)
         return "a real message", {"harness_step_count": 1}
 
@@ -2384,7 +2556,7 @@ def test_completed_run_state_with_reach_out_triggers_outreach_here() -> None:
     loop = _loop(bus, kickoff_via_cortex=True)
     seen = []
 
-    async def fake_reach_out(*, outcome, finding_text, run_id):
+    async def fake_reach_out(*, outcome, finding_text, run_id, line=None, resource_lease=None):
         seen.append((outcome.reach_out, outcome.reach_out_why, finding_text, run_id))
         return None
 

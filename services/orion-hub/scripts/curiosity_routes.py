@@ -19,9 +19,25 @@ not be", which was a claim about writes to the graph stated as a claim about
 HTTP verbs; a control action is not a write, and conflating them would have
 forced an operator button into a module that has nothing to do with this page.
 
-Follows `concept_atlas_routes.py`: two JSON GETs plus a standalone page route,
+Follows `concept_atlas_routes.py`: JSON GETs plus a standalone page route,
 degrading to an honest "unavailable" payload rather than a 500, because this is
 an interpretability surface and a broken panel must never take Hub down.
+
+Three reads feed the page (design: docs/superpowers/specs/2026-09-22-curiosity-
+tab-redesign-design.md):
+
+- `/api/atlas`   -- priors, revisions, pool totals, self panel, peer briefs.
+- `/api/runs`    -- the 14-day sittings strip: one summary per run across the
+                    three lines, plus the reach-out tally and the per-line
+                    budget read from the same Redis keys the loop writes.
+- `/api/run/{id}` -- one run's story: a clock-ordered timeline joined across
+                    lifecycle rows, Orion's graph, the journal, the outreach
+                    decision and any reply.
+
+One write beyond `/api/run-now`: `POST /api/run/{id}/reply` lets Juniper
+answer a run's reach-out from the story itself with an EXPLICIT reply link
+(`client_meta.in_reply_to`, not the time-adjacency heuristic chat replies
+use), gated on a confirmed `sent` outreach decision for that exact run.
 """
 
 from __future__ import annotations
@@ -35,10 +51,10 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from orion.curiosity.atlas import read_atlas, to_payload
+from orion.curiosity.atlas import read_atlas, to_payload, valid_run_id
+from orion.curiosity.run_story import LINES
 from orion.curiosity.self_panel import read_self_panel
 from orion.curiosity.self_panel import to_payload as self_panel_to_payload
-from orion.curiosity.self_question_pool import PARK_SQL, PIN_SQL
 from orion.curiosity.worldview import WorldviewReader
 
 logger = logging.getLogger("orion-hub.curiosity_routes")
@@ -86,9 +102,29 @@ def _build_reader() -> Optional[WorldviewReader]:
     )
 
 
+def _stamp_to_next(last: Any, cooldown: float) -> tuple[Optional[str], Optional[str]]:
+    """(last ISO, next-eligible ISO) from one cooldown key's value."""
+    if isinstance(last, (bytes, bytearray)):
+        last = last.decode("utf-8", errors="replace")
+    if not last:
+        return None, None
+    if not cooldown:
+        return str(last), None
+    try:
+        stamped = datetime.fromisoformat(str(last))
+    except ValueError:
+        # The loop writes this key, not Orion, so a malformed value is a
+        # real defect worth seeing rather than swallowing.
+        logger.warning("curiosity_atlas_bad_cooldown_stamp value=%r", last)
+        return str(last), None
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return str(last), (stamped + timedelta(seconds=cooldown)).isoformat()
+
+
 async def _read_schedule() -> dict[str, Any]:
-    """Cooldown, daily cap and next-eligible — the half of the picture that
-    lives in Redis rather than the graph.
+    """Cooldown, daily cap and next-eligible for each of the three lines --
+    the half of the picture that lives in Redis rather than the graph.
 
     The key names are IMPORTED from the loop that writes them, never retyped.
     A dashboard reading `orion:curiosity:count:...` from its own string literal
@@ -99,9 +135,12 @@ async def _read_schedule() -> dict[str, Any]:
     this process's own locale. The container sets no `TZ`, so `datetime.now()
     .astimezone()` here is UTC: between 18:00 and 23:59 in Juniper's zone that
     reads tomorrow's key, finds nothing, and reports `runs_today: 0` while the
-    loop is at cap -- the "Runs today" tile would sit at 0 of 3 every evening
-    and the at-cap highlight would never fire. Caught in review; the earlier
-    version of this docstring claimed to avoid the exact bug it had.
+    loop is at cap -- the tile would sit at 0 of 3 every evening and the at-cap
+    highlight would never fire. Caught in review; the earlier version of this
+    docstring claimed to avoid the exact bug it had.
+
+    The top-level fields describe the investigate line (kept for the one
+    existing consumer); `lines` carries all three.
     """
     out: dict[str, Any] = {
         "available": False,
@@ -112,6 +151,7 @@ async def _read_schedule() -> dict[str, Any]:
         "runs_today": None,
         "daily_cap": None,
         "cooldown_sec": None,
+        "lines": {},
     }
     try:
         from app.settings import get_settings
@@ -120,16 +160,47 @@ async def _read_schedule() -> dict[str, Any]:
         from .curiosity_investigation import (
             _COOLDOWN_KEY,
             _DAILY_COUNT_KEY_PREFIX,
+            _SELF_COOLDOWN_KEY,
+            _SELF_DAILY_COUNT_KEY_PREFIX,
+            _SENSE_EVAL_COOLDOWN_KEY,
+            _SENSE_EVAL_DAILY_COUNT_KEY_PREFIX,
         )
 
         cfg = get_settings()
-        out["daily_cap"] = int(
-            getattr(cfg, "HUB_CURIOSITY_INVESTIGATION_DAILY_CAP", 0) or 0
-        )
-        cooldown = float(
-            getattr(cfg, "HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC", 0) or 0
-        )
-        out["cooldown_sec"] = cooldown
+        spec = {
+            "investigate": (
+                _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX,
+                "HUB_CURIOSITY_INVESTIGATION_ENABLED",
+                "HUB_CURIOSITY_INVESTIGATION_DAILY_CAP",
+                "HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC",
+            ),
+            "self_inquiry": (
+                _SELF_COOLDOWN_KEY, _SELF_DAILY_COUNT_KEY_PREFIX,
+                "HUB_CURIOSITY_SELF_INQUIRY_ENABLED",
+                "HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP",
+                "HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC",
+            ),
+            "self_sense_eval": (
+                _SENSE_EVAL_COOLDOWN_KEY, _SENSE_EVAL_DAILY_COUNT_KEY_PREFIX,
+                "HUB_CURIOSITY_SELF_SENSE_EVAL_ENABLED",
+                "HUB_CURIOSITY_SELF_SENSE_EVAL_DAILY_CAP",
+                "HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC",
+            ),
+        }
+        assert set(spec) == set(LINES), "a line was added without a budget tile"
+        lines: dict[str, dict[str, Any]] = {}
+        for line, (_, _, enabled_key, cap_key, cooldown_key) in spec.items():
+            lines[line] = {
+                "enabled": bool(getattr(cfg, enabled_key, False)),
+                "daily_cap": int(getattr(cfg, cap_key, 0) or 0),
+                "cooldown_sec": float(getattr(cfg, cooldown_key, 0) or 0),
+                "runs_today": None,
+                "last_at": None,
+                "next_eligible_at": None,
+            }
+        out["daily_cap"] = lines["investigate"]["daily_cap"]
+        out["cooldown_sec"] = lines["investigate"]["cooldown_sec"]
+        out["lines"] = lines
 
         redis = getattr(getattr(hub_main, "bus", None), "redis", None)
         if redis is None:
@@ -140,30 +211,22 @@ async def _read_schedule() -> dict[str, Any]:
         except Exception:  # noqa: BLE001 -- same fallback the loop takes
             tz = timezone.utc
         local_date = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
-        last = await redis.get(_COOLDOWN_KEY)
-        count = await redis.get(f"{_DAILY_COUNT_KEY_PREFIX}{local_date}")
-        if isinstance(last, (bytes, bytearray)):
-            last = last.decode("utf-8", errors="replace")
-        if isinstance(count, (bytes, bytearray)):
-            count = count.decode("utf-8", errors="replace")
+        for line, (cooldown_key_name, count_prefix, _, _, _) in spec.items():
+            last = await redis.get(cooldown_key_name)
+            count = await redis.get(f"{count_prefix}{local_date}")
+            if isinstance(count, (bytes, bytearray)):
+                count = count.decode("utf-8", errors="replace")
+            last_iso, next_iso = _stamp_to_next(last, lines[line]["cooldown_sec"])
+            lines[line]["runs_today"] = int(count) if count else 0
+            lines[line]["last_at"] = last_iso
+            lines[line]["next_eligible_at"] = next_iso
 
         out["available"] = True
         out["local_date"] = local_date
         out["tz"] = str(tz)
-        out["last_investigation_at"] = str(last) if last else None
-        out["runs_today"] = int(count) if count else 0
-        if last and cooldown:
-            try:
-                stamped = datetime.fromisoformat(str(last))
-                if stamped.tzinfo is None:
-                    stamped = stamped.replace(tzinfo=timezone.utc)
-                out["next_eligible_at"] = (
-                    stamped + timedelta(seconds=cooldown)
-                ).isoformat()
-            except ValueError:
-                # The loop writes this key, not Orion, so a malformed value is a
-                # real defect worth seeing rather than swallowing.
-                logger.warning("curiosity_atlas_bad_cooldown_stamp value=%r", last)
+        out["last_investigation_at"] = lines["investigate"]["last_at"]
+        out["runs_today"] = lines["investigate"]["runs_today"]
+        out["next_eligible_at"] = lines["investigate"]["next_eligible_at"]
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_atlas_schedule_unavailable err=%s", exc)
     return out
@@ -183,56 +246,19 @@ def _get_memory_pg_pool() -> Any:
         return None
 
 
-async def _read_journals(run_ids: list[str]) -> dict[str, str]:
-    """What each run actually SAID, which is its real output.
-
-    The graph holds the run's structure -- priors, findings, hops -- but the
-    prose Orion wrote for Juniper lives in Postgres, and a page that shows the
-    node counts without it describes the shape of a turn while hiding what the
-    turn was for. Juniper, looking at the first version of this page: "Don't
-    know what tools are being used or what the actual output is of the run."
-
-    Keyed `curiosity:<run_id>` by the loop (`curiosity_investigation.py:318`).
-    """
-    if not run_ids:
-        return {}
-    pool = _get_memory_pg_pool()
-    if pool is None:
-        return {}
-    try:
-        refs = [f"curiosity:{r}" for r in run_ids]
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT source_ref, body FROM journal_entries "
-                "WHERE source_ref = ANY($1::text[])",
-                refs,
-            )
-        return {
-            str(r["source_ref"]).split(":", 1)[1]: str(r["body"] or "")
-            for r in rows
-            if ":" in str(r["source_ref"])
-        }
-    except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
-        logger.warning("curiosity_atlas_journal_unavailable err=%s", exc)
-        return {}
-
-
-def _wrote_on(
+def _runs_on_local_date(
     runs: list[dict[str, Any]], local_date: Optional[str], tz_name: Optional[str]
-) -> Optional[int]:
-    """How many runs wrote a node on the SAME calendar day the counter keys on.
+) -> Optional[dict[str, int]]:
+    """How many runs per line the STORES show on the SAME calendar day the
+    Redis counter keys on -- so a tile can say "counter 3, stores 2: one run
+    left no trace".
 
     Computed here rather than in the browser. The daily counter is keyed in
-    `HUB_ENDOGENOUS_OUTREACH_TZ`, while a browser's `isToday` is the viewer's
-    own zone, and comparing a count from one zone against a count from another
-    makes the "wrote nothing at all" banner fire or stay silent for reasons that
-    have nothing to do with Orion. It happens to be right today because Juniper
-    and the configured zone are both MDT; it would be wrong for any viewer who
-    is not, and wrong for everyone for the hours the two dates disagree.
-
-    An undated run counts as today: its only timestamp comes from a
-    `:TurnOutcome`, so a turn killed mid-write has no date, and calling that
-    "not today" would report it as traceless when it plainly left a trace.
+    `HUB_ENDOGENOUS_OUTREACH_TZ`, while a browser's date is the viewer's own
+    zone, and comparing a count from one zone against a count from another
+    makes the tile disagree with the counter for reasons that have nothing to
+    do with Orion. A run is dated by its start, else its end; an undated run
+    is on no day. None when the server could not name the day at all.
     """
     if not local_date:
         return None
@@ -240,28 +266,26 @@ def _wrote_on(
         tz = ZoneInfo(tz_name) if tz_name else timezone.utc
     except Exception:  # noqa: BLE001
         tz = timezone.utc
-    n = 0
+    out: dict[str, int] = {}
     for run in runs:
-        if not run.get("total_added"):
-            continue
-        stamp = run.get("written_at")
+        stamp = run.get("started_at") or run.get("finished_at")
         if not stamp:
-            n += 1
             continue
         when = datetime.fromtimestamp(int(stamp) / 1000, timezone.utc).astimezone(tz)
         if when.date().isoformat() == local_date:
-            n += 1
-    return n
+            line = str(run.get("line") or "")
+            out[line] = out.get(line, 0) + 1
+    return out
 
 
 @router.get("/api/atlas")
 async def curiosity_atlas_api() -> JSONResponse:
-    """Everything the page draws, in one read.
+    """Priors, revisions, pool totals, self panel, peer briefs, schedule.
 
-    One endpoint rather than four because every panel is a projection of the
-    same graph read: splitting it would let the priors panel and the runs panel
-    disagree about the same run, which is precisely the class of confusion this
-    surface exists to remove.
+    One read for every panel that is a projection of the priors, so the
+    priors list and its sparklines cannot disagree. Runs are NOT here any
+    more: `/api/runs` and `/api/run/{id}` own them, bounded by a window
+    rather than by the total number of runs Orion has ever taken.
     """
     reader = _build_reader()
     if reader is None:
@@ -276,18 +300,200 @@ async def curiosity_atlas_api() -> JSONResponse:
         # connected websocket, which is the rule `WorldviewReader` already
         # states for its own blocking call.
         payload = await asyncio.to_thread(lambda: to_payload(read_atlas(reader)))
-        journals = await _read_journals(
-            [r["run_id"] for r in payload.get("runs", []) if r.get("run_id")]
-        )
-        for run in payload.get("runs", []):
-            run["journal"] = journals.get(run.get("run_id", ""), "")
     payload["schedule"] = await _read_schedule()
-    payload["schedule"]["runs_wrote_today"] = _wrote_on(
-        payload.get("runs", []), payload["schedule"].get("local_date"),
-        payload["schedule"].get("tz"),
-    )
     payload["self"] = await _read_self_panel_payload()
     return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+def _run_store():
+    """Lazy, like `from . import main`: `tests/test_curiosity_atlas.py` loads
+    this module by file path with no parent package, where a top-level
+    relative import cannot resolve."""
+    from . import curiosity_run_store
+
+    return curiosity_run_store
+
+
+@router.get("/api/runs")
+async def curiosity_runs_api(
+    days: Optional[int] = None,
+    line: str = "all",
+    until: Optional[str] = None,
+) -> JSONResponse:
+    """The sittings strip: one summary per run in the window, newest first,
+    across all three lines (or one), plus the reach-out tally and the
+    per-line budget. `days` is clamped to 1..90; an unknown `line` is `all`.
+    `until` (ISO or epoch) ends the half-open window; omit for the live
+    fortnight. Never 500s: a dead store is named in `stores`, both dead is
+    `available: false`."""
+    try:
+        store = _run_store()
+        payload = await store.read_runs_payload(
+            pool=_get_memory_pg_pool(), reader=_build_reader(),
+            days=store.clamp_days(days), line=store.clamp_line(line), until=until,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
+        logger.warning("curiosity_runs_api_failed err=%s", exc)
+        payload = {"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    payload["schedule"] = await _read_schedule()
+    # Counter-vs-stores warn is only meaningful on the live window; a paged
+    # fortnight would under-count "today" and false-alarm.
+    if payload.get("until_is_now", True):
+        payload["schedule"]["runs_seen_today"] = _runs_on_local_date(
+            payload.get("runs", []), payload["schedule"].get("local_date"),
+            payload["schedule"].get("tz"),
+        )
+    else:
+        payload["schedule"]["runs_seen_today"] = None
+    return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+@router.get("/api/run/{run_id}")
+async def curiosity_run_api(run_id: str) -> JSONResponse:
+    """One run's story. `found: false` for an id no store knows; the id is
+    validated before it reaches any query."""
+    try:
+        payload = await _run_store().read_run_payload(
+            pool=_get_memory_pg_pool(), reader=_build_reader(), run_id=run_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_api_failed run=%s err=%s", run_id[:64], exc)
+        payload = {"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+_REPLY_TEXT_LIMIT = 4000
+
+
+async def _handle_chat_request(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Indirection so tests can patch `cr._handle_chat_request` directly,
+    the same pattern `_run_store()` uses for `curiosity_run_store` -- this
+    repo has two same-named `scripts` packages (root and this service's),
+    and a bare `from .api_routes import handle_chat_request` at call time can
+    resolve against whichever one a test's own import happened to load
+    first, silently missing a monkeypatch set on the other. Patching this
+    module-level name is safe because it is looked up in THIS module's own
+    globals, which is always the one object a test importing
+    `scripts.curiosity_routes` actually holds."""
+    from .api_routes import handle_chat_request
+
+    return await handle_chat_request(*args, **kwargs)
+
+
+@router.post("/api/run/{run_id}/reply")
+async def curiosity_run_reply_api(run_id: str, payload: dict) -> JSONResponse:
+    """Juniper answers a curiosity run's reach-out from the run story itself.
+
+    Missing question 1, option (b) in the redesign design doc: chat replies
+    (PR #2290) link by TIME ADJACENCY -- her next message in that session,
+    within 12h, is guessed to be the answer. This route instead carries an
+    EXPLICIT `client_meta.in_reply_to` because she clicked reply on this
+    exact run: no guessing.
+
+    Refuses a reply for any run whose Door-A outreach was not actually
+    delivered (`409`) rather than composing into a session nothing was ever
+    sent to. A downstream CHAT-turn failure never 500s -- that comes back as
+    `ok: false` with a 200, matching the never-500 contract every other route
+    on this page keeps for its own read. A bad request body, an unresolvable
+    outreach/session, or a DB failure on the lookup itself DO get a non-200
+    status (400/409/500): those are refusals or infra failures, not a turn
+    that ran and failed. Every status still carries the same
+    `{"ok": false, "reason": ...}` shape so a caller does not need two error
+    paths to check.
+    """
+    rid = valid_run_id(run_id)
+    if rid is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "invalid_run_id"}, status_code=400, headers=_NO_CACHE
+        )
+    text = str((payload or {}).get("text") or "").strip()
+    if not text:
+        return JSONResponse(
+            content={"ok": False, "reason": "empty_text"}, status_code=400, headers=_NO_CACHE
+        )
+    if len(text) > _REPLY_TEXT_LIMIT:
+        return JSONResponse(
+            content={"ok": False, "reason": "text_too_long"}, status_code=400, headers=_NO_CACHE
+        )
+
+    pool = _get_memory_pg_pool()
+    try:
+        sent, session_id = await _run_store().fetch_sent_outreach_session(pool, rid)
+    except Exception as exc:  # noqa: BLE001 -- a DB outage is ok:false, never a 500
+        logger.warning("curiosity_run_reply_lookup_failed run=%s err=%s", rid[:64], exc)
+        return JSONResponse(
+            content={"ok": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    if not sent:
+        return JSONResponse(
+            content={"ok": False, "reason": "no_sent_outreach_to_reply_to"},
+            status_code=409,
+            headers=_NO_CACHE,
+        )
+    if not session_id:
+        return JSONResponse(
+            content={"ok": False, "reason": "session_unresolvable"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+
+    try:
+        from . import main as hub_main
+        from orion.curiosity.run_story import outreach_key
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_reply_import_failed err=%s", exc)
+        return JSONResponse(
+            content={"ok": False, "reason": "chat_handler_unavailable"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    cortex_client = getattr(hub_main, "cortex_client", None)
+    if cortex_client is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "cortex_client_unavailable"},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+
+    client_meta = {
+        "in_reply_to": outreach_key(rid),
+        "in_reply_to_source": "curiosity_outreach",
+        "in_reply_to_explicit": True,
+    }
+    try:
+        result = await _handle_chat_request(
+            cortex_client,
+            {"messages": [{"role": "user", "content": text}], "mode": "orion"},
+            session_id,
+            no_write=False,
+            client_meta=client_meta,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a downstream turn failure is ok:false
+        logger.warning("curiosity_run_reply_turn_failed run=%s err=%s", rid[:64], exc)
+        return JSONResponse(
+            content={"ok": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"},
+            headers=_NO_CACHE,
+        )
+
+    if not isinstance(result, dict) or result.get("type") == "turn_error" or result.get("error"):
+        reason = (
+            (result or {}).get("error")
+            or (result or {}).get("phase")
+            or (result or {}).get("reason")
+            or "turn_failed"
+        )
+        return JSONResponse(content={"ok": False, "reason": str(reason)[:200]}, headers=_NO_CACHE)
+
+    return JSONResponse(
+        content={
+            "ok": True,
+            "correlation_id": result.get("correlation_id"),
+            "session_id": session_id,
+        },
+        headers=_NO_CACHE,
+    )
 
 
 async def _read_self_panel_payload() -> dict[str, Any]:
@@ -345,79 +551,6 @@ async def curiosity_run_now() -> JSONResponse:
             "ok": True,
             "detail": "Turn requested. It takes ~20 minutes; the page will "
                       "show it once the run writes its first node.",
-        },
-        headers=_NO_CACHE,
-    )
-
-
-@router.post("/api/self-questions/{question_id}/park")
-async def park_self_question(question_id: str) -> JSONResponse:
-    """Park a self-inquiry question so it is excluded from future draws."""
-    pool = _get_memory_pg_pool()
-    if pool is None:
-        return JSONResponse(
-            content={"ok": False, "reason": "pg_unavailable"},
-            status_code=503,
-            headers=_NO_CACHE,
-        )
-    try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(PARK_SQL, question_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("curiosity_self_question_park_failed id=%s err=%s", question_id, exc)
-        return JSONResponse(
-            content={"ok": False, "reason": str(exc)[:200]},
-            status_code=500,
-            headers=_NO_CACHE,
-        )
-    if row is None:
-        return JSONResponse(
-            content={"ok": False, "reason": "not_found", "question_id": question_id},
-            status_code=404,
-            headers=_NO_CACHE,
-        )
-    return JSONResponse(
-        content={
-            "ok": True,
-            "question_id": str(row["question_id"]),
-            "status": str(row["status"]),
-        },
-        headers=_NO_CACHE,
-    )
-
-
-@router.post("/api/self-questions/{question_id}/pin")
-async def pin_self_question(question_id: str) -> JSONResponse:
-    """Pin a self-inquiry question and reopen it if it was parked."""
-    pool = _get_memory_pg_pool()
-    if pool is None:
-        return JSONResponse(
-            content={"ok": False, "reason": "pg_unavailable"},
-            status_code=503,
-            headers=_NO_CACHE,
-        )
-    try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(PIN_SQL, question_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("curiosity_self_question_pin_failed id=%s err=%s", question_id, exc)
-        return JSONResponse(
-            content={"ok": False, "reason": str(exc)[:200]},
-            status_code=500,
-            headers=_NO_CACHE,
-        )
-    if row is None:
-        return JSONResponse(
-            content={"ok": False, "reason": "not_found", "question_id": question_id},
-            status_code=404,
-            headers=_NO_CACHE,
-        )
-    return JSONResponse(
-        content={
-            "ok": True,
-            "question_id": str(row["question_id"]),
-            "pinned": bool(row["pinned"]),
-            "status": str(row["status"]),
         },
         headers=_NO_CACHE,
     )

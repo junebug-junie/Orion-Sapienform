@@ -47,7 +47,10 @@ class PostgresCapacityStore:
             held = await (await conn.execute("SELECT l.*,r.control,r.terminal FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) WHERE l.backend_key=%s AND l.status='active'", (backend,))).fetchone()
             if request.lease:
                 token = request.lease
-                if not held or held["control"] or held["terminal"] or token.status != "active" or any(held[key] != getattr(token, key) for key in
+                # Door-A may hold an active lease after terminal=completed while
+                # Hub composes the share message; that grant must still acquire.
+                terminal_blocks = held and held["terminal"] not in (None, "completed")
+                if not held or held["control"] or terminal_blocks or token.status != "active" or any(held[key] != getattr(token, key) for key in
                         ("lease_id", "run_id", "generation", "resource_key", "lane", "backend_key", "demand_id")) or token.lane != request.lane:
                     return {"acquired": False, "reason": "resource_lease_stale"}
             elif held:

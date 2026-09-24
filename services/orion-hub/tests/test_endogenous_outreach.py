@@ -2546,6 +2546,107 @@ def test_a_curiosity_message_is_still_tagged_as_outreach(monkeypatch) -> None:
     assert captured["tags"] == ["endogenous_outreach", "curiosity_outreach"]
 
 
+def test_offer_message_meta_lands_in_every_decision_row(monkeypatch) -> None:
+    """`meta` (run_id, line) is copied into the row for EVERY exit of
+    offer_message, sent or not, and every row carries the correlation id --
+    the run story joins on either without recomputing the uuid5."""
+    meta = {"run_id": "run-1", "line": "investigate"}
+    # sent
+    outreach = _outreach()
+    _delivered(outreach)
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
+    )
+    calls = _patch_record_decision(monkeypatch)
+    result = asyncio.run(
+        outreach.offer_message(text="found it", correlation_id="corr-1", tag="curiosity_outreach", meta=meta)
+    )
+    assert result["reason"] == "sent"
+    assert calls[-1]["result"]["run_id"] == "run-1"
+    assert calls[-1]["result"]["line"] == "investigate"
+    assert calls[-1]["result"]["correlation_id"] == "corr-1"
+    # gated
+    gated = _outreach(daily_cap=0)
+    result = asyncio.run(
+        gated.offer_message(text="found it", correlation_id="corr-2", tag="curiosity_outreach", meta=meta)
+    )
+    assert result["reason"] == "daily_cap"
+    assert calls[-1]["result"]["run_id"] == "run-1"
+    assert calls[-1]["result"]["correlation_id"] == "corr-2"
+    # orion passed / empty
+    for text, reason in (("PASS", "orion_passed"), ("   ", "empty_generation")):
+        result = asyncio.run(
+            _outreach().offer_message(text=text, correlation_id="corr-3", tag="curiosity_outreach", meta=meta)
+        )
+        assert result["reason"] == reason
+        assert calls[-1]["result"]["run_id"] == "run-1"
+        assert calls[-1]["result"]["correlation_id"] == "corr-3"
+
+
+def test_offer_message_meta_cannot_override_core_keys(monkeypatch) -> None:
+    calls = _patch_record_decision(monkeypatch)
+    result = asyncio.run(
+        _outreach(daily_cap=0).offer_message(
+            text="x", correlation_id="corr-real", tag="curiosity_outreach",
+            meta={"reason": "sent", "outreach": True, "correlation_id": "corr-fake", "source": "other"},
+        )
+    )
+    assert result["outreach"] is False and result["reason"] == "daily_cap"
+    assert result["source"] == "curiosity_outreach"
+    assert calls[-1]["result"]["correlation_id"] == "corr-real"
+
+
+def test_record_blocked_goes_through_the_single_writer(monkeypatch) -> None:
+    """The pre-check block the curiosity loop used to only log. Same
+    `_record`, same table, same `source` key, so one outreach history."""
+    outreach = _outreach()
+    calls = _patch_record_decision(monkeypatch)
+    row = outreach.record_blocked(
+        "quiet_hours",
+        correlation_id="corr-q",
+        source="curiosity_outreach",
+        extra={"run_id": "run-q", "line": "self_inquiry", "reason": "ignored"},
+    )
+    assert row["outreach"] is False and row["reason"] == "quiet_hours"
+    assert row["source"] == "curiosity_outreach"
+    assert row["correlation_id"] == "corr-q"
+    assert row["run_id"] == "run-q" and row["line"] == "self_inquiry"
+    assert "at" in row
+    assert calls[-1]["result"]["reason"] == "quiet_hours"
+    assert calls[-1]["forced"] is False
+    # The endogenous loop's own last result is untouched by another loop's
+    # pre-check block -- the status endpoint keeps describing THIS loop.
+    assert outreach.status()["last_result"] == {}
+
+
+def test_history_row_client_meta_carries_the_source_tag(monkeypatch) -> None:
+    """`tags` is not a chat_history_log column; the row's client_meta is the
+    only place a reader of that table learns which loop spoke. The reply
+    stamp copies it into `in_reply_to_source`."""
+    outreach = _outreach()
+    _delivered(outreach)
+    import sys
+    import types
+
+    captured: dict = {}
+
+    async def fake_publish(bus, envelopes):
+        captured["client_meta"] = envelopes[0].payload.get("client_meta")
+
+    fake = types.ModuleType("scripts.chat_history")
+    fake.publish_chat_history = fake_publish
+    fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
+    monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
+    )
+    _offer(outreach)
+    assert captured["client_meta"] == {"unsolicited": True, "source": "curiosity_outreach"}
+
+
 @pytest.mark.parametrize(
     "kwargs,expected",
     [
@@ -2577,18 +2678,57 @@ def test_a_turn_in_flight_blocks_a_curiosity_message_too() -> None:
 def test_the_daily_cap_is_shared_because_the_interruption_is_the_same(
     monkeypatch,
 ) -> None:
-    """From Juniper's end a curiosity message and a tension-triggered outreach
-    are the same interruption, so they must not each get their own budget."""
-    outreach = _outreach(daily_cap=1)
+    """Background endogenous sends still share one daily budget with each other.
+
+    (Door-A curiosity offers use skip_schedule_gates and are covered by a
+    separate test -- they do not consume this counter.)
+    """
+    outreach = _outreach(daily_cap=1, min_cooldown_sec=0.0)
     _delivered(outreach)
+    _stub_sent_count(monkeypatch, 0)
     monkeypatch.setattr(
         EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0)
     )
     monkeypatch.setattr(
         EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
     )
-    assert _offer(outreach)["outreach"] is True
-    assert _offer(outreach)["reason"] == "daily_cap"
+    # Non-Door-A delivery eats the shared budget.
+    assert _offer(outreach, tag="endogenous_outreach")["outreach"] is True
+    assert _offer(outreach, tag="endogenous_outreach")["reason"] == "daily_cap"
+
+
+def test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap(
+    monkeypatch,
+) -> None:
+    """Juniper 2026-09-22: a finished curiosity run that asked to share is not
+    held for the clock or the background budget."""
+    outreach = _outreach(
+        daily_cap=0,
+        quiet_start_hour=0,
+        quiet_end_hour=24,
+        min_cooldown_sec=10_000.0,
+    )
+    _delivered(outreach)
+    _stub_sent_count(monkeypatch, 0)
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
+    )
+    assert outreach.blocked_reason(skip_schedule_gates=True) is None
+    assert outreach.blocked_reason() in {"quiet_hours", "daily_cap", "cooldown"}
+    before = outreach._sent_today
+    result = asyncio.run(
+        outreach.offer_message(
+            text="worth saying after a real run",
+            correlation_id="corr-door-a",
+            tag="curiosity_outreach",
+            skip_schedule_gates=True,
+        )
+    )
+    assert result["outreach"] is True and result["reason"] == "sent"
+    assert outreach._sent_today == before, "Door-A must not consume the endogenous cap"
 
 
 def test_empty_text_is_never_shipped() -> None:
@@ -3603,11 +3743,10 @@ def test_a_day_rollover_zeroes_the_counter(monkeypatch) -> None:
 
 
 def test_offer_message_on_a_fresh_process_respects_the_cap(monkeypatch) -> None:
-    """`offer_message` is the curiosity loop's delivery path and increments the
-    SAME shared counter. It has its own gate check, so a restarted hub that
-    never ran recovery here would deliver against a counter sitting at 0 --
-    the cap bypassed on the exact path `blocked_reason()` cannot protect,
-    because it is sync and cannot await the recovery."""
+    """Non-Door-A `offer_message` (no skip_schedule_gates) still recovers and
+    respects the daily cap. Door-A uses skip_schedule_gates=True (see
+    `test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap`).
+    """
     outreach = _outreach(daily_cap=4, min_cooldown_sec=0.0)
     _stub_sent_count(monkeypatch, 4)
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))

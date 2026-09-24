@@ -98,6 +98,44 @@ def test_wait_is_checkpointed_without_turn_or_timeout_and_restart_resumes_once()
     asyncio.run(scenario())
 
 
+def test_door_a_reach_out_defers_lease_release_until_hub_finishes():
+    """When Orion asked to share, finish renews and keeps the grant so Hub's
+    composition turn still has a valid lease (released via outreach_done)."""
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+
+        async def read_reach(run_id):
+            return {
+                "graph_readable": True,
+                "hops": [[1, "note"]],
+                "outcome": {
+                    "reach_out": True,
+                    "reach_out_why": "she should know",
+                    "continue_line": False,
+                },
+            }
+
+        world.read = read_reach  # type: ignore[method-assign]
+        world.events = []
+
+        async def event(state, name, detail):
+            world.events.append((name, detail))
+
+        world.event = event  # type: ignore[method-assign]
+        graph = world.graph(saver)
+        world.grant()
+        result = await graph.ainvoke(initial(), CFG)
+        assert result["status"] == "completed"
+        assert world.releases == [], f"lease must stay held for Door-A, got {world.releases}"
+        assert world.current_lease is not None
+        assert any(name == "run.outreach_pending" for name, _ in world.events)
+        from app.graph import finish_detail
+        detail = finish_detail(result)
+        assert detail["reach_out"] is True
+        assert detail["resource_lease"]["lease_id"] == "lease-001"
+    asyncio.run(scenario())
+
+
 def test_duplicate_wakeup_cannot_fake_a_grant_or_duplicate_demand():
     async def scenario():
         world, saver = World(), InMemorySaver()

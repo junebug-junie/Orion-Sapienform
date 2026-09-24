@@ -39,6 +39,8 @@ from orion.evals.self_sense_runner import SESSION_ID as SELF_SENSE_SESSION_ID
 from orion.evals.self_sense_runner import build_row
 from orion.schemas.durable_run import CuriosityTurnRequestV1, CuriosityTurnResultV1
 
+from app.graph import HARNESS_META_DETAIL_KEYS, timed_turn
+
 logger = logging.getLogger("orion-durable-runs.self_sense_graph")
 
 SELF_SENSE_EVAL_TAG = "curiosity_self_sense_eval"
@@ -118,17 +120,30 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                 assigned_lane=(state.get("lease") or {}).get("lane"),
                 session_id=SELF_SENSE_SESSION_ID,
             )
+            # Stamp the in-flight id on the same state dict execute() holds,
+            # so a timeout/cancel can address this uuid4 (not the lease-derived
+            # curiosity id). Cleared when the turn returns.
+            inflight = state.setdefault("_inflight_turn_correlation_ids", [])
+            if isinstance(inflight, list):
+                inflight.append(correlation_id)
             try:
-                result = await deps.run_turn(request)
+                result, meta = await timed_turn(deps.run_turn, request)
             except Exception as exc:  # noqa: BLE001 -- transport failure, resumable
                 raise SelfSenseAskFailed(f"{type(exc).__name__}: {exc}") from exc
+            finally:
+                if isinstance(inflight, list) and correlation_id in inflight:
+                    inflight.remove(correlation_id)
             if not result.ok:
                 logger.info(
                     "self_sense_eval_question_failed run=%s question=%s error=%s",
                     state["run_id"], question_key, result.error,
                 )
+            # Runner-measured timing per question (same keys curiosity's
+            # `harness_turn_meta` carries), so each answer's harness row is
+            # joinable and timed without Hub's help.
             answers[question_key] = {
                 "text": result.text or "", "debug": dict(result.debug or {}), "correlation_id": correlation_id,
+                **{k: meta[k] for k in HARNESS_META_DETAIL_KEYS if meta.get(k) is not None},
             }
         return {"answers": answers, "attempt": attempt}
 
@@ -185,7 +200,34 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
         "failed": int(state.get("failed") or 0),
         "empty": int(state.get("empty") or 0),
         "attempts": int(state.get("attempt") or 0),
+        "turns": _turns_detail(state),
     }
+
+
+def _turns_detail(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-question `{turn_correlation_id, harness_elapsed_sec, ...}` --
+    the same field names as curiosity's finish detail, keyed by question,
+    since one self-sense run is several harness turns. Timing keys are
+    present only for answers recorded after the runner started measuring;
+    the correlation is always there (ask_questions always writes it).
+    Bounded by the brief's question list (single digits)."""
+    answers = state.get("answers")
+    if not isinstance(answers, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, answer in answers.items():
+        if not isinstance(answer, dict):
+            continue
+        entry: dict[str, Any] = {}
+        corr = answer.get("correlation_id")
+        if isinstance(corr, str) and corr:
+            entry["turn_correlation_id"] = corr
+        for k in HARNESS_META_DETAIL_KEYS:
+            if answer.get(k) is not None:
+                entry[k] = answer[k]
+        if entry:
+            out[str(key)] = entry
+    return out
 
 
 def build_self_sense_graph(deps: Deps, checkpointer: Any):

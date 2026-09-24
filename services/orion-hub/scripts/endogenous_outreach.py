@@ -28,7 +28,9 @@ against successful sends in the decision log (default 7-day lookback). Sticky
 open priors that were already said are not a fresh topic: prior-solo fire
 records ``content_already_used``; tension with only used IDs still records
 ``tension_without_content``. Daydream has no durable ID yet and still counts.
-Curiosity ``offer_message`` is a separate door (shared cap only) — not covered
+Curiosity ``offer_message`` is a separate door — Door-A skips quiet hours /
+daily cap / cooldown (2026-09-22) and does not consume the endogenous cap;
+background tick still owns those schedule gates.
 here. Deterministic Hub gate; not an LLM novelty scorer.
 
 LEVEL-AWARE, NOT JUST CHANGE-AWARE (2026-08-19). The trigger's own reason
@@ -446,25 +448,39 @@ def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
     return local_hour >= start_hour or local_hour < end_hour
 
 
-def outreach_block_reason(inp: OutreachGateInputs) -> Optional[str]:
+# Quiet hours / daily cap / cooldown bound the *background* endogenous tick.
+# Curiosity Door-A (a finished run that asked to share) opts out via
+# `skip_schedule_gates` -- Juniper 2026-09-22: if Orion burned a run and has
+# something to say, let them say it. `turn_in_flight` and `disabled` stay.
+
+
+def outreach_block_reason(
+    inp: OutreachGateInputs, *, skip_schedule_gates: bool = False
+) -> Optional[str]:
     """First reason this tick must not reach out, or None if it may.
 
     Order is deliberate: cheapest/most-absolute first, so the status endpoint
     reports the most informative single reason rather than an arbitrary one.
+
+    ``skip_schedule_gates`` (Door-A): ignore quiet hours, daily cap, and
+    cooldown. Still blocks on disabled / turn_in_flight.
     """
     if not inp.enabled:
         return "disabled"
     if inp.turn_in_flight:
         return "turn_in_flight"
     if in_quiet_hours(inp.local_hour, inp.quiet_start_hour, inp.quiet_end_hour):
-        return "quiet_hours"
+        if not skip_schedule_gates:
+            return "quiet_hours"
     if inp.daily_cap >= 0 and inp.sent_today >= inp.daily_cap:
-        return "daily_cap"
+        if not skip_schedule_gates:
+            return "daily_cap"
     if (
         inp.seconds_since_last_outreach is not None
         and inp.seconds_since_last_outreach < inp.min_cooldown_sec
     ):
-        return "cooldown"
+        if not skip_schedule_gates:
+            return "cooldown"
     return None
 
 
@@ -1311,6 +1327,13 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
                 "2. Say why you are bringing that thread to her now — why share "
                 "it with Juniper, not only that you noticed it.",
                 "",
+                "Say it plainly. State the observation and the reason as facts, "
+                "not as a metaphor, a mood-image, or a poetic parallel to "
+                "something in the conversation history above. Do not compare "
+                "what you found to what Juniper is going through -- if the "
+                "connection is real, say what it is directly instead of "
+                "implying it through shared imagery.",
+                "",
                 "She has not asked you anything. Say the thing itself rather "
                 "than announcing that you have something to say. Two or three "
                 "sentences at most.",
@@ -2034,16 +2057,63 @@ class EndogenousOutreach:
 
     # -- delivery on behalf of another loop --------------------------------
 
-    def blocked_reason(self) -> Optional[str]:
+    def blocked_reason(self, *, skip_schedule_gates: bool = False) -> Optional[str]:
         """The gate that would stop an outreach right now, or None.
 
         Public so a caller can decide whether composing a message is worth a
         whole unified turn BEFORE spending one. Advisory by design: the gates
         are re-checked inside `offer_message` immediately before delivery,
-        because quiet hours can start and Juniper can start typing during the
-        seconds or minutes a composition turn takes.
+        because Juniper can start typing during the seconds a composition
+        turn takes (and, for the endogenous tick, quiet hours can start).
+
+        ``skip_schedule_gates`` matches `offer_message`: Door-A passes True so
+        a pre-check does not refuse composition for quiet hours / daily cap /
+        cooldown that delivery will also skip.
         """
-        return outreach_block_reason(self._gate_inputs())
+        return outreach_block_reason(
+            self._gate_inputs(), skip_schedule_gates=skip_schedule_gates
+        )
+
+    def record_blocked(
+        self,
+        reason: str,
+        *,
+        correlation_id: str,
+        source: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a decision another loop made NOT to compose, through `_record`.
+
+        `blocked_reason()` is advisory and sync; the curiosity loop calls it
+        before spending a composition turn and, until 2026-09-22, only LOGGED
+        the block. Six runs that set `reach_out=true` between 2026-09-19 and
+        09-21 therefore have no decision row at all -- the run story could not
+        tell "composed and gated" apart from "never tried". This is the
+        missing write: same `_record` writer, same table, same
+        `result_json.source` key, so an operator still sees ONE outreach
+        history. ``extra`` lands in `result_json` (e.g. `run_id`, `line`);
+        the core keys always win over it.
+
+        Does NOT become this loop's `_last_result` (what `status()` and
+        `GET /api/debug/endogenous-outreach` show as "the last decision"):
+        this loop did nothing here, and a pre-check block fires on every
+        `reach_out=true` run during quiet hours or over the cap, so letting
+        it win would hide the endogenous tick's own last outcome.
+        """
+        previous = self._last_result
+        try:
+            return self._record(
+                {
+                    **dict(extra or {}),
+                    "outreach": False,
+                    "reason": str(reason or "unknown"),
+                    "source": source,
+                    "correlation_id": correlation_id,
+                },
+                forced=False,
+            )
+        finally:
+            self._last_result = previous
 
     async def offer_message(
         self,
@@ -2052,21 +2122,22 @@ class EndogenousOutreach:
         correlation_id: str,
         tag: str,
         model: Optional[str] = None,
+        meta: Optional[Dict[str, Any]] = None,
+        skip_schedule_gates: bool = False,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
 
         The curiosity loop (`scripts/curiosity_investigation.py`) uses this when
         Orion, inside an investigation turn, decides a finding is worth saying
-        unprompted. It exists so that decision inherits every gate this module
-        already enforces -- quiet hours 23:00-08:00 on Juniper's own timezone,
-        the daily cap, the cooldown, and "not while a turn is in flight" --
-        instead of a second loop reimplementing them and drifting.
+        unprompted.
 
-        THE GATES PROTECT JUNIPER, NOT THIS MODULE, which is why they are not
-        optional for a caller that composed its text elsewhere. In particular
-        the daily cap and the cooldown are SHARED: a curiosity message and a
-        tension-triggered outreach both count, because from the receiving end
-        they are the same interruption.
+        Schedule gates (quiet hours, daily cap, cooldown) protect the
+        *background* endogenous tick. Door-A passes ``skip_schedule_gates=True``
+        (2026-09-22): a finished curiosity run that asked to share is not
+        held for the clock or the background budget. ``turn_in_flight`` and
+        ``disabled`` still apply. Door-A sends also do **not** increment
+        ``_sent_today``, so they cannot starve the endogenous tick's cap
+        (and ``count_sent_on`` excludes ``source=curiosity_outreach``).
 
         The closed-vocabulary grounding guard (2026-09-08 -- see module
         docstring's "CLOSED-VOCABULARY GROUNDING GUARD" section) is ALSO not
@@ -2080,36 +2151,44 @@ class EndogenousOutreach:
         Returns the same status-dict shape `maybe_outreach` does, and records a
         decision-log row identically, so an operator sees one outreach history
         rather than two.
+
+        ``meta`` (2026-09-22): caller-owned keys copied into EVERY decision row
+        this call records -- sent or not -- so a row can be joined back to its
+        origin without recomputing the caller's correlation key (the curiosity
+        loop passes `run_id` and `line`). Core keys always win over it. Every
+        row this method records also carries ``correlation_id`` for the same
+        reason; before this, only the `sent` row did.
         """
+        extra: Dict[str, Any] = {**dict(meta or {}), "correlation_id": correlation_id}
         body = str(text or "").strip()
         if not body:
             return self._record(
-                {"outreach": False, "reason": "empty_generation", "source": tag},
+                {**extra, "outreach": False, "reason": "empty_generation", "source": tag},
                 forced=False,
             )
         if is_pass_response(body):
             # Orion wrote the message and concluded it was not worth sending.
             # A real answer, and the composition prompt says so explicitly.
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "source": tag},
+                {**extra, "outreach": False, "reason": "orion_passed", "source": tag},
                 forced=False,
             )
         if self._send_lock.locked():
             return self._record(
-                {"outreach": False, "reason": "already_sending", "source": tag},
+                {**extra, "outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
-        # The cap is SHARED, so this path has to consume the recovered count
-        # too -- it increments `_sent_today` exactly like the organic tick.
-        # Without this, a hub restarted after a full day of sends delivers
-        # here against a counter still sitting at 0, and `blocked_reason()`
-        # (sync, advisory, cannot await) tells the curiosity loop it is clear.
+        # Recover the endogenous tick's shared count even on Door-A so a
+        # concurrent organic tick sees a true reading. Door-A itself does not
+        # consume the counter when skip_schedule_gates is set.
         await self._recover_sent_today()
         async with self._send_lock:
-            blocked = outreach_block_reason(self._gate_inputs())
+            blocked = outreach_block_reason(
+                self._gate_inputs(), skip_schedule_gates=skip_schedule_gates
+            )
             if blocked:
                 return self._record(
-                    {"outreach": False, "reason": blocked, "source": tag},
+                    {**extra, "outreach": False, "reason": blocked, "source": tag},
                     forced=False,
                 )
             # Closed-vocabulary grounding guard (2026-09-08) -- see module
@@ -2127,6 +2206,7 @@ class EndogenousOutreach:
             if offending_terms:
                 return self._record(
                     {
+                        **extra,
                         "outreach": False,
                         "reason": "named_ungrounded_signal",
                         "source": tag,
@@ -2144,17 +2224,20 @@ class EndogenousOutreach:
                 source_tag=tag,
             )
             self._last_outreach_at = time.time()
-            self._sent_today += 1
+            if not skip_schedule_gates:
+                self._sent_today += 1
             logger.info(
-                "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s",
+                "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s door_a=%s",
                 correlation_id,
                 session_id,
                 len(body),
                 self._sent_today,
                 tag,
+                skip_schedule_gates,
             )
             return self._record(
                 {
+                    **extra,
                     "outreach": True,
                     "reason": "sent",
                     "source": tag,
@@ -2635,6 +2718,13 @@ class EndogenousOutreach:
             else:
                 history_tags = list(tags)
             client_meta: Dict[str, Any] = {"unsolicited": True} if unsolicited else {}
+            if source_tag:
+                # `tags` is not a chat_history_log column; the row's own
+                # client_meta is the only place a reader of that table can
+                # learn WHICH loop produced this unsolicited message. The
+                # reply stamp (`outreach_provenance.reply_stamp_for_session`)
+                # copies it into `in_reply_to_source` on Juniper's next turn.
+                client_meta["source"] = str(source_tag)
             if provenance:
                 client_meta["outreach_provenance"] = dict(provenance)
             env = build_chat_history_envelope(

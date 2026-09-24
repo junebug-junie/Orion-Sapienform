@@ -33,6 +33,8 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_substrate_reducer
 # Self-observability v2 (coalition dwell log + endogenous curiosity candidates):
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_coalition_dwell_v1.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_endogenous_curiosity_candidates_v1.sql
+# System One / Kev shadow appraisal (behavior-inert):
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_system_one_appraisal_v1.sql
 cp services/orion-substrate-runtime/.env_example services/orion-substrate-runtime/.env
 python scripts/sync_local_env_from_example.py orion-substrate-runtime
 ```
@@ -79,11 +81,12 @@ Hub debug (node-scoped lineage):
 
 ### Projection debug reads (this service, internal)
 
-Same response contract on all three: `{"ok": false, "reason": "no_projection"}` if the reducer hasn't written yet, `{"ok": true, "projection": {...}}` otherwise.
+Same response contract on all four: `{"ok": false, "reason": "no_projection"}` if the reducer hasn't written yet, `{"ok": true, "projection": {...}}` otherwise.
 
 - `GET /projections/execution_trajectory` — `active_execution_trajectory`
 - `GET /projections/chat_session` — `active_chat_session`
 - `GET /projections/route_arbitration` — `active_route_arbitration`
+- `GET /projections/system_one_appraisal` — latest `SystemOneAppraisalFrameV1` shadow frame
 
 ## Grammar production observe
 
@@ -179,6 +182,84 @@ the top-of-tick store snapshot — otherwise a node can never cross into dormant
 decay once persistence stops, since the stale stored value never moves. Fixed in the same patch
 that added the guard; if you touch this loop again, keep the dormancy decision reading fresh
 recency even though the stored copy may lag.
+
+## System One / Kev appraisal
+
+`orion/substrate/system_one_appraisal.py` is a provider-neutral System One reducer that currently
+speaks Kev's TypeSafe-compatible `POST /v1/systemone` API. It rides the existing attention-broadcast
+tick; there is no new timer or graph. The typed frame is published on
+`orion:system_one:appraisal`; the grammar projection on `orion:grammar:event` remains the causal
+shadow. The local Kev process is `services/orion-kev` (`orion-athena-kev` on `app-net`).
+
+Inputs are deliberately bounded existing artifacts:
+
+- `AttentionBroadcastProjectionV1` from this service's current workspace competition;
+- the latest `FieldAttentionFrameV1`, only when it is fresher than
+  `SUBSTRATE_SYSTEM_ONE_FIELD_FRAME_MAX_AGE_SEC`.
+
+The question set (`orion.system_one.shadow.v1`) asks four three-level score questions:
+`reverie_fit`, `curiosity_pull`, `deliberation_need`, and `attention_interrupt`. The full
+probability surface from Kev is persisted; the expected 0..2 score is **not** silently normalized
+into a 0..1 behavioral propensity. Questions are promoted independently:
+
+| Question | Status |
+|----------|--------|
+| `curiosity_pull` | **Live** endogenous curiosity admission gate (unique level-0 = skip evaluator **only if** `gate_json` lineage persists; levels 1 and 2, and exact max-ties involving them, admit). Levels 1 and 2 have the same admission effect. Level-0 still persists seeds for Hub readers. |
+| `reverie_fit` | Observational (initial live window was argmax-0 dominated; no honest discretionary reverie seam) |
+| `attention_interrupt` | Observational (post-broadcast feedback loop risk) |
+| `deliberation_need` | Observational (not task-scoped) |
+
+```text
+attention broadcast + fresh field attention
+        -> Kev / System One reducer
+        -> SystemOneAppraisalFrameV1
+        -> substrate_system_one_appraisal
+        -> GrammarProjectionV1(projection_type=system_one_shadow_appraisal)
+        -> bus orion:system_one:appraisal
+        -> (curiosity only) endogenous_curiosity admission gate
+        -> FrontierCuriosityEvaluator when admitted / fallback
+```
+
+No `StateDeltaV1` is emitted. Hard curiosity/governance/budget gates still win. Missing or stale
+System One frames fail open to legacy evaluator-on-seeds behavior. Immediate rollback:
+
+```bash
+SUBSTRATE_SYSTEM_ONE_CURIOSITY_GATE_KILL_SWITCH=true
+```
+
+Default is live (`false`). Endogenous curiosity kill switch remains superior authority.
+
+```bash
+# bring up Kev (GPU Docker; survives reboot via restart: unless-stopped)
+scripts/safe_docker_build.sh orion-kev up -d --build
+
+SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED=true
+SUBSTRATE_SYSTEM_ONE_BASE_URL=http://orion-athena-kev:8009
+SUBSTRATE_SYSTEM_ONE_MODEL=kev-latest
+```
+
+The endpoint may be local Kev (`services/orion-kev`) or another TypeSafe-System-One-compatible
+provider. The bounded state excludes raw chat bodies and raw graph snapshots, but it does include
+derived attention summaries that may originate from private conversation; pointing the URL at a
+hosted provider is therefore an explicit privacy-boundary change.
+
+Apply the additive gate lineage column once:
+
+```bash
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_endogenous_curiosity_gate_json_v1.sql
+```
+
+Post-deploy checks:
+
+```bash
+python scripts/smoke_system_one_appraisal.py
+python scripts/analysis/eval_system_one_appraisal.py --hours 24
+```
+
+The evaluator reports variance/saturation/confidence/level distributions only; it does not invent
+behavior thresholds. See
+`docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
+promotion gate and failure model.
 
 ## AST/HOT self-model tick (rung 4)
 

@@ -574,10 +574,9 @@ async def startup_event():
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND
-                # turn (its own stance gate) and then through outreach's OWN
-                # gates -- quiet hours, daily cap, cooldown are SHARED with
-                # tension-triggered outreach, because from Juniper's end they
-                # are the same interruption. Read through a callable because
+                # turn (its own stance gate). Schedule gates (quiet hours /
+                # daily cap / cooldown) are skipped for Door-A; turn_in_flight
+                # still blocks. Read through a callable because
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
                 contractor_peer_enabled=settings.HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED,

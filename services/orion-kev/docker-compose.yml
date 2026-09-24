@@ -1,0 +1,45 @@
+services:
+  kev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${PROJECT:-orion}-kev:local
+    container_name: ${PROJECT}-kev
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${KEV_HOST_PORT:-8009}:8009"
+    environment:
+      - PROJECT=${PROJECT}
+      - HF_HOME=/cache/huggingface
+      # Docker remaps the pinned host GPU to container cuda:0.
+      - CUDA_VISIBLE_DEVICES=0
+      - KEV_MODEL=${KEV_MODEL:-jaredpalmer/kev-0.8b}
+    volumes:
+      - ${KEV_HF_CACHE_HOST_DIR:-/mnt/scripts/kev/.hf-cache}:/cache/huggingface
+    # Same GPU pin pattern as orion-whisper-tts: host nvidia-smi index,
+    # remapped to cuda:0 inside. No silent default — fail loud if unset.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${KEV_GPU_DEVICE_ID:?KEV_GPU_DEVICE_ID must be set in services/orion-kev/.env}"]
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8009/docs', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+networks:
+  app-net:
+    external: true

@@ -120,6 +120,12 @@ class PostgresAdmissionStore:
 
         The shared transaction lock linearizes an operator control against
         completion; a cancelled run can never acquire a completed outbox event.
+
+        Door-A (2026-09-22): when ``detail`` carries ``reach_out`` +
+        ``resource_lease``, the lease stays ``active`` past
+        ``terminal=completed`` so Hub can compose under that grant. Hub
+        releases via ``/runs/{id}/release-outreach-lease`` (or TTL expire).
+        Demand is still withdrawn so the broker does not re-grant.
         """
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("invalid terminal graph status")
@@ -131,8 +137,16 @@ class PostgresAdmissionStore:
                 return None
             if row["control"] == "cancelled":
                 status, detail = "cancelled", {}
+            hold_lease = (
+                status == "completed"
+                and bool(detail.get("reach_out"))
+                and isinstance(detail.get("resource_lease"), dict)
+                and bool(detail.get("resource_lease"))
+            )
             leases = await (await conn.execute("SELECT * FROM durable_resource_leases WHERE run_id=%s AND status='active'", (run_id,))).fetchall()
             for lease in leases:
+                if hold_lease:
+                    continue
                 await self._release(conn, lease, status)
             await self._event(conn, run_id, "run."+status, detail, event_id=f"{run_id}:terminal:{status}")
             await conn.execute("UPDATE durable_admission_runs SET terminal=%s,updated_at=%s WHERE run_id=%s", (status, await self.now(conn), run_id))
@@ -189,7 +203,15 @@ class PostgresAdmissionStore:
         except KeyError:
             return False
         async with self.pool.connection() as conn:
-            row = await (await conn.execute("SELECT 1 FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) WHERE lease_id=%s AND l.run_id=%s AND generation=%s AND resource_key=%s AND lane=%s AND backend_key=%s AND demand_id=%s AND status='active' AND expires_at>%s AND r.control IS NULL AND r.terminal IS NULL", (*identity, await self.now(conn)))).fetchone()
+            # Door-A hold: terminal=completed may still have an active lease
+            # until Hub releases it. Live non-terminal runs unchanged.
+            row = await (await conn.execute(
+                "SELECT 1 FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) "
+                "WHERE lease_id=%s AND l.run_id=%s AND generation=%s AND resource_key=%s AND lane=%s "
+                "AND backend_key=%s AND demand_id=%s AND status='active' AND expires_at>%s "
+                "AND r.control IS NULL AND (r.terminal IS NULL OR r.terminal='completed')",
+                (*identity, await self.now(conn)),
+            )).fetchone()
             return row is not None
 
     async def renew(self, lease: dict[str, Any], ttl_seconds: float) -> dict[str, Any] | None:
@@ -197,8 +219,14 @@ class PostgresAdmissionStore:
             raise ValueError("lease TTL must be positive")
         async with self.transaction() as conn:
             now = await self.now(conn)
-            return await (await conn.execute("UPDATE durable_resource_leases l SET heartbeat_at=%s,expires_at=GREATEST(expires_at,%s) FROM durable_admission_runs r WHERE l.run_id=r.run_id AND lease_id=%s AND l.run_id=%s AND generation=%s AND resource_key=%s AND lane=%s AND backend_key=%s AND demand_id=%s AND l.status='active' AND l.expires_at>%s AND r.control IS NULL AND r.terminal IS NULL RETURNING l.*",
-                                            (now, now + timedelta(seconds=ttl_seconds), *self._identity(lease), now))).fetchone()
+            return await (await conn.execute(
+                "UPDATE durable_resource_leases l SET heartbeat_at=%s,expires_at=GREATEST(expires_at,%s) "
+                "FROM durable_admission_runs r WHERE l.run_id=r.run_id AND lease_id=%s AND l.run_id=%s "
+                "AND generation=%s AND resource_key=%s AND lane=%s AND backend_key=%s AND demand_id=%s "
+                "AND l.status='active' AND l.expires_at>%s AND r.control IS NULL "
+                "AND (r.terminal IS NULL OR r.terminal='completed') RETURNING l.*",
+                (now, now + timedelta(seconds=ttl_seconds), *self._identity(lease), now),
+            )).fetchone()
 
     async def _release(self, conn: Any, lease: dict[str, Any], reason: str) -> bool:
         row = await (await conn.execute("UPDATE durable_resource_leases SET status='released' WHERE lease_id=%s AND run_id=%s AND generation=%s AND resource_key=%s AND lane=%s AND backend_key=%s AND demand_id=%s AND status='active' RETURNING *", self._identity(lease))).fetchone()

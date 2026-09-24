@@ -4,7 +4,15 @@ enabled: true
 policy_id: visual_baseline.v1
 interval_sec: 5400
 retry_sec: 600
-freshness_sec: 60
+# freshness_sec was 60 -- shorter than the real proposal -> policy ->
+# execution-dispatch round trip. Every stage re-validates this same
+# `observed_at` against its own clock without re-stamping it, so a 60s
+# window meant the candidate was born eligible and died of staleness before
+# the last stage ever saw it. Live-measured 2026-09-23: a normal round trip
+# took 3m54s (234s), and one taken while execution-dispatch was draining a
+# multi-day backlog took much longer. 900s gives a real margin over both
+# without approaching retry_sec (600s) badly or interval_sec (5400s).
+freshness_sec: 900
 timeout_sec: 2
 target_id: host:circe_gpu
 thought_url: http://orion-athena-thought:7155

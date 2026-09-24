@@ -96,3 +96,31 @@ def test_chat_burst_widens_without_elastic_permission_but_only_while_gate_open()
     closed = decide(requirement=req, lanes=lanes_)
     assert closed.assigned_lane is None
     assert closed.suppressed["chat-burst"] == "health_unknown_or_unavailable"
+
+
+def test_widen_alternatives_is_policy_additive_and_never_removes():
+    from orion.durable_admission.policy import widen_alternatives
+    lanes_ = {"agent": {}, "agent-burst": {"compatible_with": ["agent"]},
+              "chat-burst": {"compatible_with": ["agent"]}, "metacog": {"compatible_with": ["quick"]}}
+    # Frozen before chat-burst existed: it is added, agent-burst kept first, metacog (not
+    # compatible with agent) left out, and the stored requirement object is not mutated.
+    req = {"preferred_lane": "agent", "alternatives": ["agent-burst"]}
+    out = widen_alternatives(req, lanes_)
+    assert out["alternatives"] == ["agent-burst", "chat-burst"]
+    assert req["alternatives"] == ["agent-burst"]
+    # An explicit (non-derived) list is widened the same way; nothing is ever dropped.
+    assert widen_alternatives({"preferred_lane": "agent", "alternatives": ["metacog"]}, lanes_)["alternatives"] == ["metacog", "agent-burst", "chat-burst"]
+    # Already complete -> unchanged; unknown preferred -> unchanged.
+    assert widen_alternatives(out, lanes_)["alternatives"] == out["alternatives"]
+    assert widen_alternatives({"preferred_lane": "quick"}, lanes_)["alternatives"] == ["metacog"]
+
+
+def test_widened_lane_becomes_eligible_after_the_wait_threshold():
+    from orion.durable_admission.policy import widen_alternatives
+    lanes_ = {"agent": {"backend_key": "a", "configured": True, "healthy": True, "capabilities": {}},
+              "chat-burst": {"backend_key": "c", "configured": True, "healthy": True,
+                             "compatible_with": ["agent"], "capabilities": {}, "quality_drop": 0}}
+    frozen = {"preferred_lane": "agent", "alternatives": []}
+    assert decide(requirement=frozen, lanes=lanes_).eligible_lanes == ["agent"]
+    result = decide(requirement=widen_alternatives(frozen, lanes_), lanes=lanes_)
+    assert result.eligible_lanes == ["agent", "chat-burst"] and result.assigned_lane == "chat-burst"

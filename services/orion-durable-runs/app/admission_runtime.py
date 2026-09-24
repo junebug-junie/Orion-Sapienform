@@ -13,7 +13,9 @@ from langgraph.graph import START
 from langgraph.types import Command
 
 from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, build_admitted_graph
-from app.graph import finish_detail, turn_correlation_id
+from app.admitted_self_sense_graph import build_admitted_self_sense_graph
+from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
+from app.self_sense_graph import finish_detail as self_sense_finish_detail
 from orion.durable_admission.broker import ResourceBroker
 from orion.durable_admission.capacity import PostgresCapacityStore
 from orion.durable_admission.store import PostgresAdmissionStore, SubmissionConflict
@@ -23,6 +25,8 @@ from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EV
 
 logger = logging.getLogger(__name__)
 TERMINAL = {"completed", "failed", "cancelled"}
+DEFAULT_WORKFLOW = "curiosity.investigate"
+SELF_SENSE_WORKFLOW = "self_sense_eval"
 
 
 class AdmissionRuntime:
@@ -34,16 +38,37 @@ class AdmissionRuntime:
             widen_after_seconds=settings.widening_after_sec, hysteresis_seconds=settings.widening_hysteresis_sec,
             widening_enabled=settings.widening_enabled, shadow=settings.admission_shadow,
             capacity=PostgresCapacityStore(self.store, ttl_seconds=settings.lease_seconds) if settings.capacity_enabled else None)
-        self.graph = build_admitted_graph(runner._curiosity_deps(), AdmissionDeps(
+        admission_deps = AdmissionDeps(
             self.register, self.store.get_lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
-            guard=self.guard), runner._checkpointer)
+            guard=self.guard)
+        # One compiled graph per workflow. Before 2026-09-22 every admitted
+        # run — including self_sense_eval — shared the curiosity graph and
+        # never asked the four fixed questions.
+        self.graphs = {
+            DEFAULT_WORKFLOW: build_admitted_graph(
+                runner._curiosity_deps(), admission_deps, runner._checkpointer
+            ),
+            SELF_SENSE_WORKFLOW: build_admitted_self_sense_graph(
+                runner._self_sense_deps(), admission_deps, runner._checkpointer
+            ),
+        }
+        # Back-compat alias used by older tests that reach for `.graph`.
+        self.graph = self.graphs[DEFAULT_WORKFLOW]
         self.active: dict[str, asyncio.Task] = {}
         self._wake = asyncio.Event()
         self._catalog_at = 0.0
         from app.elastic_runtime import ElasticRuntime
         self.elastic = ElasticRuntime(self) if getattr(settings,"elastic_enabled",False) else None
+
+    def _graph_for(self, workflow: str | None):
+        return self.graphs.get(workflow or DEFAULT_WORKFLOW) or self.graphs[DEFAULT_WORKFLOW]
+
+    def _finish_detail_for(self, workflow: str | None, state: dict):
+        if (workflow or DEFAULT_WORKFLOW) == SELF_SENSE_WORKFLOW:
+            return self_sense_finish_detail(state)
+        return finish_detail(state)
 
     @staticmethod
     def config(run_id):
@@ -116,10 +141,36 @@ class AdmissionRuntime:
         return None
 
     async def _cancel_harness(self, state, reason):
-        correlation_id = turn_correlation_id(state)
-        payload = HarnessRunCancelV1(correlation_id=correlation_id, reason=reason)
-        await self.runner._publish("orion:harness:run:cancel", "harness.run.cancel.v1", payload,
-                                  self.runner._corr_for_admission(correlation_id))
+        # Curiosity: lease-derived turn id. Self-sense: each question is a
+        # fresh uuid4 -- cancel those from answers + any still in-flight.
+        ids: list[str] = []
+        try:
+            ids.append(turn_correlation_id(state))
+        except Exception:  # noqa: BLE001 -- state may lack lease/run_id
+            pass
+        meta = state.get("harness_turn_meta") if isinstance(state.get("harness_turn_meta"), dict) else {}
+        if isinstance(meta.get("turn_correlation_id"), str):
+            ids.append(meta["turn_correlation_id"])
+        answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+        for answer in answers.values():
+            if not isinstance(answer, dict):
+                continue
+            corr = answer.get("correlation_id")
+            if isinstance(corr, str) and corr:
+                ids.append(corr)
+        inflight = state.get("_inflight_turn_correlation_ids")
+        if isinstance(inflight, list):
+            ids.extend(c for c in inflight if isinstance(c, str) and c)
+        seen: set[str] = set()
+        for correlation_id in ids:
+            if not correlation_id or correlation_id in seen:
+                continue
+            seen.add(correlation_id)
+            payload = HarnessRunCancelV1(correlation_id=correlation_id, reason=reason)
+            await self.runner._publish(
+                "orion:harness:run:cancel", "harness.run.cancel.v1", payload,
+                self.runner._corr_for_admission(correlation_id),
+            )
 
     async def execute(self, state, node):
         lease = state.get("lease")
@@ -155,9 +206,12 @@ class AdmissionRuntime:
             raise
         finally:
             if not work.done():
+                # Cancel Hub before awaiting the local task's cleanup -- self-sense
+                # clears `_inflight_turn_correlation_ids` in its finally, so this
+                # must run while those ids are still stamped on `state`.
+                await self._cancel_harness(state, "durable_attempt_stopped")
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
-                await self._cancel_harness(state, "durable_attempt_stopped")
 
     @asynccontextmanager
     async def claim(self, run_id):
@@ -183,22 +237,31 @@ class AdmissionRuntime:
             row = await self.store.get_run(run_id)
             if row.get("terminal"):
                 return
-            cfg = self.config(run_id)
-            snap = await self.graph.aget_state(cfg)
             request = row["request"]
+            workflow = request.get("workflow") or DEFAULT_WORKFLOW
+            graph = self._graph_for(workflow)
+            cfg = self.config(run_id)
+            snap = await graph.aget_state(cfg)
             if not snap.values:
-                state = {"run_id": run_id, "correlation_id": request["correlation_id"],
-                         "brief": request["brief"], "admission": request["admission"],
-                         "requested_at": request["requested_at"], "attempt": 0, "status": "queued"}
+                state = {
+                    "run_id": run_id,
+                    "correlation_id": request["correlation_id"],
+                    "brief": request["brief"],
+                    "admission": request["admission"],
+                    "requested_at": request["requested_at"],
+                    "attempt": 0,
+                    "status": "queued",
+                    "workflow": workflow,
+                }
                 # Persist initial checkpoint before dispatch. Inbox recovers a
                 # death before this point; graph recovers a death after it.
-                await self.graph.aupdate_state(cfg, state, as_node=START)
-                snap = await self.graph.aget_state(cfg)
+                await graph.aupdate_state(cfg, state, as_node=START)
+                snap = await graph.aget_state(cfg)
             state = dict(snap.values)
             if row.get("control") == "cancelled":
                 await self.release(run_id, "cancelled")
-                await self.graph.aupdate_state(cfg, {"status": "cancelled", "lease": None}, as_node="finish")
-                await self._terminal(run_id, "cancelled", state)
+                await graph.aupdate_state(cfg, {"status": "cancelled", "lease": None}, as_node="finish")
+                await self._terminal(run_id, "cancelled", state, workflow=workflow)
                 return
             if row.get("control") == "paused":
                 await self.release(run_id, "paused")
@@ -209,20 +272,35 @@ class AdmissionRuntime:
                 # Hub after a broken connection. Fence that generation before
                 # replaying the expensive node under a new grant.
                 await self.release(run_id, "worker_recovery")
-                if snap.next[0] in {"harness_turn", "run_started"}:
-                    await self.graph.aupdate_state(cfg, {"lease": None, "status": "retrying", "retry_node": None}, as_node="retry_wait")
+                next_node = snap.next[0]
+                if workflow == SELF_SENSE_WORKFLOW and next_node == "ask_questions":
+                    # Self-sense has no retry_wait. Drop the lease and re-enter
+                    # resource_request so a fresh grant wraps the remaining
+                    # questions (answers already on state are skipped).
+                    await graph.aupdate_state(
+                        cfg, {"lease": None, "status": "waiting_resource"}, as_node="resource_request"
+                    )
+                elif next_node in {"harness_turn", "run_started"}:
+                    # Record the fenced generation's turn identity before the
+                    # lease goes: Hub may still finish that turn and write its
+                    # harness_turn_trace row under this id, and a later
+                    # deadline/cancel terminal should name it, not an older
+                    # attempt's (review finding, 2026-09-22).
+                    await graph.aupdate_state(
+                        cfg, {"lease": None, "status": "retrying", "retry_node": None, **failed_turn_meta(state)}, as_node="retry_wait"
+                    )
                 else:
-                    await self.graph.aupdate_state(cfg, {"lease": None})
-                snap = await self.graph.aget_state(cfg)
+                    await graph.aupdate_state(cfg, {"lease": None})
+                snap = await graph.aget_state(cfg)
                 state = dict(snap.values)
             deadline = state["admission"].get("deadline_at")
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 await self.release(run_id, "deadline")
-                await self.graph.aupdate_state(cfg, {"status": "failed", "last_error": "workflow_deadline"}, as_node="failed")
-                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"})
+                await graph.aupdate_state(cfg, {"status": "failed", "last_error": "workflow_deadline"}, as_node="failed")
+                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
                 return
             if not snap.next:
-                await self._terminal(run_id, state.get("status", "failed"), state)
+                await self._terminal(run_id, state.get("status", "failed"), state, workflow=workflow)
                 return
             resume = None
             if any(t.interrupts for t in snap.tasks):
@@ -236,8 +314,8 @@ class AdmissionRuntime:
                 resume = Command(resume=True)
                 await self.event(state, "run.resumed", {"node": snap.next[0]})
             try:
-                async for update in self.graph.astream(resume, cfg, stream_mode="updates", durability="sync"):
-                    snap = await self.graph.aget_state(cfg)
+                async for update in graph.astream(resume, cfg, stream_mode="updates", durability="sync"):
+                    snap = await graph.aget_state(cfg)
                     state = dict(snap.values)
                     for node, delta in update.items():
                         if node == "__interrupt__":
@@ -249,25 +327,35 @@ class AdmissionRuntime:
                         await self.store.record_event(run_id, "run."+status, {"node": node},
                             event_id=f"{run_id}:{checkpoint}:{node}:{status}")
                     if state.get("status") in TERMINAL and not snap.next:
-                        await self._terminal(run_id, state["status"], state)
+                        await self._terminal(run_id, state["status"], state, workflow=workflow)
             except asyncio.CancelledError:
                 raise
             except RunControlPending:
                 return
             except WorkflowDeadline:
-                await self.graph.aupdate_state(cfg, {"status": "failed", "last_error": "workflow_deadline"}, as_node="failed")
-                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"})
+                await graph.aupdate_state(cfg, {"status": "failed", "last_error": "workflow_deadline"}, as_node="failed")
+                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
             except Exception:
                 # The checkpoint retains the failing node. Reconciliation is
                 # allowed to retry persistence/transport, never an empty result.
                 logger.exception("durable_checkpoint_resume_failed run=%s", run_id)
                 await self.event(state, "run.checkpoint_resume_failed", {"node": list(snap.next)})
 
-    async def _terminal(self, run_id, status, state):
-        detail = finish_detail(state) if status == "completed" else {"error": state.get("last_error")}
+    async def _terminal(self, run_id, status, state, *, workflow: str | None = None):
+        wf = workflow or state.get("workflow") or DEFAULT_WORKFLOW
+        if status == "completed":
+            detail = self._finish_detail_for(wf, state)
+        else:
+            # Only what the graph recorded -- never re-derived here, since by
+            # now the lease is cleared and a fresh derivation would name the
+            # run's lineage, not the turn that actually failed.
+            detail = {"error": state.get("last_error")}
+            corr = recorded_turn_correlation_id(state)
+            if corr:
+                detail["turn_correlation_id"] = corr
         actual = await self.store.finish_projection(run_id, status, detail)
         if actual is not None and actual != status:
-            await self.graph.aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
+            await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         self._wake.set()
 
     async def refresh_lanes(self):
@@ -344,8 +432,10 @@ class AdmissionRuntime:
         for raw in await self.store.pending_outbox():
             event = ResourceEventV1.model_validate(raw)
             if event.event == "run.completed" and event.entry_id == f"{event.run_id}:terminal:completed":
+                row = await self.store.get_run(event.run_id)
+                workflow = ((row or {}).get("request") or {}).get("workflow") or DEFAULT_WORKFLOW
                 completion = DurableRunStateV1(entry_id=event.entry_id+":state", run_id=event.run_id,
-                    workflow="curiosity.investigate", thread_id=event.thread_id, node="finish", status="completed",
+                    workflow=workflow, thread_id=event.thread_id, node="finish", status="completed",
                     correlation_id=event.correlation_id, generated_at=event.generated_at, detail=event.detail)
                 if not await self.runner._publish(self.settings.state_channel, DURABLE_RUN_STATE_KIND, completion,
                         self.runner._corr_for_admission(event.correlation_id)):
@@ -398,13 +488,14 @@ class AdmissionRuntime:
         row = await self.store.get_run(run_id)
         if not row:
             raise KeyError(run_id)
-        snap = await self.graph.aget_state(self.config(run_id))
+        workflow = row["request"].get("workflow") or DEFAULT_WORKFLOW
+        snap = await self._graph_for(workflow).aget_state(self.config(run_id))
         lease = await self.store.get_lease(run_id)
         history = await self.store.history(run_id)
         demand = await self.store.get_demand(run_id)
         first_grant = await self.store.first_granted_at(run_id)
         wait_end = first_grant or (row["updated_at"] if row.get("terminal") else self.now())
-        return {"run_id": run_id, "thread_id": run_id, "workflow_kind": row["request"]["workflow"],
+        return {"run_id": run_id, "thread_id": run_id, "workflow_kind": workflow,
                 "status": row.get("terminal") or row.get("control") or snap.values.get("status", "waiting_resource"),
                 "requested_resource": row["request"]["admission"]["resource"], "lease": lease,
                 "next": list(snap.next), "created_at": row["created_at"], "history": history,

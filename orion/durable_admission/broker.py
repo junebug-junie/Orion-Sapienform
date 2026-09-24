@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
-from .policy import decide_lane
+from .policy import decide_lane, widen_alternatives
 from .store import PostgresAdmissionStore
 
 
@@ -59,7 +59,10 @@ class ResourceBroker:
                 await conn.execute("UPDATE durable_elastic_slot SET admission_observed=true WHERE slot='circe-gpu2'")
             ahead: dict[str, float] = {}
             for demand in pending:
-                requirement = demand["requirement"]
+                # Policy-additive: a lane declared compatible after this demand was frozen
+                # still counts (see widen_alternatives). The stored row is not rewritten.
+                widened = widen_alternatives(demand["requirement"], self.lanes)
+                requirement = widened
                 retained_lane = demand.get("first_assigned_lane")
                 retain_assignment = bool(retained_lane and not requirement.get("operator_override")
                                          and not requirement.get("pinned_lane"))
@@ -79,7 +82,7 @@ class ResourceBroker:
                 if self.elastic and retained_lane in {None,"agent-burst"}:
                     from .elastic import activation_decision
                     meta = self.lanes.get("agent-burst", {})
-                    elastic_detail = activation_decision(demand["requirement"], meta,
+                    elastic_detail = activation_decision(widened, meta,
                         retained_burst=retained_lane == "agent-burst",
                         waited=(now-demand["created_at"]).total_seconds(), threshold=self.widen_after_seconds,
                         widening=self.widening_enabled, preferred_start=decision.estimates.get("agent"),

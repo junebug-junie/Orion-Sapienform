@@ -1606,6 +1606,7 @@ class CuriosityInvestigation:
                 finding_text=text,
                 run_id=run_id,
                 hop_notes=hops,
+                line=LINE_INVESTIGATE,
             )
         return None
 
@@ -2141,6 +2142,7 @@ class CuriosityInvestigation:
                 finding_text=text,
                 run_id=run_id,
                 hop_notes=hops,
+                line=LINE_SELF_INQUIRY,
             )
         return None
 
@@ -2753,6 +2755,59 @@ class CuriosityInvestigation:
 
     # --- the second turn ---------------------------------------------------
 
+    @staticmethod
+    def _record_outreach_skip(
+        outreach: Any,
+        reason: str,
+        *,
+        correlation_id: str,
+        run_id: str,
+        line: str,
+    ) -> None:
+        """Write a decision row for a reach-out that never reached `offer_message`.
+
+        Every Door-A decision gets a row (2026-09-22). Until then the pre-check
+        block, `disabled` and `no_outreach_loop` only logged, and a log line
+        is wiped on the next container restart -- the six `reach_out=true`
+        runs of 2026-09-19..21 have no trace anywhere except their own graph
+        node. Goes through the loop's own `_record` writer when there is a
+        loop (`record_blocked`), and straight to the decision-log module when
+        there is none to go through (`disabled` with no provider, or
+        `no_outreach_loop` by definition). Best-effort: never raises into the
+        investigation, matching `_record`'s own contract.
+        """
+        extra = {"run_id": run_id, "line": line}
+        try:
+            recorder = getattr(outreach, "record_blocked", None) if outreach is not None else None
+            if callable(recorder):
+                recorder(
+                    reason,
+                    correlation_id=correlation_id,
+                    source=OUTREACH_TAG,
+                    extra=extra,
+                )
+                return
+            from scripts.endogenous_outreach_decisions import record_decision
+
+            record_decision(
+                {
+                    **extra,
+                    "outreach": False,
+                    "reason": reason,
+                    "source": OUTREACH_TAG,
+                    "correlation_id": correlation_id,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                },
+                forced=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_outreach_decision_record_failed run=%s reason=%s err=%s",
+                run_id,
+                reason,
+                exc,
+            )
+
     async def _maybe_reach_out(
         self,
         *,
@@ -2760,6 +2815,8 @@ class CuriosityInvestigation:
         finding_text: str,
         run_id: str,
         hop_notes: Optional[list[tuple[int, str]]] = None,
+        line: str = LINE_INVESTIGATE,
+        resource_lease: ResourceLeaseV1 | None = None,
     ) -> Optional[str]:
         """Orion decided a finding is worth telling Juniper about. Compose it.
 
@@ -2767,17 +2824,59 @@ class CuriosityInvestigation:
         buys one specific thing: the second turn gets its OWN
         `ThoughtClient.react()` stance check. So Orion can find something
         genuinely worth saying and the system can still independently decide
-        "not now, she is in the middle of something". One turn would collapse
+        "not now, she is mid-turn" via `turn_in_flight`. One turn would collapse
         "this is interesting" and "this is worth interrupting her for" into a
         single judgement made at the wrong moment.
 
-        The outreach gates are checked BEFORE the turn as well as inside the
-        delivery: quiet hours can span eight hours, and spending a full
-        unified turn to compose a message that cannot be delivered for another
-        six is a waste of Orion's own compute, not a safety issue.
+        Schedule gates (quiet hours / daily cap / cooldown) do NOT apply here
+        (2026-09-22): if Orion burned a run and asked to share, they share.
+        Delivery still goes through `offer_message(skip_schedule_gates=True)`.
+
+        When ``resource_lease`` is set (durable admission held the grant past
+        finish for Door-A), composition uses that lease and Hub releases it
+        afterward so the GPU slot is not stranded.
+
+        EVERY exit below leaves a decision row (2026-09-22): the ones that
+        reach `offer_message` are recorded there; the ones that do not go
+        through `_record_outreach_skip`. The row's key is the same
+        deterministic `correlation_id` in every case, and `result_json`
+        carries `run_id` + `line`, so the run story can find its outreach
+        decision without recomputing the uuid5.
         """
+        correlation_id = str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{run_id}"))
+        try:
+            return await self._maybe_reach_out_inner(
+                outcome=outcome,
+                finding_text=finding_text,
+                run_id=run_id,
+                hop_notes=hop_notes,
+                line=line,
+                resource_lease=resource_lease,
+                correlation_id=correlation_id,
+            )
+        finally:
+            if resource_lease is not None:
+                await self._release_outreach_lease(run_id)
+
+    async def _maybe_reach_out_inner(
+        self,
+        *,
+        outcome: TurnOutcome,
+        finding_text: str,
+        run_id: str,
+        hop_notes: Optional[list[tuple[int, str]]],
+        line: str,
+        resource_lease: ResourceLeaseV1 | None,
+        correlation_id: str,
+    ) -> Optional[str]:
         if not self.outreach_enabled:
+            # Same order as before: the provider is not consulted when this
+            # loop's own outreach switch is off. The row goes straight to the
+            # decision-log module.
             logger.info("curiosity_outreach_disabled run=%s", run_id)
+            self._record_outreach_skip(
+                None, "disabled", correlation_id=correlation_id, run_id=run_id, line=line
+            )
             return "disabled"
         outreach = self._outreach_provider() if self._outreach_provider else None
         if outreach is None:
@@ -2786,9 +2885,12 @@ class CuriosityInvestigation:
                 "and there is no outreach loop to deliver through",
                 run_id,
             )
+            self._record_outreach_skip(
+                None, "no_outreach_loop", correlation_id=correlation_id, run_id=run_id, line=line
+            )
             return "no_outreach_loop"
 
-        blocked = outreach.blocked_reason()
+        blocked = outreach.blocked_reason(skip_schedule_gates=True)
         if blocked:
             logger.info(
                 "curiosity_outreach_blocked run=%s reason=%s why=%s",
@@ -2796,7 +2898,10 @@ class CuriosityInvestigation:
                 blocked,
                 outcome.reach_out_why[:120],
             )
-            return blocked
+            self._record_outreach_skip(
+                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line
+            )
+            return str(blocked)
 
         notes: list[tuple[int, str]]
         if hop_notes is not None:
@@ -2814,17 +2919,23 @@ class CuriosityInvestigation:
         else:
             notes = []
 
-        correlation_id = str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{run_id}"))
         prompt = build_outreach_composition_prompt(
             finding_text=finding_text,
             reach_out_why=outcome.reach_out_why,
             hop_notes=notes,
         )
         text, debug = await self._generate(
-            prompt, correlation_id, source=OUTREACH_TAG, require_lookup=False
+            prompt,
+            correlation_id,
+            source=OUTREACH_TAG,
+            require_lookup=False,
+            resource_lease=resource_lease,
         )
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
+            self._record_outreach_skip(
+                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line
+            )
             return "empty_generation"
 
         result = await outreach.offer_message(
@@ -2832,6 +2943,8 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             tag=OUTREACH_TAG,
             model=debug.get("fcc_model_label"),
+            meta={"run_id": run_id, "line": line},
+            skip_schedule_gates=True,
         )
         logger.info(
             "curiosity_outreach_result run=%s sent=%s reason=%s",
@@ -2840,6 +2953,46 @@ class CuriosityInvestigation:
             result.get("reason"),
         )
         return None if result.get("outreach") else str(result.get("reason") or "not_sent")
+
+    async def _release_outreach_lease(self, run_id: str) -> None:
+        """Free the durable-runs grant held past finish for Door-A composition.
+
+        Best-effort: a failed release leaves the lease to expire on TTL so the
+        broker recovers capacity without Hub blocking the investigation path.
+        """
+        url = self._outreach_lease_release_url(run_id)
+        if not url:
+            return
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url)
+            if response.status_code >= 400:
+                logger.warning(
+                    "curiosity_outreach_lease_release_failed run=%s status=%s body=%s",
+                    run_id,
+                    response.status_code,
+                    (response.text or "")[:200],
+                )
+            else:
+                logger.info("curiosity_outreach_lease_released run=%s", run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "curiosity_outreach_lease_release_failed run=%s err=%s", run_id, exc
+            )
+
+    def _outreach_lease_release_url(self, run_id: str) -> str:
+        """Derive release URL from the lease-validate base (no new env key)."""
+        base = str(self.lease_validation_url or "").strip()
+        if not base:
+            return ""
+        marker = "/leases/validate"
+        if marker in base:
+            root = base.split(marker, 1)[0].rstrip("/")
+        else:
+            root = base.rstrip("/")
+        return f"{root}/runs/{run_id}/release-outreach-lease"
 
     # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
 
@@ -3295,8 +3448,23 @@ class CuriosityInvestigation:
             reach_out=True,
             reach_out_why=str(detail.get("reach_out_why") or ""),
         )
+        lease = None
+        raw_lease = detail.get("resource_lease")
+        if isinstance(raw_lease, dict) and raw_lease:
+            try:
+                lease = ResourceLeaseV1.model_validate(raw_lease)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_outreach_lease_invalid run=%s err=%s",
+                    state.run_id,
+                    exc,
+                )
         await self._maybe_reach_out(
-            outcome=outcome, finding_text=str(detail.get("finding_text") or ""), run_id=state.run_id
+            outcome=outcome,
+            finding_text=str(detail.get("finding_text") or ""),
+            run_id=state.run_id,
+            line=str(detail.get("line") or LINE_INVESTIGATE),
+            resource_lease=lease,
         )
 
     async def _publish_attention_schema(

@@ -73,8 +73,11 @@ def zone_for_box(
     if not zones or width <= 0 or height <= 0 or len(box_xyxy) != 4:
         return None
     x1, _y1, x2, y2 = (float(v) for v in box_xyxy)
-    px = ((x1 + x2) / 2.0) / float(width)
-    py = y2 / float(height)
+    # Clamp into the frame: a box touching (or past) the bottom edge must land
+    # inside a polygon whose edge is y=1.0, not fall outside every zone.
+    eps = 1e-6
+    px = min(max(((x1 + x2) / 2.0) / float(width), 0.0), 1.0 - eps)
+    py = min(max(y2 / float(height), 0.0), 1.0 - eps)
     for z in zones:
         if _point_in_polygon(px, py, z.polygon):
             return z

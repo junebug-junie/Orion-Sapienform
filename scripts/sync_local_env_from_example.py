@@ -82,6 +82,10 @@ NEVER_SYNC_KEYS = frozenset(
         "PUBLISH_CORTEX_EXEC_GRAMMAR",
         # Host-specific Tailscale / mesh address — never overwrite from docker-oriented templates.
         "ORION_BUS_URL",
+        # Camera RTSP URLs carry the camera's credentials. The template holds a
+        # placeholder; --force must never overwrite a live URL with it.
+        "REOLINK_URL",
+        "WALKWAY_RTSP_URL",
         # Real chat-time graph search gate (orion-recall). Both keys must change together by
         # hand or the feature silently no-ops (enabled flag + empty/stale URL) -- the exact
         # bug already hit twice this session with CONCEPT_RELATION_RESOLUTION_ENABLED and

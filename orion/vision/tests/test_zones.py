@@ -25,3 +25,10 @@ def test_bottom_center_decides_zone_and_first_match_wins():
 
 def test_missing_file_means_no_zones(tmp_path: Path):
     assert load_zones(tmp_path / "nope.yaml") == {}
+
+
+def test_box_touching_bottom_edge_stays_in_patio():
+    zones = load_zones(DEFAULT_ZONES_PATH)["walkway"]
+    for y2 in (360, 400):
+        z = zone_for_box(zones, [40, 200, 88, y2], 640, 360)
+        assert z is not None and z.name == "patio" and not may_embed(z)

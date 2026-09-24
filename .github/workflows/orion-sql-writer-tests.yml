@@ -56,7 +56,11 @@ jobs:
             services/orion-sql-writer/tests/test_world_pulse_routing.py \
             services/orion-sql-writer/tests/test_grammar_event_routing.py \
             services/orion-sql-writer/tests/test_grammar_ledger_sql_shape.py \
-            services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py
+            services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py \
+            services/orion-sql-writer/tests/test_vision_walkway_persist.py \
+            services/orion-sql-writer/tests/test_vision_individuals.py \
+            services/orion-sql-writer/tests/test_vision_rhythm.py \
+            services/orion-sql-writer/evals/test_walkway_reducers_eval.py
 
   sql-writer-integration:
     name: SQL writer — Postgres grammar integration

@@ -243,3 +243,9 @@ def test_main_worktree_root_falls_back_when_services_dir_is_absent(tmp_path):
     repo.mkdir()
     sp.run(["git", "init", "-q", str(repo)], check=True)
     assert sync_mod.main_worktree_root(repo) == repo
+
+
+def test_camera_rtsp_urls_never_synced() -> None:
+    # They carry camera credentials; a --force sync must not replace a live URL
+    # with the template placeholder.
+    assert {"REOLINK_URL", "WALKWAY_RTSP_URL"} <= NEVER_SYNC_KEYS

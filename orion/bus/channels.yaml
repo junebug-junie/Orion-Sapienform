@@ -508,7 +508,10 @@ channels:
     kind: "event"
     schema_id: "OrionAskV1"
     producer_services: ["orion-sql-writer"]
-    consumer_services: ["orion-hub"]
+    # No live subscriber: the Hub's ask card polls orion_ask (the table is the
+    # durable record; the Hub has no push channel for panels). Published for
+    # observability and future push; write-only is the honest state.
+    consumer_services: []
     stability: "experimental"
     since: "2026-09-24"
 

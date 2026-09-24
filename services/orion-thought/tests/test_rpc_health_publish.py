@@ -116,6 +116,12 @@ async def test_cortex_exec_rpc_lands_in_published_window() -> None:
         rpc_health_channel_latency_enabled=True,
     )
     publisher = build_publisher(settings, lambda: pub_bus)
+    assert publisher._kwargs["sinks"] and publisher._connect_bus is True
+    # The loop discards whatever the sinks held BEFORE it started (first window = one
+    # interval, not "since process start"), so hand this test's already-folded stats to
+    # the publish bus the same way the loop's per-tick sink drain does.
+    for sink in publisher._kwargs["sinks"]:
+        sink.drain_into(pub_bus._rpc_health)
     publisher.start()
     for _ in range(200):
         await asyncio.sleep(0.01)
@@ -257,8 +263,12 @@ async def test_lifespan_starts_and_stops_publisher(monkeypatch) -> None:
     made: list[OrionBusAsync] = []
 
     class _Bus(OrionBusAsync):
-        async def connect(self):  # type: ignore[override]
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
             made.append(self)
+
+        async def connect(self):  # type: ignore[override]
+            self.connected = True
 
         async def close(self):  # type: ignore[override]
             self.closed = True
@@ -271,6 +281,11 @@ async def test_lifespan_starts_and_stops_publisher(monkeypatch) -> None:
     async with main_module.lifespan(app):
         assert app.state.rpc_health_publisher.running
         assert app.state.rpc_health_bus is made[0]
+        for _ in range(100):  # the publisher task connects it (connect_bus=True)
+            if getattr(made[0], "connected", False):
+                break
+            await asyncio.sleep(0.01)
+        assert getattr(made[0], "connected", False) is True
     assert not app.state.rpc_health_publisher.running
     assert getattr(made[0], "closed", False) is True
 

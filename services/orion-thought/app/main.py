@@ -110,17 +110,18 @@ async def lifespan(app: FastAPI):
 
         try:
             rpc_health_bus = OrionBusAsync(url=settings.orion_bus_url)
-            await rpc_health_bus.connect()
             app.state.rpc_health_bus = rpc_health_bus
             app.state.rpc_health_publisher.start()
         except Exception as exc:
             logger.warning("rpc_health_publish_start_failed error=%s", exc)
-    yield
-    await app.state.rpc_health_publisher.stop()
-    if app.state.rpc_health_bus is not None:
-        with suppress(Exception):
-            await app.state.rpc_health_bus.close()
-        app.state.rpc_health_bus = None
+    try:
+        yield
+    finally:
+        await app.state.rpc_health_publisher.stop()
+        if app.state.rpc_health_bus is not None:
+            with suppress(Exception):
+                await app.state.rpc_health_bus.close()
+            app.state.rpc_health_bus = None
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()

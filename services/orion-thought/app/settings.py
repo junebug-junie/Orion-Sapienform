@@ -51,7 +51,7 @@ class ThoughtSettings(BaseSettings):
     # Defaults match .env_example. channel_latency is extra="forbid" on the consumer side:
     # rebuild orion-signal-gateway + orion-equilibrium-service on PR #2312's build first.
     rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
-    rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
     rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     channel_thought_request: str = Field(

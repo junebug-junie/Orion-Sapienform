@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # baseline-design.md). Per-tick dispatch buses fold into app.worker.RPC_HEALTH_SINK;
     # a dedicated long-lived bus publishes it. Defaults match .env_example.
     rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
-    rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
     rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
     execution_dispatch_rpc_timeout_sec: float = Field(
         120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"

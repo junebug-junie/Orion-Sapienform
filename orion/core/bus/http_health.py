@@ -44,6 +44,12 @@ A transport wrapper, not httpx ``event_hooks``: response hooks never fire on a t
 which is exactly the outcome transport health most needs. Recording never raises into
 the request path.
 
+Passing ``transport=`` to an httpx client disables httpx's env-proxy mounts
+(``HTTP(S)_PROXY`` with ``trust_env``); the wrapped hops in this repo are tailnet calls with
+no proxy configured (checked for orion-thought and orion-durable-runs 2026-09-24). Test code
+that injects its own ``transport=`` into a client built with these kwargs will collide --
+wire the recorder only where no test double already owns the transport.
+
 ``path_normalizer`` collapses high-cardinality paths (ids in the URL) to a stable key,
 e.g. ``lambda p: re.sub(r"/[0-9a-f-]{16,}", "/:id", p)``. Key cardinality is also capped
 by the aggregator (``MAX_DISTINCT_HOPS``, overflow folded into ``_overflow``).

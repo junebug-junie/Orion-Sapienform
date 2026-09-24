@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     # app.llm_client.RPC_HEALTH_SINK; a long-lived lifespan bus publishes it.
     # Defaults match .env_example.
     RPC_HEALTH_PUBLISH_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_PUBLISH_ENABLED")
-    RPC_HEALTH_PUBLISH_INTERVAL_SEC: float = Field(default=30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    RPC_HEALTH_PUBLISH_INTERVAL_SEC: float = Field(default=30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
     RPC_HEALTH_CHANNEL_LATENCY_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
     MIND_LLM_INTAKE_CHANNEL: str = Field(
         default="orion:exec:request:LLMGatewayService",

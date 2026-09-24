@@ -42,8 +42,10 @@ same thing everywhere:
 - HTTP: ``http:<host><path>`` (``orion.core.bus.http_health``; ids in the path collapsed
   to ``:id`` by ``normalize_id_path``) -- orion-durable-runs (gateway/cabinet/elastic
   controller), orion-thought (thought -> mind)
-- FCC motor subprocess wall time: ``fcc:<served_model>`` -- orion-harness-governor
-  (success on normal exit, timeout on timeout-kill)
+- FCC motor leg wall time (``HarnessMotorResult.fcc_elapsed_sec``: served-model probe +
+  claude subprocess + lifecycle publish): ``fcc:<served_model>`` -- orion-harness-governor
+  (success on exit code >= 0, timeout on the motor's own timeout-kill; cancels, pre-spawn
+  refusals and output-limit kills are skipped)
 
 Short-lived buses (a new ``OrionBusAsync`` per tick or per call, often on another
 thread's event loop -- orion-execution-dispatch-runtime, orion-mind) fold their

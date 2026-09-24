@@ -56,6 +56,12 @@ def _call(client) -> None:
 def _drain_publish(main_mod, bus: OrionBusAsync) -> dict:
     bus.publish = AsyncMock()  # type: ignore[method-assign]
     publisher = main_mod.build_rpc_health_publisher(bus)
+    assert publisher._kwargs["sinks"] and publisher._connect_bus is True
+    # The loop discards whatever the sinks held BEFORE it started (first window = one
+    # interval, not "since process start"), so hand this test's already-folded stats to
+    # the publish bus the same way the loop's per-tick sink drain does.
+    for sink in publisher._kwargs["sinks"]:
+        sink.drain_into(bus._rpc_health)
 
     async def _one_window() -> dict:
         publisher.enabled = True
@@ -141,7 +147,8 @@ async def test_lifespan_starts_and_stops_publisher_bus(monkeypatch) -> None:
     monkeypatch.setattr(main_mod.settings, "ORION_BUS_ENABLED", True)
 
     async with main_mod.lifespan(FastAPI()):
-        fake_bus.connect.assert_awaited_once()
+        # connect_bus=True: the publisher task connects (with retry), not the lifespan.
+        fake_bus.connect.assert_not_awaited()
         fake_pub.start.assert_called_once()
     fake_pub.stop.assert_awaited_once()
     fake_bus.close.assert_awaited_once()

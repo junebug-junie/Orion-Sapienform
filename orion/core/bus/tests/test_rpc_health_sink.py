@@ -121,10 +121,7 @@ async def test_publish_loop_drains_sinks_into_published_window() -> None:
     bus = OrionBusAsync(url="redis://unused:6379/0", enabled=False)
     bus.publish = AsyncMock()  # type: ignore[method-assign]
     sink = SharedRpcHealthSink()
-    sink.record_hop_success("fcc:qwen", 100.0)
-    agg = RpcHealthAggregator()
-    agg.record_success(request_channel="orion:cortex:exec:request", latency_ms=50.0)
-    sink.absorb_aggregator(agg)
+    sink.record_hop_success("stale:before-start", 1.0)  # pre-loop: must be discarded
 
     stop = asyncio.Event()
     task = asyncio.create_task(
@@ -134,12 +131,17 @@ async def test_publish_loop_drains_sinks_into_published_window() -> None:
             node="athena",
             instance="main",
             source=SRC,
-            interval_sec=0.01,
+            interval_sec=0.05,
             stop_event=stop,
             include_channel_latency=True,
             sinks=[sink],
         )
     )
+    await asyncio.sleep(0)  # loop runs its initial drain
+    sink.record_hop_success("fcc:qwen", 100.0)
+    agg = RpcHealthAggregator()
+    agg.record_success(request_channel="orion:cortex:exec:request", latency_ms=50.0)
+    sink.absorb_aggregator(agg)
     for _ in range(100):
         await asyncio.sleep(0.01)
         if bus.publish.await_count:
@@ -152,6 +154,7 @@ async def test_publish_loop_drains_sinks_into_published_window() -> None:
     assert payload["channel_latency"]["fcc:qwen"]["success_count"] == 1
     assert payload["channel_latency"]["orion:cortex:exec:request"]["success_count"] == 1
     assert payload["instance"] == "main"
+    assert "stale:before-start" not in payload["channel_latency"]
 
 
 @pytest.mark.asyncio
@@ -192,3 +195,58 @@ def test_normalize_id_path_collapses_ids_keeps_names() -> None:
     assert normalize_id_path("/lanes/qwen3.5-27b/wake") == "/lanes/qwen3.5-27b/wake"
     assert normalize_id_path("/routes") == "/routes"
     assert http_hop_key("http://gw:8222/runs/42?x=1", normalize_id_path) == "http:gw:8222/runs/:id"
+
+
+@pytest.mark.asyncio
+async def test_publisher_connect_bus_retries_until_connected() -> None:
+    """A dedicated publish bus that fails to connect at boot must not disable publishing
+    for the process lifetime: the publisher retries, then publishes."""
+    bus = OrionBusAsync(url="redis://unused:6379/0", enabled=False)
+    bus.publish = AsyncMock()  # type: ignore[method-assign]
+    attempts = {"n": 0}
+
+    async def _flaky_connect() -> None:
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise ConnectionError("mesh blip")
+
+    bus.connect = _flaky_connect  # type: ignore[method-assign]
+    pub = RpcHealthPublisher(
+        enabled=True,
+        bus_getter=lambda: bus,
+        service="svc",
+        node="n",
+        instance="main",
+        source=SRC,
+        interval_sec=0.01,
+        include_channel_latency=True,
+        connect_bus=True,
+        connect_retry_max_sec=0.01,
+    )
+    pub._connect_retry_initial_sec = 0.01
+    pub.start()
+    for _ in range(300):
+        await asyncio.sleep(0.01)
+        if bus.publish.await_count:
+            break
+    await pub.stop()
+    assert attempts["n"] == 2
+    assert bus.publish.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_publisher_stop_during_connect_retry_returns_promptly() -> None:
+    bus = OrionBusAsync(url="redis://unused:6379/0", enabled=False)
+
+    async def _never() -> None:
+        raise ConnectionError("down")
+
+    bus.connect = _never  # type: ignore[method-assign]
+    pub = RpcHealthPublisher(
+        enabled=True, bus_getter=lambda: bus, service="svc", node="n", instance="main",
+        source=SRC, interval_sec=30.0, include_channel_latency=True, connect_bus=True,
+    )
+    pub.start()
+    await asyncio.sleep(0.01)
+    await asyncio.wait_for(pub.stop(), timeout=2.0)
+    assert not pub.running

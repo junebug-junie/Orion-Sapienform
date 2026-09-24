@@ -55,6 +55,9 @@ def build_rpc_health_publisher(bus: OrionBusAsync) -> RpcHealthPublisher:
         source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
         interval_sec=settings.RPC_HEALTH_PUBLISH_INTERVAL_SEC,
         include_channel_latency=settings.RPC_HEALTH_CHANNEL_LATENCY_ENABLED,
+        # Dedicated publish-only bus: the task retries connect() with backoff, so a
+        # mesh blip at boot does not disable publishing for the process lifetime.
+        connect_bus=True,
         sinks=[RPC_HEALTH_SINK],
     )
 
@@ -65,7 +68,6 @@ async def _start_rpc_health() -> None:
         return
     try:
         bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
-        await bus.connect()
         rpc_health_bus = bus
         rpc_health_publisher = build_rpc_health_publisher(bus)
         rpc_health_publisher.start()

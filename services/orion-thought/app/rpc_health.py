@@ -50,5 +50,8 @@ def build_publisher(settings: Any, bus_getter: Callable[[], Optional[Any]]) -> R
         ),
         interval_sec=settings.rpc_health_publish_interval_sec,
         include_channel_latency=settings.rpc_health_channel_latency_enabled,
+        # Dedicated publish-only bus: the task retries connect() with backoff, so a
+        # mesh blip at boot does not disable publishing for the process lifetime.
+        connect_bus=True,
         sinks=[RPC_HEALTH_SINK],
     )

@@ -2370,6 +2370,15 @@ def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _environmental_context(environment: Dict[str, Any]) -> str | None:
+    """Weather, then the street -- so a turn at 07:45 when the dog did not
+    come reads differently from one when it did (walkway spec idea 5)."""
+    weather = _compact(environment.get("current_summary"), limit=120)
+    street = _compact(environment.get("street_summary"), limit=240)
+    parts = [p for p in (weather, f"Street: {street}" if street else "") if p]
+    return "; ".join(parts) or None
+
+
 def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     fragment = ctx.get("situation_prompt_fragment") if isinstance(ctx.get("situation_prompt_fragment"), dict) else {}
     brief = ctx.get("situation_brief") if isinstance(ctx.get("situation_brief"), dict) else {}
@@ -2423,6 +2432,13 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
             limit=3,
         ),
         "practical_flags": environment.get("practical_flags") if isinstance(environment.get("practical_flags"), dict) else {},
+        # The street outside the walkway camera (orion.situational
+        # perception_reader.fetch_street_summary via PerceptionContextV1).
+        # Empty when there is nothing to say; walkway spec idea 5.
+        "street_summary": _compact(
+            (brief.get("perception") or {}).get("street_summary") if isinstance(brief.get("perception"), dict) else "",
+            limit=240,
+        ),
     }
     relevance = "active" if has_active else ("background" if fragment else "none")
     return {
@@ -3117,7 +3133,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         situation_relevance=situation_relevance,  # type: ignore[arg-type]
         temporal_context=_compact((situation.get("conversation_phase") or {}).get("phase_change"), limit=40) or None,
         audience_context=_compact((situation.get("presence") or {}).get("audience_mode"), limit=60) or None,
-        environmental_context=_compact((situation.get("environment") or {}).get("current_summary"), limit=120) or None,
+        environmental_context=_environmental_context(situation.get("environment") or {}),
         operational_context=_compact((situation.get("lab") or {}).get("summary"), limit=120) or None,
         situation_response_guidance=_unique(situation_guidance, limit=6),
         answer_strategy=answer_strategy,

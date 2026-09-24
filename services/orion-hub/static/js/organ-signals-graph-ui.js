@@ -13,7 +13,6 @@
     "concept_induction",
     "graph_cognition",
     "power_guard",
-    "security_watcher",
   ]);
 
   const DEFAULT_ORGAN_LAYERS = {

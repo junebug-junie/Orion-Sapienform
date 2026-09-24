@@ -26,6 +26,8 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:vision:events:sql-write` | `vision.event.v1` | `VisionEventSQL` |
 | `orion:autonomy:action:outcome` | `action.outcome.emit.v1` | `ActionOutcomeSQL` |
 | `orion:debug:attention:streak_tick` | `debug.attention.streak_tick.v1` | `DominanceStreakTickSQL` |
+| `orion:vision:crops:sql-write` | `vision.crop.observation.v1` | `vision_crop_observation` (one row per crop, dedicated handler) |
+| `orion:vision:unresolved:sql-write` | `vision.unresolved.v1` | `VisionUnresolvedSQL` (`vision_unresolved`) |
 
 **Action outcome persistence:** `action.outcome.emit.v1` (produced by `orion-spark-concept-induction` after an autonomous readonly fetch) is projected into `action_outcomes` (PK `action_id`, idempotent upsert). `orion-cortex-exec` reads it back per-subject for chat-stance action feedback. DDL is applied on boot (`app/main.py` lifespan) and also lives in `services/orion-sql-db/manual_migration_action_outcomes_v1.sql`.
 
@@ -306,6 +308,123 @@ exists -- the same pending markers cover the policy and dispatch stages. It is d
 NOT done here: that is ~8.3 GB of substrate history, which is the cognition substrate's own
 record of what it proposed, decided and did, and deleting it is Juniper's call to make
 explicitly rather than a side effect of a retention patch.
+
+## Walkway camera reducers
+
+### Deploy checklist (walkway camera)
+
+The one place the vision-host, vision-council and this README point to.
+
+1. **Apply the migration first:**
+   `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_walkway_camera_v1.sql`.
+   It is idempotent and upgrades tables made from an earlier draft. It also
+   adds `vision_events.stream_id`; this writer re-tries that at boot in its
+   own transaction, and until the column exists it writes vision events
+   without it (logged at ERROR) -- room readers then ignore those rows.
+2. **Rebuild together** (they share `orion/schemas/vision.py`): orion-vision-
+   host, orion-vision-window, orion-vision-council, **orion-vision-scribe**,
+   orion-sql-writer, orion-hub, orion-thought, orion-cortex-exec. A scribe on
+   old code re-parses `VisionEventPayload` and drops `stream_id`; the room
+   readers refuse NULL-stream rows written after
+   `ORION_VISION_EVENTS_LEGACY_CUTOFF` (default 2026-09-24T00:00:00Z), so that
+   fails closed (no percept) rather than leaking the walkway.
+3. **Changing `config/vision_zones.yaml` requires rebuilding all three images
+   that bake it in:** orion-vision-host (which boxes may be embedded and
+   thumbnailed), orion-vision-council (what an unresolved percept may say),
+   and orion-sql-writer (defense-in-depth recompute, `zone_no_embed`, presence
+   rows). A partial rebuild leaves them disagreeing about where the patio is.
+4. orion-hub mounts `/mnt/telemetry/orion-vision-host/crop_thumbs` read-only.
+
+Spec: `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
+(ideas 1, 2, 3-opener, 6-score, 8-writer, 9). Tables come from
+`services/orion-sql-db/manual_migration_walkway_camera_v1.sql`, which must be
+applied by hand; until it is, both loops log `migration not applied` and back
+off (doubling up to an hour) instead of crash-looping, and crop writes land
+in `bus_fallback_log`. The ORM for `vision_unresolved` sits on its own
+declarative base so boot-time `create_all` can never create these tables
+without the migration's constraints.
+
+**Crop persistence.** `vision.crop.observation.v1` fans out to one
+`vision_crop_observation` row per crop (`crop_id = <observation_id>:<index>`,
+idempotent). Before insert, each box's zone is recomputed from
+`config/vision_zones.yaml` (copied into the image), and any box whose declared
+OR recomputed zone is a no-embed zone (the patio) loses its embedding and its
+thumbnail ref, and the row gets `zone_no_embed = true` (from the config, never
+from the zone's name). The table's CHECK constraint (`zone_no_embed` => no
+embedding, embedding_ref, or thumb_ref) is the last layer, so a second
+`embed: false` zone is covered without editing SQL.
+
+**Individuals loop** (`app/vision_individuals.py`, every
+`VISION_INDIVIDUALS_INTERVAL_SEC`, default 60 s). Reads new crops per stream
+since `vision_individuals_cursor`, which tracks LANDING time
+(`vision_crop_observation.created_at`), so a crop that arrives late (old
+`observed_at`) is still processed; within a batch crops are clustered in
+`observed_at` order, and a late crop outside the latest sighting becomes its
+own earlier sighting; joins each embedded crop to the nearest
+same-kind centroid at cosine >= `VISION_INDIVIDUALS_MATCH_THRESHOLD`, else opens
+a new `vision_individual` (centroid = renormalized running mean; two crops
+from one frame never join the same individual). Observations no more than
+`VISION_INDIVIDUALS_MERGE_GAP_SEC` apart form one `vision_individual_sighting`
+(zone = most observations, tracked in `zone_counts`; dwell = ended - started).
+Every touched sighting is scored (`app/vision_attention_score.py`: unknown,
+unusual time from its own hour history, long dwell vs the zone's
+`dwell_rare_sec`, few prior sightings; weights in one dict; null components
+count 0 and are stored as null). At or above `VISION_ATTENTION_THRESHOLD` it
+writes one `vision_events` row `attention_worthy` per sighting. No-embed-zone
+boxes never become individuals; they only update one
+`substrate_embodied_presence` row per no-embed zone, `<stream>:<zone name>`
+(e.g. `walkway:patio`; `subject = {"count": n}`, `no_embed_zone: true`), and
+only while the camera is producing census rows. The situation brief finds
+these rows by that flag. Then: Juniper's answers are applied (`orion_ask`
+answered -> `vision_individual.label`, `applied_at` set), open asks past
+`expires_at` expire, and new asks open for unlabeled individuals with
+>= `VISION_ASK_MIN_SIGHTINGS` sightings over >= `VISION_ASK_MIN_DAYS` local
+days, under `ORION_ASK_DAILY_CAP` counted from `orion_ask.created_at` since
+local midnight (restart-proof). Opened asks are rows only (no bus event);
+the Hub's ask card reads `orion_ask`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
+sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
+for the sighting retention are deleted, labeled ones stay.
+
+**Rhythm loop** (`app/vision_rhythm.py`, every `VISION_RHYTHM_INTERVAL_SEC`,
+default 900 s). Subjects are individuals and the labels in
+`VISION_RHYTHM_LABELS` (arrivals from `vision_scene_inventory`: first positive
+window after `VISION_RHYTHM_ARRIVAL_GAP_SEC` without one). Per
+(stream, subject, weekday/weekend/any) it fits a circular kernel density over
+local minute-of-day and emits `vision_percept_expectation` rows for the next
+24 h only with >= 5 occurrences over >= 5 distinct days, each window itself
+hit on >= 5 days. Closed windows are graded `met` / `missed` / `unscorable`
+(no census frames in the window) and `met`/`missed` write `vision_events`
+`arrived_as_expected` / `expected_absent` citing `expectation:<id>`. While a
+window is open and unmet it sets Redis `orion:vision:expect:<stream>` (on
+`ORION_BUS_URL`) with TTL = seconds to window end. That key is refreshed by
+its own cheap loop every `VISION_EXPECT_REFRESH_INTERVAL_SEC` (default 60 s;
+only the open-window query, no fitting), so steering starts within a minute
+of a window opening rather than up to one rhythm tick late. Rhythm surprise stays in
+this table; it is not wired to the substrate graph until live data passes the
+metric gate.
+
+Safety rails added after review: each cycle holds a Postgres advisory lock
+(a second instance skips the tick); crops newer than
+`VISION_INDIVIDUALS_SETTLE_SEC` wait a tick so out-of-order writes are not
+skipped by the cursor; match candidates are individuals seen in
+`VISION_INDIVIDUALS_CANDIDATE_DAYS` plus every labeled one (numpy matmul);
+a failed crop write logs to `bus_fallback_log` with embeddings and boxes
+redacted; if the zones file cannot load, every embedding is stripped (fail
+closed); ask images are crop thumbnails (`thumb:<sha256>`, written by
+orion-vision-host for embedded crops only and served by the Hub), never whole
+frames, and only from a sighting recent enough that the thumbnail outlives the
+ask (host keeps them `VISION_CROP_THUMB_RETENTION_DAYS`, 10, asks expire after 7; the same key is read here); an
+unanswered expired ask is not repeated for `VISION_ASK_COOLDOWN_DAYS`; a window
+is `missed` only if census coverage (5 s windows bridged across gaps up to
+30 s) is at least `VISION_RHYTHM_MIN_COVERAGE`, and an individual's window is
+not graded until the individuals cursor has passed its end; the Redis expect
+key is deleted as soon as everything open on the stream has arrived.
+
+Every knob (all `VISION_*`, `ORION_ASK_*` keys) is listed with a comment in
+`.env_example`. The zones file path can be overridden with `VISION_ZONES_PATH`
+(read by `orion/vision/zones.py`, not Settings).
+
+Report: `python3 scripts/report_vision_individuals.py [--stream walkway] [--json]`.
 
 ## Running & Testing
 

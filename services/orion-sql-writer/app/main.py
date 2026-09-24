@@ -797,6 +797,43 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 
+    # Walkway camera (2026-09-24): vision_events.stream_id. Its own
+    # transaction, NOT the long bootstrap block above -- that block has been
+    # seen rolling back whole on a LockNotAvailable, and its single handler
+    # only warns. Verified after, not assumed: until the column exists the
+    # worker strips stream_id from vision_events writes (the column is
+    # deferred on the ORM, so nothing else touches it) and room readers treat
+    # those NULL rows as not-room after the legacy cutoff -- fail closed.
+    # The manual migration (manual_migration_walkway_camera_v1.sql) is the
+    # required deploy step; this is the safety net.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '10s';")
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx "
+                "ON vision_events (stream_id, created_at);"
+            )
+    except Exception as e:
+        logger.error("vision_events.stream_id migration failed: %s -- apply "
+                     "services/orion-sql-db/manual_migration_walkway_camera_v1.sql", e)
+    try:
+        from app import worker as _worker
+
+        with engine.connect() as conn:
+            has_col = conn.exec_driver_sql(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'vision_events' AND column_name = 'stream_id';"
+            ).first() is not None
+        _worker.set_vision_events_stream_id_ready(has_col)
+        if not has_col:
+            logger.error("vision_events.stream_id MISSING -- vision events are written without a camera "
+                         "and room readers will ignore them; apply manual_migration_walkway_camera_v1.sql")
+    except Exception as e:
+        logger.error("vision_events.stream_id check failed: %s", e)
+
     # Deliberately NOT inside the long bootstrap transaction above, and
     # verified rather than assumed. Backs
     # orion/substrate/metacog_trend_signals.py::latest_biometrics_induction_by_node,
@@ -989,11 +1026,41 @@ async def lifespan(app: FastAPI):
             "vision object-permanence sweep DISABLED (VISION_PERMANENCE_SWEEP_INTERVAL_SEC=0)"
         )
 
+    # Walkway camera reducers -- see app/vision_individuals.py and
+    # app/vision_rhythm.py. Both are clocked (absence and "the usual thing did
+    # not happen" are non-events) and back off with a clear log line while the
+    # walkway migration is not applied.
+    vision_individuals_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_individuals_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_individuals_loop import vision_individuals_loop
+
+        vision_individuals_task = asyncio.create_task(vision_individuals_loop(settings))
+    else:
+        logger.info("vision individuals reducer DISABLED (VISION_INDIVIDUALS_INTERVAL_SEC=0)")
+    vision_rhythm_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_rhythm_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_rhythm_loop import vision_rhythm_loop
+
+        vision_rhythm_task = asyncio.create_task(vision_rhythm_loop(settings))
+    else:
+        logger.info("vision rhythm learner DISABLED (VISION_RHYTHM_INTERVAL_SEC=0)")
+    vision_expect_task: asyncio.Task | None = None
+    # Only alongside the rhythm loop: with the learner off, nothing grades or
+    # emits expectations, and a refresh would steer on stale open windows.
+    if vision_rhythm_task is not None and float(
+            getattr(settings, "vision_expect_refresh_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_rhythm_loop import vision_expect_refresh_loop
+
+        vision_expect_task = asyncio.create_task(vision_expect_refresh_loop(settings))
+    else:
+        logger.info("vision expect-key refresh DISABLED (VISION_EXPECT_REFRESH_INTERVAL_SEC=0)")
+
     try:
         yield
     finally:
         pending = [
-            t for t in (task, watch_task, retention_task, vision_permanence_task)
+            t for t in (task, watch_task, retention_task, vision_permanence_task,
+                        vision_individuals_task, vision_rhythm_task, vision_expect_task)
             if t is not None
         ]
         for background in pending:

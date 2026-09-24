@@ -151,6 +151,24 @@ class ThoughtSettings(BaseSettings):
     reverie_perception_max_events: int = Field(
         3, alias="ORION_REVERIE_PERCEPTION_MAX_EVENTS"
     )
+    # 2026-09-24 (walkway camera): the ROOM cameras whose narratives reverie
+    # may read. vision_events also holds the walkway camera's narratives
+    # (street and patio) and its reducers' rows; those are not "the room".
+    # Same default as cortex-exec's ORION_SITUATION_PERCEPTION_STREAM_IDS.
+    # Legacy rows with no stream_id are always accepted.
+    reverie_perception_stream_ids: str = Field(
+        "carbon,cam0", alias="ORION_REVERIE_PERCEPTION_STREAM_IDS"
+    )
+
+    # Read by app/vision_reader.py via the environment (same key as
+    # orion/situational/perception_reader.py); declared here so it is visible.
+    vision_events_legacy_cutoff: str = Field(
+        "2026-09-24T00:00:00Z", alias="ORION_VISION_EVENTS_LEGACY_CUTOFF"
+    )
+
+    @property
+    def reverie_perception_stream_id_list(self) -> list[str]:
+        return [p.strip() for p in (self.reverie_perception_stream_ids or "").split(",") if p.strip()]
 
     # --- Reverie expectation scoring (Movement III, default-off) ---
     # Closes the loop between imagination and reality (docs/superpowers/specs/

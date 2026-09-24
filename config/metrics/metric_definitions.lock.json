@@ -1,15 +1,20 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 660,
+  "metric_count": 659,
   "_last_change": {
-    "base": "merge base 2aa783b9b (origin/main)",
-    "change_count": 4,
-    "high_severity_count": 4,
+    "base": "merge base 976064af8 (origin/main)",
+    "change_count": 9,
+    "high_severity_count": 6,
     "changes": [
-      "high   removed metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#confidence",
-      "high   removed metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#latency_level",
-      "high   removed metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#level",
-      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:rpc_health:snapshot (all_producers: ['orion-cortex-exec', 'orion-cortex-orch'] -> ['orion-cortex-exec', 'orion-cortex-orch', 'orion-hub'])"
+      "high   removed metric://bus_channel/orion-security-watcher/orion:vision:guard:alert",
+      "high   removed metric://bus_channel/orion-security-watcher/orion:vision:guard:signal",
+      "high   removed metric://organ_signal/security_watcher/security_event#confidence",
+      "high   removed metric://organ_signal/security_watcher/security_event#level",
+      "high   routing_changed metric://bus_channel/orion-vision-edge/orion:vision:artifacts (declared_consumers: ['orion-security-watcher', 'orion-vision-counc\u2026 -> ['orion-vision-counc\u2026)",
+      "high   routing_changed metric://bus_channel/orion-vision-edge/orion:vision:edge:raw (declared_consumers: ['orion-security-watcher'] -> ['orion-vision-edge'])",
+      "medium added metric://bus_channel/orion-hub/orion:ask:answered",
+      "medium added metric://bus_channel/orion-vision-council/orion:vision:unresolved:sql-write",
+      "medium added metric://bus_channel/orion-vision-window/orion:vision:crops:sql-write"
     ]
   },
   "definitions": {
@@ -1569,6 +1574,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:ask:answered": {
+      "schema_id": "OrionAskAnsweredV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:attention:loop_outcome": {
       "schema_id": "AttentionLoopOutcomeV1",
       "all_producers": [
@@ -2206,28 +2222,6 @@
       "declared_consumers": [
         "*",
         "orion-hub"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-security-watcher/orion:vision:guard:alert": {
-      "schema_id": "VisionGuardAlert",
-      "all_producers": [
-        "orion-security-watcher"
-      ],
-      "declared_consumers": [
-        "*"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-security-watcher/orion:vision:guard:signal": {
-      "schema_id": "VisionGuardSignal",
-      "all_producers": [
-        "orion-security-watcher"
-      ],
-      "declared_consumers": [
-        "*"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2994,6 +2988,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-vision-council/orion:vision:unresolved:sql-write": {
+      "schema_id": "VisionUnresolvedV1",
+      "all_producers": [
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-vision-edge/orion:vision:artifacts": {
       "schema_id": "VisionArtifactPayload",
       "all_producers": [
@@ -3001,7 +3006,6 @@
         "orion-vision-host"
       ],
       "declared_consumers": [
-        "orion-security-watcher",
         "orion-vision-council",
         "orion-vision-window"
       ],
@@ -3066,7 +3070,7 @@
         "orion-vision-edge"
       ],
       "declared_consumers": [
-        "orion-security-watcher"
+        "orion-vision-edge"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -3185,6 +3189,17 @@
         "orion-vision-council"
       ],
       "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:vision:crops:sql-write": {
+      "schema_id": "VisionCropObservationV1",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-vision-window/orion:vision:inventory:sql-write": {
@@ -5455,14 +5470,6 @@
     },
     "metric://organ_signal/rpc_health_cortex_orch/rpc_transport_health#level": {
       "notes": "organ=rpc_health_cortex_orch class=exogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/security_watcher/security_event#confidence": {
-      "notes": "organ=security_watcher class=exogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/security_watcher/security_event#level": {
-      "notes": "organ=security_watcher class=exogenous",
       "registry_source": "orion/signals/registry.py"
     },
     "metric://organ_signal/social_memory/relationship_continuity#level": {

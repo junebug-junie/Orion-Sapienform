@@ -11,6 +11,20 @@ class VisionObject(BaseModel):
     score: float
     box_xyxy: List[float]
     class_id: Optional[int] = None
+    # Additive (2026-09-24, walkway camera, docs/superpowers/specs/
+    # 2026-09-22-walkway-camera-busy-world-design.md idea 1). Set only when the
+    # request asked for crop embeddings and the box is outside every
+    # no-embed zone (config/vision_zones.yaml, orion/vision/zones.py). The
+    # vector is inlined for the same reason VisionEmbedding.vector is: the
+    # clustering reducer lives in another service and must not reach into
+    # vision-host's model-cache volume.
+    zone: Optional[str] = None
+    embedding_ref: Optional[str] = None
+    embedding: Optional[List[float]] = None
+    # Additive (2026-09-24). "thumb:<sha256>" -- a small JPEG of this box's
+    # crop, written by orion-vision-host ONLY for a crop it embedded (never a
+    # no-embed-zone box). The Hub serves it for the ask card.
+    thumb_ref: Optional[str] = None
 
 
 # Alias for explicit requirement
@@ -289,6 +303,12 @@ class VisionEventBundleItem(BaseModel):
     confidence: float
     salience: float
     evidence_refs: List[str]
+    # Additive (2026-09-24, walkway camera). Which camera this narrative is
+    # about. vision_events is shared by every camera; room readers
+    # (orion/situational/perception_reader.py, orion-thought's
+    # vision_reader.py) filter on it so a walkway (street/patio) narrative is
+    # never read as the room. None on legacy producers.
+    stream_id: Optional[str] = None
 
 
 class VisionEventPayload(BaseModel):
@@ -434,30 +454,6 @@ class VisionScribeAckPayload(BaseModel):
     error: Optional[str] = None
 
 
-class VisionGuardSignal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    camera_id: str
-    window_start: float
-    window_end: float
-    decision: Literal["presence", "unknown", "absent", "alert"]
-    confidence: float
-    summary: Dict[str, Any]
-    evidence_refs: List[str]  # List of artifact_ids
-    salience: float = 0.0
-
-
-class VisionGuardAlert(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    camera_id: str
-    ts: float
-    alert_type: str
-    severity: Literal["low", "medium", "high"]
-    summary: str
-    evidence_refs: List[str]
-    snapshot_path: Optional[str] = None
-    meta: Optional[Dict[str, Any]] = None
-
-
 class VisionEdgeHealth(BaseModel):
     model_config = ConfigDict(extra="forbid")
     camera_id: str
@@ -504,3 +500,86 @@ class VisionScribeRequestPayload(BaseModel):
 class VisionScribeResultPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ack: VisionScribeAckPayload
+
+
+# ---------------------------------------------------------------------------
+# Walkway camera (2026-09-24, docs/superpowers/specs/2026-09-22-walkway-
+# camera-busy-world-design.md). Individuals, rhythms, unresolved percepts.
+# ---------------------------------------------------------------------------
+
+
+class VisionCropV1(BaseModel):
+    """One detection box worth remembering as a possible individual.
+
+    ``embedding`` is None for any box inside a no-embed zone (the patio). The
+    DB enforces the same rule with a CHECK constraint, so a producer bug
+    cannot quietly start storing pictures of the family.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    score: float
+    box_xyxy: List[float]
+    zone: Optional[str] = None
+    embedding_ref: Optional[str] = None
+    embedding: Optional[List[float]] = None
+    # Additive (2026-09-24): see VisionObject.thumb_ref. Same rule as the
+    # embedding: None for any no-embed-zone box (DB CHECK enforces it too).
+    thumb_ref: Optional[str] = None
+
+
+class VisionCropObservationV1(BaseModel):
+    """Every tracked-label box from one host artifact, for the individuals reducer."""
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["vision.crop.observation.v1"] = "vision.crop.observation.v1"
+    observation_id: str
+    stream_id: str
+    camera_id: Optional[str] = None
+    artifact_id: Optional[str] = None
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    frame_width: Optional[int] = None
+    frame_height: Optional[int] = None
+    crops: List[VisionCropV1] = Field(default_factory=list)
+
+
+class PerceptExpectationV1(BaseModel):
+    """A prediction Orion makes in advance about the street and can be wrong about.
+
+    Written and scored by the rhythm reducer in orion-sql-writer. Minutes are
+    minute-of-day in the reducer's configured local timezone.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    expectation_id: str
+    stream_id: str
+    subject_key: str                 # "individual:<id>" | "label:<label>"
+    subject_label: str               # human-readable, e.g. "the black dog" or "vehicle"
+    day_kind: Literal["weekday", "weekend", "any"]
+    window_start: datetime
+    window_end: datetime
+    peak_minute: int = Field(ge=0, lt=1440)
+    support_days: int = Field(ge=0)
+    support_sightings: int = Field(ge=0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    status: Literal["open", "met", "missed", "unscorable"] = "open"
+    emitted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    scored_at: Optional[datetime] = None
+    outcome_event_id: Optional[str] = None
+
+
+class VisionUnresolvedV1(BaseModel):
+    """Something Orion looked at and could not name. Study material, not an alert."""
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["vision.unresolved.v1"] = "vision.unresolved.v1"
+    unresolved_id: str
+    stream_id: Optional[str] = None
+    camera_id: Optional[str] = None
+    window_id: Optional[str] = None
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    reason: Literal["council_uncertainty", "no_label", "surprise"]
+    description: str
+    what_was_tried: List[str] = Field(default_factory=list)
+    evidence_refs: List[str] = Field(default_factory=list)
+    image_ref: Optional[str] = None

@@ -63,6 +63,8 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "notify_summary": "daily",
     "world_pulse_digest": "digest",
     "town_episode": "digest",
+    "walkway_forecast": "digest",
+    "walkway_grade": "digest",
 }
 
 _AUTONOMY_EPISODE_NARRATIVE_SECTIONS = (

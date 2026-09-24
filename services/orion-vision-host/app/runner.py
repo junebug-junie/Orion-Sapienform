@@ -16,6 +16,7 @@ from orion.vision.caption_echo import strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
 from .caption_sanitize import CAPTION_PROMPT, sanitize_answer, sanitize_caption
+from .crop_embeddings import ThumbRateLimiter, ThumbStore, attach_crop_embeddings, load_zones_fail_closed
 from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
@@ -27,6 +28,24 @@ from .when_guard import safe_when
 settings = Settings()
 
 _safe_when = safe_when
+
+_THUMB_STORE: ThumbStore | None = None
+_THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
+
+
+def _thumb_store() -> ThumbStore | None:
+    """Crop thumbnails for the ask card (app/crop_embeddings.py). Empty
+    VISION_CROP_THUMB_DIR disables them."""
+    global _THUMB_STORE
+    root = str(getattr(settings, "VISION_CROP_THUMB_DIR", "") or "").strip()
+    if not root:
+        return None
+    if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
+        _THUMB_STORE = ThumbStore(
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 10.0)))
+        # Retention runs on its own daemon thread, never on the detect path.
+        _THUMB_STORE.start_pruner()
+    return _THUMB_STORE
 
 
 def _resolve_latest_frame_path() -> Path:
@@ -301,6 +320,7 @@ class VisionRunner:
         warnings: List[str] = []
 
         target = self.profiles.resolve_target(task.task_type)
+        request = self._request_with_stream_id(task)
 
         try:
             if self.profiles.is_pipeline(target):
@@ -314,7 +334,7 @@ class VisionRunner:
                         inputs=merge_result_inputs(task.request, task.meta),
                         meta={"error_code": "pipeline_disabled"},
                     )
-                artifacts = self._run_pipeline(self.profiles.get_pipeline(target), task.request, device, warnings)
+                artifacts = self._run_pipeline(self.profiles.get_pipeline(target), request, device, warnings)
             else:
                 if not self._is_enabled(target):
                     return VisionResult(
@@ -326,7 +346,7 @@ class VisionRunner:
                         inputs=merge_result_inputs(task.request, task.meta),
                         meta={"error_code": "profile_disabled"},
                     )
-                artifacts = self._run_profile(self.profiles.get_profile(target), task.request, device, warnings)
+                artifacts = self._run_profile(self.profiles.get_profile(target), request, device, warnings)
 
         except KeyError:
             return VisionResult(
@@ -391,6 +411,22 @@ class VisionRunner:
             warnings=warnings,
             meta=meta,
         )
+
+    @staticmethod
+    def _request_with_stream_id(task: VisionTask) -> Dict[str, Any]:
+        """The router carries stream_id in task meta, not the request, but
+        crop embeddings need it to look up the camera's zones (the patio rule
+        is per camera). Meta wins on a collision, same as merge_result_inputs,
+        so the zone lookup keys on the router's own view of the stream."""
+        request = dict(task.request or {})
+        meta_stream = (task.meta or {}).get("stream_id")
+        if meta_stream:
+            request["stream_id"] = str(meta_stream)
+        # The router's tier (baseline | triggered) gates crop thumbnails.
+        meta_tier = (task.meta or {}).get("dispatch_tier")
+        if meta_tier and not request.get("dispatch_tier"):
+            request["dispatch_tier"] = str(meta_tier)
+        return request
 
     def _run_pipeline(
         self,
@@ -474,12 +510,9 @@ class VisionRunner:
     # ------------------------
     # Real embedding (SigLIP2)
     # ------------------------
-    def _run_embedding_siglip(self, p: ProfileDef, request: Dict[str, Any], device: str) -> Dict[str, Any]:
-        img = _load_image_from_request(request)
-
+    def _load_embedder(self, p: ProfileDef, device: str):
         model_id = p.model_id if p.model_id and not p.model_id.startswith("REPLACE_ME") else self.DEFAULT_EMBED_MODEL
         dtype = self._resolve_dtype(p)
-
         model, processor = self.models.load_siglip_image_embedder(
             profile_name=p.name,
             device=device,
@@ -487,8 +520,11 @@ class VisionRunner:
             model_id=model_id,
             fallback_model_id=self.DEFAULT_EMBED_FALLBACK,
         )
+        return model, processor, model_id
 
-        inputs = processor(images=img, return_tensors="pt")
+    def _embed_images(self, model: Any, processor: Any, images: List[Image.Image], device: str) -> np.ndarray:
+        """One forward pass over a batch of images -> (N, D) float array, un-normalized."""
+        inputs = processor(images=images, return_tensors="pt")
         inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
 
         with torch.inference_mode():
@@ -500,8 +536,14 @@ class VisionRunner:
                 if feats is None:
                     # fallback: CLS token
                     feats = out.last_hidden_state[:, 0, :]
+        return feats.detach().float().cpu().numpy()
 
-        vec = feats.detach().float().cpu().numpy()[0]
+    def _run_embedding_siglip(self, p: ProfileDef, request: Dict[str, Any], device: str) -> Dict[str, Any]:
+        img = _load_image_from_request(request)
+
+        model, processor, model_id = self._load_embedder(p, device)
+
+        vec = self._embed_images(model, processor, [img], device)[0]
 
         if bool(p.params.get("normalize", True)):
             n = np.linalg.norm(vec) + 1e-12
@@ -757,6 +799,20 @@ class VisionRunner:
                 f"nms_iou={nms_iou} max_det={max_det}"
             )
 
+        crop_stats = None
+        if request.get("want_crop_embeddings") is True and objects:
+            try:
+                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, box_th)
+            except Exception as exc:
+                # A crop-embedding failure must not cost the detection or the
+                # whole-frame embedding. Strip any partial vectors.
+                logger.warning(f"[CROP] crop embeddings failed, detections kept: {exc}")
+                for o in objects:
+                    o.pop("embedding", None)
+                    o.pop("embedding_ref", None)
+                    o.pop("thumb_ref", None)
+                crop_stats = {"error": 1, "error_detail": str(exc)[:200]}
+
         # Store as JSON artifact
         seed = f"{request.get('image_path') or request.get('frame_path')}|{model_id}|{text}"
         h = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
@@ -773,7 +829,9 @@ class VisionRunner:
             "text_threshold": text_th,
             "nms_iou": nms_iou,
             "max_detections": max_det,
-            "objects": objects,
+            # Crop vectors ride the bus inline (VisionObject.embedding); the
+            # on-disk debug copy keeps the ref only, not a second vector store.
+            "objects": [{k: v for k, v in o.items() if k != "embedding"} for o in objects],
         }
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -786,7 +844,58 @@ class VisionRunner:
             "prompts": prompts,
             "objects": objects,
             "artifact_path": str(json_path),
+            # Boxes are in this image's pixel space; consumers that map a box
+            # to a zone (orion-vision-window's crop observation) need both.
+            "frame_width": int(img.width),
+            "frame_height": int(img.height),
+            **({"crop_embeddings": crop_stats} if crop_stats is not None else {}),
         }
+
+    def _attach_crop_embeddings(
+        self,
+        p: ProfileDef,
+        objects: List[Dict[str, Any]],
+        img: Image.Image,
+        request: Dict[str, Any],
+        device: str,
+        box_th: float,
+    ) -> Dict[str, int]:
+        """Walkway individuals (idea 1): zone every tracked-label box and embed
+        the crops a zone allows, in one batched forward pass on the already-
+        warm SigLIP embedder. Patio and zones-unknown boxes are never cropped.
+        See app/crop_embeddings.py for the privacy rule."""
+        embed_profile_name = str(p.params.get("crop_embed_profile") or "embed_image")
+        embed_profile = self.profiles.get_profile(embed_profile_name)
+        if not embed_profile.enabled or not self._is_enabled(embed_profile_name):
+            raise RuntimeError(f"crop embed profile disabled: {embed_profile_name}")
+
+        def _embed(crops: List[Image.Image]) -> np.ndarray:
+            model, processor, _model_id = self._load_embedder(embed_profile, device)
+            return self._embed_images(model, processor, crops, device)
+
+        embed_model_id = (
+            embed_profile.model_id
+            if embed_profile.model_id and not embed_profile.model_id.startswith("REPLACE_ME")
+            else self.DEFAULT_EMBED_MODEL
+        )
+        min_score = request.get("crop_embedding_min_score")
+        if min_score is None:
+            min_score = p.params.get("crop_embedding_min_score")
+        min_score = float(box_th if min_score is None else min_score)
+        thumb_store = _thumb_store()
+        return attach_crop_embeddings(
+            objects,
+            img,
+            request=request,
+            params=p.params,
+            embed_fn=_embed,
+            zones_by_stream=load_zones_fail_closed(),
+            model_id=embed_model_id,
+            embed_profile=embed_profile_name,
+            min_score=min_score,
+            thumb_fn=thumb_store.put if thumb_store is not None else None,
+            thumb_limiter=_THUMB_LIMITER,
+        )
 
     # ------------------------
     # Real Captioning (VLM)

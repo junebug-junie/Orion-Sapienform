@@ -37,7 +37,7 @@ async def health():
         # per-node NODE_NAME setting exists yet for this service.
         "node": "vision-edge-node",
         "stream_id": settings.STREAM_ID,
-        "source": settings.SOURCE,
+        "source": settings.source_redacted,
         "detectors": settings.detector_names,
         "bus_enabled": settings.ORION_BUS_ENABLED,
         "events_publish_raw": settings.VISION_EVENTS_PUBLISH_RAW,

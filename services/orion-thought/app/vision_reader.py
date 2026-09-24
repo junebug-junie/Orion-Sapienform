@@ -39,8 +39,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Sequence
 
 logger = logging.getLogger("orion-thought.vision_reader")
 
@@ -74,34 +74,64 @@ def _get_engine():
     return _engine
 
 
+DEFAULT_VISION_EVENTS_LEGACY_CUTOFF = "2026-09-24T00:00:00+00:00"
+
+
+def _legacy_cutoff() -> datetime:
+    """Same rule and same env key as orion/situational/perception_reader.py."""
+    raw = (os.getenv("ORION_VISION_EVENTS_LEGACY_CUTOFF") or "").strip() or DEFAULT_VISION_EVENTS_LEGACY_CUTOFF
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("bad ORION_VISION_EVENTS_LEGACY_CUTOFF=%r; using default", raw)
+        ts = datetime.fromisoformat(DEFAULT_VISION_EVENTS_LEGACY_CUTOFF)
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def read_recent_vision_events(
     *,
     max_age_sec: float,
     limit: int,
+    stream_ids: Sequence[str],
+    legacy_cutoff: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Most recent fresh, narrated vision events, newest first. Never raises.
 
     Each entry: {narrative: str, age_sec: float | None}. The empty/whitespace-
     narrative and staleness filters both apply before LIMIT -- a caption-less
     or aged-out row must not crowd out an older, real, still-fresh one.
+
+    Only rows from ``stream_ids`` (the ROOM cameras) or legacy rows with a
+    NULL ``stream_id`` written before ``legacy_cutoff`` (default: setting
+    ``ORION_VISION_EVENTS_LEGACY_CUTOFF``, 2026-09-24T00:00:00Z) are read -- a
+    NULL row after that means a producer dropped the camera, so it is refused. ``vision_events`` also carries the walkway
+    camera's narratives (street and patio) and its reducers' rows; reverie is
+    about the room. An empty ``stream_ids`` reads legacy rows only, never
+    every camera. Same rule as ``orion/situational/perception_reader.py``.
     """
     if limit <= 0:
         return []
+    ids = [str(s).strip() for s in stream_ids if str(s).strip()] or ["\x00none"]
     try:
-        from sqlalchemy import text
+        from sqlalchemy import bindparam, text
 
         engine = _get_engine()
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=float(max_age_sec))
+        stmt = text(
+            "SELECT narrative, created_at FROM vision_events "
+            "WHERE narrative IS NOT NULL AND narrative <> '' "
+            "AND created_at >= :cutoff "
+            "AND (stream_id IN :stream_ids "
+            "     OR (stream_id IS NULL AND created_at < :legacy_cutoff)) "
+            "ORDER BY created_at DESC "
+            "LIMIT :limit"
+        ).bindparams(bindparam("stream_ids", expanding=True))
         with engine.connect() as conn:
             rows = (
                 conn.execute(
-                    text(
-                        "SELECT narrative, created_at FROM vision_events "
-                        "WHERE narrative IS NOT NULL AND narrative <> '' "
-                        "AND created_at >= now() - make_interval(secs => :max_age_sec) "
-                        "ORDER BY created_at DESC "
-                        "LIMIT :limit"
-                    ),
-                    {"limit": limit, "max_age_sec": max_age_sec},
+                    stmt,
+                    {"limit": limit, "cutoff": cutoff, "stream_ids": ids,
+                     "legacy_cutoff": legacy_cutoff or _legacy_cutoff()},
                 )
                 .mappings()
                 .all()

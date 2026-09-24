@@ -24,3 +24,24 @@ class TestJournalComposePrompt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_walkway_rules_render_only_for_walkway_triggers():
+    import jinja2
+
+    src = (Path(__file__).resolve().parents[1] / "orion" / "cognition" / "prompts" / "journal_compose_prompt.j2").read_text()
+    tmpl = jinja2.Template(src)
+
+    def render(kind):
+        return tmpl.render(
+            metadata={"journal_trigger": {"trigger_kind": kind, "source_kind": "scheduler", "prompt_seed": "{}"},
+                      "journal_mode": "digest"},
+            raw_user_text="s", memory_digest="",
+        )
+
+    for kind in ("walkway_forecast", "walkway_grade"):
+        text = render(kind)
+        assert "Walkway journal:" in text
+        assert "confirmed, disconfirmed, unscored" in text
+        assert "enough_days: false" in text
+    assert "Walkway journal:" not in render("metacog_digest")

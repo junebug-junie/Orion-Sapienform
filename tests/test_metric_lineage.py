@@ -59,7 +59,9 @@ def test_every_registry_resolves_nonempty():
     """
     assert len(resolve_field_channels()) >= 38
     assert len(resolve_bus_channels()) >= 250
-    assert len(resolve_organ_signals()) >= 252
+    # 252 -> 240 on 2026-09-24: retiring orion-security-watcher removed its two
+    # organ signals (250 left). Floor, not census -- see docstring.
+    assert len(resolve_organ_signals()) >= 240
     # 13 signals + their enumerable scalar fields
     assert len(resolve_inner_state()) >= 13
 

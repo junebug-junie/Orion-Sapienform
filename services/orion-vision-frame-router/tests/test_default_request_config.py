@@ -13,10 +13,14 @@ def _cfg_path() -> Path:
     return Path(__file__).resolve().parents[3] / "config" / "vision_frame_router.yaml"
 
 
-def test_defaults_baseline_disables_caption_and_embeddings() -> None:
+def test_defaults_baseline_disables_caption_enables_embeddings() -> None:
+    # want_embeddings flipped true on the baseline tier 2026-08-19 (P2
+    # perception prediction error needs a frame embedding every baseline
+    # task; see the comment on that key in config/vision_frame_router.yaml).
+    # This test still asserted the pre-flip value and had been red since.
     raw = load_policy_file(_cfg_path())
     assert raw["defaults"]["baseline"]["request"]["want_caption"] is False
-    assert raw["defaults"]["baseline"]["request"]["want_embeddings"] is False
+    assert raw["defaults"]["baseline"]["request"]["want_embeddings"] is True
 
 
 def test_defaults_triggered_enables_caption_and_embeddings() -> None:
@@ -31,7 +35,7 @@ def test_camera_without_override_inherits_baseline_request() -> None:
 
     merged, _name = policy.resolve_camera_policy("mock-cam-01")
     assert merged["baseline"]["request"]["want_caption"] is False
-    assert merged["baseline"]["request"]["want_embeddings"] is False
+    assert merged["baseline"]["request"]["want_embeddings"] is True
 
     porch_request = policy.resolve_camera_policy("porch_eye")[0]["request"]
     assert "want_caption" not in porch_request

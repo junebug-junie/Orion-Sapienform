@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # identity_face is deliberately excluded from CHANNEL_VISIONHOST_PUB's
     # general broadcast (should_broadcast_artifact in main.py) -- that
     # channel has multiple, generic, task-type-agnostic subscribers
-    # (orion-security-watcher, orion-vision-window, orion-vision-council per
+    # (orion-vision-window, orion-vision-council per
     # orion/bus/channels.yaml) and identity data should not ride on a lane
     # any current or future subscriber gets by default. The one legitimate
     # consumer (orion-vision-window, for presence.subject + the window
@@ -171,6 +171,17 @@ class Settings(BaseSettings):
     # docker-compose.yml) rather than adding a new volume.
     IDENTITY_GALLERY_DIR: str = "/mnt/telemetry/orion-vision-host/identity_gallery"
     IDENTITY_ENROLLED_SUBJECT: str = "juniper"
+
+    # Walkway crop thumbnails (app/crop_embeddings.py ThumbStore): a small
+    # JPEG per EMBEDDED crop (never a no-embed-zone box), named by content
+    # hash, for the Hub's ask card. The Hub mounts this directory read-only.
+    # Pruned here after VISION_CROP_THUMB_RETENTION_DAYS without a rewrite --
+    # longer than an ask stays open (7 days); orion-sql-writer reads the same
+    # key to pick an ask picture that outlives the ask. Empty disables.
+    VISION_CROP_THUMB_DIR: str = "/mnt/telemetry/orion-vision-host/crop_thumbs"
+    VISION_CROP_THUMB_RETENTION_DAYS: float = 10.0
+    # At most one thumbnail per stream per this many seconds.
+    VISION_CROP_THUMB_MIN_INTERVAL_SEC: float = 10.0
 
     @property
     def enabled_profiles(self) -> List[str]:

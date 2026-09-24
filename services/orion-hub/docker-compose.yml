@@ -54,6 +54,10 @@ services:
       # path in/out (network_mode: host, no path translation needed), :ro
       # since Hub only ever reads these -- it is not the producer.
       - ${REVERIE_VISUAL_STORAGE_DIR:-/mnt/storage-lukewarm/orion/reverie-visual}:${REVERIE_VISUAL_STORAGE_DIR:-/mnt/storage-lukewarm/orion/reverie-visual}:ro
+      # Walkway ask card pictures (read-only): orion-vision-host writes one
+      # small JPEG per embedded crop here (never a patio box) and prunes it
+      # after 10 days. Served only by content hash (scripts/ask_routes.py).
+      - ${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro
       # Reuse the operator's existing host-level git/gh auth read-only, same pattern
       # as the claude-binary mount below -- no credentials are stored
       # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
@@ -209,6 +213,7 @@ services:
       - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}
       - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
+      - HUB_VISION_CROP_THUMB_DIR=${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
 
       # New Titanium Channels
       - CORTEX_GATEWAY_REQUEST_CHANNEL=${CORTEX_GATEWAY_REQUEST_CHANNEL:-orion-cortex-gateway:request}

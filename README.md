@@ -631,7 +631,6 @@ Orion runs on real machines in a real room, and increasingly, a persistent virtu
 | `orion-ai-town` | Mesh deployment wrapper for a self-hosted AI Town (Convex) — the environment `orion-embodiment` actuates in. |
 | `orion-power-guard` | Power safety and guardrails. |
 | `orion-gpu-cluster-power` | GPU cluster power monitoring/control. |
-| `orion-security-watcher` | Security/event watcher. |
 | `orion-equilibrium-service` | Health → distress/zen/equilibrium signals. |
 
 The vision mesh runs a self-contained host pipe (`frames → router → host → window → council`). Host GroundingDINO detections gate VLM caption work; window evidence tiers and Council grounding produce `person_presence` without caption hallucinations. Edge YOLO/motion stays on separate channels for edge-local consumers. See [`docs/vision_services.md`](docs/vision_services.md) and service READMEs under `services/orion-vision-*`. Vision should not be treated as omniscience — it should be noisy, bounded, consent-aware evidence. False positives, lighting shifts, dust, and movement artifacts are expected engineering problems, not failures of the concept.
@@ -792,7 +791,7 @@ Notifications / attention:
   orion-notify, orion-notify-digest
 
 Power / security / lab safety:
-  orion-power-guard, orion-gpu-cluster-power, orion-security-watcher
+  orion-power-guard, orion-gpu-cluster-power
 
 Bus / platform / observability:
   orion-bus, orion-bus-mirror, orion-bus-tap, orion-signal-gateway,

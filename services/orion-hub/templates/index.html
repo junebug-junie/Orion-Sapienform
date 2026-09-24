@@ -611,6 +611,18 @@
         </div>
         <div id="affectAmbientStatusLine" class="hidden text-[11px] text-gray-500"></div>
         <div id="affectCaptureResult" class="hidden rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300 whitespace-pre-wrap"></div>
+        <!-- Orion is asking (walkway camera idea 3). Open questions from
+             orion_ask via GET /api/asks; answers/dismissals POST to
+             /api/asks/{id}/answer|dismiss (scripts/ask_routes.py). Wired by
+             static/js/vision-asks.js. -->
+        <div id="visionAsksCard" class="rounded-lg border border-gray-700 bg-gray-900/60 p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">Orion is asking</h3>
+            <span class="text-[11px] text-gray-500">Things Orion saw and wants your help naming</span>
+          </div>
+          <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
+          <div id="visionAsksList" class="space-y-2"></div>
+        </div>
       </div>
 
       <!-- ✅ ADDED: Vision pop-out container (hidden; does not change layout) -->
@@ -4075,6 +4087,7 @@
   <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/container-bringup-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/carbon-affect-snapshot.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="/static/js/organ-signals-graph-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

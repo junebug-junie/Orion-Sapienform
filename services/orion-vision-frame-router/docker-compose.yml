@@ -13,6 +13,8 @@ services:
       - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED:-false}
       - ROUTER_POLICY_PATH=/app/config/vision_frame_router.yaml
       - DRY_RUN=${DRY_RUN:-false}
+      - ROUTER_EXPECTATION_STEERING_ENABLED=${ROUTER_EXPECTATION_STEERING_ENABLED:-true}
+      - ROUTER_EXPECTATION_REFRESH_SEC=${ROUTER_EXPECTATION_REFRESH_SEC:-5.0}
     volumes:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-frame-router/app:/app/app
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion

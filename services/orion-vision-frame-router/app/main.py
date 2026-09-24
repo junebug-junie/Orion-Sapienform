@@ -12,6 +12,7 @@ from loguru import logger
 from orion.core.bus.async_service import OrionBusAsync
 
 from .dispatcher import FrameDispatcher
+from .expectation import ExpectationCache
 from .metrics import RouterMetrics, make_health_envelope
 from .policy import FrameDispatchPolicy
 from .settings import Settings
@@ -37,13 +38,20 @@ class FrameRouterService:
         self._reply_task: Optional[asyncio.Task] = None
         self._timeout_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+        self._expectation_task: Optional[asyncio.Task] = None
+        self._expectation_redis: Any = None
+        self.expectation: ExpectationCache | None = (
+            ExpectationCache(refresh_sec=self.settings.ROUTER_EXPECTATION_REFRESH_SEC)
+            if self.settings.ROUTER_EXPECTATION_STEERING_ENABLED
+            else None
+        )
         self._shutdown = asyncio.Event()
 
     async def start(self) -> None:
         logger.remove()
         logger.add(lambda m: print(m, end=""), level=self.settings.LOG_LEVEL)
 
-        self.policy = FrameDispatchPolicy.load(self.settings)
+        self.policy = FrameDispatchPolicy.load(self.settings, expectation=self.expectation)
         self.dispatcher = FrameDispatcher(
             settings=self.settings,
             policy=self.policy,
@@ -58,17 +66,40 @@ class FrameRouterService:
         self._reply_task = asyncio.create_task(self._reply_loop())
         self._timeout_task = asyncio.create_task(self._timeout_loop())
         self._health_task = asyncio.create_task(self._health_loop())
+        if self.expectation is not None:
+            # Own client on the bus Redis (where orion:vision:expect:<stream_id>
+            # lives). Plain redis-py, not the bus codec: this is a key read, not
+            # a message.
+            import redis.asyncio as aioredis
+
+            self._expectation_redis = aioredis.from_url(
+                self.settings.ORION_BUS_URL, socket_timeout=2.0, socket_connect_timeout=2.0
+            )
+            self._expectation_task = asyncio.create_task(
+                self.expectation.run(self._expectation_redis, self._shutdown)
+            )
         logger.info(f"[FRAME-ROUTER] Started → {self.settings.CHANNEL_FRAMES_IN}")
 
     async def stop(self) -> None:
         self._shutdown.set()
-        for task in (self._frames_task, self._reply_task, self._timeout_task, self._health_task):
+        for task in (
+            self._frames_task,
+            self._reply_task,
+            self._timeout_task,
+            self._health_task,
+            self._expectation_task,
+        ):
             if task:
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
+        if self._expectation_redis is not None:
+            try:
+                await self._expectation_redis.aclose()
+            except Exception:
+                pass
         await self.bus.close()
 
     async def _frames_loop(self) -> None:
@@ -153,6 +184,9 @@ class FrameRouterService:
             "router_enabled": self.settings.ROUTER_ENABLED,
             "dry_run": self.settings.DRY_RUN,
             "policy_path": self.settings.ROUTER_POLICY_PATH,
+            "expectation_steering_enabled": self.expectation is not None,
+            "expectation_open_streams": self.expectation.open_streams() if self.expectation else [],
+            "expectation_refresh_failures": self.expectation.refresh_failures if self.expectation else 0,
         }
 
 

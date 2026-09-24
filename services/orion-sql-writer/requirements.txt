@@ -11,7 +11,9 @@ loguru>=0.7
 # else in this file pulls requests in transitively -- verified against the live
 # image, where `from orion.notify.client import NotifyClient` raised
 # ModuleNotFoundError. Same pin as every other NotifyClient consumer
-# (orion-actions, orion-security-watcher, orion-notify-digest, orion-world-pulse).
+# (orion-actions, orion-notify-digest, orion-world-pulse).
 requests==2.32.3
-#numpy>=2.4
+# Centroid matching for the walkway individuals reducer (app/vision_individuals.py):
+# one matmul per crop instead of a Python loop over every individual.
+numpy==2.0.2
 #scipy>=1.6

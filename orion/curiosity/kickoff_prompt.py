@@ -50,6 +50,7 @@ it into its own graph, which is a channel it already owns -- see
 from __future__ import annotations
 
 from typing import Optional, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from orion.curiosity.study_material import StudyMaterial
 from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, next_hop_n
@@ -255,6 +256,37 @@ def _material_section(material: StudyMaterial) -> list[str]:
         lines += [f"  - {card.preview()}" for card in material.relations]
         lines.append("")
 
+    lines += _unresolved_section(material)
+    return lines
+
+
+def _unresolved_section(material: StudyMaterial) -> list[str]:
+    """Percepts Orion's cameras could not name (walkway spec idea 4). Each
+    line names its own camera from the row's stream_id.
+
+    Nothing at all when there are none -- no heading over an empty list. The
+    paragraph says these exist and what Orion MAY do with them; it does not
+    say to pick one. The chooser stays Orion.
+    """
+    if not material.unresolved:
+        return []
+    try:
+        tz = ZoneInfo(material.local_timezone or "America/Denver")
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = None
+    lines = [
+        "THINGS YOUR CAMERAS SAW AND COULD NOT NAME (the most recent "
+        f"{len(material.unresolved)} from the last three days; each says which "
+        "camera). Your camera "
+        "recorded these because nothing it knows fit them. They are here "
+        "because not-knowing is material too, not because you should pick one. "
+        "If one interests you, you may open a :Prior about what it was, or say "
+        "in what you write that you want to ask Juniper about it -- she can "
+        "look at what that camera sees; you only have what is listed here.",
+        "",
+    ]
+    lines += [f"  - {card.preview(tz)}" for card in material.unresolved]
+    lines.append("")
     return lines
 
 

@@ -215,6 +215,13 @@ class Settings(BaseSettings):
     orion_situation_perception_stream_ids: str = Field(
         "carbon,cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_IDS"
     )
+    # 2026-09-24, walkway camera spec idea 5: street cameras whose summary
+    # (who is around, expectation outcomes, unnamed percepts, patio count)
+    # joins the situation brief. Empty string disables the street line.
+    # Only read when ORION_SITUATION_PERCEPTION_ENABLED is true.
+    orion_situation_street_stream_ids: str = Field(
+        "walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+    )
     # 2026-08-29: the cooldown for the OTHER ask reason -- "I have no fresh
     # confirmed read of who this is at all" (lid closed, camera off, empty
     # frame). 21600s (6h), far longer than the mismatch cooldown above,

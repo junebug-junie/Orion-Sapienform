@@ -43,6 +43,7 @@ stays reconstructable afterwards even though it is not reproducible.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Sequence
@@ -129,6 +130,11 @@ class StudyMaterial:
     relation_resolvable: int = 0
     relation_by_kind: dict[str, int] = field(default_factory=dict)
     relations: list[RelationCard] = field(default_factory=list)
+    # Walkway percepts Orion could not name (idea 4). Empty when the table is
+    # missing, empty, or unreadable -- read separately from the two stores
+    # above so a missing migration never makes the whole menu `unavailable`.
+    unresolved: list["UnresolvedPerceptCard"] = field(default_factory=list)
+    local_timezone: str = "America/Denver"
     unavailable_reason: str | None = None
 
     @property
@@ -143,9 +149,11 @@ class StudyMaterial:
         return self.unavailable_reason is not None
 
     def shown_ids(self) -> list[str]:
-        return [c.crystallization_id for c in self.crystallizations] + [
-            r.decision_id for r in self.relations
-        ]
+        return (
+            [c.crystallization_id for c in self.crystallizations]
+            + [r.decision_id for r in self.relations]
+            + [u.unresolved_id for u in self.unresolved]
+        )
 
 
 def _as_float(value: Any) -> float | None:
@@ -378,3 +386,109 @@ def assemble_study_material(
         relation_resolvable=relation_resolvable,
         relations=[build_relation_card(r) for r in relation_rows],
     )
+
+
+# --- Things Orion's cameras saw and could not name --------------------------
+#
+# docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 4.
+# Curiosity's only material used to be Orion's own internals, which is why the
+# runs kept sliding into architecture archaeology. `vision_unresolved` rows are
+# percepts the vision pipeline could not label (council uncertainty, no label
+# above threshold, embedding surprise). They are OFFERED, never chosen: newest
+# first is not a ranking of what matters, it is "the last few", capped at 3 so
+# the street cannot crowd out everything else.
+#
+# Degrades to nothing: the migration may not be applied yet, and an absent or
+# empty table must render no section at all -- never a heading with no rows.
+
+DEFAULT_UNRESOLVED_SAMPLE = 3
+DEFAULT_UNRESOLVED_LOOKBACK_HOURS = 72
+
+UNRESOLVED_RECENT_SQL = """
+SELECT unresolved_id, stream_id, camera_id, observed_at, reason, description,
+       what_was_tried, evidence_refs, image_ref
+FROM vision_unresolved
+WHERE observed_at > now() - make_interval(hours => $1)
+ORDER BY observed_at DESC
+LIMIT $2
+"""
+
+_REASON_PLAIN = {
+    "council_uncertainty": "the vision council was unsure",
+    "no_label": "no detector label was confident enough",
+    "surprise": "it looked unlike what that camera usually sees",
+}
+
+
+def _as_str_list(value: Any) -> list[str]:
+    """`what_was_tried` is JSONB; asyncpg hands it back as a JSON string unless
+    a codec is registered, so accept both."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return [value] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if str(v).strip()]
+    return []
+
+
+@dataclass(frozen=True)
+class UnresolvedPerceptCard:
+    unresolved_id: str
+    observed_at: datetime
+    stream_id: str
+    reason: str
+    description: str
+    what_was_tried: tuple[str, ...] = ()
+    image_ref: str | None = None
+
+    def preview(self, tz: Any = None) -> str:
+        when = self.observed_at.astimezone(tz) if tz is not None else self.observed_at
+        # Named from the row's own stream, never assumed to be the walkway.
+        place = f"on the {self.stream_id} camera" if self.stream_id else "on a camera"
+        known = [_clip(self.description)] if self.description.strip() else []
+        why = _REASON_PLAIN.get(self.reason)
+        if why:
+            known.append(f"flagged because {why}")
+        if self.what_was_tried:
+            known.append("tried: " + ", ".join(_clip(t, 60) for t in self.what_was_tried))
+        text = (
+            f"At {when:%H:%M} on {when:%a %d %b} {place} I saw something I could "
+            f"not name; here is what I know: {'; '.join(known) or 'nothing more was recorded'}."
+        )
+        # image_ref deliberately NOT printed: a ref could be a whole frame, and
+        # a frame from a camera with a no-embed zone shows the patio (family
+        # space). The council already withholds it for such cameras; this is
+        # the second layer.
+        return text + f"\n      unresolved_id: {self.unresolved_id}"
+
+
+def build_unresolved_card(row: Any) -> UnresolvedPerceptCard | None:
+    """None for a row with no timestamp or id -- skipped, not rendered empty."""
+    try:
+        observed = row["observed_at"]
+        uid = row["unresolved_id"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if observed is None or not uid:
+        return None
+    return UnresolvedPerceptCard(
+        unresolved_id=str(uid),
+        observed_at=observed,
+        stream_id=str(row["stream_id"] or ""),
+        reason=str(row["reason"] or ""),
+        description=str(row["description"] or ""),
+        what_was_tried=tuple(_as_str_list(row["what_was_tried"])),
+        image_ref=(str(row["image_ref"]) if row["image_ref"] else None),
+    )
+
+
+def build_unresolved_cards(
+    rows: Sequence[Any], *, limit: int = DEFAULT_UNRESOLVED_SAMPLE
+) -> list[UnresolvedPerceptCard]:
+    cards = [c for c in (build_unresolved_card(r) for r in rows) if c is not None]
+    cards.sort(key=lambda c: c.observed_at, reverse=True)
+    return cards[: max(0, limit)]

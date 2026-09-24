@@ -58,16 +58,6 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         bus_channels=["orion:power:events"],
         notes=[]
     ),
-    "security_watcher": OrionOrganRegistryEntry(
-        organ_id="security_watcher",
-        organ_class=OrganClass.exogenous,
-        service="orion-security-watcher",
-        signal_kinds=["security_event"],
-        canonical_dimensions=["level", "confidence"],
-        causal_parent_organs=[],
-        bus_channels=["orion:security:visits", "orion:security:alerts", "orion:vision:guard:signal"],
-        notes=[]
-    ),
     "equilibrium": OrionOrganRegistryEntry(
         organ_id="equilibrium",
         organ_class=OrganClass.hybrid,

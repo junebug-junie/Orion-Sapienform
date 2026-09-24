@@ -55,3 +55,22 @@ def test_summarize_items_skips_caption_prompt_echo() -> None:
     ]
     summary = summarize_items(items)
     assert summary["captions"] == ["A desk with two monitors."]
+
+
+def test_unnamed_boxes_carry_geometry_for_the_council_zone_check() -> None:
+    art = VisionArtifactPayload(
+        artifact_id="a1", correlation_id="c1", task_type="retina_fast", device="cuda:0",
+        inputs={"stream_id": "walkway"},
+        outputs=VisionArtifactOutputs(
+            objects=[VisionObject(label="", score=0.4, box_xyxy=[10, 20, 30, 40]),
+                     VisionObject(label="object", score=0.4, box_xyxy=[1, 2, 3, 4]),
+                     VisionObject(label="person", score=0.9, box_xyxy=[5, 6, 7, 8])],
+            frame_width=640, frame_height=360,
+        ),
+        timing={}, model_fingerprints={},
+    )
+    boxes = summarize_items([(art, time.time())])["unnamed_boxes"]
+    assert boxes == [
+        {"frame": "a1", "box_xyxy": [10.0, 20.0, 30.0, 40.0], "frame_width": 640, "frame_height": 360},
+        {"frame": "a1", "box_xyxy": [1.0, 2.0, 3.0, 4.0], "frame_width": 640, "frame_height": 360},
+    ]  # named boxes are not forwarded

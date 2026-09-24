@@ -187,6 +187,19 @@ profiles:
       nms_iou: 0.6
       label_mode: open_vocab           # open_vocab | closed_set
       labels_hint: []                  # optional label shortlist per request
+      # Walkway crop embeddings (2026-09-24, docs/superpowers/specs/
+      # 2026-09-22-walkway-camera-busy-world-design.md idea 1). Only runs when
+      # the request sets want_crop_embeddings: true (the router's walkway
+      # stream policy does; no other stream asks). Each box whose label is in
+      # crop_embedding_labels (request value wins) is zoned via
+      # config/vision_zones.yaml; boxes in a no-embed zone (the patio) are
+      # never cropped. Allowed crops go through crop_embed_profile's already-
+      # warm SigLIP tower in ONE batched forward pass. Code:
+      # services/orion-vision-host/app/crop_embeddings.py.
+      crop_embed_profile: embed_image
+      crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+      crop_embedding_max_per_frame: 8  # highest-scoring boxes first; caps bus payload (~1152 floats each)
+      crop_min_side_px: 16             # smaller crops are noise to SigLIP; zoned but not embedded
       # Open-vocabulary detection can only name what the prompt asks about.
       # With this unset, runner.py fell back to a hardcoded six-word list
       # (person/face/phone/screen/door/package), which is why 19 days of live

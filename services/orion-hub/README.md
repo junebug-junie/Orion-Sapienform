@@ -3061,3 +3061,12 @@ snapshot only with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 Off by default on purpose: Hub's pooled p95 includes long hub->orch turns, and
 orion-equilibrium-service's current transport gate fires on pooled p95 >= 5 s. Enable after the
 per-hop EWMA transport gate ships (docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
+
+## Orion is asking (open questions to Juniper)
+
+Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). A card in the Vision panel ("Orion is asking", `#visionAsksCard`, `static/js/vision-asks.js`) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
+
+- `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
+- `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
+
+Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.

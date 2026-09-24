@@ -89,7 +89,6 @@ class Settings(BaseSettings):
         "orion:stance:*",
         "orion:journal:*",
         "orion:power:*",
-        "orion:security:*",
         "orion:world:*",
         "orion:rpc_health:*",
     ]

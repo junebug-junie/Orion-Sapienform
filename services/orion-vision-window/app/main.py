@@ -29,6 +29,7 @@ from .projection import (
     identity_hint_from_artifact,
     stream_key_from_artifact,
 )
+from .crops import build_crop_observation
 from .recovery_store import RecoveryStore
 from .presence import PresenceRegistry, write_snapshot_to_postgres
 from .scene_belief import SceneBeliefRegistry
@@ -135,6 +136,8 @@ class WindowService:
         self._m_snapshots = 0
         self._m_inventory_published = 0
         self._m_inventory_failed = 0
+        self._m_crop_obs_published = 0
+        self._m_crop_obs_failed = 0
         self._m_recovery_ok = 0
         self._m_recovery_fail = 0
         self._m_catchup_expired = 0
@@ -258,6 +261,7 @@ class WindowService:
                 self._m_ingest += 1
                 async with self._buffer_lock:
                     self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
+                await self._publish_crop_observation(payload, env)
 
     async def _consume_identity(self) -> None:
         """Separate loop, separate channel from _consume() above --
@@ -572,6 +576,37 @@ class WindowService:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
+    async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:
+        """Per-artifact, not per-window: every tracked-label box the host
+        zoned/embedded (walkway individuals, idea 1) goes to the individuals
+        reducer with its own frame time. Patio boxes are forwarded with no
+        vector; they are presence counts. Best effort, like the inventory:
+        a failure here must never cost ingest."""
+        if not settings.WINDOW_CROP_OBSERVATIONS_ENABLED or not self.bus:
+            return
+        try:
+            obs = build_crop_observation(artifact)
+            if obs is None:
+                return
+            try:
+                cid = _corr_uuid(getattr(env, "correlation_id", None))
+            except ValueError:
+                cid = uuid.uuid4()
+            await self.bus.publish(
+                settings.CHANNEL_CROP_OBSERVATIONS_PUB,
+                BaseEnvelope(
+                    kind="vision.crop.observation.v1",
+                    source=_source_ref(),
+                    correlation_id=cid,
+                    causality_chain=[*(getattr(env, "causality_chain", None) or [])],
+                    payload=obs.model_dump(mode="json"),
+                ),
+            )
+            self._m_crop_obs_published += 1
+        except Exception as exc:
+            self._m_crop_obs_failed += 1
+            logger.warning(f"[WINDOW] crop observation publish failed: {exc}")
+
     async def _get_fresh_identity_reading(
         self, stream_id: str, *, now: float
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -857,4 +892,6 @@ async def api_metrics() -> Dict[str, Any]:
         "vision_window_recovery_writes_total": service._m_recovery_ok,
         "vision_window_recovery_write_failures_total": service._m_recovery_fail,
         "vision_window_cursor_expired_total": service._m_catchup_expired,
+        "vision_window_crop_observations_published_total": service._m_crop_obs_published,
+        "vision_window_crop_observations_failed_total": service._m_crop_obs_failed,
     }

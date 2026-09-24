@@ -280,6 +280,16 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_POST_TURN_CLOSURE_LISTENER",
     )
+    # Juniper's answers to Orion's asks (walkway camera idea 3). A named
+    # vision_individual becomes an EntityNodeV1 (app/ask_answered_listener.py).
+    channel_ask_answered: str = Field(
+        "orion:ask:answered",
+        alias="CHANNEL_ASK_ANSWERED",
+    )
+    enable_ask_answered_listener: bool = Field(
+        True,
+        alias="ENABLE_ASK_ANSWERED_LISTENER",
+    )
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(

@@ -181,7 +181,8 @@ from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionReco
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
-from orion.schemas.vision import VisionEventBundleItem, VisionSceneInventoryV1
+from orion.schemas.vision import VisionEventBundleItem, VisionSceneInventoryV1, VisionUnresolvedV1
+from app.models.vision_walkway import VisionUnresolvedSQL
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.telemetry.system_health import EquilibriumServiceTransitionV1
 from orion.schemas.world_pulse import (
@@ -221,6 +222,7 @@ _GRAMMAR_BACKGROUND_TASKS: set[asyncio.Task] = set()
 _WRITE_SEMAPHORE: asyncio.Semaphore | None = None
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
+VISION_CROP_OBSERVATION_KIND = "vision.crop.observation.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
@@ -237,6 +239,7 @@ INSERT_ONLY_MODELS = {
     MindRunSQL,
     CausalGeometrySnapshotSQL,
     EquilibriumServiceTransitionSQL,
+    VisionUnresolvedSQL,
 }
 
 
@@ -515,6 +518,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
     "VisionSceneInventorySQL": (VisionSceneInventorySQL, VisionSceneInventoryV1),
+    "VisionUnresolvedSQL": (VisionUnresolvedSQL, VisionUnresolvedV1),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
     "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
@@ -1577,11 +1581,25 @@ def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
     return out
 
 
+# Set at boot by main.py after checking information_schema. Until the
+# vision_events.stream_id column exists, the key is stripped from writes
+# (VisionEventSQL.stream_id is deferred, so no SELECT/INSERT names it) rather
+# than every vision event failing on UndefinedColumn.
+_VISION_EVENTS_STREAM_ID_READY = True
+
+
+def set_vision_events_stream_id_ready(ready: bool) -> None:
+    global _VISION_EVENTS_STREAM_ID_READY
+    _VISION_EVENTS_STREAM_ID_READY = bool(ready)
+
+
 def _write_row(sql_model_cls, data: dict) -> bool:
     sess = get_session()
     try:
         mapper = inspect(sql_model_cls)
         write_data = dict(data)
+        if sql_model_cls is VisionEventSQL and not _VISION_EVENTS_STREAM_ID_READY:
+            write_data.pop("stream_id", None)
         if sql_model_cls is NotificationRequestDB:
             write_data = _normalize_notification_request_payload(write_data)
         if sql_model_cls is BiometricsClusterSQL:
@@ -2314,6 +2332,30 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
     if env.kind == "chat.history.spark_meta.patch.v1":
         await asyncio.to_thread(_apply_spark_meta_patch, payload)
+        return
+
+    # One envelope -> N rows (one per crop), with the patio rule re-enforced
+    # before insert. See app/vision_crop_persist.py.
+    if env.kind == VISION_CROP_OBSERVATION_KIND:
+        from app.vision_crop_persist import persist_crop_observation
+
+        try:
+            n = await asyncio.to_thread(persist_crop_observation, payload)
+            logger.info("Written %s -> vision_crop_observation rows=%s", env.kind, n)
+        except Exception as exc:
+            logger.error(
+                "vision_crop_observation_write_failed corr=%s error=%s "
+                "(is services/orion-sql-db/manual_migration_walkway_camera_v1.sql applied?)",
+                getattr(env, "correlation_id", None), exc,
+            )
+            from app.vision_crop_persist import redact_crop_payload
+
+            # Never the raw payload: it carries embeddings, possibly of the
+            # patio. The fallback row records that a write was lost, not what.
+            await asyncio.to_thread(
+                _write_fallback, env.kind, str(getattr(env, "correlation_id", "") or ""),
+                redact_crop_payload(env.payload), f"vision_crop_observation write failed: {exc}",
+            )
         return
 
     async def _persist_evidence_units() -> bool:

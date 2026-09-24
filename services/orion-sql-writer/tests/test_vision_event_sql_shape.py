@@ -76,3 +76,53 @@ def test_vision_event_bundle_item_data_constructs_vision_event_sql_without_raisi
     assert row.confidence == evt.confidence
     assert row.salience == evt.salience
     assert row.evidence_refs == evt.evidence_refs
+
+
+def test_stream_id_rides_from_bundle_item_onto_the_row() -> None:
+    """Room readers filter vision_events on stream_id; a walkway narrative
+    that lost it on the way would read as a legacy room row."""
+    row = VisionEventSQL(**_make_event(stream_id="walkway").model_dump())
+    assert row.stream_id == "walkway"
+
+
+def test_every_raw_vision_events_insert_writes_stream_id() -> None:
+    """The walkway reducers write vision_events with raw SQL, not the ORM.
+    Every such INSERT must name the camera, or its rows would pass the room
+    readers' legacy (stream_id IS NULL) branch."""
+    import re
+
+    app_dir = SERVICE_ROOT / "app"
+    found = 0
+    for path in sorted(app_dir.glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"INSERT INTO vision_events \(([^)]*)\)", src):
+            found += 1
+            cols = {c.strip() for c in m.group(1).replace('"', " ").split(",")}
+            assert "stream_id" in cols, f"{path.name}: vision_events INSERT without stream_id"
+    assert found >= 2  # vision_rhythm + vision_individuals
+
+
+def test_boot_ddl_adds_vision_events_stream_id_in_its_own_transaction() -> None:
+    src = (SERVICE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    ddl = "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT"
+    assert src.count(ddl) == 1
+    # Not inside the giant bootstrap block (which a LockNotAvailable rolled
+    # back live): that block's first statement comes before, and its own
+    # handler after, the walkway ALTER would be the wrong place.
+    assert src.index("chat_message migration warning") < src.index(ddl)
+    assert "vision_events.stream_id migration failed" in src
+
+
+def test_missing_stream_id_column_is_tolerated_on_write() -> None:
+    from sqlalchemy.orm import attributes  # noqa: F401
+
+    from app import worker
+
+    col = VisionEventSQL.__table__.c.stream_id
+    assert col.server_default is not None and VisionEventSQL.__mapper__.eager_defaults is False
+    assert inspect(VisionEventSQL).attrs["stream_id"].deferred is True
+    worker.set_vision_events_stream_id_ready(False)
+    try:
+        assert worker._VISION_EVENTS_STREAM_ID_READY is False
+    finally:
+        worker.set_vision_events_stream_id_ready(True)

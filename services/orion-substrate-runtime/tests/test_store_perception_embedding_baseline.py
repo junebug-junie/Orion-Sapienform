@@ -127,3 +127,28 @@ def test_save_perception_embedding_baseline_inserts_and_prunes_scoped_to_stream(
     assert "DELETE FROM substrate_perception_embedding_baseline" in delete_sql
     assert "WHERE stream_id = :stream_id" in delete_sql
     assert delete_params == {"stream_id": "cam0"}
+
+
+def test_save_never_writes_rtsp_credentials_into_stream_id():
+    """Regression (walkway spec 2026-09-22): ~480k rows carried the full RTSP
+    URL, password included, as stream_id. The store strips userinfo from any
+    URL-shaped stream_id before writing or querying."""
+    eng = _RecordingEngine()
+    store = _store_with(eng)
+    url = "rtsp://admin:Secr3t!@192.168.1.21:554/Preview_01_sub"
+
+    store.save_perception_embedding_baseline(url, PerceptionEmbeddingBaseline(embedding_ewma=(1.0,), n=1), retention_days=30.0)
+
+    for sql, params in eng.executed:
+        assert "Secr3t" not in str(params) and "admin" not in str(params)
+        assert "Secr3t" not in sql
+    insert_params = next(p for s, p in eng.executed if "INSERT INTO" in s)
+    assert insert_params["stream_id"] == "rtsp://192.168.1.21:554/Preview_01_sub"
+
+
+def test_get_latest_never_queries_with_rtsp_credentials():
+    eng = _RecordingEngine(first_row=None)
+    store = _store_with(eng)
+    store.get_latest_perception_embedding_baseline("rtsp://u:pw@host:554/x")
+    _sql, params = eng.executed[0]
+    assert params == {"stream_id": "rtsp://host:554/x"}

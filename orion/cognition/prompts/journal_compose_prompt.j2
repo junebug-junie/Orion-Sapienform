@@ -39,6 +39,12 @@ Rules:
 - Focus on what shifted, what matters for Orion's lab and continuity, and honest uncertainty where coverage is partial or sparse.
 - Do not restate the full digest card schema; write reflective prose, not a news brief.
 {% endif %}
+{% if _jt.get("trigger_kind") in ("walkway_forecast", "walkway_grade") %}
+- Walkway journal: this is about the street outside, seen through your walkway camera. The Prompt seed is the whole truth; use only subjects, times, counts, and verdicts that appear in it. Do not invent a subject, a time, or an outcome.
+- Keep it short: one or two paragraphs, first person. The seed's `lines` are the substance -- say each one plainly; the reflection is at most a few sentences about what it is like to be right, wrong, or not yet able to tell.
+- If the seed says `enough_days: false`, say that you do not have enough days yet, using the seed's own numbers, and do not guess at any rhythm.
+- Grades use exactly these words: confirmed, disconfirmed, unscored. "Not scored yet" means the window has not been graded; never call it a miss.
+{% endif %}
 {% if metadata.get("journal_mode") == "digest" or _jt.get("trigger_kind") == "notify_summary" %}
 - Automated digest-shaped journal: do not use city names, region names, or other geography in the title or body unless those words appear verbatim in the Summary or Prompt seed below. Do not infer location from default timezones, deployment defaults, or unrelated memory.
 - Novelty vs repetition: do not retell the same ongoing incident (hardware repair, DIMM/GPU/node diagnostics, ticket threads, etc.) run after run unless the Summary, Prompt seed, or memory digest explicitly adds **new** facts, timestamps, decisions, or state changes. If memory keeps circling one incident, acknowledge continuity in **at most one short sentence**, then shift to tone, uncertainty, tradeoffs, or what would change the situation—avoid verbatim echo of prior journal tropes when the evidence is stale.

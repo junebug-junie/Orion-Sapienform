@@ -140,11 +140,15 @@ from orion.curiosity.study_material import (
     APPROVED_SAMPLE_SQL,
     DEFAULT_CRYSTALLIZATION_SAMPLE,
     DEFAULT_RELATION_SAMPLE,
+    DEFAULT_UNRESOLVED_LOOKBACK_HOURS,
+    DEFAULT_UNRESOLVED_SAMPLE,
     RELATION_COUNT_SQL,
     RELATION_RESOLVABLE_SQL,
     RELATION_SAMPLE_SQL,
     StudyMaterial,
+    UNRESOLVED_RECENT_SQL,
     assemble_study_material,
+    build_unresolved_cards,
 )
 from orion.curiosity.attention_schema import (
     read_attended_priors,
@@ -1209,7 +1213,7 @@ class CuriosityInvestigation:
             return StudyMaterial(
                 generated_at=now, unavailable_reason=f"query_failed:{type(exc).__name__}"
             )
-        return assemble_study_material(
+        material = assemble_study_material(
             now=now,
             approved_counts=approved_counts,
             approved_rows=approved_rows,
@@ -1217,6 +1221,30 @@ class CuriosityInvestigation:
             relation_rows=relation_rows,
             relation_resolvable=int(resolvable or 0),
         )
+        material.local_timezone = self.timezone_name
+        material.unresolved = await self._read_unresolved_percepts(pool)
+        return material
+
+    async def _read_unresolved_percepts(self, pool: Any) -> list:
+        """Recent percepts Orion's cameras could not name (walkway spec idea 4),
+        any camera; each card names its own from the row's stream_id.
+
+        Its own read, its own failure: `vision_unresolved` ships as a manual
+        migration, so on a host that has not applied it this query raises
+        UndefinedTable. That must cost this section only -- never flip the
+        whole menu to `unavailable`, which would block the run.
+        """
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    UNRESOLVED_RECENT_SQL,
+                    DEFAULT_UNRESOLVED_LOOKBACK_HOURS,
+                    DEFAULT_UNRESOLVED_SAMPLE,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_unresolved_percepts_unreadable err=%s", type(exc).__name__)
+            return []
+        return build_unresolved_cards(rows)
 
     async def _pg_role_missing(self) -> bool:
         """Does the role the FCC sandbox connects as exist? True if it does NOT.

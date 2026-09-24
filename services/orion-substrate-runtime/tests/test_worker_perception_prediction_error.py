@@ -145,7 +145,7 @@ def test_warmed_scalar_baseline_scores_and_caches_zscored_result() -> None:
     worker._handle_perception_prediction_error_message(
         _encode_artifact(_artifact_payload(camera_id="cam0", vector=[0.825, 0.5651327277728658]))
     )
-    assert worker._last_perception_prediction_error == 0.5
+    assert abs(worker._last_perception_prediction_error - 0.5) < 1e-9  # was ==, 0.5000000000000002 on this platform
     saved_args, _ = fake_store.save_perception_embedding_baseline.call_args
     assert saved_args[1].surprise.n == 6
 
@@ -332,3 +332,25 @@ def test_perception_tick_loop_is_always_registered_regardless_of_flag() -> None:
     assert "_perception_prediction_error_tick_loop" in source
     assert "_perception_prediction_error_listener_loop" in source
     assert "enable_perception_prediction_error_tick" in source
+
+
+def test_rtsp_camera_id_keys_baseline_by_stream_name_not_url() -> None:
+    """Regression (walkway spec 2026-09-22): orion-vision-edge published its
+    RTSP source URL as camera_id, and this handler keyed on camera_id first,
+    so the camera password landed in ~480k baseline rows. A URL-shaped
+    camera_id now falls through to the stream name."""
+    worker, store = _make_worker()
+    payload = _artifact_payload(camera_id="rtsp://admin:Secr3t!@192.168.1.21:554/Preview_01_sub", vector=[1.0, 0.0])
+    payload["inputs"]["stream_id"] = "cam0"
+    worker._handle_perception_prediction_error_message(_encode_artifact(payload))
+    store.get_latest_perception_embedding_baseline.assert_called_once_with("cam0")
+    assert store.save_perception_embedding_baseline.call_args.args[0] == "cam0"
+    assert worker._last_perception_stream_id == "cam0"
+
+
+def test_plain_camera_id_still_wins_over_stream_id() -> None:
+    """carbon publishes camera_id="carbon-webcam"; its warm baseline stays keyed there."""
+    worker, store = _make_worker()
+    payload = _artifact_payload(camera_id="carbon-webcam", vector=[1.0, 0.0])
+    worker._handle_perception_prediction_error_message(_encode_artifact(payload))
+    store.get_latest_perception_embedding_baseline.assert_called_once_with("carbon-webcam")

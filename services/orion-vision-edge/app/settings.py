@@ -5,6 +5,8 @@ from typing import List, Tuple
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from orion.vision.stream_ids import strip_userinfo
+
 
 class Settings(BaseSettings):
     """
@@ -27,7 +29,12 @@ class Settings(BaseSettings):
     SERVICE_VERSION: str = Field("0.2.0", alias="SERVICE_VERSION")
 
     # --- Camera source ---
-    SOURCE: str = Field(..., alias="SOURCE") # e.g. rtsp://USER:PASS@host:554/Preview_01_sub
+    # Capture URL. May carry credentials (rtsp://USER:PASS@host/...), so it is
+    # used ONLY to open the camera. Everything published or persisted uses
+    # `camera_id` below (the camera name), never this. The password once
+    # leaked into ~480k substrate_perception_embedding_baseline rows because
+    # SOURCE was published as camera_id.
+    SOURCE: str = Field(..., alias="SOURCE")
     STREAM_ID: str = Field("cam0", alias="STREAM_ID")
 
     WIDTH: int = Field(640, alias="WIDTH")
@@ -97,6 +104,15 @@ class Settings(BaseSettings):
     EDGE_PUBLISH_ARTIFACTS: bool = Field(True, alias="EDGE_PUBLISH_ARTIFACTS")
 
     @property
+    def camera_id(self) -> str:
+        """The camera's published identity: its name, never the SOURCE URL."""
+        return self.STREAM_ID
+
+    @property
+    def source_redacted(self) -> str:
+        return strip_userinfo(self.SOURCE) if "://" in self.SOURCE else self.SOURCE
+
+    @property
     def detector_names(self) -> List[str]:
         return [d.strip() for d in self.DETECTORS.split(",") if d.strip()]
 
@@ -108,6 +124,13 @@ class Settings(BaseSettings):
     @property
     def yolo_class_set(self):
         return {c.strip().lower() for c in self.YOLO_CLASSES.split(",") if c.strip()}
+
+    @field_validator("SOURCE")
+    @classmethod
+    def source_required(cls, v: str) -> str:
+        if not str(v or "").strip():
+            raise ValueError("SOURCE is empty (for the walkway instance: set WALKWAY_RTSP_URL in the service .env)")
+        return v
 
     @field_validator("JPEG_QUALITY")
     @classmethod

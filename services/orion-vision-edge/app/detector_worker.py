@@ -15,6 +15,7 @@ from orion.schemas.vision import (
 
 from .activity import ActivityRateLimiter, labels_from_detections, publish_activity_if_allowed
 from .context import settings, bus, detectors
+from .stream_filter import is_own_frame
 from .utils import draw_boxes
 
 logger = logging.getLogger("orion-vision-edge.detector")
@@ -174,6 +175,13 @@ async def run_detector_loop():
                 logger.debug("Ignored non-pointer message")
                 continue
 
+            # Each edge instance detects only its own camera. Every instance
+            # subscribes to the same frames channel, so without this a second
+            # instance (walkway) would re-detect cam0's frames and vice versa,
+            # doubling activity events and GPU work.
+            if not is_own_frame(pointer.stream_id, settings.STREAM_ID):
+                continue
+
             # Load Frame
             if not pointer.image_path:
                 continue
@@ -192,7 +200,7 @@ async def run_detector_loop():
                 mean_brightness = np.mean(gray)
                 
                 health_payload = VisionEdgeHealth(
-                    camera_id=settings.SOURCE,
+                    camera_id=settings.camera_id,
                     ts=time.time(),
                     ok=True,
                     fps=settings.FPS,
@@ -287,7 +295,7 @@ async def run_detector_loop():
             except Exception as e:
                 logger.error(f"Detection loop error: {e}")
                 err_payload = VisionEdgeError(
-                    camera_id=settings.SOURCE,
+                    camera_id=settings.camera_id,
                     ts=time.time(),
                     error_type="loop_error",
                     message=str(e)

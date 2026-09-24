@@ -12,6 +12,17 @@ orion:vision:artifacts  ──►  orion-vision-window  ──►  orion:vision:
    (edge + host artifacts)         (aggregate)              (VisionWindowPayload)
 ```
 
+Also publishes, per host artifact that carries tracked-label boxes (walkway
+camera, `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
+idea 1), one `VisionCropObservationV1` to `orion:vision:crops:sql-write`
+(`CHANNEL_CROP_OBSERVATIONS_PUB`, toggle `WINDOW_CROP_OBSERVATIONS_ENABLED`) for
+orion-sql-writer's individuals reducer. A box is "tracked" when the host set a
+`zone` or an `embedding` on it (`want_crop_embeddings`). Patio boxes are
+forwarded with no vector so the reducer can count patio presence. Frame size
+comes from the host's `frame_width`/`frame_height` output. Code: `app/crops.py`.
+Counters: `vision_window_crop_observations_{published,failed}_total` on
+`/api/vision-window/metrics`.
+
 ## Evidence tiers
 
 Window summaries include an `evidence` block used by Council for grounded interpretation:

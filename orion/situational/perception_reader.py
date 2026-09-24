@@ -16,10 +16,11 @@ promise is to never load the fields in the first place.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Any, NamedTuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, NamedTuple, Sequence
 
 from sqlalchemy import create_engine, text
 
@@ -57,8 +58,61 @@ def _get_engine():
     return _ENGINE
 
 
-def fetch_latest_percept() -> dict[str, Any] | None:
+# Rows with no stream_id are accepted as room rows only if written before
+# this instant -- the day vision_events learned which camera a row is about.
+# After it, a NULL stream_id means a producer (e.g. a not-yet-rebuilt
+# orion-vision-scribe) dropped the camera, and it could be the walkway: fail
+# closed. Override with ORION_VISION_EVENTS_LEGACY_CUTOFF (ISO-8601).
+DEFAULT_VISION_EVENTS_LEGACY_CUTOFF = "2026-09-24T00:00:00+00:00"
+
+
+def vision_events_legacy_cutoff() -> datetime:
+    raw = (os.getenv("ORION_VISION_EVENTS_LEGACY_CUTOFF") or "").strip() or DEFAULT_VISION_EVENTS_LEGACY_CUTOFF
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("bad ORION_VISION_EVENTS_LEGACY_CUTOFF=%r; using default", raw)
+        ts = datetime.fromisoformat(DEFAULT_VISION_EVENTS_LEGACY_CUTOFF)
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _room_percept_stmt():
+    """Newest narrated row from a ROOM camera.
+
+    `vision_events` is shared by every camera: the council narrates the
+    walkway (street and patio included) and the walkway reducers write
+    `arrived_as_expected` / `expected_absent` / `attention_worthy` rows. The
+    room percept must never be one of those, so the read is restricted to the
+    configured room streams. Rows written before `stream_id` existed carry
+    NULL and are still accepted, but only if older than the legacy cutoff
+    (`vision_events_legacy_cutoff`) -- they all came from the room cameras,
+    the only ones that existed then. A NULL row after the cutoff is refused.
+
+    Expanding IN (not `= ANY`) so the same statement runs on SQLite in tests.
+    """
+    from sqlalchemy import DateTime, Text, bindparam
+
+    return (
+        text(
+            "SELECT narrative, created_at FROM vision_events "
+            "WHERE narrative IS NOT NULL AND narrative <> '' "
+            "AND (stream_id IN :stream_ids "
+            "     OR (stream_id IS NULL AND created_at < :legacy_cutoff)) "
+            "ORDER BY created_at DESC LIMIT 1"
+        )
+        .bindparams(bindparam("stream_ids", expanding=True))
+        .columns(narrative=Text, created_at=DateTime(timezone=True))
+    )
+
+
+def fetch_latest_percept(
+    *, stream_ids: Sequence[str], legacy_cutoff: datetime | None = None
+) -> dict[str, Any] | None:
     """Return the newest vision percept, or None if there is none / on any error.
+
+    Only rows from `stream_ids` (the room cameras) or legacy rows with no
+    stream are considered -- see `_room_percept_stmt`. An empty list reads
+    legacy rows only, never every camera.
 
     Returns ``{"scene_summary": str, "observed_at": datetime}``. The caller owns
     the staleness decision -- this returns the newest row regardless of age, so
@@ -70,12 +124,12 @@ def fetch_latest_percept() -> dict[str, Any] | None:
         return None
     try:
         with engine.connect() as conn:
+            # A sentinel keeps the expanding IN valid when no stream is
+            # configured: legacy rows only, never "every camera".
+            ids = [str(s) for s in stream_ids if str(s).strip()] or ["\x00none"]
+            cutoff = legacy_cutoff or vision_events_legacy_cutoff()
             row = conn.execute(
-                text(
-                    "SELECT narrative, created_at FROM vision_events "
-                    "WHERE narrative IS NOT NULL AND narrative <> '' "
-                    "ORDER BY created_at DESC LIMIT 1"
-                )
+                _room_percept_stmt(), {"stream_ids": ids, "legacy_cutoff": cutoff}
             ).first()
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_perception_read_failed err=%s", exc)
@@ -332,3 +386,375 @@ def percept_age_seconds(observed_at: datetime | None, now: datetime | None = Non
         return None
     reference = now or datetime.now(timezone.utc)
     return max(0, int((reference - observed_at).total_seconds()))
+
+
+# ---------------------------------------------------------------------------
+# The street (walkway camera spec ideas 5 and 9,
+# docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md).
+#
+# Reads what orion-sql-writer's walkway reducers write -- individuals and their
+# sightings, expectations and their grades, percepts nobody could name -- plus
+# the patio presence row. Every read is its own statement with its own
+# failure: the walkway tables ship as a manual migration and may not exist
+# yet, and a missing table must cost that one line, never the rest.
+#
+# PRIVACY. Names appear only when Juniper gave them (`vision_individual.label`,
+# set through the ask flow). A no-embed zone (the patio; config/vision_zones.yaml
+# `embed: false`) is family space: it is read ONLY from
+# `substrate_embodied_presence` rows flagged `no_embed_zone` and yields a
+# count, never a name, and sightings flagged `zone_no_embed` are excluded from
+# the "who is around" line even if a reducer ever wrote one. Both are found
+# by the flag the writer sets from the zones config, never by a zone's name.
+# ---------------------------------------------------------------------------
+
+STREET_RECENT_MINUTES = 15
+STREET_OUTCOME_LOOKBACK_MINUTES = 60
+# Patio presence older than this is not "now".
+PATIO_MAX_AGE_SECONDS = 900
+_MAX_WHO_PHRASES = 4
+
+_STREET_SIGHTINGS_SQL = text(
+    "SELECT s.individual_id, i.kind, i.label, i.distinct_days, "
+    "       min(s.started_at) AS first_at, max(s.ended_at) AS last_at "
+    "FROM vision_individual_sighting s "
+    "JOIN vision_individual i ON i.individual_id = s.individual_id "
+    "WHERE s.stream_id = :stream_id "
+    "  AND s.ended_at > now() - make_interval(mins => :lookback) "
+    "  AND NOT s.zone_no_embed "
+    "GROUP BY s.individual_id, i.kind, i.label, i.distinct_days "
+    "ORDER BY max(s.ended_at) DESC LIMIT 50"
+)
+
+_STREET_EXPECTATIONS_SQL = text(
+    "SELECT subject_key, subject_label, status, peak_minute, window_start, "
+    "       window_end, scored_at "
+    "FROM vision_percept_expectation "
+    "WHERE stream_id = :stream_id AND ("
+    "   (status IN ('met', 'missed') AND scored_at > now() - make_interval(mins => :lookback))"
+    "   OR (status = 'open' AND window_start <= now() AND window_end > now())"
+    ") ORDER BY window_start LIMIT 20"
+)
+
+_STREET_UNRESOLVED_SQL = text(
+    "SELECT observed_at, description FROM vision_unresolved "
+    "WHERE stream_id = :stream_id "
+    "  AND observed_at > now() - make_interval(mins => :lookback) "
+    "ORDER BY observed_at DESC LIMIT 20"
+)
+
+# One row per no-embed zone, `<stream>:<zone>` (orion-sql-writer's
+# vision_individuals.no_embed_presence_id), recognised by the flag in the
+# snapshot rather than by a hardcoded zone name.
+_PATIO_PRESENCE_SQL = text(
+    "SELECT presence_id, presence_json, updated_at FROM substrate_embodied_presence "
+    "WHERE presence_id LIKE :prefix ESCAPE '\\' "
+    "  AND presence_json->>'no_embed_zone' = 'true' "
+    "ORDER BY presence_id"
+)
+
+
+def _like_prefix(stream_id: str) -> str:
+    escaped = stream_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}:%"
+
+
+class StreetSummary(NamedTuple):
+    """`read_ok=False` means nothing could be read at all (no DSN, database
+    down) -- distinct from an empty `lines`, which means the street was read
+    and was quiet. Same contract as `PresenceResolution`."""
+
+    stream_id: str
+    lines: list[str]
+    read_ok: bool
+
+
+def _article(noun: str) -> str:
+    return "an" if noun[:1].lower() in "aeiou" else "a"
+
+
+def _plural(kind: str) -> str:
+    return {"person": "people"}.get(kind, kind + "s")
+
+
+def _who_phrase(kind: str, label: str | None, distinct_days: int) -> str:
+    if label:
+        return label
+    kind = (kind or "something").strip() or "something"
+    if distinct_days >= 2:
+        return f"{_article(kind)} {kind} I have seen on {distinct_days} days but have no name for"
+    return f"{_article('unfamiliar')} unfamiliar {kind}"
+
+
+def _hhmm(minute_of_day: Any) -> str | None:
+    try:
+        m = int(minute_of_day)
+    except (TypeError, ValueError):
+        return None
+    return f"{m // 60:02d}:{m % 60:02d}" if 0 <= m < 1440 else None
+
+
+def _utc(ts: Any) -> datetime | None:
+    if not isinstance(ts, datetime):
+        return None
+    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+
+
+def _past_peak(peak_minute: Any, window_start: datetime | None, *, now: datetime, tz: Any) -> bool:
+    """Is `now` past the expected peak? Peak is minute-of-day local; anchor
+    it on the window's own local date, rolled forward a day when it falls
+    before the window start (a window that crosses midnight)."""
+    try:
+        minute = int(peak_minute)
+    except (TypeError, ValueError):
+        return False
+    if window_start is None or not 0 <= minute < 1440:
+        return False
+    local_start = window_start.astimezone(tz)
+    peak = local_start.replace(hour=minute // 60, minute=minute % 60, second=0, microsecond=0)
+    if peak < local_start:
+        peak += timedelta(days=1)
+    return now > peak
+
+
+def summarize_street(
+    *,
+    sightings: list[dict[str, Any]] | None,
+    expectations: list[dict[str, Any]] | None,
+    unresolved: list[dict[str, Any]] | None,
+    patio: dict[str, Any] | list[dict[str, Any]] | None,
+    now: datetime,
+    tz: Any,
+    camera: str = "walkway",
+) -> list[str]:
+    """Pure: rows in, a few short plain-English lines out.
+
+    `None` for any input means that read failed and contributes nothing --
+    never a sentence claiming the street was empty. `patio` is one presence
+    snapshot per no-embed zone (a single dict is accepted too); each names its
+    own zone under `zone`. `camera` is the stream the rows came from.
+    """
+    lines: list[str] = []
+    camera = (camera or "").strip() or "camera"
+
+    # 1. Who is around (last 15 minutes).
+    recent_cut = now - timedelta(minutes=STREET_RECENT_MINUTES)
+    who: list[str] = []
+    unnamed_new: dict[str, int] = {}
+    for row in sightings or []:
+        last_at = _utc(row.get("last_at"))
+        if last_at is None or last_at < recent_cut:
+            continue
+        label = str(row.get("label") or "").strip() or None
+        kind = str(row.get("kind") or "").strip()
+        days = int(row.get("distinct_days") or 0)
+        if not label and days < 2:
+            unnamed_new[kind or "something"] = unnamed_new.get(kind or "something", 0) + 1
+            continue
+        who.append(_who_phrase(kind, label, days))
+    for kind, n in sorted(unnamed_new.items()):
+        who.append(_who_phrase(kind, None, 0) if n == 1 else f"{n} unfamiliar {_plural(kind)}")
+    if who:
+        shown = who[:_MAX_WHO_PHRASES]
+        extra = len(who) - len(shown)
+        text_ = ", ".join(shown) + (f", and {extra} more" if extra > 0 else "")
+        lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {text_}.")
+
+    # 2. What was expected, and did it happen.
+    outcomes: list[str] = []
+    for row in expectations or []:
+        label = str(row.get("subject_label") or "").strip()
+        if not label:
+            continue
+        status = str(row.get("status") or "")
+        peak = _hhmm(row.get("peak_minute"))
+        at = f" around {peak}" if peak else ""
+        if status == "met":
+            outcomes.append(f"{label} came as expected{at}")
+        elif status == "missed":
+            outcomes.append(f"{label} did not come (usually{at})")
+        elif status == "open":
+            key = str(row.get("subject_key") or "")
+            kind, _, ref = key.partition(":")
+            window_start = _utc(row.get("window_start"))
+            here = False
+            if kind == "individual":
+                here = any(
+                    str(r.get("individual_id")) == ref
+                    and (_utc(r.get("last_at")) or now) >= (window_start or now)
+                    for r in sightings or []
+                )
+            elif kind == "label":
+                here = any(
+                    str(r.get("kind")) == ref and (_utc(r.get("last_at")) or now) >= (window_start or now)
+                    for r in sightings or []
+                )
+            past_peak = _past_peak(row.get("peak_minute"), window_start, now=now, tz=tz)
+            # The sightings read only looks back STREET_OUTCOME_LOOKBACK_MINUTES;
+            # a window that opened earlier could have been met before that, so
+            # it cannot support an absence claim.
+            if window_start is None or window_start < now - timedelta(minutes=STREET_OUTCOME_LOOKBACK_MINUTES):
+                past_peak = False
+            # "Usually here by now" is an absence claim, so it needs a
+            # sightings read that answered AND an individual subject: label
+            # subjects can be fed by scene counts this reader does not see.
+            if here:
+                outcomes.append(f"{label} is here, as expected")
+            elif past_peak and sightings is not None and kind == "individual":
+                outcomes.append(f"{label} is usually here by now")
+            else:
+                outcomes.append(f"{label} usually comes{at}")
+    if outcomes:
+        lines.append(f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + ".")
+
+    # 3. Things I could not name (last hour).
+    names = [r for r in unresolved or [] if str(r.get("description") or "").strip()]
+    if names:
+        latest = names[0]
+        ts = _utc(latest.get("observed_at"))
+        when = f" at {ts.astimezone(tz):%H:%M}" if ts else ""
+        desc = " ".join(str(latest["description"]).split())[:100]
+        if len(names) == 1:
+            lines.append(f"In the last hour I saw one thing on the {camera} I could not name{when}: {desc}.")
+        else:
+            lines.append(
+                f"In the last hour I saw {len(names)} things on the {camera} I could not name; "
+                f"the latest{when}: {desc}."
+            )
+
+    # 4. No-embed zones (the patio): counts only, never names, only when fresh.
+    zones = [patio] if isinstance(patio, dict) else list(patio or [])
+    for snap in zones:
+        if not isinstance(snap, dict):
+            continue
+        zone = str(snap.get("zone") or "").strip()
+        if not zone:
+            continue  # cannot say where; say nothing rather than guess
+        age = presence_row_age_seconds(snap)
+        if age is None or age > PATIO_MAX_AGE_SECONDS or snap.get("state") != "present":
+            continue
+        count = snap.get("count")
+        try:
+            count = int(count) if count is not None else None
+        except (TypeError, ValueError):
+            count = None
+        if count is not None and count >= 2:
+            lines.append(f"{count} people are on the {zone}.")
+        elif count == 1:
+            lines.append(f"Someone is on the {zone}.")
+        elif count is None:
+            lines.append(f"People are on the {zone}.")
+        # count == 0 with state present contradicts itself: say nothing.
+    return lines
+
+
+def _street_rows(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> list[dict[str, Any]] | None:
+    """One statement, one failure. Rolls back so the next read can proceed on
+    the same connection after, say, an UndefinedTable."""
+    try:
+        return [dict(r._mapping) for r in conn.execute(stmt, params).all()]
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.info("situation_street_read_failed part=%s err=%s", label, type(exc).__name__)
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def fetch_street_summary(
+    stream_id: str,
+    *,
+    tz_name: str = "America/Denver",
+    engine: Any | None = None,
+    now: datetime | None = None,
+) -> StreetSummary:
+    """Plain-English lines about the street outside one walkway camera.
+
+    Never raises. `read_ok=False` when no read could happen at all; an empty
+    `lines` with `read_ok=True` means the tables answered and there was
+    nothing worth saying (or the tables do not exist yet).
+    """
+    from zoneinfo import ZoneInfo
+
+    stream_id = (stream_id or "").strip()
+    if not stream_id:
+        return StreetSummary("", [], False)
+    engine = engine if engine is not None else _get_engine()
+    if engine is None:
+        return StreetSummary(stream_id, [], False)
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001
+        tz = timezone.utc
+    now = now or datetime.now(timezone.utc)
+    try:
+        with engine.connect() as conn:
+            sightings = _street_rows(
+                conn, _STREET_SIGHTINGS_SQL,
+                # Wide enough to see an individual who arrived at the start of
+                # an expectation window, not only the last 15 minutes.
+                {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
+                "sightings",
+            )
+            expectations = _street_rows(
+                conn, _STREET_EXPECTATIONS_SQL,
+                {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
+                "expectations",
+            )
+            unresolved = _street_rows(
+                conn, _STREET_UNRESOLVED_SQL,
+                {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
+                "unresolved",
+            )
+            patio_rows = _street_rows(
+                conn, _PATIO_PRESENCE_SQL, {"prefix": _like_prefix(stream_id)}, "no_embed_zones"
+            )
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.warning("situation_street_connect_failed err=%s", exc)
+        return StreetSummary(stream_id, [], False)
+
+    if all(r is None for r in (sightings, expectations, unresolved, patio_rows)):
+        # Every read failed: that is "unread", not a quiet street.
+        return StreetSummary(stream_id, [], False)
+
+    patio: list[dict[str, Any]] = []
+    prefix = f"{stream_id}:"
+    for prow in patio_rows or []:
+        try:
+            raw = prow.get("presence_json")
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            if not isinstance(raw, dict) or raw.get("no_embed_zone") is not True:
+                continue
+            snap = _presence_row_to_dict(raw, prow.get("updated_at"))
+            # The zone's own name from the snapshot, else from the row id.
+            pid = str(prow.get("presence_id") or "")
+            if not snap.get("zone") and pid.startswith(prefix):
+                snap["zone"] = pid[len(prefix):]
+            # The sql-writer reducer writes the head count as
+            # subject={"count": n}; lift it out before subject is dropped.
+            subj = snap.get("subject")
+            if snap.get("count") is None and isinstance(subj, dict):
+                snap["count"] = subj.get("count")
+            # Belt and braces for the privacy rule: nothing identity-shaped
+            # from a no-embed zone row survives past this point.
+            for key in ("subject", "identity_confirmed", "identity_uncertain", "identity_confidence"):
+                snap.pop(key, None)
+            patio.append(snap)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("situation_street_patio_decode_failed err=%s", exc)
+
+    try:
+        lines = summarize_street(
+            sightings=sightings,
+            expectations=expectations,
+            unresolved=unresolved,
+            patio=patio,
+            now=now,
+            tz=tz,
+            camera=stream_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("situation_street_summarize_failed err=%s", exc)
+        return StreetSummary(stream_id, [], True)
+    return StreetSummary(stream_id, lines, True)

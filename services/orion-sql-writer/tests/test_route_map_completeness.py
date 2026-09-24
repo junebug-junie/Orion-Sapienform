@@ -51,6 +51,7 @@ LEGACY_KIND_ALIASES = {
 INLINE_ROUTE_KINDS = {
     "journal.entry.index.v1": "JournalEntryIndexSQL",
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
+    "vision.crop.observation.v1": "__vision_crop_observation__",
 }
 
 # Evidence ingest channels project to evidence.unit.v1 via build_evidence_units().

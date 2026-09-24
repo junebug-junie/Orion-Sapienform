@@ -55,7 +55,13 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
             objects.append(VisionObject(
                 label=str(obj.get("label", "unknown")),
                 score=float(obj.get("score", 0.0)),
-                box_xyxy=obj.get("box_xyxy", [0, 0, 0, 0])
+                box_xyxy=obj.get("box_xyxy", [0, 0, 0, 0]),
+                # Walkway crop embeddings (app/crop_embeddings.py). All three
+                # stay None unless the request asked for crop embeddings; a
+                # no-embed-zone box carries its zone and no vector.
+                zone=obj.get("zone"),
+                embedding_ref=obj.get("embedding_ref"),
+                embedding=obj.get("embedding"),
             ))
 
     if "caption" in artifacts and isinstance(artifacts["caption"], dict):

@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # identity_face is deliberately excluded from CHANNEL_VISIONHOST_PUB's
     # general broadcast (should_broadcast_artifact in main.py) -- that
     # channel has multiple, generic, task-type-agnostic subscribers
-    # (orion-security-watcher, orion-vision-window, orion-vision-council per
+    # (orion-vision-window, orion-vision-council per
     # orion/bus/channels.yaml) and identity data should not ride on a lane
     # any current or future subscriber gets by default. The one legitimate
     # consumer (orion-vision-window, for presence.subject + the window

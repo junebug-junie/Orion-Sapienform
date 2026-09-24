@@ -57,6 +57,10 @@ COPY services/orion-vision-host/scripts ./scripts
 
 # Copy ROOT config into image (no volume mount)
 COPY config/vision_profiles.yaml /app/config/vision_profiles.yaml
+# Camera zones for crop embeddings (app/crop_embeddings.py). orion/vision/
+# zones.py resolves /app/config/vision_zones.yaml by default; if this file is
+# missing the host embeds NO crops (fail closed), so it must ship in the image.
+COPY config/vision_zones.yaml /app/config/vision_zones.yaml
 
 EXPOSE 6600
 CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "6600"]

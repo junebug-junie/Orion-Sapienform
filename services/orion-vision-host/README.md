@@ -163,8 +163,8 @@ subject** -- not a growing gallery, not a stranger tracker.
   `probable` / `possible` / `unsure` -- never a binary match/no-match. A
   `subject` other than `"unknown"` is returned only for `probable`/`possible`.
 - **Never reaches the general artifact broadcast.** `CHANNEL_VISIONHOST_PUB`
-  (`orion:vision:artifacts`) is consumed by `orion-security-watcher`,
-  `orion-vision-window`, and `orion-vision-council` (`orion/bus/
+  (`orion:vision:artifacts`) is consumed by `orion-vision-window`,
+  `orion-vision-council`, and `orion-substrate-runtime` (`orion/bus/
   channels.yaml`) -- none identity-aware or retention-gated. `app/main.py`'s
   `should_broadcast_artifact()` excludes `identity_face` from both real
   broadcast call sites (found live, 2026-08-26: the bus-first path and the
@@ -320,6 +320,29 @@ BLIP correctly can) would hand the caller the prompt glued onto the real
 answer. `_generate_vlm_text` slices by real input token length instead of
 string-matching a prefix off the decoded text, which cannot reliably strip
 chat special tokens.
+
+## Crop embeddings (walkway individuals)
+
+Spec: `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
+idea 1. When a detect request sets `want_crop_embeddings: true` (only the
+router's `walkway` stream policy does), `_run_detect_grounding_dino` zones
+every box whose label is in `crop_embedding_labels` and embeds the allowed
+crops in one batched pass on the already-warm `embed_image` SigLIP tower
+(`app/crop_embeddings.py`). Each object gains `zone`, `embedding_ref`, and an
+L2-normalized inline `embedding`; the detect artifact also carries
+`frame_width`/`frame_height` and a `crop_embeddings` counter block.
+
+- The camera name comes from task meta `stream_id` (set by the frame router),
+  copied into the request by `VisionRunner._request_with_stream_id`.
+- **Patio rule:** a box in a no-embed zone (`config/vision_zones.yaml`,
+  `embed: false`) is never cropped; it keeps its zone and no vector.
+- **Fails closed:** if the zones file is missing or unreadable, no crop is
+  embedded at all. The Dockerfile copies `config/vision_zones.yaml` to
+  `/app/config/`; override with `VISION_ZONES_PATH` only for local runs.
+- Knobs live in the `retina_detect_open_vocab` profile params
+  (`config/vision_profiles.yaml`): `crop_embed_profile`,
+  `crop_embedding_labels`, `crop_embedding_max_per_frame`, `crop_min_side_px`.
+- Test: `tests/test_crop_embeddings_patio.py` (embedder mocked).
 
 ## Observability (logs-first)
 

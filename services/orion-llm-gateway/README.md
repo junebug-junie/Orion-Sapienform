@@ -150,7 +150,7 @@ Summary-only metrics (`confidence_semantics=language_surface_stability_not_truth
 }
 ```
 
-Mind (`MIND_LLM_RETURN_LOGPROBS_SEMANTIC` + `MIND_LLM_LOGPROB_PROBE_MODE`) and cortex metacog draft (`CORTEX_METACOG_RETURN_LOGPROBS` + `CORTEX_METACOG_LOGPROB_PROBE_MODE`) can set these options when enabled in their service `.env` files.
+Mind (`MIND_LLM_RETURN_LOGPROBS_SEMANTIC` + `MIND_LLM_LOGPROB_PROBE_MODE`) can set these options when enabled in its service `.env` file. (The cortex metacog draft probe that also used them was removed 2026-09-24.)
 
 Important routing note:
 

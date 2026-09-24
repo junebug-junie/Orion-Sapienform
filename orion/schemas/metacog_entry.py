@@ -75,16 +75,20 @@ class MetacogRealState(BaseModel):
     turn_effect_evidence: Optional[dict[str, Any]] = None
     substrate_eventfulness_score: Optional[float] = None
     substrate_eventfulness_reasons: Optional[list[str]] = None
+    # Only populated when the trigger itself is about LLM surface
+    # instability (trigger_kind=llm_surface_instability, copied from its
+    # upstream). The metacog writer's own logprob probe that used to fill
+    # this on ~every row was removed 2026-09-24: it measured the writer, not
+    # the event.
     llm_uncertainty: Optional[dict[str, Any]] = None
     reasoning_excerpt: Optional[str] = None
     repair_pressure: Optional[MetacogRepairPressure] = None
 
 
 class MetacogCausalDensity(BaseModel):
-    """Scored purely from the real-artifact blend in `state` (repair_pressure
-    level/confidence if present, substrate_eventfulness_score if present, a
-    severity read off turn_effect if present). No self-report leg exists in
-    this model, so there's nothing to blend it with."""
+    """score = the triggering event's own normalized magnitude (0..1), from
+    orion.metacog.evidence_map (2026-09-24). Previously a blend of global
+    state fields that only ever read 0 or 0.25."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -102,6 +106,12 @@ class MetacogProvenance(BaseModel):
     source: str
     produces: str
     impacts: list[str] = Field(default_factory=list)
+    # The metacog pipeline's own step log ("exec -> X", "ok <- X", ...). Moved
+    # here out of what_changed.evidence on 2026-09-24: it describes how the row
+    # was produced, not what the triggering event was. Additive + optional;
+    # extra="ignore" means an un-rebuilt sql-writer drops it silently rather
+    # than failing, so rebuild orion-sql-writer alongside cortex-exec.
+    pipeline_steps: list[str] = Field(default_factory=list)
 
 
 class MetacogEntryV1(BaseModel):
@@ -123,17 +133,18 @@ class MetacogEntryV1(BaseModel):
     what_changed: MetacogWhatChanged = Field(default_factory=MetacogWhatChanged)
     state: MetacogRealState = Field(default_factory=MetacogRealState)
 
-    # Repurposes the old collapse_mirror `observer_state` concept: a discrete
-    # severity read off real numbers already on this entry (llm_uncertainty,
-    # count of non-ok steps this turn), not a repeat of causal_density's
-    # continuous score. See orion.metacog.service.compute_severity.
+    # Discrete severity read off the TRIGGER's own upstream magnitude
+    # (2026-09-24 metric-definition change; previously the writing LLM's
+    # logprob margin + the pipeline's failed-step count). Same band as
+    # causal_density.score: nominal <0.3, degraded <0.6, critical >=0.6.
+    # See orion.metacog.evidence_map.
     severity: Literal["nominal", "degraded", "critical"] = "nominal"
 
-    # Repurposes the old collapse_mirror `field_resonance` concept as
-    # topology, not severity: which other real-artifact evidence this entry
-    # actually carries (e.g. "relational", "substrate", "affect",
-    # "execution"), mechanically derived from which `state` fields are
-    # populated -- not a new signal. See orion.metacog.service.compute_touches.
+    # Topology, not severity: the services / channels / artifacts named in
+    # the trigger's own upstream (e.g. "cortex-exec",
+    # "orion:state:request", "channel:failure_pressure"). See
+    # orion.metacog.evidence_map (2026-09-24; previously which global `state`
+    # fields happened to be populated).
     touches: list[str] = Field(default_factory=list)
 
     causal_density: MetacogCausalDensity = Field(default_factory=MetacogCausalDensity)

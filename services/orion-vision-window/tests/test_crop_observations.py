@@ -90,3 +90,15 @@ def test_ingest_publishes_on_crops_channel(monkeypatch) -> None:
     svc.bus.publish.reset_mock()
     asyncio.run(svc._publish_crop_observation(_artifact(_objs()), env))
     svc.bus.publish.assert_not_awaited()
+
+
+def test_projection_never_uses_rtsp_camera_id_as_camera_or_stream_key() -> None:
+    """vision_scene_inventory.camera_id carried the RTSP URL (password) in
+    ~316k rows before 2026-09-24; the window's camera/stream helpers drop it."""
+    from app.projection import camera_id_from_artifact, stream_key_from_artifact
+
+    art = _artifact(_objs(), inputs={"camera_id": "rtsp://admin:pw@10.0.0.2/x"})
+    assert camera_id_from_artifact(art) is None
+    assert "rtsp://" not in stream_key_from_artifact(art)
+    art2 = _artifact(_objs(), inputs={"camera_id": "cam0", "stream_id": "cam0"})
+    assert camera_id_from_artifact(art2) == "cam0"

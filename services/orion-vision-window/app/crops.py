@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from orion.schemas.vision import VisionArtifactPayload, VisionCropObservationV1, VisionCropV1
-from orion.vision.stream_ids import is_url_like, safe_camera_name
+from orion.vision.stream_ids import safe_camera_name
 
 from .projection import camera_id_from_artifact, stream_key_from_artifact
 
@@ -53,7 +53,6 @@ def build_crop_observation(art: VisionArtifactPayload) -> Optional[VisionCropObs
         return None
 
     inputs = art.inputs or {}
-    raw_camera_id = camera_id_from_artifact(art)
     outputs_extra = art.outputs.model_extra or {}
     width = _as_int(outputs_extra.get("frame_width")) or _as_int(inputs.get("width"))
     height = _as_int(outputs_extra.get("frame_height")) or _as_int(inputs.get("height"))
@@ -70,7 +69,7 @@ def build_crop_observation(art: VisionArtifactPayload) -> Optional[VisionCropObs
         # Names only: an edge that still puts its RTSP source in camera_id
         # must not leak the camera password into the individuals tables.
         stream_id=safe_camera_name(inputs.get("stream_id"), stream_key_from_artifact(art)),
-        camera_id=None if is_url_like(raw_camera_id) else raw_camera_id,
+        camera_id=camera_id_from_artifact(art),  # drops URL-shaped ids
         artifact_id=art.artifact_id,
         observed_at=observed_at,
         frame_width=width,

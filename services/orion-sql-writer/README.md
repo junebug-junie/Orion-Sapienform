@@ -347,8 +347,8 @@ answered -> `vision_individual.label`, `applied_at` set), open asks past
 `expires_at` expire, and new asks open for unlabeled individuals with
 >= `VISION_ASK_MIN_SIGHTINGS` sightings over >= `VISION_ASK_MIN_DAYS` local
 days, under `ORION_ASK_DAILY_CAP` counted from `orion_ask.created_at` since
-local midnight (restart-proof). Each opened ask is published as `OrionAskV1`
-on `orion:ask:opened`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
+local midnight (restart-proof). Opened asks are rows only (no bus event);
+the Hub's ask card reads `orion_ask`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.
 

@@ -503,18 +503,9 @@ channels:
     stability: "experimental"
     since: "2026-09-24"
 
-  # Orion asking Juniper a question that stays open until answered.
-  - name: "orion:ask:opened"
-    kind: "event"
-    schema_id: "OrionAskV1"
-    producer_services: ["orion-sql-writer"]
-    # No live subscriber: the Hub's ask card polls orion_ask (the table is the
-    # durable record; the Hub has no push channel for panels). Published for
-    # observability and future push; write-only is the honest state.
-    consumer_services: []
-    stability: "experimental"
-    since: "2026-09-24"
-
+  # Orion asking Juniper a question that stays open until answered. Asks are
+  # opened as orion_ask rows (no bus event: nothing would consume it); the
+  # Hub publishes the answer here.
   - name: "orion:ask:answered"
     kind: "event"
     schema_id: "OrionAskAnsweredV1"

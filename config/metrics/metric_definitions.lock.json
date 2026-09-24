@@ -1,9 +1,9 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 663,
+  "metric_count": 662,
   "_last_change": {
     "base": "merge base 2aa783b9b (origin/main)",
-    "change_count": 10,
+    "change_count": 9,
     "high_severity_count": 6,
     "changes": [
       "high   removed metric://bus_channel/orion-security-watcher/orion:vision:guard:alert",
@@ -13,7 +13,6 @@
       "high   routing_changed metric://bus_channel/orion-vision-edge/orion:vision:artifacts (declared_consumers: ['orion-security-watcher', 'orion-vision-counc\u2026 -> ['orion-vision-counc\u2026)",
       "high   routing_changed metric://bus_channel/orion-vision-edge/orion:vision:edge:raw (declared_consumers: ['orion-security-watcher'] -> ['orion-vision-edge'])",
       "medium added metric://bus_channel/orion-hub/orion:ask:answered",
-      "medium added metric://bus_channel/orion-sql-writer/orion:ask:opened",
       "medium added metric://bus_channel/orion-vision-council/orion:vision:unresolved:sql-write",
       "medium added metric://bus_channel/orion-vision-window/orion:vision:crops:sql-write"
     ]
@@ -2683,17 +2682,6 @@
         "orion-spark-concept-induction"
       ],
       "notes": "kind=stream stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-sql-writer/orion:ask:opened": {
-      "schema_id": "OrionAskV1",
-      "all_producers": [
-        "orion-sql-writer"
-      ],
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-sql-writer/orion:chat:social:stored": {

@@ -5,9 +5,9 @@ Before this, outreach was one-way: Orion could say something but had no place
 to receive an answer. An ask stays open until it is answered, dismissed, or
 expires, and the answer is stored on the same row as the question.
 
-Producers open asks by inserting into ``orion_ask`` and publishing
-``OrionAskV1`` on ``orion:ask:opened``. The Hub renders open asks and, on
-answer, updates the row and publishes ``OrionAskAnsweredV1`` on
+Producers open asks by inserting ``OrionAskV1``-shaped rows into
+``orion_ask`` (no bus event: the Hub polls the table). The Hub renders open
+asks and, on answer, updates the row and publishes ``OrionAskAnsweredV1`` on
 ``orion:ask:answered``.
 """
 

@@ -649,6 +649,11 @@ def fetch_street_summary(
                 raw = json.loads(raw)
             if isinstance(raw, dict):
                 patio = _presence_row_to_dict(raw, patio_rows[0].get("updated_at"))
+                # The sql-writer patio reducer writes the head count as
+                # subject={"count": n}; lift it out before subject is dropped.
+                subj = patio.get("subject")
+                if patio.get("count") is None and isinstance(subj, dict):
+                    patio["count"] = subj.get("count")
                 # Belt and braces for the privacy rule: nothing identity-shaped
                 # from the patio row survives past this point.
                 for key in ("subject", "identity_confirmed", "identity_uncertain", "identity_confidence"):

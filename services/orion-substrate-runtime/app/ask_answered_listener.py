@@ -8,7 +8,7 @@ graph store the worker already uses, through the same
 ``SubstrateGraphMaterializer`` path topic-foundry ingestion uses.
 
 Not handled here, on purpose:
-- ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` (sibling walkway patch) from
+- ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` from
   the ``orion_ask`` row on its own clock (the row is the truth, not this event).
 - Dismissed asks and other ``source_kind`` values are ignored.
 

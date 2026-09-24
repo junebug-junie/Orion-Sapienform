@@ -300,3 +300,15 @@ def test_every_read_failing_is_unread() -> None:
                   "vision_unresolved": boom, "substrate_embodied_presence": boom})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.read_ok is False
+
+
+def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
+    # orion-sql-writer's vision_individuals writes subject={"count": n}
+    # (services/orion-sql-writer/app/vision_individuals.py); the count must
+    # survive the identity strip, not collapse to "People are on the patio."
+    conn = _Conn({"substrate_embodied_presence": [
+        {"presence_json": '{"state": "present", "since_sec": 30, "last_seen_sec": 1, "subject": {"count": 3}}',
+         "updated_at": datetime.now(timezone.utc)},
+    ]})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
+    assert got.lines == ["3 people are on the patio."]

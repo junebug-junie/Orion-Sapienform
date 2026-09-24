@@ -1,8 +1,7 @@
 """Orion's open questions to Juniper, and her answers (OrionAskV1).
 
 docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 3.
-``orion-sql-writer`` (sibling walkway patch) opens asks (inserts ``orion_ask`` rows, publishes
-``orion:ask:opened``). This module lists open asks for the Vision panel card
+``orion-sql-writer``'s individuals loop opens asks (inserts ``orion_ask`` rows). This module lists open asks for the Vision panel card
 and records Juniper's answer or dismissal:
 
 1. ``UPDATE orion_ask ... WHERE status='open'`` -- only an open, unexpired
@@ -11,15 +10,14 @@ and records Juniper's answer or dismissal:
 2. Publish ``OrionAskAnsweredV1`` on ``orion:ask:answered`` (consumed by
    ``orion-substrate-runtime``, which writes the substrate entity).
 
-The row is the source of truth. ``orion-sql-writer`` (sibling walkway patch,
-not in this branch) applies answers to ``vision_individual.label`` by reading
+The row is the source of truth. ``orion-sql-writer`` applies answers to ``vision_individual.label`` by reading
 ``status='answered' AND applied_at IS NULL`` on its own clock, so a failed
 publish does not lose the label -- it is reported as ``published: false`` and
 logged. It does lose the substrate entity for that answer: nothing replays
 ``orion:ask:answered`` today (known gap).
 
-The Hub does not subscribe to ``orion:ask:opened``: it has no push channel for
-panels, so the card polls ``GET /api/asks`` and Postgres stays the only truth.
+There is no "ask opened" bus event: the Hub has no push channel for panels,
+so the card polls ``GET /api/asks`` and Postgres stays the only truth.
 
 Uses the Hub's asyncpg pool (``app.state.memory_pg_pool``, same ``conjourney``
 database sql-writer writes to). All DB calls are awaited, so nothing blocks the

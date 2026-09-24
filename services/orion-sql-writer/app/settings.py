@@ -510,7 +510,6 @@ class Settings(BaseSettings):
     # Orion's whole daily ask budget (every source_kind), counted from
     # orion_ask.created_at since local midnight, so a restart cannot reset it.
     orion_ask_daily_cap: int = Field(2, alias="ORION_ASK_DAILY_CAP")
-    orion_ask_opened_channel: str = Field("orion:ask:opened", alias="ORION_ASK_OPENED_CHANNEL")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
 

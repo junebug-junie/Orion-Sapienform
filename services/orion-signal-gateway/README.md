@@ -38,8 +38,9 @@ cortex-exec lane containers: `rpc_health_cortex_exec_{legacy,chat,spark,backgrou
 `SignalWindow` keys its current-state view by `organ_id` alone, so a shared id across producers
 would make each publish silently overwrite the previous producer's entry. Since 2026-09-24 this is
 a pass-through, not a whitelist: an unregistered producer (hub, durable-runs, ...) still gets its
-own exogenous signal instead of being dropped (`_organ_id_for()` in the adapter). The former
-single `rpc_health_cortex_exec` organ, which all four exec lanes overwrote, is retired. The
+own exogenous signal instead of being dropped (`_organ_id_for()` in the adapter). Only
+`rpc_health_cortex_orch` is registered; the former single `rpc_health_cortex_exec` organ, which
+all four exec lanes overwrote, is retired, and the per-lane ids pass through unregistered. The
 optional per-hop `channel_latency` field of `RpcHealthSnapshotV1` is ignored by this adapter
 (consumed by orion-equilibrium-service's transport gate).
 

@@ -181,7 +181,7 @@ def test_adapt_keys_by_service_and_instance(
         )
         assert sig is not None
         assert sig.organ_id == f"rpc_health_cortex_exec_{lane}"
-        assert sig.organ_id in ORGAN_REGISTRY
+        assert sig.organ_class == OrganClass.exogenous
         ids.add(sig.organ_id)
     assert len(ids) == 4
 
@@ -218,14 +218,8 @@ def test_adapt_is_deterministic_for_same_source_event(
 
 
 def test_registry_entry_shape() -> None:
-    assert "rpc_health_cortex_exec" not in ORGAN_REGISTRY  # retired 2026-09-24, see lane entries
-    for organ_id in (
-        "rpc_health_cortex_exec_legacy",
-        "rpc_health_cortex_exec_chat",
-        "rpc_health_cortex_exec_spark",
-        "rpc_health_cortex_exec_background",
-        "rpc_health_cortex_orch",
-    ):
+    assert "rpc_health_cortex_exec" not in ORGAN_REGISTRY  # retired 2026-09-24 (lanes pass through)
+    for organ_id in ("rpc_health_cortex_orch",):
         entry = ORGAN_REGISTRY[organ_id]
         assert entry.organ_class == OrganClass.exogenous
         assert "orion:rpc_health:snapshot" in entry.bus_channels

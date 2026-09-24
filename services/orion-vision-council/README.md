@@ -36,6 +36,8 @@ Walkway camera idea 4 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-wo
 
 `description` is plain words, `what_was_tried` names the detector/caption/council model that looked, `evidence_refs` are the window's artifact ids. `unresolved_id` is derived from `window_id` + reason, so a redelivered window cannot create a second row. At most one per stream per `COUNCIL_UNRESOLVED_MIN_INTERVAL_SEC` (default 600); `COUNCIL_UNRESOLVED_ENABLED=false` turns it off. Code: `app/unresolved.py`, wired in `CouncilService._maybe_publish_unresolved`. Intake windows only; RPC requests do not produce unresolved rows.
 
+**Cameras with a no-embed zone (the walkway's patio).** Uncertainties, captions and `artifact_uris` describe the whole frame, patio included. For any stream with an `embed: false` zone in `config/vision_zones.yaml` (copied into the image; read via `orion.vision.zones`) the council records only `no_label`, counted from the unnamed boxes (`summary.unnamed_boxes`, geometry from orion-vision-window) whose zone is a real embeddable zone -- a box in a no-embed zone, outside every zone, or without a frame size is left out -- with no council free text, no captions, no other labels, and no `image_ref`. If the zones file cannot be read every stream is treated this way (fail closed). Other cameras keep the behaviour above. Every reader names the camera from the row's `stream_id`.
+
 Live note (2026-09-24): the last 20 cam0 interpretations all had empty `uncertainties`, so on the office camera `council_uncertainty` is expected to be rare; `no_label` is the deterministic trigger.
 
 ## Evidence grounding rules

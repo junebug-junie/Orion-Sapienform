@@ -17,12 +17,25 @@ Study material for curiosity, not an alert. Two deterministic triggers:
 
 A per-stream minimum interval keeps a noisy scene from flooding the table.
 Pure module: no bus I/O, so it is testable without a running service.
+
+**Cameras with a no-embed zone (the walkway's patio).** The council's
+uncertainties and the captions describe the WHOLE frame, patio included, and
+``artifact_uris`` are whole frames. For any stream that has an ``embed:
+false`` zone in ``config/vision_zones.yaml`` (``orion.vision.zones``) this
+module therefore never emits ``council_uncertainty``, never quotes a caption,
+never names other detected labels, and never sets ``image_ref``. It emits
+``no_label`` only, counted from the unnamed boxes whose zone is a real,
+embeddable zone (``summary.unnamed_boxes``, placed by the window service);
+a box in a no-embed zone, outside every zone, or with no frame size is left
+out entirely. If the zones file cannot be read, every stream is treated this
+way (fail closed). Other cameras keep the full behaviour.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import Iterable, Optional
+import logging
+from typing import Dict, Iterable, List, Optional
 
 from orion.schemas.vision import (
     VisionSceneInterpretationV1,
@@ -33,6 +46,70 @@ from orion.schemas.vision import (
 MAX_EVIDENCE_REFS = 20
 MAX_GUESS_LABELS = 5
 MAX_UNCERTAINTIES_IN_TEXT = 3
+
+logger = logging.getLogger(__name__)
+
+_ZONES: Optional[Dict[str, list]] = None
+_ZONES_LOADED = False
+_FROM_CONFIG = object()
+
+
+def _load_zones_once() -> Optional[Dict[str, list]]:
+    """stream -> zones, or None when the zones file is missing/unreadable
+    (fail closed: every stream is then treated as having a no-embed zone)."""
+    global _ZONES, _ZONES_LOADED
+    if _ZONES_LOADED:
+        return _ZONES
+    try:
+        from orion.vision.zones import DEFAULT_ZONES_PATH, load_zones
+        import os
+        from pathlib import Path
+
+        path = Path(os.getenv("VISION_ZONES_PATH") or DEFAULT_ZONES_PATH)
+        if not path.exists():
+            logger.warning("vision zones file missing path=%s; unresolved percepts fail closed", path)
+            _ZONES = None
+        else:
+            _ZONES = load_zones(path)
+    except Exception as exc:  # malformed yaml must not open the patio up
+        logger.warning("vision zones unreadable err=%s; unresolved percepts fail closed", exc)
+        _ZONES = None
+    _ZONES_LOADED = True
+    return _ZONES
+
+
+def _guarded_zones(window: VisionWindowPayload, zones_by_stream: Optional[Dict[str, list]]) -> Optional[list]:
+    """The stream's zones if it has a no-embed zone (or zones are unknown ->
+    []), else None meaning "not guarded, full behaviour"."""
+    if zones_by_stream is None:
+        return []
+    zones = list(zones_by_stream.get(str(window.stream_id or "")) or [])
+    if any(not z.embed for z in zones):
+        return zones
+    return None
+
+
+def _embeddable_unnamed_count(window: VisionWindowPayload, zones: list) -> int:
+    """Per-frame max of unnamed boxes that sit in a real, embeddable zone."""
+    from orion.vision.zones import zone_for_box
+
+    raw = (window.summary or {}).get("unnamed_boxes") or []
+    per_frame: Dict[str, int] = {}
+    for box in raw if isinstance(raw, list) else []:
+        if not isinstance(box, dict):
+            continue
+        try:
+            xyxy = [float(v) for v in box.get("box_xyxy") or []]
+            w = float(box.get("frame_width") or 0)
+            h = float(box.get("frame_height") or 0)
+        except (TypeError, ValueError):
+            continue
+        zone = zone_for_box(zones, xyxy, w, h) if zones else None
+        if zone is None or not zone.embed:
+            continue  # no-embed zone, outside every zone, or unplaceable
+        key = str(box.get("frame") or "")
+        per_frame[key] = per_frame.get(key, 0) + 1
+    return max(per_frame.values()) if per_frame else 0
 
 
 def _evidence(window: VisionWindowPayload) -> dict:
@@ -101,12 +178,22 @@ def build_unresolved(
     *,
     council_model: str,
     council_route: str,
+    zones_by_stream: Optional[Dict[str, list]] | object = _FROM_CONFIG,
 ) -> Optional[VisionUnresolvedV1]:
     """Return a VisionUnresolvedV1 for this window, or None if nothing went unnamed.
 
     ``interpretation`` is None when the council did not run (stable-scene gate
     or LLM failure); only the ``no_label`` trigger can fire then.
+
+    ``zones_by_stream`` defaults to ``config/vision_zones.yaml``; ``None``
+    means the zones are unknown, which fails closed (every stream guarded).
     """
+    if zones_by_stream is _FROM_CONFIG:
+        zones_by_stream = _load_zones_once()
+    guarded = _guarded_zones(window, zones_by_stream)
+    if guarded is not None:
+        return _build_guarded(window, guarded)
+
     uncertainties = list(interpretation.uncertainties) if interpretation is not None else []
     detections = _detection_count(window)
     unnamed = _unnamed_count(window)
@@ -161,6 +248,30 @@ def build_unresolved(
         what_was_tried=tried,
         evidence_refs=_dedupe(evidence_refs, MAX_EVIDENCE_REFS),
         image_ref=image_ref,
+    )
+
+
+def _build_guarded(window: VisionWindowPayload, zones: list) -> Optional[VisionUnresolvedV1]:
+    """A camera that sees a no-embed zone: say only what is known about the
+    unnamed boxes outside it. No free text from the council, no captions, no
+    other labels, no frame."""
+    count = _embeddable_unnamed_count(window, zones)
+    if count <= 0:
+        return None
+    where = _where(window)
+    return VisionUnresolvedV1(
+        unresolved_id=unresolved_id_for(window.window_id, "no_label"),
+        stream_id=window.stream_id,
+        camera_id=window.camera_id,
+        window_id=window.window_id,
+        reason="no_label",
+        description=(
+            f"Something showed up on the {where} camera that I could not name. "
+            f"The detector drew a box around {count} thing(s) there but could not say what they were."
+        ),
+        what_was_tried=[f"object detector on the vision host: {count} box(es) it could not put a name to"],
+        evidence_refs=_dedupe(window.artifact_ids or [], MAX_EVIDENCE_REFS),
+        image_ref=None,
     )
 
 

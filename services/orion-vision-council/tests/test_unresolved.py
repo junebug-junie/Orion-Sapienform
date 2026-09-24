@@ -14,7 +14,7 @@ from app.main import CouncilService
 from app.unresolved import UnresolvedRateLimiter, build_unresolved, unresolved_id_for
 
 
-def _window(*, detections=0, hard=(), counts=None, stream="walkway", window_id="w1") -> VisionWindowPayload:
+def _window(*, detections=0, hard=(), counts=None, stream="cam0", window_id="w1") -> VisionWindowPayload:
     return VisionWindowPayload(
         window_id=window_id,
         start_ts=1.0,
@@ -154,25 +154,32 @@ def _load_window_projection():
     return mod
 
 
-def _artifact(objects):
+def _artifact(objects, artifact_id="art-real"):
     from orion.schemas.vision import VisionArtifactPayload
 
+    def _obj(o):
+        label, score = o[0], o[1]
+        box = o[2] if len(o) > 2 else [0, 0, 1, 1]
+        return {"label": label, "score": score, "box_xyxy": box}
+
     return VisionArtifactPayload(
-        artifact_id="art-real",
+        artifact_id=artifact_id,
         correlation_id="c",
         task_type="detect_open_vocab",
         device="cuda:0",
         inputs={},
-        outputs={"objects": [{"label": l, "score": s, "box_xyxy": [0, 0, 1, 1]} for l, s in objects]},
+        outputs={"objects": [_obj(o) for o in objects], "frame_width": 1000, "frame_height": 1000,
+                 "caption": {"text": "two people sitting on the patio"}},
         timing={},
         model_fingerprints={},
     )
 
 
-def _real_window(objects) -> VisionWindowPayload:
+def _real_window(objects, stream="cam0") -> VisionWindowPayload:
     proj = _load_window_projection()
     summary = proj.summarize_items([(_artifact(objects), 1.0)])
-    return VisionWindowPayload(window_id="wr", start_ts=1.0, end_ts=2.0, stream_id="walkway", summary=summary, artifact_ids=["art-real"])
+    return VisionWindowPayload(window_id="wr", start_ts=1.0, end_ts=2.0, stream_id=stream, summary=summary,
+                               artifact_ids=["art-real"], artifact_uris=["/mnt/telemetry/vision/frames/walkway.jpg"])
 
 
 def test_real_summary_named_boxes_do_not_fire():
@@ -186,3 +193,63 @@ def test_real_summary_unnamed_box_fires_no_label():
     item = build_unresolved(window, None, council_model="m", council_route="r")
     assert item is not None and item.reason == "no_label"
     assert "1 thing(s)" in item.description
+
+
+# --- a camera with a no-embed zone (the walkway's patio) ---------------------
+# Shipped config/vision_zones.yaml: patio = x 0..0.35, y 0.7..1.0 (embed:
+# false); walkway = y 0.35..1.0 (embed: true). Boxes are in a 1000x1000 frame.
+PATIO_BOX = [100.0, 800.0, 200.0, 950.0]      # bottom-center (150, 950): patio
+WALKWAY_BOX = [600.0, 600.0, 700.0, 900.0]    # bottom-center (650, 900): walkway
+SKY_BOX = [400.0, 50.0, 500.0, 200.0]         # outside every zone
+
+
+def test_walkway_unnamed_box_on_the_patio_records_nothing():
+    window = _real_window([("", 0.5, PATIO_BOX), ("person", 0.9, PATIO_BOX)], stream="walkway")
+    assert build_unresolved(window, _interp(["who is that on the patio"]), council_model="m", council_route="r") is None
+
+
+def test_walkway_council_uncertainty_is_never_recorded_as_free_text():
+    window = _real_window([("person", 0.9, WALKWAY_BOX)], stream="walkway")
+    assert build_unresolved(window, _interp(["someone on the patio holding something"]),
+                            council_model="m", council_route="r") is None
+
+
+def test_walkway_unnamed_box_outside_the_patio_is_no_label_without_frame_or_captions():
+    window = _real_window([("", 0.5, WALKWAY_BOX), ("", 0.5, PATIO_BOX), ("object", 0.4, SKY_BOX),
+                           ("person", 0.9, PATIO_BOX)], stream="walkway")
+    item = build_unresolved(window, _interp(["two people on the patio"]), council_model="m", council_route="r")
+    assert item is not None and item.reason == "no_label"
+    assert "1 thing(s)" in item.description  # the walkway box only
+    assert "walkway camera" in item.description
+    assert item.image_ref is None
+    text = " ".join([item.description, *item.what_was_tried]).lower()
+    assert "patio" not in text and "caption" not in text and "person" not in text
+    assert item.evidence_refs == ["art-real"]
+
+
+def test_second_no_embed_zone_guards_its_stream_too():
+    from orion.vision.zones import Zone
+
+    zones = {"driveway": [
+        Zone(name="garden", polygon=((0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)), embed=False),
+        Zone(name="street", polygon=((0.0, 0.0), (1.0, 0.0), (1.0, 0.5), (0.0, 0.5)), embed=True),
+    ]}
+    window = _real_window([("", 0.5, [100.0, 700.0, 200.0, 900.0])], stream="driveway")  # in the garden
+    assert build_unresolved(window, _interp(["x"]), council_model="m", council_route="r",
+                            zones_by_stream=zones) is None
+    window = _real_window([("", 0.5, [100.0, 100.0, 200.0, 300.0])], stream="driveway")  # on the street
+    item = build_unresolved(window, None, council_model="m", council_route="r", zones_by_stream=zones)
+    assert item is not None and item.image_ref is None and "driveway camera" in item.description
+
+
+def test_unknown_zones_fail_closed_for_every_stream():
+    window = _window(detections=4, counts={"": 2})
+    assert build_unresolved(window, _interp(["x"]), council_model="m", council_route="r",
+                            zones_by_stream=None) is None
+
+
+def test_other_cameras_keep_full_behaviour():
+    item = build_unresolved(_window(detections=3, hard=["person"], counts={"person": 1}),
+                            _interp(["is that a coat or a person"]), council_model="m", council_route="r")
+    assert item is not None and item.reason == "council_uncertainty"
+    assert item.image_ref == "/mnt/telemetry/vision/frames/a.jpg"

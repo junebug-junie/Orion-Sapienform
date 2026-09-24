@@ -17,6 +17,11 @@ from orion.vision.stream_ids import is_url_like
 SNAPSHOT_SCHEMA_V1 = "vision_window_snapshot.v1"
 MAX_URIS_PER_ENVELOPE = 32
 HARD_SCORE_THRESHOLD = 0.25
+# Boxes the detector drew but could not name: GroundingDINO's "" and the host
+# runner's "object" fallback. Same set as orion-vision-council's
+# app/unresolved.py UNNAMED_LABELS, which reads the boxes below.
+UNNAMED_LABELS = frozenset({"", "object"})
+MAX_UNNAMED_BOXES = 40
 CAPTION_STOPLIST = frozenset({"youtube", "google", "video", "watching", "describe", "image"})
 
 
@@ -184,6 +189,45 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
     }
 
 
+def _frame_size(art: VisionArtifactPayload) -> Tuple[Optional[int], Optional[int]]:
+    extra = art.outputs.model_extra or {}
+    inputs = art.inputs or {}
+
+    def _pos(v: Any) -> Optional[int]:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
+    return (_pos(extra.get("frame_width")) or _pos(inputs.get("width")),
+            _pos(extra.get("frame_height")) or _pos(inputs.get("height")))
+
+
+def _unnamed_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Dict[str, Any]]:
+    """Where the unnamed boxes were, so the council can place each one in a
+    camera zone (orion.vision.zones) and leave any in a no-embed zone (the
+    patio) out of what it records as "something I could not name". Geometry
+    only; capped."""
+    out: List[Dict[str, Any]] = []
+    for art, _ts in items:
+        if _skip_edge_artifact(art):
+            continue
+        width, height = _frame_size(art)
+        for obj in art.outputs.objects or []:
+            if str(obj.label or "").strip().lower() not in UNNAMED_LABELS:
+                continue
+            out.append({
+                "frame": art.artifact_id,
+                "box_xyxy": [float(v) for v in obj.box_xyxy],
+                "frame_width": width,
+                "frame_height": height,
+            })
+            if len(out) >= MAX_UNNAMED_BOXES:
+                return out
+    return out
+
+
 def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[str, Any]:
     """Aggregate a window's artifacts.
 
@@ -256,6 +300,7 @@ def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
         "label_counts": counts,
         "detection_count": sum(detections.values()) if detections else 0,
         "evidence": _build_evidence(items),
+        "unnamed_boxes": _unnamed_boxes(items),
     }
 
 

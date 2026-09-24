@@ -388,7 +388,7 @@ def assemble_study_material(
     )
 
 
-# --- Things Orion saw on the walkway and could not name --------------------
+# --- Things Orion's cameras saw and could not name --------------------------
 #
 # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 4.
 # Curiosity's only material used to be Orion's own internals, which is why the
@@ -447,7 +447,8 @@ class UnresolvedPerceptCard:
 
     def preview(self, tz: Any = None) -> str:
         when = self.observed_at.astimezone(tz) if tz is not None else self.observed_at
-        place = f"on the {self.stream_id}" if self.stream_id else "on a camera"
+        # Named from the row's own stream, never assumed to be the walkway.
+        place = f"on the {self.stream_id} camera" if self.stream_id else "on a camera"
         known = [_clip(self.description)] if self.description.strip() else []
         why = _REASON_PLAIN.get(self.reason)
         if why:
@@ -458,8 +459,10 @@ class UnresolvedPerceptCard:
             f"At {when:%H:%M} on {when:%a %d %b} {place} I saw something I could "
             f"not name; here is what I know: {'; '.join(known) or 'nothing more was recorded'}."
         )
-        # image_ref deliberately NOT printed: vision_unresolved has no zone
-        # column, so a ref could point at a patio crop (family space).
+        # image_ref deliberately NOT printed: a ref could be a whole frame, and
+        # a frame from a camera with a no-embed zone shows the patio (family
+        # space). The council already withholds it for such cameras; this is
+        # the second layer.
         return text + f"\n      unresolved_id: {self.unresolved_id}"
 
 

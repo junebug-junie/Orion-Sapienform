@@ -53,7 +53,7 @@ def test_preview_is_first_person_local_time_and_cites_its_id() -> None:
     # 09:12 UTC is 03:12 MDT.
     card = build_unresolved_cards([_row("u1", 0, observed_at=datetime(2026, 9, 24, 9, 12, tzinfo=timezone.utc))])[0]
     text = card.preview(ZoneInfo("America/Denver"))
-    assert text.startswith("At 03:12 on Thu 24 Sep on the walkway I saw something I could not name")
+    assert text.startswith("At 03:12 on Thu 24 Sep on the walkway camera I saw something I could not name")
     assert "a low shape moving along the fence line" in text
     assert "tried: yolo, council" in text
     assert "unresolved_id: u1" in text
@@ -96,3 +96,20 @@ def test_unresolved_does_not_change_the_run_gate() -> None:
 def test_image_ref_never_reaches_the_prompt() -> None:
     card = build_unresolved_cards([_row("u1", 0, image_ref="/crops/patio/1.jpg")])[0]
     assert "patio" not in card.preview()
+
+
+def test_preview_names_the_rows_own_camera_and_never_assumes_the_walkway() -> None:
+    card = build_unresolved_cards([_row("u9", 0, stream_id="cam0", camera_id="cam0")])[0]
+    text = card.preview()
+    assert "on the cam0 camera" in text and "walkway" not in text
+    nameless = build_unresolved_cards([_row("u8", 0, stream_id=None)])[0].preview()
+    assert "on a camera" in nameless and "walkway" not in nameless
+
+
+def test_prompt_does_not_assume_the_street() -> None:
+    from pathlib import Path
+
+    from orion.curiosity import kickoff_prompt
+
+    src = Path(kickoff_prompt.__file__).read_text(encoding="utf-8")
+    assert "look at the street" not in src

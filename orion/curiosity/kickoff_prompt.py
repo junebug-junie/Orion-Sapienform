@@ -261,7 +261,8 @@ def _material_section(material: StudyMaterial) -> list[str]:
 
 
 def _unresolved_section(material: StudyMaterial) -> list[str]:
-    """Walkway percepts Orion could not name (walkway spec idea 4).
+    """Percepts Orion's cameras could not name (walkway spec idea 4). Each
+    line names its own camera from the row's stream_id.
 
     Nothing at all when there are none -- no heading over an empty list. The
     paragraph says these exist and what Orion MAY do with them; it does not
@@ -281,7 +282,7 @@ def _unresolved_section(material: StudyMaterial) -> list[str]:
         "because not-knowing is material too, not because you should pick one. "
         "If one interests you, you may open a :Prior about what it was, or say "
         "in what you write that you want to ask Juniper about it -- she can "
-        "look at the street; you only have what is listed here.",
+        "look at what that camera sees; you only have what is listed here.",
         "",
     ]
     lines += [f"  - {card.preview(tz)}" for card in material.unresolved]

@@ -1226,7 +1226,8 @@ class CuriosityInvestigation:
         return material
 
     async def _read_unresolved_percepts(self, pool: Any) -> list:
-        """Recent walkway percepts Orion could not name (walkway spec idea 4).
+        """Recent percepts Orion's cameras could not name (walkway spec idea 4),
+        any camera; each card names its own from the row's stream_id.
 
         Its own read, its own failure: `vision_unresolved` ships as a manual
         migration, so on a host that has not applied it this query raises

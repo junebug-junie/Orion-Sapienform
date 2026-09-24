@@ -27,6 +27,11 @@ from .transport_metacog_gate import (
 )
 from .insight_metacog_gate import build_insight_metacog_trigger
 from .flow_metacog_gate import build_flow_metacog_trigger
+from .transport_baseline_gate import (
+    TransportBaselineGate,
+    config_from_settings as transport_baseline_config_from_settings,
+    log_fold_result as log_transport_baseline_fold,
+)
 from .repair_pressure_trend_gate import (
     evaluate_repair_pressure_trend,
     state_from_dict,
@@ -159,6 +164,16 @@ class EquilibriumService(BaseChassis):
         # first poll -- correct ("this is news to this process") and bounded,
         # versus the pre-2026-07-30 behavior of firing every 30s forever.
         self._bus_synaptic_above_threshold: bool = False
+        # Per-hop transport baselines (app/transport_baseline_gate.py). State is
+        # restored from Redis in _run(); a config change cold-starts it.
+        self._transport_baseline_gate: TransportBaselineGate | None = (
+            TransportBaselineGate(
+                transport_baseline_config_from_settings(settings),
+                settings.transport_exclude_labels(),
+            )
+            if settings.transport_baseline_enable
+            else None
+        )
 
     def _trace_meta(
         self,
@@ -224,6 +239,67 @@ class EquilibriumService(BaseChassis):
             )
         except Exception as e:
             logger.warning("Failed to persist repair_pressure_trend state: %s", e)
+
+    async def _load_transport_baseline_state(self) -> None:
+        if self._transport_baseline_gate is None:
+            return
+        try:
+            raw = await self.bus.redis.get(settings.transport_baseline_state_key)
+        except Exception as e:
+            logger.warning("Failed to load transport_baseline state: %s", e)
+            raw = None
+        self._transport_baseline_gate.load(raw)
+
+    async def _persist_transport_baseline_state(self) -> None:
+        if self._transport_baseline_gate is None:
+            return
+        try:
+            await self.bus.redis.set(
+                settings.transport_baseline_state_key, self._transport_baseline_gate.dump()
+            )
+        except Exception as e:
+            logger.warning("Failed to persist transport_baseline state: %s", e)
+
+    async def _handle_rpc_health_snapshot(
+        self, payload_dict: Dict[str, Any], *, zen: float, distress: float
+    ) -> None:
+        """Both transport consumers of one RpcHealthSnapshotV1 window.
+
+        - baseline gate (per-hop EWMA): always folds when enabled; publishes
+          only when EQUILIBRIUM_TRANSPORT_BASELINE_EMIT is effective.
+        - legacy timeout branch: runs only while the baseline gate is NOT
+          emitting, so one timeout never produces two triggers.
+        """
+        zen_state = "zen" if zen > 0.5 else "not_zen"
+        emit = settings.transport_baseline_emit_effective()
+        gate = self._transport_baseline_gate
+        if gate is not None:
+            result, triggers = gate.process(
+                payload_dict,
+                zen_state=zen_state,
+                pressure=distress,
+                recall_enabled=settings.metacog_recall_enabled,
+            )
+            if result.skipped_reason is None:
+                log_transport_baseline_fold(result, emit=emit)
+                await self._persist_transport_baseline_state()
+            if emit:
+                for trigger in triggers:
+                    # Episodes are rate-limited by construction (open/escalate/
+                    # close with close_quiet_s hysteresis). The 30s transport lane
+                    # would silently drop a close or escalate that lands inside
+                    # it, so these bypass it.
+                    await self._publish_metacog_trigger(trigger, bypass_cooldown=True)
+
+        if settings.metacog_transport_trigger_enable and not emit:
+            trigger = build_transport_metacog_trigger_from_snapshot(
+                payload_dict,
+                zen_state=zen_state,
+                pressure=distress,
+                recall_enabled=settings.metacog_recall_enabled,
+            )
+            if trigger is not None:
+                await self._publish_metacog_trigger(trigger)
 
     def _service_key(self, payload: SystemHealthV1) -> str:
         node = payload.node or "unknown"
@@ -524,7 +600,9 @@ class EquilibriumService(BaseChassis):
             return getattr(settings, attr)
         return settings.metacog_cooldown_sec
 
-    async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> bool:
+    async def _publish_metacog_trigger(
+        self, trigger: MetacogTriggerV1, *, bypass_cooldown: bool = False
+    ) -> bool:
         """Returns True only if the trigger was really published to the bus.
 
         Callers that keep their own event-identity de-dupe state (the generative
@@ -532,6 +610,11 @@ class EquilibriumService(BaseChassis):
         cooldown-suppressed fire would mark the event as seen while never having
         emitted it. Every pre-existing caller ignores the return value, which is
         the unchanged behavior for them.
+
+        ``bypass_cooldown`` is only for sources that are already episode-shaped
+        (the transport baseline gate): they skip the lane check and do not
+        consume the lane either, so they neither lose a close row to it nor
+        starve the lane's other sources.
         """
         now_ts = datetime.now().timestamp()
 
@@ -543,14 +626,15 @@ class EquilibriumService(BaseChassis):
             else self._last_metacog_trigger_ts
         )
 
-        if (now_ts - last_ts) < cooldown_sec:
+        if not bypass_cooldown and (now_ts - last_ts) < cooldown_sec:
             logger.info("Metacog trigger skipped due to cooldown (%s)", trigger.trigger_kind)
             return False
 
-        if has_own_lane:
-            self._last_trigger_ts_by_kind[trigger.trigger_kind] = now_ts
-        else:
-            self._last_metacog_trigger_ts = now_ts
+        if not bypass_cooldown:
+            if has_own_lane:
+                self._last_trigger_ts_by_kind[trigger.trigger_kind] = now_ts
+            else:
+                self._last_metacog_trigger_ts = now_ts
 
         # 1. Publish Trigger Event (for observability)
         trace_id = uuid4()
@@ -1142,6 +1226,7 @@ class EquilibriumService(BaseChassis):
     async def _run(self) -> None:
         await self._load_state()
         await self._load_repair_pressure_trend_state()
+        await self._load_transport_baseline_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
         metacog_task = asyncio.create_task(self._metacog_baseline_loop())
@@ -1166,8 +1251,9 @@ class EquilibriumService(BaseChassis):
                 channels.append(settings.channel_thought_artifact)
                 channels.append(settings.channel_harness_run_artifact)
                 channels.append(settings.channel_grammar_event)
-            if settings.metacog_transport_trigger_enable:
+            if settings.metacog_transport_trigger_enable or self._transport_baseline_gate is not None:
                 channels.append(settings.channel_rpc_health_snapshot)
+            if settings.metacog_transport_trigger_enable:
                 # channel_grammar_event may already be subscribed above for
                 # chat_turn's own exec_turn_timeout/stance_timeout filtering --
                 # avoid a duplicate pubsub subscription to the same channel.
@@ -1370,23 +1456,14 @@ class EquilibriumService(BaseChassis):
                                 if trigger is not None:
                                     await self._publish_metacog_trigger(trigger)
 
-                        elif (
-                            channel == settings.channel_rpc_health_snapshot
-                            and settings.metacog_transport_trigger_enable
-                        ):
+                        elif channel == settings.channel_rpc_health_snapshot:
                             # Real RpcHealthSnapshotV1, published every
                             # RPC_HEALTH_PUBLISH_INTERVAL_SEC by orion-cortex-exec /
                             # orion-cortex-orch (orion/core/bus/rpc_health_publish.py,
                             # PR #1313/#1315, live-verified).
-                            trigger = build_transport_metacog_trigger_from_snapshot(
-                                payload_dict,
-                                zen_state="zen" if zen > 0.5 else "not_zen",
-                                pressure=distress,
-                                recall_enabled=settings.metacog_recall_enabled,
-                                latency_p95_threshold_ms=settings.metacog_transport_latency_p95_threshold_ms,
+                            await self._handle_rpc_health_snapshot(
+                                payload_dict, zen=zen, distress=distress
                             )
-                            if trigger is not None:
-                                await self._publish_metacog_trigger(trigger)
 
                 except Exception as e:
                     logger.warning("Failed to process message on %s: %s", channel, e)

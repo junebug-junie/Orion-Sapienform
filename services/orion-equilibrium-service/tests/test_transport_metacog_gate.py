@@ -53,7 +53,6 @@ def test_snapshot_no_timeout_no_latency_spike_fires_nothing():
         zen_state="zen",
         pressure=0.1,
         recall_enabled=True,
-        latency_p95_threshold_ms=5000.0,
     )
     assert trigger is None
 
@@ -66,7 +65,6 @@ def test_snapshot_empty_window_fires_nothing():
         zen_state="zen",
         pressure=0.1,
         recall_enabled=True,
-        latency_p95_threshold_ms=5000.0,
     )
     assert trigger is None
 
@@ -77,7 +75,6 @@ def test_snapshot_real_timeout_fires():
         zen_state="zen",
         pressure=0.2,
         recall_enabled=True,
-        latency_p95_threshold_ms=5000.0,
     )
     assert trigger is not None
     assert trigger.trigger_kind == "transport"
@@ -87,16 +84,25 @@ def test_snapshot_real_timeout_fires():
     assert trigger.upstream["service"] == "cortex-exec"
 
 
-def test_snapshot_latency_spike_above_threshold_fires():
+def test_snapshot_pooled_latency_never_fires_self_loop_regression():
+    """Regression (2026-09-24): the pooled-p95 branch fired on metacog's own
+    ~17s background LLM draft (cortex-orch windows averaged 2.1 calls, 0
+    timeouts), dispatching another draft -- ~2,000 junk rows/day. A slow
+    window with no timeouts must never fire the legacy gate."""
     trigger = build_transport_metacog_trigger_from_snapshot(
-        _snapshot_payload(success_latency_ms_p95=9000.0),
+        _snapshot_payload(
+            service="cortex-orch",
+            success_count=2,
+            timeout_count=0,
+            success_latency_ms_p95=17000.0,
+            success_latency_ms_max=17000.0,
+            channel_counts={"orion:cortex:exec:request:background": 1, "orion:state:request": 1},
+        ),
         zen_state="zen",
         pressure=0.2,
         recall_enabled=True,
-        latency_p95_threshold_ms=5000.0,
     )
-    assert trigger is not None
-    assert any(c.startswith("success_latency_ms_p95=") for c in trigger.upstream["fired_conditions"])
+    assert trigger is None
 
 
 def test_snapshot_latency_below_threshold_does_not_fire_alone():
@@ -105,21 +111,20 @@ def test_snapshot_latency_below_threshold_does_not_fire_alone():
         zen_state="zen",
         pressure=0.2,
         recall_enabled=True,
-        latency_p95_threshold_ms=5000.0,
     )
     assert trigger is None
 
 
-def test_snapshot_both_conditions_fire_together():
+def test_snapshot_timeout_with_slow_p95_fires_on_timeout_only():
     trigger = build_transport_metacog_trigger_from_snapshot(
         _snapshot_payload(timeout_count=2, success_latency_ms_p95=9000.0),
         zen_state="not_zen",
         pressure=0.5,
         recall_enabled=False,
-        latency_p95_threshold_ms=5000.0,
     )
     assert trigger is not None
-    assert len(trigger.upstream["fired_conditions"]) == 2
+    assert trigger.upstream["fired_conditions"] == ["timeout_count=2"]
+    assert "latency_p95_threshold_ms" not in trigger.upstream
 
 
 def test_snapshot_upstream_carries_full_evidence():
@@ -128,7 +133,6 @@ def test_snapshot_upstream_carries_full_evidence():
         zen_state="zen",
         pressure=0.1,
         recall_enabled=True,
-        latency_p95_threshold_ms=5000.0,
     )
     assert trigger is not None
     for key in (

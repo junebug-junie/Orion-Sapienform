@@ -165,7 +165,7 @@ Added 2026-07-22 (PR #1291), shipped disabled by default; **enabled 2026-07-23**
 
 Full design: `docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md`. Three independent evidence sources, all feeding `trigger_kind=transport` (`app/transport_metacog_gate.py`), no correlator needed -- each source fires on its own real evidence directly:
 
-- **(A) `RpcHealthSnapshotV1` windows** on `orion:rpc_health:snapshot` (published every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` by `orion-cortex-exec`/`orion-cortex-orch`, `orion/core/bus/rpc_health_publish.py`, PR #1313/#1315, live-verified). Fires when `timeout_count > 0` (real evidence, no threshold) or `success_latency_ms_p95 >= EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` (a starting default, unvalidated). An empty window (no real calls) fires nothing -- absence of traffic isn't evidence of trouble, same rule `orion-signal-gateway`'s `rpc_health` organ adapter already applies.
+- **(A) `RpcHealthSnapshotV1` windows** on `orion:rpc_health:snapshot` (published every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` by `orion-cortex-exec`/`orion-cortex-orch`, `orion/core/bus/rpc_health_publish.py`, PR #1313/#1315, live-verified). Fires when `timeout_count > 0` (real evidence, no threshold). **The pooled-p95 latency branch and its `EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` key were removed 2026-09-24**: the slow call in those windows was metacog's own background LLM draft, so the branch was a self-loop (~2,000 junk rows/day). Per-hop latency moved to the baseline gate below. While `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` is effective, this whole Option A branch is not called -- the baseline gate's timeout/zero_success episodes replace it. An empty window (no real calls) fires nothing -- absence of traffic isn't evidence of trouble, same rule `orion-signal-gateway`'s `rpc_health` organ adapter already applies.
 - **(C) `rpc_transport_timeout` grammar atoms** on `orion:grammar:event` (published by `orion/core/bus/async_service.py::_emit_rpc_timeout_grammar`, fired from both of `rpc_request()`'s real timeout branches -- generalizes `chat_turn`'s own `exec_turn_timeout`/`stance_timeout` markers, scoped to one harness/thought RPC each, to every one of the 37+ real `rpc_request()` call sites sharing that one client). Terminal by construction -- a real RPC already timed out by the time this atom exists, no threshold to evaluate.
 - **(bus_synaptic) `node:substrate.bus_synaptic`'s `prediction_error`**, polled directly from FalkorDB (`orion_substrate` graph, written by `orion-substrate-runtime`'s `_bus_synaptic_tick` -- PR #1377/#1380) every `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC`, not message-driven like A/C. Passively covers RPC-health-invisible organs (bespoke long-poll clients like `orion-harness-governor`) that A/C structurally cannot see. Fires at `error >= EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` (default `0.15`). **Retuned 2026-07-30**: `bus_synaptic_prediction_error` changed from a magnitude (mean `|z|`, saturating at `1.0`) to the *fraction of edges currently anomalous*, so the old `1.0` default would have required every edge in the mesh to be anomalous at once. `0.15` is ~1.6x the live-measured baseline max (60 samples over 10 min: median 0.026, p95 0.072, max 0.094); zero baseline samples reached it. A single organ failing reads ~0.051 and even the three busiest together read 0.136 -- **below** this threshold, deliberately: baseline-to-few-organ separation is only ~1.45x, so no threshold separates them cleanly. This detects broad mesh events (>=15-20% of edges). Few-organ detection needs a per-organ signal, not a lower bar here.
 
@@ -177,13 +177,39 @@ Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) --
 |-----|---------|---------|
 | `EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE` | `true` | Master gate for the transport trigger |
 | `EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC` | `30` | transport's own cooldown window, separate from `EQUILIBRIUM_METACOG_COOLDOWN_SEC` |
-| `EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` | `5000` | Option A's latency-spike threshold; unvalidated starting default |
 | `CHANNEL_RPC_HEALTH_SNAPSHOT` | `orion:rpc_health:snapshot` | Option A's source channel |
 | `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Option C's source channel, filtered to `semantic_role=="rpc_transport_timeout"` |
 | `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE` | `true` | Master gate for Option bus_synaptic |
 | `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC` | `30` | Poll cadence for Option bus_synaptic |
 | `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` | `0.15` | Option bus_synaptic's fire threshold (fraction of edges anomalous; ~3.5x measured baseline) |
 | `FALKORDB_URI` / `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Option bus_synaptic's read-only FalkorDB connection |
+
+### transport baseline gate (per-hop EWMA, 2026-09-24)
+
+Spec: `docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md` (A1-A4). Reducer: `orion/metacog/transport_baseline.py` (pure). Glue: `app/transport_baseline_gate.py`.
+
+What it does, plainly: every rpc_health window now carries per-hop latency sums (`channel_latency`). For each `(service, instance, hop)` this learns what "normal speed" is, in log space, and reports when a hop is suddenly slow (`spike`), has been slow for a while compared with its best recent normal (`saturation`), has been slow so long that normal has really moved (`regime_shift`, stated once, then the baseline re-seeds), or is timing out (`timeout`, `zero_success`). Each is an episode: one row on open, one per severity doubling, one on close with duration and peak -- not one per 30-second window.
+
+Guards against learning "busy" as normal: windows that look like incidents never teach the baseline; slow drift is measured against a floor that barely moves up and does not move up at all while saturated; the floor only jumps after a `regime_shift` row has said so. Load (calls per minute) is carried as evidence, never as a trigger.
+
+Old producers without `channel_latency` are skipped (nothing is guessed from the pooled p95). Hops labelled with anything in `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` (default metacog's own `log_orion_metacognition` dispatch) are measured and logged, never triggered. Episode triggers bypass the 30 s transport cooldown lane and do not consume it.
+
+Log-only by default. Look for `transport_baseline_obs` (per-key z, ratio, calls, open conditions) and `transport_baseline_event emit=False` lines; acceptance check 1 in the spec is judged on those.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE` | `true` | Fold + persist + log. Publishes nothing on its own |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` | `false` | Publish episode triggers; also retires the legacy Option A timeout branch |
+| `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` | `log_orion_metacognition` | Baselined but never trigger |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_STATE_KEY` | `equilibrium:transport_baseline_state:v1` | Redis key for reducer state + config fingerprint |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_MIN_CALLS` | `5` | Calls needed (pooled across windows if sparse) before latency is judged |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_N_WARM` | `10` | Judged windows before any latency condition may fire |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_SPIKE_Z` | `3.0` | Spike z, sustained 2 judged windows |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_SATURATION_RATIO` | `2.0` | Saturation opens at recent level / floor >= this (closes below 1.5) |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_REGIME_AFTER_SEC` | `21600` | Saturation this long becomes one `regime_shift` |
+
+Changing any tunable changes the state fingerprint: the next boot logs `transport_baseline cold_start reason=config_fingerprint_mismatch` and re-learns. Rollback: set `EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE=false` and delete the Redis key.
+
 
 **Testing the bus_synaptic option:**
 

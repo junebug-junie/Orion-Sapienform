@@ -214,11 +214,50 @@ class Settings(BaseSettings):
     metacog_transport_cooldown_sec: float = Field(
         30.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC"
     )
-    # RpcHealthSnapshotV1 p95 latency threshold (Option A gate condition). No existing
-    # config to inherit from -- a starting default, same calibration caveat as
-    # telemetry_anomaly's threshold_multiplier; needs real data to validate.
-    metacog_transport_latency_p95_threshold_ms: float = Field(
-        5000.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS"
+    # EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS was removed on
+    # 2026-09-24: the pooled-p95 latency branch it gated was metacog measuring its
+    # own background LLM call (a self-loop, ~2,000 junk rows/day). Per-hop latency
+    # is judged by the transport baseline gate below instead.
+
+    # --- transport baseline gate (spec 2026-09-24-metacog-capture-and-transport-
+    # ewma-baseline-design.md, A1-A4; app/transport_baseline_gate.py). Per-hop
+    # log-latency EWMA over RpcHealthSnapshotV1.channel_latency.
+    # ENABLE: fold + persist + log per-key z/ratio/calls (log-only). Publishes
+    # nothing on its own.
+    transport_baseline_enable: bool = Field(
+        True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE"
+    )
+    # EMIT: also publish episode triggers (open/escalate/close). Requires
+    # ENABLE and EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE. While effective,
+    # the legacy rpc_health timeout branch is not called (no double firing).
+    transport_baseline_emit: bool = Field(
+        False, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
+    )
+    # Comma-separated health labels / verb names / whole hop keys that are
+    # baselined and logged but never trigger. Default breaks metacog's self-loop.
+    transport_exclude_labels_raw: str = Field(
+        "log_orion_metacognition", alias="EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS"
+    )
+    transport_baseline_state_key: str = Field(
+        "equilibrium:transport_baseline_state:v1",
+        alias="EQUILIBRIUM_TRANSPORT_BASELINE_STATE_KEY",
+    )
+    # Proposals from the spec; set for real from the log-only week. Changing
+    # any of these changes the state fingerprint -> cold start on next boot.
+    transport_baseline_min_calls: int = Field(
+        5, alias="EQUILIBRIUM_TRANSPORT_BASELINE_MIN_CALLS"
+    )
+    transport_baseline_n_warm: int = Field(
+        10, alias="EQUILIBRIUM_TRANSPORT_BASELINE_N_WARM"
+    )
+    transport_baseline_spike_z: float = Field(
+        3.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_SPIKE_Z"
+    )
+    transport_baseline_saturation_ratio: float = Field(
+        2.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_SATURATION_RATIO"
+    )
+    transport_baseline_regime_after_sec: float = Field(
+        21600.0, alias="EQUILIBRIUM_TRANSPORT_BASELINE_REGIME_AFTER_SEC"
     )
     # Option (bus_synaptic): third transport evidence source, reads
     # node:substrate.bus_synaptic's prediction_error directly from FalkorDB
@@ -413,6 +452,18 @@ class Settings(BaseSettings):
             except Exception:
                 self.windows_sec = [int(x) for x in _parse_list(self.windows_sec)]
         return self
+
+    def transport_exclude_labels(self) -> List[str]:
+        return _parse_list(self.transport_exclude_labels_raw)
+
+    def transport_baseline_emit_effective(self) -> bool:
+        """True only when baseline triggers really publish -- the single
+        predicate that also retires the legacy rpc_health timeout branch."""
+        return bool(
+            self.transport_baseline_enable
+            and self.transport_baseline_emit
+            and self.metacog_transport_trigger_enable
+        )
 
     def expected_services(self) -> List[str]:
         items: List[str] = []
